@@ -1,5 +1,4 @@
 import { AGENT_STOP_CHECKS_DEFAULT } from "../../../core/config.js";
-import { issueNumber } from "../../../core/change-ref.js";
 import { settingValues } from "../../../core/settings.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
@@ -158,14 +157,14 @@ async function implement(
   }
   // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in. A resumed
   // run has no agent, so a conflict there fails with merge_conflict.
-  const sync = await syncBase(w, run, item, handle, ctx, signal, gitDir, dirs, baseSha, model, resumed !== null);
+  const sync = await syncBase(w, run, item, handle, signal, gitDir, dirs, baseSha, model, resumed !== null);
   // A new MySQL step whose number the base took moves to the next free number (issue #297), before the gates.
   const renumbered = sync.merged ? await w.renumberSteps(run, handle, sync.baseSha) : [];
   // The files an earlier sync of these commits conflicted in still pass the scope gate, and so does a step moved
   // from an allowed path.
   const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
   const passing = [...conflicts, ...renumbered.filter((r) => isCovered(r.from, item.allowed_paths)).map((r) => r.to)];
-  const prePush = await prePushGates(w, run, item, handle, ctx, sync.baseSha, passing);
+  const prePush = await prePushGates(w, run, item, handle, sync.baseSha, passing);
   let floor = prePush.floor;
   const paths = prePush.paths;
   if (floor) {
@@ -192,7 +191,7 @@ async function implement(
     work.commits += Number((await w.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0;
   };
   try {
-    checked = await checksBeforePush(w, run, item, handle, ctx, signal, { gitDir, dirs, model, start, baseSha: sync.baseSha });
+    checked = await checksBeforePush(w, run, item, handle, signal, { gitDir, dirs, model, start, baseSha: sync.baseSha });
   } catch (err) {
     // Each keeps the commits on a wip branch, so the retry starts from them.
     if (!(err instanceof RunFailure) || ![CHECKS_FAILED_RUN, CHECKS_ENV, TOOLCHAIN_MISSING].includes(err.code)) throw err;
@@ -203,7 +202,7 @@ async function implement(
   if (checked.fixed) {
     await countFixCommits();
     // The fix commit goes through every gate again, on the final diff.
-    const postFixPrePush = await prePushGates(w, run, item, handle, ctx, sync.baseSha, passing);
+    const postFixPrePush = await prePushGates(w, run, item, handle, sync.baseSha, passing);
     floor = postFixPrePush.floor;
     if (floor) return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
   }
@@ -590,7 +589,6 @@ async function syncBase(
   run: Run,
   item: WorkItem,
   handle: SandboxHandle,
-  ctx: ToolCallContext,
   signal: AbortSignal,
   gitDir: string,
   dirs: string,
@@ -635,7 +633,7 @@ async function syncBase(
   }
   await w.recordConflicts(item, baseSha, conflicts);
   if (noAgent) {
-    return mergeConflict(w, run, item, ctx, conflicts, "no agent step on a resumed run", "", true);
+    return mergeConflict(w, run, item, conflicts, "no agent step on a resumed run", "", true);
   }
   const touched = (await w.git(handle, [
     "log", "--no-merges", `--max-count=${MAX_CONFLICT_COMMITS}`, "--format=%H %s", `${fork}..${baseSha}`, "--", ...conflicts,
@@ -662,7 +660,7 @@ async function syncBase(
 
   // Retry as a resolve step (decision changed 2026-11-02): same run, nothing pushed in between.
   const resolvePrompt = w.d.prompts.resolve;
-  if (!resolvePrompt) return mergeConflict(w, run, item, ctx, conflicts, `${first.failure} (no resolve prompt for a retry)`, first.transcript);
+  if (!resolvePrompt) return mergeConflict(w, run, item, conflicts, `${first.failure} (no resolve prompt for a retry)`, first.transcript);
   await restartMerge(w, handle, tip, branch);
   const again = await w.gitRaw(handle, [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", message, baseSha], identity);
   if (again.exit_code === 0) return { baseSha, merged: true, conflicts: [] };
@@ -685,7 +683,7 @@ async function syncBase(
     output_schema: IMPLEMENT_SCHEMA,
   });
   if (second.failure !== null) {
-    return mergeConflict(w, run, item, ctx, left, `${first.failure}; the retry as a resolve step failed too: ${second.failure}`, second.transcript);
+    return mergeConflict(w, run, item, left, `${first.failure}; the retry as a resolve step failed too: ${second.failure}`, second.transcript);
   }
   return commitSync(w, handle, baseSha, left, second.pending, identity);
 }
@@ -777,12 +775,11 @@ async function conflictStep(
   return done(null, pending);
 }
 
-/** The `merge_conflict` failure: an issue comment with the conflicting files, then a task failure. */
+/** The `merge_conflict` failure: a comment on the item with the conflicting files, then a task failure. */
 async function mergeConflict(
   w: Worker,
   run: Run,
   item: WorkItem,
-  ctx: ToolCallContext,
   conflicts: string[],
   why: string,
   transcript: string,
@@ -798,14 +795,7 @@ async function mergeConflict(
     "",
     ...conflicts.map((f) => `- \`${f}\``),
   ].join("\n");
-  const posted = await w.forgeComment(item, ctx, {
-    number: issueNumber(item),
-    body,
-    marker: `<!-- factory:merge-conflict:${run.id} -->`,
-  });
-  if (!posted.ok) {
-    w.d.log.warn("merge conflict comment failed", { run_id: run.id, error_code: posted.error_code });
-  }
+  await w.comment(item, { pr: null, body, marker: `<!-- factory:merge-conflict:${run.id} -->` });
   throw new RunFailure("merge_conflict", `${why}; conflicting files: ${conflicts.join(", ")}`.slice(0, 500), false, {
     output_tail: tail(transcript),
   });
@@ -825,7 +815,6 @@ async function checksBeforePush(
   run: Run,
   item: WorkItem,
   handle: SandboxHandle,
-  ctx: ToolCallContext,
   signal: AbortSignal,
   s: FixContext,
 ): Promise<{ results: CheckResult[]; fixed: boolean }> {
@@ -844,8 +833,8 @@ async function checksBeforePush(
   const second = await w.runCheckList(run, handle, signal);
   if (!second.failed) return { results: second.results, fixed: true };
   const onBase = await failsOnBase(w, run, handle, signal, s.baseSha, second.failed);
-  if (onBase) return checksEnv(w, run, item, ctx, second.failed, onBase);
-  return checksFailed(w, run, item, ctx, first.failed, second.failed);
+  if (onBase) return checksEnv(w, run, item, second.failed, onBase);
+  return checksFailed(w, run, item, first.failed, second.failed);
 }
 
 /**
@@ -930,7 +919,7 @@ async function fixStep(
 }
 
 /** `checks_failed` (a task failure): one comment naming the command, keyed on the run; nothing is pushed. */
-async function checksFailed(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, first: CheckResult, second: CheckResult): Promise<never> {
+async function checksFailed(w: Worker, run: Run, item: WorkItem, first: CheckResult, second: CheckResult): Promise<never> {
   const cmd = commandText(second.command);
   const before = commandText(first.command);
   const body = [
@@ -940,12 +929,7 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, ctx: ToolCallCo
     "",
     "Nothing was pushed to the change's branch. The run failed with `checks_failed`; the factory retries it from the kept commits until `max_attempts`.",
   ].join("\n");
-  const posted = await w.forgeComment(item, ctx, {
-    number: issueNumber(item),
-    body,
-    marker: `<!-- factory:checks:${run.id} -->`,
-  });
-  if (!posted.ok) w.d.log.warn("checks failed comment failed", { run_id: run.id, error_code: posted.error_code });
+  await w.comment(item, { pr: null, body, marker: `<!-- factory:checks:${run.id} -->` });
   // The failing tests by name (design §5 Restarts), so the detail says what broke, not only the exit code.
   const tests = failingTests(second.tail, MAX_FAILING_TESTS);
   const named = tests.length > 0 ? `; failing tests: ${tests.join(", ")}` : "";
@@ -959,7 +943,7 @@ async function checksFailed(w: Worker, run: Run, item: WorkItem, ctx: ToolCallCo
  * too; a failed post is logged. Nothing is pushed. The controller requeues the run without spending an attempt
  * or a restart, at most CHECKS_ENV_LIMIT times per item.
  */
-async function checksEnv(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, failed: CheckResult, files: string[]): Promise<never> {
+async function checksEnv(w: Worker, run: Run, item: WorkItem, failed: CheckResult, files: string[]): Promise<never> {
   const cmd = commandText(failed.command);
   const body = [
     "## Factory pre-push checks: failing on the base branch too",
@@ -970,12 +954,7 @@ async function checksEnv(w: Worker, run: Run, item: WorkItem, ctx: ToolCallConte
     "",
     `Nothing was pushed to the change's branch. The run failed with \`${CHECKS_ENV}\`; the factory retries it from the kept commits without spending an attempt, at most ${CHECKS_ENV_LIMIT} times per item, then waits for a person.`,
   ].join("\n");
-  const posted = await w.forgeComment(item, ctx, {
-    number: issueNumber(item),
-    body,
-    marker: `<!-- factory:checks:${run.id} -->`,
-  });
-  if (!posted.ok) w.d.log.warn("checks env comment failed", { run_id: run.id, error_code: posted.error_code });
+  await w.comment(item, { pr: null, body, marker: `<!-- factory:checks:${run.id} -->` });
   throw new RunFailure(CHECKS_ENV, `\`${cmd}\` ${failed.how} after one fix step, and on the base commit too; failing tests: ${files.join(", ")}`.slice(0, 500), false, {
     output_tail: failed.tail,
   });
@@ -1034,11 +1013,10 @@ async function prePushGates(
   run: Run,
   item: WorkItem,
   handle: SandboxHandle,
-  ctx: ToolCallContext,
   baseSha: string,
   conflicts: readonly string[] = [],
 ): Promise<{ floor: FloorHit[] | null; paths: string[] }> {
-  await scopeGateStep(w, run, item, handle, ctx, baseSha, conflicts);
+  await scopeGateStep(w, run, item, handle, baseSha, conflicts);
   // The item's project's gate settings (design 2026-11-01), read only through settingValues. The gates themselves
   // are src/core/pre-push.ts, shared with `session finish` (design §5, 2026-11-01).
   const s = settingValues(item.project, w.cfg.settings, w.d.learned);
@@ -1062,7 +1040,6 @@ async function scopeGateStep(
   run: Run,
   item: WorkItem,
   handle: SandboxHandle,
-  ctx: ToolCallContext,
   baseSha: string,
   conflicts: readonly string[],
 ) {
@@ -1077,14 +1054,7 @@ async function scopeGateStep(
     "",
     ...scopeReply(outside),
   ].join("\n");
-  const posted = await w.forgeComment(item, ctx, {
-    number: issueNumber(item),
-    body,
-    marker: `<!-- factory:scope:${run.id} -->`,
-  });
-  if (!posted.ok) {
-    w.d.log.warn("scope violation comment failed", { run_id: run.id, error_code: posted.error_code });
-  }
+  await w.comment(item, { pr: null, body, marker: `<!-- factory:scope:${run.id} -->` });
   throw new RunFailure("scope_violation", `files outside allowed_paths: ${outside.join(", ")}`.slice(0, 500));
 }
 

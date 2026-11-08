@@ -3,7 +3,7 @@ import type { DiffStat } from "../core/diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "../core/commands.js";
 import { type ReviewOutput, specFindings, unverifiedOf } from "../core/outputs.js";
 import { AGENT_STALLED, RATE_LIMITED } from "../core/policy.js";
-import { type LocalRoute, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor } from "../core/worker-deps.js";
+import { type LocalRoute, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, threadDelivery } from "../core/worker-deps.js";
 import { stripAnsi } from "../core/output-summary.js";
 import { MYSQL_STEPS_DIR, type Renumbering, staleStepRefs } from "../core/mechanical.js";
 import type { ConflictFile } from "../core/resolve.js";
@@ -12,7 +12,7 @@ import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkI
 import type { AgentRunResult } from "../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../interfaces/sandbox.js";
 
-export { type LocalRoute, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor };
+export { type LocalRoute, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, threadDelivery };
 
 /** The run kinds `workers pause` stops mid-run (design §5 Pause). Others finish first; then the worker stops claiming. */
 export const PAUSABLE_KINDS: readonly RunKind[] = ["implement", "review"];

@@ -16,7 +16,7 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeForge, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeForge, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner, fakePrRef, runComments } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -66,9 +66,6 @@ class GitPushBroker implements ToolBroker {
   }
   pushes() {
     return this.calls.filter((c) => c.name === "github.push_branch");
-  }
-  comments() {
-    return this.calls.filter((c) => c.name === "github.comment");
   }
 }
 
@@ -142,7 +139,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[]; localIt
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts: {
       triage: "T", implement: "I", review: "R",
-    }, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv, awake: new NoKeepAwake(),
+    }, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv, awake: new NoKeepAwake(), prRef: (pr) => fakePrRef(pr),
     // The local route, as compose always sets it: a local item without a PR would take it.
     local: { broker: new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo }), sandbox: new NoOpSandbox(join(root, "local-wt"), undefined, undefined, { local: true }) },
   });
@@ -179,6 +176,8 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[]; localIt
   return {
     store, source, forge, sandbox, broker, runner, controller, worker, step, event, id: id as WorkItemId, branch,
     origin, branchSha, mainSha, remoteSha, updateRuns, resolveRuns, reasons, toolEnv, waitForMerge, moveMain,
+    /** The update runs' comments, handed to outbound as thread entries (RFC 0015 M7). */
+    comments: async () => (await runComments(store, id)).filter((c) => c.marker.includes("factory:update:")),
   };
 }
 
@@ -237,7 +236,7 @@ describe("update run: worker", () => {
     expect(run!.outcome?.status === "failed" ? run!.outcome.detail : "").not.toContain("git rev-parse:");
     expect(git(f.origin, "rev-list", "--parents", "-n", "1", f.remoteSha()).split(" ").slice(1)).toEqual([f.branchSha, f.mainSha]);
     expect(f.broker.pushes()).toHaveLength(1);
-    expect(f.broker.comments()[0]!.args).toMatchObject({ number: 42 });
+    expect((await f.comments())[0]!).toMatchObject({ number: 42, pr: true });
   });
 
   it("clean merge with passing tests: pushes the merge commit, comments, stays merge_pending", async () => {
@@ -253,10 +252,10 @@ describe("update run: worker", () => {
     const [run] = await f.updateRuns();
     expect(run).toMatchObject({ status: "succeeded", attempt: 1 });
     expect(run!.acknowledged_at).not.toBeNull();
-    const comments = f.broker.comments();
+    const comments = (await f.comments());
     expect(comments).toHaveLength(1);
-    expect(comments[0]!.args).toMatchObject({ number: 42, marker: `<!-- factory:update:${run!.id} -->` });
-    expect(String(comments[0]!.args.body)).toContain("updated with main");
+    expect(comments[0]!).toMatchObject({ number: 42, pr: true, marker: `<!-- factory:update:${run!.id} -->` });
+    expect(String(comments[0]!.body)).toContain("updated with main");
 
     expect((await f.store.getWorkItem(f.id))!).toMatchObject({
       stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending",
@@ -296,7 +295,7 @@ describe("update run: worker", () => {
     expect(body).toContain("## In short\n\nthe change");
     expect(body).toContain("- **Not done:** the MySQL step");
     expect(body).toContain("Checked before push: `sh -c exit 0` passed");
-    expect(f.broker.comments()).toHaveLength(1);
+    expect((await f.comments())).toHaveLength(1);
   });
 
   it("conflict: no push, a comment listing every conflicting file, and a resolve run starts on its own", async () => {
@@ -313,12 +312,12 @@ describe("update run: worker", () => {
     const resolves = await f.resolveRuns();
     expect(resolves.map((r) => [r.idempotency_key, r.status])).toEqual([[`${f.id}:resolve:auto:${f.mainSha}:1`, "queued"]]);
     const [run] = await f.updateRuns();
-    const comments = f.broker.comments();
+    const comments = (await f.comments());
     expect(comments).toHaveLength(1);
-    expect(comments[0]!.args.marker).toBe(`<!-- factory:update:${run!.id} -->`);
-    const files = String(comments[0]!.args.body).split("\n").flatMap((l) => /^- `(.+)`$/.exec(l)?.[1] ?? []);
+    expect(comments[0]!.marker).toBe(`<!-- factory:update:${run!.id} -->`);
+    const files = String(comments[0]!.body).split("\n").flatMap((l) => /^- `(.+)`$/.exec(l)?.[1] ?? []);
     expect(files).toEqual(["a.txt", "src/c.txt"]);
-    expect(String(comments[0]!.args.body)).toContain("automatic resolve run");
+    expect(String(comments[0]!.body)).toContain("automatic resolve run");
     // Each conflicting file is recorded once, raising its coordination weight (design §5, 2026-11-03).
     expect(await f.store.conflictCounts(PROJECT_KEY)).toEqual(new Map([["a.txt", 1], ["src/c.txt", 1]]));
     expect(await f.reasons()).toEqual(["update_started"]);
@@ -434,10 +433,10 @@ describe("update run: worker", () => {
       stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending",
     });
     const [run] = await f.updateRuns();
-    const comments = f.broker.comments();
+    const comments = (await f.comments());
     expect(comments).toHaveLength(1);
-    expect(comments[0]!.args.marker).toBe(`<!-- factory:update:${run!.id} -->`);
-    const body = String(comments[0]!.args.body);
+    expect(comments[0]!.marker).toBe(`<!-- factory:update:${run!.id} -->`);
+    const body = String(comments[0]!.body);
     expect(body).toContain("tests failed on the updated branch");
     expect(body.toLowerCase()).not.toContain("conflict");
     expect(await f.reasons()).toEqual(["update_started", "update_tests_failed"]);
@@ -449,7 +448,7 @@ describe("update run: worker", () => {
     await f.step();
     const pushed = f.remoteSha();
     expect(f.broker.pushes()).toHaveLength(1);
-    expect(f.broker.comments()).toHaveLength(1);
+    expect((await f.comments())).toHaveLength(1);
 
     // GitHub has not recomputed mergeability yet and reports our new head as unmergeable.
     f.forge.queue.push(f.event("h2", "b1"));
@@ -459,7 +458,7 @@ describe("update run: worker", () => {
     expect(runs).toHaveLength(2);
     expect(runs[1]!.outcome).toMatchObject({ status: "succeeded", data: { result: "up_to_date" } });
     expect(f.broker.pushes()).toHaveLength(1);
-    expect(f.broker.comments()).toHaveLength(1);
+    expect((await f.comments())).toHaveLength(1);
     expect(f.remoteSha()).toBe(pushed);
     expect((await f.store.getWorkItem(f.id))!).toMatchObject({
       stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending",

@@ -1,7 +1,7 @@
 // The controller units' shared kernel (RFC 0015 M5).
 
 import { LiveSettings, type ProjectSettings, settingValues } from "../../core/settings.js";
-import { LOCAL_SOURCE } from "../../core/local-merge.js";
+import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
@@ -60,9 +60,7 @@ type ThreadEntry = Extract<ControllerWrite, { kind: "thread_entry" }>["entry"];
 export function threadEntry(
   it: WorkItem, target: SourceRef, body: string, marker: string, link: NonNullable<ThreadEntry["delivery"]>["link_field"] = null,
 ): ThreadEntry {
-  const type = it.source.type;
-  const delivery = type === LOCAL_SOURCE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
-  return { work_item_id: it.id, marker, body, delivery };
+  return { work_item_id: it.id, marker, body, delivery: threadDelivery(it, target, link) };
 }
 
 /**

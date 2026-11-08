@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
-import { FakeGitHubClient, pipeline, waitFor } from "./helpers/fakes.js";
+import { FakeGitHubClient, pipeline, runComments, waitFor } from "./helpers/fakes.js";
 
 // The review run's cheap checks before any agent call, and the CI results in the review prompt (issue #223).
 
@@ -46,8 +46,7 @@ async function factory(reviews: (Answer | Error)[] = []) {
   };
   const runs = async (kind?: "review" | "implement") => p.runs(await item(), kind);
   const reviewSpecs = () => p.runner.specs.filter((s) => s.role === "review");
-  const reviewComments = () =>
-    p.broker.calls.filter((c) => c.name === "github.comment" && String((c.args as { marker: string }).marker).includes("factory:review:"));
+  const reviewComments = async () => (await runComments(p.store, (await item()).id)).filter((c) => c.pr && c.marker.includes("factory:review:"));
   const messages = async (part: string) => (await p.store.listItemMessages((await item()).id)).filter((m) => m.marker.includes(part));
   return { ...p, start, item, setHead, reviewAgain, runs, reviewSpecs, reviewComments, messages };
 }
@@ -59,7 +58,7 @@ describe("review cheap checks: empty diff and an already-merged branch", () => {
     const it0 = await f.start();
     expect(f.reviewSpecs()).toHaveLength(0);
     expect(it0).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "empty_diff" });
-    expect(f.reviewComments()).toHaveLength(0);
+    expect((await f.reviewComments())).toHaveLength(0);
     const posted = await f.messages("empty_diff");
     expect(posted).toHaveLength(1);
     expect(posted[0]!.body).toContain("PR #42 has no changes against `main`");
@@ -101,7 +100,7 @@ describe("review cheap checks: unchanged head", () => {
     const it0 = await f.start();
     expect(it0).toMatchObject({ blocked_on: "human", blocked_reason: "merge_pending" });
     expect(f.reviewSpecs()).toHaveLength(1);
-    expect(f.reviewComments()).toHaveLength(1);
+    expect((await f.reviewComments())).toHaveLength(1);
     expect((await f.runs("review"))[0]!.outcome).toMatchObject({ status: "succeeded", data: { head_sha: "h1" } });
 
     // Requeued unblocked: the unchanged head leaves that state as it is (no verdict replay).
@@ -109,7 +108,7 @@ describe("review cheap checks: unchanged head", () => {
     const after = await f.item();
     const messages = (await f.store.listItemMessages(after.id)).length;
     expect(f.reviewSpecs()).toHaveLength(1);
-    expect(f.reviewComments()).toHaveLength(1);
+    expect((await f.reviewComments())).toHaveLength(1);
     expect(after).toMatchObject({ stage: "REVIEW", blocked_on: "none", blocked_reason: null });
     const again = (await f.runs("review")).find((r) => r.idempotency_key === "again-1")!;
     expect(again.outcome).toMatchObject({ status: "succeeded", data: { no_agent: "unchanged_head", head_sha: "h1" } });
@@ -126,7 +125,7 @@ describe("review cheap checks: unchanged head", () => {
     f.setHead("h2");
     await f.reviewAgain("again-1");
     expect(f.reviewSpecs()).toHaveLength(2);
-    expect(f.reviewComments()).toHaveLength(2);
+    expect((await f.reviewComments())).toHaveLength(2);
   });
 
   it("a PR head that cannot be read never matches: the review calls the agent", async () => {
@@ -143,7 +142,7 @@ describe("review cheap checks: unchanged head", () => {
     // The fake implementer moves no head, so the review after the loop sees the head the bug verdict was for.
     await f.start();
     expect(f.reviewSpecs()).toHaveLength(1);
-    expect(f.reviewComments()).toHaveLength(1);
+    expect((await f.reviewComments())).toHaveLength(1);
     const reviews = await f.runs("review");
     expect(reviews.map((r) => r.outcome?.status === "succeeded" && r.outcome.data.no_agent)).toEqual([undefined, "unchanged_head"]);
     expect(await f.item()).toMatchObject({ stage: "REVIEW", loop_count: 1, blocked_on: "none" });
@@ -156,7 +155,7 @@ describe("review cheap checks: unchanged head", () => {
     f.clock.advance(f.config.retry_base_ms * 4);
     await f.step();
     expect(f.reviewSpecs()).toHaveLength(2);
-    expect(f.reviewComments()).toHaveLength(1);
+    expect((await f.reviewComments())).toHaveLength(1);
     expect(await f.item()).toMatchObject({ blocked_reason: "merge_pending" });
   });
 
@@ -166,7 +165,7 @@ describe("review cheap checks: unchanged head", () => {
     expect((await f.item()).blocked_on).toBe("human");
     await f.reviewAgain("again-1");
     expect(f.reviewSpecs()).toHaveLength(2);
-    expect(f.reviewComments()).toHaveLength(1);
+    expect((await f.reviewComments())).toHaveLength(1);
   });
 
   it("an egress-blocked review does not count: a later review at the same head calls the agent", async () => {

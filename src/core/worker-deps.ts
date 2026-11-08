@@ -3,12 +3,14 @@
 // wait, pause and diff watches, host-sleep check), which src/worker/ may not import (no-clock). They move into the
 // worker as those waits move onto its ticks and the session's pushes and PR writes go to outbound (RFC 0015 M6/M7).
 
-import { LOCAL_SOURCE } from "./local-merge.js";
+import { LOCAL_SOURCE, threadDelivery } from "./local-merge.js";
+
+export { threadDelivery };
 import type { FactoryConfig, Prompts } from "./config.js";
 import { type LearnedSettingsSource, LiveSettings } from "./settings.js";
 import type { ModelNames, ModelTable } from "./model-choice.js";
 import type { Logger } from "./log.js";
-import type { WorkItem, WorkerId } from "./types.js";
+import type { SourceRef, WorkItem, WorkerId } from "./types.js";
 import type { AgentRunner } from "../interfaces/agent-runner.js";
 import type { CapabilitySearch } from "../interfaces/capability-search.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -156,4 +158,10 @@ export interface WorkerDeps {
    * another revision is resumed only by code that can resume it (RFC 0015 §8). Absent: `dev`.
    */
   code_version?: string;
+  /**
+   * The forge's PR `pr` as a comment target (`Forge.prRef`, a pure function: the worker writes nothing to the forge).
+   * A run's PR comment is a thread entry on it, which outbound delivers (RFC 0015 M7). Absent (no forge): the
+   * comment goes to the item's own source, as the controller's PR comments do.
+   */
+  prRef?: (pr: number) => SourceRef;
 }

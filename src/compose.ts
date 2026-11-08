@@ -901,6 +901,8 @@ export async function build(
     testDatabase,
     settings,
     engines,
+    // A run's PR comment is a thread entry on this ref; outbound posts it (RFC 0015 M7).
+    ...(forge ? { prRef: (pr: number) => forge.prRef(pr) } : {}),
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };

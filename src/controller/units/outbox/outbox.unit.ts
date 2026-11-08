@@ -4,7 +4,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its store reads are still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
-import { LOCAL_SOURCE } from "../../../core/local-merge.js";
+import { LOCAL_SOURCE, threadDelivery } from "../../../core/local-merge.js";
 import { isCliCommandKey } from "../../../core/local-cli.js";
 import { type WorkStatus, statusOf } from "../../../core/status-label.js";
 import { type SourceRef, type WorkItem } from "../../../core/types.js";
@@ -124,8 +124,7 @@ export class OutboxUnit {
    * (e.g. the item's PR) is used when it is of that source's type, else the item's source.
    */
   async post(it: WorkItem, target: SourceRef, body: string, marker: string, link: ThreadLinkField | null = null): Promise<string | null> {
-    const type = it.source.type;
-    const delivery = type === LOCAL_SOURCE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
+    const delivery = threadDelivery(it, target, link);
     const { created, message } = await this.c.k.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery });
     if (created || delivery === null) return null;
     const row = (await this.c.k.d.store.listDeliveries(it.id)).find((d) => d.thread_seq === message.seq);

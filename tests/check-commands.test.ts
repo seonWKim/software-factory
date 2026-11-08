@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "../src/compose.js";
 import { checkCommands, redact } from "../src/core/checks.js";
 import type { WorkItem } from "../src/core/types.js";
-import { config, pipeline } from "./helpers/fakes.js";
+import { config, pipeline, runComments } from "./helpers/fakes.js";
 import { issue, system } from "./helpers/store.js";
 
 // repo.check_commands (design §4, decided 2026-11-03): one list of checks, run before every push, in the
@@ -126,8 +126,8 @@ describe("update and resolve runs run the check list", () => {
     expect(gateCommands(f)).toEqual(["npm run typecheck", "npm test"]);
     const run = (await f.runs(item, "update"))[0]!;
     expect(run.outcome).toMatchObject({ status: "succeeded", data: { result: "pushed" } });
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.comment"]);
-    expect(JSON.stringify(f.broker.calls.at(-1)!.args)).toContain("`npm run typecheck`, `npm test` passed");
+    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch"]);
+    expect((await runComments(f.store, item.id)).map((c) => c.body).join("\n")).toContain("`npm run typecheck`, `npm test` passed");
   });
 
   it("update: the first failing check stops the list; nothing is pushed and the comment names it", async () => {
@@ -141,8 +141,8 @@ describe("update and resolve runs run the check list", () => {
     expect(run.outcome).toMatchObject({
       status: "succeeded", data: { result: "tests_failed", command: "npm run typecheck", exit_code: 2, timed_out: false },
     });
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.comment"]);
-    expect(JSON.stringify(f.broker.calls[0]!.args)).toContain("`npm run typecheck` exited 2");
+    expect(f.broker.calls).toEqual([]);
+    expect((await runComments(f.store, item.id)).map((c) => c.body).join("\n")).toContain("`npm run typecheck` exited 2");
   });
 
   it("resolve: install_command first, then every check, then the push", async () => {

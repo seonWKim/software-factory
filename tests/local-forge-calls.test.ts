@@ -7,7 +7,7 @@ import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
-import { FakeGitHubClient, FakeSandbox, MemoryStorage, alice, cleanScanner, issueRef, pipeline, prompts } from "./helpers/fakes.js";
+import { FakeGitHubClient, FakeSandbox, MemoryStorage, alice, cleanScanner, issueRef, pipeline, prompts, runComments } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // A local item with GitHub selected (design 05-sources): its gate comments stay in its item thread, so the
@@ -131,13 +131,14 @@ describe("a local item's implement run with the GitHub broker selected", () => {
 });
 
 describe("a GitHub item's implement run", () => {
-  it("still posts its gate comment to its issue, with the marker", async () => {
+  it("hands its gate comment for its issue to outbound, with the marker; the run writes nothing to GitHub", async () => {
     const g = await withGitHub(issueRef(7));
     g.sandbox.changedFiles = ["src/outside.ts"];
     const run = await g.implement();
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "scope_violation" });
-    const posted = g.client.comments.get(7) ?? [];
-    expect(posted.map((c) => c.body)).toEqual([expect.stringContaining(`<!-- factory:scope:${run.id} -->`)]);
+    expect(g.client.forgeWrites()).toEqual([]);
+    const posted = (await runComments(g.f.store, g.item.id)).filter((c) => c.marker.includes("factory:scope:"));
+    expect(posted.map((c) => [c.number, c.pr, c.marker])).toEqual([[7, false, `<!-- factory:scope:${run.id} -->`]]);
     expect(posted[0]!.body).toContain("## Factory scope check: push blocked");
   });
 });

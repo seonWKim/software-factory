@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Run, RunOutcome } from "../src/core/types.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
-import { pipeline } from "./helpers/fakes.js";
+import { pipeline, runComments } from "./helpers/fakes.js";
 
 // Design §5 Restarts: a push or PR failure after a successful agent step leaves the run's commits on a wip branch
 // on the forge, under the branch prefix. The retry checks that branch out and pushes it with no agent run.
@@ -174,8 +174,8 @@ describe("wip branch on a failed push or PR", () => {
     expect(f.agentCalls("implement")).toBe(1);
     // Nothing pushed by the resumed run: not the PR branch, not a new wip branch.
     expect(f.broker.calls.filter((c) => c.name === "github.push_branch")).toHaveLength(pushesBefore);
-    const comment = f.broker.calls.filter((c) => c.name === "github.comment").at(-1)!;
-    expect((comment.args as { body: string }).body).toContain("resumed from its wip branch");
+    const comment = (await runComments(f.store, it0.id)).filter((c) => c.marker === `<!-- factory:merge-conflict:${retry.id} -->`);
+    expect(comment.map((c) => c.body)).toEqual([expect.stringContaining("resumed from its wip branch")]);
   });
 
   it("a wip branch that is gone or moved is not trusted: the retry runs the agent again", async () => {

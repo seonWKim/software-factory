@@ -14,6 +14,7 @@ import type {
   PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
 } from "../../src/interfaces/source-adapter.js";
 import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks } from "../../src/interfaces/forge.js";
+import type { FactoryStore } from "../../src/interfaces/factory-store.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
 import { Worker } from "../../src/worker/index.js";
@@ -628,6 +629,28 @@ export class FakeRunner implements AgentRunner {
   }
 }
 
+/** PR `pr` of `owner/repo` as the GitHub forge hands it out (`prRef`): the target of a run's PR comment. */
+export function fakePrRef(pr: number, repo = "o/r"): SourceRef {
+  return { type: "github_issue", id: `${repo}#${pr}`, link: `https://github.com/${repo}/pull/${pr}` };
+}
+
+/**
+ * The comments a run handed to outbound for `item` (RFC 0015 M7): its thread entries with a delivery, in order.
+ * `number` is the issue or PR number the target names; `pr` whether the target is a PR.
+ */
+export async function runComments(
+  store: Pick<FactoryStore, "listDeliveries">,
+  item: WorkItemId,
+): Promise<{ number: number | null; pr: boolean; body: string; marker: string; target: SourceRef }[]> {
+  return (await store.listDeliveries(item)).map((d) => ({
+    number: /#(\d+)$/.test(d.target.id) ? Number(/#(\d+)$/.exec(d.target.id)![1]) : null,
+    pr: /\/pull\/\d+$/.test(d.target.link),
+    body: d.body,
+    marker: d.marker,
+    target: d.target,
+  }));
+}
+
 /**
  * Yields to timers and I/O until `cond` holds (e.g. a background heartbeat landed in the store). Gives up
  * after at least `tries` yields and `ms` of real time, so a slow machine (CI) gets the same chance as a fast one.
@@ -811,7 +834,7 @@ export async function pipeline(opts: {
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(),
-      clock, config: cfg, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(),
+      clock, config: cfg, prompts, log, scanner, toolEnv: {}, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
     });
   const w1 = worker("w1");
   const w2 = worker("w2");

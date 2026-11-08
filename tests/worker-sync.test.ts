@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { WorkItem, WorkerId } from "../src/core/types.js";
+import type { WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -13,7 +13,7 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, gates, issueRef, silent } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, gates, issueRef, runComments, silent } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // Sync before push (design §4, decided 2026-11-01): an implement run merges the freshly fetched
@@ -81,9 +81,11 @@ class GitPushBroker implements ToolBroker {
   names() {
     return this.calls.map((c) => c.name);
   }
-  comments() {
-    return this.calls.filter((c) => c.name === "github.comment").map((c) => c.args as { number: number; body: string; marker: string });
-  }
+}
+
+/** The implement run's gate comments, handed to outbound as thread entries (RFC 0015 M7). */
+async function gateComments(f: { store: Parameters<typeof runComments>[0] }, id: WorkItemId) {
+  return (await runComments(f.store, id)).filter((c) => /factory:(merge-conflict|checks|scope):/.test(c.marker));
 }
 
 const spec = {
@@ -245,7 +247,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(merge.split(" ")).toContain(mainSha); // a merge commit, not a rebase
     expect(merge).toContain(`Merge origin/main`);
     // docs/x.txt changed only on main: the scope gate does not count it (src/ is the only allowed path).
-    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr"]);
     expect(f.conflictSteps).toHaveLength(0);
     // The base commit the merge and the gates used is the one fetched after the implementer exited.
     expect(f.sandbox.execs).toContain(`git diff --name-only -z --no-renames ${mainSha}...HEAD`);
@@ -293,7 +295,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(at("git -c core.hooksPath=/dev/null commit --no-edit")).toBeGreaterThan(at("sh -c"));
     expect(at(`git diff --name-only -z --no-renames ${mainSha}...HEAD`)).toBeGreaterThan(at("git -c core.hooksPath=/dev/null commit"));
     expect(at(`git diff --numstat -z -M ${mainSha}...HEAD`)).toBeGreaterThan(at("git diff --name-only -z --no-renames"));
-    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr"]);
     expect(await f.store.listHandoffs(item.id)).toHaveLength(2);
     // The sync conflict is recorded per file, and the PR's file list is stored (design §5, 2026-11-03).
     expect(await f.store.conflictCounts(item.project)).toEqual(new Map([["src/a.txt", 1]]));
@@ -320,7 +322,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
 
-    const [c] = f.broker.comments();
+    const [c] = (await gateComments(f, item.id));
     expect(c!.number).toBe(5);
     expect(c!.marker).toBe(`<!-- factory:merge-conflict:${runs[0]!.id} -->`);
     expect(c!.body).toContain("- `src/a.txt`");
@@ -340,7 +342,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(f.resolveSteps).toHaveLength(1);
     expect(f.broker.names()).not.toContain("github.push_branch");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    expect(f.broker.comments()[0]!.body).toContain("Nothing was pushed");
+    expect((await gateComments(f, item.id))[0]!.body).toContain("Nothing was pushed");
   });
 
   it("a resolution left unstaged (markers staged, clean file in the working tree) fails with merge_conflict and pushes nothing", async () => {
@@ -359,7 +361,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(f.broker.names()).not.toContain("github.push_branch");
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    expect(f.broker.comments()[0]!.body).toContain("Nothing was pushed");
+    expect((await gateComments(f, item.id))[0]!.body).toContain("Nothing was pushed");
   });
 
   it("an agent that commits the markers itself and fixes only the working tree fails with merge_conflict", async () => {
@@ -412,7 +414,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     }
     expect(f.broker.names()).not.toContain("github.push_branch");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    expect(f.broker.comments()[0]!.marker).toBe(`<!-- factory:scope:${run.id} -->`);
+    expect((await gateComments(f, item.id))[0]!.marker).toBe(`<!-- factory:scope:${run.id} -->`);
   });
 
   it("a review-fix push on an open PR syncs with base first", async () => {
@@ -461,7 +463,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     expect(git(f.origin, "show", `${branch}:src/a.txt`)).toBe("a merged by the retry");
     expect(git(f.origin, "log", "-1", "--format=%s", branch)).toContain("Merge origin/main");
     expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(true);
-    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
+    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr"]);
     expect((await f.storage.list(`transcripts/${item.id}/${runs[0]!.id}`)).sort()).toEqual([
       `transcripts/${item.id}/${runs[0]!.id}.json`,
       `transcripts/${item.id}/${runs[0]!.id}.merge.json`,
@@ -524,8 +526,8 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     const run = (await f.implementRuns(item.id))[0]!;
     expect(run.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["docs/x.txt"] } });
     expect(git(f.origin, "show", `${branch}:docs/x.txt`)).toBe("x merged");
-    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr", "github.comment"]);
-    expect(f.broker.comments().some((c) => c.marker.startsWith("<!-- factory:scope:"))).toBe(false);
+    expect(f.broker.names()).toEqual(["github.push_branch", "github.open_pr"]);
+    expect((await gateComments(f, item.id)).some((c) => c.marker.startsWith("<!-- factory:scope:"))).toBe(false);
   });
 
   it("an unrelated file outside allowed_paths still fails scope_violation and pushes nothing, conflict or not", async () => {

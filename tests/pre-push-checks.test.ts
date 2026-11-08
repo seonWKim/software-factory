@@ -18,7 +18,7 @@ import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runne
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { TestDatabase } from "../src/interfaces/test-database.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // The pre-push checks (design §4, decided 2026-11-03): an implement run runs repo.check_commands after sync and
@@ -83,9 +83,6 @@ class GitPushBroker implements ToolBroker {
   }
   names() {
     return this.calls.map((c) => c.name);
-  }
-  comments() {
-    return this.calls.filter((c) => c.name === "github.comment").map((c) => c.args as { number: number; body: string; marker: string });
   }
   pushes() {
     return this.calls.filter((c) => c.name === "github.push_branch").map((c) => String(c.args.branch));
@@ -310,7 +307,8 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(f.broker.names()).not.toContain("github.open_pr");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    const comments = f.broker.comments();
+    expect(f.broker.names()).not.toContain("github.comment");
+    const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:checks:"));
     expect(comments).toHaveLength(1);
     expect(comments[0]!.marker).toBe(`<!-- factory:checks:${run.id} -->`);
     expect(comments[0]!.body).toContain(`\`${SQLITE.join(" ")}\``);
@@ -332,8 +330,9 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     const gitCalls = f.sandbox.execs.map((e) => e.cmd);
     const add = gitCalls.findIndex((c) => c.includes("worktree add --quiet --detach .factory-base"));
     expect(gitCalls.slice(add).some((c) => c.includes("worktree remove --force .factory-base"))).toBe(true);
-    expect(f.broker.comments().map((c) => c.marker)).toEqual([`<!-- factory:checks:${run.id} -->`]);
-    expect(f.broker.comments()[0]!.body).toContain("`tests/flaky.test.ts`");
+    const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:checks:"));
+    expect(comments.map((c) => c.marker)).toEqual([`<!-- factory:checks:${run.id} -->`]);
+    expect(comments[0]!.body).toContain("`tests/flaky.test.ts`");
     expect(f.broker.pushes()).toEqual([`factory/wip/${item.id}/${run.id}`]);
   });
 

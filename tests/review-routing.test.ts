@@ -16,7 +16,7 @@ import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import {
   FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemoryStorage,
-  alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
+  alice, cleanScanner, config, issueRef, prompts, runComments, silent, triageSpec,
 } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
@@ -51,7 +51,7 @@ async function factory(opts: { reviews?: Answer[]; implements?: Answer[]; cfg?: 
   const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts, log: silent,
-    scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
+    scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
   });
   const step = async () => {
     await controller.tickIntake();
@@ -74,8 +74,7 @@ async function factory(opts: { reviews?: Answer[]; implements?: Answer[]; cfg?: 
   const item = async (): Promise<WorkItem> => (await store.getWorkItemBySource("github_issue", src.id))!;
   const runs = async (kind?: Run["kind"]) => (await store.listRuns((await item()).id)).filter((r) => !kind || r.kind === kind);
   const reasons = async () => (await store.listStateChanges((await item()).id)).map((c) => c.reason);
-  const reviewComments = () =>
-    broker.calls.filter((c) => c.name === "github.comment").map((c) => (c.args as { body: string }).body);
+  const reviewComments = async () => (await runComments(store, (await item()).id)).filter((c) => c.pr).map((c) => c.body);
   return { store, source, forge, sandbox, broker, runner, controller, worker, step, start, approve, item, runs, reasons, reviewComments };
 }
 
@@ -138,7 +137,7 @@ describe("review routing", () => {
     expect(implement.map((r) => r.idempotency_key)).toEqual([`${it0.id}:implement:l0:r0`, `${it0.id}:implement:l1:r0`]);
     expect(await f.runs("triage")).toHaveLength(1);
     expect(await f.reasons()).toContain("review_bug");
-    expect(f.reviewComments()[0]).toMatch(/^## Factory review: changes needed/);
+    expect((await f.reviewComments())[0]).toMatch(/^## Factory review: changes needed/);
   });
 
   for (const [name, findings] of [
@@ -159,7 +158,7 @@ describe("review routing", () => {
       expect(await f.runs("implement")).toHaveLength(1);
       expect(await f.reasons()).toContain("review_spec_revision");
       expect(await f.reasons()).not.toContain("review_bug");
-      expect(f.reviewComments()[0]).toMatch(/^## Factory review: spec needs a change/);
+      expect((await f.reviewComments())[0]).toMatch(/^## Factory review: spec needs a change/);
       expect(f.runner.specs.filter((s) => s.role === "triage").at(-1)!.prompt).toContain("criterion 2 needs src/core/policy.ts");
     });
   }
@@ -202,7 +201,7 @@ describe("review routing", () => {
     const stored = (review.outcome as unknown as { data: { review: ReviewOutput } }).data.review;
     expect(stored.findings).toEqual([]);
     expect(stored.unverified).toEqual(["could not run npm test: listen EPERM"]);
-    const body = f.reviewComments()[0]!;
+    const body = (await f.reviewComments())[0]!;
     expect(body).toMatch(/^## Factory review: pass/);
     expect(body).toContain("### Not verified\n\n- could not run npm test: listen EPERM");
   });
@@ -213,7 +212,7 @@ describe("review routing", () => {
     expect(it5).toMatchObject({ blocked_on: "human", blocked_reason: "run_failed:review:egress_blocked", spec_feedback: null, revision_count: 0 });
     const review = (await f.runs("review"))[0]!;
     expect(JSON.stringify(review.outcome)).not.toContain(SECRET);
-    expect(f.reviewComments()).toEqual([]);
+    expect((await f.reviewComments())).toEqual([]);
     const leak = f.source.comments.filter((c) => c.marker.includes("leak-blocked"));
     expect(leak).toHaveLength(1);
     expect(leak[0]!.body).toContain("known_secret");
