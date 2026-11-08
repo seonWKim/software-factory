@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { HOST_SLEEP_MS, Worker } from "../src/core/worker.js";
+import { HOST_SLEEP_MS, Worker } from "../src/worker/index.js";
 import type { RunId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -214,13 +214,15 @@ describe("host sleep: recorded by the worker (issue #218)", () => {
     const { clock, store, calls, worker, sleeps } = await sleepWorld();
     const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "i" } });
     const runner = new FakeRunner({
-      implement: async () => {
+      implement: async (spec) => {
         const pauseReads = calls.get("workerPause") ?? 0;
-        const heartbeats = calls.get("heartbeat") ?? 0;
+        // The heartbeat renews through the engine, which moves the lease; the pause watch reads the store.
+        const leased = async () => (await store.getRun(spec.run_id))!.lease!.expires_at;
+        const before = await leased();
         clock.advance(5 * 60_000);
         clock.drift_ms = 1;
         // Both loops woke from the one jump and went on to their store call.
-        await waitFor(() => (calls.get("workerPause") ?? 0) > pauseReads && (calls.get("heartbeat") ?? 0) > heartbeats, "both loops");
+        await waitFor(async () => (calls.get("workerPause") ?? 0) > pauseReads && (await leased()) !== before, "both loops");
         await waitFor(async () => (await sleeps()).length > 0, "the host sleep row");
         for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
         clock.drift_ms = 0;

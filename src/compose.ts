@@ -24,8 +24,8 @@ import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
-import { WorkerPool } from "./core/worker-pool.js";
-import type { LocalRoute } from "./core/worker.js";
+import { WorkerPool } from "./worker/index.js";
+import type { LocalRoute } from "./worker/index.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";
@@ -803,6 +803,8 @@ export async function build(
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
+  // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
+  const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
 
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
@@ -876,6 +878,7 @@ export async function build(
     capability,
     testDatabase,
     settings,
+    engines,
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => store.close()) };

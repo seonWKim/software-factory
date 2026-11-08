@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { inspect } from "node:util";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { Edit, Glob, Grep, Read, type ToolContext, Write, guardPolicy } from "../src/core/tools/index.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { WorkerId } from "../src/core/types.js";

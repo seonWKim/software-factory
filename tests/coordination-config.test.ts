@@ -9,7 +9,7 @@ import { coordinationConfig } from "../src/core/config.js";
 import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import { runSettings } from "../src/settings-cmd.js";
 import type { RunKind, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";

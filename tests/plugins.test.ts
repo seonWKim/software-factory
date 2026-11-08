@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
-import type { WorkerDeps } from "../src/core/worker.js";
+import type { WorkerDeps } from "../src/worker/index.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
@@ -32,6 +32,7 @@ import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.js";
 import { SqlBus } from "../src/bus/index.js";
 import { TimeBasedTicks } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
+import { JournalEngines } from "../src/worker/engine/plugins/journal/journal-engine.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -89,6 +90,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   network_probe: { http: HttpNetworkProbe },
   bus: { sql: SqlBus },
   ticks: { "time-based": TimeBasedTicks },
+  engine: { journal: JournalEngines },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -191,6 +193,7 @@ describe("plugin registry: defaults", () => {
       network_probe: "http",
       bus: "sql",
       ticks: "time-based",
+      engine: "journal",
       // Derived from github-issues, the default source (issue #273).
       forge: "github",
     });
@@ -898,7 +901,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 20 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(20);
+  it("covers 21 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(21);
   });
 });

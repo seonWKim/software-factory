@@ -72,7 +72,7 @@ describe("forge: an optional kind with no default", () => {
   });
 
   it("the registry loads with no default forge plugin", async () => {
-    const registry = await loadRegistry([join(REPO_ROOT, "src", "impl")]);
+    const registry = await loadRegistry([join(REPO_ROOT, "src")]);
     expect(registry.forge.defaults.fallback).toBeUndefined();
   });
 

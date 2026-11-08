@@ -11,7 +11,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { TRIAGE_SCHEMA } from "../src/core/outputs.js";
 import { Bash, Edit, Glob, Grep, Read, type ToolSpec, Write } from "../src/core/tools/index.js";
 import type { RunId, WorkItemId, WorkerId } from "../src/core/types.js";
-import { WRITE_TOOLS, Worker } from "../src/core/worker.js";
+import { WRITE_TOOLS, Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";

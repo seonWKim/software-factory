@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { WRITE_TOOLS, Worker } from "../src/core/worker.js";
+import { WRITE_TOOLS, Worker } from "../src/worker/index.js";
 import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";

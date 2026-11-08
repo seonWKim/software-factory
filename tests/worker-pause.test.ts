@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";

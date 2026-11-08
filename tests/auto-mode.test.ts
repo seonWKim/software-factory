@@ -10,7 +10,7 @@ import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { AUTO_ACTOR } from "../src/core/policy.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";

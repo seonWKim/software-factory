@@ -48,7 +48,8 @@
     "test_database": "none",
     "network_probe": "http",
     "bus": "sql",
-    "ticks": "time-based"
+    "ticks": "time-based",
+    "engine": "journal"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {

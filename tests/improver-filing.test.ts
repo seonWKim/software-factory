@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPROVER, MAX_FILED_ISSUES, SYSTEM_ITEM, fileReport, issueMarker, patternKey, systemSource } from "../src/core/improver.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { ImproveReport, ImproveWindow, RunId, SourceRef, Timestamp, UserId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";

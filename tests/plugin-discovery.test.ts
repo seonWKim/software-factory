@@ -111,6 +111,7 @@ describe("plugin discovery: the built-in registry", () => {
       network_probe: "http",
       bus: "sql",
       ticks: "time-based",
+      engine: "journal",
     };
     expect(defaultPlugins("darwin")).toEqual({ ...fixed, awake: "caffeinate" });
     expect(defaultPlugins("linux")).toEqual({ ...fixed, awake: "none" });
