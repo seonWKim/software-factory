@@ -172,17 +172,19 @@ export const TOKEN_FAIL_DAYS = 0;
 export const TOKEN_WARN_DAYS = 3;
 
 /**
- * The GitHub token's expiry line: an App token's from its mint response (`grant`), else the expiry header of one
- * repository GET. Whole days left, rounded down: 0 or less is a FAIL, 1 or 2 a warn, 3 or more ok. `token_days`
+ * The GitHub token's expiry line. An App sign-in (`grant` present) is always ok and makes no read: the factory mints
+ * a fresh token on each use, so the hour-long mint expiry says nothing. Otherwise the expiry header of one
+ * repository GET: whole days left, rounded down: 0 or less is a FAIL, 1 or 2 a warn, 3 or more ok. `token_days`
  * carries the number, so the dashboard's Needs you can read the last run's value without asking GitHub again.
  */
 export async function tokenExpiryCheck(
   client: Pick<GitHubClient, "tokenExpiration">,
   repo: RepoRef,
   now: Date,
-  grant: { expires_at: Date } | null = null,
+  grant: object | null = null,
 ): Promise<Check> {
-  const exp = grant ? grant.expires_at : await client.tokenExpiration(repo);
+  if (grant) return { ok: true, msg: "GitHub App token minted (renewed automatically)" };
+  const exp = await client.tokenExpiration(repo);
   // Local use may keep a non-expiring token; a shared or cloud deployment should not.
   if (exp === null) return { ok: false, msg: `GitHub token never expires (fine locally; use ≤ ${MAX_TOKEN_DAYS} days when shared)`, warn: true };
   if (Number.isNaN(exp.getTime())) return { ok: false, msg: "GitHub token expiry is readable" };
