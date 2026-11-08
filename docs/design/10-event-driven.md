@@ -63,6 +63,25 @@ force.
   dedupe in their component's `<component>_inbox` in the same transaction as their effect (`deliver()`), so
   at-least-once delivery has an effect exactly once. Solo: SQLite, one process runs every schedule. Enterprise:
   MySQL, any number of consumers and schedulers; leases and claim tokens keep a message with one consumer.
+- **Intake runs in inbound, on the bus** (since 2026-11-08, RFC 0015 M4; strangler: the legacy controller still
+  decides). `src/inbound/` polls the sources, then the forge (whose records are stored first, so a merge is
+  handled before the issue close it caused), relays stream records and command rows, and prunes old records. Each
+  record and its `InboundReceived` message are written in one transaction with the fenced cursor move. The
+  `normalize-source` handler turns it into `CommandReceived{command_id}` or `SourceEventReceived{record_id, kind}`
+  on `controller.commands`; the controller's `legacy-controller` handler hands each to the old decision code
+  (`consumeEvent`, `consumeCommand`). Both topics (`inbound.records`, `controller.commands`) are partitioned by
+  stream (the source type, `local` for CLI and UI commands), so one source's records keep their poll order.
+  The bridge runs the old code first and writes the inbox row after it (the old code commits its own writes and
+  SQLite cannot nest transactions): at-least-once, safe because those handlers may run twice. A failed command is
+  retried, never skipped: `controller.commands` backs off 1 s to 60 s for 1,000 attempts (about 16 hours) before a
+  dead letter, which keeps the old hold-until-it-succeeds. The CLI command log and the app requests are one table,
+  `inbound_commands` (breaking migration with verify and `legacy_*` copies; ids `cmd_<table>_<seq>`, every
+  idempotency key kept). The controller role (`src/runtime/roles/controller-role.ts`) owns the sync lease and hands
+  it to inbound (fences its cursor moves) and to the old controller (fences its deliveries). In production, relay
+  and consume run every 250 ms and intake every `tick_ms`, so a command reaches the decision code up to about
+  0.5 s later than in the old same-tick loop. `npm run migrate` creates every discovered topic's tables, so an
+  enterprise MySQL user needs no DDL rights at run time; a role creates them again at start (idempotent), so solo
+  needs no migrate step.
 - **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
@@ -97,3 +116,6 @@ force.
 - **Messaging between parts** (decision changed 2026-11-08, RFC 0015 M3). Before: no bus; the controller tick
   polls sources and the store, and workers claim runs from the store (still how the factory runs until components
   are wired to the bus in M4 and later).
+- **Intake** (decision changed 2026-11-08, RFC 0015 M4). Before: the controller tick polled every source and the
+  forge, read the command inbox and the app requests (two tables) by `seq` cursor, and handled each in the same
+  tick.

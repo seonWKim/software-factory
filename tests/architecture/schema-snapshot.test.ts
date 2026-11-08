@@ -4,8 +4,7 @@ import { describe, expect, it } from "vitest";
 import { MysqlDriver } from "../../src/impl/store/mysql/mysql-driver.js";
 import { MysqlMigrations } from "../../src/impl/store/mysql/migrations.js";
 import { SqliteDriver } from "../../src/impl/store/sqlite/sqlite-driver.js";
-import { ensureTopicTables } from "../../src/bus/index.js";
-import { loadRegistry } from "../../src/runtime/registry/registry.js";
+import { ensureDiscoveredTopicTables } from "../../src/runtime/index.js";
 import { mysqlSnapshot, sqliteSnapshot } from "../../src/state/snapshot.js";
 import type { Dialect, SqlExecutor } from "../../src/state/index.js";
 import { MYSQL_URL, newEmptyMysqlDatabase } from "../helpers/store.js";
@@ -19,9 +18,8 @@ import { REPO, SRC } from "./lib.js";
 const DIR = join(REPO, "schema");
 const UPDATE = process.env.SF_SNAPSHOT_UPDATE === "1";
 
-async function ensureTopics(dialect: Dialect, db: SqlExecutor): Promise<void> {
-  const { topics } = await loadRegistry(SRC);
-  await ensureTopicTables({ dialect, all: (s, p) => db.all(s, p), run: (s, p) => db.run(s, p) }, topics.map((t) => t.descriptor));
+function ensureTopics(dialect: Dialect, db: SqlExecutor): Promise<void> {
+  return ensureDiscoveredTopicTables(dialect, db, SRC);
 }
 
 function compare(file: string, actual: string): void {

@@ -4,10 +4,11 @@
 
 The factory is moving to RFC 0015: an event-driven factory of independent, restartable actors. M0, M1 and M2 are done.
 The cores of M3 (bus), M6 (worker engine), M9 (passports) and M10 (extension points) are merged on
-`refactor/rfc-0015`, but none of them is wired into the running factory yet. Data still flows the legacy way through
-`core/controller.ts` and `core/worker.ts`. The live database is not migrated: the owner runs `npm run migrate` after
-reviewing the branch, and a rehearsal on a copy lost no row. Two M10 choices wait on the owner. Next is M4 (inbound on
-the bus) plus the M3, M9 and M10 leftovers.
+`refactor/rfc-0015`. M4 put intake on the bus: inbound polls and stores records, and the controller consumes them
+from `controller.commands`. The decisions are still the legacy ones in `core/controller.ts`, and runs still go
+through `core/worker.ts`. The live database is not migrated: the owner runs `npm run migrate` after
+reviewing the branch, and a rehearsal on a copy lost no row. Two M10 choices wait on the owner. Next is M5 (controller units) plus
+the M3, M9 and M10 leftovers.
 
 The RFC and the target schema live in `~/Desktop/software-factory-rfcs/` (`0015-event-driven-factory.md`,
 `0015-target-schema.sql`). This file says what exists today on the `refactor/rfc-0015` branch, what is still legacy,
@@ -15,6 +16,25 @@ and what comes next. It is updated with every milestone.
 
 The refactor runs in the main session, not through the factory. The factory (supervisor, cron loops, background agents)
 is paused until it lands.
+
+## Overnight timeline (2026-11-08 → 09, owner asleep)
+
+Goal: the refactor complete, reviewed, and the review's fixes applied. Each step ends green (typecheck, SQLite suite,
+MySQL suite alone, rehearsal) and is committed on `refactor/rfc-0015`. Agents run in worktrees, time-boxed at 90
+minutes; past that the main session takes over from their WIP commit.
+
+| Time | Step | Who |
+|---|---|---|
+| 22:30 | M4 merged | main |
+| 22:30–23:15 | M5 router + unit contract (`src/controller/router/`, `defineUnit`, `unit-purity` test) | main |
+| 22:45–01:30 | M6 port `worker.ts` onto the engine; M9 wiring (ToolBroker passport check, service passports, UI names) | agents |
+| 23:15–02:30 | M5 units in three clusters: commands/verdicts/standing; run results/checks/review gates; timed units (alarms, improve, reaper, probe, coordination, phases) | agents + main merges |
+| 02:30–05:00 | M7 outbound (deliveries leave the controller and worker); M8 merge queue; M10 call sites (hooks, roles) | agents + main |
+| 05:00–06:30 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main |
+| 06:30–08:00 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main |
+
+Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
+owner decisions below. Status per row is updated here as each step lands.
 
 ## Milestones
 
@@ -24,7 +44,7 @@ is paused until it lands.
 | 1 | Table renames to `<component>_` prefixes (backup → expand → backfill → verify → swap) | done | aa4d554; rehearsed on a copy of the live MySQL DB |
 | 2 | Components and discovery | done | 2279de4, 8e46469; re-planned: CLI + plugin discovery now, legacy code moves with its rewrite |
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; components' outboxes not wired yet |
-| 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | not started | |
+| 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | groundwork | 8dc1414: actor state tables + state-machines test |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core merged | merge 073f94f: `ExecutionEngine`, `journal` engine, `worker_run_steps`, contract test; `worker.ts` not ported yet |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | not started | |
@@ -108,8 +128,10 @@ tests/architecture/     NEW     dependency-direction, file-budget, no-clock, tab
                                 - known-violations/*.json: the ratchet lists (they only shrink)
 ```
 
-Data flow is still the legacy one. The controller tick polls sources, decides, and writes the store and the thread
-outbox. Workers claim runs from the store and push/open PRs themselves.
+Data flow: inbound polls the sources and the forge, stores each record with an `InboundReceived` message, and its
+`normalize-source` handler publishes `CommandReceived` / `SourceEventReceived` on `controller.commands`. The
+controller's `legacy-controller` handler hands each to the legacy decision code, which still writes the store and the
+thread outbox. Workers still claim runs from the store and push/open PRs themselves.
 
 ## Data and migrations
 
@@ -131,7 +153,7 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 | file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`) |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| dependency-direction | 74 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup) and `controller/settings/floors.setting.ts`; they go as legacy code goes |
+| dependency-direction | 93 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`); they go as legacy code goes (M5) |
 
 ## Decisions taken while implementing
 
@@ -153,6 +175,16 @@ M1 (table renames):
   the store only knows the new names. Upgrade tests from old states still run.
 - Added `npm run migrate -- --rehearse` (D8). Wired the D1 backup folder (`<stateDir>/db/backups`) into MySQL
   `npm run migrate`, which had none.
+
+M4 (inbound on the bus):
+
+- The main session took M4 over from its agent after 40 minutes (owner's call); the agent's WIP commit is kept.
+- Strangler: the controller consumes from the bus but still decides with the legacy code. The bridge writes its inbox
+  row after the old code commits (at-least-once; the old handlers may run twice).
+- Topics are partitioned by stream, not record id, so a forge merge is still handled before the issue close it
+  caused. Commands retry with backoff for about 16 hours before a dead letter, as the old loop held them.
+- `npm run migrate` creates the discovered topics' tables (`ensureDiscoveredTopicTables`), so an enterprise DB user
+  needs no DDL at run time. Details: `docs/design/10-event-driven.md`, "Intake runs in inbound, on the bus".
 
 M2 (components and discovery):
 
@@ -223,11 +255,10 @@ M10 (extension points):
 
 ## Next
 
-1. M4: inbound on the bus.
+1. M5: controller units (router + pure `decide()` units; `controller.ts` gone; the M4 seams go with it).
 2. M3 leftovers:
-   - each component's migration creates its outbox and inbox (`ensureComponentTables`);
-   - the runtime builds the sql bus as a plugin, ensures discovered topics at start and in `npm run migrate`, and runs
-     the bus schedules;
+   - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
+   - the runtime builds the sql bus as a plugin (today the controller role builds it);
    - `requires` on competing topics (worker filtering);
    - dead-letter alerts on `system.alerts`.
 3. M10 wiring follows its call sites:
@@ -238,6 +269,8 @@ M10 (extension points):
    - the UI does not show display names yet (the CLI's `users list` does);
    - an OIDC or GitHub provider implementing `AuthProvider.displayName`;
    - components get their SQL driver from the runtime (today `storeSql` takes it from the legacy store).
+5. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by
+   tests now; the store's command-row mapping duplicates `commandOf` in `src/inbound/records.ts`.
 
 ## After the refactor: acceptance runs (owner request, 2026-11-08)
 

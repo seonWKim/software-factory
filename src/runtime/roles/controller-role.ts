@@ -9,7 +9,7 @@
 
 import { join } from "node:path";
 import {
-  BUS_PERIODS, SqlEventBus, SqlRetryScheduler, ensureTopicTables, scheduleBus, scheduleComponent,
+  BUS_PERIODS, SqlEventBus, SqlRetryScheduler, scheduleBus, scheduleComponent,
 } from "../../bus/index.js";
 import { CONTROLLER, type ControllerContext } from "../../controller/index.js";
 import { Controller, type ControllerDeps, type GitHubBudgetStatus } from "../../core/controller.js";
@@ -25,6 +25,7 @@ import { tickAt, type Tick } from "../../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../../state/index.js";
 import { ComponentConsumer } from "../consumer.js";
 import { loadRegistry, type Registry } from "../registry/registry.js";
+import { ensureDiscoveredTopicTables } from "../registry/topic-tables.js";
 
 export interface ControllerRoleDeps extends ControllerDeps {
   /**
@@ -170,7 +171,7 @@ export class ControllerRole extends Controller {
     const dialect = db.dialect.name;
     const r = await registry();
     const topics = r.topics.map((t) => t.descriptor);
-    await ensureTopicTables({ dialect, all: (sql, p) => db.all(sql, p), run: (sql, p) => db.run(sql, p) }, topics);
+    await ensureDiscoveredTopicTables(dialect, db, CODE_ROOT);
     const consumerId = d.replica_id ?? SYNC_OWNER;
     const inboundBus = new SqlEventBus({ db, dialect, component: INBOUND, topics, consumerId });
     const controllerBus = new SqlEventBus({ db, dialect, component: CONTROLLER, topics, consumerId });

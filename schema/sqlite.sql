@@ -11,6 +11,114 @@ CREATE TABLE authz_audit (
     at           TEXT NOT NULL
   );
 
+CREATE TABLE bus_controller_commands (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  partition_key TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  idempotency_key_ttl_ms INTEGER,
+  causation_id TEXT,
+  correlation_id TEXT NOT NULL,
+  passport_id TEXT,
+  producer TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  not_before TEXT,
+  payload TEXT NOT NULL,
+  published_at TEXT NOT NULL
+);
+
+CREATE TABLE bus_controller_commands_cursors (
+  consumer_group TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  owner TEXT,
+  lease_token INTEGER NOT NULL DEFAULT 0,
+  lease_until TEXT,
+  PRIMARY KEY (consumer_group, `partition`)
+);
+
+CREATE TABLE bus_controller_commands_dead_letters (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  error_code TEXT NOT NULL,
+  last_error TEXT,
+  dead_at TEXT NOT NULL,
+  replayed_at TEXT,
+  replayed_by TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_controller_commands_retries (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_inbound_records (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  partition_key TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  idempotency_key_ttl_ms INTEGER,
+  causation_id TEXT,
+  correlation_id TEXT NOT NULL,
+  passport_id TEXT,
+  producer TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  not_before TEXT,
+  payload TEXT NOT NULL,
+  published_at TEXT NOT NULL
+);
+
+CREATE TABLE bus_inbound_records_cursors (
+  consumer_group TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  owner TEXT,
+  lease_token INTEGER NOT NULL DEFAULT 0,
+  lease_until TEXT,
+  PRIMARY KEY (consumer_group, `partition`)
+);
+
+CREATE TABLE bus_inbound_records_dead_letters (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  error_code TEXT NOT NULL,
+  last_error TEXT,
+  dead_at TEXT NOT NULL,
+  replayed_at TEXT,
+  replayed_by TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_inbound_records_retries (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
 CREATE TABLE bus_scheduler (
   id INTEGER NOT NULL PRIMARY KEY,
   released_until TEXT NOT NULL
@@ -121,6 +229,15 @@ CREATE TABLE controller_improve_reports (
     created_at      TEXT NOT NULL
   );
 
+CREATE TABLE controller_inbox (
+  consumer TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  processed_at TEXT NOT NULL,
+  expires_at TEXT,
+  PRIMARY KEY (consumer, idempotency_key)
+);
+
 CREATE TABLE controller_item_thread (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,
     work_item_id  TEXT NOT NULL REFERENCES controller_work_items(id),
@@ -138,6 +255,16 @@ CREATE TABLE controller_merge_checks (
     base_sha      TEXT NOT NULL,
     checked_at    TEXT NOT NULL
   );
+
+CREATE TABLE controller_outbox (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  envelope TEXT NOT NULL,
+  commit_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  published_at TEXT
+);
 
 CREATE TABLE controller_standing_proposals (
     id          TEXT PRIMARY KEY,
@@ -301,12 +428,31 @@ CREATE TABLE inbound_cursors (
     value  TEXT NOT NULL
   );
 
+CREATE TABLE inbound_inbox (
+  consumer TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  processed_at TEXT NOT NULL,
+  expires_at TEXT,
+  PRIMARY KEY (consumer, idempotency_key)
+);
+
 CREATE TABLE inbound_listener_leases (
     source_type  TEXT PRIMARY KEY,
     owner        TEXT NOT NULL,
     token        INTEGER NOT NULL,
     expires_at   TEXT NOT NULL
   );
+
+CREATE TABLE inbound_outbox (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  envelope TEXT NOT NULL,
+  commit_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  published_at TEXT
+);
 
 CREATE TABLE inbound_raw_records (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -979,6 +1125,22 @@ CREATE INDEX base_pushes_pending ON "legacy_base_pushes" (finished_at, next_atte
 
 CREATE INDEX budget_checkpoints_work_item ON "legacy_budget_checkpoints" (work_item_id, created_at);
 
+CREATE INDEX bus_controller_commands_due ON bus_controller_commands (not_before) WHERE not_before IS NOT NULL;
+
+CREATE INDEX bus_controller_commands_partition ON bus_controller_commands (`partition`, seq);
+
+CREATE INDEX bus_controller_commands_published ON bus_controller_commands (published_at);
+
+CREATE INDEX bus_controller_commands_retries_due ON bus_controller_commands_retries (next_attempt_at);
+
+CREATE INDEX bus_inbound_records_due ON bus_inbound_records (not_before) WHERE not_before IS NOT NULL;
+
+CREATE INDEX bus_inbound_records_partition ON bus_inbound_records (`partition`, seq);
+
+CREATE INDEX bus_inbound_records_published ON bus_inbound_records (published_at);
+
+CREATE INDEX bus_inbound_records_retries_due ON bus_inbound_records_retries (next_attempt_at);
+
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 
 CREATE INDEX claim_decisions_work_item ON "legacy_claim_decisions" (work_item_id, at);
@@ -994,6 +1156,10 @@ CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions 
 CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (depends_on);
 
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
+
+CREATE INDEX controller_inbox_expiry ON controller_inbox (expires_at);
+
+CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 
 CREATE INDEX controller_unreviewed_merges_at ON controller_unreviewed_merges (at);
 
@@ -1038,6 +1204,10 @@ CREATE INDEX inbound_commands_mirror ON "legacy_inbound_commands" (mirror, mirro
 CREATE INDEX inbound_commands_pending ON inbound_commands (handled_at, created_at);
 
 CREATE INDEX inbound_commands_unmirrored ON inbound_commands (mirror, mirrored_at, seq);
+
+CREATE INDEX inbound_inbox_expiry ON inbound_inbox (expires_at);
+
+CREATE INDEX inbound_outbox_pending ON inbound_outbox (published_at, seq);
 
 CREATE INDEX inbound_raw_records_seq ON inbound_raw_records (source_type, seq);
 

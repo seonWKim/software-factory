@@ -1614,6 +1614,11 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",
+      // Outbox and inbox of the components on the bus (RFC 0015 M4).
+      "controller_inbox",
+      "controller_outbox",
+      "inbound_inbox",
+      "inbound_outbox",
       "runtime_hook_decisions",
     ];
 
