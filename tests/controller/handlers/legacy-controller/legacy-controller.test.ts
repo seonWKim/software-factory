@@ -21,6 +21,7 @@ async function harness() {
   const decisions: Decisions = {
     consumeEvent: async (e) => void calls.push(["event", e]),
     consumeCommand: async (c) => void calls.push(["command", c.key]),
+    deliveryCompleted: async () => {},
   };
   const run = (m: ReturnType<typeof message>) => legacy.handle(m, { db: store.db, decisions, emit: () => {}, recordAlert: async () => {} });
   return { store, calls, run };

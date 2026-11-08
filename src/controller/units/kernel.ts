@@ -6,6 +6,7 @@ import { type SourceRef, type SourceType } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
+import type { NewAction } from "../../outbound/index.js";
 
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
@@ -25,6 +26,12 @@ function checkSources(d: Pick<ControllerDeps, "source" | "sources">): readonly S
   return sources;
 }
 
+/** How the units hand writes to outbound (RFC 0015 M7): the role binds them to the store's driver and its bus. */
+export interface Deliveries {
+  record(a: NewAction, now: string): Promise<void>;
+  announce(now: string): Promise<number>;
+}
+
 /**
  * What every unit shares (RFC 0015 M5): the legacy deps, the configured sources and forge, the live settings, and the
  * step guard. Built once per controller role; holds no decision.
@@ -38,11 +45,21 @@ export class Kernel {
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   readonly live: LiveSettings;
 
-  constructor(readonly d: ControllerDeps) {
+  constructor(readonly d: ControllerDeps, private readonly deliveries: Deliveries) {
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.forge = d.forge ?? null;
     this.live = d.settings ?? LiveSettings.fixed(d.config);
+  }
+
+  /** Stores an intent for outbound (RFC 0015 M7); the outbox step announces it. */
+  async recordAction(a: NewAction): Promise<void> {
+    await this.deliveries.record(a, this.d.clock.now().toISOString());
+  }
+
+  /** Announces every stored intent as DeliveryRequested on the controller's bus; returns how many. */
+  announce(): Promise<number> {
+    return this.deliveries.announce(this.d.clock.now().toISOString());
   }
 
   /** The config with each settable key at its effective value as of the last refresh. */
