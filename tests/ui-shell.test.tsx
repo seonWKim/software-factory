@@ -24,7 +24,7 @@ const overview = {
 const row = (n: number, level: string, title: string, extra: object = {}) => ({
   id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level,
   badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
-  pr_number: null, pr_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
+  change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
 });
 const items = {
   as_of: AT, total: 3,
@@ -54,8 +54,8 @@ const RESPONSES: Record<string, unknown> = {
   "/api/v1/unreviewed-merges": {
     as_of: AT,
     merges: [
-      { project: "github.com/o/r", pr_number: 9, pr_url: "https://github.com/o/r/pull/9", merge_sha: "abcdef1", merged_by: "github:7", recorded_at: AT },
-      { project: "github.com/o/r", pr_number: 8, pr_url: null, merge_sha: "1234567", merged_by: "unknown", recorded_at: AT },
+      { project: "github.com/o/r", change_ref: "9", change_url: "https://github.com/o/r/pull/9", merge_sha: "abcdef1", merged_by: "github:7", recorded_at: AT },
+      { project: "github.com/o/r", change_ref: "8", change_url: null, merge_sha: "1234567", merged_by: "unknown", recorded_at: AT },
     ],
   },
 };
@@ -274,12 +274,12 @@ describe("unreviewed merges", () => {
 });
 
 // ---- ItemsTable (issue #240): title link, Issue and PR columns only with the GitHub plugin ----
-const GH = { issues: "github", prs: "github" } as const;
-const NONE = { issues: null, prs: null } as const;
+const GH = { issues: "github" } as const;
+const NONE = { issues: null } as const;
 const trow = (n: number, extra: Partial<ItemRow> = {}): ItemRow => ({
   id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title: `Title ${n}`,
   level: "running", badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null,
-  run_status: null, pr_number: null, pr_url: null, issue: { number: n, url: `https://github.com/o/r/issues/${n}` }, since: AT,
+  run_status: null, change_ref: null, change_url: null, issue: { number: n, url: `https://github.com/o/r/issues/${n}` }, since: AT,
   updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
 });
 const NOW_MS = Date.parse(AT);
@@ -304,7 +304,7 @@ describe("ItemsTable columns and links (issue #240)", () => {
   });
 
   it("with GitHub: Issue links to the issue, PR to the PR, a dash when there is none", () => {
-    const c = itemsTable([trow(3, { pr_number: 9, pr_url: "https://github.com/o/r/pull/9" }), trow(4)], GH);
+    const c = itemsTable([trow(3, { change_ref: "9", change_url: "https://github.com/o/r/pull/9" }), trow(4)], GH);
     expect(heads(c)).toEqual(["Item", "State", "Why", "Since", "Issue", "PR"]);
     const [r1, r2] = [...c.querySelectorAll("tbody tr")] as HTMLElement[];
     const t1 = [...r1!.querySelectorAll("td")];
@@ -315,24 +315,27 @@ describe("ItemsTable columns and links (issue #240)", () => {
     expect([...r2!.querySelectorAll("td")][5]!.textContent).toBe("–");
   });
 
-  it("without GitHub: no Issue or PR column and no link to github.com", () => {
+  it("without GitHub: no Issue column; the PR column shows the stored link, or a dash with no change_ref", () => {
     for (const plugins of [NONE, undefined]) {
-      const c = itemsTable([trow(5, { pr_number: 9, pr_url: "https://github.com/o/r/pull/9" })], plugins);
-      expect(heads(c)).toEqual(["Item", "State", "Why", "Since"]);
+      const c = itemsTable([trow(5, { change_ref: "9", change_url: "https://forge.example/o/r/pull/9" }), trow(4)], plugins);
+      expect(heads(c)).toEqual(["Item", "State", "Why", "Since", "PR"]);
       expect(c.innerHTML).not.toContain("github.com");
+      const [r1, r2] = [...c.querySelectorAll("tbody tr")] as HTMLElement[];
+      expect([...r1!.querySelectorAll("td")][4]!.querySelector("a")!.getAttribute("href")).toBe("https://forge.example/o/r/pull/9");
+      expect([...r2!.querySelectorAll("td")][4]!.textContent).toBe("–");
       cleanup();
     }
   });
 
   it("an adopted PR shows a dash under Issue and its number under PR", () => {
-    const c = itemsTable([trow(6, { issue: null, pr_number: 6, pr_url: "https://github.com/o/r/pull/6" })], GH);
+    const c = itemsTable([trow(6, { issue: null, change_ref: "6", change_url: "https://github.com/o/r/pull/6" })], GH);
     const td = cells(c);
     expect(td[4]!.textContent).toBe("–");
     expect(td[5]!.textContent).toBe("#6");
   });
 
-  it("a PR without a link (unknown project label) shows its number as text", () => {
-    const td = cells(itemsTable([trow(7, { pr_number: 7, pr_url: null })], GH));
+  it("a change_ref without a stored change_url shows the ref as text", () => {
+    const td = cells(itemsTable([trow(7, { change_ref: "7", change_url: null })], GH));
     expect(td[5]!.textContent).toBe("#7");
     expect(td[5]!.querySelector("a")).toBeNull();
   });

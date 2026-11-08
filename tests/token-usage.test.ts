@@ -441,7 +441,7 @@ async function page(seed: (store: Awaited<ReturnType<typeof newStore>>["store"],
   await seed(store, clock);
   clock.set(NOW);
   const html = await renderIndex(
-    { store, scanner: cleanScanner, clock, lease_ms: 60_000, prUrl: () => "", health: new HealthMonitor(async () => [], clock) },
+    { store, scanner: cleanScanner, clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock) },
     NO_FILTERS,
   );
   return { html, store };

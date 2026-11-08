@@ -30,6 +30,7 @@ import type {
   Registry,
   SecretDeclaration,
   Selection,
+  SetupHook,
 } from "./plugin-api.js";
 
 export type {
@@ -47,8 +48,10 @@ export type {
   Registry,
   SecretDeclaration,
   Selection,
+  SetupContext,
+  SetupHook,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, defineGrant, definePlugin, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, selectedSetups, defineGrant, definePlugin, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
 import { authByOrigin } from "./plugin-api.js";
 
 interface KindInfo {
@@ -136,7 +139,7 @@ export async function loadRegistry(dirs: readonly string[]): Promise<Registry> {
 function checkDescriptor(file: string, d: unknown): PluginDescriptor {
   const bad = (why: string) => new Error(`plugin descriptor ${file}: ${why} (docs/plugins.md, "Adding a plugin")`);
   if (d === null || typeof d !== "object") throw bad("no default export; write `export default definePlugin({...})`");
-  const { kind, name, create, secrets, default: dflt } = d as Record<string, unknown>;
+  const { kind, name, create, secrets, setup, default: dflt } = d as Record<string, unknown>;
   if (typeof kind !== "string" || !Object.hasOwn(KINDS, kind)) {
     throw bad(`unknown kind ${JSON.stringify(kind)}; known kinds: ${PLUGIN_KINDS.join(", ")}`);
   }
@@ -145,6 +148,7 @@ function checkDescriptor(file: string, d: unknown): PluginDescriptor {
   if (info.guard && DISABLING.has(name)) throw bad(`"${name}" cannot name a ${info.interface} plugin: it means disabled`);
   if (typeof create !== "function") throw bad("create must be a function");
   if (secrets !== undefined && !Array.isArray(secrets)) throw bad("secrets must be a list");
+  if (setup !== undefined && typeof setup !== "function") throw bad("setup must be a function");
   if (dflt !== undefined) {
     if (TOP_LEVEL_KINDS.includes(kind as PluginKind)) {
       throw bad(`${kind} plugins take no default: the top-level "${info.configKey}" config key always picks one`);
@@ -166,6 +170,7 @@ function registryOf(found: readonly Found[]): Registry {
     const label = `${info.interface} (${kind})`;
     const plugins: Record<string, PluginFactory<PluginKind>> = {};
     const secrets: Record<string, readonly SecretDeclaration[]> = {};
+    const setups: Record<string, SetupHook> = {};
     const fileOf = new Map<string, string>();
     for (const { file, descriptor: d } of mine) {
       const first = fileOf.get(d.name);
@@ -176,6 +181,7 @@ function registryOf(found: readonly Found[]): Registry {
       fileOf.set(d.name, file);
       plugins[d.name] = d.create as PluginFactory<PluginKind>;
       secrets[d.name] = d.secrets ?? [];
+      if (d.setup) setups[d.name] = d.setup;
     }
     if (info.guard && mine.length === 0) {
       errors.push(`${label} is a guard and has no plugin; guards cannot be disabled (docs/architecture.md §5)`);
@@ -205,7 +211,7 @@ function registryOf(found: readonly Found[]): Registry {
       const files = mine.length > 0 ? mine.map((f) => f.file).join(", ") : "no plugin files";
       errors.push(`${label} has no default plugin; mark one descriptor \`default: true\` (${files})`);
     }
-    registry[kind] = { ...info, plugins, secrets, defaults };
+    registry[kind] = { ...info, plugins, secrets, setups, defaults };
   }
   if (errors.length > 0) throw new Error(`plugin registry: ${errors.join("; ")}`);
   return registry as unknown as Registry;

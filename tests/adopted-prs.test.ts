@@ -113,7 +113,7 @@ describe("adopting a pull request a person opened", () => {
     expect(f.source.statusLabels(prRef(50))).toEqual(["in_review"]);
   });
 
-  it("a GitHub item opened from change_open stores change_url as https://<label>/pull/<n>, the string prUrl in src/main.ts builds", async () => {
+  it("a GitHub item opened from change_open stores change_url as https://<label>/pull/<n>, the link the status UI shows", async () => {
     const f = await factory();
     const label = "github.com/o/r";
     await f.store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, label);

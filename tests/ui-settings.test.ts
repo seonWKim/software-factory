@@ -53,7 +53,6 @@ async function setup(opts: { store?: FactoryStore; label?: boolean; resolveProje
     scanner,
     clock,
     lease_ms: 300_000,
-    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health: new HealthMonitor(async () => [], clock),
     settings,
   };

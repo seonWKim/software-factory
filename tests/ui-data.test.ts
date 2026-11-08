@@ -72,7 +72,6 @@ async function seeded() {
     scanner: new PatternEgressScanner(async () => []),
     clock,
     lease_ms: LEASE,
-    prUrl: (project, n) => `https://github.com/${project}/pull/${n}`,
     health: new HealthMonitor(async () => [], clock),
   };
   return { d, store, calls, plain, leaky, run };

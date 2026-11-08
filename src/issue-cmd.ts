@@ -3,8 +3,9 @@
 // left out on purpose: those stay human actions.
 
 import { readFile } from "node:fs/promises";
+import type { Plugins } from "./compose.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
-import type { GitHubClient, RepoRef } from "./impl/github/github-client.js";
+import type { GitHubApi } from "./interfaces/github-credentials.js";
 
 export const ISSUE_USAGE = `usage: npm run factory -- issue <action>
   create --title <text> --body-file <path> [--label <name>]...
@@ -72,11 +73,17 @@ export function parseIssueArgs(args: readonly string[]): IssueAction | null {
 }
 
 export interface IssueDeps {
-  client: GitHubClient;
-  repo: RepoRef;
+  client: GitHubApi;
+  repo: { owner: string; name: string };
   /** Every title and body is scanned before it is sent (G5); a finding refuses the action. */
   scanner: EgressScanner;
   read?: (path: string) => Promise<string>;
+}
+
+/** The configured deps: the process's forge client (Plugins.githubApi), the configured repo and egress scanner. */
+export async function issueDeps(p: Plugins): Promise<IssueDeps> {
+  const { owner, name } = p.loaded.config.repo;
+  return { client: await p.githubApi(), repo: { owner, name }, scanner: await p.scanner(await p.secrets()) };
 }
 
 /** Runs one action and returns the line to print (the issue's number and URL, or the URL written to). */

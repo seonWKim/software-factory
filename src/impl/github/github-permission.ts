@@ -1,5 +1,6 @@
 import type { GrantSource, GrantSubject, Role } from "../../interfaces/auth-provider.js";
-import { type GitHubClient, GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
+import type { GitHubApi } from "../../interfaces/github-credentials.js";
+import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
 
 const APPROVER = new Set(["admin", "maintain", "write"]);
 const REQUESTER = new Set(["triage", "read"]);
@@ -14,7 +15,7 @@ export class GitHubPermissionGrant implements GrantSource {
   readonly remote = true;
 
   constructor(
-    private readonly client: Pick<GitHubClient, "request">,
+    private readonly client: Pick<GitHubApi, "request">,
     private readonly repo: RepoRef,
   ) {}
 

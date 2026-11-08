@@ -86,7 +86,6 @@ async function setup() {
   await storage.put(`transcripts/${b.item.id}/${b.run.id}.json`, enc(await fixture("planted-secret.jsonl")));
   const d: UiDeps = {
     store, scanner, clock, lease_ms: LEASE, storage,
-    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health: new HealthMonitor(async () => [], clock),
   };
   return { d, store, storage, scanner, a, b, none };
