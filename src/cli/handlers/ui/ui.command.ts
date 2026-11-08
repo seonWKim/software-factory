@@ -68,6 +68,8 @@ export default defineCommand({
         storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
         // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id, or this machine's CLI identity, for the controller to apply.
         commands: parts.commands,
+        // Names where the pages show user ids (identity_profiles, read by id; ids stay what is stored).
+        displayNames: parts.displayNames,
         // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
         pauses: parts.pauses,
       },

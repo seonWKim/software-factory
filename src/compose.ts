@@ -42,7 +42,7 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
-import { LOCAL_KEY_FILE, startIdentity, type IdentityRuntime } from "./identity/index.js";
+import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { AuditedAuthProvider, PluginIdentityProvider } from "./impl/auth/audited-auth.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
@@ -982,6 +982,8 @@ export interface UiParts {
   commands: UiCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
+  /** Display names by user id from Identity's identity_profiles (M9), only to show. */
+  displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
   close(): Promise<void>;
 }
 
@@ -1047,7 +1049,9 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
-  return { clock, store, scanner, settings, commands, pauses, close: () => identity.stop().then(() => store.close()) };
+  const profiles = new ProfileStore(storeSql(store));
+  const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
+  return { clock, store, scanner, settings, commands, pauses, displayNames, close: () => identity.stop().then(() => store.close()) };
 }
 
 function refusalOf(d: AuthDecision): string | null {
