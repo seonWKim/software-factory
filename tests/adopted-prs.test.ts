@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { Logger } from "../src/core/log.js";
 import { SKIP_LABEL } from "../src/core/policy.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import type { SourceRef, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubClient } from "../src/impl/github/github-client.js";
@@ -58,10 +58,10 @@ async function factory(script: ConstructorParameters<typeof FakeRunner>[0] = {},
     review: () => ({ output: { verdict: "pass", tier: 1, findings: [], summary: "fine" } }),
     ...script,
   });
-  const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent,
-    scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),
+    scanner: cleanScanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
   });
   /** One poll tick: PR events come from the forge, the rest from the source. */
   const poll = async (...events: (SourceEvent | ForgeEvent)[]) => {
@@ -137,9 +137,10 @@ describe("adopting a pull request a person opened", () => {
     expect(spec.prompt).toContain("+ a change");
     expect(spec.prompt).toContain("no spec");
     expect(spec.prompt).toContain("src/core/stats.ts");
-    const posted = f.broker.calls.filter((c) => c.name === "github.comment");
-    expect(posted).toHaveLength(1);
-    expect(posted[0]!.args).toMatchObject({ number: 50 });
+    // The review comment went out through outbound, onto the PR; the run itself called no comment tool.
+    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.comment");
+    const posted = f.forge.comments.filter((c) => c.marker.includes("factory:review:"));
+    expect(posted.map((c) => c.pr_number)).toEqual([50]);
 
     const it = (await f.item(50))!;
     expect(it).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", tier: 1 });
@@ -387,7 +388,7 @@ describe("the first start on a repository with history (design §5, Merges)", ()
     const ctx = { clock, history_since: null, log };
     const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
     const forge = new GitHubForge(repo, { owner: "o", name: "r" }, "factory/", "main", source, ctx);
-    const controller = new Controller({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner });
     const unreviewed = () => log.lines.filter((l) => l.msg === "unreviewed merge");
     return { clock, store, repo, controller, unreviewed };
   }

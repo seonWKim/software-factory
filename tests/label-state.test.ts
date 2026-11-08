@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
@@ -20,7 +20,7 @@ const label = (status: string) => statusLabels("sf: ").find((l) => l.status === 
 function controllerOn(store: FactoryStore, clock: FakeClock) {
   const github = new FakeGitHubClient();
   const source = new GitHubIssueSource(github, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   return { github, source, controller };
 }
 
@@ -161,13 +161,13 @@ describe("solo setup", () => {
       { source: { type: "local", id: "local-1", link: "local:local-1" }, requester_id: "local:owner" as UserId, project: PROJECT_KEY, problem: "p", resources: [] },
       system,
     );
-    const controller = new Controller({ store, source: new LocalSource(store), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source: new LocalSource(store), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     await controller.catchUpStatus();
     // A refused app request posts its reply through the local source.
     await store.recordAppCommandRequest({ key: "k1", actor: "local:someone" as UserId, command: "frobnicate", args: { work_item_id: item.id } });
     await controller.tickCommands();
     expect(await store.listItemMessages(item.id)).toHaveLength(1);
-    for (const table of ["posted_comments", "label_states"]) {
+    for (const table of ["outbound_deliveries", "outbound_label_states"]) {
       expect((await store.listTableRows({ table }))?.total, table).toBe(0);
     }
   });
@@ -177,7 +177,7 @@ describe("schema", () => {
   it("SQLite builds posted_comments and label_states on open", async () => {
     const { store } = await newStore();
     const names = (await store.listTables()).map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["posted_comments", "label_states"]));
+    expect(names).toEqual(expect.arrayContaining(["outbound_deliveries", "outbound_label_states"]));
   });
 
   it.skipIf(!MYSQL_URL)("a MySQL store refuses to start until step 0027 is applied, then has both tables", async () => {
@@ -193,6 +193,6 @@ describe("schema", () => {
     db.onCleanup(() => store.close());
     await store.migrate();
     const names = (await store.listTables()).map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["posted_comments", "label_states"]));
+    expect(names).toEqual(expect.arrayContaining(["outbound_deliveries", "outbound_label_states"]));
   });
 });

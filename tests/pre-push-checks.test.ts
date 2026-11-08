@@ -3,9 +3,9 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { failingTestFiles, withTestFiles } from "../src/core/checks.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -15,8 +15,8 @@ import { MYSQL_SKIPPED, NoTestDatabase } from "../src/impl/test-database/no-test
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { TestDatabase } from "../src/interfaces/test-database.js";
-import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
+import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
+import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { newStore } from "./helpers/store.js";
 
@@ -61,6 +61,12 @@ class GitPushBroker implements ToolBroker {
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;
     if (name === "github.preflight") return { ok: true, content: {} };
+    // The run's last step: the bare origin stands in for the forge, so the stored branch lands there at once;
+    // outbound's push and PR (RFC 0015 M7) are logged into \`calls\` by the controller's FakeForge.
+    if (name === STORE_BRANCH) {
+      git(String(a.workdir), "push", "--quiet", "origin", `HEAD:refs/heads/${String(a.branch)}`);
+      return { ok: true, content: { sha: git(String(a.workdir), "rev-parse", "HEAD").trim(), forge: true } };
+    }
     this.calls.push({ ctx, name, args: a });
     if (name === "github.push_branch") {
       git(String(a.workdir), "push", "--quiet", "origin", `HEAD:refs/heads/${String(a.branch)}`);
@@ -71,9 +77,6 @@ class GitPushBroker implements ToolBroker {
   }
   names() {
     return this.calls.map((c) => c.name);
-  }
-  comments() {
-    return this.calls.filter((c) => c.name === "github.comment").map((c) => c.args as { number: number; body: string; marker: string });
   }
   pushes() {
     return this.calls.filter((c) => c.name === "github.push_branch").map((c) => String(c.args.branch));
@@ -191,7 +194,7 @@ async function setup(opts: {
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
   const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(null, broker.calls), auth: new FakeAuth(), clock, config: cfg, log, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: cfg,
     prompts: { triage: "T", implement: "I", review: "R", resolve: "S" }, log, scanner, toolEnv, awake: new NoKeepAwake(),
@@ -267,7 +270,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
       const handoffs = await f.store.listHandoffs(item.id);
       expect(handoffs.map((h) => h.worked_on)).toEqual(["implementer edits a (1)", "add a fault", `fix: remove ${c.file}`]);
       const run = (await f.implementRuns(item.id))[0]!;
-      expect(run.outcome).toMatchObject({ status: "succeeded", data: { commits: 3, pr_number: 42 } });
+      expect(run.outcome).toMatchObject({ status: "succeeded", data: { commits: 3, pr_pending: true } });
       // The whole list ran again after the fix: every command once more, in order.
       const ran = f.checkExecs().map((e) => e.cmd);
       const failedAt = CHECKS.findIndex((x) => x === c.cmd);
@@ -303,7 +306,8 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
     expect(f.broker.names()).not.toContain("github.open_pr");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
-    const comments = f.broker.comments();
+    expect(f.broker.names()).not.toContain("github.comment");
+    const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:checks:"));
     expect(comments).toHaveLength(1);
     expect(comments[0]!.marker).toBe(`<!-- factory:checks:${run.id} -->`);
     expect(comments[0]!.body).toContain(`\`${SQLITE.join(" ")}\``);
@@ -325,8 +329,9 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     const gitCalls = f.sandbox.execs.map((e) => e.cmd);
     const add = gitCalls.findIndex((c) => c.includes("worktree add --quiet --detach .factory-base"));
     expect(gitCalls.slice(add).some((c) => c.includes("worktree remove --force .factory-base"))).toBe(true);
-    expect(f.broker.comments().map((c) => c.marker)).toEqual([`<!-- factory:checks:${run.id} -->`]);
-    expect(f.broker.comments()[0]!.body).toContain("`tests/flaky.test.ts`");
+    const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:checks:"));
+    expect(comments.map((c) => c.marker)).toEqual([`<!-- factory:checks:${run.id} -->`]);
+    expect(comments[0]!.body).toContain("`tests/flaky.test.ts`");
     expect(f.broker.pushes()).toEqual([`factory/wip/${item.id}/${run.id}`]);
   });
 
@@ -404,7 +409,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     await f.step();
 
     const done = (await f.implementRuns(item.id))[1]!;
-    expect(done.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42 } });
+    expect(done.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true } });
     expect(f.implementCount()).toBe(1); // no new implement agent: the retry started from the kept commits
     const branch = `refs/heads/factory/${item.id}`;
     git(f.origin, "merge-base", "--is-ancestor", wipHead, branch);

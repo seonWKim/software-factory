@@ -1,0 +1,5 @@
+[
+  "golden-cases-missing|worker/roles/implement.role.ts|implement",
+  "golden-cases-missing|worker/roles/resolve.role.ts|resolve",
+  "golden-cases-missing|worker/roles/triage.role.ts|triage"
+]

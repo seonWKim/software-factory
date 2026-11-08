@@ -20,6 +20,12 @@ export const CONFIG_ENV = "FACTORY_CONFIG";
  * Unset: 0.
  */
 export const WORKER_INDEX_BASE_ENV = "SF_WORKER_INDEX_BASE";
+/**
+ * Set by the supervisor for its child: the revision the child was built from. The child's workers stamp it on each
+ * run they execute (`worker_runs.code_version`), so a run journaled by one revision is resumed only by code that
+ * can resume it. Unset (an unsupervised `dev`): `dev`.
+ */
+export const CODE_VERSION_ENV = "SF_CODE_VERSION";
 /** Set to "1" by the supervisor for its child, so `dev` runs controller + worker instead of supervising. */
 export const SUPERVISED_ENV = "SOFTWARE_FACTORY_SUPERVISED";
 /** IPC messages between the supervisor and its child. No new signal: SIGTERM stays the hard stop. */

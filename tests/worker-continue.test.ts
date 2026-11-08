@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunOutcome, WipRef } from "../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { pipeline } from "./helpers/fakes.js";
 
 // Design §5 Restarts, stopped runs keep their work: an implement run that stops mid-work (rate_limited,
@@ -40,7 +41,7 @@ async function harness(stop: Partial<AgentRunResult>, work = true) {
   return { f, startedOn, stored };
 }
 
-const RATE_LIMITED: Partial<AgentRunResult> = { status: "rate_limited", error: "rate_limited", reset_at: "2030-01-01T00:00:00.000Z" };
+const RATE_LIMITED: Partial<AgentRunResult> = { status: "rate_limited", error: "rate_limited", reset_at: "2026-01-02T00:00:00.000Z" };
 const implementSpecs = (f: Harness) => f.runner.specs.filter((s) => s.role === "implement");
 const pushedBranches = (f: Harness) => f.broker.calls.filter((c) => c.name === "github.push_branch").map((c) => (c.args as { branch: string }).branch);
 
@@ -52,9 +53,9 @@ async function firstRun(f: Harness) {
   return { it0, failed: failed!, outcome: failed!.outcome as Failed };
 }
 
-/** Lets the retry be claimed: past the rate-limit pause and its not_before. */
+/** Lets the retry be claimed: past the rate-limit pause and its not_before, within the run's schedule_to_close. */
 async function retry(f: Harness) {
-  f.clock.set(new Date("2030-01-01T00:01:00.000Z"));
+  f.clock.set(new Date("2026-01-02T00:01:00.000Z"));
   await f.step();
 }
 
@@ -114,9 +115,10 @@ describe("a run stopped mid-work keeps its commits", () => {
     expect(startedOn).toEqual(["base", "base"]);
   });
 
-  it("a failed wip push fails the run with its original code, no wip ref, and the retry starts fresh", async () => {
+  it("a failed wip store fails the run with its original code, no wip ref, and the retry starts fresh", async () => {
     const { f } = await harness(RATE_LIMITED);
-    f.broker.responses["github.push_branch"] = [{ ok: false, error_code: "push_failed", message: "rejected" }];
+    // A stopped run stores only its wip branch.
+    f.broker.responses[STORE_BRANCH] = [{ ok: false, error_code: "push_failed", message: "rejected" }];
     const { it0, outcome } = await firstRun(f);
     expect(outcome).toMatchObject({ error_code: "rate_limited" });
     expect(outcome.wip).toBeUndefined();

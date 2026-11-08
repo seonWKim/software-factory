@@ -7,6 +7,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { type Migration, type MigrationDb, applyMigrations, pendingMigrations } from "../../../state/index.js";
 import { BASELINE, TABLE } from "./schema.js";
 
 /** The state the frozen baseline brings a database to. The first step file is BASELINE_STATE + 1. */
@@ -110,9 +111,13 @@ export function inlineStepName(step: InlineStep): string {
 export interface PendingStep {
   number: number;
   label: string;
-  /** "baseline": bring the database to state 11 (build on empty, stamp on existing). */
-  kind: "baseline" | "sql" | "ts";
+  /**
+   * "baseline": bring the database to state 11 (build on empty, stamp on existing). "timestamped": a
+   * migration after the frozen numbered steps (RFC 0015 §6.3), applied by src/state/migrate/runner.ts.
+   */
+  kind: "baseline" | "sql" | "ts" | "timestamped";
   step?: StepFile;
+  migration?: Migration;
   /** Baseline only: the frozen statements it runs (none when it only records state 11). */
   statements?: readonly string[];
 }
@@ -245,6 +250,12 @@ export function pendingMessage(s: MigrationStatus): string {
   return `${n} schema step${n === 1 ? "" : "s"} pending (state ${s.state ?? "none"}, latest ${s.latest}): run \`npm run migrate\``;
 }
 
+/** One MySQL connection as the state component's migration database. */
+export function mysqlMigrationDb(db: Queryable): MigrationDb {
+  const exec = async (sql: string, params: readonly unknown[] = []) => (await db.query(sql, [...params]))[0];
+  return { dialect: "mysql", all: async (sql, params) => (await exec(sql, params)) as Row[], run: async (sql, params) => ((await exec(sql, params)) as { affectedRows?: number }).affectedRows ?? 0 };
+}
+
 export class MysqlMigrations {
   private readonly dir: string;
   /** INLINE_STEPS with the repo's own steps dir; none with a caller's `dir` (tests build their own trees). */
@@ -252,10 +263,22 @@ export class MysqlMigrations {
 
   constructor(
     private readonly db: Queryable,
-    opts: { dir?: string } = {},
+    opts: { dir?: string; backupDir?: string | null } = {},
   ) {
     this.dir = opts.dir ?? STEPS_DIR;
     this.inline = opts.dir === undefined ? INLINE_STEPS : [];
+    this.timestamped = opts.dir === undefined;
+    this.backupDir = opts.backupDir ?? null;
+  }
+
+  /** Timestamped migrations run only with the repo's own steps (tests that build older trees stop at their state). */
+  private readonly timestamped: boolean;
+  /** Where breaking timestamped migrations back up their tables first (RFC 0015 §12 D1). */
+  private readonly backupDir: string | null;
+
+  private async timestampedSteps(latest: number): Promise<PendingStep[]> {
+    if (!this.timestamped) return [];
+    return (await pendingMigrations(mysqlMigrationDb(this.db))).map((m) => ({ number: latest, label: m.id, kind: "timestamped" as const, migration: m }));
   }
 
   private async all(sql: string, params: readonly Value[] = []): Promise<Row[]> {
@@ -301,13 +324,18 @@ export class MysqlMigrations {
         return { state, latest, pending: [], refusal: `schema_migrations is at ${legacy}, past the frozen baseline ${BASELINE_STATE}: unknown database` };
       else if (legacy === BASELINE_STATE) label = `baseline: record state ${BASELINE_STATE} on the existing schema (no statements)`;
       else label = `baseline: apply legacy steps ${legacy + 1} to ${BASELINE_STATE}, then record state ${BASELINE_STATE}`;
-      return { state, latest, pending: [{ number: BASELINE_STATE, label, kind: "baseline", statements }, ...fileSteps(BASELINE_STATE)], refusal: null };
+      return {
+        state,
+        latest,
+        pending: [{ number: BASELINE_STATE, label, kind: "baseline", statements }, ...fileSteps(BASELINE_STATE), ...(await this.timestampedSteps(latest))],
+        refusal: null,
+      };
     }
     if (state > latest)
       return { state, latest, pending: [], refusal: `recorded state ${state} is ahead of the newest step file (${pad(latest)}): update the factory` };
     if (state < BASELINE_STATE)
       return { state, latest, pending: [], refusal: `recorded state ${state} is below the baseline ${BASELINE_STATE}: no step starts there` };
-    return { state, latest, pending: fileSteps(state), refusal: null };
+    return { state, latest, pending: [...fileSteps(state), ...(await this.timestampedSteps(latest))], refusal: null };
   }
 
   /**
@@ -319,6 +347,11 @@ export class MysqlMigrations {
     if (s.refusal) return s;
     let blocked = false; // an earlier pending step changes the schema a later plan may read
     for (const p of s.pending) {
+      if (p.kind === "timestamped") {
+        const m = p.migration!;
+        print(`-- ${m.id}: ${m.change}${m.change === "breaking" ? `, backs up ${m.tables.length} tables first, copies and verifies every row` : ""}`);
+        continue;
+      }
       print(`-- ${pad(p.number)}: ${p.label}`);
       if (p.kind === "baseline") {
         for (const st of p.statements ?? []) print(`${st};`);
@@ -356,6 +389,7 @@ export class MysqlMigrations {
       const s = await this.status();
       if (s.refusal) throw new Error(`refusing to migrate: ${s.refusal}`);
       for (const p of s.pending) {
+        if (p.kind === "timestamped") continue;
         print(`applying ${pad(p.number)}: ${p.label}`);
         if (p.kind === "baseline") await this.baseline();
         else if (p.kind === "sql") {
@@ -374,6 +408,11 @@ export class MysqlMigrations {
           }
         }
         print(`state ${p.number}`);
+      }
+      if (this.timestamped) {
+        // A database built from empty just now holds nothing worth a backup.
+        const fresh = s.state === null && s.pending[0]?.kind === "baseline" && (s.pending[0].statements ?? []).length > 0 && s.pending[0].label.includes("empty database");
+        await applyMigrations(mysqlMigrationDb(this.db), { backupDir: fresh ? null : this.backupDir, now: () => new Date().toISOString(), print });
       }
       return s;
     } finally {

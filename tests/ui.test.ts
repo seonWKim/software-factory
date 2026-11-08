@@ -6,7 +6,7 @@ import { request } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { uiPort } from "../src/compose.js";
 import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -294,7 +294,7 @@ describe("ui: config and intake", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const source = new FakeSource();
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     source.queue.push({ kind: "item_requested", source: issueRef(9), requester: alice, title: "Status page", body: "please" });
     await controller.tickIntake();
     const item = (await store.getWorkItemBySource("github_issue", issueRef(9).id))!;
@@ -855,12 +855,11 @@ describe("ui: item commands over the real socket (issue #227)", () => {
     expect(logged.join("\n")).not.toContain(token);
   });
 
-  it("the server binds a fixed 127.0.0.1 and main.ts never prints the token", () => {
+  it("the server binds a fixed 127.0.0.1 and the ui command never prints the token", () => {
     const server = readFileSync(join(import.meta.dirname, "../src/ui/server.ts"), "utf8");
     expect(server).toContain('const BIND = "127.0.0.1";');
     expect(server).toContain("server.listen(port, BIND,");
-    const main = readFileSync(join(import.meta.dirname, "../src/main.ts"), "utf8");
-    const ui = main.slice(main.indexOf('case "ui": {'), main.indexOf('case "migrate": {'));
+    const ui = readFileSync(join(import.meta.dirname, "../src/cli/handlers/ui/ui.command.ts"), "utf8");
     expect(ui).toContain("commands: parts.commands");
     expect(ui).not.toMatch(/console\.\w+\([^)]*(token|parts\.commands)/);
   });

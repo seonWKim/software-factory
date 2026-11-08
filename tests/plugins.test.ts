@@ -4,11 +4,13 @@ import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
-import type { WorkerDeps } from "../src/core/worker.js";
+import type { WorkerDeps } from "../src/worker/index.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { NoAuthProvider } from "../src/impl/auth/none-auth-provider.js";
+import { AuditedAuthProvider } from "../src/impl/auth/audited-auth.js";
+import { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
@@ -30,6 +32,9 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
 import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.js";
+import { SqlBus } from "../src/bus/index.js";
+import { TimeBasedTicks } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
+import { JournalEngines } from "../src/worker/engine/plugins/journal/journal-engine.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -37,7 +42,7 @@ import type { GitHubAccess, GitHubApi } from "../src/interfaces/github-credentia
 import type { ToolBroker, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import {
   type Contexts,
-  IMPL_DIR,
+  PLUGIN_ROOT,
   type PluginDescriptor,
   defaultPlugins,
   findPluginFiles,
@@ -85,11 +90,14 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   // Optional with no default plugin (issue #172); github-issues among the sources implies github (issue #273).
   forge: { github: GitHubForge },
   network_probe: { http: HttpNetworkProbe },
+  bus: { sql: SqlBus },
+  ticks: { "time-based": TimeBasedTicks },
+  engine: { journal: JournalEngines },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
 const DESCRIPTORS = await Promise.all(
-  findPluginFiles([IMPL_DIR]).map(async (file) => ({
+  findPluginFiles([PLUGIN_ROOT]).map(async (file) => ({
     file,
     descriptor: ((await import(pathToFileURL(file).href)) as { default: PluginDescriptor }).default,
   })),
@@ -185,6 +193,9 @@ describe("plugin registry: defaults", () => {
       github_auth: "token",
       test_database: "none",
       network_probe: "http",
+      bus: "sql",
+      ticks: "time-based",
+      engine: "journal",
       // Derived from github-issues, the default source (issue #273).
       forge: "github",
     });
@@ -242,7 +253,7 @@ describe("plugin registry: every discovered plugin", () => {
   });
 
   for (const { file, descriptor: d } of DESCRIPTORS) {
-    describe(`${d.kind} \`${d.name}\` (${file.slice(IMPL_DIR.length + 1)})`, () => {
+    describe(`${d.kind} \`${d.name}\` (${file.slice(PLUGIN_ROOT.length + 1)})`, () => {
       it("is registered with its descriptor's factory and secrets", () => {
         expect(REGISTRY[d.kind].plugins[d.name]).toBe(d.create);
         expect(REGISTRY[d.kind].secrets[d.name]).toEqual(d.secrets ?? []);
@@ -252,7 +263,10 @@ describe("plugin registry: every discovered plugin", () => {
         const text = readFileSync(file, "utf8");
         expect(text).toMatch(/export default definePlugin\(/);
         const local = [...text.matchAll(/(?:from\s+|import\()"(\.[^"]+)"/g)].map((m) => join(dirname(file), m[1]!));
-        expect(local.filter((p) => p.startsWith(IMPL_DIR)).length, "imports its implementation from src/impl").toBeGreaterThan(0);
+        // A component's plugin keeps its descriptor in src/impl until plugin-api.ts is a component (M11): a component
+        // file importing it would break dependency-direction. Its implementation is then in the component's plugins/.
+        const home = (p: string) => p.startsWith(pluginHome(file)) || /[\\/](bus|shared[\\/]ticks)[\\/]plugins[\\/]/.test(p);
+        expect(local.filter(home).length, "imports its implementation from its own folder").toBeGreaterThan(0);
       });
 
       it("builds an object from a full context without running anything", async () => {
@@ -284,13 +298,19 @@ describe("plugin registry: every discovered plugin", () => {
   }
 });
 
+/** A plugin's own folder: src/impl/<interface>/ for legacy plugins, else the folder of its descriptor. */
+function pluginHome(file: string): string {
+  const [top, dir] = file.slice(PLUGIN_ROOT.length + 1).split(/[\\/]/);
+  return top === "impl" ? join(PLUGIN_ROOT, "impl", dir!) : dirname(file);
+}
+
 /**
  * The classes a descriptor constructs from its own interface's directory (src/impl/<dir>/...), such as
  * SqlFactoryStore and SqliteDriver; shared helpers such as ConsoleLogger come from elsewhere.
  */
 function implementationClasses(file: string): string[] {
   const text = readFileSync(file, "utf8");
-  const own = join(IMPL_DIR, file.slice(IMPL_DIR.length + 1).split(/[\\/]/)[0]!);
+  const own = pluginHome(file);
   const constructed = new Set([...text.matchAll(/new\s+([A-Z]\w*)/g)].map((m) => m[1]!));
   return [...text.matchAll(/import\s*\{([^}]*)\}\s*from\s*"(\.[^"]+)"/g)]
     .filter((m) => join(dirname(file), m[2]!).startsWith(own))
@@ -457,13 +477,15 @@ describe("plugin registry: guards can be switched", () => {
       expect(built.secrets).toBe(made.secrets);
       const w = (built.worker as unknown as { d: WorkerDeps }).d;
       expect(w.scanner).toBe(made.scanner);
-      expect(w.broker).toBe(made.broker);
+      // Behind the run passport guard (M9).
+      expect(w.broker).toBeInstanceOf(PassportToolBroker);
+      expect((w.broker as PassportToolBroker).inner).toBe(made.broker);
       // The other plugins get the swapped guards, not the built-in ones.
       expect((w.runner as unknown as { opts: { secrets: unknown } }).opts.secrets).toBe(made.secrets);
       expect(made.brokerCtx?.secrets).toBe(made.secrets);
       expect(made.brokerCtx?.scanner).toBe(made.scanner);
       expect(made.brokerCtx?.store).toBe(built.store);
-      expect((built.controller as unknown as { d: { store: unknown } }).d.store).toBe(built.store);
+      expect(built.controller.kernel.d.store).toBe(built.store);
     } finally {
       await built.close();
     }
@@ -513,8 +535,9 @@ describe("plugin registry: existing config keys keep working", () => {
     const authOf = async (auth: unknown) => {
       const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
       try {
-        const d = (built.controller as unknown as { d: { auth: unknown; local_auth: unknown } }).d;
-        return [d.auth, d.local_auth];
+        const d = built.controller.kernel.d;
+        // Each behind the audit of its decisions (M9).
+        return [d.auth, d.local_auth].map((a) => (a as AuditedAuthProvider).inner);
       } finally {
         await built.close();
       }
@@ -534,7 +557,7 @@ describe("plugin registry: existing config keys keep working", () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth: "none" }));
     const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      expect((built.controller as unknown as { d: { auth: unknown } }).d.auth).toBeInstanceOf(NoAuthProvider);
+      expect((built.controller.kernel.d.auth as AuditedAuthProvider).inner).toBeInstanceOf(NoAuthProvider);
     } finally {
       await built.close();
     }
@@ -632,7 +655,7 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
     });
     const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      const sources = (built.controller as unknown as { sources: readonly unknown[] }).sources;
+      const sources = built.controller.kernel.sources;
       expect(sources).toHaveLength(2);
       expect(sources[0]).toBeInstanceOf(GitHubIssueSource);
       expect(made).toHaveLength(1);
@@ -738,7 +761,7 @@ describe("plugin registry: only plugin descriptors construct implementations", (
 });
 
 describe("GitHub plugins (design 05-sources): one client per process, built by the credential plugin", () => {
-  const GITHUB_DIR = join(IMPL_DIR, "github");
+  const GITHUB_DIR = join(PLUGIN_ROOT, "impl", "github");
   const srcFiles = (dir: string): string[] => findPluginFiles([dir], /\.ts$/);
 
   it("every GitHub descriptor imports its implementation inside create(), never at top level", () => {
@@ -747,7 +770,7 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     for (const file of files) {
       const text = readFileSync(file, "utf8");
       const topLevel = [...text.matchAll(/^import\s+(?!type\b)[^"]*from\s+"(\.[^"]+)"/gm)].map((m) => join(dirname(file), m[1]!));
-      expect(topLevel.filter((p) => p.startsWith(IMPL_DIR)), file).toEqual([]);
+      expect(topLevel.filter((p) => p.startsWith(join(PLUGIN_ROOT, "impl"))), file).toEqual([]);
       expect(text, file).toMatch(/\bimport\("\.\//);
     }
   });
@@ -766,7 +789,7 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     expect(users.map((f) => f.slice(REPO_ROOT.length + 1)).sort()).toEqual(["src/impl/github/app-credentials.ts", "src/impl/github/token-credentials.ts"]);
   });
 
-  it("build() makes one client and hands it to every context that needs one; only the broker gets credentials", async () => {
+  it("build() makes one client and hands it to every context that needs one; only the broker and the forge get credentials", async () => {
     const credentials = { token: async () => null };
     const api = { tag: "the one client", shareBudget: () => {} } as unknown as GitHubApi;
     let made = 0;
@@ -791,12 +814,14 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
       expect(seen[kind]?.github, kind).toBe(api);
       expect(seen[kind]!.repo, kind).toEqual({ owner: (REAL.repo as { owner: string }).owner, name: (REAL.repo as { name: string }).name });
     }
-    for (const kind of ["source", "auth", "grant", "forge"]) {
+    for (const kind of ["source", "auth", "grant"]) {
       expect(Object.keys(seen[kind]!), kind).not.toContain("credentials");
       expect(Object.keys(seen[kind]!), kind).not.toContain("token");
       expect(Object.values(seen[kind]!), kind).not.toContain(credentials);
     }
     expect(seen.broker!.credentials).toBe(credentials);
+    // The forge's writes are outbound's (RFC 0015 M7): its run pushes need them.
+    expect(seen.forge!.credentials).toBe(credentials);
   });
 
   it("Plugins.githubApi() builds the credential plugin once and returns its client every time", async () => {
@@ -883,7 +908,7 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 18 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(18);
+  it("covers 21 interfaces", () => {
+    expect(PLUGIN_KINDS).toHaveLength(21);
   });
 });

@@ -39,7 +39,7 @@ export function statusOf(
 ): WorkStatus {
   if (it.stage === "CLOSED") return it.close_reason === "completed" ? "done" : "rejected";
   if (it.blocked_on === "upstream" && (it.blocked_reason === PHASE_HOLD || it.blocked_reason === PHASES_OPEN)) return "implementing";
-  if (it.blocked_on !== "none" && it.blocked_on !== "dependency") {
+  if (it.blocked_on !== "none" && it.blocked_on !== "dependency" && it.blocked_on !== "outbound") {
     if (it.blocked_on === "human" && it.stage === "READY" && it.blocked_reason === "spec_pending") return "needs_approval";
     if (it.blocked_on === "human" && it.stage === "REVIEW" && it.blocked_reason === "merge_pending") return "ready_to_merge";
     return "needs_human";

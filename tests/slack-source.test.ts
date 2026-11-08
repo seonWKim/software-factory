@@ -2,7 +2,7 @@
 // listener and inbox into the controller, and the thread replies back out. docs/plugins/source-adapter.md, `slack`.
 
 import { afterEach, describe, expect, it } from "vitest";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Listener } from "../src/core/listener.js";
 import type { Logger } from "../src/core/log.js";
 import type { UserId, WorkItem } from "../src/core/types.js";
@@ -70,7 +70,7 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store: real, sources: [gh, slack], forge, auth, clock, config, log, scanner, llm: new ApproveLLM(),
   });
   const ac = new AbortController();

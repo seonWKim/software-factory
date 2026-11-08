@@ -1,4 +1,4 @@
-import type { GitHubBudgetStatus } from "../core/controller.js";
+import type { GitHubBudgetStatus } from "../core/controller-deps.js";
 import type { FactoryStore } from "./factory-store.js";
 import type { Secret } from "./secret-store.js";
 

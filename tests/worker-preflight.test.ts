@@ -89,7 +89,7 @@ async function brokerFor(answer: (method: string, path: string) => unknown) {
   } as unknown as GitHubClient;
   const credentials = { token: async () => null } as unknown as GitHubCredentials;
   const broker = new GitHubToolBroker({
-    client, credentials, store, scanner: cleanScanner, clock: { now: () => new Date() } as never,
+    client, store, scanner: cleanScanner, clock: { now: () => new Date() } as never,
     repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
   });
   const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };

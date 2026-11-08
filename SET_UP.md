@@ -6,28 +6,37 @@ What to do once before the factory can take work. One command does most of it:
 npm run setup
 ```
 
-It is safe to run again: it skips what is already done. Two steps need you in a browser; the command stops and tells you when.
+It is safe to run again: every question shows its default (your current choice) and Enter takes it, and it skips what is already done. Two steps need you in a browser; the command stops and tells you when.
+
+- `npm run setup -- --yes` takes every default without asking (for scripts). A missing secret is reported, not asked: paste it later with a plain `npm run setup` in a terminal.
+- `npm run setup -- --me` only registers you (your ID and display name). For a second person on a shared store: it changes neither `factory.config.json` nor the secret file.
+- `npm run setup -- --rotate-github` (or `--rotate-claude`, `--rotate-mysql`) replaces a stored credential.
 
 ## Before you start
 
 - Node.js 22.13 or newer, and git
 - Claude Code installed (`claude --version`)
 - A Claude Pro / Max / Team / Enterprise plan
-- MySQL 8+ running locally, and an admin login that the `mysql` client can use (`~/.my.cnf`, or it asks for the root password). For SQLite only, set `"store": { "type": "sqlite" }` in `factory.config.json` and skip this
-- Write access to the GitHub repository the factory works on (set in `factory.config.json`, default `seonWKim/software-factory`)
+- For a MySQL store: MySQL 8+ running locally, and an admin login that the `mysql` client can use (`~/.my.cnf`, or it asks for the root password). For SQLite, answer `sqlite` at setup's Store step and skip this
+- With GitHub sync on: write access to the GitHub repository the factory works on (set in `factory.config.json`, default `seonWKim/software-factory`)
 - `ANTHROPIC_API_KEY` **not** set in your shell. If it is, it overrides the subscription token: `unset ANTHROPIC_API_KEY`
 
 ## What `npm run setup` does
 
 | Step | Automated | You do |
 |---|---|---|
-| 1. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository | — |
-| 2. Model credential | Prompts for the token with hidden input and writes it to the secret file | Run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once), paste it at the prompt |
-| 3. GitHub token | Opens the token page, shows the exact settings, prompts with hidden input, writes it to the secret file | Create the token (settings below), paste it at the prompt |
-| 4. Database | Creates the `software_factory` database and the factory's own MySQL user with a generated password, written to the secret file | Type the MySQL root password if the `mysql` client asks |
-| 5. Labels | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create | — |
-| 6. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, database connection, push access, intake label; warns on a token that never expires and on each missing status label | Fix any `FAIL` line and rerun. On a new MySQL database, run `npm run migrate` once first (the schema-steps FAIL says so) |
-| 7. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
+| 1. Store | Asks `sqlite` (one machine, no server) or `mysql` (a shared database for a team) | Press Enter for the default (`sqlite` on a new file) |
+| 2. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`store`, `plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin | Answer, then confirm the diff |
+| 3. Mode | Asks `manual` or `auto` and `auto_merge_max_tier` (0 to 3; 0 merges nothing). Runtime settings, not file keys: set later in the "You and the mode" step through `factory settings set` | Press Enter to keep the current ones |
+| 4. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository | — |
+| 5. Model credential | Prompts for the token with hidden input and writes it to the secret file | Run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once), paste it at the prompt |
+| 6. GitHub token | Opens the token page, shows the exact settings, prompts with hidden input, writes it to the secret file | Create the token (settings below), paste it at the prompt |
+| 7. Database | Creates the `software_factory` database and the factory's own MySQL user with a generated password, written to the secret file | Type the MySQL root password if the `mysql` client asks |
+| 8. You and the mode | Asks your display name (prefilled from git `user.name`) and stores it once against your ID; makes you the local owner if there is none yet; sets the mode and tier you chose if they changed | Type your name or press Enter. Your ID stays `cli_user`, else `local:<git user.email>`, else `local:<OS user>` |
+| 9. Other secrets | Prompts for any other secret the selected plugins declare | Paste each |
+| 10. Labels | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create | — |
+| 11. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, database connection, push access, intake label; warns on a token that never expires and on each missing status label | Fix any `FAIL` line and rerun. On a new MySQL database, run `npm run migrate` once first (the schema-steps FAIL says so) |
+| 12. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
 
@@ -92,8 +101,8 @@ A command is the first line of a comment: `/` and the command name (any case), t
 
 | Command | What it does | Applies when |
 |---|---|---|
-| `/approve [notes]` | Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. `/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths | spec waiting for approval, spec at the revision limit, blocked by the floor check |
-| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, review loop limit reached |
+| `/approve [notes]` | Approve the spec, the floor block or a run held for a person by the Rule of Two, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. `/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths | spec waiting for approval, spec at the revision limit, blocked by the floor check, waiting for a person to approve its run (Rule of Two) |
+| `/reject <reason>` | Close the item without a merge, giving your reason | spec waiting for approval, spec at the revision limit, blocked by the floor check, waiting for a person to approve its run (Rule of Two), paused at a budget checkpoint, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, review loop limit reached |
 | `/revise <feedback>` | Get a new spec written with your feedback. On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it | spec waiting for approval, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, review loop limit reached; on its PR: waiting for a human merge, blocked by a failed review run |
 | `/retry` | Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. `/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too | blocked by a failed run, blocked by a failed review run, blocked: the change was too large, blocked by a failed implement run, blocked: the agent asked for a human, blocked: a run failed the same way twice, blocked: a dependency was closed without a merge, review loop limit reached |
 | `/resolve [notes]` | Let an agent resolve the PR's merge conflict; notes go to the agent. `/resolve +paths <path>...` (at most 10, notes on the lines below) also adds those paths to the allowed paths | PR has a merge conflict, blocked: the agent asked for a human |
@@ -113,14 +122,14 @@ If you have write permission and reply in plain words on an open work item's iss
 
 Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`). Run the commands as `npm run --silent factory -- <command>`. None of them calls GitHub, and they work the same whether GitHub is selected, unreachable or rate limited.
 
-Who you are: `cli_user` in `factory.config.json` if you set it (optional), else `local:<git user.email>`, else `local:<OS user name>`, else `local:anonymous`. The local UI uses the same identity. Git's `user.name` is not used, because it is a display name.
+Who you are: `cli_user` in `factory.config.json` if you set it (optional), else `local:<git user.email>`, else `local:<OS user name>`, else `local:anonymous`. The local UI uses the same identity. Git's `user.name` is never your ID: it is only the default of the display name `npm run setup` (or `npm run setup -- --me`) stores once against your ID; `factory users list` shows it next to the ID.
 
 Who may act: local commands (the CLI and the local UI) are checked by the local auth plugin, never by GitHub's. GitHub comments are still checked by the `auth` plugin for GitHub. The first identity to run a writing command (`task create`, `approve`, `retry`, `revise`, `reject`, `users add`/`remove`) becomes the local **owner**.
 
 | | Solo (default, zero setup) | Team (many developers on one shared store) |
 |---|---|---|
 | Config | Nothing to add: `"auth": "github"` (or any string) keeps GitHub comments on GitHub's check, and local commands use `local` | The same. To name both explicitly: `"auth": { "github_issue": "github", "local": "local" }` |
-| Setup | None: you become the owner on your first writing command | The first person to write becomes the owner, who then runs `factory users add <user_id> --role approver` for each person who may approve |
+| Setup | None needed: you become the owner on your first writing command, or at `npm run setup` | The first person becomes the owner. Each later person runs `npm run setup -- --me` (ID and display name only) and has no role until the owner runs `factory users add <user_id> --role approver` |
 | May approve, retry, revise, reject, resolve | The owner | The owner and every `approver` |
 | May create, list and show | Everyone, `anonymous` included | Everyone, `anonymous` included |
 | `anonymous` | Read and create only: never the owner, never an approver | The same |
@@ -313,7 +322,7 @@ With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve fro
 | GitHub token expired or about to | `npm run setup -- --rotate-github` |
 | Claude token replaced | `npm run setup -- --rotate-claude` |
 | New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
-| MySQL: after setup creates the database, and after an update that adds a file in `migrations/mysql/` (the factory refuses to start until then; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
+| MySQL: after setup creates the database, and after an update that adds a file in `migrations/mysql/` (the factory refuses to start until then; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. It drains only `factory dev`: stop any `factory controller` or `factory worker` you started yourself before you migrate, so no old process writes meanwhile. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
 | MySQL: see the schema state and the pending steps | `npm run migrate -- --status` |
 | MySQL: see what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |

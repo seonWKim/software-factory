@@ -358,7 +358,7 @@ export interface SettingRow {
   key: string;
   /** What the key controls, from the settings core module. */
   description: string;
-  kind: "number" | "boolean" | "models" | "model_by";
+  kind: "number" | "boolean" | "models" | "json" | "mode";
   value: string;
   source: "override" | "file" | "default";
   file_value: string | null;

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROJECT_RETRY_MS, build, loadConfig, resolveProject, resolvedConfig, startupProject } from "../src/compose.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
   UNKNOWN_PROJECT_LABEL, assertProjectKey, githubProjectKey, isLegacyProject, isProjectKey, projectKeyCursor, projectLabel, projectLabelCursor,
 } from "../src/core/project.js";
@@ -41,8 +41,8 @@ async function rawStore(clock = new FakeClock()) {
   const store = new SqlFactoryStore(driver, clock);
   await store.migrate();
   const projects = async () => [
-    ...(await driver.all("SELECT project FROM work_items")).map((r) => String(r.project)),
-    ...(await driver.all("SELECT project FROM unreviewed_merges")).map((r) => String(r.project)),
+    ...(await driver.all("SELECT project FROM controller_work_items")).map((r) => String(r.project)),
+    ...(await driver.all("SELECT project FROM controller_unreviewed_merges")).map((r) => String(r.project)),
   ];
   return { driver, store, clock, projects };
 }
@@ -234,7 +234,7 @@ describe("writes use the key", () => {
     const f = await rawStore();
     const source = new FakeSource();
     const forge = new FakeForge(source);
-    const controller = new Controller({ store: f.store, source, forge, auth: new FakeAuth(), clock: f.clock, config, log: recordingLog(), scanner: cleanScanner });
+    const controller = new ControllerRole({ store: f.store, source, forge, auth: new FakeAuth(), clock: f.clock, config, log: recordingLog(), scanner: cleanScanner });
     source.queue.push({ kind: "item_requested", source: issueRef(7), requester: alice, title: "t", body: "b" });
     await controller.tickIntake();
     const run = (await f.store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;
@@ -312,7 +312,7 @@ describe("the label, never the key, is shown", () => {
     const source = new FakeSource();
     const forge = new FakeForge(source);
     const cfg: FactoryConfig = { ...config, project: { key: KEY, label: "github.com/o/r" } };
-    const controller = new Controller({ store: f.store, source, forge, auth: new FakeAuth(), clock: f.clock, config: cfg, log, scanner: cleanScanner });
+    const controller = new ControllerRole({ store: f.store, source, forge, auth: new FakeAuth(), clock: f.clock, config: cfg, log, scanner: cleanScanner });
 
     // Startup line, then intake, triage, a rejection and an unreviewed merge: every path that comments or logs.
     const stop = new AbortController();

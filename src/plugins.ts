@@ -1,6 +1,7 @@
 // Plugin registry (design D6): every implementation of an infra interface is a named plugin, chosen by
 // name in factory.config.json. Each plugin describes itself in a `*.plugin.ts` file beside its
-// implementation under src/impl/ (`export default definePlugin({...})`, src/plugin-api.ts). At startup the
+// implementation, anywhere under src/ (legacy src/impl/ or a component's plugins/ folder; `export default
+// definePlugin({...})`, src/plugin-api.ts). At startup the
 // loader below finds those files (`*.plugin.js` once built), sorts them by path, imports each and fills
 // REGISTRY. This file names no plugin and imports no implementation: only a new interface edits it.
 // src/compose.ts, src/canary.ts and src/setup.ts resolve plugins through it; docs/plugins.md describes
@@ -12,10 +13,9 @@
 // Optional kinds (Forge, issue #172) have no default plugin: "none" selects nothing. Leaving `plugins.forge` out
 // lets src/compose.ts derive it from the sources (withForgeDefault, issue #273).
 
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { ConfigKeyError, suggestion } from "./config-keys.js";
+import { findDescriptorFiles } from "./state/index.js";
 import type { GrantSource } from "./interfaces/auth-provider.js";
 import type {
   Contexts,
@@ -85,6 +85,9 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   test_database: { interface: "TestDatabase", configKey: "plugins.test_database", guard: false, optional: false },
   forge: { interface: "Forge", configKey: "plugins.forge", guard: false, optional: true },
   network_probe: { interface: "NetworkProbe", configKey: "plugins.network_probe", guard: false, optional: false },
+  bus: { interface: "EventBus", configKey: "plugins.bus", guard: false, optional: false },
+  ticks: { interface: "TickGenerator", configKey: "plugins.ticks", guard: false, optional: false },
+  engine: { interface: "ExecutionEngine", configKey: "plugins.engine", guard: false, optional: false },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];
@@ -98,8 +101,11 @@ export const PLUGINS_KEYS = PLUGIN_KINDS.filter((k) => !TOP_LEVEL_KINDS.includes
 /** Values that mean "turn this off". Never accepted for a guard. */
 const DISABLING = new Set<unknown>([undefined, null, false, "", "none"]);
 
-/** Where the built-in descriptors live: src/impl in the source tree, dist/impl once built. */
-export const IMPL_DIR = join(import.meta.dirname, "impl");
+/**
+ * Where the built-in descriptors live: the whole code root (src/ in the source tree, dist/ once built), so a
+ * component's plugins/ folder is found as well as legacy src/impl (RFC 0015 §6.1).
+ */
+export const PLUGIN_ROOT = import.meta.dirname;
 
 /** `*.plugin.ts` (source) or `*.plugin.js` (built); never a `*.d.ts`. */
 const DESCRIPTOR_FILE = /\.plugin\.(?:ts|js)$/;
@@ -109,16 +115,7 @@ const GRANT_FILE = /\.grant\.(?:ts|js)$/;
 
 /** Every descriptor file under `dirs`, recursively, sorted by path so registration order is stable. */
 export function findPluginFiles(dirs: readonly string[], pattern: RegExp = DESCRIPTOR_FILE): string[] {
-  const out: string[] = [];
-  const walk = (dir: string): void => {
-    for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, e.name);
-      if (e.isDirectory()) walk(path);
-      else if (e.isFile() && pattern.test(e.name) && !e.name.endsWith(".d.ts")) out.push(path);
-    }
-  };
-  for (const dir of dirs) walk(dir);
-  return out.sort();
+  return dirs.flatMap((dir) => findDescriptorFiles(dir, pattern)).sort();
 }
 
 interface Found {
@@ -199,6 +196,12 @@ function registryOf(found: readonly Found[]): Registry {
         }
         continue;
       }
+      if (info.guard) {
+        // A platform default would win over the guard's fallback on every zero-setup config: a second guard
+        // plugin is used only when config names it.
+        errors.push(`${label} is a guard: its one default is \`default: true\`, never per platform; select ${d.name} in config instead (${file})`);
+        continue;
+      }
       for (const p of d.default.platforms) {
         if (Object.hasOwn(defaults.platforms, p)) errors.push(`${label} has two defaults for ${p}: ${platformFile[p]} and ${file}`);
         else {
@@ -217,8 +220,8 @@ function registryOf(found: readonly Found[]): Registry {
   return registry as unknown as Registry;
 }
 
-/** The built-in registry: every descriptor under IMPL_DIR, loaded once at startup. */
-export const REGISTRY: Registry = await loadRegistry([IMPL_DIR]);
+/** The built-in registry: every descriptor under PLUGIN_ROOT, loaded once at startup. */
+export const REGISTRY: Registry = await loadRegistry([PLUGIN_ROOT]);
 
 /** Grant plugins by name (design 2026-11-01): one `*.grant.ts` descriptor each, apart from REGISTRY. */
 export type GrantRegistry = Readonly<Record<string, GrantDescriptor>>;
@@ -237,8 +240,8 @@ export async function loadGrants(dirs: readonly string[]): Promise<GrantRegistry
   return out;
 }
 
-/** The built-in grant plugins under IMPL_DIR, loaded once at startup. */
-export const GRANTS: GrantRegistry = await loadGrants([IMPL_DIR]);
+/** The built-in grant plugins under PLUGIN_ROOT, loaded once at startup. */
+export const GRANTS: GrantRegistry = await loadGrants([PLUGIN_ROOT]);
 
 /**
  * `permissions` from factory.config.json: `grants` is a list of grant names, each once, in the order they are

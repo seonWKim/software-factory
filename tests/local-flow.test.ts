@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import { Sessions } from "../src/core/session.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -19,6 +19,7 @@ import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { GrantSource, Role } from "../src/interfaces/auth-provider.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import {
   FakeAuth, FakeBroker, FakeIssues, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemorySessionFiles, MemoryStorage, alice, cleanScanner, config, issueRef,
   mallory, prompts, silent, triageSpec,
@@ -63,7 +64,7 @@ async function factory(opts: { sync?: boolean } = {}) {
   const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
   const auth = new GitHubAuthProvider(store, grants);
   const local_auth = new LocalAuthProvider(store, grants);
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: opts.sync === false ? [local] : [gh, local], forge, auth, local_auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
@@ -140,7 +141,9 @@ async function gitFactory(o: { github: boolean }) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const gh = new FakeSource();
-  const forge = new FakeForge(gh);
+  // The GitHub broker: a recording fake whose calls are the GitHub calls, outbound's push and PR included.
+  const ghBroker = new FakeBroker();
+  const forge = new FakeForge(gh, ghBroker.calls);
   const github = new GitHubGrant();
   const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
   const local_auth = new LocalAuthProvider(store, grants);
@@ -150,10 +153,9 @@ async function gitFactory(o: { github: boolean }) {
     broker: new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo }),
     sandbox: new NoOpSandbox(wt, undefined, undefined, { local: true }),
   };
-  // The GitHub broker: a recording fake whose calls are the GitHub calls. With GitHub selected, the selected sandbox fetches origin.
-  const ghBroker = new FakeBroker();
+  // With GitHub selected, the selected sandbox fetches origin.
   const sandbox = o.github ? new NoOpSandbox(wt) : localRoute.sandbox;
-  const controller = new Controller({
+  const controller = new ControllerRole({
     store, sources: o.github ? [gh, new LocalSource(store)] : [new LocalSource(store)], ...(o.github ? { forge } : {}), auth, local_auth, clock, config: cfg,
     log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
@@ -334,14 +336,15 @@ describe("factory session on a local item, with the GitHub broker selected", () 
     const sandbox = new FakeSandbox();
     sandbox.changedFiles = ["src/a/x.ts"];
     const ghBroker = new FakeBroker();
-    // The local broker's one tool: it commits the local branch and has no PR tool.
+    // The local broker's one tool: it commits the local branch, which is the change itself (no forge, no PR).
     const localBroker = new FakeBroker();
-    localBroker.tools = localBroker.tools.filter((t) => t.name === "github.push_branch");
+    localBroker.tools = localBroker.tools.filter((t) => t.name === STORE_BRANCH);
+    localBroker.toForge = false;
     const s = new Sessions({
       store, sandbox, broker: ghBroker, scanner: cleanScanner, auth: new FakeAuth(), clock, config, log: silent, files: new MemorySessionFiles(),
       issues: new FakeIssues({}), toolEnv: {}, owner: "session:host:1", ...(o.local ? { local: { broker: localBroker, sandbox } } : {}),
     });
-    const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const { item } = await store.createWorkItem({ ...issue(1), source: { type: "local", id: "local:1", link: "" } }, system);
     const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "seed", patch: { stage: "RUNNING", allowed_paths: ["src/a/"], tier: 2, done_criteria: ["x"] } });
     expect(r.ok).toBe(true);
@@ -354,8 +357,10 @@ describe("factory session on a local item, with the GitHub broker selected", () 
     const done = await h.s.finish({});
     expect(done.ok).toBe(true);
     expect(done.lines.at(-1)).toContain("no push, no PR");
-    expect(h.localBroker.calls.map((c) => c.name)).toEqual(["github.push_branch"]);
-    expect([h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], []]);
+    expect(h.localBroker.stores.map((c) => c.name)).toEqual([STORE_BRANCH]);
+    expect([h.ghBroker.stores, h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], [], []]);
+    // Nothing for outbound: no push and no PR intent.
+    expect(await h.store.db.all("SELECT action FROM outbound_actions WHERE action IN ('push', 'pr')")).toEqual([]);
     await h.controller.tickRuns();
     expect(await h.store.getWorkItem(h.id)).toMatchObject({ stage: "REVIEW", change_ref: null });
   });
@@ -365,6 +370,6 @@ describe("factory session on a local item, with the GitHub broker selected", () 
     const r = await h.s.start({ target: h.id, person: alice });
     expect(r.ok).toBe(false);
     expect(r.lines.join("\n")).toContain("only through the local broker");
-    expect([h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], []]);
+    expect([h.ghBroker.stores, h.ghBroker.calls, h.ghBroker.preflights]).toEqual([[], [], []]);
   });
 });

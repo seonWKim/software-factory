@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
-import { GitHubToolBroker, forgeAuthRefused } from "../src/impl/github/github-tool-broker.js";
+import type { Timestamp } from "../src/core/types.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
+import { forgeAuthRefused } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
-import { cleanScanner, pipeline } from "./helpers/fakes.js";
+import { pipeline } from "./helpers/fakes.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts: a 401 or 403 from the forge pauses implement-type claims (implement and update) for every
@@ -70,18 +70,6 @@ describe("forge-auth pause", () => {
     expect(await f.store.getClaimPause("forge_auth")).toBe(iso(start + 5 * 60_000));
   });
 
-  it("a 401/403 on the push or on the PR pauses too", async () => {
-    for (const tool of ["github.push_branch", "github.open_pr"]) {
-      const f = await pipeline();
-      f.broker.responses[tool] = [AUTH];
-      const a = await f.submit();
-      await f.step();
-      expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ status: "failed", error_code: "forge_auth", infra: false });
-      expect(await f.store.getClaimPause("forge_auth")).not.toBeNull();
-      expect(await f.item(a)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
-    }
-  });
-
   it("each pause posts one comment on the item whose run started it and logs one line", async () => {
     const f = await pipeline();
     const a = await f.submit();
@@ -102,13 +90,13 @@ describe("forge-auth pause", () => {
       return { output: { summary: "s", next_steps: "n" } };
     };
     f.broker.responses["github.preflight"] = [{ ok: true, content: {} }, AUTH];
-    // Then a's push is refused too, during the same pause (it moves the pause later, but starts none).
-    f.broker.responses["github.push_branch"] = [AUTH];
+    // a's run, already past its preflight, finishes: its push and PR are outbound's (RFC 0015 M7), so no forge
+    // refusal reaches the run.
     await f.w1.tick();
     await f.controller.tickRuns();
     await f.controller.tickRuns();
 
-    expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ error_code: "forge_auth" });
+    expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ status: "succeeded" });
     expect((await f.runs(b, "implement"))[0]!.outcome).toMatchObject({ error_code: "forge_auth" });
     const pauseComments = () => f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:forge-auth:"));
     expect(pauseComments()).toHaveLength(1);
@@ -125,7 +113,8 @@ describe("forge-auth pause", () => {
     f.clock.advance(f.config.retry_max_ms + 1);
     f.runner.script.implement = () => ({ output: { summary: "s", next_steps: "n" } });
     f.broker.responses["github.preflight"] = [AUTH];
-    await f.w1.tick();
+    // a's review is queued too: claim until b's implement retry has run its preflight.
+    while (f.broker.responses["github.preflight"].length > 0 && (await f.w1.tick())) await f.controller.tickRuns();
     await f.controller.tickRuns();
     expect(pauseComments()).toHaveLength(2);
     expect(lines()).toHaveLength(2);
@@ -178,34 +167,28 @@ describe("forge-auth pause", () => {
   });
 });
 
-describe("the broker maps forge 401/403 to forge_auth", () => {
-  async function brokerWith(request: (method: string, path: string) => unknown) {
-    const { store } = await newStore();
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
-    const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
+describe("the forge maps 401/403 to forge_auth", () => {
+  // The PR write is outbound's (github-change, RFC 0015 M7): its failure is a delivery failure named by its class.
+  function forgeWith(request: (method: string, path: string) => unknown) {
     const client = { request: async (m: string, p: string) => request(m, p) } as unknown as GitHubClient;
-    const broker = new GitHubToolBroker({
-      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
-      clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-    });
-    return { broker, ctx: { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token }, branch: `factory/${item.id}` };
+    return new GitHubForge(client, { owner: "o", name: "r" }, "factory/", "main", {} as never);
   }
+  const pr = { branch: "factory/wi_1", base_ref: "main", title: "t", body: "b" };
 
-  it("open_pr: a 401 or 403 is a forge_auth result, not a thrown exception", async () => {
+  it("openPr: a 401 or 403 fails with forge_auth first", async () => {
     for (const status of [401, 403]) {
-      const b = await brokerWith(() => {
+      const forge = forgeWith(() => {
         throw new GitHubError(status, `GitHub POST /repos/o/r/pulls → ${status} Resource not accessible by integration`);
       });
-      const r = await b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "t", body: "b" });
-      expect(r).toMatchObject({ ok: false, error_code: "forge_auth" });
+      await expect(forge.openPr(pr)).rejects.toThrow(/^forge_auth: open_pr: GitHub refused the credentials/);
     }
   });
 
-  it("open_pr: other errors still throw as before", async () => {
-    const b = await brokerWith(() => {
+  it("openPr: other errors throw as they are", async () => {
+    const forge = forgeWith(() => {
       throw new GitHubError(422, "GitHub POST → 422");
     });
-    await expect(b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "t", body: "b" })).rejects.toThrow("422");
+    await expect(forge.openPr(pr)).rejects.toThrow(/^GitHub POST → 422/);
   });
 
   it("push: git's 401/403 and auth messages are recognized; other push errors are not", () => {

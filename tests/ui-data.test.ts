@@ -63,9 +63,9 @@ async function seeded() {
   const run = (await store.claimRun({ worker_id: "host:1:0" as WorkerId, kinds: ["triage"], lease_ms: LEASE }))!;
   await store.acquireListenerLease("slack_thread", "replica-a", LEASE);
   await store.createLinkCode("github:1" as UserId, LINK_CODE);
-  await driver.run("UPDATE runs SET lease_token = ?", [RUN_TOKEN]);
-  await driver.run("UPDATE run_attempts SET lease_token = ?", [ATTEMPT_TOKEN]);
-  await driver.run("UPDATE listener_leases SET token = ?", [LISTENER_TOKEN]);
+  await driver.run("UPDATE worker_runs SET lease_token = ?", [RUN_TOKEN]);
+  await driver.run("UPDATE worker_run_attempts SET lease_token = ?", [ATTEMPT_TOKEN]);
+  await driver.run("UPDATE inbound_listener_leases SET token = ?", [LISTENER_TOKEN]);
   const calls: string[] = [];
   const d: UiDeps = {
     store: spied(store, calls),
@@ -93,44 +93,44 @@ describe("ui api: data tables", () => {
     const { d } = await seeded();
     const body = await json<{ tables: { name: string; rows: number; columns: string[]; hidden: string[] }[] }>(d, "/api/v1/data/tables");
     const by = new Map(body.tables.map((t) => [t.name, t]));
-    for (const t of ["work_items", "runs", "run_attempts", "claim_decisions", "file_conflicts", "link_codes"]) expect(by.has(t), t).toBe(true);
-    expect(by.get("work_items")).toMatchObject({ rows: 2, hidden: [] });
-    expect(by.get("work_items")!.columns).toEqual(expect.arrayContaining(["id", "title", "created_at"]));
-    expect(by.get("runs")).toMatchObject({ rows: 1, hidden: ["lease_token"] });
-    expect(by.get("link_codes")).toMatchObject({ rows: 1, hidden: ["code_hash"] });
+    for (const t of ["controller_work_items", "worker_runs", "worker_run_attempts", "controller_claim_decisions", "controller_file_conflicts", "identity_link_codes"]) expect(by.has(t), t).toBe(true);
+    expect(by.get("controller_work_items")).toMatchObject({ rows: 2, hidden: [] });
+    expect(by.get("controller_work_items")!.columns).toEqual(expect.arrayContaining(["id", "title", "created_at"]));
+    expect(by.get("worker_runs")).toMatchObject({ rows: 1, hidden: ["lease_token"] });
+    expect(by.get("identity_link_codes")).toMatchObject({ rows: 1, hidden: ["code_hash"] });
   });
 
   it("/data/tables/:name returns one page of rows, newest first, with the total, the page and the limit", async () => {
     const { d, plain, leaky } = await seeded();
-    const p = await json<Page>(d, "/api/v1/data/tables/work_items");
-    expect(p).toMatchObject({ table: "work_items", total: 2, page: 1, limit: 50 });
+    const p = await json<Page>(d, "/api/v1/data/tables/controller_work_items");
+    expect(p).toMatchObject({ table: "controller_work_items", total: 2, page: 1, limit: 50 });
     expect(p.rows.map((r) => r.id)).toEqual([leaky.id, plain.id]);
     expect(Object.keys(p.rows[0]!)).toEqual(p.columns);
-    const p2 = await json<Page>(d, "/api/v1/data/tables/work_items?limit=1&page=2");
+    const p2 = await json<Page>(d, "/api/v1/data/tables/controller_work_items?limit=1&page=2");
     expect(p2).toMatchObject({ total: 2, page: 2, limit: 1 });
     expect(p2.rows.map((r) => r.id)).toEqual([plain.id]);
-    expect((await json<Page>(d, "/api/v1/data/tables/cursors?limit=999")).limit).toBe(200);
+    expect((await json<Page>(d, "/api/v1/data/tables/inbound_cursors?limit=999")).limit).toBe(200);
   });
 
   it("col= and val= filter on one column; a quote in the value matches as a bound parameter", async () => {
     const { d, leaky } = await seeded();
-    const p = await json<Page>(d, `/api/v1/data/tables/work_items?col=problem&val=${encodeURIComponent(`it's "quoted"`)}`);
+    const p = await json<Page>(d, `/api/v1/data/tables/controller_work_items?col=problem&val=${encodeURIComponent(`it's "quoted"`)}`);
     expect(p.total).toBe(1);
     expect(p.rows.map((r) => r.id)).toEqual([leaky.id]);
-    const none = await json<Page>(d, `/api/v1/data/tables/work_items?col=problem&val=${encodeURIComponent("x' OR '1'='1")}`);
+    const none = await json<Page>(d, `/api/v1/data/tables/controller_work_items?col=problem&val=${encodeURIComponent("x' OR '1'='1")}`);
     expect(none).toMatchObject({ total: 0, rows: [] });
   });
 
   it("a run id maps to the item that owns it", async () => {
     const { d, run, plain } = await seeded();
-    const p = await json<Page>(d, "/api/v1/data/tables/run_attempts");
+    const p = await json<Page>(d, "/api/v1/data/tables/worker_run_attempts");
     expect(p.rows[0]!.run_id).toBe(run.id);
     expect(p.run_items).toEqual({ [run.id]: plain.id });
   });
 
   it("an unknown table is a 404 with no row read: only the catalog is consulted", async () => {
     const { d, calls } = await seeded();
-    for (const path of ["/api/v1/data/tables/nope", "/api/v1/data/tables/work_items%3B%20DROP%20TABLE%20runs", "/api/v1/data/tables/%E0%A4%A"]) {
+    for (const path of ["/api/v1/data/tables/nope", "/api/v1/data/tables/controller_work_items%3B%20DROP%20TABLE%20runs", "/api/v1/data/tables/%E0%A4%A"]) {
       calls.length = 0;
       const r = await get(d, path);
       expect(r.status, path).toBe(404);
@@ -142,7 +142,7 @@ describe("ui api: data tables", () => {
   it("an unknown column in col= is a 404 with no row read", async () => {
     const { d, calls } = await seeded();
     calls.length = 0;
-    const r = await get(d, "/api/v1/data/tables/work_items?col=nope&val=1");
+    const r = await get(d, "/api/v1/data/tables/controller_work_items?col=nope&val=1");
     expect(r.status).toBe(404);
     expect(calls).toEqual(["listTables"]);
   });
@@ -162,7 +162,7 @@ describe("ui api: data tables", () => {
   it("bad paging or a col without val is a 400", async () => {
     const { d } = await seeded();
     for (const q of ["page=0", "page=x", "limit=0", "limit=-1", "col=id", "val=1"]) {
-      expect((await get(d, `/api/v1/data/tables/work_items?${q}`)).status, q).toBe(400);
+      expect((await get(d, `/api/v1/data/tables/controller_work_items?${q}`)).status, q).toBe(400);
     }
   });
 
@@ -176,14 +176,15 @@ describe("ui api: data tables", () => {
     }
     for (const [table, cols] of Object.entries(HIDDEN_COLUMNS)) {
       const p = await json<Page>(d, `/api/v1/data/tables/${table}`);
-      expect(p.rows.length, table).toBeGreaterThan(0);
+      // Legacy copies (RFC 0015 §12) are empty in a new store; their hidden columns still never leave.
+      if (!table.startsWith("legacy_")) expect(p.rows.length, table).toBeGreaterThan(0);
       for (const row of p.rows) for (const c of cols) expect(row[c], `${table}.${c}`).toBe("[hidden]");
     }
   });
 
   it("a secret-like text value shows as [withheld: <rule>] and its text is in no response", async () => {
     const { d, store, leaky } = await seeded();
-    const p = await json<Page>(d, "/api/v1/data/tables/work_items");
+    const p = await json<Page>(d, "/api/v1/data/tables/controller_work_items");
     expect(p.rows.find((r) => r.id === leaky.id)!.title).toBe("[withheld: github_token]");
     for (const t of (await store.listTables()).map((x) => x.name)) {
       const b = (await get(d, `/api/v1/data/tables/${t}`)).body;
@@ -191,7 +192,7 @@ describe("ui api: data tables", () => {
       expect(b, t).not.toContain("Ab3Ab3");
     }
     // The filter value echoed back passes the Withholder too.
-    const f = await get(d, `/api/v1/data/tables/work_items?col=title&val=${encodeURIComponent(SECRET)}`);
+    const f = await get(d, `/api/v1/data/tables/controller_work_items?col=title&val=${encodeURIComponent(SECRET)}`);
     expect(f.status).toBe(200);
     expect(f.body).not.toContain(SECRET);
   });
@@ -199,7 +200,7 @@ describe("ui api: data tables", () => {
   it("POST, PUT, PATCH and DELETE to each data route are 405 and make no store call", async () => {
     const { d, calls } = await seeded();
     calls.length = 0;
-    for (const path of ["/api/v1/data/tables", "/api/v1/data/tables/work_items", "/api/v1/data/tables/runs?col=id&val=x"]) {
+    for (const path of ["/api/v1/data/tables", "/api/v1/data/tables/controller_work_items", "/api/v1/data/tables/worker_runs?col=id&val=x"]) {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
         const r = await get(d, path, method);
         expect(r.status, `${method} ${path}`).toBe(405);

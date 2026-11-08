@@ -137,7 +137,8 @@ export interface NewRun {
 
 /** The patterns the alarm step looks for across items (design 05-alarms). */
 /** `auto_stopped`: a stop condition set auto mode back to manual (design 03-risk); the controller stores it, not the alarm step. */
-export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped";
+/** `dead_letter`: the bus dead-lettered a message (RFC 0015 §5.4); the controller's dead-letter-alarm handler stores it. */
+export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter";
 
 /** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
 export interface NewAlert {
@@ -205,36 +206,22 @@ export interface TransitionInput {
    * attempt record closes as `cancelled`.
    */
   cancel_running_runs?: boolean;
-  /**
-   * Queue one base push in the same transaction (design 05-sources, Local items): the local merge's close, when a
-   * forge is selected. At most one row per item; a second is ignored.
-   */
-  base_push?: NewBasePush;
-}
-
-/** What a local merge queues for the remote: its base branch and its merge commit. */
-export interface NewBasePush {
-  base_ref: string;
-  merge_sha: string;
 }
 
 /** How a base push finished: `pushed` (the remote base contains the merge) or `conflict` (it moved and does not merge). */
 export type BasePushOutcome = "pushed" | "conflict";
 
-export interface BasePush extends NewBasePush {
-  seq: number;
-  work_item_id: WorkItemId;
-  /** Failed tries so far (an outage, a rate limit, a base that moved under the push). */
+/** A local merge's base push (RFC 0015 M8: outbound's `push_base` action), as the status page shows it. */
+export interface BasePush {
+  base_ref: string;
+  merge_sha: string;
+  /** Failed tries so far (an outage, a rate limit, a base that moved under the push): its batch's. */
   attempts: number;
-  /** When the next try may run. */
-  next_attempt_at: Timestamp;
   /** Null while pending. */
-  finished_at: Timestamp | null;
   outcome: BasePushOutcome | null;
   /** The remote base after a `pushed` outcome. */
   pushed_sha: string | null;
   last_error: string | null;
-  created_at: Timestamp;
 }
 
 export type TransitionResult =
@@ -726,11 +713,6 @@ export interface FactoryStore {
   /** Rows of `source_type` with seq > `after_seq`, in seq order, at most `limit`. Read-only. */
   listInboxAfter(source_type: SourceType, after_seq: number, limit: number): Promise<InboxRow[]>;
   /**
-   * Deletes rows of `source_type` that are both at or below `through_seq` and received more than
-   * `older_than_ms` ago (store clock). Returns how many went.
-   */
-  pruneInbox(source_type: SourceType, through_seq: number, older_than_ms: number): Promise<number>;
-  /**
    * Takes `source_type`'s listener lease for `owner` if nobody holds it or the holder's lease expired;
    * the token goes up by one on every take. Otherwise reports the current holder.
    */
@@ -755,12 +737,6 @@ export interface FactoryStore {
   releaseSyncLease(name: string, token: number): Promise<void>;
   /** The lease row, expired or not; null when it was never taken. Read-only. */
   getSyncLease(name: string): Promise<SyncLease | null>;
-  /**
-   * advanceCursor fenced by a sync lease: sets cursor `cursor` to `next` only if it still equals `expected` and
-   * `fence.token` is still the token of lease `fence.name`, in one transaction. False changes nothing.
-   */
-  advanceSyncCursor(fence: SyncFence, cursor: string, expected: string | null, next: string): Promise<boolean>;
-
   // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
   // one row per (project, plugin), shared by every replica.
 
@@ -932,6 +908,11 @@ export interface FactoryStore {
    * for that item is a no-op that reports the existing message with `created: false`.
    */
   recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }>;
+  /**
+   * Stores a run's keyed write for outbound (RFC 0015 M7: a push or a PR), which the controller's outbox step
+   * announces. A key already stored is a no-op, so a step re-run after a restart writes each once.
+   */
+  recordRunIntent(intent: RunIntent): Promise<void>;
   /** The messages of `work_item_id` only, oldest first. Empty for an item with none. Read-only. */
   listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]>;
   /**
@@ -970,35 +951,30 @@ export interface FactoryStore {
    * Returns the claim token, or null when the row is delivered, claimed by another, or the fence is stale.
    */
   claimDelivery(seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null>;
+  /** Outbox row `seq` with its thread entry, or null. Read-only. */
+  getDelivery(seq: number): Promise<ThreadDelivery | null>;
   /**
-   * Marks row `seq` delivered with the comment's `url`, under claim `token`. When the row names a link field and
-   * no newer row of the item names the same field, the item's field is set to `url` (no version change, no
-   * state change). Returns false, changing nothing, when the token is no longer the row's live claim.
+   * Marks row `seq` delivered with the comment's `url`, under claim `token` (outbound). Returns false, changing
+   * nothing, when the token is no longer the row's live claim.
    */
   finishDelivery(seq: number, token: number, url: string | null): Promise<boolean>;
+  /**
+   * Records a delivered row on its item (the controller, on DeliveryCompleted): when the row names a link field
+   * and no newer row of the item names the same field, the item's field is set to the row's URL (no version
+   * change, no state change). An undelivered row, or one with no URL, changes nothing.
+   */
+  linkDelivery(seq: number): Promise<void>;
   /**
    * Records a failed delivery of row `seq` under claim `token`: one more attempt, the error, the claim released
    * and the next try `retry_in_ms` from now. Returns false, changing nothing, when the token is not the claim.
    */
   failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean>;
 
-  // The base push (design 05-sources, Local items): a local merge with a forge selected queues one row in its close
-  // transition; the controller's base push step claims it, fetches, merges a moved remote base, and pushes, retrying
-  // with backoff. Nothing here changes the item.
-
-  /** Unfinished base pushes whose retry time has come and that no live claim holds, oldest first, at most `limit`. Read-only. */
-  listPendingBasePushes(limit: number): Promise<BasePush[]>;
-  /** The base push of `work_item_id`, finished or not; null when its merge queued none. Read-only. */
-  getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
   /**
-   * Claims base push `seq` for `lease_ms`, so only one replica pushes it. Conditional: only an unfinished row with no
-   * live claim. Returns the claim token, or null when the row is finished or claimed by another.
+   * The newest base push of `work_item_id` (design 05-sources, Local items; RFC 0015 M8: the `push_base` action a
+   * delivered merge stored), delivered or not; null when its merge stored none. Read-only.
    */
-  claimBasePush(seq: number, lease_ms: number): Promise<number | null>;
-  /** Finishes row `seq` under claim `token`. False, changing nothing, when the token is not the row's live claim. */
-  finishBasePush(seq: number, token: number, result: { outcome: BasePushOutcome; pushed_sha: string | null; error?: string }): Promise<boolean>;
-  /** A failed try under claim `token`: one more attempt, the error, the claim released, the next try `retry_in_ms` from now. */
-  failBasePush(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean>;
+  getBasePush(work_item_id: WorkItemId): Promise<BasePush | null>;
 
   // App command requests (issue #245): commands sent from the factory's own app, applied by the controller tick
   // through the same path as a comment command. Created by the status page's POST /api/v1/items/:id/commands (#227).
@@ -1013,8 +989,8 @@ export interface FactoryStore {
    * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.
    */
   markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
-  /** The request with `seq`, or null. Read-only. */
-  getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+  /** The request with `seq` (a number) or idempotency key (a string), or null. Read-only. */
+  getAppCommandRequest(ref: number | string): Promise<AppCommandRequest | null>;
   /**
    * The requests whose `args.work_item_id` is `id`, oldest (lowest seq) first: the newest `limit` of them.
    * Pending and handled alike. Read-only (the item API's `replies`, issue #227).
@@ -1178,15 +1154,17 @@ export interface NewCliCommand {
   command: string;
   /** The command's arguments, stored as JSON. */
   args: Record<string, unknown>;
-  /**
-   * The command is to be mirrored once to its item's sync source (a CLI command on a sync source's item), best effort:
-   * listed by `listUnmirroredCliCommands` until `markCliCommandMirrored`. Absent or false: nothing to mirror.
-   */
+  /** Mirrored once to its item's sync source, best effort: listed by `listUnmirroredCliCommands` until marked. */
   mirror?: boolean;
+  /** The edge passport the command entered with (RFC 0015 §8, Identity); absent on rows from before M9. */
+  passport_id?: string;
 }
 
 export interface CliCommand extends NewCliCommand {
   seq: number;
+  /** Its id (CommandReceived carries it) and origin (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
+  id: string;
+  origin: string;
   /** Store clock's now when the command was first appended. */
   created_at: Timestamp;
 }
@@ -1200,6 +1178,8 @@ export interface NewAppCommandRequest {
   command: string;
   /** The command's arguments, stored as JSON: `work_item_id`, and for `approve` an optional `note`. */
   args: Record<string, unknown>;
+  /** The page's edge passport (RFC 0015 §8, Identity); absent when the UI has no Identity. */
+  passport_id?: string;
 }
 
 export interface AppCommandRequest extends NewAppCommandRequest {
@@ -1367,4 +1347,14 @@ export interface ForgeBudget {
   limit: number;
   reset_at: Timestamp;
   updated_at: Timestamp;
+}
+
+/** A run's keyed write to the forge (RFC 0015 M7): `push` the stored sha to its branch, then `pr` open or update. */
+export interface RunIntent {
+  readonly action: "push" | "pr";
+  /** The destination: the host whose factory repo holds the commit, and the branch (`git:<host>:<branch>`). */
+  readonly target: SourceRef;
+  readonly work_item_id: string;
+  readonly args: Readonly<Record<string, string | number | null>>;
+  readonly key: string;
 }

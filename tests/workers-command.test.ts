@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorkerId } from "../src/core/types.js";
-import { WORKERS_CLI_ACTOR, WORKERS_USAGE, parseWorkersArgs, runWorkersCommand } from "../src/core/worker-pool.js";
+import { WORKERS_CLI_ACTOR, WORKERS_USAGE, parseWorkersArgs, runWorkersCommand } from "../src/worker/index.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 // `factory workers pause <n> | pause --all | resume | status` (design §5 Pause).

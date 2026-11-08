@@ -4,6 +4,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
+import { APP_COMMANDS } from "../src/ui/commands.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -22,7 +23,7 @@ const LEASE = 60_000;
 const SECRET = `ghp_${"Ab3".repeat(12)}`;
 const ROUTES = [
   "/api/v1/overview", "/api/v1/items", "/api/v1/items/ITEM", "/api/v1/runs", "/api/v1/queue", "/api/v1/workers", "/api/v1/health", "/api/v1/unreviewed-merges",
-  "/api/v1/data/tables", "/api/v1/data/tables/work_items", "/api/v1/data/tables/runs", "/api/v1/data/tables/state_changes",
+  "/api/v1/data/tables", "/api/v1/data/tables/controller_work_items", "/api/v1/data/tables/worker_runs", "/api/v1/data/tables/controller_state_changes",
 ];
 
 function get(d: UiDeps, path: string, opts: { method?: string; host?: string } = {}): Promise<UiResponse> {
@@ -707,7 +708,7 @@ describe("ui api: item commands POST (issue #227)", () => {
   }
 
   async function appRequestRows(store: FactoryStore): Promise<number | undefined> {
-    return (await store.listTables()).find((t) => t.name === "app_command_requests")?.rows;
+    return (await store.listCliCommandsAfter(0, 100)).filter((c) => c.origin === "app").length;
   }
 
   async function nothingWritten(store: FactoryStore) {
@@ -887,15 +888,15 @@ describe("ui api: item commands POST (issue #227)", () => {
 describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227)", () => {
   type Detail = { commands: { name: string; usage: string; description: string }[]; replies: Record<string, unknown>[] };
 
-  it("commands are the footer table's commands for the item's state, /help last, never /link", async () => {
+  it("commands are the footer table's commands for the item's state the page can send: never /help or /link", async () => {
     const { d, store, items } = await seeded();
     for (const it of Object.values(items)) {
       const cur = (await store.getWorkItem(it.id))!;
       const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
-      const want = commandsFor(commandState(cur)).map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+      const want = commandsFor(commandState(cur)).filter((c) => c.name !== "help").map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
       expect(body.commands, it.id).toEqual(want);
-      expect(body.commands.at(-1)!.name).toBe("help");
-      expect(body.commands.map((c) => c.name)).not.toContain("link");
+      // Every listed command is one the commands route accepts, so no button can only be refused.
+      for (const c of body.commands) expect(APP_COMMANDS, `${it.id} ${c.name}`).toContain(c.name);
     }
     const approve = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(items.approve.id)}`);
     expect(approve.commands.map((c) => c.name)).toContain("approve");
@@ -1372,7 +1373,7 @@ describe("ui api: items for the tree (issue #295)", () => {
 
   it("a held run carries the latest claim decision: holder, cost and threshold, from one batched read", async () => {
     const { d, store, clock } = await seeded();
-    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const PATHS = { files_to_change: ["src/worker/runner.ts"], allowed_paths: ["src/worker/"] };
     const a = await make(store, 60, "Holder");
     await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
     clock.advance(1_000);
@@ -1391,7 +1392,7 @@ describe("ui api: items for the tree (issue #295)", () => {
 
   it("claim reads one batch and no per-item decisions, and a stale hold from an earlier run is left out", async () => {
     const { d, store, clock } = await seeded();
-    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const PATHS = { files_to_change: ["src/worker/runner.ts"], allowed_paths: ["src/worker/"] };
     const a = await make(store, 70, "Holder");
     await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
     clock.advance(1_000);

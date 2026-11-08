@@ -9,6 +9,8 @@ import { BACKENDS } from "./helpers/store.js";
 /** The schema step that adds the standing-approval tables (issue #298): SQLite migration 32, MySQL step 0032. */
 const STEP = 32;
 const TABLES = ["standing_rules", "standing_proposals"];
+/** The same tables under their RFC 0015 names, after the prefix migration. */
+const STORE_TABLES = ["controller_standing_rules", "controller_standing_proposals"];
 const owner = "github:1" as UserId;
 
 /** Column names per table of `CREATE TABLE` statements, in order. Keys and constraints are left out. */
@@ -40,7 +42,7 @@ describe.each(BACKENDS)("standing approvals: store methods ($name)", ({ make }) 
   it("a new store has both tables, empty", async () => {
     const { store } = await make();
     const tables = await store.listTables();
-    for (const t of TABLES) expect(tables.find((x) => x.name === t), t).toMatchObject({ rows: 0 });
+    for (const t of STORE_TABLES) expect(tables.find((x) => x.name === t), t).toMatchObject({ rows: 0 });
     expect(await store.listStandingRules()).toEqual([]);
     expect(await store.listStandingProposals()).toEqual([]);
   });

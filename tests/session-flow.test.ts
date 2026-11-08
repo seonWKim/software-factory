@@ -3,13 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Sessions, parseTarget } from "../src/core/session.js";
 import type { Run, RunKind, Tier, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { FileSessionFiles, githubIssues, parseSessionArgs, runSession } from "../src/session-cmd.js";
 import {
-  FakeAuth, FakeBroker, FakeIssues, FakeSandbox, FakeSource, MemorySessionFiles, alice, cleanScanner, config, issueRef, mallory, silent, waitFor,
+  FakeAuth, FakeBroker, FakeForge, FakeIssues, FakeSandbox, FakeSource, MemorySessionFiles, alice, cleanScanner, config, issueRef, mallory, silent, waitFor,
 } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
@@ -37,7 +38,15 @@ async function harness() {
   const sessions = new Sessions({
     store, sandbox, broker, scanner: cleanScanner, auth: new FakeAuth(), clock, config: cfg, log: silent, files, issues, toolEnv: {}, owner: "session:host:1",
   });
-  const controller = new Controller({ store, source: new FakeSource(), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  const source = new FakeSource();
+  // Outbound's pushes and PR opens land in `broker.calls` under the broker tools' names (RFC 0015 M7), with no ctx.
+  const forge = new FakeForge(source, broker.calls);
+  const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  /** The controller applies the finished run, then outbound delivers the push and the PR, and the controller applies that. */
+  const deliver = async () => {
+    await controller.tickRuns();
+    await controller.tickOutbox();
+  };
   /** A RUNNING item with an approved spec on `paths` and no run, as after `/approve` once its run ended. */
   const running = async (n: number, paths = ["src/a/"], tier: Tier = 2, extra: Partial<WorkItem> = {}) => {
     const { item } = await store.createWorkItem({ ...issue(n), title: `Item ${n}` }, system);
@@ -53,7 +62,7 @@ async function harness() {
   const item = async (id: WorkItemId) => (await store.getWorkItem(id))!;
   const runs = async (id: WorkItemId, kind?: RunKind) => (await store.listRuns(id)).filter((r) => !kind || r.kind === kind);
   const start = (target: string, extra: { spec?: string; transcript?: string } = {}) => sessions.start({ target, person: alice, ...extra });
-  return { clock, store, cfg, sandbox, broker, files, issues, sessions, controller, running, enqueue, snapshot, item, runs, start };
+  return { clock, store, cfg, sandbox, broker, forge, files, issues, sessions, controller, deliver, running, enqueue, snapshot, item, runs, start };
 }
 type H = Awaited<ReturnType<typeof harness>>;
 /** A harness with an open session on item #1 (`it0`, allowed `paths`); `file` is its local record. */
@@ -271,52 +280,59 @@ describe("session finish", () => {
     expect(await h.item(h.it0.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", tier: 2 });
   });
 
-  it("pushes and opens the PR only through the broker; the controller moves the item to REVIEW and queues a review run", async () => {
+  it("stores the branch through the broker; outbound pushes it and opens the PR, then the item goes to REVIEW with a review run", async () => {
     const h = await started();
     await h.sessions.note({ text: "split the parser", tokens: 120 });
     expect((await h.sessions.finish({ tokens: 300 })).ok).toBe(true);
     const run = (await h.runs(h.it0.id, "interactive"))[0]!;
     const ctx = { run_id: run.id, work_item_id: h.it0.id, lease_token: 1 };
-    expect(h.broker.calls.map((c) => [c.name, c.ctx])).toEqual([["github.push_branch", ctx], ["github.open_pr", ctx]]);
-    expect(h.broker.calls[0]!.args).toEqual({ workdir: "/wt/1", branch: `factory/${h.it0.id}`, base_ref: "main" });
-    expect((h.broker.calls[1]!.args as { body: string }).body).toMatch(/split the parser[\s\S]*Closes #1/);
+    // The session's only branch write is the store in the factory repo; it writes nothing to the forge (RFC 0015 M7).
+    expect(h.broker.stores.map((c) => [c.name, c.ctx, c.args])).toEqual([[STORE_BRANCH, ctx, { workdir: "/wt/1", branch: `factory/${h.it0.id}`, base_ref: "main" }]]);
+    expect(h.broker.calls).toEqual([]);
+    // The item waits for the PR: a failed push holds it, and outbound's retry delivers both.
+    h.forge.pushErrors = [new Error("network_unavailable: could not reach github.com")];
+    await h.controller.tickRuns();
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "RUNNING", blocked_on: "outbound", blocked_reason: "pr_pending" });
+    h.clock.advance(h.cfg.retry_max_ms);
+    await h.controller.tickOutbox();
+    expect(h.broker.calls.map((c) => [c.name, c.ctx])).toEqual([["github.push_branch", undefined], ["github.push_branch", undefined], ["github.open_pr", undefined]]);
+    expect(h.forge.prOpens[0]!.body).toMatch(/split the parser[\s\S]*Closes #1/);
     expect(h.sandbox.gitCalls.some((c) => /(^| )push( |$)/.test(c))).toBe(false); // no git push of its own
     // The gates in order: scope, then size and floor (one numstat), then the test command.
     const at = (p: string) => h.sandbox.gitCalls.findIndex((c) => c.startsWith(p));
     expect([at("diff --name-only -z --no-renames basesha...HEAD") >= 0, at("diff --numstat -z -M basesha...HEAD") > at("diff --name-only"), h.sandbox.commands]).toEqual([true, true, ["npm test"]]);
     expect([run.status, h.files.files.size]).toEqual(["succeeded", 0]);
-    for (let i = 0; i < 2; i++) await h.controller.tickRuns(); // applied once
+    for (let i = 0; i < 2; i++) await h.deliver(); // applied once
     expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 300, pr_files: ["src/a/x.ts"] });
     expect((await h.runs(h.it0.id, "review")).map((x) => x.status)).toEqual(["queued"]);
-    expect((await h.store.listStateChanges(h.it0.id)).at(-1)).toMatchObject({ reason: "session_finished" });
+    expect((await h.store.listStateChanges(h.it0.id)).map((c) => c.reason).slice(-2)).toEqual(["session_finished", "pr_delivered"]);
   });
 
-  it("the PR the session opened stores change_url from the open result", async () => {
+  it("the PR outbound opened stores change_url from the open result", async () => {
     const h = await started();
-    const url = "https://github.example/o/r/pull/42";
-    h.broker.responses["github.open_pr"] = [{ ok: true, content: { number: 42, url } }];
+    h.forge.prNumbers.set(`factory/${h.it0.id}`, 43);
     expect((await h.sessions.finish({ tokens: 300 })).ok).toBe(true);
-    const run = (await h.runs(h.it0.id, "interactive"))[0]!;
-    expect(run.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, pr_url: url } });
-    await h.controller.tickRuns();
-    expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, change_ref: "42", change_url: url });
+    await h.deliver();
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 43, change_ref: "43", change_url: h.forge.prRef(43).link });
   });
 
-  it("finish again after a success, or after a failed push, creates no second PR and no second review run", async () => {
+  it("finish again after a success, or after a refused store, creates no second PR and no second review run", async () => {
     const h = await started();
-    h.broker.responses["github.push_branch"] = [{ ok: false, error_code: "push_failed", message: "rejected" }];
+    h.broker.responses[STORE_BRANCH] = [{ ok: false, error_code: "push_failed", message: "rejected" }];
     expect((await h.sessions.finish({})).lines.join("\n")).toContain("push: push_failed: rejected");
-    await h.controller.tickRuns();
+    await h.deliver();
     expect((await h.item(h.it0.id)).stage).toBe("RUNNING");
+    expect(h.broker.calls).toEqual([]);
     expect((await h.sessions.finish({})).ok).toBe(true);
-    await h.controller.tickRuns();
+    await h.deliver();
     expect((await h.sessions.finish({ id: h.it0.id })).ok).toBe(false);
     // The local record left behind by a crash between completion and its removal changes nothing either.
     const run = (await h.runs(h.it0.id, "interactive"))[0]!;
     await h.files.write({ work_item_id: h.it0.id, run_id: run.id, token: 1, branch: "b", folder: { id: "sbx1", workdir: "/wt/1", base_sha: "basesha" } });
     expect((await h.sessions.finish({})).ok).toBe(false);
-    await h.controller.tickRuns();
-    expect(h.broker.calls.filter((c) => c.name === "github.open_pr")).toHaveLength(1);
+    await h.deliver();
+    expect(h.forge.pushes).toHaveLength(1);
+    expect(h.forge.prOpens).toHaveLength(1);
     expect(await h.runs(h.it0.id, "review")).toHaveLength(1);
     expect((await h.item(h.it0.id)).stage).toBe("REVIEW");
   });
@@ -325,20 +341,15 @@ describe("session finish", () => {
 describe("session end without a PR", () => {
   const released = { stage: "RUNNING", blocked_on: "human", blocked_reason: "session_released" };
 
-  it("abandon ends the run as failed `abandoned`, keeps the remote branch, and the controller releases the item", async () => {
+  it("abandon ends the run as failed `abandoned`, keeps the run folder, and the controller releases the item", async () => {
     const h = await started();
     const { it0 } = h;
-    h.broker.responses["github.open_pr"] = [{ ok: false, error_code: "pr_failed", message: "no" }];
-    expect((await h.sessions.finish({})).ok).toBe(false); // pushed, no PR: the branch is on the fake forge
-    const branch = `factory/${it0.id}`;
-    expect(h.broker.remote.has(branch)).toBe(true);
     expect((await h.sessions.abandon({ tokens: 40 })).ok).toBe(true);
     expect((await h.runs(it0.id, "interactive"))[0]).toMatchObject({ status: "failed", outcome: { status: "failed", error_code: "abandoned" } });
     expect(h.sandbox.destroyed).toBe(0); // the run folder is kept too
     await h.controller.tickRuns();
     expect(await h.item(it0.id)).toMatchObject({ ...released, token_cost: 40 });
     expect((await h.runs(it0.id)).filter((x) => x.status === "queued")).toEqual([]);
-    expect(h.broker.remote.has(branch)).toBe(true);
     // Released: the next start succeeds and clears the block.
     expect((await h.start(it0.id)).ok).toBe(true);
     expect(await h.item(it0.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
@@ -397,7 +408,7 @@ describe("session flow and CLI", () => {
     expect((await h.start("7", { spec: SPEC_TEXT, transcript: "https://example.com/t" })).ok).toBe(true);
     const it0 = (await h.store.getWorkItemBySource("github_issue", issueRef(7).id))!;
     expect((await h.sessions.finish({ id: it0.id, tokens: 1000 })).ok).toBe(true);
-    await h.controller.tickRuns();
+    await h.deliver();
     expect(await h.item(it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 1000 });
     expect((await h.runs(it0.id)).map((x) => [x.kind, x.status])).toEqual([["triage", "cancelled"], ["interactive", "succeeded"], ["review", "queued"]]);
     expect((await h.runs(it0.id, "interactive"))[0]).toMatchObject({ actor_id: "github:1", transcript_url: "https://example.com/t" });
@@ -426,7 +437,7 @@ describe("session flow and CLI", () => {
     expect([await files.list(), await files.read("../x" as WorkItemId)]).toEqual([[], null]);
   });
 
-  it("runSession maps the login to the GitHub account, keeps the lease until stopped, and finishes through the broker", async () => {
+  it("runSession maps the login to the GitHub account, keeps the lease until stopped, and finishes through the broker's store", async () => {
     const h = await harness();
     const it0 = await h.running(1);
     const replies: Record<string, unknown> = {
@@ -444,7 +455,7 @@ describe("session flow and CLI", () => {
     expect(await started).toBe(0);
     expect(printed.at(-1)).toMatch(/stopped keeping the lease/);
     expect(await runSession({ ...deps, stop: new AbortController().signal }, { cmd: "finish" })).toBe(0);
-    expect(h.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr"]);
+    expect([h.broker.stores.map((c) => c.name), h.broker.calls]).toEqual([[STORE_BRANCH], []]);
     expect(await runSession(deps, { cmd: "start", target: "1", as: "nobody" })).toBe(1);
     const issues = githubIssues(github, { owner: "o", name: "r" });
     expect(await issues.issue(3)).toEqual({ source: { type: "github_issue", id: "o/r#3", link: "https://github.com/o/r/issues/3" }, title: "T", body: "", author: { provider: "github", subject: "9" } });

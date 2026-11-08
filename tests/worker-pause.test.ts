@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Run, WorkItem, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { AgentRunResult, AgentRunSpec, AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import {
-  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, pipeline, prompts, recordingLog, triageSpec, waitFor,
+  FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, pipeline, prompts, recordingLog, runComments, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
@@ -381,7 +381,7 @@ describe("workers resume", () => {
     await w.worker("hostA:1:1", w.hosts.hostA).tick();
     expect(flag(w.runner.calls.at(-1)!.args, "--resume")).toBe(paused.session_id);
     expect(await onlyRun(w.store, item)).toMatchObject({ status: "succeeded" });
-    expect(w.broker.calls.filter((c) => c.name === "github.comment")).toHaveLength(1);
+    expect((await runComments(w.store, item.id)).filter((c) => c.marker.includes("factory:review:"))).toHaveLength(1);
   });
 });
 

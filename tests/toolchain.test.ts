@@ -6,7 +6,7 @@ import { TOOLCHAIN_PLACEHOLDER, checkToolchainEnv, fillPrompt, loadConfig, toolc
 import type { FactoryConfig, ToolchainConfig } from "../src/core/config.js";
 import { keyRefusal, PR_ONLY_KEYS } from "../src/core/settings.js";
 import { FORBIDDEN_ENV } from "../src/core/tools/index.js";
-import { WARM_FAILED } from "../src/core/worker.js";
+import { WARM_FAILED } from "../src/worker/index.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { TOOLCHAIN_HOMES, buildAgentEnv } from "../src/impl/runner/claude-code-runner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";

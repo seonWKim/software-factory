@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { READ_TOOLS, WRITE_TOOLS } from "../src/core/worker.js";
+import { READ_TOOLS, WRITE_TOOLS } from "../src/worker/index.js";
 import { Glob, Read, TOOLS } from "../src/core/tools/index.js";
 import { ENV_FILE_DENY, buildClaudeArgs, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";

@@ -13,7 +13,7 @@ import { DEFAULT_MODEL_TABLE, type ModelTable, modelClassFor } from "./core/mode
 import type { ProjectRef } from "./core/project.js";
 import { REVIEW_SCHEMA, findingLine, parseReview } from "./core/outputs.js";
 import type { RunId, StateChange, WorkItem, WorkItemId } from "./core/types.js";
-import { toolsNamed } from "./core/worker.js";
+import { toolsNamed } from "./worker/index.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressChannel, EgressScanner } from "./interfaces/egress-scanner.js";
@@ -25,7 +25,7 @@ export const EXPECTS = ["should_flag", "should_pass"] as const;
 export type Expect = (typeof EXPECTS)[number];
 
 /**
- * The tool names of the worker's review run (`WRITE_TOOLS` in src/core/worker.ts), resolved to the shared
+ * The tool names of the worker's review run (`WRITE_TOOLS` in src/worker/support.ts), resolved to the shared
  * tool specs with `toolsNamed`.
  * tests/golden.test.ts checks this against a real Worker review run, so a drift fails the tests.
  */
@@ -525,7 +525,7 @@ export const PROMPT_CODE_PATHS: readonly string[] = [
   "src/golden.ts",
   "src/core/outputs.ts",
   "src/core/model-choice.ts",
-  "src/core/worker.ts",
+  "src/worker/",
   "src/impl/runner/",
   "src/impl/claude/",
   "src/impl/openai/",

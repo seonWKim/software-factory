@@ -6,7 +6,7 @@ import { loadConfig } from "../src/compose.js";
 import { ConfigKeyError } from "../src/config-keys.js";
 import { type PathCompanion, applyCompanions, pathCompanionProblems, pathCompanionsConfig } from "../src/core/companions.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import { Controller } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { renderSpec } from "../src/core/spec-comment.js";
@@ -217,7 +217,7 @@ describe("the controller's triage branch", () => {
     const { store } = await newStore(clock);
     const source = new FakeSource();
     const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
+    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, settings });
     const intake = async (n: number): Promise<WorkItem> => {
       source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "Change", body: "do it" });
       await controller.tickIntake();

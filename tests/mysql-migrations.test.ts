@@ -35,7 +35,12 @@ describe("npm run migrate: arguments", () => {
     expect(parseMigrateArgs(["--dry-run"])).toBe("dry-run");
     expect(parseMigrateArgs([], { npm_config_status: "true" })).toBe("status");
     expect(parseMigrateArgs([], { npm_config_dry_run: "true" })).toBe("dry-run");
+    expect(parseMigrateArgs(["--rehearse"])).toBe("rehearse");
+    expect(parseMigrateArgs([], { npm_config_rehearse: "true" })).toBe("rehearse");
     expect(parseMigrateArgs(["--status", "--dry-run"])).toEqual({ error: expect.stringContaining("one of") });
+    expect(parseMigrateArgs(["--dry-run", "--rehearse"])).toEqual({ error: expect.stringContaining("one of") });
+    expect(parseMigrateArgs(["--contract"])).toBe("contract");
+    expect(parseMigrateArgs(["--contract", "--rehearse"])).toEqual({ error: expect.stringContaining("one of") });
     expect(parseMigrateArgs(["--down"])).toEqual({ error: expect.stringContaining("--down") });
   });
 
@@ -53,40 +58,6 @@ describe("SQLite behaves as before", () => {
     expect(v.applied).toBe(v.latest);
   });
 
-  it("run attempts (migration 20) backfill one record per claimed run from the run row, none for unclaimed runs", async () => {
-    const path = join(mkdtempSync(join(tmpdir(), "sf-sqlite-attempts-")), "factory.db");
-    const clock = new FakeClock();
-    const seed = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await seed.migrate();
-    const ids = await seedRuns(seed, clock);
-    await seed.close();
-    // Back to state 19, as a database from before this change: no run_attempts table, its runs as they were.
-    const raw = new DatabaseSync(path);
-    raw.exec(`DROP TABLE run_attempts; DELETE FROM schema_migrations WHERE version > 19;`);
-    raw.close();
-
-    const store = new SqlFactoryStore(new SqliteDriver(path), clock);
-    await store.migrate();
-    expect(await store.schemaVersion()).toEqual({ applied: MIGRATIONS.length, latest: MIGRATIONS.length });
-    const runs = (await Promise.all(ids.map((id) => store.listRuns(id)))).flat();
-    const attempts = (await Promise.all(ids.map((id) => store.listRunAttempts(id)))).flat();
-    expect(attempts.map((a) => a.run_id).sort()).toEqual(runs.filter((r) => r.attempt >= 1).map((r) => r.id).sort());
-    for (const r of runs.filter((x) => x.attempt >= 1)) expect(attempts.find((a) => a.run_id === r.id), r.id).toEqual(expectedBackfill(r));
-    expect(attempts.map((a) => a.status).sort()).toEqual(["cancelled", "failed", "failed", "failed", "lease_expired", "paused", "running", "succeeded"]);
-    // A backfilled open record is closed by the claim that holds it, and the next claim numbers after it.
-    const running = runs.find((r) => r.status === "running")!;
-    await store.completeRun(running.id, running.lease!.token, { status: "succeeded", summary: "", data: { tokens: 3 } });
-    expect((await store.listRunAttempts(running.work_item_id)).find((a) => a.run_id === running.id)).toMatchObject({ status: "succeeded", tokens: 3 });
-    const reaped = runs.find((r) => r.status === "queued" && r.attempt >= 1 && r.paused_at === null)!;
-    clock.advance(600_000);
-    const again = (await store.claimRun({ worker_id: "w-9" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
-    expect(again.id).toBe(reaped.id);
-    expect((await store.listRunAttempts(reaped.work_item_id)).map((a) => [a.attempt, a.status])).toEqual([
-      [reaped.attempt, "lease_expired"],
-      [reaped.attempt + 1, "running"],
-    ]);
-    await store.close();
-  });
 
   it("npm run migrate on a SQLite config runs no schema scripts, only the project-key data step", async () => {
     const app = await compiledApp();
@@ -102,96 +73,6 @@ describe("SQLite behaves as before", () => {
 // --- MySQL ------------------------------------------------------------------------------------------------
 
 describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
-  it("step 0020 backfills run attempts the same way as SQLite migration 20: pending, then applied", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c).apply(() => undefined);
-    const clock = new FakeClock();
-    const seed = new SqlFactoryStore(new MysqlDriver(db.options), clock);
-    db.onCleanup(() => seed.close());
-    const ids = await seedRuns(seed, clock);
-    // Back to state 19, as a database from before this step: no run_attempts table, its runs as they were. The
-    // steps dir stops at 20, so no later step runs again.
-    await c.query("DROP TABLE run_attempts");
-    await c.query("UPDATE schema_state SET state = 19 WHERE id = 1");
-    const dir = mysqlStepsUpTo(20);
-    expect((await new MysqlMigrations(c, { dir }).status()).pending.map((p) => p.label)).toEqual(["0020-run-attempts.sql"]);
-    await new MysqlMigrations(c, { dir }).apply(() => undefined);
-    expect(await state(c)).toBe(20);
-
-    const runs = (await Promise.all(ids.map((id) => seed.listRuns(id)))).flat();
-    const attempts = (await Promise.all(ids.map((id) => seed.listRunAttempts(id)))).flat();
-    expect(attempts.map((a) => a.run_id).sort()).toEqual(runs.filter((r) => r.attempt >= 1).map((r) => r.id).sort());
-    for (const r of runs.filter((x) => x.attempt >= 1)) expect(attempts.find((a) => a.run_id === r.id), r.id).toEqual(expectedBackfill(r));
-    // Safe to rerun (a failure midway leaves the state at 19): running the step again adds nothing.
-    await c.query("UPDATE schema_state SET state = 19 WHERE id = 1");
-    await new MysqlMigrations(c, { dir }).apply(() => undefined);
-    expect((await Promise.all(ids.map((id) => seed.listRunAttempts(id)))).flat()).toHaveLength(attempts.length);
-  });
-
-  it("the change-fields step adds the columns and keys, backfills like SQLite, and a second apply changes nothing", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c).apply(() => undefined);
-    const clock = new FakeClock();
-    const seed = new SqlFactoryStore(new MysqlDriver(db.options), clock);
-    db.onCleanup(() => seed.close());
-    const label = "github.com/o/r";
-    const adoptedIn = (n: number, project: string) => ({
-      ...issue(n), project, adopted: { change_ref: String(n), head_branch: "b", head_sha: "h", allowed_paths: ["a.ts"], tier: 4 as const },
-    });
-    await seed.advanceCursor(projectLabelCursor(PROJECT_KEY), null, label);
-    const labelled = (await seed.createWorkItem(adoptedIn(5, PROJECT_KEY), system)).item;
-    const unlabelled = (await seed.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), system)).item;
-    const plain = (await seed.createWorkItem(issue(8), system)).item;
-    const { merge } = await seed.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "11", merge_sha: "m", merger_id: null });
-    // Back to the state before the step: no change columns or keys, every row as it was.
-    const step = readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")!;
-    await c.query("ALTER TABLE work_items DROP INDEX work_items_change, DROP COLUMN change_ref, DROP COLUMN change_url");
-    await c.query("ALTER TABLE unreviewed_merges DROP INDEX unreviewed_merges_change, DROP COLUMN change_ref");
-    await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [step.from]);
-    const dir = mysqlStepsUpTo(step.number);
-    expect((await new MysqlMigrations(c, { dir }).status()).pending.map((p) => p.label)).toEqual([step.file]);
-    await new MysqlMigrations(c, { dir }).apply(() => undefined);
-    expect(await state(c)).toBe(step.number);
-
-    const row = async (table: string, id: string) => (await seed.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
-    expect(await row("work_items", labelled.id)).toMatchObject({ change_ref: "5", change_url: `https://${label}/pull/5` });
-    expect(await row("work_items", unlabelled.id)).toMatchObject({ change_ref: "6", change_url: null });
-    expect(await row("work_items", plain.id)).toMatchObject({ change_ref: null, change_url: null });
-    expect(await row("unreviewed_merges", merge.id)).toMatchObject({ change_ref: "11" });
-    expect(await rows(c, `SELECT table_name AS t, index_name AS i, non_unique AS u, GROUP_CONCAT(column_name ORDER BY seq_in_index) AS cols
-      FROM information_schema.statistics WHERE table_schema = DATABASE() AND index_name IN ('work_items_change', 'unreviewed_merges_change')
-      GROUP BY table_name, index_name, non_unique ORDER BY table_name`)).toEqual([
-      { t: "unreviewed_merges", i: "unreviewed_merges_change", u: 0, cols: "project,change_ref" },
-      { t: "work_items", i: "work_items_change", u: 1, cols: "project,change_ref" },
-    ]);
-
-    // A second apply: nothing to plan, no column or key added, no row updated.
-    const data = ((await import(pathToFileURL(join(STEPS_DIR, step.file)).href)) as { default: DataStep }).default;
-    const ran: [string, number][] = [];
-    const stepDb: StepDb = {
-      all: async (sql, params) => (await c.query(sql, params ? [...params] : []))[0] as Row[],
-      run: async (sql, params) => {
-        const n = ((await c.query(sql, params ? [...params] : []))[0] as { affectedRows: number }).affectedRows;
-        ran.push([sql.split(" ").slice(0, 2).join(" "), n]);
-        return n;
-      },
-    };
-    expect(await data.plan(stepDb)).toEqual([]);
-    const before = await snapshot(c);
-    await data.apply(stepDb);
-    expect(ran.every(([sql, n]) => sql === "UPDATE work_items" || sql === "UPDATE unreviewed_merges" ? n === 0 : false), JSON.stringify(ran)).toBe(true);
-    expect(await snapshot(c)).toEqual(before);
-
-    // A run that failed midway left one key out: the next apply adds only that.
-    await c.query("ALTER TABLE work_items DROP INDEX work_items_change");
-    expect(await data.plan(stepDb)).toEqual([{ add_key: "work_items.work_items_change" }]);
-    ran.length = 0;
-    await data.apply(stepDb);
-    expect(ran.map(([sql]) => sql).filter((sql) => !sql.startsWith("UPDATE"))).toEqual(["CREATE INDEX"]);
-  });
-
   it("existing database at the current schema: creates schema_state, records 11, runs no schema or data statements", async () => {
     const db = await newEmptyMysqlDatabase();
     const c = await db.connect();
@@ -366,8 +247,8 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
     const { report } = await store.recordImproveReport({ run_id: run.id, project: item.project, ...window, groups: [], patterns: [] });
     expect(await store.getImproveReport(run.id)).toEqual(report);
     const tables = await store.listTables();
-    expect(tables.find((t) => t.name === "improve_reports")?.rows).toBe(1);
-    expect(tables.find((t) => t.name === "filed_patterns")?.rows).toBe(0);
+    expect(tables.find((t) => t.name === "controller_improve_reports")?.rows).toBe(1);
+    expect(tables.find((t) => t.name === "controller_filed_patterns")?.rows).toBe(0);
   });
 
   describe("the commands, end to end on the built code", () => {

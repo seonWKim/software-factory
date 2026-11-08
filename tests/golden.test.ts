@@ -6,8 +6,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REVIEW_SCHEMA } from "../src/core/outputs.js";
 import type { Actor, UserId, WorkItem, WorkItemPatch, WorkerId } from "../src/core/types.js";
-import { Controller } from "../src/core/controller.js";
-import { Worker } from "../src/core/worker.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { Worker } from "../src/worker/index.js";
 import {
   type CaseResult,
   type GoldenRunDeps,
@@ -31,7 +31,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth,
+  FakeForge, FakeAuth,
   FakeBroker,
   PROJECT as PROJECT_REF,
   FakeGitHubDiff,
@@ -378,7 +378,7 @@ describe("golden run", () => {
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
       review: () => ({ output: REVIEW_PASS }),
     });
-    const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
       clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),

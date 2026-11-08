@@ -16,6 +16,20 @@ export interface ExternalIdentity {
   subject: string; // provider's stable id, e.g. a forge's numeric user id
   /** Display handle, used transiently for provider API lookups. Never stored. */
   login?: string;
+  /**
+   * The edge passport this identity's command entered with (RFC 0015 §8, Identity): set by the command inbox from
+   * the command row. Absent: none (a row from before M9, an actor no provider resolves, a polled source event).
+   */
+  passport?: CommandPassport;
+}
+
+/**
+ * A command's edge passport and when the command was recorded (the store's clock). Its expiry is checked at `at`:
+ * it proves who sent the command then, however long the command waited in its stream; revocation is checked now.
+ */
+export interface CommandPassport {
+  id: string;
+  at: string;
 }
 
 /** `record_verdict`: a `/verdict` comment (design §4); kept apart from `approve_spec` so it can be granted on its own. */
@@ -30,7 +44,11 @@ export type AuthDecision = { allow: true } | { allow: false; reason: string };
 
 export interface AuthProvider {
   resolve(identity: ExternalIdentity): Promise<Principal | null>;
-  authorize(principal: Principal, action: AuthAction, resource: AuthResource): Promise<AuthDecision>;
+  /**
+   * `passport`: the command's edge passport. The controller's wrapper (`AuditedAuthProvider`) has Identity check
+   * it before this plugin's grants decide; a grant plugin ignores it.
+   */
+  authorize(principal: Principal, action: AuthAction, resource: AuthResource, passport?: CommandPassport): Promise<AuthDecision>;
 }
 
 /** A role on a project (design 2026-11-01). Each grants a fixed set of actions (`ROLE_ACTIONS`, src/core/authorize.ts). */

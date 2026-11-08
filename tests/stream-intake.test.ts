@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_INBOX_RETENTION_DAYS, inboxRetentionDays, loadConfig } from "../src/compose.js";
-import { Controller, inboxCursorName } from "../src/core/controller.js";
+import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { inboxCursorName } from "../src/inbound/index.js";
 import { Listener } from "../src/core/listener.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -57,8 +58,8 @@ function startListener(store: FactoryStore, clock: FakeClock, source: FakeStream
   return r;
 }
 
-function controller(store: FactoryStore, clock: FakeClock, source: FakeStreamSource, replica_id: string): Controller {
-  return new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, replica_id });
+function controller(store: FactoryStore, clock: FakeClock, source: FakeStreamSource, replica_id: string): ControllerRole {
+  return new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, replica_id });
 }
 
 /** `store` with some methods replaced, e.g. to make the inbox write fail. */
@@ -118,10 +119,36 @@ describe("stream intake: listener", () => {
     expect(await store.listInboxAfter(SLACK, 0, 10)).toHaveLength(1);
 
     const c = controller(store, clock, source, "replica-a");
-    const handled = vi.spyOn(c as unknown as { handle(e: unknown): Promise<void> }, "handle");
+    const handled = vi.spyOn(c, "consumeEvent");
     await c.tickIntake();
     await c.tickIntake();
     expect(handled).toHaveBeenCalledTimes(1);
+    expect(await stateChangeCount(store, 1)).toBe(1);
+  });
+
+  it("an event whose handling hits a store error is retried, not dropped", async () => {
+    const { store, clock } = await newStore();
+    const source = new FakeStreamSource();
+    source.push(slackEvent(1), "ev-1");
+    startListener(store, clock, source, "replica-a");
+    await waitFor(() => source.acks.length === 1, "ack");
+
+    let failing = true;
+    const flaky = patched(store, {
+      createWorkItem: async (...args) => {
+        if (failing) throw new Error("deadlock");
+        return store.createWorkItem(...args);
+      },
+    });
+    const c = controller(flaky, clock, source, "replica-a");
+    await c.tickIntake();
+    expect(await stateChangeCount(store, 1)).toBe(0);
+
+    failing = false;
+    for (let i = 0; i < 10 && (await stateChangeCount(store, 1)) === 0; i++) {
+      clock.advance(60_000);
+      await c.tickIntake();
+    }
     expect(await stateChangeCount(store, 1)).toBe(1);
   });
 
@@ -272,7 +299,7 @@ describe("stream intake: controller", () => {
 
     const ca = controller(store, clock, a, "replica-a");
     const cb = controller(store, clock, b, "replica-b");
-    const handledA = vi.spyOn(ca as unknown as { handle(e: unknown): Promise<void> }, "handle");
+    const handledA = vi.spyOn(ca, "consumeEvent");
     await cb.tickIntake();
     expect(await stateChangeCount(store, 1)).toBe(1);
     expect(await stateChangeCount(store, 2)).toBe(1);
@@ -316,7 +343,7 @@ describe("stream intake: controller", () => {
     source.push(slackEvent(1), "ev-1");
     await waitFor(() => source.acks.length === 1, "ack 1");
     clock.advance(30 * DAY);
-    await c.cleanupInbox();
+    await c.tickRecords();
     expect((await store.listInboxAfter(SLACK, 0, 10)).map((r) => r.dedupe_key)).toEqual(["ev-1"]);
 
     source.push(slackEvent(2), "ev-2");
@@ -329,11 +356,11 @@ describe("stream intake: controller", () => {
     await waitFor(() => source.acks.length === 4, "ack 4");
     clock.advance(DAY + 1);
     // ev-1, ev-2: old and behind the cursor → gone. ev-3: old but ahead of the cursor. ev-4: too new.
-    await c.cleanupInbox();
+    await c.tickRecords();
     expect((await store.listInboxAfter(SLACK, 0, 10)).map((r) => r.dedupe_key)).toEqual(["ev-3", "ev-4"]);
 
     await c.tickIntake(); // cursor now at ev-4
-    await c.cleanupInbox();
+    await c.tickRecords();
     expect((await store.listInboxAfter(SLACK, 0, 10)).map((r) => r.dedupe_key)).toEqual(["ev-4"]);
     expect(await stateChangeCount(store, 3)).toBe(1);
   });

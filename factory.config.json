@@ -46,7 +46,10 @@
     "updater": "git-worktree",
     "github_auth": "app",
     "test_database": "none",
-    "network_probe": "http"
+    "network_probe": "http",
+    "bus": "sql",
+    "ticks": "time-based",
+    "engine": "journal"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {
@@ -94,6 +97,10 @@
   ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
+  "permissions": {
+    "grants": ["github-permission", "static"],
+    "static": { "roles": { "github:69591622": { "*": ["approver"] } } }
+  },
   "ui": { "port": 4310 },
   "stats": { "weights": { "none": 0, "minor": 1, "major": 3, "critical": 10 }, "min_sample": 10 },
   "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" }

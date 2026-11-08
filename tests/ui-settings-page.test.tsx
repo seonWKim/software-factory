@@ -36,7 +36,7 @@ const view: SettingsView = {
     row("tick_ms", { value: "2000", source: "default", file_value: null, default_value: "2000", applies_at: "the next tick" }),
     row("workers", { value: "5", max: 8, capped_at: null, applies_at: "the worker pool's next tick" }),
     row("models", { kind: "models", value: '{"cheap":"haiku","standard":"sonnet","strong":"opus"}', source: "default", file_value: null, applies_at: "the next run that starts" }),
-    row("model_by", { kind: "model_by", value: '{"retry_up":true}', applies_at: "the next run that starts" }),
+    row("model_by", { kind: "json", value: '{"retry_up":true}', applies_at: "the next run that starts" }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
     row("retry_max_ms", { value: "1800000", file_value: "1800000", default_value: "1800000", applies_at: "the next retry" }),
     row("run_timeout_ms", { value: "5400000", source: "override", file_value: "3600000", default_value: "3600000", applies_at: "the next run that starts" }),
