@@ -272,6 +272,93 @@ describe("failed checks after an implement run that pushed nothing", () => {
     expect(after.outcome).toMatchObject({ status: "succeeded", data: { head_sha: "h2" } });
     expect(changes.find((c) => c.reason === "checks_failed")!.changes).toMatchObject({ loop_count: { from: 0, to: 1 } });
   });
+
+  describe("items stalled before the fix are swept by tickChecks", () => {
+    const pending = { state: "pending" as const };
+    /** A stalled item: its last review skipped an unchanged head with pending checks, so it sits in REVIEW, unblocked, with no run. */
+    async function stalled(n: number, checks: import("../src/interfaces/forge.js").PrChecks[], opts: Parameters<typeof noPush>[2] = {}) {
+      const f = await noPush(n, checks, opts);
+      expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", blocked_reason: null });
+      const runs = await f.store.listRuns(f.item.id);
+      expect(runs.filter((r) => r.status === "queued" || r.status === "running")).toEqual([]);
+      expect(runs.filter((r) => r.kind === "review" && r.outcome?.status === "succeeded").at(-1)!.outcome!).toMatchObject({ data: { no_agent: "unchanged_head" } });
+      return f;
+    }
+    const snapshot = async (f: Awaited<ReturnType<typeof noPush>>) => ({
+      version: (await f.store.getWorkItem(f.item.id))!.version,
+      runs: (await f.store.listRuns(f.item.id)).length,
+      changes: (await f.store.listStateChanges(f.item.id)).length,
+    });
+    async function unchangedAfterTicks(f: Awaited<ReturnType<typeof noPush>>, checks: import("../src/interfaces/forge.js").PrChecks) {
+      const before = await snapshot(f);
+      f.forge.checkResults = [checks, checks];
+      await f.controller.tickChecks();
+      await f.controller.tickChecks();
+      expect(await snapshot(f)).toEqual(before);
+    }
+
+    it("failed checks: one pass loops it back to implement with loop_count + 1; a second pass adds nothing", async () => {
+      const f = await stalled(96, [failed, pending]);
+      expect(f.item.loop_count).toBe(1);
+      f.forge.checkResults = [failed];
+      await f.controller.tickChecks();
+      const item = (await f.store.getWorkItem(f.item.id))!;
+      expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", loop_count: 2 });
+      const runs = await f.store.listRuns(f.item.id);
+      const queued = runs.filter((r) => r.status === "queued");
+      expect(queued.map((r) => r.kind)).toEqual(["implement"]);
+      const last = (await f.store.listStateChanges(f.item.id)).at(-1)!;
+      expect(last).toMatchObject({ reason: "checks_failed", detail: { unchanged_head: true }, changes: { loop_count: { from: 1, to: 2 } } });
+
+      const before = await snapshot(f);
+      f.forge.checkResults = [failed];
+      await f.controller.tickChecks();
+      expect(await snapshot(f)).toEqual(before);
+    });
+
+    it("failed checks at the loop limit: one pass blocks it on a human with max_loops and queues no run; a second pass adds nothing", async () => {
+      const f = await stalled(97, [failed, failed, pending]);
+      expect(f.item.loop_count).toBe(config.max_loops - 1);
+      f.forge.checkResults = [failed];
+      await f.controller.tickChecks();
+      const item = (await f.store.getWorkItem(f.item.id))!;
+      expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: config.max_loops - 1 });
+      expect((await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued")).toEqual([]);
+
+      const before = await snapshot(f);
+      f.forge.checkResults = [failed];
+      await f.controller.tickChecks();
+      expect(await snapshot(f)).toEqual(before);
+    });
+
+    it("pending checks: no state change and no run", async () => {
+      await unchangedAfterTicks(await stalled(98, [failed, pending]), pending);
+    });
+
+    it("after a bug verdict: no state change and no run", async () => {
+      const f = await noPush(99, [failed], { reviews: ["bug"] });
+      expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", blocked_reason: null });
+      await unchangedAfterTicks(f, failed);
+    });
+
+    it("an item with a queued or running run is left alone", async () => {
+      const f = await stalled(100, [failed, pending]);
+      await f.store.enqueueRun({ work_item_id: f.item.id, kind: "review", idempotency_key: `${f.item.id}:review:extra` });
+      await unchangedAfterTicks(f, failed);
+    });
+
+    it("a stored merge check that conflicts for its head starts an update run first and adds no loop", async () => {
+      const f = await stalled(101, [failed, pending]);
+      await f.store.recordMergeCheck({ work_item_id: f.item.id, mergeable: false, conflicts: ["src/a.ts"], head_sha: "h1", base_sha: "b1" });
+      f.forge.checkResults = [failed];
+      await f.controller.tickChecks();
+      const item = (await f.store.getWorkItem(f.item.id))!;
+      expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_failed_update", loop_count: 1 });
+      const queued = (await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued");
+      expect(queued.map((r) => [r.kind, r.idempotency_key])).toEqual([["update", `${f.item.id}:update:42:h1:b1`]]);
+      expect((await f.store.listStateChanges(f.item.id)).at(-1)!.changes).not.toHaveProperty("loop_count");
+    });
+  });
 });
 
 describe("one issue to one merged PR", () => {
