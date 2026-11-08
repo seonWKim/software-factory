@@ -31,14 +31,18 @@ describe("migration-safety", () => {
     expect(problems).toEqual([]);
   });
 
-  it("flags a DROP in a breaking migration, an unnamed drop in a contract, and a breaking one with no verify", () => {
+  it("flags a DROP in a breaking migration, an unnamed drop in a contract, a breaking one with no verify, a contract with no after", () => {
     const up = async () => {};
     const verify = async () => [];
     expect(safetyProblems("a", "DROP TABLE x", { kind: "migration", change: "breaking", tables: ["x"], up, verify })).toEqual(["a: DROP x outside a contract migration"]);
-    expect(safetyProblems("b", "DROP TABLE IF EXISTS `y`", { kind: "migration", change: "contract", tables: ["x"], up })).toEqual([
+    expect(safetyProblems("b", "DROP TABLE IF EXISTS `y`", { kind: "migration", change: "contract", tables: ["x"], after: ["m"], up })).toEqual([
       "b: drops y, which its tables list does not name (so it is not archived)",
     ]);
     expect(safetyProblems("c", "", { kind: "migration", change: "breaking", tables: ["x"], up })).toEqual(["c: a breaking migration needs verify"]);
-    expect(safetyProblems("d", "", { kind: "migration", change: "contract", tables: [], up })).toEqual(["d: a contract migration must name the tables it changes"]);
+    expect(safetyProblems("d", "", { kind: "migration", change: "contract", tables: [], after: ["m"], up })).toEqual(["d: a contract migration must name the tables it changes"]);
+    // With no `after`, nothing holds it until the breaking migration's down path (D9) has had its time.
+    expect(safetyProblems("e", "", { kind: "migration", change: "contract", tables: ["x"], up })).toEqual([
+      "e: a contract migration must name the migrations it follows (after)",
+    ]);
   });
 });

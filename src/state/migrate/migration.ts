@@ -26,6 +26,11 @@ export interface MigrationSpec {
    * differs). Any problem fails the migration, so it is never recorded as applied (§12 D2).
    */
   verify?(db: MigrationDb): Promise<string[]>;
+  /**
+   * Required for contract: the breaking migrations whose leftovers it drops. It runs only through
+   * `npm run migrate -- --contract`, and only once each of them was applied CONTRACT_MIN_DAYS ago (§12 D2).
+   */
+  readonly after?: readonly string[];
 }
 
 export interface MigrationDescriptor extends MigrationSpec {
@@ -38,6 +43,9 @@ export interface Migration extends MigrationDescriptor {
   readonly component: string;
 }
 
+/** Days a breaking migration's leftovers are kept before its contract may drop them (§12 D2). */
+export const CONTRACT_MIN_DAYS = 14;
+
 export const MIGRATION_FILE = /^(\d{8}T\d{4})-([a-z]+)-([a-z0-9]+(?:-[a-z0-9]+)*)\.migration\.(?:ts|js)$/;
 
 /** Problems with a spec that the type alone cannot catch; empty when it is safe to run (migration-safety). */
@@ -45,6 +53,7 @@ export function migrationSpecProblems(spec: MigrationSpec): string[] {
   const out: string[] = [];
   if (spec.change !== "additive" && spec.tables.length === 0) out.push(`a ${spec.change} migration must name the tables it changes`);
   if (spec.change === "breaking" && spec.verify === undefined) out.push("a breaking migration needs verify");
+  if (spec.change === "contract" && (spec.after ?? []).length === 0) out.push("a contract migration must name the migrations it follows (after)");
   return out;
 }
 

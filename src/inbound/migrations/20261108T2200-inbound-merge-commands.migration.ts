@@ -19,8 +19,8 @@
 
 import { LEGACY_PREFIX, defineMigration, tableExists, verifyCopy, type MigrationDb } from "../../state/index.js";
 
-const COMMANDS = "inbound_commands";
-const APPS = "inbound_app_requests";
+export const COMMANDS = "inbound_commands";
+export const APPS = "inbound_app_requests";
 const NEXT = "inbound_commands_next";
 /** The source names RFC 0015 §12 D7 records in `legacy_table`. */
 export const FROM_COMMANDS = "command_inbox";

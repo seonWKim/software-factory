@@ -11,17 +11,18 @@ import { DRAIN_MARGIN_MS } from "../../../impl/updater/git-worktree.js";
 import { secretName } from "../../../interfaces/secret-store.js";
 import { withDrain } from "../../../migrate-drain.js";
 import { ensureDiscoveredTopicTables } from "../../../runtime/index.js";
-import type { SqlExecutor } from "../../../state/index.js";
+import { applyMigrations, type SqlExecutor } from "../../../state/index.js";
 import { defineCommand } from "../../command.js";
 
 export default defineCommand({
   names: ["migrate"],
-  usage: `  migrate [--status | --dry-run | --rehearse]
+  usage: `  migrate [--status | --dry-run | --rehearse | --contract]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
                --dry-run prints what would run and each row it would change, --rehearse runs them on a
                copy and checks no row was lost, no flag applies them (back up first). The other commands
-               refuse to start while steps or owner/name rows remain`,
+               refuse to start while steps or owner/name rows remain. --contract drops the legacy_* tables
+               a rename left, 14 days after it, archiving their rows to db/backups first`,
   async run(argv, ctx) {
     const args = [...argv];
     // --json (with --status): one JSON line for the supervisor's check. --no-drain: apply without asking a
@@ -49,6 +50,7 @@ export default defineCommand({
         };
       };
       const db = loaded.store;
+      if (mode === "contract") return contract(loaded, print);
       if (db.type !== "mysql") {
         const file = join(loaded.stateDir, "db", "factory.db");
         if (mode === "rehearse") return rehearseSqlite(file, print);
@@ -92,6 +94,33 @@ export default defineCommand({
     return withDrain({ stateDir: loaded.stateDir, clock, print, timeoutMs: loaded.config.run_timeout_ms + DRAIN_MARGIN_MS }, run);
   },
 });
+
+/** `--contract`: the contract migrations whose breaking migration is old enough (RFC 0015 §12 D2, D4). */
+async function contract(loaded: Loaded, print: (line: string) => void): Promise<number> {
+  const db = loaded.store;
+  const clock = await new Plugins(loaded).clock();
+  let driver: SqlExecutor & { close(): Promise<void> };
+  if (db.type !== "mysql") driver = new SqliteDriver(join(loaded.stateDir, "db", "factory.db"));
+  else {
+    const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
+    if (!password) {
+      print("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+      return 1;
+    }
+    driver = new MysqlDriver({ host: db.host, port: db.port, database: db.database, user: db.user, password: password.reveal() });
+  }
+  try {
+    const dialect = db.type === "mysql" ? "mysql" : "sqlite";
+    const done = await applyMigrations(
+      { dialect, all: (s, p) => driver.all(s, p), run: (s, p) => driver.run(s, p) },
+      { backupDir: join(loaded.stateDir, "db", "backups"), now: () => clock.now().toISOString(), print, contract: true },
+    );
+    print(done.length === 0 ? "contract: nothing to apply" : `contract: applied ${done.join(", ")}`);
+    return 0;
+  } finally {
+    await driver.close();
+  }
+}
 
 /**
  * The steps `npm run migrate` would apply, by name, read-only: pending MySQL schema step files, then

@@ -23,6 +23,14 @@ force.
   name from its own DDL, verify every column of every row, and only then rename all old tables to
   `legacy_<old>` at once (one transaction on SQLite, one `RENAME TABLE` on MySQL). The legacy tables stay
   until a contract migration drops them after the owner confirms.
+- **Contract migrations run only on `npm run migrate -- --contract`** (since 2026-11-09, RFC 0015 M11; see
+  History). A `contract` migration names the breaking migrations it follows (`after`) and is never pending for an
+  open, a start or an update: SQLite's open and MySQL's `npm run migrate` skip it. `--contract` applies each one
+  whose `after` migrations were applied at least 14 days earlier (`CONTRACT_MIN_DAYS`, the D9 down path's window)
+  and prints why it skips the others; a table with rows is archived to `db/backups/` first, and with no backup
+  folder the drop is refused (D4). Written: `20261109T0900-state-drop-legacy-tables` (M1's `legacy_*`) and
+  `20261109T0901-inbound-drop-legacy-commands` (M4's). Solo and enterprise: the same; on a shared MySQL store the
+  owner runs it once.
 - **Rehearse before migrating** (since 2026-11-08): `npm run migrate -- --rehearse` copies the database
   (MySQL: one consistent snapshot into `<database>_rehearsal`, which the factory's MySQL user needs to be
   granted once; SQLite: `VACUUM INTO` a temp file), applies every pending step and migration to the copy,
@@ -275,3 +283,5 @@ force.
 - **Outbound writes** (decision changed 2026-11-09, RFC 0015 M7). Before: the controller's outbox step and its
   transitions called the sources and the forge directly (comments with retries, labels and 👀 best effort, closes
   inline), outside any batch, and outbox delivery never waited on the forge budget.
+- **Contract migrations** (decision changed 2026-11-09, RFC 0015 M11). Before: the runner applied every pending
+  migration, a contract one too, on open (SQLite) and on `npm run migrate` (MySQL); none was written yet.

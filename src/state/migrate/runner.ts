@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { findDescriptorFiles } from "../discovery.js";
 import { backupTables } from "./backup.js";
 import { tableExists } from "./copy-tables.js";
-import { MIGRATION_FILE, type Migration, type MigrationDb, type MigrationDescriptor } from "./migration.js";
+import { CONTRACT_MIN_DAYS, MIGRATION_FILE, type Migration, type MigrationDb, type MigrationDescriptor } from "./migration.js";
 
 /** The code root: src/ (tests) or dist/ (built); this file is src/state/migrate/runner.ts. */
 export const CODE_ROOT = join(import.meta.dirname, "..", "..");
@@ -65,11 +65,28 @@ async function applied(db: MigrationDb): Promise<Set<string>> {
   return new Set((await db.all(`SELECT id FROM ${MIGRATIONS_TABLE}`)).map((r) => String(r.id)));
 }
 
-/** The migrations not yet applied. Read-only. */
-export async function pendingMigrations(db: MigrationDb, migrations?: readonly Migration[]): Promise<Migration[]> {
+/**
+ * The migrations not yet applied. Read-only. Contract migrations are left out unless `contract` is set: they run
+ * only when the owner asks (`npm run migrate -- --contract`), so they never hold up a start or an update.
+ */
+export async function pendingMigrations(db: MigrationDb, migrations?: readonly Migration[], contract = false): Promise<Migration[]> {
   const all = migrations ?? (await discoverMigrations());
   const done = await applied(db);
-  return all.filter((m) => !done.has(m.id));
+  return all.filter((m) => !done.has(m.id) && (m.change === "contract") === contract);
+}
+
+/**
+ * Why a contract migration may not run yet: a migration it follows is not applied, or was applied less than
+ * CONTRACT_MIN_DAYS ago (the down path of D9 stays open that long). Null when it may run.
+ */
+export async function contractNotReady(db: MigrationDb, m: Migration, now: string): Promise<string | null> {
+  for (const id of m.after ?? []) {
+    const [row] = await db.all(`SELECT finished_at FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [id]);
+    if (!row) return `${id} is not applied`;
+    const days = (Date.parse(now) - Date.parse(String(row.finished_at))) / 86_400_000;
+    if (days < CONTRACT_MIN_DAYS) return `${id} was applied ${Math.floor(days)} days ago; contract waits ${CONTRACT_MIN_DAYS}`;
+  }
+  return null;
 }
 
 export interface ApplyOptions {
@@ -78,16 +95,23 @@ export interface ApplyOptions {
   readonly now: () => string;
   readonly print?: (line: string) => void;
   readonly migrations?: readonly Migration[];
+  /** Runs the pending contract migrations instead (and only those whose `after` is old enough). */
+  readonly contract?: boolean;
 }
 
 /** Applies every pending migration in order; returns the ids applied. */
 export async function applyMigrations(db: MigrationDb, opts: ApplyOptions): Promise<string[]> {
-  const pending = await pendingMigrations(db, opts.migrations);
+  const pending = await pendingMigrations(db, opts.migrations, opts.contract);
   if (pending.length === 0) return [];
   await db.run(CREATE[db.dialect]);
   const out: string[] = [];
   for (const m of pending) {
     const started_at = opts.now();
+    const wait = m.change === "contract" ? await contractNotReady(db, m, started_at) : null;
+    if (wait) {
+      opts.print?.(`skipping ${m.id}: ${wait}`);
+      continue;
+    }
     let backup: string | null = null;
     if (m.change !== "additive" && m.tables.length > 0) {
       const present = await existingTables(db, m.tables);

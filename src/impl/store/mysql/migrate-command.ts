@@ -8,7 +8,8 @@ import { fingerprintTables, lostRows, type Row } from "../../../state/index.js";
 import type { MysqlOptions } from "./mysql-driver.js";
 import { type MigrationStatus, MysqlMigrations, mysqlMigrationDb, type Queryable } from "./migrations.js";
 
-export type MigrateMode = "apply" | "status" | "dry-run" | "rehearse";
+/** `contract`: only the contract migrations that drop `legacy_*` (RFC 0015 §12 D2); the migrate command runs it. */
+export type MigrateMode = "apply" | "status" | "dry-run" | "rehearse" | "contract";
 
 export const SQLITE_MIGRATE_MESSAGE =
   "SQLite has no schema scripts: it builds the latest schema when the factory opens it. `npm run migrate` runs only the data steps (project keys) on SQLite.";
@@ -22,10 +23,11 @@ export const BACKUP_REMINDER =
  */
 export function parseMigrateArgs(args: readonly string[], env: Record<string, string | undefined> = {}): MigrateMode | { error: string } {
   const flag = (name: string, envName: string) => args.includes(`--${name}`) || env[envName] === "true";
-  const unknown = args.filter((a) => a !== "--status" && a !== "--dry-run" && a !== "--rehearse");
-  if (unknown.length > 0) return { error: `unknown argument: ${unknown.join(" ")} (use --status, --dry-run or --rehearse)` };
-  const modes = (["status", "dry-run", "rehearse"] as const).filter((m) => flag(m, `npm_config_${m.replace("-", "_")}`));
-  if (modes.length > 1) return { error: "use one of --status, --dry-run and --rehearse" };
+  const names = ["status", "dry-run", "rehearse", "contract"] as const;
+  const unknown = args.filter((a) => !names.some((n) => a === `--${n}`));
+  if (unknown.length > 0) return { error: `unknown argument: ${unknown.join(" ")} (use --status, --dry-run, --rehearse or --contract)` };
+  const modes = names.filter((m) => flag(m, `npm_config_${m.replace("-", "_")}`));
+  if (modes.length > 1) return { error: "use one of --status, --dry-run, --rehearse and --contract" };
   return modes[0] ?? "apply";
 }
 
@@ -70,6 +72,7 @@ export async function runMigrate(
       return 0;
     }
     if (mode === "rehearse") throw new Error("rehearse runs through migrateCommand: it needs its own copy of the database");
+    if (mode === "contract") throw new Error("contract runs through the migrate command (applyMigrations with contract)");
     print(BACKUP_REMINDER);
     const s = await m.apply(print);
     print(s.pending.length === 0 ? `up to date at state ${s.state}: nothing to apply` : `done: state ${s.pending.at(-1)!.number}`);

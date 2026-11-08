@@ -39,6 +39,8 @@ describe("npm run migrate: arguments", () => {
     expect(parseMigrateArgs([], { npm_config_rehearse: "true" })).toBe("rehearse");
     expect(parseMigrateArgs(["--status", "--dry-run"])).toEqual({ error: expect.stringContaining("one of") });
     expect(parseMigrateArgs(["--dry-run", "--rehearse"])).toEqual({ error: expect.stringContaining("one of") });
+    expect(parseMigrateArgs(["--contract"])).toBe("contract");
+    expect(parseMigrateArgs(["--contract", "--rehearse"])).toEqual({ error: expect.stringContaining("one of") });
     expect(parseMigrateArgs(["--down"])).toEqual({ error: expect.stringContaining("--down") });
   });
 
