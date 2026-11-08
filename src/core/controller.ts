@@ -3527,8 +3527,8 @@ export class Controller {
       };
     }
     if (checks.state === "failed") return this.checksFailed(it, review, checks.failed, fields, ack);
-    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human. An incomplete
-    // PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
+    // Every change waits here for a merge; in auto mode the auto-merge step merges a local one it may (design 03-risk).
+    // An incomplete PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
     const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? []);
     // No PR (a local item, design 05-sources): no checks to wait for, and the merge is `factory merge`, by a human.
