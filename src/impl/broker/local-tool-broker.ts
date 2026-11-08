@@ -1,7 +1,8 @@
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../interfaces/tool-broker.js";
-import { branchAllowed, holdsLease, storeBranch } from "./trusted-git.js";
+import { grantedTools, leaseLost } from "./tool-broker-shared.js";
+import { branchAllowed, storeBranch } from "./trusted-git.js";
 
 const SCHEMA = {
   type: "object",
@@ -47,7 +48,7 @@ export class LocalToolBroker implements ToolBroker {
   ) {}
 
   listTools(grants: readonly string[]): ToolDescriptor[] {
-    return TOOLS.filter((t) => grants.includes(t.name));
+    return grantedTools(TOOLS, grants);
   }
 
   allTools(): readonly ToolDescriptor[] {
@@ -55,7 +56,8 @@ export class LocalToolBroker implements ToolBroker {
   }
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    const lost = await leaseLost(this.deps.store, ctx);
+    if (lost) return lost;
     if (name === STORE_BRANCH) return this.commitBranch(args as PushArgs);
     return { ok: false, error_code: "unknown_tool", message: name };
   }

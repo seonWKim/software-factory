@@ -6,9 +6,8 @@
 // egress scanner. Advisory only: a hook that crashes, times out or cannot reach the host allows, and the worker's
 // gates still decide. No secret value is written to the folder.
 
-import { appendFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { type Server, type Socket, createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import type { Socket } from "node:net";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { commandText, runChecks } from "../../core/checks.js";
 import { diffStat, overSizeLimit, sizeDetail } from "../../core/diff-gate.js";
@@ -17,6 +16,7 @@ import { NO_COMMITS_DETAIL, TRUSTED_GIT_ENV, fenced, runCommits } from "../../wo
 import type { AgentRunSpec, GateBlock, GateHooks } from "../../interfaces/agent-runner.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { Sandbox } from "../../interfaces/sandbox.js";
+import { type JsonLineHost, startJsonLineHost } from "./json-line-host.js";
 
 /** The folder under the harness config dir that holds one sub-folder per run with hooks. */
 export const GATE_HOOKS_DIR = "gate-hooks";
@@ -265,58 +265,20 @@ async function tailLines(tail: string, scanner: EgressScanner | undefined): Prom
 }
 
 /**
- * The run's socket: a Unix socket in a fresh private folder under the OS temp folder (the harness config dir can be
- * too long for the platform's socket path limit). One JSON line in, one JSON line out; `sent` records a block
- * before its answer goes out on a connection still open.
+ * The run's socket (`startJsonLineHost`). One JSON line in, one JSON line out, then the connection ends: only the
+ * first request on a connection is answered. `sent` records a block before its answer goes out on a connection
+ * still open.
  */
-async function startHost(
-  answer: (req: unknown) => Promise<Answer | null>,
-  sent: (a: Answer, conn: Socket) => Promise<void>,
-): Promise<{ socket: string; close(): Promise<void> }> {
-  const dir = await mkdtemp(join(tmpdir(), "sf-hooks-"));
-  const socket = join(dir, "s");
-  const conns = new Set<Socket>();
-  const server: Server = createServer((conn) => {
-    conns.add(conn);
-    conn.on("close", () => conns.delete(conn));
-    conn.on("error", () => conn.destroy());
-    conn.setEncoding("utf8");
-    let buf = "";
-    conn.on("data", (chunk: Buffer | string) => {
-      buf += String(chunk);
-      if (buf.length > MAX_REQUEST_BYTES) return void conn.destroy();
-      const nl = buf.indexOf("\n");
-      if (nl < 0) return;
-      let req: unknown = null;
-      try {
-        req = JSON.parse(buf.slice(0, nl));
-      } catch {
-        // malformed: answered with no output
-      }
-      buf = "";
-      void answer(req)
-        .then(async (a) => {
-          if (a) await sent(a, conn);
-          if (conn.writable) conn.end(`${JSON.stringify(a ? { output: a.output } : {})}\n`);
-        })
-        .catch(() => conn.writable && conn.end("{}\n"));
-    });
+function startHost(answer: (req: unknown) => Promise<Answer | null>, sent: (a: Answer, conn: Socket) => Promise<void>): Promise<JsonLineHost> {
+  const answered = new WeakSet<Socket>();
+  return startJsonLineHost("sf-hooks-", MAX_REQUEST_BYTES, (req, conn) => {
+    if (answered.has(conn)) return;
+    answered.add(conn);
+    void answer(req)
+      .then(async (a) => {
+        if (a) await sent(a, conn);
+        if (conn.writable) conn.end(`${JSON.stringify(a ? { output: a.output } : {})}\n`);
+      })
+      .catch(() => conn.writable && conn.end("{}\n"));
   });
-  try {
-    await new Promise<void>((res, rej) => {
-      server.once("error", rej);
-      server.listen(socket, () => res());
-    });
-  } catch (err) {
-    await rm(dir, { recursive: true, force: true });
-    throw err;
-  }
-  return {
-    socket,
-    close: async () => {
-      for (const c of conns) c.destroy();
-      await new Promise<void>((res) => server.close(() => res()));
-      await rm(dir, { recursive: true, force: true });
-    },
-  };
 }

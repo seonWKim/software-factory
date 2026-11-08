@@ -5,7 +5,8 @@ import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescripto
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
-import { branchAllowed, holdsLease, storeBranch } from "../broker/trusted-git.js";
+import { grantedTools, leaseLost } from "../broker/tool-broker-shared.js";
+import { branchAllowed, storeBranch } from "../broker/trusted-git.js";
 
 /**
  * Where a run's last step stores its branch in the factory repo (RFC 0015 M7): a staging ref outbound's
@@ -70,7 +71,7 @@ export class GitHubToolBroker implements ToolBroker {
   ) {}
 
   listTools(grants: readonly string[]): ToolDescriptor[] {
-    return TOOLS.filter((t) => grants.includes(t.name));
+    return grantedTools(TOOLS, grants);
   }
 
   /** The store writes the factory repo; only the preflight, which reads, is read-only. */
@@ -79,7 +80,8 @@ export class GitHubToolBroker implements ToolBroker {
   }
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
+    const lost = await leaseLost(this.deps.store, ctx);
+    if (lost) return lost;
     switch (name) {
       case STORE_BRANCH:
         return this.store(args as PushArgs);
