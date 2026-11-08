@@ -364,7 +364,7 @@ describe("the page's commands actor (uiCommandsActor, design 09)", () => {
       contentType: "application/json", csrfToken: TOKEN, body: JSON.stringify({ command: "approve" }),
     });
     expect(r.status).toBe(503);
-    expect(JSON.parse(r.body).error).toBe("Commands are off: this server is not on loopback, so set ui.user_id in factory.config.json and restart `factory ui`.");
+    expect(JSON.parse(r.body).error).toBe("Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.");
     expect(await h.store.listAppCommandRequestsForItem(it1.id, 10)).toEqual([]);
   });
 });

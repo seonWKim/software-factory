@@ -93,7 +93,7 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   if (req.origin === undefined || req.origin.trim().toLowerCase() !== own) return err(403, "Origin must be this page's own origin.");
   if (mediaType(req.contentType) !== "application/json") return err(415, "Content-Type must be application/json.");
   const c = d.commands;
-  const off = err(503, "Commands are off: this server is not on loopback, so set ui.user_id in factory.config.json and restart `factory ui`.");
+  const off = err(503, "Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.");
   if (!c) return off;
   if (!csrfMatches(c.token, req.csrfToken)) return err(403, "Missing or stale x-csrf-token; reload the page.");
   if (c.actor === null) return off;

@@ -481,6 +481,8 @@ describe("item commands", () => {
     typeNote("some text");
     for (const b of document.querySelectorAll("[data-command] > button")) expect((b as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText(/Commands are off/)).toBeTruthy();
+    // The notice links to the Settings page's section that says what to set.
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/app/settings#page-commands");
   });
 });
 
