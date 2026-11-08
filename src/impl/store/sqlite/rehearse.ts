@@ -36,7 +36,7 @@ export async function rehearseSqlite(file: string, print: (line: string) => void
     } finally {
       await baseline.close();
     }
-    const after = new SqliteDriver(copy);
+    const after = new SqliteDriver(copy, { applyBreaking: true });
     try {
       await after.migrate();
       const lost = await lostRows(migrationDb(after), before);

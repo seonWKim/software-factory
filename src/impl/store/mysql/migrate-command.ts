@@ -12,7 +12,7 @@ import { type MigrationStatus, MysqlMigrations, mysqlMigrationDb, type Queryable
 export type MigrateMode = "apply" | "status" | "dry-run" | "rehearse" | "contract";
 
 export const SQLITE_MIGRATE_MESSAGE =
-  "SQLite has no schema scripts: it builds the latest schema when the factory opens it. `npm run migrate` runs only the data steps (project keys) on SQLite.";
+  "SQLite has no schema scripts: the factory applies additive migrations when it opens the database. `npm run migrate` applies the breaking ones (they rename tables, so a running factory drains first) and the data steps (project keys).";
 
 export const BACKUP_REMINDER =
   "Back up the database before migrating (e.g. mysqldump --single-transaction <database> > backup.sql), and rehearse first (npm run migrate -- --rehearse). Numbered steps are not reversible.";
