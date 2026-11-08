@@ -249,7 +249,7 @@ describe("/standing", () => {
 });
 
 describe("footers match what the controller accepts", () => {
-  /** A patch that puts an item in each phase; floor_tier also needs its floor_blocked row. */
+  /** A patch that puts an item in each phase; floor_tier also needs its floor_blocked row, rule_of_two its held run. */
   const PATCHES: Record<CommandPhase, WorkItemPatch> = {
     triaging: {},
     spec_pending: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" },
@@ -259,6 +259,7 @@ describe("footers match what the controller accepts", () => {
     dependency_hold: { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #1 to merge" },
     dependency_closed: { stage: "RUNNING", blocked_on: "human", blocked_reason: "dependency_closed:#1" },
     floor_tier: { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" },
+    rule_of_two: { stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" },
     failed_review: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" },
     failed_run: { stage: "REVIEW", blocked_on: "human", blocked_reason: "run_failed:update:invalid_output" },
     too_large: { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" },
@@ -299,6 +300,7 @@ describe("footers match what the controller accepts", () => {
         id: item.id, expected_version: item.version, actor, reason: phase === "floor_tier" ? "floor_blocked" : "setup",
         patch: { ...PATCHES[phase], change_ref: pr === null ? null : String(pr), tier: 2 as const },
         ...(phase === "floor_tier" ? { detail: { required_tier: 3 } } : {}),
+        ...(phase === "rule_of_two" ? { detail: { held_by: "rule_of_two", held_run_kind: "implement", held_run_key: `held:${n}` } } : {}),
       };
       // A budget checkpoint is a block plus its pending checkpoint row, which /budget and /reject answer.
       const r = phase === "budget_checkpoint"

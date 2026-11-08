@@ -6,6 +6,9 @@ import { MODEL_RUN_KINDS } from "../../src/core/model-choice.js";
 import { READ_TOOLS, WRITE_TOOLS } from "../../src/worker/index.js";
 import { type RoleCatalog, loadRoles, rolesShortOfGolden } from "../../src/runtime/index.js";
 import { type RoleDescriptor, approvalRefusal, defineRole, roleProblems, ruleOfTwoRefusal } from "../../src/shared/role.js";
+import { AUTO_ACTOR } from "../../src/core/policy.js";
+import type { UserId } from "../../src/core/types.js";
+import { personApproved } from "../../src/controller/units/transitions/transitions.unit.js";
 import { REPO, ratchet } from "./lib.js";
 
 // RFC 0015 §8, §9 rule-of-two: every role declares its three facts; no autonomous role holds all three; no role
@@ -63,6 +66,20 @@ describe("rule-of-two", () => {
       expect(ruleOfTwoRefusal(r, { person_approved: true }), r.name).toBeNull();
     }
     expect(ruleOfTwoRefusal(roles.get("review")!, { person_approved: false })).toBeNull();
+  });
+
+  it("a person approved an item when the newest approval by a person or auto mode is a person's", () => {
+    const auto = { actor: { kind: "system" as const, id: AUTO_ACTOR } };
+    const person = { actor: { kind: "user" as const, id: "local:owner" as UserId } };
+    const controller = { actor: { kind: "system" as const, id: "system:controller" } };
+    // Manual mode: no auto approval, so the dials, a standing rule or a parent's approval run as before.
+    expect(personApproved([controller])).toBe(true);
+    expect(personApproved([auto])).toBe(false);
+    expect(personApproved([auto, controller])).toBe(false);
+    // A person's /approve after auto mode's covers the item's later retries by the controller.
+    expect(personApproved([auto, person, controller])).toBe(true);
+    // Auto mode approving a new spec after a person's /revise needs a person again.
+    expect(personApproved([person, auto])).toBe(false);
   });
 
   it("no role approves what it proposes, and no principal approves its own proposal", () => {

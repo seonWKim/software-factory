@@ -41,14 +41,15 @@ export interface RoleDescriptor {
 
 export const ROLE_NAME = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
-const holdsAll = (r: RuleOfTwo) => RULE_OF_TWO_FACTS.every((f) => r[f]);
+/** Whether `r` holds all three facts: untrusted input, sensitive access and an external effect. */
+export const holdsAllFacts = (r: RuleOfTwo) => RULE_OF_TWO_FACTS.every((f) => r[f]);
 
 /** Why the role breaks the Rule of Two or its own shape, or []. */
 export function roleProblems(r: Omit<RoleDescriptor, "kind">): string[] {
   const out: string[] = [];
   if (!ROLE_NAME.test(r.name)) out.push(`role name "${r.name}" must be kebab-case`);
   for (const f of RULE_OF_TWO_FACTS) if (typeof r.rule_of_two?.[f] !== "boolean") out.push(`${r.name}: rule_of_two.${f} must be declared`);
-  if (r.autonomous && r.rule_of_two && holdsAll(r.rule_of_two)) {
+  if (r.autonomous && r.rule_of_two && holdsAllFacts(r.rule_of_two)) {
     out.push(`${r.name}: an autonomous role holds untrusted input, sensitive access and an external effect; drop one or put a person before it`);
   }
   for (const a of r.approves) if (r.proposes.includes(a)) out.push(`${r.name}: proposes and approves ${a}`);
@@ -68,7 +69,7 @@ export function defineRole(r: Omit<RoleDescriptor, "kind">): RoleDescriptor {
  * does not count.
  */
 export function ruleOfTwoRefusal(role: RoleDescriptor, ctx: { person_approved: boolean }): string | null {
-  if (!holdsAll(role.rule_of_two) || ctx.person_approved) return null;
+  if (!holdsAllFacts(role.rule_of_two) || ctx.person_approved) return null;
   return `rule_of_two: ${role.name} holds untrusted input, sensitive access and an external effect; a person must approve before it runs`;
 }
 

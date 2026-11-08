@@ -1,12 +1,16 @@
-// Every decided item transition: re-read, decide, the budget hold, the WorkItem state table check, a conditional write.
-// It reads through the kernel's reader, decides with no I/O of its own (the budget hold is a pure function of what it
-// read), and the kernel commits the decision: the checkpoint comment, then the conditional write (RFC 0015 §7).
+// Every decided item transition: re-read, decide, the Rule of Two and budget holds, the WorkItem state table check, a
+// conditional write. It reads through the kernel's reader, decides with no I/O of its own (each hold is a pure function
+// of what it read), and the kernel commits the decision: the hold's comment, then the conditional write (RFC 0015 §7).
 
 import { BUDGET_CHECKPOINT, DEFAULT_BUDGET_MIN_SAMPLE, checkpointComment, currentBudget, overBudget, suggestBudget, tierBudget } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
-import { type RunKind, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../../core/types.js";
-import type { NewBudgetCheckpoint, TransitionInput } from "../../../interfaces/factory-store.js";
-import { type Decision, type Refusal, MAX_CONFLICT_RETRIES, updatingForChecks, awaitingMerge } from "../support.js";
+import {
+  type Actor, type RunInput, type RunKind, type StateChange, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch,
+} from "../../../core/types.js";
+import type { NewBudgetCheckpoint, NewRun, TransitionInput } from "../../../interfaces/factory-store.js";
+import { loadRoles } from "../../../runtime/index.js";
+import { holdsAllFacts, ruleOfTwoRefusal } from "../../../shared/role.js";
+import { type CommandEvent, type Decision, type Refusal, AUTO, MAX_CONFLICT_RETRIES, RULE_OF_TWO, footerAfter, updatingForChecks, awaitingMerge } from "../support.js";
 import workItemActor from "../../actors/work-item/work-item.actor.js";
 import { allowed } from "../../router/actor.js";
 import type { Ctx } from "../context.js";
@@ -18,6 +22,22 @@ type ThreadEntry = ReturnType<typeof threadEntry>;
 type Hold = Omit<TransitionInput, "id" | "expected_version" | "enqueue"> & { checkpoint: NewBudgetCheckpoint };
 /** Patch fields that can change an item's status or where it is shown. */
 const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "change_ref"] as const;
+/** The state change of a person's `/approve` on a `rule_of_two` block. */
+const RULE_OF_TWO_APPROVED = "rule_of_two_approved";
+
+/**
+ * Whether a person approved the item's runs (RFC 0015 §8), from its state changes in order with the decision being
+ * made last: the newest change by a person or by auto mode decides. A person's command approves; auto mode's approval
+ * does not. With neither (manual mode: the dials, a standing rule, a parent's approval) the item runs as before.
+ */
+export function personApproved(changes: readonly Pick<StateChange, "actor">[]): boolean {
+  for (let i = changes.length - 1; i >= 0; i--) {
+    const a = changes[i]!.actor;
+    if (a.kind === "user") return true;
+    if (a.kind === "system" && a.id === AUTO.id) return false;
+  }
+  return true;
+}
 
 /** Every decided item transition: re-read, decide, the budget hold, the WorkItem state table check, a conditional write. */
 export class TransitionsUnit {
@@ -72,14 +92,17 @@ export class TransitionsUnit {
       if (!wanted) return null;
       if ("refuse" in wanted) return wanted.refuse;
       if (!this.inTable(item, wanted.patch)) return null;
+      // The Rule of Two: every run the factory queues passes here; one no person approved is held (design 10-event-driven).
+      const refused = await this.ruleOfTwoRefusal(item, wanted);
+      const personHold = refused === null ? null : ruleOfTwoHold(item, wanted, refused);
       // The one budget check: every implement or review run the factory would queue passes here (design §6).
-      const held = budgetHold(item, wanted, await this.loadBudget(item, wanted));
+      const held = personHold ? null : budgetHold(item, wanted, await this.loadBudget(item, wanted));
       const hold = held?.hold ?? null;
-      const decision = hold ?? wanted;
+      const decision = personHold?.hold ?? hold ?? wanted;
       const at = { id, expected_version: item.version };
       const r = held
         ? await k.commitItem([{ kind: "thread_entry", entry: held.comment }], { kind: "budget_checkpoint", input: { ...held.hold, ...at } })
-        : await k.commitItem([], { kind: "transition", input: { ...wanted, ...at } });
+        : await k.commitItem(personHold ? [{ kind: "thread_entry", entry: personHold.comment }] : [], { kind: "transition", input: { ...decision, ...at } });
       if (r.ok) {
         this.c.k.d.log.info("transition", { work_item_id: id, reason: decision.reason, version: r.item.version });
         if (STATUS_FIELDS.some((k) => k in decision.patch)) await this.c.unit("outbox").showStatus(r.item);
@@ -94,6 +117,38 @@ export class TransitionsUnit {
     }
     this.c.k.d.log.warn("transition gave up after conflicts", { work_item_id: id });
     return null;
+  }
+
+  /** Why `d`'s run may not be queued on `it` now, or null. Reads the item's state changes only for a three-fact role. */
+  async ruleOfTwoRefusal(it: WorkItem, d: NonNullable<Decision>): Promise<string | null> {
+    const role = d.enqueue ? (await loadRoles()).get(d.enqueue.kind) : null;
+    if (!role || !holdsAllFacts(role.rule_of_two)) return null;
+    const changes = d.actor.kind === "user" ? [] : await this.c.k.reader.listStateChanges(it.id);
+    return ruleOfTwoRefusal(role, { person_approved: personApproved([...changes, d]) });
+  }
+
+  /**
+   * A command on a `rule_of_two` block. A person's `/approve` queues the held run (its key, input and not-before as
+   * held) and clears the block; `/reject` closes the item. Any other command is refused.
+   */
+  async ruleOfTwoCommand(
+    e: Exclude<CommandEvent, { kind: "budget_continue" }>, it: WorkItem, actor: Actor, note: string | null, paths: readonly string[],
+  ): Promise<Decision | Refusal> {
+    if (e.kind === "spec_rejected") {
+      return { patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null }, actor, reason: "rule_of_two_rejected" };
+    }
+    if (e.kind !== "spec_approved" || paths.length > 0) {
+      return { refuse: "the item waits for a person to approve its run (Rule of Two); reply `/approve` to start it or `/reject <reason>` to close" };
+    }
+    const held = (await this.c.k.reader.listStateChanges(it.id)).filter((c) => c.detail?.held_by === RULE_OF_TWO).at(-1)?.detail;
+    if (typeof held?.held_run_kind !== "string" || typeof held.held_run_key !== "string") return { refuse: "the Rule of Two block has no held run" };
+    const run: Omit<NewRun, "work_item_id"> = {
+      kind: held.held_run_kind as RunKind,
+      idempotency_key: held.held_run_key,
+      ...(typeof held.held_run_input === "string" ? { input: JSON.parse(held.held_run_input) as RunInput } : {}),
+      ...(typeof held.held_run_not_before === "string" ? { not_before: held.held_run_not_before as Timestamp } : {}),
+    };
+    return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason: RULE_OF_TWO_APPROVED, ...(note ? { detail: { note } } : {}), enqueue: run };
   }
 
   /**
@@ -114,6 +169,36 @@ export class TransitionsUnit {
     const min_sample = this.c.k.cfg.budget_min_sample ?? DEFAULT_BUDGET_MIN_SAMPLE;
     return { base, budget, over: { history, min_sample, runs: (await r.listRuns(it.id)).length } };
   }
+}
+
+/**
+ * `d` with its run held by the Rule of Two: the rest of `d` stands (its reason too, so an auto approval is still
+ * recorded as one), the item blocks on a human, and the run is kept on the state change's detail (`held_by`) for the
+ * `/approve` that queues it. One comment, keyed on the held run's key.
+ */
+function ruleOfTwoHold(it: WorkItem, d: NonNullable<Decision>, refusal: string): { hold: NonNullable<Decision>; comment: ThreadEntry } {
+  const run = d.enqueue!;
+  const { enqueue: _held, ...rest } = d;
+  const patch = { ...d.patch, blocked_on: "human" as const, blocked_reason: RULE_OF_TWO };
+  const body = [
+    `The ${run.kind} run was not started: ${refusal.replace(/^rule_of_two: /, "")}. Auto mode's approval is not a person's.`,
+    "",
+    "Reply `/approve` to start it, or `/reject <reason>` to close the item.",
+    "",
+    footerAfter(it, patch),
+  ].join("\n");
+  const detail: StateChangeDetail = {
+    ...d.detail,
+    held_by: RULE_OF_TWO,
+    held_run_kind: run.kind,
+    held_run_key: run.idempotency_key,
+    held_run_input: run.input == null ? null : JSON.stringify(run.input),
+    held_run_not_before: run.not_before ?? null,
+  };
+  return {
+    hold: { ...rest, patch, detail },
+    comment: threadEntry(it, it.source, body, `<!-- factory:rule-of-two:${run.idempotency_key} -->`),
+  };
 }
 
 /** The budget check's reads (`loadBudget`). `over` is set only when the item is at or over its current budget. */

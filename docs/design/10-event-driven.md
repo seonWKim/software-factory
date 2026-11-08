@@ -364,13 +364,26 @@ force.
     goes out once the passport is allowed again. `DeliveryCompleted` carries the passport id. With no Identity (tests,
     a startup check) every delivery is allowed under no passport, as before. Solo and enterprise: the same.
 - **Run roles declare a Rule of Two profile and drive the agent** (since 2026-11-08, RFC 0015 M10; decision changed
-  in the M6 leftovers: roles now drive prompts and tools, see History). Each agent run kind (`triage`,
+  in the M6 leftovers: roles now drive prompts and tools; changed 2026-11-09: every run start checks the Rule of Two,
+  see History). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
   `external_effect`; classified strictly), what it proposes and approves, and its minimum golden cases. An autonomous
-  role may not hold all three facts; `implement` and `resolve` hold them and are not autonomous. `ruleOfTwoRefusal`
-  states that rule, but no run start calls it yet: an implement or resolve run starts once its item is approved,
-  by a person or by auto mode, so in auto mode they run with all three facts and no person (owner decision pending). No role approves what it proposes, and no
+  role may not hold all three facts; `implement` and `resolve` hold them and are not autonomous. **Every run start
+  checks the Rule of Two** (owner decision 2026-11-09): every run the controller queues passes
+  `TransitionsUnit.decide`, which asks `ruleOfTwoRefusal` before the budget check. A run whose role holds all three
+  facts is queued only when a person approved the item: of its state changes, the decision being made included, the
+  newest one by a person (`user` actor: `/approve`, `/retry`, `/resolve`, ...) or by auto mode (`system:auto`) is a
+  person's (`personApproved`). Otherwise the run is held: the decision's other effects stand (an auto approval is
+  still recorded as `spec_approved`), the item blocks with `blocked_on: human`, `blocked_reason: rule_of_two` (no new
+  stage), the held run's kind, key, input and not-before go on that state change's detail (`held_by: rule_of_two`),
+  and one comment says why and what to reply. A person's `/approve` (`rule_of_two_approved`, the person as actor, a
+  note goes to the implementer as an approval note) queues the held run; `/reject` closes the item; other commands
+  are refused. In auto mode, then, a spec auto mode approves still waits for a person before implement runs; auto
+  mode's approval still answers the spec's decisions and its merge still applies. Manual mode is unchanged: it has no
+  auto approval, so the dials, a standing rule and a parent's `phases_auto_approve` approval run as before. Solo and
+  enterprise: the same; the person's command passes their passport check as any `/approve`. `src/shared/role.ts`
+  joined `src/worker/roles/` on the gate list. No role approves what it proposes, and no
   principal approves its own proposal (`approvalRefusal`). A golden case names its role in `case.json` (`role`; none
   means `review`). `src/worker/roles/` is on the gate list, so a role's facts change only by an owner merge
   (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
@@ -499,6 +512,9 @@ force.
 
 ## History
 
+- **Rule of Two at run start** (decision changed 2026-11-09, owner decision). Before: `ruleOfTwoRefusal` existed but
+  no run start called it, so an implement or resolve run started once its item was approved, by a person or by auto
+  mode, and in auto mode they ran with all three facts and no person.
 - **Outbound review fixes** (decisions changed 2026-11-09). Before: a join updated the open batch with no state
   check and no claim-token move, so an intent joined between a flush's read and its claim ended in a sent batch
   unsent (finding 1); git destinations named `os.hostname()` (from the replica id, `local` with none), and a

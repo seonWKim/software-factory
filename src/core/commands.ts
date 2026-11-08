@@ -18,6 +18,8 @@ export type CommandPhase =
   | "dependency_hold"
   | "dependency_closed"
   | "floor_tier"
+  /** A run whose role holds all three Rule of Two facts, waiting for a person's `/approve` (auto mode approved its spec). */
+  | "rule_of_two"
   | "too_large"
   | "failed_implement"
   | "failed_review"
@@ -35,7 +37,7 @@ export type CommandPhase =
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
   "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "floor_tier",
-  "too_large",
+  "rule_of_two", "too_large",
   "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "merged", "closed",
 ];
 
@@ -84,11 +86,11 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "approve",
     usage: "/approve [notes]",
     description:
-      "Approve the spec or the floor block, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. " +
+      "Approve the spec, the floor block or a run held for a person by the Rule of Two, or start an implement run held by coordination cost now (not one waiting for a dependency). Notes on the same line or below go to the implementer and the reviewer. " +
       "`/approve +paths <path>...` (at most 10, notes on the lines below) on the spec or the floor block also adds those paths to the allowed paths",
     // Also accepted on an implement run held by coordination cost (design §5, 2026-11-03): that hold is not in the
     // item's fields, so it is no phase here; the hold comment names the command. Never on a dependency hold.
-    phases: ["spec_pending", "max_revisions", "floor_tier"],
+    phases: ["spec_pending", "max_revisions", "floor_tier", "rule_of_two"],
     needs_pr: false,
     changes_state: true,
   },
@@ -97,7 +99,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage: "/reject <reason>",
     description: "Close the item without a merge, giving your reason",
     phases: [
-      "spec_pending", "max_revisions", "floor_tier", "budget_checkpoint", "too_large", "failed_implement", "agent_needs_human", "repeated_failure",
+      "spec_pending", "max_revisions", "floor_tier", "rule_of_two", "budget_checkpoint", "too_large", "failed_implement", "agent_needs_human", "repeated_failure",
       "max_loops",
     ],
     needs_pr: false,
@@ -218,6 +220,7 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.stage === "CLOSED") return it.merge_sha ? "merged" : "closed";
   if (it.blocked_reason === "budget_checkpoint") return "budget_checkpoint";
   if (it.blocked_reason === "floor_tier") return "floor_tier";
+  if (it.blocked_reason === "rule_of_two") return "rule_of_two";
   if (it.blocked_on === "human") {
     if (it.blocked_reason === AGENT_NEEDS_HUMAN) return "agent_needs_human";
     if (it.blocked_reason === REPEATED_FAILURE) return "repeated_failure";
@@ -326,6 +329,7 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   dependency_hold: "waiting for a dependency to merge",
   dependency_closed: "blocked: a dependency was closed without a merge",
   floor_tier: "blocked by the floor check",
+  rule_of_two: "waiting for a person to approve its run (Rule of Two)",
   too_large: "blocked: the change was too large",
   failed_implement: "blocked by a failed implement run",
   failed_review: "blocked by a failed review run",
