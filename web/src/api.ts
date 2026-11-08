@@ -75,9 +75,21 @@ export function mergeCheckLabel(m: MergeCheckView): string {
   return `Conflicts: ${m.conflicts.length} ${m.conflicts.length === 1 ? "file" : "files"}`;
 }
 
-/** Whether the Merge button (#246) is disabled: while the item has conflicts or is being checked. */
-export function mergeBlocked(m: MergeCheckView | null | undefined): boolean {
-  return !!m && m.state !== "mergeable";
+/**
+ * Whether the Merge button is enabled (design §9), from the item API's `merge`: else `reason` says why, e.g. not
+ * waiting for a merge, merge check running, N conflicting files, no sandbox that can merge, no forge selected.
+ */
+export interface MergeReadiness {
+  enabled: boolean;
+  reason: string | null;
+}
+
+/** The `merge` reason of an item that is not waiting for a merge (src/ui/commands.ts NOT_WAITING). */
+const NOT_WAITING = "not waiting for a merge";
+
+/** Whether to draw the Merge button, enabled or with its reason: for an item waiting for its merge only. */
+export function showsMerge(m: MergeReadiness | null | undefined): m is MergeReadiness {
+  return !!m && (m.enabled || m.reason !== NOT_WAITING);
 }
 
 /**
@@ -116,6 +128,8 @@ export interface ItemRow {
   dependents: number;
   conflicts: { automatic: number; person: number };
   merge_check?: MergeCheckView | null;
+  /** The Merge button: enabled, or disabled with the reason. */
+  merge?: MergeReadiness;
   /**
    * What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows.
    * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
@@ -201,6 +215,8 @@ export interface ItemDetail {
     created_at: string;
     updated_at: string;
     merge_check?: MergeCheckView | null;
+    /** The Merge button: enabled, or disabled with the reason. */
+    merge?: MergeReadiness;
     why?: Why;
   };
   timeline: {
@@ -232,8 +248,6 @@ export interface ItemDetail {
   commands?: ItemCommand[];
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
-  /** Show the Merge button: a local item waiting for its merge, and the page's user allowed approve_merge. */
-  can_merge?: boolean;
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
 }
