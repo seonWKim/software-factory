@@ -196,7 +196,7 @@ describe("the broker maps forge 401/403 to forge_auth", () => {
       const b = await brokerWith(() => {
         throw new GitHubError(status, `GitHub POST /repos/o/r/pulls → ${status} Resource not accessible by integration`);
       });
-      const r = await b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "t", body: "b" });
+      const r = await b.broker.call(b.ctx, "forge.open_change", { branch: b.branch, base_ref: "main", title: "t", body: "b" });
       expect(r).toMatchObject({ ok: false, error_code: "forge_auth" });
     }
   });
@@ -205,7 +205,7 @@ describe("the broker maps forge 401/403 to forge_auth", () => {
     const b = await brokerWith(() => {
       throw new GitHubError(422, "GitHub POST → 422");
     });
-    await expect(b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "t", body: "b" })).rejects.toThrow("422");
+    await expect(b.broker.call(b.ctx, "forge.open_change", { branch: b.branch, base_ref: "main", title: "t", body: "b" })).rejects.toThrow("422");
   });
 
   it("push: git's 401/403 and auth messages are recognized; other push errors are not", () => {

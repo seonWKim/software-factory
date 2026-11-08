@@ -87,14 +87,29 @@ describe("tool_grants at startup", () => {
     await expect(startWith({ review: ["test.write_note"] })).rejects.toThrow(/"test\.write_note", which is not read-only.*valid read-only tools of the test-notes broker: test\.read_note/);
   });
 
-  for (const tool of ["github.push_branch", "github.open_pr", "github.comment"]) {
-    it(`fails on ${tool} with the github broker: not read-only; the valid name is github.preflight`, async () => {
+  for (const tool of ["forge.push_branch", "forge.open_change", "forge.comment"]) {
+    it(`fails on ${tool} with the github broker: not read-only; the valid name is forge.preflight`, async () => {
       const err = await startWith({ implement: [tool] }, "github").then(
         () => null,
         (e: unknown) => e as Error,
       );
       expect(err?.message).toContain(`tool_grants.implement grants "${tool}", which is not read-only`);
-      expect(err?.message).toContain("valid read-only tools of the github broker: github.preflight");
+      expect(err?.message).toContain("valid read-only tools of the github broker: forge.preflight");
+    });
+  }
+
+  it("grants forge.preflight with the github broker", async () => {
+    const built = await startWith({ triage: ["forge.preflight"] }, "github");
+    try {
+      expect(workerConfig(built).tool_grants).toEqual({ triage: ["forge.preflight"] });
+    } finally {
+      await built.close();
+    }
+  });
+
+  for (const [old, forge] of [["github.preflight", "forge.preflight"], ["github.push_branch", "forge.push_branch"], ["github.open_pr", "forge.open_change"], ["github.comment", "forge.comment"]]) {
+    it(`fails on the old name ${old}, naming ${forge} to grant instead`, async () => {
+      await expect(startWith({ triage: [old] }, "github")).rejects.toThrow(`tool_grants.triage grants "${old}", an old tool name; grant "${forge}" instead`);
     });
   }
 
@@ -138,18 +153,18 @@ describe("tool_grants at startup", () => {
 });
 
 describe("the GitHub broker's read_only flags", () => {
-  it("only github.preflight is read-only", () => {
+  it("only forge.preflight is read-only", () => {
     const broker = new GitHubToolBroker({
       client: {} as never, credentials: {} as never, store: {} as never, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const flags = Object.fromEntries(broker.allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "github.push_branch": false, "github.open_pr": false, "github.preflight": true, "github.comment": false });
+    expect(flags).toEqual({ "forge.push_branch": false, "forge.open_change": false, "forge.preflight": true, "forge.comment": false });
   });
 
   it("FakeBroker lists the same flags", () => {
     const flags = Object.fromEntries(new FakeBroker().allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "github.push_branch": false, "github.open_pr": false, "github.preflight": true, "github.comment": false });
-    expect(new FakeBroker().listTools(["github.preflight"]).map((t) => t.name)).toEqual(["github.preflight"]);
+    expect(flags).toEqual({ "forge.push_branch": false, "forge.open_change": false, "forge.preflight": true, "forge.comment": false });
+    expect(new FakeBroker().listTools(["forge.preflight"]).map((t) => t.name)).toEqual(["forge.preflight"]);
   });
 });
 

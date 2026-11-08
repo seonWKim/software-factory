@@ -52,7 +52,7 @@ import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
-import type { ToolBroker, ToolCallContext, ToolResult } from "../interfaces/tool-broker.js";
+import { type ToolBroker, type ToolCallContext, type ToolResult, forgeToolName } from "../interfaces/tool-broker.js";
 
 export interface WorkerDeps {
   /** `<host>:<pid>:<n>` under a WorkerPool: unique per worker loop, stored as the lease owner. */
@@ -139,9 +139,13 @@ export function routeFor(
   return { ...(local && d.local ? d.local : { broker: d.broker, sandbox: d.sandbox }), local };
 }
 
-/** Whether `broker` serves `name`: the local broker has no PR, preflight or comment tool (design 05-sources). */
+/**
+ * Whether `broker` serves `name`, an old tool name counting as its forge.* tool (TOOL_ALIASES): the local broker has no PR,
+ * preflight or comment tool (design 05-sources).
+ */
 export function hasTool(broker: ToolBroker, name: string): boolean {
-  return broker.allTools().some((t) => t.name === name);
+  const forge = forgeToolName(name);
+  return broker.allTools().some((t) => t.name === name || t.name === forge);
 }
 
 /** The run kinds `workers pause` stops mid-run (design §5 Pause). Others finish first; then the worker stops claiming. */

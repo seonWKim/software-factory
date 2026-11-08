@@ -336,7 +336,7 @@ describe("factory session on a local item, with the GitHub broker selected", () 
     const ghBroker = new FakeBroker();
     // The local broker's one tool: it commits the local branch and has no PR tool.
     const localBroker = new FakeBroker();
-    localBroker.tools = localBroker.tools.filter((t) => t.name === "github.push_branch");
+    localBroker.tools = localBroker.tools.filter((t) => t.name === "forge.push_branch");
     const s = new Sessions({
       store, sandbox, broker: ghBroker, scanner: cleanScanner, auth: new FakeAuth(), clock, config, log: silent, files: new MemorySessionFiles(),
       issues: new FakeIssues({}), toolEnv: {}, owner: "session:host:1", ...(o.local ? { local: { broker: localBroker, sandbox } } : {}),

@@ -154,11 +154,11 @@ describe("github.comment in the broker", () => {
     });
     const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
     for (const number of [Number.NaN, null, undefined, 0, -1, 1.5, "3", Number.POSITIVE_INFINITY]) {
-      const r = await broker.call(ctx, "github.comment", { number, body: "b", marker: "<!-- m -->" });
+      const r = await broker.call(ctx, "forge.comment", { number, body: "b", marker: "<!-- m -->" });
       expect(r).toMatchObject({ ok: false, error_code: "invalid_args" });
     }
     expect(client.requests).toEqual([]);
-    expect(await broker.call(ctx, "github.comment", { number: 1, body: "b", marker: "<!-- m -->" })).toMatchObject({ ok: true });
+    expect(await broker.call(ctx, "forge.comment", { number: 1, body: "b", marker: "<!-- m -->" })).toMatchObject({ ok: true });
     expect(client.requests.some((r) => r.includes("/issues/1/comments"))).toBe(true);
   });
 });

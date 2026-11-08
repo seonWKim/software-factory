@@ -1,3 +1,4 @@
+import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
@@ -5,11 +6,13 @@ import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import { GitHubError, GitHubRateLimitError, type GitHubClient, type RepoRef } from "./github-client.js";
+import { brokerToolName } from "../broker/tool-alias.js";
 import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "../broker/trusted-git.js";
 
+/** The forge.* tools; each old github.* name runs its tool as an alias (TOOL_ALIASES). */
 const TOOLS: readonly ToolDescriptor[] = [
   {
-    name: "github.push_branch",
+    name: "forge.push_branch",
     read_only: false,
     description: "Push the current HEAD of a run folder to its factory branch on the factory repo's remote.",
     input_schema: {
@@ -19,7 +22,7 @@ const TOOLS: readonly ToolDescriptor[] = [
     },
   },
   {
-    name: "github.open_pr",
+    name: "forge.open_change",
     read_only: false,
     description:
       "Open a PR for a factory branch, or update the open one's title and body so it matches the branch. `labels` adds (true) or removes (false) each named label on it.",
@@ -36,7 +39,7 @@ const TOOLS: readonly ToolDescriptor[] = [
     },
   },
   {
-    name: "github.preflight",
+    name: "forge.preflight",
     read_only: true,
     description:
       "Read-only check before an implement run's agent starts: the credentials may push to the repository, and the PR API answers for the branch.",
@@ -47,7 +50,7 @@ const TOOLS: readonly ToolDescriptor[] = [
     },
   },
   {
-    name: "github.comment",
+    name: "forge.comment",
     read_only: false,
     description: "Comment on an issue or PR at most once per marker.",
     input_schema: {
@@ -97,6 +100,8 @@ export class GitHubToolBroker implements ToolBroker {
       branchPrefix: string;
       /** The factory repo: its origin is the trusted push remote, its origin/<base> the trusted base. */
       repoPath?: string;
+      /** Where a github.* alias's one warning goes; stderr when absent. */
+      log?: Pick<Logger, "warn">;
     },
   ) {}
 
@@ -111,14 +116,14 @@ export class GitHubToolBroker implements ToolBroker {
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
-    switch (name) {
-      case "github.push_branch":
+    switch (brokerToolName(name, this.deps.log)) {
+      case "forge.push_branch":
         return this.push(args as PushArgs);
-      case "github.open_pr":
+      case "forge.open_change":
         return this.openPr(args as PrArgs);
-      case "github.preflight":
+      case "forge.preflight":
         return this.preflight(args as PreflightArgs);
-      case "github.comment":
+      case "forge.comment":
         return this.comment(args as CommentArgs);
       default:
         return { ok: false, error_code: "unknown_tool", message: name };

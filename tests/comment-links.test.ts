@@ -177,7 +177,7 @@ describe("GitHub comments return their URL", () => {
       credentials: { token: async () => null },
       scanner: cleanScanner,
     });
-    const r = await broker.call({ run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token }, "github.comment", {
+    const r = await broker.call({ run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token }, "forge.comment", {
       number: 1, body: "x", marker: "m",
     });
     expect(r).toEqual({ ok: true, content: { created: true, url: client.postedUrl } });

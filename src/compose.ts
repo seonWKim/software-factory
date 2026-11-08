@@ -37,7 +37,7 @@ import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthProvider } from "./interfaces/auth-provider.js";
-import type { ToolBroker } from "./interfaces/tool-broker.js";
+import { TOOL_ALIASES, type ToolBroker, forgeToolName } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
@@ -626,6 +626,20 @@ async function githubParts(loaded: Loaded, p: Plugins, secrets: SecretStore, clo
  * calls GitHub reads the last response any replica got, at most once per tick, and writes its own. With no GitHub
  * plugin selected there is no client, and no budget row is written.
  */
+/**
+ * Startup refuses an old github.* tool name in `tool_grants` (the forge rename, phase 1), one line per name, each
+ * naming the forge.* tool to grant instead. Runs before toolGrantsConfig, which checks the rest.
+ */
+function refuseAliasGrants(raw: unknown): void {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+  const problems = Object.entries(raw as Record<string, unknown>).flatMap(([kind, names]) =>
+    (Array.isArray(names) ? names : [])
+      .filter((n): n is string => typeof n === "string" && Object.hasOwn(TOOL_ALIASES, n))
+      .map((n) => `tool_grants.${kind} grants ${JSON.stringify(n)}, an old tool name; grant ${JSON.stringify(forgeToolName(n))} instead`),
+  );
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+}
+
 function shareGitHubBudget(loaded: Loaded, github: GitHubClient, store: FactoryStore, config: FactoryConfig): void {
   if (loaded.config.local_only !== true) github.shareBudget({ store, project: config.project.key, refresh_ms: config.tick_ms });
 }
@@ -770,6 +784,7 @@ export async function build(
   const brokerDeps: BrokerDeps = { github, credentials, secrets, store, scanner, clock };
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, ...brokerDeps });
   // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
+  refuseAliasGrants(loaded.file.tool_grants);
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
   // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
   const local = await p.localRoute({ broker, sandbox }, brokerDeps);

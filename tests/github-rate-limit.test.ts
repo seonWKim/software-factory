@@ -129,9 +129,9 @@ describe("broker: github_rate_limited", () => {
     const ctx = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
     const branch = `factory/${item.id}`;
     const calls = {
-      preflight: () => broker.call(ctx, "github.preflight", { branch, base_ref: "main" }),
-      open_pr: () => broker.call(ctx, "github.open_pr", { branch, base_ref: "main", title: "t", body: "b" }),
-      comment: () => broker.call(ctx, "github.comment", { number: 1, body: "hello", marker: "<!-- m -->" }),
+      preflight: () => broker.call(ctx, "forge.preflight", { branch, base_ref: "main" }),
+      open_pr: () => broker.call(ctx, "forge.open_change", { branch, base_ref: "main", title: "t", body: "b" }),
+      comment: () => broker.call(ctx, "forge.comment", { number: 1, body: "hello", marker: "<!-- m -->" }),
     };
     return { calls, now: fake.now().getTime() };
   }
