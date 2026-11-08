@@ -7,7 +7,7 @@ import { loadConfig } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItemId, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";

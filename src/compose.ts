@@ -24,8 +24,8 @@ import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
-import { WorkerPool } from "./core/worker-pool.js";
-import type { LocalRoute } from "./core/worker.js";
+import { WorkerPool } from "./worker/index.js";
+import type { LocalRoute } from "./worker/index.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";

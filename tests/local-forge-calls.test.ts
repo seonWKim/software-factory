@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { issueNumber } from "../src/core/change-ref.js";
 import type { SourceRef, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";

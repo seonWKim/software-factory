@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";

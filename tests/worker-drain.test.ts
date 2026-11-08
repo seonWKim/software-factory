@@ -1,7 +1,7 @@
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { describe, expect, it, vi } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";

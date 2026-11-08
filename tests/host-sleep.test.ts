@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { HOST_SLEEP_MS, Worker } from "../src/core/worker.js";
+import { HOST_SLEEP_MS, Worker } from "../src/worker/index.js";
 import type { RunId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";

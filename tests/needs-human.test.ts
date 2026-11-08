@@ -4,7 +4,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, REVIEW_SCHEMA, parseImplement, parseReview } from "../src/core/outputs.js";
 import { blockingRunKind, failureLine, repeatsLastFailure } from "../src/core/policy.js";
 import { type Run, type WorkerId, type WorkItem, outcomeTokens } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { GATE_PATHS, MAX_DRAFT_CALLS, enqueueImprove, isGatePath, runImprove, systemSource } from "../src/core/improver.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import type { ImproveReport, Run, RunId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";

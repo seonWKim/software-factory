@@ -1,6 +1,7 @@
-import { LiveSettings } from "./settings.js";
-import type { Timestamp, WorkerId } from "./types.js";
-import { Worker, type WorkerDeps } from "./worker.js";
+import { LiveSettings } from "../core/settings.js";
+import type { Timestamp, WorkerId } from "../core/types.js";
+import { Worker } from "./runner.js";
+import type { WorkerDeps } from "./support.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 

@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
-import type { WorkerDeps } from "../src/core/worker.js";
+import type { WorkerDeps } from "../src/worker/index.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";

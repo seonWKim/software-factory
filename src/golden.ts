@@ -13,7 +13,7 @@ import { DEFAULT_MODEL_TABLE, type ModelTable, modelClassFor } from "./core/mode
 import type { ProjectRef } from "./core/project.js";
 import { REVIEW_SCHEMA, findingLine, parseReview } from "./core/outputs.js";
 import type { RunId, StateChange, WorkItem, WorkItemId } from "./core/types.js";
-import { toolsNamed } from "./core/worker.js";
+import { toolsNamed } from "./worker/index.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressChannel, EgressScanner } from "./interfaces/egress-scanner.js";

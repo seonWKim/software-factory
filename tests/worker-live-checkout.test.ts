@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { Write, guardPolicy } from "../src/core/tools/index.js";
 import type { WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";

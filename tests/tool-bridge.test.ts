@@ -8,7 +8,7 @@ import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FORBIDDEN_ENV, Read } from "../src/core/tools/index.js";
 import type { Run, RunId, WorkItemId, WorkerId } from "../src/core/types.js";
-import { Worker } from "../src/core/worker.js";
+import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ClaudeCodeRunner, buildAgentEnv, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { isGatePath } from "../../src/core/improver.js";
 import { MODEL_RUN_KINDS } from "../../src/core/model-choice.js";
-import { READ_TOOLS, WRITE_TOOLS } from "../../src/core/worker.js";
+import { READ_TOOLS, WRITE_TOOLS } from "../../src/worker/index.js";
 import { type RoleCatalog, loadRoles, rolesShortOfGolden } from "../../src/runtime/index.js";
 import { type RoleDescriptor, approvalRefusal, defineRole, roleProblems, ruleOfTwoRefusal } from "../../src/shared/role.js";
 import { REPO, ratchet } from "./lib.js";
