@@ -777,8 +777,9 @@ export class Controller {
 
   /**
    * The local merge (design 05-sources, Local items): the one merge path for an item with no PR, reached by
-   * `factory merge <id>` through the command inbox (and later by other callers, never a second path). Authorized
-   * by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
+   * `factory merge <id>` through the command inbox and by the status page's Merge button (an app request,
+   * applyAppRequest), never a second path. `who` is the CLI's local identity or the app request's factory user ID.
+   * Authorized by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
    * for a merge. The controller's sandbox merges the item's local branch into the local base branch after the
    * install command and the checks passed on the merge commit in a temporary worktree; a conflict or a failing
    * check leaves the item in merge_pending and the reply says why. A checkout of the base is fast-forwarded when
@@ -786,14 +787,17 @@ export class Controller {
    * (completed, its merge sha) with the approver as its actor and releases the items waiting on it; with a forge
    * that can push a base, the same transition queues one base push, which the base push step makes later, so the
    * merge never waits on the remote. Never automatic: only a human's command calls it. Safe to run twice: a branch
-   * the base already contains moves nothing and closes the item with the base's commit; `key` keys the reply.
+   * the base already contains moves nothing and closes the item with the base's commit; `key` keys the reply and
+   * `detail` goes on the state change. Returns the refusal, or null when the item merged.
    */
-  async mergeLocal(id: WorkItemId, who: ExternalIdentity, key: string): Promise<void> {
+  async mergeLocal(id: WorkItemId, who: ExternalIdentity | UserId, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
     const item = await this.d.store.getWorkItem(id);
-    if (!item) return;
+    if (!item) return "the work item was not found";
     const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
-    const principal = await this.authorize(who, "approve_merge", item.id);
+    const principal = typeof who === "string"
+      ? await this.allowed({ user_id: who, attributes: {} }, "approve_merge", item.id, true)
+      : await this.authorize(who, "approve_merge", item.id);
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
     else if (!awaitingMerge(item) || item.change_ref !== null) {
@@ -819,7 +823,7 @@ export class Controller {
               actor,
               reason: "local_merged",
               detail: {
-                branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}), ...(stale ? { checkout_not_updated: stale } : {}),
+                ...detail, branch, base_ref: repo.base_branch, ...(r.already ? { already_merged: true } : {}), ...(stale ? { checkout_not_updated: stale } : {}),
               },
               ...(push ? { base_push: { base_ref: repo.base_branch, merge_sha: r.sha } } : {}),
             }
@@ -832,7 +836,7 @@ export class Controller {
           ];
           await this.post(item, item.source, body.join("\n\n"), `<!-- factory:local-merged:${key} -->`);
           await this.guard("dependents", () => this.releaseDependents(item.source.id));
-          return;
+          return null;
         }
         refusal = lost;
       } else if ("conflicts" in r) {
@@ -847,6 +851,7 @@ export class Controller {
     }
     this.d.log.info("command refused", { work_item_id: item.id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
     await this.post(item, item.source, `\`factory merge\` was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
+    return refusal;
   }
 
   /** The forge's base push and the sandbox that syncs the base before it, or null when either cannot (no push is queued). */
@@ -950,9 +955,10 @@ export class Controller {
   }
 
   /**
-   * One app command request, through the comment command path (design §4, app requests): `approve` gets the
-   * `/approve` permission check, note scan and transition, with the request's seq on the state change; any other
-   * command is refused. A refusal is posted once on the item's source, keyed on the request, then stored on the
+   * One app command request (design §4, app requests): `approve` goes through the comment command path and gets
+   * the `/approve` permission check, note scan and transition; `merge` on a local item goes to mergeLocal, the
+   * same local merge as `factory merge` (design §9, the item page's Merge button). Both put the request's seq on
+   * the state change. Any other command is refused. A refusal is posted once on the item's source, keyed on the request, then stored on the
    * row by the conditional mark. A failed post leaves the request pending for the next tick. Safe to run twice:
    * a request whose transition is already stored (an earlier try, another replica) is marked applied.
    */
@@ -968,8 +974,13 @@ export class Controller {
     if (await applied()) return this.finishAppRequest(r, item, null);
 
     let refusal: string | null;
-    if (r.command !== "approve") {
-      refusal = "only `approve` is applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
+    if (r.command === MERGE_COMMAND) {
+      // mergeLocal posts its own reply, under the same marker as finishAppRequest's, so the thread gets it once.
+      refusal = item.source.type === LOCAL_SOURCE
+        ? await this.mergeLocal(item.id, r.actor, `app-${r.seq}`, { [APP_REQUEST]: r.seq })
+        : `${item.id} is not a local item: merge its PR instead`;
+    } else if (r.command !== "approve") {
+      refusal = "only `approve` and `merge` are applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     } else {
       const principal = await this.allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true);
       if ("refuse" in principal) refusal = principal.refuse;

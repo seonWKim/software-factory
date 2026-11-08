@@ -232,6 +232,8 @@ export interface ItemDetail {
   commands?: ItemCommand[];
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
+  /** Show the Merge button: a local item waiting for its merge, and the page's user allowed approve_merge. */
+  can_merge?: boolean;
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
 }
@@ -312,11 +314,14 @@ export interface CommandReply {
   refusal: string | null;
 }
 
-/** `/api/v1/session`: the token item commands send, and whether `ui.user_id` is set. */
+/** `/api/v1/session`: the token item commands send, whether commands are on, and who they act as. */
 export interface Session {
   as_of: string;
   csrf_token: string;
   commands_enabled: boolean;
+  /** The factory user commands act as: `ui.user_id`, else on loopback the CLI identity; null when off. */
+  actor: string | null;
+  actor_source: "config" | "environment" | null;
 }
 
 export type CommandResult = { ok: true; seq: number } | { ok: false; error: string };

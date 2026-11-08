@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { API, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
+import { useEffect, useRef, useState } from "react";
+import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
@@ -199,6 +199,37 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   );
 }
 
+/**
+ * Who the page's item commands act as, and what to set when they are off (design 09): the item page's "Commands
+ * are off" notice links here (#page-commands). `ui.user_id` is a config-file key, not a settable one (#445).
+ */
+function PageCommands() {
+  const session = useApi<Session>(API.session, false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (window.location.hash === "#page-commands") ref.current?.scrollIntoView();
+  }, []);
+  const s = session.data;
+  return (
+    <div id="page-commands" ref={ref} className="mt-6 first:mt-0">
+      <Section title="Commands from the page">
+        <p className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          {s?.actor ? (
+            <>
+              Item commands act as <code>{s.actor}</code> (from {s.actor_source === "config" ? "config" : "environment"}).{" "}
+            </>
+          ) : (
+            <>Item commands are off: this server is not on loopback, so it needs a user to act as. </>
+          )}
+          To act as another user, set <code>ui.user_id</code> in <code>factory.config.json</code> to a factory user ID (e.g.{" "}
+          <code>{'"ui": { "user_id": "github:12345" }'}</code>) and restart <code>factory ui</code>. Without it, a server on
+          127.0.0.1 acts as the CLI identity: <code>cli_user</code>, else git <code>user.email</code>, else the OS user.
+        </p>
+      </Section>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const now = useNow();
   const settings = useApi<SettingsView>(API.settings);
@@ -207,6 +238,7 @@ export function SettingsPage() {
   const v = settings.data;
   return (
     <>
+      <PageCommands />
       <Section title="Settable keys" count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
           A change is stored as an override and applies with no restart; the same checks as <code>factory settings</code> run first.

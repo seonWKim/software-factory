@@ -15,6 +15,7 @@ import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import type { Logger } from "./core/log.js";
+import type { CliIdentity } from "./core/local-cli.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
@@ -36,7 +37,7 @@ import type { Forge } from "./interfaces/forge.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
-import type { AuthProvider } from "./interfaces/auth-provider.js";
+import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -44,6 +45,7 @@ import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { GitHubError, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
+import { BIND as UI_BIND } from "./ui/server.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
@@ -142,7 +144,7 @@ export interface FileConfig {
   agent_git_identity: { name: string; email: string };
   /**
    * The status page (`factory ui`). Always bound to 127.0.0.1; there is no host option. `user_id`: the factory
-   * user ID the page's commands act as (issue #227); absent, the page cannot send commands.
+   * user ID the page's commands act as (issue #227); absent, they act as the CLI identity (uiCommandsActor).
    */
   ui?: { port?: number; user_id?: string };
   /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
@@ -906,7 +908,7 @@ export function uiPort(ui: FileConfig["ui"]): number {
 }
 
 /**
- * `ui.user_id` from factory.config.json: absent means null (the page cannot send commands), otherwise a
+ * `ui.user_id` from factory.config.json: absent means null (uiCommandsActor decides), otherwise a
  * non-empty string (a factory user ID, never a display name) or startup fails naming the key.
  */
 export function uiUserId(ui: FileConfig["ui"]): UserId | null {
@@ -916,13 +918,30 @@ export function uiUserId(ui: FileConfig["ui"]): UserId | null {
   return id.trim() as UserId;
 }
 
+/** True for a loopback bind address: only this machine's user can reach the server. */
+export function isLoopback(bind: string): boolean {
+  return ["127.0.0.1", "::1", "localhost"].includes(bind.trim().toLowerCase());
+}
+
+/**
+ * Who the page's commands act as (design 09, 2026-11-08): `ui.user_id` when set (source `config`); else, on a
+ * loopback server, the CLI identity of this machine (`cli_user` is `config`, git user.email or the OS user is
+ * `environment`), so a solo setup needs no key. A server on any other address needs `ui.user_id`: null.
+ * Commands are then authorized as any local command is (the auth plugin; `local:anonymous` holds no role).
+ */
+export function uiCommandsActor(uiUser: UserId | null, cli: CliIdentity, bind: string): Pick<UiCommands, "actor" | "source"> {
+  if (uiUser !== null) return { actor: uiUser, source: "config" };
+  if (!isLoopback(bind)) return { actor: null, source: null };
+  return { actor: cli.user, source: cli.from === "cli_user" ? "config" : "environment" };
+}
+
 export interface UiParts {
   clock: Clock;
   store: FactoryStore;
   scanner: EgressScanner;
   /** The Settings page's write path (design §8, issue #236): the config base, repo, actor, store-only resolver, CSRF token. */
   settings: UiSettings;
-  /** The item commands route (POST /api/v1/items/:id/commands, issue #227): ui.user_id and the per-process token. */
+  /** The item commands route (POST /api/v1/items/:id/commands, issue #227): its actor and the per-process token. */
   commands: UiCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
@@ -937,12 +956,12 @@ const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
  * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only
  * because the MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches
  * the page. The Settings page finds the configured repo's project key from the stored project label
- * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `actor` is the
- * writer's ID (`local:<OS login>`); the CSRF token is made here, per process, and kept only in memory. The
- * commands route acts as `ui.user_id` (null: not configured) and takes the same token. The pause route's owner
+ * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `identity` is the
+ * CLI identity main.ts resolves (cliIdentity); its user is the Settings writer. The CSRF token is made here, per
+ * process, and kept only in memory. The commands route acts as uiCommandsActor says and takes the same token. The pause route's owner
  * check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
-export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Promise<UiParts> {
+export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
   const p = new Plugins(loaded);
   const clock = await p.clock();
@@ -955,26 +974,32 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
   const settings: UiSettings = {
     base: settingsBase(loaded),
     repo: { owner, name },
-    actor: opts.actor,
+    actor: opts.identity.user,
     resolveProject: storeProjectResolver(store, { owner, name }),
     csrfToken: token,
   };
-  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
-  const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
-  // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
-  // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
+  // The owner check for "Resume now" and the Merge button's approve_merge check: the configured auth plugin over the
+  // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
+  // `factory resume` needs no grant). A remote-only grant therefore shows no Merge button.
   const base = p.base;
   const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
   const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
+    const project = await settings.resolveProject();
+    if (!project) return { allow: false, reason: "no project is stored yet" };
+    return auth.authorize({ user_id, attributes: {} }, action, { kind: "project", id: project.key });
+  };
+  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
+  const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, UI_BIND);
+  const commands: UiCommands = {
+    ...who, token,
+    mergeAllowed: async () => who.actor !== null && (await onProject(who.actor, "approve_merge")).allow,
+  };
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
-    principal: async () => (await auth.resolve({ provider: "local", subject: opts.actor.replace(/^local:/, "") }))?.user_id ?? cliUser,
-    authorize: async (user_id) => {
-      const project = await settings.resolveProject();
-      if (!project) return { allow: false, reason: "no project is stored yet" };
-      return auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
-    },
+    principal: async () => (await auth.resolve({ provider: "local", subject: opts.identity.user.replace(/^local:/, "") }))?.user_id ?? cliUser,
+    authorize: (user_id) => onProject(user_id, "approve_spec"),
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };

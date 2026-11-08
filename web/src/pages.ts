@@ -27,6 +27,9 @@ const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES];
 
 export const BASE = "/app/";
 
+/** The Settings page's "Commands from the page" section: what to set when the page's commands are off. */
+export const PAGE_COMMANDS_PATH = `${BASE}settings#page-commands`;
+
 /** Where a location path under /app/ leads: a sidebar page, or one work item (`items/<id>`, under Work items). */
 export interface Route {
   page: PageDef;

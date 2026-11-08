@@ -8,8 +8,8 @@ import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import { type ItemDetail, type ItemRow, type MergeCheckView, API, mergeBlocked, mergeCheckLabel } from "../web/src/api.js";
+import { describe, expect, it, vi } from "vitest";
+import { type ItemDetail, type ItemRow, type MergeCheckView, API, mergeBlocked, mergeCheckLabel, postCommand } from "../web/src/api.js";
 // TS6142: tsconfig.test.json has no JSX, so these .tsx views stay untyped here; web/tsconfig.json checks them.
 // @ts-expect-error -- see above
 import { ItemsTable } from "../web/src/views/common.js";
@@ -285,7 +285,7 @@ describe("ui app: item commands markup", () => {
     };
     const client = new QueryClient();
     client.setQueryData([API.item("wi_1")], detail);
-    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
+    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true, actor: "local:me", actor_source: "environment" });
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
     const buttons = [...html.matchAll(/<li data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
     expect(buttons).toEqual(names.map((n) => [n, n]));
@@ -295,5 +295,59 @@ describe("ui app: item commands markup", () => {
     expect(tag("revise")).toContain(" disabled=\"\"");
     expect(tag("reject")).toContain(" disabled=\"\"");
     expect(tag("approve")).not.toContain(" disabled=\"\"");
+  });
+});
+
+// The item page's Merge button (design §9): only where the item API says can_merge, its refusal beside it.
+describe("ui app: the Merge button", () => {
+  const AT = "2026-11-07T00:00:00.000Z";
+  const page = (source: string, canMerge: boolean | undefined, refusal: string | null = null) => {
+    const detail: ItemDetail = {
+      as_of: AT,
+      item: {
+        id: "wi_1", source: { type: source, id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
+        blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
+        version: 1, created_at: AT, updated_at: AT, merge_check: null,
+      },
+      timeline: [],
+      runs: [],
+      commands: [{ name: "retry", usage: "/retry", description: "retry" }],
+      replies: refusal === null ? [] : [{ seq: 3, command: "merge", created_at: AT, handled_at: AT, refusal }],
+      ...(canMerge === undefined ? {} : { can_merge: canMerge }),
+    };
+    const client = new QueryClient();
+    client.setQueryData([API.item("wi_1")], detail);
+    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
+  };
+  const mergeRow = (html: string) => html.match(/<li data-command="merge"[^>]*>.*?<\/li>/)?.[0] ?? null;
+
+  it("shows Merge when can_merge is true, and nowhere else", () => {
+    const row = mergeRow(page("local", true));
+    expect(row).toMatch(/<button[^>]*>Merge<\/button>/);
+    expect(row).not.toContain(" disabled=\"\"");
+    expect(mergeRow(page("local", false))).toBeNull();
+    expect(mergeRow(page("local", undefined))).toBeNull();
+    expect(mergeRow(page("github_issue", false))).toBeNull();
+  });
+
+  it("shows the latest merge refusal beside the button", () => {
+    const row = mergeRow(page("local", true, "`merge` was not applied: `factory/wi_1` does not merge cleanly."))!;
+    expect(row).toContain('role="alert"');
+    expect(row).toContain("does not merge cleanly");
+  });
+
+  it("a merge send posts { command: merge } with the token and no note", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ seq: 9 }), { status: 202 }));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      expect(await postCommand("tok", "wi_1", "merge", "")).toEqual({ ok: true, seq: 9 });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const [url, init] = fetch.mock.calls[0]! as unknown as [string, RequestInit];
+    expect(url).toBe(API.itemCommands("wi_1"));
+    expect(JSON.parse(String(init.body))).toEqual({ command: "merge" });
+    expect(new Headers(init.headers).get("x-csrf-token")).toBe("tok");
   });
 });

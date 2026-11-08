@@ -111,7 +111,10 @@ async function localFactory() {
     await step();
     return id;
   };
-  return { repo, origin, owner, remoteRefs, store, runner, github, forgeCalls, step, cli, messages, toMergePending };
+  /** A merge from the status page: an app command request by `user`, as POST /api/v1/items/:id/commands writes it. */
+  const appMerge = async (user: UserId, id: WorkItemId) =>
+    (await store.recordAppCommandRequest({ key: `app:${++n}`, actor: user, command: "merge", args: { work_item_id: id } })).request.seq;
+  return { repo, origin, owner, remoteRefs, store, runner, github, forgeCalls, step, cli, messages, toMergePending, appMerge };
 }
 
 describe("a local task from create to merge, no GitHub plugin", { timeout: 60_000 }, () => {
@@ -240,6 +243,51 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(readFileSync(join(side, WORKFLOW), "utf8")).toBe("name: scope\non: push\n");
     const merged = (await f.store.listStateChanges(id)).find((c) => c.reason === "local_merged")!;
     expect(merged.detail).not.toHaveProperty("checkout_not_updated");
+  });
+
+  it("a merge from the status page goes through the same local merge: a conflict is refused on the request, then a clean merge closes the item", async () => {
+    const f = await localFactory();
+    const id = await f.toMergePending();
+    const head = git(f.repo, "rev-parse", `refs/heads/factory/${id}`);
+    const side = join(f.repo, "..", "side");
+    git(f.repo, "worktree", "add", "--quiet", side, "main");
+    commitIn(side, { [WORKFLOW]: "name: other\n" }, "another workflow");
+    git(f.repo, "worktree", "remove", side);
+    const conflicted = git(f.repo, "rev-parse", "main");
+
+    const refused = await f.appMerge(ME, id);
+    await f.step();
+    const row = (await f.store.getAppCommandRequest(refused))!;
+    expect(row.handled_at).not.toBeNull();
+    expect(row.refusal).toContain("does not merge cleanly");
+    expect(row.refusal).toContain(`- \`${WORKFLOW}\``);
+    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain("does not merge cleanly");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    expect(git(f.repo, "rev-parse", "main")).toBe(conflicted);
+
+    // A requester's merge from the page is refused on its request, naming the approver role.
+    expect((await f.cli(ME, { action: "users_add", user: DEV, role: "requester" })).code).toBe(0);
+    const denied = await f.appMerge(DEV, id);
+    await f.step();
+    expect((await f.store.getAppCommandRequest(denied))!.refusal).toContain(`factory users add ${DEV} --role approver`);
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+
+    // The owner drops the conflicting commit; the next merge from the page is clean.
+    git(f.repo, "update-ref", "refs/heads/main", `${conflicted}~1`);
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    const ok = await f.appMerge(ME, id);
+    await f.step();
+    expect(await f.store.getAppCommandRequest(ok)).toMatchObject({ refusal: null });
+    expect((await f.store.getAppCommandRequest(ok))!.handled_at).not.toBeNull();
+    const main = git(f.repo, "rev-parse", "main");
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: main });
+    expect(git(f.repo, "rev-list", "--parents", "-n", "1", main).split(" ").slice(1)).toEqual([mainBefore, head]);
+    const merged = (await f.store.listStateChanges(id)).find((c) => c.reason === "local_merged")!;
+    expect(merged.actor).toEqual({ kind: "user", id: ME });
+    expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain(main.slice(0, 12));
+
+    expect(f.github.calls).toEqual([]);
+    expect(f.forgeCalls).toEqual([]);
   });
 });
 
