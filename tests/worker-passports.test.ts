@@ -22,8 +22,8 @@ describe("run passports in the worker", () => {
     const events: string[] = [];
     const begun: RunPassportRequest[] = [];
     const passports: RunPassportIssuer = {
-      begin: async (req) => void (begun.push(req), events.push(`begin ${req.run}`)),
-      end: (run) => void events.push(`end ${run}`),
+      begin: async (req) => void (begun.push(req), events.push(`begin ${req.run} ${req.lease_token}`)),
+      end: (run, token) => void events.push(`end ${run} ${token}`),
     };
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: new FakeRunner({ triage: () => ({ output: triageSpec }) }),
@@ -37,6 +37,7 @@ describe("run passports in the worker", () => {
     const item = (await store.getWorkItemBySource("github_issue", issueRef(7).id))!;
     const [triage] = await store.listRuns(item.id);
     expect(begun).toEqual([expect.objectContaining({ run: triage!.id, kind: "triage", item: item.id, project: item.project })]);
-    expect(events).toEqual([`begin ${triage!.id}`, `end ${triage!.id}`]);
+    // Ended under the claim that began it, so a slot that lost the run cannot end a later claim's passport.
+    expect(events).toEqual([`begin ${triage!.id} 1`, `end ${triage!.id} 1`]);
   });
 });

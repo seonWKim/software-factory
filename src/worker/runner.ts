@@ -207,6 +207,7 @@ export class Worker {
       kinds: Object.fromEntries([...kinds.values()].map((k: RunKindDescriptor) => [k.name, k.timeouts])),
       leaseMs: () => this.live.values().lease_ms,
       onLost: (ref) => this.leases.get(ref.id)?.abort(new Error("lease_lost")),
+      log: this.d.log,
     }));
     return this.engineReady;
   }
@@ -253,15 +254,31 @@ export class Worker {
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
       await this.d.passports?.begin({
-        run: run.id, kind: run.kind, item: item.id, project: item.project, branch: branchFor(item, this.cfg.branch_prefix), grants: grantsFor(this.cfg.tool_grants, run.kind),
+        run: run.id, lease_token: token, kind: run.kind, item: item.id, project: item.project, branch: branchFor(item, this.cfg.branch_prefix), grants: grantsFor(this.cfg.tool_grants, run.kind),
       });
       // The guards allowed the run (its claim and its passport); the owner's hooks may still refuse it.
       await this.beforeRun(run, item);
       // One class for every agent step of the run, the merge-conflict steps of an implement run included.
       const model = isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
       // An update run has no agent, so the class it is handed is never used.
-      const signal = lease.signal;
-      const step: RunCall["step"] = (id, fn) => engine.step(ref, id, fn).catch((err: unknown) => { throw stepFailure(err); });
+      // A step's timeout or the run's deadline aborts the run's signal too, so the step's work (the agent, checks)
+      // stops; and a failed step settles only once its work has, so the run's folder never goes under a running agent.
+      const stepStop = new AbortController();
+      const signal = AbortSignal.any([lease.signal, stepStop.signal]);
+      const step: RunCall["step"] = (id, fn) => {
+        let work: Promise<unknown> = Promise.resolve();
+        return engine
+          .step(ref, id, (s) => {
+            s.signal.addEventListener("abort", () => stepStop.abort(s.signal.reason), { once: true });
+            const p = fn(s);
+            work = p;
+            return p;
+          })
+          .catch(async (err: unknown) => {
+            await work.catch(() => undefined);
+            throw stepFailure(err);
+          });
+      };
       const data = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
       // Recorded next to the run's usage, so cost and failure rate can be compared per class. data.tokens: the
       // full count, where readers from before usage existed look for it.
@@ -277,7 +294,7 @@ export class Worker {
         outcome = { status: "failed", error_code: failed.code, detail: failed.detail.slice(0, 500), infra: failed.infra, ...failed.extra, usage };
       }
     } finally {
-      this.d.passports?.end(run.id);
+      this.d.passports?.end(run.id, token);
       this.meters.delete(run);
       // Dropped whatever happened, a failed check included (design §4).
       await this.releaseDatabase(run);

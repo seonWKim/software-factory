@@ -38,8 +38,8 @@ async function setup() {
   let held: (run: string) => HeldRunPassport | null = (run) => runs.passportOf(run);
   const broker = new PassportToolBroker(inner, { checker: identity, passportOf: (run) => held(run) });
   const ctx = (run = "run_1", item = "wi_1"): ToolCallContext => ({ run_id: run as RunId, work_item_id: item as WorkItemId, lease_token: 1 });
-  const begin = (run = "run_1", kind = "implement") =>
-    runs.begin({ run, kind, item: "wi_1", project: "proj", branch: "factory/wi_1", grants: [] });
+  const begin = (run = "run_1", kind = "implement", lease_token = 1) =>
+    runs.begin({ run, lease_token, kind, item: "wi_1", project: "proj", branch: "factory/wi_1", grants: [] });
   const audit = () => db.all("SELECT principal, action, decision, reason FROM authz_audit ORDER BY seq");
   return { db, ticks, identity, runs, broker, calls, ctx, begin, audit, setHeld: (f: typeof held) => (held = f) };
 }
@@ -103,7 +103,18 @@ describe("ToolBroker run passports", () => {
   it("forgets a run's token when the run ends", async () => {
     const t = await setup();
     await t.begin();
-    t.runs.end("run_1");
+    t.runs.end("run_1", 1);
+    expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
+  });
+
+  it("a slot that lost the run does not end the passport of the claim that took it over", async () => {
+    const t = await setup();
+    await t.begin("run_1", "implement", 1);
+    // The run was requeued and claimed again in this process (token 2) before the first slot's finally ran.
+    await t.begin("run_1", "implement", 2);
+    t.runs.end("run_1", 1);
+    expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: true });
+    t.runs.end("run_1", 2);
     expect(await t.broker.call(t.ctx(), "github.open_pr", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
   });
 });

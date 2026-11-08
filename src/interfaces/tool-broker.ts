@@ -39,6 +39,8 @@ export interface ToolBroker {
 /** What a run passport is minted for (RFC 0015 §8 "Run passports"). */
 export interface RunPassportRequest {
   run: RunId;
+  /** The claim's lease token: only the holder of this token's claim may `end` the passport. */
+  lease_token: number;
   /** The run kind: picks the broker tools the passport names. */
   kind: string;
   item: WorkItemId;
@@ -56,6 +58,9 @@ export interface RunPassportRequest {
  */
 export interface RunPassportIssuer {
   begin(req: RunPassportRequest): Promise<unknown>;
-  /** Forgets the run's token; the passport itself expires with its parent. */
-  end(run: RunId): void;
+  /**
+   * Forgets the run's token if this claim (`lease_token`) minted it; the passport itself expires with its parent.
+   * A slot that lost the run never drops the passport of the claim that took it over.
+   */
+  end(run: RunId, lease_token: number): void;
 }
