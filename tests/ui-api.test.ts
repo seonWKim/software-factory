@@ -4,6 +4,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
+import { APP_COMMANDS } from "../src/ui/commands.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -885,15 +886,15 @@ describe("ui api: item commands POST (issue #227)", () => {
 describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227)", () => {
   type Detail = { commands: { name: string; usage: string; description: string }[]; replies: Record<string, unknown>[] };
 
-  it("commands are the footer table's commands for the item's state, /help last, never /link", async () => {
+  it("commands are the footer table's commands for the item's state the page can send: never /help or /link", async () => {
     const { d, store, items } = await seeded();
     for (const it of Object.values(items)) {
       const cur = (await store.getWorkItem(it.id))!;
       const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
-      const want = commandsFor(commandState(cur)).map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+      const want = commandsFor(commandState(cur)).filter((c) => c.name !== "help").map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
       expect(body.commands, it.id).toEqual(want);
-      expect(body.commands.at(-1)!.name).toBe("help");
-      expect(body.commands.map((c) => c.name)).not.toContain("link");
+      // Every listed command is one the commands route accepts, so no button can only be refused.
+      for (const c of body.commands) expect(APP_COMMANDS, `${it.id} ${c.name}`).toContain(c.name);
     }
     const approve = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(items.approve.id)}`);
     expect(approve.commands.map((c) => c.name)).toContain("approve");

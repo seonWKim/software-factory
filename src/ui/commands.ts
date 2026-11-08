@@ -143,10 +143,15 @@ export function readSession(d: UiDeps, now: Date): Record<string, unknown> | nul
   return { as_of: now.toISOString(), csrf_token: d.commands.token, commands_enabled: d.commands.actor !== null, actor: d.commands.actor, actor_source: d.commands.source };
 }
 
-/** The item API's `commands`: what applies in the item's state, from the comment footer's table, `/help` last. */
+/**
+ * The item API's `commands`: what the page may send in the item's state, from the comment footer's table. Not `/help`:
+ * it answers a comment and the page cannot send it (APP_COMMANDS), so a button for it could only be refused.
+ */
 export function itemCommands(it: WorkItem, runs: readonly Run[]) {
   const askedBy = it.blocked_reason === AGENT_NEEDS_HUMAN ? blockingRunKind(it.blocked_reason, runs) : undefined;
-  return commandsFor(commandState(it, askedBy)).map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+  return commandsFor(commandState(it, askedBy))
+    .filter((c) => APP_COMMANDS.includes(c.name))
+    .map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
 }
 
 /** The item API's `replies`: the item's app requests; the refusal and command pass `text`, the note never leaves. */

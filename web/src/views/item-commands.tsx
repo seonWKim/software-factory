@@ -62,7 +62,16 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const [local, setLocal] = useState<Record<string, LocalSend>>({});
   // The page's own item query (same key and options), read here for its `can_merge`.
   const canMerge = useApi<ItemDetail>(API.item(id)).data?.can_merge === true;
-  if (commands.length === 0 && !canMerge) return null;
+  // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
+  if (commands.length === 0 && !canMerge) {
+    return (
+      <Section title="Commands">
+        <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          No command applies now; the factory continues on its own. Commands show here when the item waits for you.
+        </p>
+      </Section>
+    );
+  }
   const token = session.data?.csrf_token;
   const enabled = !!token && session.data?.commands_enabled === true;
   const off = session.isError || session.data?.commands_enabled === false;
