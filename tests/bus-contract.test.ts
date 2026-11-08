@@ -156,6 +156,24 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     await expect(s.publish({ ...s.msg("Happened", "x"), payload: { body: "x".repeat(201) } })).rejects.toThrow("store it and send its id");
   });
 
+  it("skips only a key conflict: a value too long for its column fails instead of being cut", async () => {
+    const s = await setup(backend);
+    const m = s.msg("Happened", "x");
+    expect(await s.db.transaction((tx) => s.a.claim(tx, "h", m))).toBe("new");
+    expect(await s.db.transaction((tx) => s.a.claim(tx, "h", m))).toBe("duplicate");
+    // Two consumers whose names share their first 191 characters: INSERT IGNORE cut both to one inbox key on MySQL.
+    const prefix = "c".repeat(191);
+    const first = s.db.transaction((tx) => s.a.claim(tx, `${prefix}a`, m));
+    if (backend.name === "mysql") await expect(first).rejects.toThrow(/too long/i);
+    else {
+      expect(await first).toBe("new");
+      expect(await s.db.transaction((tx) => s.a.claim(tx, `${prefix}b`, m))).toBe("new");
+    }
+    const keyed = defineTopic({ ...TOPIC_BASE, name: "test.keyed", messages: { Keyed: "event" }, consumption: "partitioned", partitionKey: (x) => `${x.subject}:${"p".repeat(191)}` });
+    const bus = new SqlEventBus({ db: s.db, component: "testc", topics: [keyed], consumerId: "k" });
+    await expect(s.db.transaction((tx) => bus.publish(tx, [s.msg("Keyed", "x")]))).rejects.toThrow("partition key is longer than 191");
+  });
+
   it("at-least-once delivery plus inbox dedupe is effectively once", async () => {
     const s = await setup(backend);
     const first = s.msg("Happened", "x", { key: "same" });

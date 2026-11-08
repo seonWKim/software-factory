@@ -107,10 +107,10 @@ export async function announce(db: SqlDriver, bus: EventBus, project_id: string,
       const fresh: Pending[] = [];
       for (const i of intents) {
         // Another replica's announce took it first: it is requested once, there.
-        const n = await tx.run(insertOrSkip(db.dialect.name, "outbound_requests (intent_id, destination, commit_id, commit_count, requested_at) VALUES (?, ?, ?, ?, ?)"), [
+        const inserted = await insertOrSkip(tx, db.dialect.name, "outbound_requests (intent_id, destination, commit_id, commit_count, requested_at) VALUES (?, ?, ?, ?, ?)", [
           i.id, destination, commit_id, intents.length, now,
         ]);
-        if (n > 0) fresh.push(i);
+        if (inserted) fresh.push(i);
       }
       if (fresh.length === 0) continue;
       if (fresh.length !== intents.length) {

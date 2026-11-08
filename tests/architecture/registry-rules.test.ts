@@ -63,6 +63,13 @@ describe("envelope-shape", () => {
     expect(envelopeProblems(ok)).toEqual([]);
     const long = envelope({ type: "X", subject: "s", idempotency_key: "k", idempotency_key_ttl_ms: 10, payload: { body: "x".repeat(201) } }, cause, "test", "m2");
     expect(envelopeProblems(long)).toEqual([expect.stringContaining("store it and send its id")]);
+    // MySQL keeps these in VARCHAR(191): a longer one would be cut, and two keys sharing a prefix would dedupe as one.
+    const key = (k: string, subject: string, producer: string) =>
+      envelopeProblems(envelope({ type: "X", subject, idempotency_key: k, idempotency_key_ttl_ms: null, payload: {} }, cause, producer, "m3"));
+    expect(key("k".repeat(191), "s".repeat(191), "p".repeat(191))).toEqual([]);
+    expect(key("k".repeat(192), "s", "test")).toEqual(["idempotency_key is longer than 191 chars"]);
+    expect(key("k", "s".repeat(192), "test")).toEqual(["subject is longer than 191 chars"]);
+    expect(key("k", "s", "p".repeat(192))).toEqual(["producer is longer than 191 chars"]);
   });
 
   it("a topic's retries end within its maximum redelivery", () => {

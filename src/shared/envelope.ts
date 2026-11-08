@@ -8,6 +8,8 @@ export type Scalar = string | number | boolean | null;
 export type Payload = Readonly<Record<string, Scalar | readonly Scalar[]>>;
 
 export const MAX_PAYLOAD_STRING = 200;
+/** The longest id, key, subject or producer: the bus stores them in VARCHAR(191) columns on MySQL. */
+export const MAX_KEY_LENGTH = 191;
 
 export type MessageKind = "command" | "event";
 
@@ -95,6 +97,11 @@ export function envelopeProblems(m: Envelope): string[] {
   const out: string[] = [];
   for (const field of ["id", "type", "subject", "project_id", "idempotency_key", "correlation_id", "producer", "occurred_at"] as const) {
     if (typeof m[field] !== "string" || m[field] === "") out.push(`${field} is missing`);
+  }
+  // Refused here rather than cut to the column: two keys sharing their first 191 characters would dedupe as one.
+  for (const field of ["id", "type", "subject", "project_id", "idempotency_key", "causation_id", "correlation_id", "passport_id", "producer"] as const) {
+    const v = m[field];
+    if (typeof v === "string" && v.length > MAX_KEY_LENGTH) out.push(`${field} is longer than ${MAX_KEY_LENGTH} chars`);
   }
   if (!Number.isInteger(m.schema_version) || m.schema_version < 1) out.push("schema_version must be a positive integer");
   if (!("idempotency_key_ttl_ms" in m)) out.push("idempotency_key_ttl_ms is missing (null means never expires)");

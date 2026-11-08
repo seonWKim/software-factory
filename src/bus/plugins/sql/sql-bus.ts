@@ -12,7 +12,7 @@
 //   waits alone.
 // - Every time comparison is against the scheduler's release horizon (bus_scheduler), never a clock.
 
-import { MAX_PAYLOAD_STRING, envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
+import { MAX_KEY_LENGTH, MAX_PAYLOAD_STRING, envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
 import { CAPABILITY, maxRedeliveryMs, partitionOf, requirementsOf, type TopicDescriptor } from "../../../shared/topic.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
@@ -93,6 +93,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
       if (m.idempotency_key_ttl_ms !== null && m.idempotency_key_ttl_ms < floor) {
         problems.push(`idempotency_key_ttl_ms ${m.idempotency_key_ttl_ms} is below ${topic.name}'s maximum redelivery (${floor} ms)`);
       }
+      if (topic.partitionKey(m).length > MAX_KEY_LENGTH) problems.push(`its partition key is longer than ${MAX_KEY_LENGTH} chars`);
       if (problems.length > 0) throw new Error(`cannot publish ${m.type} ${m.id}: ${problems.join("; ")}`);
       // Checked here, so a bad requirement fails its producer and never the relay.
       requirementsOf(topic, m);
@@ -145,17 +146,19 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     const competing = topic.consumption === "competing";
     if (competing) values.push(JSON.stringify(requirementsOf(topic, m)));
     const columns = competing ? `${MESSAGE_COLUMNS}, requires` : MESSAGE_COLUMNS;
-    await tx.run(insertOrSkip(this.dialect, `${topicTables(topic.name).messages} (${columns}) VALUES (${values.map(() => "?").join(", ")})`), values);
+    await insertOrSkip(tx, this.dialect, `${topicTables(topic.name).messages} (${columns}) VALUES (${values.map(() => "?").join(", ")})`, values);
   }
 
   /** Inserts `(consumer, idempotency_key)` with the caller's state change; a key seen before is a duplicate. */
   async claim(tx: Tx, consumer: string, m: Envelope): Promise<"new" | "duplicate"> {
     const expires = m.idempotency_key_ttl_ms === null ? null : addMs(m.occurred_at, m.idempotency_key_ttl_ms);
-    const n = await tx.run(
-      insertOrSkip(this.dialect, `${this.inbox} (consumer, idempotency_key, message_id, processed_at, expires_at) VALUES (?, ?, ?, ?, ?)`),
+    const inserted = await insertOrSkip(
+      tx,
+      this.dialect,
+      `${this.inbox} (consumer, idempotency_key, message_id, processed_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
       [consumer, m.idempotency_key, m.id, await readHorizon(tx), expires],
     );
-    return n === 1 ? "new" : "duplicate";
+    return inserted ? "new" : "duplicate";
   }
 
   /** Removes inbox rows past their key's TTL and old published outbox rows (the component's `prune` tick). */
@@ -340,7 +343,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     const key = `${topic.name}\0${group}`;
     if (this.cursorsReady.has(key)) return;
     for (let p = 0; p < topic.partitions; p++) {
-      await this.db.run(insertOrSkip(this.dialect, `${t.cursors} (consumer_group, ${P}) VALUES (?, ?)`), [group, p]);
+      await insertOrSkip(this.db, this.dialect, `${t.cursors} (consumer_group, ${P}) VALUES (?, ?)`, [group, p]);
     }
     this.cursorsReady.add(key);
   }
