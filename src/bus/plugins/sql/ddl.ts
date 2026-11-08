@@ -187,7 +187,11 @@ export async function insertOrSkip(q: SqlExecutor, dialect: Dialect, rest: strin
   }
 }
 
-/** Creates every missing topic table and refuses a topic whose partitions or consumption changed. */
+/**
+ * Creates every missing topic table and refuses a topic whose partitions or consumption changed. A topic whose
+ * `bus_topics` row exists runs no DDL: the row is written only after its tables, so a start against a database
+ * `npm run migrate` prepared needs no CREATE right (an enterprise DML-only user).
+ */
 export async function ensureTopicTables(db: MigrationDb, topics: readonly TopicDescriptor[]): Promise<void> {
   for (const topic of topics) {
     const known = await db.all(`SELECT consumption, partitions FROM ${TOPICS_TABLE} WHERE name = ?`, [topic.name]);
@@ -198,14 +202,13 @@ export async function ensureTopicTables(db: MigrationDb, topics: readonly TopicD
           `${topic.consumption} with ${topic.partitions}: changing either needs a bus migration`,
       );
     }
+    if (row) continue;
     for (const sql of topicTablesSql(topic, db.dialect)) await db.run(sql);
-    if (!row) {
-      await insertOrSkip(db, db.dialect, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`, [
-        topic.name,
-        topic.consumption,
-        topic.partitions,
-      ]);
-    }
+    await insertOrSkip(db, db.dialect, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`, [
+      topic.name,
+      topic.consumption,
+      topic.partitions,
+    ]);
   }
 }
 

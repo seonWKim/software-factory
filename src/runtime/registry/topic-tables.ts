@@ -1,6 +1,6 @@
 // The sql bus's tables for every discovered topic (RFC 0015 §6.3). `npm run migrate` creates them, so an enterprise
-// database user needs no DDL rights at run time; a role creates them again at start (idempotent), so a solo
-// factory needs no migrate step.
+// database user needs no DDL rights at run time; a role creates, at start, only those of a topic `bus_topics` does
+// not list yet (no DDL when all exist), so a solo factory needs no migrate step.
 
 import { ensureTopicTables } from "../../bus/index.js";
 import type { Dialect, SqlExecutor } from "../../state/index.js";

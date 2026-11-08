@@ -28,7 +28,7 @@ import {
 import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick, type TickGenerator, type TickSource } from "../../shared/ticks/tick-generator.js";
-import { CODE_ROOT, type SqlDriver } from "../../state/index.js";
+import { CODE_ROOT, type SqlDriver, forgetOnFailure } from "../../state/index.js";
 import { ComponentConsumer } from "../consumer.js";
 import { loadHooks, runHooks } from "../hooks/run-hooks.js";
 import { SqlHookAudit } from "../hooks/sql-hook-audit.js";
@@ -66,17 +66,25 @@ const MAX_DRAIN_ROUNDS = 50;
 let discovered: Promise<Registry> | null = null;
 let discoveredUnits: Promise<ControllerUnits> | null = null;
 
+/** The components whose handlers this role consumes (its ComponentConsumers in `build`). */
+const CONSUMED = [INBOUND, CONTROLLER, OUTBOUND];
+
 /** The discovered handlers and topics, loaded once per process; startup refuses a broken dispatch. */
 async function registry(): Promise<Registry> {
-  const r = await (discovered ??= loadRegistry(CODE_ROOT));
-  const problems = r.problems();
+  return checkDispatch(await (discovered ??= forgetOnFailure(loadRegistry(CODE_ROOT), () => (discovered = null))));
+}
+
+/** `r`, or a throw naming every dispatch problem, a handler outside the components this role consumes included. */
+export function checkDispatch(r: Registry): Registry {
+  const problems = r.problems(CONSUMED);
   if (problems.length > 0) throw new Error(`message dispatch is broken: ${problems.join("; ")}`);
   return r;
 }
 
-/** The discovered controller units, loaded once per process. */
+/** The discovered controller units, loaded once per process (a failed load is tried again). */
 function units(): Promise<ControllerUnits> {
-  return (discoveredUnits ??= loadDescriptors<ControllerUnits[number]>(CODE_ROOT, "unit").then((l) => l.map((u) => u.descriptor)));
+  const load = () => loadDescriptors<ControllerUnits[number]>(CODE_ROOT, "unit").then((l) => l.map((u) => u.descriptor));
+  return (discoveredUnits ??= forgetOnFailure(load(), () => (discoveredUnits = null)));
 }
 
 /** The SQL driver under the store: the bus and inbound write in its transactions. */
@@ -126,8 +134,8 @@ export class ControllerRole implements Decisions {
   private readonly role: Prepared;
   /** What every unit shares: the deps, the configured sources, the live settings. */
   readonly kernel: Kernel;
-  private wiring?: Promise<Wiring>;
-  private routed?: Promise<ControllerRouter>;
+  private wiring: Promise<Wiring> | undefined;
+  private routed: Promise<ControllerRouter> | undefined;
 
   constructor(deps: ControllerRoleDeps) {
     this.role = prepare(deps);
@@ -385,7 +393,7 @@ export class ControllerRole implements Decisions {
   }
 
   private router(): Promise<ControllerRouter> {
-    return (this.routed ??= units().then((list) => {
+    return (this.routed ??= forgetOnFailure(units().then((list) => {
       const r: ControllerRouter = new Router(list, this.kernel, {
         kinds: CONTROLLER_EVENT_KINDS,
         messages: Object.keys(CONTROLLER_EVENTS.messages),
@@ -397,7 +405,7 @@ export class ControllerRole implements Decisions {
       const problems = r.problems();
       if (problems.length > 0) throw new Error(`controller units are broken: ${problems.join("; ")}`);
       return r;
-    }));
+    }), () => (this.routed = undefined)));
   }
 
   /** Relays and consumes until nothing moves: what the role's ticks do over time, done at once. */
@@ -417,8 +425,9 @@ export class ControllerRole implements Decisions {
     }
   }
 
+  /** The wiring, built once; a failed build (a transient store error) is built again on the next call. */
   private wire(): Promise<Wiring> {
-    return (this.wiring ??= this.build());
+    return (this.wiring ??= forgetOnFailure(this.build(), () => (this.wiring = undefined)));
   }
 
   private async build(): Promise<Wiring> {

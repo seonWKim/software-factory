@@ -4,7 +4,7 @@
 export type { Row, SqlDialect, SqlDriver, SqlExecutor, SqlValue } from "./sql-driver.js";
 export { backupTables, restoreBackup, tableChecksum, verifyCopy, type BackupManifest, type RowFilter, type TableSummary } from "./migrate/backup.js";
 export { mysqlSnapshot, sqliteSnapshot } from "./snapshot.js";
-export { findDescriptorFiles } from "./discovery.js";
+export { findDescriptorFiles, forgetOnFailure } from "./discovery.js";
 export { defineMigration, migrationSpecProblems, type Dialect, type Migration, type MigrationDb, type MigrationDescriptor } from "./migrate/migration.js";
 export { applyMigrations, CODE_ROOT, discoverMigrations, MIGRATIONS_TABLE, pendingMigrations } from "./migrate/runner.js";
 export { dropTables, LEGACY_PREFIX, renameTablesByCopy, tableColumns, tableExists, verifyRenamedTables, type Rename } from "./migrate/copy-tables.js";

@@ -1,6 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { dirname, join } from "node:path";
-import { type Row, type SqlDialect, type SqlDriver, type SqlExecutor, type SqlValue, applyMigrations } from "../../../state/index.js";
+import { migrationPendingError } from "../../../interfaces/updater.js";
+import { type Row, type SqlDialect, type SqlDriver, type SqlExecutor, type SqlValue, applyMigrations, pendingMigrations } from "../../../state/index.js";
 import { MIGRATIONS } from "./schema.js";
 
 const SQLITE_CONSTRAINT_UNIQUE = 2067;
@@ -25,10 +26,13 @@ export class SqliteDriver implements SqlDriver {
   /**
    * `baselineOnly`: stop after the frozen numbered list, for tests of a historical step on an old database
    * (the timestamped migrations then run as on any database when a later driver opens it).
+   * `applyBreaking`: also apply a pending breaking migration to a database that holds data. Only
+   * `npm run migrate` (after its drain) and a rehearsal on a copy set it: every other open refuses with
+   * MIGRATION_PENDING, so new code never renames tables under a factory that still writes them (§12 D1).
    */
   constructor(
     private readonly path: string,
-    private readonly opts: { baselineOnly?: boolean } = {},
+    private readonly opts: { baselineOnly?: boolean; applyBreaking?: boolean } = {},
   ) {
     this.db = new DatabaseSync(path);
     this.db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
@@ -44,7 +48,8 @@ export class SqliteDriver implements SqlDriver {
 
   /**
    * The frozen numbered baseline, then the timestamped migrations (RFC 0015 §6.3), all in one transaction.
-   * A breaking migration backs up its tables to `backups/` beside a file database first (§12 D1).
+   * A breaking migration backs up its tables to `backups/` beside a file database first (§12 D1). On a database
+   * that existed before this open, a pending breaking migration is refused unless `applyBreaking` is set.
    */
   migrate(): Promise<void> {
     return this.transaction(async () => {
@@ -57,6 +62,10 @@ export class SqliteDriver implements SqlDriver {
       if (this.opts.baselineOnly) return;
       // A database built just now holds nothing worth a backup.
       const fresh = (row.v ?? 0) === 0;
+      if (!fresh && !this.opts.applyBreaking) {
+        const breaking = (await pendingMigrations({ dialect: "sqlite", ...this.exec })).filter((m) => m.change === "breaking");
+        if (breaking.length > 0) throw migrationPendingError(breakingPendingMessage(breaking.map((m) => m.id)));
+      }
       await applyMigrations(
         { dialect: "sqlite", ...this.exec },
         { backupDir: this.path === ":memory:" || fresh ? null : join(dirname(this.path), "backups"), now: () => new Date().toISOString() },
@@ -112,4 +121,9 @@ export class SqliteDriver implements SqlDriver {
     this.queue = result.catch(() => undefined);
     return result;
   }
+}
+
+/** Why a store with a pending breaking migration refuses to open; it names `npm run migrate`, as MySQL's does. */
+export function breakingPendingMessage(ids: readonly string[]): string {
+  return `SQLite: breaking migration${ids.length === 1 ? "" : "s"} pending (${ids.join(", ")}): run \`npm run migrate\` (it drains a running factory first)`;
 }

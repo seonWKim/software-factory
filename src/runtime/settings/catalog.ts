@@ -3,7 +3,7 @@
 
 import { join } from "node:path";
 import type { SettingDescriptor } from "../../shared/setting.js";
-import { CODE_ROOT } from "../../state/index.js";
+import { CODE_ROOT, forgetOnFailure } from "../../state/index.js";
 import { type Located, loadDescriptors } from "../registry/registry.js";
 
 export class SettingCatalog {
@@ -40,8 +40,7 @@ let cached: Promise<SettingCatalog> | null = null;
 export function loadSettingCatalog(root: string = CODE_ROOT): Promise<SettingCatalog> {
   if (root === CODE_ROOT && cached) return cached;
   const load = loadDescriptors<SettingDescriptor>(root, "setting").then((e) => new SettingCatalog(e));
-  if (root === CODE_ROOT) cached = load;
-  return load;
+  return root === CODE_ROOT ? (cached = forgetOnFailure(load, () => (cached = null))) : load;
 }
 
 const cell = (v: string) => v.replace(/\|/g, "\\|");

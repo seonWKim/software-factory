@@ -157,6 +157,13 @@ describe("external config: reviewed keys", () => {
     expect(loaded.file.intake_label).toBe("external");
     expect(loaded.file.workers).toBe(2);
   });
+
+  it("a shared store (MySQL): hooks come only from the checked-in file, so a replica cannot drop the owner's veto", async () => {
+    noSecrets();
+    const main = checkout({ ...REAL, hooks: ["owner-veto"] });
+    const loaded = await loadConfig(main, { configFile: external({ ...REAL, hooks: [] }) });
+    expect(loaded.file.hooks).toEqual(["owner-veto"]);
+  });
 });
 
 describe("external config: doctor", () => {

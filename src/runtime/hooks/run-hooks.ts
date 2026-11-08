@@ -5,7 +5,7 @@
 import type { HookDescriptor, HookInput, HookPoint, Timer } from "../../shared/hook.js";
 import type { Located } from "../registry/registry.js";
 import { loadDescriptors } from "../registry/registry.js";
-import { CODE_ROOT } from "../../state/index.js";
+import { CODE_ROOT, forgetOnFailure } from "../../state/index.js";
 
 export type HookOutcomeKind = "pass" | "veto" | "annotate" | "timeout" | "error";
 
@@ -85,8 +85,7 @@ let cached: Promise<Located<HookDescriptor>[]> | null = null;
 export function loadHooks(root: string = CODE_ROOT): Promise<Located<HookDescriptor>[]> {
   if (root === CODE_ROOT && cached) return cached;
   const load = loadDescriptors<HookDescriptor>(root, "hook");
-  if (root === CODE_ROOT) cached = load;
-  return load;
+  return root === CODE_ROOT ? (cached = forgetOnFailure(load, () => (cached = null))) : load;
 }
 
 /** The convention path of a hook: `<component>/hooks/<name>/<name>.hook.ts` under the code root. */

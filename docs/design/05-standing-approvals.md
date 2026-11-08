@@ -34,8 +34,10 @@
     on, and how to turn it off. `standing_approved` is not a human decision, so the run check does not read it.
   - **Protected paths.** A rule never approves a spec whose allowed paths touch, by the floor touch rule (under the
     prefix, or covering it): gates (`src/controller/` since RFC 0015 M5, before it `src/core/controller.ts`; `policy.ts`, `diff-gate.ts`, `pre-push.ts`, `checks.ts`,
-    `merge-check.ts`, `standing.ts`), prompts (`prompts/`), permissions (`src/core/authorize.ts`, `src/impl/auth/`,
-    `src/impl/grant/`, `.claude/`), tools (`src/core/tools/`, `src/impl/broker/`), guard settings
+    `merge-check.ts`, `standing.ts`; since 2026-11-09 also `src/compose.ts` and `src/outbound/outbound.ts`, which wire
+    G1, the run passport check and G5), prompts (`prompts/`), permissions (`src/core/authorize.ts`, `src/impl/auth/`,
+    `src/impl/grant/`, `.claude/`, `src/identity/` since 2026-11-09), tools (`src/core/tools/`, `src/impl/broker/`, the
+    default broker `src/impl/github/github-tool-broker.ts` and `broker.plugin.ts` since 2026-11-09), guard settings
     (`factory.config.json`, `src/core/config.ts`, `src/core/settings.ts`, `src/config-keys.ts`, `src/plugins.ts`,
     `src/impl/egress/`, `src/impl/secrets/`) or the item's configured floors (`PROTECTED_PATHS`, `protectedCategory`).
     Such a spec waits for `/approve` as before.
@@ -78,3 +80,4 @@
 - **The page shows and changes rules** (decision changed 2026-11-08, issue #300). Before: phase 3 was named as a
   separate item; rules and proposals were shown and changed only through `/standing`, and the status page had no route
   for them.
+- **Guard code on the protected list** (changed 2026-11-09, runtime review H3). Before: only `src/identity/settings/` of identity was listed, and `src/compose.ts` (G1, the passport broker wrapper), `src/outbound/outbound.ts` (G5, the delivery passport) and the default broker files under `src/impl/github/` were not, so auto mode could merge an agent change to them with no person.

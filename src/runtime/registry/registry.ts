@@ -73,11 +73,19 @@ export class Registry {
   }
 
   /**
-   * Dispatch rules (RFC 0015 §6.2): a command has exactly one handler; an accepted type must be on a topic.
-   * Returns every violation; startup refuses a non-empty list.
+   * Dispatch rules (RFC 0015 §6.2): a command has exactly one handler; an accepted type must be on a topic; with
+   * `consumed` (the components whose consumers the roles build), every handler sits in one of them, since a
+   * handler no consumer subscribes would let its messages pile up unread. Returns every violation; startup
+   * refuses a non-empty list.
    */
-  problems(): string[] {
+  problems(consumed?: readonly string[]): string[] {
     const out: string[] = [];
+    if (consumed) {
+      for (const h of this.handlers) {
+        const component = h.file.split("/")[0]!;
+        if (!consumed.includes(component)) out.push(`handler ${h.descriptor.name} (${h.file}) is in ${component}, which no role consumes (${consumed.join(", ")})`);
+      }
+    }
     for (const [type, located] of this.topicByType) {
       const kind = located.descriptor.messages[type];
       const n = this.handlersFor(type).length;

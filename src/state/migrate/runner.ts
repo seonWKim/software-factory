@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { findDescriptorFiles } from "../discovery.js";
+import { findDescriptorFiles, forgetOnFailure } from "../discovery.js";
 import { backupTables } from "./backup.js";
 import { tableExists } from "./copy-tables.js";
 import { CONTRACT_MIN_DAYS, MIGRATION_FILE, type Migration, type MigrationDb, type MigrationDescriptor } from "./migration.js";
@@ -52,8 +52,7 @@ export function discoverMigrations(root: string = CODE_ROOT): Promise<Migration[
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));
   })();
-  if (root === CODE_ROOT) cached = load;
-  return load;
+  return root === CODE_ROOT ? (cached = forgetOnFailure(load, () => (cached = null))) : load;
 }
 
 async function applied(db: MigrationDb): Promise<Set<string>> {

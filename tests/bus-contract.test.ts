@@ -558,4 +558,12 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     await ensureTopicTables(mdb, TOPICS);
     await expect(ensureTopicTables(mdb, [{ ...EVENTS, partitions: 8 }])).rejects.toThrow("changing either needs a bus migration");
   });
+
+  it("runs no DDL for a topic whose tables exist, so a DML-only database user can start", async () => {
+    const s = await setup(backend);
+    const ran: string[] = [];
+    const mdb: MigrationDb = { dialect: backend.name, all: (q, p) => s.db.all(q, p), run: (q, p) => (ran.push(q), s.db.run(q, p)) };
+    await ensureTopicTables(mdb, TOPICS);
+    expect(ran).toEqual([]);
+  });
 });

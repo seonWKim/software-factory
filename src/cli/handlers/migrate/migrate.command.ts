@@ -1,11 +1,10 @@
-import { existsSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { type Loaded, Plugins, resolveProject } from "../../../compose.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "../../../impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "../../../impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "../../../impl/store/project-keys.js";
-import { rehearseSqlite } from "../../../impl/store/sqlite/rehearse.js";
+import { migrateSqlite, rehearseSqlite, sqlitePendingSteps } from "../../../impl/store/sqlite/rehearse.js";
 import { SqliteDriver } from "../../../impl/store/sqlite/sqlite-driver.js";
 import { DRAIN_MARGIN_MS } from "../../../impl/updater/git-worktree.js";
 import { secretName } from "../../../interfaces/secret-store.js";
@@ -56,14 +55,10 @@ export default defineCommand({
         if (mode === "rehearse") return rehearseSqlite(file, print);
         print(SQLITE_MIGRATE_MESSAGE);
         await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-        const driver = new SqliteDriver(file);
-        try {
-          await driver.migrate();
-          await ensureDiscoveredTopicTables("sqlite", driver);
-          return await runProjectKeyStep(driver, resolveRepo, mode, print);
-        } finally {
-          await driver.close();
-        }
+        return migrateSqlite(file, mode, {
+          topicTables: (driver) => ensureDiscoveredTopicTables("sqlite", driver),
+          projectKeys: (driver, m) => runProjectKeyStep(driver, resolveRepo, m, print),
+        }, print);
       }
       const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
       if (!password) {
@@ -124,8 +119,8 @@ async function contract(loaded: Loaded, print: (line: string) => void): Promise<
 
 /**
  * The steps `npm run migrate` would apply, by name, read-only: pending MySQL schema step files, then
- * "project keys" while owner/name rows remain (checked only once the schema is current). SQLite builds its
- * schema on open, so only the data step can be pending there.
+ * "project keys" while owner/name rows remain (checked only once the schema is current). SQLite applies
+ * additive migrations on open, so there only breaking migrations and the data step are reported.
  */
 async function pendingMigrationNames(loaded: Loaded): Promise<string[]> {
   const db = loaded.store;
@@ -139,10 +134,7 @@ async function pendingMigrationNames(loaded: Loaded): Promise<string[]> {
       await driver.close();
     }
   };
-  if (db.type !== "mysql") {
-    const file = join(loaded.stateDir, "db", "factory.db");
-    return existsSync(file) ? legacy(new SqliteDriver(file)) : [];
-  }
+  if (db.type !== "mysql") return sqlitePendingSteps(join(loaded.stateDir, "db", "factory.db"));
   const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
   if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
   const options = { host: db.host, port: db.port, database: db.database, user: db.user, password: password.reveal() };

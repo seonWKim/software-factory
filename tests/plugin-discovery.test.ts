@@ -232,6 +232,18 @@ describe("plugin discovery: bad descriptors fail startup", () => {
     }
   });
 
+  it("a second guard plugin cannot take over as a platform default; a plain second one needs config to select it", async () => {
+    const lax = (kind: string) => `export default { kind: "${kind}", name: "lax", create: () => ({}), default: { platforms: ["darwin", "linux", "win32"] } };\n`;
+    for (const kind of ["egress", "secrets", "broker"]) {
+      const dir = tree({ "lax.plugin.ts": lax(kind) });
+      const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
+      expect(err).toMatch(/is a guard: its one default is `default: true`, never per platform/);
+      expect(err).toContain(join(dir, "lax.plugin.ts"));
+    }
+    const plain = tree({ "lax.plugin.ts": `export default { kind: "egress", name: "lax", create: () => ({}) };\n` });
+    expect(defaultPlugins("darwin", await loadRegistry([PLUGIN_ROOT, plain])).egress).toBe("pattern");
+  });
+
   it("a guard plugin cannot be named after a disabling value", async () => {
     const dir = tree({ "n.plugin.ts": `export default { kind: "egress", name: "none", create: () => ({}) };\n` });
     const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));

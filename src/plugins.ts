@@ -196,6 +196,12 @@ function registryOf(found: readonly Found[]): Registry {
         }
         continue;
       }
+      if (info.guard) {
+        // A platform default would win over the guard's fallback on every zero-setup config: a second guard
+        // plugin is used only when config names it.
+        errors.push(`${label} is a guard: its one default is \`default: true\`, never per platform; select ${d.name} in config instead (${file})`);
+        continue;
+      }
       for (const p of d.default.platforms) {
         if (Object.hasOwn(defaults.platforms, p)) errors.push(`${label} has two defaults for ${p}: ${platformFile[p]} and ${file}`);
         else {

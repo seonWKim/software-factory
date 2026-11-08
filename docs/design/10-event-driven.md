@@ -137,6 +137,9 @@ force.
   the group subscribes, not at its first consume: the controller role subscribes every handler when it wires its
   components, before any of them relays, so a message published after the process starts (a startup command, a
   first poll) is delivered, and a handler added later skips only what was published before its first start.
+  The role consumes only inbound's, the controller's and outbound's handlers, so startup refuses a handler in any
+  other component (since 2026-11-09): no group would subscribe it and its messages would pile up unread. A failed
+  wiring or discovery (a transient store error) is not cached: the next call builds it again.
   `consume` refuses a group that never subscribed. Competing topics are one queue for every group: nothing to
   register. Solo and enterprise: the same; on a fresh store every topic is empty, so latest equals earliest.
 - **Inserts skip key conflicts only** (since 2026-11-09, RFC 0015 review; decision changed: no `INSERT IGNORE`, see
@@ -185,8 +188,9 @@ force.
   it to inbound (fences its cursor moves) and to the old controller (fences its deliveries). In production, relay
   and consume run every 250 ms and intake every `tick_ms`, so a command reaches the decision code up to about
   0.5 s later than in the old same-tick loop. `npm run migrate` creates every discovered topic's tables, so an
-  enterprise MySQL user needs no DDL rights at run time; a role creates them again at start (idempotent), so solo
-  needs no migrate step.
+  enterprise MySQL user needs no DDL rights at run time: at start a role creates only the tables of a topic
+  `bus_topics` does not list yet (the row is written after the tables) and runs no DDL when every topic is listed
+  (since 2026-11-09), so solo needs no migrate step.
 - **The controller decides in discovered units** (since 2026-11-08, RFC 0015 M5; the units still do their own I/O).
   `src/core/controller.ts` is gone. Each feature is one unit, `src/controller/units/<unit>/<unit>.unit.ts`
   (`defineUnit`, `src/controller/router/unit.ts`), found by discovery: the event kinds it decides on (exactly one
@@ -382,10 +386,13 @@ force.
   refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
   text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
   until the owner lists it in `hooks` (factory.config.json, a PR-only key, so enabling one is a reviewed and
-  audited change; startup fails on a name no discovered hook has). `before_run` is called at run start, after the
+  audited change; startup fails on a name no discovered hook has). On a shared store `hooks` is a reviewed key,
+  read only from the checked-in file like `dials` (since 2026-11-09), so a replica's own config cannot drop a veto. `before_run` is called at run start, after the
   guards (the claim and the run passport) allowed the run: a refusal fails the run `hook_refused` before its folder
   or agent; a note is logged. `before_merge` is called at the merge queue's landing (subject the work item): a veto
-  removes the entry and posts the hook's reason. Not called yet: `before_delivery` (outbound). No hook ships.
+  removes the entry and posts the hook's reason. Not called yet: `before_delivery` (outbound), so startup refuses an
+  enabled hook at that point (`UNCALLED_HOOK_POINTS`, `src/shared/hook.ts`; since 2026-11-09) until outbound calls
+  it. No hook ships.
 - **Commands and runs carry passports** (since 2026-11-08, RFC 0015 M9 wiring; details in 08-permissions.md,
   "Passports in the running factory"). A CLI or UI command row stores its actor's passport id; inbound mints one for
   a comment command at relay time, before its commit (a passport minted for a commit that loses its cursor race is
@@ -589,3 +596,15 @@ force.
   when this host's runner still had it. A network requeue or a restart gives the retry a new folder, so the agent
   was resumed in an empty folder and told its earlier work was there. A pause still resumes its session, in the
   folder it kept.
+- **`hooks` on a shared store** (changed 2026-11-09, runtime review M1). Before: `hooks` was PR-only but not a
+  reviewed key, so a MySQL replica started with its own `--config` took `hooks` from that file; `hooks: []` there
+  skipped the owner's `before_merge` veto whenever that replica landed the merge queue.
+- **An enabled `before_delivery` hook** (changed 2026-11-09, runtime review L1). Before: startup accepted it (the
+  name was discovered) though nothing ran it, so every delivery went out unchecked with no error.
+- **Topic tables at start** (changed 2026-11-09, runtime review M3). Before: every start ran each topic's
+  `CREATE TABLE IF NOT EXISTS` even when `bus_topics` listed it, so a MySQL user without CREATE rights failed at the
+  first `wire()` and the controller restarted in a loop.
+- **Unconsumed handlers and failed builds** (changed 2026-11-09, runtime review L2, L3). Before: a handler in a
+  component no role consumes (worker, identity) passed the dispatch check and its messages piled up with no
+  error; and a failed `build()` or discovery stayed cached as a rejected promise, so every later call failed the
+  same way for the life of the object.
