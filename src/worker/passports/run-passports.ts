@@ -18,6 +18,8 @@ const WORKER_TOOLS: Readonly<Record<string, readonly string[]>> = {
 
 export interface RunPassportRequest {
   readonly run: string;
+  /** The claim's lease token: `end` drops the passport only for the claim that minted it. */
+  readonly lease_token: number;
   readonly kind: string;
   readonly item: string;
   readonly project: string;
@@ -33,7 +35,7 @@ export interface HeldPassport {
 }
 
 export class RunPassports {
-  private readonly held = new Map<string, HeldPassport>();
+  private readonly held = new Map<string, HeldPassport & { readonly lease_token: number }>();
 
   constructor(private readonly identity: Pick<PassportService, "service" | "narrow">) {}
 
@@ -56,16 +58,18 @@ export class RunPassports {
       tools: tools.length > 0 ? tools : ["none"],
       audience: [BROKER_AUDIENCE],
     });
-    this.held.set(req.run, { token: issued.token, project: req.project, branch: req.branch });
+    this.held.set(req.run, { token: issued.token, project: req.project, branch: req.branch, lease_token: req.lease_token });
     return issued;
   }
 
-  end(run: string): void {
-    this.held.delete(run);
+  /** Drops the run's passport if the claim under `lease_token` minted it; a later claim's passport stays. */
+  end(run: string, lease_token: number): void {
+    if (this.held.get(run)?.lease_token === lease_token) this.held.delete(run);
   }
 
   /** The run's passport, or null when the run has none in this process (the broker then refuses). */
   passportOf(run: string): HeldPassport | null {
-    return this.held.get(run) ?? null;
+    const held = this.held.get(run);
+    return held ? { token: held.token, project: held.project, branch: held.branch } : null;
   }
 }

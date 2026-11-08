@@ -254,7 +254,7 @@ export class Worker {
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
       await this.d.passports?.begin({
-        run: run.id, kind: run.kind, item: item.id, project: item.project, branch: branchFor(item, this.cfg.branch_prefix), grants: grantsFor(this.cfg.tool_grants, run.kind),
+        run: run.id, lease_token: token, kind: run.kind, item: item.id, project: item.project, branch: branchFor(item, this.cfg.branch_prefix), grants: grantsFor(this.cfg.tool_grants, run.kind),
       });
       // The guards allowed the run (its claim and its passport); the owner's hooks may still refuse it.
       await this.beforeRun(run, item);
@@ -278,7 +278,7 @@ export class Worker {
         outcome = { status: "failed", error_code: failed.code, detail: failed.detail.slice(0, 500), infra: failed.infra, ...failed.extra, usage };
       }
     } finally {
-      this.d.passports?.end(run.id);
+      this.d.passports?.end(run.id, token);
       this.meters.delete(run);
       // Dropped whatever happened, a failed check included (design §4).
       await this.releaseDatabase(run);
