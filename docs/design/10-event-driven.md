@@ -137,6 +137,9 @@ force.
   the group subscribes, not at its first consume: the controller role subscribes every handler when it wires its
   components, before any of them relays, so a message published after the process starts (a startup command, a
   first poll) is delivered, and a handler added later skips only what was published before its first start.
+  The role consumes only inbound's, the controller's and outbound's handlers, so startup refuses a handler in any
+  other component (since 2026-11-09): no group would subscribe it and its messages would pile up unread. A failed
+  wiring or discovery (a transient store error) is not cached: the next call builds it again.
   `consume` refuses a group that never subscribed. Competing topics are one queue for every group: nothing to
   register. Solo and enterprise: the same; on a fresh store every topic is empty, so latest equals earliest.
 - **Inserts skip key conflicts only** (since 2026-11-09, RFC 0015 review; decision changed: no `INSERT IGNORE`, see
@@ -562,3 +565,7 @@ force.
 - **Topic tables at start** (changed 2026-11-09, runtime review M3). Before: every start ran each topic's
   `CREATE TABLE IF NOT EXISTS` even when `bus_topics` listed it, so a MySQL user without CREATE rights failed at the
   first `wire()` and the controller restarted in a loop.
+- **Unconsumed handlers and failed builds** (changed 2026-11-09, runtime review L2, L3). Before: a handler in a
+  component no role consumes (worker, identity) passed the dispatch check and its messages piled up with no
+  error; and a failed `build()` or discovery stayed cached as a rejected promise, so every later call failed the
+  same way for the life of the object.

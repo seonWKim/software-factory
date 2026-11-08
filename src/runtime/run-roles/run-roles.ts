@@ -5,7 +5,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RoleDescriptor } from "../../shared/role.js";
 import { type Located, loadDescriptors } from "../registry/registry.js";
-import { CODE_ROOT } from "../../state/index.js";
+import { CODE_ROOT, forgetOnFailure } from "../../state/index.js";
 
 /** The role of a golden case with no `role` field. */
 export const DEFAULT_GOLDEN_ROLE = "review";
@@ -35,8 +35,7 @@ let cached: Promise<RoleCatalog> | null = null;
 export function loadRoles(root: string = CODE_ROOT): Promise<RoleCatalog> {
   if (root === CODE_ROOT && cached) return cached;
   const load = loadDescriptors<RoleDescriptor>(root, "role").then((e) => new RoleCatalog(e));
-  if (root === CODE_ROOT) cached = load;
-  return load;
+  return root === CODE_ROOT ? (cached = forgetOnFailure(load, () => (cached = null))) : load;
 }
 
 /** Golden case ids per role, from `<casesDir>/<id>/case.json`. */

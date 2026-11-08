@@ -17,3 +17,14 @@ export function findDescriptorFiles(root: string, pattern: RegExp): string[] {
   walk(root);
   return out.sort();
 }
+
+/**
+ * `load`, but a failure runs `forget` first: a discovery or build cached in a variable is cleared when it fails, so
+ * the next caller tries again instead of getting the same rejection for the life of the process.
+ */
+export function forgetOnFailure<T>(load: Promise<T>, forget: () => void): Promise<T> {
+  return load.catch((err: unknown) => {
+    forget();
+    throw err;
+  });
+}
