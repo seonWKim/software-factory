@@ -30,7 +30,7 @@ import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./superviso
 import { HealthMonitor, syncChecks } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import { LastChecks, serverRevision } from "./ui/system-actions.js";
+import { LastChecks, olderThanFactory, serverRevision } from "./ui/system-actions.js";
 import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
@@ -121,6 +121,9 @@ async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", si
   await Promise.all(loops);
   await app.close();
 }
+
+/** How often a `factory ui` started by hand checks that the factory has not moved past its revision. */
+const UI_REVISION_CHECK_MS = 30_000;
 
 function stopOnSignals(): AbortSignal {
   const stop = new AbortController();
@@ -281,6 +284,18 @@ async function main(argv: readonly string[]): Promise<number> {
       const parts = await buildUiParts(loaded, { identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)) });
       // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
       const lastChecks = new LastChecks();
+      const revision = await serverRevision(loaded.codeRoot);
+      const factoryStatus = () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers);
+      // A page started by hand (not the supervisor's child, which it swaps) never serves code older than the
+      // factory runs (design 08 Self-update): it refuses to start, and stops once the factory moves past it.
+      const supervised = process.env[SUPERVISED_ENV] === "1" && process.send !== undefined;
+      const older = async () => (supervised ? null : olderThanFactory(loaded.codeRoot, revision, (await factoryStatus())?.rev ?? null));
+      const refused = await older();
+      if (refused !== null) {
+        console.log(refused);
+        await parts.close();
+        return 1;
+      }
       const ui = await startUi(
         {
           store: parts.store,
@@ -307,9 +322,9 @@ async function main(argv: readonly string[]): Promise<number> {
           ),
           lastChecks,
           // The revision this server runs (its code root's HEAD): the app shows a banner when its own differs.
-          revision: await serverRevision(loaded.codeRoot),
+          revision,
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
-          factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
+          factoryStatus,
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
           // The configured shared storage, read only by the transcript view (byte ranges, design §9).
@@ -326,12 +341,23 @@ async function main(argv: readonly string[]): Promise<number> {
       console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands as ${actsAs}; Ctrl-C to stop)`);
       // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
       const orphan = new AbortController();
-      if (process.env[SUPERVISED_ENV] === "1" && process.send) process.once("disconnect", () => orphan.abort());
-      const signal = AbortSignal.any([stopOnSignals(), orphan.signal]);
+      if (supervised) process.once("disconnect", () => orphan.abort());
+      // The hand-started page rereads the supervisor's status file (a local read) every 30 s.
+      const stale = new AbortController();
+      let staleText: string | null = null;
+      const watch = setInterval(() => {
+        void older().then((t) => {
+          if (t !== null && staleText === null) { staleText = t; stale.abort(); }
+        });
+      }, UI_REVISION_CHECK_MS);
+      watch.unref();
+      const signal = AbortSignal.any([stopOnSignals(), orphan.signal, stale.signal]);
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      clearInterval(watch);
+      if (staleText !== null) console.log(staleText);
       await ui.close();
       await parts.close();
-      return 0;
+      return staleText === null ? 0 : 1;
     }
     case "migrate": {
       // --json (with --status): one JSON line for the supervisor's check. --no-drain: apply without asking a
