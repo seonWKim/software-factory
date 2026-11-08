@@ -51,8 +51,13 @@ export interface RunPassportRequest {
   kind: string;
   item: WorkItemId;
   project: string;
-  /** The run's branch (`factory/<item>` or the item's head branch): the only branch its tools may touch. */
+  /** The run's branch (`factory/<item>` or the item's head branch): with `wip_branch`, the only branches its tools may touch. */
   branch: string;
+  /**
+   * The run's work-in-progress branch (an implement run's `factory/wip/<item>/<run>`): where a stopped or failed run
+   * keeps its commits for the retry (design §5 Restarts). Absent: the run keeps none.
+   */
+  wip_branch?: string;
   /** The read-only tools `tool_grants` gives this run kind. */
   grants: readonly string[];
 }

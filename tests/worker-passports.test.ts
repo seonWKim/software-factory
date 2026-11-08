@@ -40,3 +40,34 @@ describe("run passports in the worker", () => {
     expect(events).toEqual([`begin ${triage!.id}`, `end ${triage!.id}`]);
   });
 });
+
+describe("an implement run's passport", () => {
+  it("names the run's wip branch beside its branch, so a stopped run can keep its commits", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const source = new FakeSource();
+    const scanner = new PatternEgressScanner(async () => []);
+    const controller = new ControllerRole({ store, source, forge: new FakeForge(source), auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: false });
+    const begun: RunPassportRequest[] = [];
+    const passports: RunPassportIssuer = { begin: async (req) => void begun.push(req), end: () => undefined };
+    const worker = new Worker({
+      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(),
+      runner: new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { summary: "s", next_steps: "n" } }) }),
+      broker: new FakeBroker(), storage: new MemoryStorage(), clock, config,
+      prompts, log: silent, scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(), passports,
+    });
+    source.queue.push({ kind: "item_requested", source: issueRef(8), requester: alice, title: "t", body: "b" });
+    await controller.tickIntake();
+    while (await worker.tick()) await controller.tickRuns();
+    source.queue.push({ kind: "spec_approved", source: issueRef(8), comment_id: "1", approver: alice });
+    await controller.tickIntake();
+    while (await worker.tick()) await controller.tickRuns();
+
+    const item = (await store.getWorkItemBySource("github_issue", issueRef(8).id))!;
+    const implement = (await store.listRuns(item.id)).find((r) => r.kind === "implement")!;
+    expect(begun.find((r) => r.kind === "implement")).toMatchObject({
+      run: implement.id, branch: `factory/${item.id}`, wip_branch: `factory/wip/${item.id}/${implement.id}`,
+    });
+    expect(begun.find((r) => r.kind === "triage")?.wip_branch).toBeUndefined();
+  });
+});

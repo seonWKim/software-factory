@@ -58,6 +58,16 @@ describe("ToolBroker run passports", () => {
     ]);
   });
 
+  it("lets a stopped implement run keep its commits on its own wip branch, and no other wip branch", async () => {
+    const t = await setup();
+    await t.runs.begin({ run: "run_1", kind: "implement", item: "wi_1", project: "proj", branch: "factory/wi_1", wip_branch: "factory/wip/wi_1/run_1", grants: [] });
+    expect(await t.broker.call(t.ctx(), "github.push_branch", { branch: "factory/wip/wi_1/run_1" })).toMatchObject({ ok: true });
+    expect(await t.broker.call(t.ctx(), "github.push_branch", { branch: "factory/wip/wi_1/run_9" })).toMatchObject({
+      ok: false, message: "github.push_branch: outside_branches",
+    });
+    expect(t.calls).toEqual(["github.push_branch"]);
+  });
+
   it("refuses a run with no passport, a tool or branch outside it, and a token used for another run", async () => {
     const t = await setup();
     expect(await t.broker.call(t.ctx(), "github.push_branch", { branch: "factory/wi_1" })).toMatchObject({ ok: false, error_code: "passport_missing" });

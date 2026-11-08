@@ -22,6 +22,8 @@ export interface RunPassportRequest {
   readonly item: string;
   readonly project: string;
   readonly branch: string;
+  /** The run's work-in-progress branch, named beside `branch` (see the broker interface's RunPassportRequest). */
+  readonly wip_branch?: string;
   readonly grants: readonly string[];
 }
 
@@ -51,7 +53,7 @@ export class RunPassports {
       projects: [req.project],
       items: [req.item],
       runs: [req.run],
-      branches: [req.branch],
+      branches: [req.branch, ...(req.wip_branch ? [req.wip_branch] : [])],
       // An empty list would be malformed; a run with no tools gets one no tool matches, so it is still closed.
       tools: tools.length > 0 ? tools : ["none"],
       audience: [BROKER_AUDIENCE],

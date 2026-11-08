@@ -11,7 +11,7 @@ import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import type { LogFields } from "../core/log.js";
 import { type CheckRound, checkCommands, commandText, redact, runChecks } from "../core/checks.js";
-import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
+import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import { MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, renumberPlan, touchesSqliteSchema } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
@@ -252,8 +252,10 @@ export class Worker {
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
+      // An implement run that stops or fails after its agent step keeps its commits on its wip branch: named too.
       await this.d.passports?.begin({
         run: run.id, kind: run.kind, item: item.id, project: item.project, branch: branchFor(item, this.cfg.branch_prefix), grants: grantsFor(this.cfg.tool_grants, run.kind),
+        ...(run.kind === "implement" ? { wip_branch: wipBranchFor(item, this.cfg.branch_prefix, run.id) } : {}),
       });
       // The guards allowed the run (its claim and its passport); the owner's hooks may still refuse it.
       await this.beforeRun(run, item);
