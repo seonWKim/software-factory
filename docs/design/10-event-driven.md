@@ -185,8 +185,9 @@ force.
   it to inbound (fences its cursor moves) and to the old controller (fences its deliveries). In production, relay
   and consume run every 250 ms and intake every `tick_ms`, so a command reaches the decision code up to about
   0.5 s later than in the old same-tick loop. `npm run migrate` creates every discovered topic's tables, so an
-  enterprise MySQL user needs no DDL rights at run time; a role creates them again at start (idempotent), so solo
-  needs no migrate step.
+  enterprise MySQL user needs no DDL rights at run time: at start a role creates only the tables of a topic
+  `bus_topics` does not list yet (the row is written after the tables) and runs no DDL when every topic is listed
+  (since 2026-11-09), so solo needs no migrate step.
 - **The controller decides in discovered units** (since 2026-11-08, RFC 0015 M5; the units still do their own I/O).
   `src/core/controller.ts` is gone. Each feature is one unit, `src/controller/units/<unit>/<unit>.unit.ts`
   (`defineUnit`, `src/controller/router/unit.ts`), found by discovery: the event kinds it decides on (exactly one
@@ -558,3 +559,6 @@ force.
   skipped the owner's `before_merge` veto whenever that replica landed the merge queue.
 - **An enabled `before_delivery` hook** (changed 2026-11-09, runtime review L1). Before: startup accepted it (the
   name was discovered) though nothing ran it, so every delivery went out unchecked with no error.
+- **Topic tables at start** (changed 2026-11-09, runtime review M3). Before: every start ran each topic's
+  `CREATE TABLE IF NOT EXISTS` even when `bus_topics` listed it, so a MySQL user without CREATE rights failed at the
+  first `wire()` and the controller restarted in a loop.
