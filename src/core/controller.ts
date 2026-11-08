@@ -9,6 +9,7 @@ import {
   tierBudget,
 } from "./budget.js";
 import { prNumber } from "./change-ref.js";
+import { checkCommands } from "./checks.js";
 import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
@@ -74,7 +75,7 @@ import {
   SESSION_RELEASED,
 } from "./policy.js";
 import { commandEvent, syncedCommand } from "./command-inbox.js";
-import { MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
+import { LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal } from "./local-merge.js";
 import { isCliCommandKey, localIdentity } from "./local-cli.js";
 import { enqueueImprove, fileReport, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
@@ -354,8 +355,6 @@ const LEGACY_LOCAL_CURSOR = "intake:local";
 const MIRROR_BATCH = 50;
 /** Outbox rows delivered per tick at most (issue #282). */
 const OUTBOX_BATCH = 50;
-/** Local items: the store holds their thread and state, so they need no adapter (issue #282). */
-const LOCAL_TYPE: SourceType = "local";
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
 /** A command name safe to quote in a reply: anything else is called "the command". */
@@ -767,7 +766,7 @@ export class Controller {
     // `factory merge <id>`: no comment command, so it does not go through the comment mapping. Local items only; the
     // CLI refuses it for any other when it writes one.
     if (c.command === MERGE_COMMAND) {
-      if (item.source.type === LOCAL_TYPE) await this.mergeLocal(item.id, localIdentity(c.actor), c.key);
+      if (item.source.type === LOCAL_SOURCE) await this.mergeLocal(item.id, localIdentity(c.actor), c.key);
       return;
     }
     const e = commandEvent(c, item.source);
@@ -778,9 +777,10 @@ export class Controller {
    * The local merge (design 05-sources, Local startup): the one merge path for an item with no PR, reached by
    * `factory merge <id>` through the command inbox (and later by other callers, never a second path). Authorized
    * by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
-   * for a merge. The controller's sandbox merges the item's local branch into the local base branch with no push
-   * and no checkout; a conflict leaves the item in merge_pending and the reply names the files. A merge closes the
-   * item (completed, its merge sha) with the approver as its actor and releases the items waiting on it. Never
+   * for a merge. The controller's sandbox merges the item's local branch into the local base branch with no push,
+   * never in the owner's checkout, after the install command and the checks passed on the merge commit in a
+   * temporary worktree; a conflict or a failing check leaves the item in merge_pending and the reply says why.
+   * A merge closes the item (completed, its merge sha) with the approver as its actor and releases the items waiting on it. Never
    * automatic: only a human's command calls it. Safe to run twice: a branch the base already contains moves
    * nothing and closes the item with the base's commit; `key` keys the reply.
    */
@@ -801,6 +801,8 @@ export class Controller {
     else {
       const r = await this.d.sandbox.mergeLocal({
         repo: repo.path, base_ref: repo.base_branch, branch, identity: this.cfg.agent_git_identity,
+        // The install command, then the checks, on the merge commit before the base moves: a failure merges nothing.
+        checks: [repo.install_command, ...checkCommands(repo)], timeout_ms: this.cfg.run_timeout_ms,
         message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${principal.user_id} with \`factory merge\`.`,
       });
       if (r.merged) {
@@ -846,7 +848,7 @@ export class Controller {
       const id = c.args.item;
       const item = typeof id === "string" && id !== "" ? await this.d.store.getWorkItem(id as WorkItemId) : null;
       // No item, or a local one: nothing to post anywhere.
-      if (!item || item.source.type === LOCAL_TYPE) {
+      if (!item || item.source.type === LOCAL_SOURCE) {
         await this.d.store.markCliCommandMirrored(c.key);
         continue;
       }
@@ -3148,9 +3150,11 @@ export class Controller {
           // `session finish` passed every gate and pushed through the broker (design §5, 2026-11-01): as an implement PR.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? { pr_files: data.files as string[] } : {};
           const detail = { run_id: run.id, ...(run.actor_id ? { actor_id: run.actor_id } : {}) };
-          const input = await this.reviewInput(Number(data.pr_number), it.id);
+          // No PR (a local item, design 05-sources): it reviews and merges as its local branch, as an implement run's.
+          const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
+          const input = await this.reviewInput(pr, it.id);
           return {
-            patch: { stage: "REVIEW", change_ref: String(data.pr_number), ...prUrlOf(data), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
+            patch: { stage: "REVIEW", change_ref: pr === null ? null : String(pr), ...prUrlOf(data), token_cost: tokens, ...files }, actor: SYSTEM, reason: "session_finished", detail,
             ack_run: run.id, enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input },
           };
         }
@@ -3552,6 +3556,24 @@ export class Controller {
       if (!review) continue;
       await this.guard("checks", () => this.decide(w.id, (it) => (waitingOnChecks(it) ? this.checkGate(it, review, {}, null) : null)).then(() => undefined));
     }
+    // Items stalled before failed checks on an unchanged head looped (PR #399): in REVIEW, unblocked, with no run.
+    const unblocked = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "none", limit: CHECKS_BATCH });
+    for (const w of unblocked) {
+      if (!(await this.stalled(w))) continue;
+      const review = await this.latestReview(w.id);
+      if (!review || !(await this.lastVerdictPassed(w.id, review.id))) continue;
+      await this.guard("checks", () => this.decide(w.id, async (it) => {
+        if (!(await this.stalled(it))) return null;
+        const checks = await this.readChecks(it);
+        return checks.state === "failed" ? this.checksFailed(it, review, checks.failed, {}, {}) : null;
+      }).then(() => undefined));
+    }
+  }
+
+  /** In REVIEW with no block and no blocked reason, and no run queued, running or not yet applied: nothing will look at it again. */
+  private async stalled(it: WorkItem): Promise<boolean> {
+    if (it.stage !== "REVIEW" || it.blocked_on !== "none" || it.blocked_reason !== null) return false;
+    return !(await this.d.store.listRuns(it.id)).some((r) => r.status === "queued" || r.status === "running" || r.acknowledged_at === null);
   }
 
   /**
@@ -4266,7 +4288,7 @@ export class Controller {
    */
   private async post(it: WorkItem, target: SourceRef, body: string, marker: string, link: ThreadLinkField | null = null): Promise<string | null> {
     const type = it.source.type;
-    const delivery = type === LOCAL_TYPE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
+    const delivery = type === LOCAL_SOURCE ? null : { source_type: type, target: target.type === type ? target : it.source, link_field: link };
     const { created, message } = await this.d.store.recordItemMessage({ work_item_id: it.id, marker, body, delivery });
     if (created || delivery === null) return null;
     const row = (await this.d.store.listDeliveries(it.id)).find((d) => d.thread_seq === message.seq);
@@ -4334,7 +4356,7 @@ export class Controller {
 
   /** Whether this process can apply an item's transitions: it has the item's source adapter, or the item is local. */
   private serves(type: SourceType): boolean {
-    return type === LOCAL_TYPE || this.byType.has(type);
+    return type === LOCAL_SOURCE || this.byType.has(type);
   }
 
   /**
@@ -4345,7 +4367,7 @@ export class Controller {
     const adapter = this.byType.get(source.type);
     if (adapter) return adapter;
     // A local item's surface is the store itself: nothing to call, nothing to warn about.
-    if (source.type === LOCAL_TYPE) return null;
+    if (source.type === LOCAL_SOURCE) return null;
     this.d.log.warn("no source adapter for the item's source type; skipped", { source_type: source.type, source_id: source.id, call });
     return null;
   }

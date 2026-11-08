@@ -16,7 +16,7 @@ const NOW = Date.parse(AT);
 const row = (n: number, level: string, title: string, extra: object = {}) => ({
   id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level,
   badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
-  pr_number: null, pr_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 },
+  change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 },
   parent_id: null, phase: null, run: null, claim: null, waiting_on_number: null, ...extra,
 });
 const why = (code: string, text: string, refs: number[] = []) => ({ code, text, next_actor: "factory", refs, ref_url: "https://github.com/o/r/issues/" });
@@ -27,7 +27,7 @@ const ROWS = [
   // Out of phase order on purpose.
   row(13, "waiting_on_issue", "Phase three", { parent_id: "wi_10", phase: 3, waiting_on_number: 12, why: phaseHold(13, 12) }),
   row(11, "running", "Phase one", {
-    parent_id: "wi_10", phase: 1, pr_number: 41, pr_url: "https://github.com/o/r/pull/41", why: why("running", "Running"),
+    parent_id: "wi_10", phase: 1, change_ref: "41", change_url: "https://github.com/o/r/pull/41", why: why("running", "Running"),
     run: { kind: "implement", status: "running", attempt: 1, worker_id: "host:7:0", started_at: AT, position: null },
   }),
   row(12, "waiting_on_issue", "Phase two", { parent_id: "wi_10", phase: 2, waiting_on_number: 11, why: phaseHold(12, 11) }),
@@ -42,7 +42,7 @@ const ROWS = [
   row(40, "closed", "Closed alone", { stage: "CLOSED", close_reason: "merged" }),
   row(50, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", why: why("human", "Waiting for approval") }),
 ];
-const overview = { as_of: AT, stages: {}, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, unreviewed_merges_7d: 0, plugins: { issues: "github", prs: "github" } };
+const overview = { as_of: AT, stages: {}, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, unreviewed_merges_7d: 0, plugins: { issues: null } };
 const itemsBody = { as_of: AT, total: ROWS.length, items: ROWS, facets: { allStates: ROWS.length, state: {} } };
 let fetched: string[] = [];
 

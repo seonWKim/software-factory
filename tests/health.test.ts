@@ -116,7 +116,7 @@ async function uiFor(loaded: Loaded, clock = new FakeClock()) {
   const scanner = await p.scanner(await p.secrets());
   const store = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
   await store.migrate();
-  const d: UiDeps = { store, scanner, clock, lease_ms: 60_000, prUrl: () => "https://github.com/o/r/pull/1", health: new HealthMonitor(() => doctorChecks(loaded), clock) };
+  const d: UiDeps = { store, scanner, clock, lease_ms: 60_000, health: new HealthMonitor(() => doctorChecks(loaded), clock) };
   return { port: d, clock };
 }
 
@@ -289,7 +289,7 @@ describe("health: at most one run per 60 seconds per UI process", () => {
     const clock = new FakeClock();
     const store = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
     await store.migrate();
-    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 60_000, prUrl: () => "https://x/1", health: new HealthMonitor(run, clock) };
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 60_000, health: new HealthMonitor(run, clock) };
     return { port: d, clock };
   }
 
@@ -402,7 +402,7 @@ describe("health: the latest improve report (design §7, issue #308)", () => {
     const scanner = new PatternEgressScanner(async () => []);
     const health = new HealthMonitor(async () => [], clock);
     const page = async (store: FactoryStore) =>
-      section((await get({ store, scanner, clock, lease_ms: 60_000, prUrl: () => "https://x/1", health }, "/classic")).body, "improve");
+      section((await get({ store, scanner, clock, lease_ms: 60_000, health }, "/classic")).body, "improve");
     expect(await page(empty)).toContain("no improve run has reported yet");
     const shown = await page(await withReports());
     expect(shown).toContain("a flaky port");

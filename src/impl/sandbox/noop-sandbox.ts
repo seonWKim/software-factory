@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chmod, cp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
 import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
@@ -192,10 +192,11 @@ export class NoOpSandbox implements Sandbox {
 
   /**
    * The local merge (design 05-sources, Local startup): `branch` into the local `base_ref` of the factory repo,
-   * with no checkout at all. merge-tree writes the merged tree and commit-tree the merge commit, both only objects;
-   * then `refs/heads/<base_ref>` moves conditionally on the base that was merged (another merge in between is
-   * refused, nothing lost). No push, no hook, no worktree, no index: the owner's checkout keeps its HEAD and status.
-   * A base branch checked out in any worktree is refused: moving it would change that checkout's status.
+   * never in the owner's checkout. merge-tree writes the merged tree and commit-tree the merge commit, both only
+   * objects; `checks` then run on that commit in a temporary detached worktree (hooks off), removed afterwards;
+   * a failing one moves nothing. Only then `refs/heads/<base_ref>` moves conditionally on the base that was merged
+   * (another merge in between is refused, nothing lost). No push, no hook: the owner's checkout keeps its HEAD and
+   * status. A base branch checked out in any worktree is refused: moving it would change that checkout's status.
    */
   async mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> {
     for (const b of [spec.base_ref, spec.branch]) {
@@ -221,9 +222,37 @@ export class NoOpSandbox implements Sandbox {
     const who = spec.identity;
     const identity = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
     const sha = (await this.git(spec.repo, ["commit-tree", tree.tree, "-p", base, "-p", head, "-m", spec.message], true, identity)).stdout.trim();
+    const failed = await this.checkMerge(spec, sha);
+    if (failed) return { merged: false, refused: failed };
     const moved = await this.git(spec.repo, ["update-ref", "-m", spec.message.split("\n")[0]!, `refs/heads/${spec.base_ref}`, sha, base], false);
     if (moved.exit_code !== 0) return { merged: false, refused: `\`${spec.base_ref}\` moved during the merge; run it again` };
     return { merged: true, sha, already: false };
+  }
+
+  /**
+   * Runs `spec.checks` in order on `sha` in a temporary detached worktree of the factory repo under the worktrees
+   * dir, with the host's base env and no hook. Null when every one passed; otherwise why the merge stops. The
+   * worktree is removed whatever the outcome.
+   */
+  private async checkMerge(spec: LocalMergeSpec, sha: string): Promise<string | null> {
+    if (spec.checks.length === 0) return null;
+    await mkdir(this.worktreesDir, { recursive: true });
+    const dir = await mkdtemp(join(this.worktreesDir, ".merge-"));
+    const hooks = await this.emptyHooks();
+    try {
+      await this.git(spec.repo, ["-c", `core.hooksPath=${hooks}`, "worktree", "add", "--quiet", "--detach", dir, sha]);
+      for (const cmd of spec.checks) {
+        const r = await this.run(cmd, { cwd: dir, env: baseEnv(), timeout_ms: spec.timeout_ms });
+        if (r.exit_code !== 0) {
+          return `\`${cmd.join(" ")}\` ${r.timed_out ? "timed out" : `exited ${r.exit_code}`} on the merged commit, so \`${spec.base_ref}\` did not move; fix it on the branch and run the merge again`;
+        }
+      }
+      return null;
+    } finally {
+      await this.git(spec.repo, ["worktree", "remove", "--force", dir], false);
+      await rm(dir, { recursive: true, force: true });
+      await this.git(spec.repo, ["worktree", "prune"], false);
+    }
   }
 
   /** The commit of the factory repo's local branch `branch`, or null when there is none. */

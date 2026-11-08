@@ -82,14 +82,13 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
 }
 
 /**
- * Needs you and Work items. The title links to the item's page; the Item cell has no link out. The Issue and PR
- * columns exist only when the GitHub plugin is in use (`plugins` from the overview).
+ * Needs you and Work items. The title links to the item's page; the Item cell has no link out. The Issue column
+ * exists only when the GitHub plugin is in use (`plugins` from the overview); the PR column always shows.
  */
 export function ItemsTable({ items, now, label, empty, plugins }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"] }) {
   if (items.length === 0) return <Empty>{empty}</Empty>;
   const showIssue = plugins?.issues === "github";
-  const showPr = plugins?.prs === "github";
-  const head = ["Item", "State", "Why", "Since", ...(showIssue ? ["Issue"] : []), ...(showPr ? ["PR"] : [])];
+  const head = ["Item", "State", "Why", "Since", ...(showIssue ? ["Issue"] : []), "PR"];
   return (
     <Table label={label} head={head}>
       {items.map((it) => (
@@ -106,11 +105,9 @@ export function ItemsTable({ items, now, label, empty, plugins }: { items: reado
           <Td className="text-zinc-600 dark:text-zinc-400">{it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
           <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
           {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
-          {showPr && (
-            <Td className="tabular-nums">
-              {it.pr_number === null ? "–" : it.pr_url ? <Ext href={it.pr_url}>#{it.pr_number}</Ext> : `#${it.pr_number}`}
-            </Td>
-          )}
+          <Td className="tabular-nums">
+            {it.change_ref === null ? "–" : it.change_url ? <Ext href={it.change_url}>#{it.change_ref}</Ext> : `#${it.change_ref}`}
+          </Td>
         </Tr>
       ))}
     </Table>

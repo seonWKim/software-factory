@@ -24,6 +24,7 @@ import {
   type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./core/worker-pool.js";
+import type { LocalRoute } from "./core/worker.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";
@@ -321,6 +322,8 @@ export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: str
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
 const GITHUB_SOURCE = "github-issues";
 const GITHUB_FORGE = "github";
+/** The broker plugin local items always take (Plugins.localRoute). */
+const LOCAL_BROKER = "local";
 
 /**
  * The forge default rule (issue #273): `plugins.forge` left out follows the sources: `github` when `plugins.source`
@@ -636,6 +639,9 @@ export interface Built {
   close(): Promise<void>;
 }
 
+/** What every broker plugin is built with, beside the base context. */
+interface BrokerDeps { github: GitHubApi; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock }
+
 /**
  * Resolves the configured plugins one at a time, through the same registry as build(). For code that needs
  * only some of them: setup, doctor and the G6 canary, so they exercise the configured guards.
@@ -693,6 +699,19 @@ export class Plugins {
   /** The process's forge client (githubAccess): what the CLI commands, setup and doctor call the forge through. */
   async githubApi(): Promise<GitHubApi> {
     return (await this.githubAccess()).api;
+  }
+  /**
+   * Where local items go (design 05-sources, Local items): the `local` broker and the selected sandbox plugin on
+   * the local base branch. With no GitHub plugin selected those are `selected` already; otherwise both are built
+   * here beside them, from the same registry, with no new config key. Never a credential: the local broker has none.
+   */
+  async localRoute(selected: LocalRoute, deps: BrokerDeps): Promise<LocalRoute> {
+    if (this.loaded.config.local_only === true) return selected;
+    const loaded: Loaded = { ...this.loaded, config: { ...this.loaded.config, local_only: true } };
+    const base = { ...this.base, loaded };
+    const sandbox = await createPlugin(loaded.registry, "sandbox", loaded.plugins.sandbox, base);
+    const broker = this.loaded.plugins.broker === LOCAL_BROKER ? selected.broker : await createPlugin(loaded.registry, "broker", LOCAL_BROKER, { ...base, ...deps });
+    return { broker, sandbox };
   }
   /** `tools`: the broker and scanner a runner exposes granted tools through; left out where nothing is granted. */
   /** One runner, or a FallbackRunner over the `plugins.runner` chain (design 2026-11-07). */
@@ -757,9 +776,12 @@ export async function build(
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
   // The broker before the runner: the runner exposes granted broker tools through it (`tool_grants`).
-  const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
+  const brokerDeps: BrokerDeps = { github, credentials, secrets, store, scanner, clock };
+  const broker = await createPlugin(registry, "broker", sel.broker, { ...base, ...brokerDeps });
   // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
+  // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
+  const local = await p.localRoute({ broker, sandbox }, brokerDeps);
   const runner = await p.runner(sandbox, secrets, { broker, scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
@@ -826,6 +848,7 @@ export async function build(
     sandbox,
     runner,
     broker,
+    local,
     scanner,
     storage,
     llm,
@@ -961,6 +984,8 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
 export interface SessionParts {
   clock: Clock; store: FactoryStore; scanner: EgressScanner; sandbox: Sandbox; broker: ToolBroker; auth: AuthProvider; github: GitHubApi; config: FactoryConfig;
+  /** The local items' broker and sandbox, as the worker pool's (Plugins.localRoute). */
+  local: LocalRoute;
   close(): Promise<void>;
 }
 
@@ -975,13 +1000,15 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const [scanner, { credentials, api: github }, sandbox] = [await p.scanner(secrets), await p.githubAccess({ secrets, clock }), await p.sandbox()];
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
-  const broker = await createPlugin(registry, "broker", sel.broker, { ...base, github, credentials, secrets, store, scanner, clock });
+  const brokerDeps: BrokerDeps = { github, credentials, secrets, store, scanner, clock };
+  const broker = await createPlugin(registry, "broker", sel.broker, { ...base, ...brokerDeps });
+  const local = await p.localRoute({ broker, sandbox }, brokerDeps);
   const { project, refreshed } = await projectAtStartup(loaded, { store, lookup: github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
   const config = resolvedConfig(loaded.config, project);
   shareGitHubBudget(loaded, github, store, config);
   const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });
   await settings.refresh();
-  return { clock, store, scanner, sandbox, broker, auth, github, config: settings.config(), close: () => refreshed.then(() => store.close()) };
+  return { clock, store, scanner, sandbox, broker, local, auth, github, config: settings.config(), close: () => refreshed.then(() => store.close()) };
 }
 
 /**

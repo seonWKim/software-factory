@@ -126,7 +126,7 @@ function waitsFor(it: ItemRow, byNumber: ReadonlyMap<number, ItemRow>): { label:
 
 const CHIP = "rounded border border-zinc-300 px-1.5 py-0.5 text-xs whitespace-nowrap dark:border-zinc-700";
 
-function Row({ node, now, byNumber, plugins }: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow>; plugins: boolean }) {
+function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
   const it = node.item;
   const waits = waitsFor(it, byNumber);
   const run = it.run;
@@ -149,8 +149,8 @@ function Row({ node, now, byNumber, plugins }: { node: TreeNode; now: number; by
           {run.started_at && run.status === "running" && ` · ${ago(run.started_at, now)}`}
         </span>
       )}
-      {plugins && it.pr_number !== null && (
-        it.pr_url ? <a href={it.pr_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>PR #{it.pr_number}</a> : <span className="text-xs tabular-nums">PR #{it.pr_number}</span>
+      {it.change_ref !== null && (
+        it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>PR #{it.change_ref}</a> : <span className="text-xs tabular-nums">PR #{it.change_ref}</span>
       )}
       <span className="text-xs whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-400">{ago(it.updated_at, now)}</span>
       <span className="flex basis-full flex-wrap gap-x-2 text-xs text-zinc-600 sm:basis-auto sm:text-sm dark:text-zinc-400">
@@ -161,7 +161,7 @@ function Row({ node, now, byNumber, plugins }: { node: TreeNode; now: number; by
   );
 }
 
-function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow>; plugins: boolean }) {
+function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
   const { node } = props;
   return (
     <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-blue-500">
@@ -208,11 +208,10 @@ export function useExpanded(defaults: readonly string[]): [ReadonlySet<string>, 
   return [new Set(saved ?? defaults), set];
 }
 
-export function ItemsTree({ nodes, rows, now, plugins, expanded, onExpanded }: {
+export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
   nodes: readonly TreeNode[];
   rows: readonly ItemRow[];
   now: number;
-  plugins: boolean;
   expanded: ReadonlySet<string>;
   onExpanded: (ids: Iterable<string>) => void;
 }) {
@@ -229,7 +228,7 @@ export function ItemsTree({ nodes, rows, now, plugins, expanded, onExpanded }: {
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}
       className="rounded-md border border-zinc-200 text-sm dark:border-zinc-800"
     >
-      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} plugins={plugins} />)}
+      {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} />)}
     </Tree>
   );
 }
