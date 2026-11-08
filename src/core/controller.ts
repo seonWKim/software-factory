@@ -3462,7 +3462,7 @@ export class Controller {
         "",
         "Merge it only with a follow-up issue for the rest, or comment `/revise <feedback>` on the PR to send it back to the implementer.",
       ].join("\n")
-      : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.cfg.repo.base_branch}\`, with no push` : ""}.`;
+      : `${ready} A human merge is required${local ? `: \`factory merge ${it.id}\` (approver role) merges it into the local \`${this.cfg.repo.base_branch}\`, ${this.basePusher() ? "then queues its push to origin" : "with no push"}` : ""}.`;
     await this.comment(it, `merge:${reviewRunId}`, `${text}\n\n${footerAfter(it, patch)}`);
     return { patch, actor: SYSTEM, reason: "review_passed", ...ack };
   }
