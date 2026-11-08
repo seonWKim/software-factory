@@ -3,7 +3,7 @@
 // user's linked accounts, with the viewer's identity, its source and role. Store reads only, no forge call: a user
 // whose role comes only from GitHub permission is not listed. POST /api/v1/users adds, changes or removes a local
 // user through the CLI's own `users` actions (runLocalCli), so the page and `factory users` share one path, its
-// owner rule, its first-writer-is-owner claim and its audit row (`local_user_changes`, written by the store). The
+// owner rule, its first-writer-is-owner claim and its audit row (`identity_local_user_changes`, written by the store). The
 // request guards (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the body; then
 // the owner check inside runLocalCli. Every refusal comes before any store write.
 

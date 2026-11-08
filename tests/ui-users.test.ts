@@ -2,7 +2,7 @@
 // local users, the static grant users and their links, and the viewer's identity, with no forge call; POST
 // /api/v1/users adds, changes or removes a local user through the CLI's own `users` actions, behind the pause
 // route's guards (Host, Origin, Content-Type, CSRF token, body size, JSON, body) and then the owner check. Every
-// refusal writes nothing: no local_users row and no local_user_changes row.
+// refusal writes nothing: no identity_local_users row and no identity_local_user_changes row.
 
 import { describe, expect, it } from "vitest";
 import type { LogFields, Logger } from "../src/core/log.js";
@@ -66,7 +66,7 @@ async function setup(opts: { me?: CliIdentity; owner?: UserId | null; wired?: bo
     health: new HealthMonitor(async () => [], new FakeClock()),
     ...(opts.wired === false ? {} : { users }),
   };
-  const changes = async () => (await real.listTableRows({ table: "local_user_changes", limit: 200 }))!.rows;
+  const changes = async () => (await real.listTableRows({ table: "identity_local_user_changes", limit: 200 }))!.rows;
   return { d, real, users, log, changes, calls, writes: () => calls.length };
 }
 

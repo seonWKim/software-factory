@@ -602,6 +602,16 @@ CREATE TABLE identity_link_codes (
     created_at     TEXT NOT NULL
   );
 
+CREATE TABLE identity_local_user_changes (
+    seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id   TEXT NOT NULL,
+    action    TEXT NOT NULL,
+    old_role  TEXT,
+    new_role  TEXT,
+    actor     TEXT NOT NULL,
+    at        TEXT NOT NULL
+  );
+
 CREATE TABLE identity_local_users (
     user_id     TEXT PRIMARY KEY,
     role        TEXT NOT NULL,

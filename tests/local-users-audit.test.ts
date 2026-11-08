@@ -1,26 +1,23 @@
 // Local user changes are audited (design 08-permissions, issue #445): every add, role change and removal of a
-// local user writes one `local_user_changes` row (actor, user, action, old role, new role, time) in the same
+// local user writes one `identity_local_user_changes` row (actor, user, action, old role, new role, time) in the same
 // transaction as the change, from the store, so `factory users` and the Users page write the same row. A refused
 // or empty write writes none. Never pin a step as the newest.
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { UserId } from "../src/core/types.js";
 import { cliIdentity, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
-import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
+import migration from "../src/identity/migrations/20261109T1300-identity-local-user-changes.migration.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { Dialect, MigrationDb } from "../src/state/index.js";
+import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { newStore } from "./helpers/store.js";
 
-const STEP = MIGRATIONS.findIndex((m) => m.includes("CREATE TABLE IF NOT EXISTS local_user_changes")) + 1;
-const STEP_FILE = `${String(STEP).padStart(4, "0")}-local-user-changes.sql`;
 const OWNER = "local:owner@example.com" as UserId;
 const ALICE = "local:alice" as UserId;
 
 /** The audit rows, oldest first. */
 async function changes(store: FactoryStore) {
-  const page = await store.listTableRows({ table: "local_user_changes", limit: 200 });
+  const page = await store.listTableRows({ table: "identity_local_user_changes", limit: 200 });
   return [...page!.rows].sort((a, b) => Number(a.seq) - Number(b.seq)).map(({ seq: _, ...r }) => r);
 }
 
@@ -30,7 +27,7 @@ async function owned() {
   return { store, at: clock.now().toISOString() };
 }
 
-describe("local_user_changes: one row per add, change and remove", () => {
+describe("identity_local_user_changes: one row per add, change and remove", () => {
   it("records an add, a change and a remove with the actor, the old and new role and the time", async () => {
     const { store, at } = await owned();
     await store.setLocalUserRole(ALICE, "requester", OWNER);
@@ -77,14 +74,31 @@ describe("local_user_changes: one row per add, change and remove", () => {
   });
 });
 
-describe("migration: local_user_changes", () => {
-  it("is one SQLite migration and the MySQL step of the same number", () => {
-    expect(STEP).toBeGreaterThan(0);
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "local-user-changes")).toMatchObject({
-      number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE,
-    });
-    const sql = readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
-    expect(sql).toContain("CREATE TABLE IF NOT EXISTS local_user_changes");
-    for (const col of ["seq", "user_id", "action", "old_role", "new_role", "actor", "at"]) expect(sql).toMatch(new RegExp(`\\n\\s+${col}\\s`));
+describe("migration: identity_local_user_changes", () => {
+  /** The statements the migration runs on `dialect`. */
+  async function statements(dialect: Dialect): Promise<string[]> {
+    const sql: string[] = [];
+    const db = { dialect, run: async (q: string) => (sql.push(q), 0), all: async () => [] } as unknown as MigrationDb;
+    await migration.up(db);
+    return sql;
+  }
+
+  it("is additive and creates the same table, with every column, on SQLite and MySQL", async () => {
+    expect(migration.change).toBe("additive");
+    for (const dialect of ["sqlite", "mysql"] as const) {
+      const [sql, ...rest] = await statements(dialect);
+      expect(rest).toEqual([]);
+      expect(sql).toContain("CREATE TABLE IF NOT EXISTS identity_local_user_changes");
+      for (const col of ["seq", "user_id", "action", "old_role", "new_role", "actor", "at"]) expect(sql).toMatch(new RegExp(`\\n\\s+${col}\\s`));
+    }
+    expect((await statements("mysql"))[0]).toContain("AUTO_INCREMENT");
+  });
+
+  it("runs again on a database that already has the table (a rerun after a crash)", async () => {
+    const driver = new SqliteDriver(":memory:");
+    await driver.migrate();
+    const db: MigrationDb = { dialect: "sqlite", run: (q, p) => driver.run(q, p), all: (q, p) => driver.all(q, p) };
+    await expect(migration.up(db)).resolves.toBeUndefined();
+    await driver.close();
   });
 });

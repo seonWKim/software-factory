@@ -224,12 +224,7 @@ class ApiCtx {
  */
 async function health(c: ApiCtx) {
   const report = await c.d.health.report(c.d.scanner);
-  let rows: HostSleep[] = [];
-  try {
-    rows = await c.d.store.listHostSleeps({ limit: HEALTH_SLEEPS });
-  } catch {
-    rows = [];
-  }
+  const rows = await c.d.store.listHostSleeps({ limit: HEALTH_SLEEPS }).catch((): HostSleep[] => []);
   return { ...report, sleeps: await sleepRows(c, rows) };
 }
 

@@ -72,6 +72,7 @@ import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import { recordAction } from "../../../outbound/index.js";
+import { recordLocalUserChange } from "../../../identity/index.js";
 import type {
   AbandonedAttempt,
   AppCommandRequest,
@@ -1813,11 +1814,11 @@ export class SqlFactoryStore implements FactoryStore {
       if (row) {
         await tx.run("UPDATE identity_local_users SET role = ?, added_by = ? WHERE user_id = ?", [role, added_by, user_id]);
         // Setting the role a user already has changes nothing, so it is not audited.
-        if (row.role !== role) await auditLocalUser(tx, { user_id, action: "change", old_role: row.role as string, new_role: role, actor: added_by, at: now });
+        if (row.role !== role) await recordLocalUserChange(tx, { user_id, action: "change", old_role: String(row.role), new_role: role, actor: added_by, at: now });
         return { ok: true as const, created: false };
       }
       await tx.run("INSERT INTO identity_local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, ?, NULL, ?, ?)", [user_id, role, added_by, now]);
-      await auditLocalUser(tx, { user_id, action: "add", old_role: null, new_role: role, actor: added_by, at: now });
+      await recordLocalUserChange(tx, { user_id, action: "add", old_role: null, new_role: role, actor: added_by, at: now });
       return { ok: true as const, created: true };
     });
   }
@@ -1831,8 +1832,7 @@ export class SqlFactoryStore implements FactoryStore {
       if (row.role === "owner") return "owner" as const;
       const [owner] = await tx.all("SELECT user_id FROM identity_local_users WHERE owner_slot = 1");
       await tx.run("DELETE FROM identity_local_users WHERE user_id = ?", [user_id]);
-      const actor = (owner?.user_id ?? row.added_by) as string;
-      await auditLocalUser(tx, { user_id, action: "remove", old_role: row.role as string, new_role: null, actor, at: now });
+      await recordLocalUserChange(tx, { user_id, action: "remove", old_role: String(row.role), new_role: null, actor: String(owner?.user_id ?? row.added_by), at: now });
       return "removed" as const;
     });
   }
@@ -1904,15 +1904,8 @@ export class SqlFactoryStore implements FactoryStore {
       );
     // Keyed by work_item_id: update the row, else insert it; a concurrent first insert that loses updates instead.
     if ((await update()) === 0) {
-      try {
-        await this.db.run(
-          "INSERT INTO controller_merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)",
-          [...values, c.work_item_id],
-        );
-      } catch (err) {
-        if (!this.db.isDuplicateKey(err)) throw err;
-        await update();
-      }
+      const sql = "INSERT INTO controller_merge_checks (mergeable, conflicts, head_sha, base_sha, checked_at, work_item_id) VALUES (?, ?, ?, ?, ?, ?)";
+      if (!(await this.insertOnce(this.db, sql, [...values, c.work_item_id]))) await update();
     }
     return { ...c, conflicts: [...c.conflicts], checked_at };
   }
@@ -1950,16 +1943,9 @@ export class SqlFactoryStore implements FactoryStore {
         [...values, c.source_id, c.marker],
       );
     if ((await update()) > 0) return;
-    try {
-      await this.db.run(
-        `INSERT INTO outbound_deliveries (comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at, source_id, marker)
-         VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?)`,
-        [...values, now, c.source_id, c.marker],
-      );
-    } catch (err) {
-      if (!this.db.isDuplicateKey(err)) throw err;
-      await update();
-    }
+    const sql = `INSERT INTO outbound_deliveries (comment_id, url, body_hash, attempts, next_attempt_at, created_at, updated_at, source_id, marker)
+         VALUES (?, ?, ?, 0, NULL, ?, ?, ?, ?)`;
+    if (!(await this.insertOnce(this.db, sql, [...values, now, c.source_id, c.marker]))) await update();
   }
 
   async recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number): Promise<boolean> {
@@ -2051,16 +2037,9 @@ export class SqlFactoryStore implements FactoryStore {
       );
     // Keyed by process_id: update the row, else insert it; a concurrent first insert that loses updates instead.
     if ((await update()) === 0) {
-      try {
-        await this.db.run(
-          `INSERT INTO worker_processes (pid, host, slots, max_slots, busy, index_base, started_at, reported_at, process_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [...values, r.process_id],
-        );
-      } catch (err) {
-        if (!this.db.isDuplicateKey(err)) throw err;
-        await update();
-      }
+      const sql = `INSERT INTO worker_processes (pid, host, slots, max_slots, busy, index_base, started_at, reported_at, process_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+      if (!(await this.insertOnce(this.db, sql, [...values, r.process_id]))) await update();
     }
     return { ...r, reported_at };
   }
@@ -2500,7 +2479,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   /** False if a unique key says the row is already there. */
-  private async insertOnce(tx: SqlExecutor, sql: string, params: (string | number | null)[]): Promise<boolean> {
+  private async insertOnce(tx: SqlExecutor, sql: string, params: SqlValue[]): Promise<boolean> {
     try {
       await tx.run(sql, params);
       return true;
@@ -3012,17 +2991,6 @@ function toCell(v: unknown): TableCell {
   if (v instanceof Date) return v.toISOString();
   if (v instanceof Uint8Array) return Buffer.from(v).toString("utf8");
   return String(v);
-}
-
-/** One `local_user_changes` row (design 08-permissions), inside the caller's transaction. */
-async function auditLocalUser(
-  tx: SqlExecutor,
-  c: { user_id: string; action: "add" | "change" | "remove"; old_role: string | null; new_role: string | null; actor: string; at: string },
-): Promise<void> {
-  await tx.run(
-    "INSERT INTO local_user_changes (user_id, action, old_role, new_role, actor, at) VALUES (?, ?, ?, ?, ?, ?)",
-    [c.user_id, c.action, c.old_role, c.new_role, c.actor, c.at],
-  );
 }
 
 function rowToLocalUser(r: Row): LocalUser {

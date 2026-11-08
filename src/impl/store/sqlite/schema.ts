@@ -717,18 +717,4 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX IF NOT EXISTS base_pushes_pending ON base_pushes (finished_at, next_attempt_at);
   `,
-  // 42: the audit of local users (design 08-permissions, issue #445). One row per add, role change or removal of a
-  // `local_users` row, written in the same transaction: `action` add | change | remove, `old_role` NULL for an add,
-  // `new_role` NULL for a remove, `actor` the user who made the change. No backfill. IF NOT EXISTS: safe to run again.
-  `
-  CREATE TABLE IF NOT EXISTS local_user_changes (
-    seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id   TEXT NOT NULL,
-    action    TEXT NOT NULL,
-    old_role  TEXT,
-    new_role  TEXT,
-    actor     TEXT NOT NULL,
-    at        TEXT NOT NULL
-  );
-  `,
 ];

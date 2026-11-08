@@ -741,6 +741,17 @@ CREATE TABLE `identity_link_codes` (
   KEY `link_codes_live` (`used_at`,`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `identity_local_user_changes` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `user_id` varchar(128) COLLATE utf8mb4_bin NOT NULL,
+  `action` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `old_role` varchar(16) COLLATE utf8mb4_bin DEFAULT NULL,
+  `new_role` varchar(16) COLLATE utf8mb4_bin DEFAULT NULL,
+  `actor` varchar(128) COLLATE utf8mb4_bin NOT NULL,
+  `at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `identity_local_users` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `user_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
