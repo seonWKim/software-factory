@@ -4,7 +4,7 @@ import { join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  IMPL_DIR,
+  PLUGIN_ROOT,
   PLUGIN_KINDS,
   REGISTRY,
   createPlugin,
@@ -42,14 +42,14 @@ const failure = (p: Promise<unknown>): Promise<string | null> =>
 
 describe("plugin discovery: finding descriptor files", () => {
   it("finds every *.plugin.ts descriptor in the source tree, sorted by path, and no other file", () => {
-    const files = findPluginFiles([IMPL_DIR]);
+    const files = findPluginFiles([PLUGIN_ROOT]);
     // Counted from the tree, not pinned, so a new plugin needs no edit here.
-    const onDisk = readdirSync(IMPL_DIR, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".plugin.ts"));
+    const onDisk = readdirSync(PLUGIN_ROOT, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".plugin.ts"));
     expect(files.length).toBe(onDisk.length);
     expect(files.length).toBeGreaterThan(0);
     expect(files).toEqual([...files].sort());
     for (const f of files) expect(f).toMatch(/\.plugin\.ts$/);
-    for (const f of files) expect(relative(IMPL_DIR, f).startsWith("..")).toBe(false);
+    for (const f of files) expect(relative(PLUGIN_ROOT, f).startsWith("..")).toBe(false);
   });
 
   it("in a source tree: finds *.plugin.ts, ignores *.d.ts and other files", () => {
@@ -80,14 +80,14 @@ describe("plugin discovery: finding descriptor files", () => {
     const js = (name: string) =>
       `export default { kind: "clock", name: ${JSON.stringify(name)}, create: () => ({ now: () => new Date(0), sleep: async () => {} }) };\n`;
     const dir = tree({ "b.plugin.js": js("js-b"), "a.plugin.js": js("js-a") });
-    const registry = await loadRegistry([IMPL_DIR, dir]);
+    const registry = await loadRegistry([PLUGIN_ROOT, dir]);
     expect(Object.keys(registry.clock.plugins)).toEqual(["system", "js-a", "js-b"]);
   });
 });
 
 describe("plugin discovery: the built-in registry", () => {
   it("REGISTRY is the registry loaded from src/impl", async () => {
-    const loaded = await loadRegistry([IMPL_DIR]);
+    const loaded = await loadRegistry([PLUGIN_ROOT]);
     for (const kind of PLUGIN_KINDS) {
       expect(Object.keys(loaded[kind].plugins), kind).toEqual(Object.keys(REGISTRY[kind].plugins));
     }
@@ -132,7 +132,7 @@ describe("plugin discovery: the built-in registry", () => {
 describe("plugin discovery: a new plugin file", () => {
   it("is discovered and selectable through selectPlugins, with no other file changed", async () => {
     const dir = tree({ "temp-clock.plugin.ts": clockPlugin("temp-clock") });
-    const registry = await loadRegistry([IMPL_DIR, dir]);
+    const registry = await loadRegistry([PLUGIN_ROOT, dir]);
     expect(Object.keys(registry.clock.plugins)).toContain("temp-clock");
     const sel = selectPlugins(
       registry,
@@ -154,7 +154,7 @@ describe("plugin discovery: a new plugin file", () => {
         `secrets: [{ name: "TEST_CLOCK_TOKEN", purpose: "reads the test clock" }],`,
       ),
     });
-    const registry = await loadRegistry([IMPL_DIR, dir]);
+    const registry = await loadRegistry([PLUGIN_ROOT, dir]);
     expect(registry.clock.secrets["secret-clock"]!.map((d) => d.name)).toEqual(["TEST_CLOCK_TOKEN"]);
     expect(registry.clock.secrets.system).toEqual([]);
   });
@@ -163,29 +163,29 @@ describe("plugin discovery: a new plugin file", () => {
 describe("plugin discovery: bad descriptors fail startup", () => {
   it("an unknown kind names the file", async () => {
     const dir = tree({ "x/bad.plugin.ts": `export default { kind: "telepathy", name: "x", create: () => ({}) };\n` });
-    const err = await failure(loadRegistry([IMPL_DIR, dir]));
+    const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
     expect(err).toContain(join(dir, "x", "bad.plugin.ts"));
     expect(err).toContain("telepathy");
   });
 
   it("a file without a descriptor names the file", async () => {
     const dir = tree({ "empty.plugin.ts": "export const nothing = 1;\n" });
-    const err = await failure(loadRegistry([IMPL_DIR, dir]));
+    const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
     expect(err).toContain(join(dir, "empty.plugin.ts"));
   });
 
   it("two plugins with one name under one kind name the kind, the name and both files", async () => {
     const dir = tree({ "dup.plugin.ts": clockPlugin("system") });
-    const err = await failure(loadRegistry([IMPL_DIR, dir]));
+    const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
     expect(err).toContain("clock");
     expect(err).toContain('"system"');
-    expect(err).toContain(join(IMPL_DIR, "clock", "system.plugin.ts"));
+    expect(err).toContain(join(PLUGIN_ROOT, "impl", "clock", "system.plugin.ts"));
     expect(err).toContain(join(dir, "dup.plugin.ts"));
   });
 
   it("the same name under two kinds is fine", async () => {
     const dir = tree({ "sys.plugin.ts": clockPlugin("noop") });
-    const registry = await loadRegistry([IMPL_DIR, dir]);
+    const registry = await loadRegistry([PLUGIN_ROOT, dir]);
     expect(Object.keys(registry.clock.plugins)).toContain("noop");
     expect(Object.keys(registry.sandbox.plugins)).toContain("noop");
   });
@@ -199,9 +199,9 @@ describe("plugin discovery: bad descriptors fail startup", () => {
 
   it("two defaults for every platform name the kind and both files", async () => {
     const dir = tree({ "second.plugin.ts": clockPlugin("second-clock", "default: true,") });
-    const err = await failure(loadRegistry([IMPL_DIR, dir]));
+    const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
     expect(err).toMatch(/Clock \(clock\) has two defaults/);
-    expect(err).toContain(join(IMPL_DIR, "clock", "system.plugin.ts"));
+    expect(err).toContain(join(PLUGIN_ROOT, "impl", "clock", "system.plugin.ts"));
     expect(err).toContain(join(dir, "second.plugin.ts"));
   });
 
@@ -209,15 +209,15 @@ describe("plugin discovery: bad descriptors fail startup", () => {
     const dir = tree({
       "a.plugin.ts": `export default { kind: "awake", name: "mac2", create: () => ({}), default: { platforms: ["darwin"] } };\n`,
     });
-    const err = await failure(loadRegistry([IMPL_DIR, dir]));
+    const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
     expect(err).toMatch(/KeepAwake \(awake\) has two defaults for darwin/);
-    expect(err).toContain(join(IMPL_DIR, "awake", "caffeinate.plugin.ts"));
+    expect(err).toContain(join(PLUGIN_ROOT, "impl", "awake", "caffeinate.plugin.ts"));
     expect(err).toContain(join(dir, "a.plugin.ts"));
   });
 
   it("store and auth take no default: their config keys pick one", async () => {
     const dir = tree({ "s.plugin.ts": `export default { kind: "auth", name: "x", create: () => ({}), default: true };\n` });
-    const err = await failure(loadRegistry([IMPL_DIR, dir]));
+    const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
     expect(err).toMatch(/auth/);
     expect(err).toContain(join(dir, "s.plugin.ts"));
   });
@@ -231,7 +231,7 @@ describe("plugin discovery: bad descriptors fail startup", () => {
 
   it("a guard plugin cannot be named after a disabling value", async () => {
     const dir = tree({ "n.plugin.ts": `export default { kind: "egress", name: "none", create: () => ({}) };\n` });
-    const err = await failure(loadRegistry([IMPL_DIR, dir]));
+    const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
     expect(err).toMatch(/means disabled/);
     expect(err).toContain(join(dir, "n.plugin.ts"));
   });

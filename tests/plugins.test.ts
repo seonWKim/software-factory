@@ -37,7 +37,7 @@ import type { GitHubAccess, GitHubApi } from "../src/interfaces/github-credentia
 import type { ToolBroker, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import {
   type Contexts,
-  IMPL_DIR,
+  PLUGIN_ROOT,
   type PluginDescriptor,
   defaultPlugins,
   findPluginFiles,
@@ -89,7 +89,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
 const DESCRIPTORS = await Promise.all(
-  findPluginFiles([IMPL_DIR]).map(async (file) => ({
+  findPluginFiles([PLUGIN_ROOT]).map(async (file) => ({
     file,
     descriptor: ((await import(pathToFileURL(file).href)) as { default: PluginDescriptor }).default,
   })),
@@ -242,7 +242,7 @@ describe("plugin registry: every discovered plugin", () => {
   });
 
   for (const { file, descriptor: d } of DESCRIPTORS) {
-    describe(`${d.kind} \`${d.name}\` (${file.slice(IMPL_DIR.length + 1)})`, () => {
+    describe(`${d.kind} \`${d.name}\` (${file.slice(PLUGIN_ROOT.length + 1)})`, () => {
       it("is registered with its descriptor's factory and secrets", () => {
         expect(REGISTRY[d.kind].plugins[d.name]).toBe(d.create);
         expect(REGISTRY[d.kind].secrets[d.name]).toEqual(d.secrets ?? []);
@@ -252,7 +252,7 @@ describe("plugin registry: every discovered plugin", () => {
         const text = readFileSync(file, "utf8");
         expect(text).toMatch(/export default definePlugin\(/);
         const local = [...text.matchAll(/(?:from\s+|import\()"(\.[^"]+)"/g)].map((m) => join(dirname(file), m[1]!));
-        expect(local.filter((p) => p.startsWith(IMPL_DIR)).length, "imports its implementation from src/impl").toBeGreaterThan(0);
+        expect(local.filter((p) => p.startsWith(pluginHome(file))).length, "imports its implementation from its own folder").toBeGreaterThan(0);
       });
 
       it("builds an object from a full context without running anything", async () => {
@@ -284,13 +284,19 @@ describe("plugin registry: every discovered plugin", () => {
   }
 });
 
+/** A plugin's own folder: src/impl/<interface>/ for legacy plugins, else the folder of its descriptor. */
+function pluginHome(file: string): string {
+  const [top, dir] = file.slice(PLUGIN_ROOT.length + 1).split(/[\\/]/);
+  return top === "impl" ? join(PLUGIN_ROOT, "impl", dir!) : dirname(file);
+}
+
 /**
  * The classes a descriptor constructs from its own interface's directory (src/impl/<dir>/...), such as
  * SqlFactoryStore and SqliteDriver; shared helpers such as ConsoleLogger come from elsewhere.
  */
 function implementationClasses(file: string): string[] {
   const text = readFileSync(file, "utf8");
-  const own = join(IMPL_DIR, file.slice(IMPL_DIR.length + 1).split(/[\\/]/)[0]!);
+  const own = pluginHome(file);
   const constructed = new Set([...text.matchAll(/new\s+([A-Z]\w*)/g)].map((m) => m[1]!));
   return [...text.matchAll(/import\s*\{([^}]*)\}\s*from\s*"(\.[^"]+)"/g)]
     .filter((m) => join(dirname(file), m[2]!).startsWith(own))
@@ -738,7 +744,7 @@ describe("plugin registry: only plugin descriptors construct implementations", (
 });
 
 describe("GitHub plugins (design 05-sources): one client per process, built by the credential plugin", () => {
-  const GITHUB_DIR = join(IMPL_DIR, "github");
+  const GITHUB_DIR = join(PLUGIN_ROOT, "impl", "github");
   const srcFiles = (dir: string): string[] => findPluginFiles([dir], /\.ts$/);
 
   it("every GitHub descriptor imports its implementation inside create(), never at top level", () => {
@@ -747,7 +753,7 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     for (const file of files) {
       const text = readFileSync(file, "utf8");
       const topLevel = [...text.matchAll(/^import\s+(?!type\b)[^"]*from\s+"(\.[^"]+)"/gm)].map((m) => join(dirname(file), m[1]!));
-      expect(topLevel.filter((p) => p.startsWith(IMPL_DIR)), file).toEqual([]);
+      expect(topLevel.filter((p) => p.startsWith(join(PLUGIN_ROOT, "impl"))), file).toEqual([]);
       expect(text, file).toMatch(/\bimport\("\.\//);
     }
   });

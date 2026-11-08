@@ -33,6 +33,8 @@ force.
   (`defineCommand` from `src/cli/command.ts`: its names, its block of the help text, `run`). `src/main.ts` only reads
   `--config`, finds the command by name and runs it; adding a command edits no central file. Help lists the
   commands by file order (alphabetical).
+- **Plugins are found anywhere under `src/`** (since 2026-11-08): `src/plugins.ts` walks the whole code root for
+  `*.plugin.ts` and `*.grant.ts`, so a component keeps its plugins in its own `plugins/` folder.
 - **Legacy code moves into its component when it is rewritten** (since 2026-11-08, RFC 0015 M2 re-planned):
   `src/core/`, `src/impl/` and `src/interfaces/` stay where they are until the milestone that rebuilds them
   (inbound M4, controller M5, worker M6, outbound M7, identity and guards M9). Moving them first would rewrite
@@ -49,3 +51,4 @@ force.
   (still in force for steps up to `0041`, see 05-coordination.md "MySQL schema steps").
 - **CLI commands** (decision changed 2026-11-08, RFC 0015 M2). Before: `src/main.ts` held one `switch` case per
   command and one hand-written help text.
+- **Plugin discovery root** (decision changed 2026-11-08, RFC 0015 M2). Before: only `src/impl/` was walked.
