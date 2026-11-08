@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, readlink, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { Logger } from "../../core/log.js";
 import { writeSupervisorStatus } from "../../supervisor-status.js";
 import type { Clock } from "../../interfaces/clock.js";
@@ -51,11 +51,8 @@ export function isCodePath(file: string): boolean {
 export interface GitWorktreeOptions {
   /** The main checkout: state root, and the repository whose origin/<base> the version folders follow. */
   repoPath: string;
-  /** Legacy `<state_dir>/runtime` (drain-then-start layout): removed on the first start under versions/. Its
-   * parent is the state dir, where versions/ and deps/ live unless set below. */
-  runtimeDir: string;
-  /** Legacy `<state_dir>/runtime-next`: removed together with runtimeDir. */
-  stagingDir: string;
+  /** `<state_dir>`: versions/ and deps/ live here unless set below. */
+  stateDir: string;
   /** `<state_dir>/versions`: one detached worktree per version, `versions/<short-rev>`. */
   versionsDir?: string;
   /** `<state_dir>/deps`: node_modules installs, `deps/<hash of package-lock.json>/node_modules`. */
@@ -202,11 +199,11 @@ export class GitWorktreeUpdater implements Updater {
   }
 
   private get versionsDir(): string {
-    return this.o.versionsDir ?? join(dirname(this.o.runtimeDir), "versions");
+    return this.o.versionsDir ?? join(this.o.stateDir, "versions");
   }
 
   private get depsDir(): string {
-    return this.o.depsDir ?? join(dirname(this.o.runtimeDir), "deps");
+    return this.o.depsDir ?? join(this.o.stateDir, "deps");
   }
 
   childPid(): number | null {
@@ -230,7 +227,6 @@ export class GitWorktreeUpdater implements Updater {
     const origin = await this.fetch();
     await this.fastForwardMain(origin);
     await this.sweep(origin);
-    if (this.foreign.size === 0) await this.removeLegacy();
     if (!this.newest) {
       this.o.log.info("creating a version folder", { rev: origin });
       this.newest = await this.create(origin);
@@ -705,15 +701,6 @@ export class GitWorktreeUpdater implements Updater {
       log.info("reusing the newest folder: its build matches origin", { dir: newest, rev: origin });
     }
     for (const dir of dead) if (dir !== this.newest) await this.removeFolder(dir);
-  }
-
-  /** The drain-then-start layout's runtime/ and runtime-next/, removed once no foreign child is alive. */
-  private async removeLegacy(): Promise<void> {
-    for (const dir of [this.o.runtimeDir, this.o.stagingDir]) {
-      if (!existsSync(dir)) continue;
-      this.o.log.info("removing the legacy runtime folder", { dir });
-      await this.removeFolder(dir);
-    }
   }
 
   /**
