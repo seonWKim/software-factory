@@ -9,6 +9,7 @@ import { Controller } from "../src/core/controller.js";
 import type { WorkItemId, WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/core/worker.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
@@ -77,10 +78,12 @@ type Scenario = "clean" | "conflict";
  * A bare origin, a factory/<id> branch with one commit, and main advanced after it: a change to another
  * file ("clean") or to the same files ("conflict"). The item waits for a human merge of PR 42.
  */
-async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) {
+async function setup(scenario: Scenario, opts: { testCommand?: string[]; localItem?: boolean } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const created = (await store.createWorkItem(issue(7), system)).item;
+  // `localItem`: a local item that opened PR 42 before #427 (the PR #429 case): its source is local, its PR is real.
+  const filed = opts.localItem ? { ...issue(7), source: { type: "local" as const, id: "local-pr-era", link: "" } } : issue(7);
+  const created = (await store.createWorkItem(filed, system)).item;
   const moved = await store.transition({
     id: created.id,
     expected_version: created.version,
@@ -140,6 +143,8 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[] } = {}) 
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts: {
       triage: "T", implement: "I", review: "R",
     }, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv, awake: new NoKeepAwake(),
+    // The local route, as compose always sets it: a local item without a PR would take it.
+    local: { broker: new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo }), sandbox: new NoOpSandbox(join(root, "local-wt"), undefined, undefined, { local: true }) },
   });
   const step = async () => {
     await controller.tickIntake();
@@ -222,6 +227,19 @@ describe("update run: change_unmergeable", () => {
 });
 
 describe("update run: worker", () => {
+  it("a local item with a PR keeps the PR path: its update run reads origin, pushes and comments on the PR (PR #429)", async () => {
+    const f = await setup("clean", { localItem: true });
+    f.forge.queue.push(f.event());
+    await f.step();
+
+    const [run] = await f.updateRuns();
+    expect(run).toMatchObject({ status: "succeeded" });
+    expect(run!.outcome?.status === "failed" ? run!.outcome.detail : "").not.toContain("git rev-parse:");
+    expect(git(f.origin, "rev-list", "--parents", "-n", "1", f.remoteSha()).split(" ").slice(1)).toEqual([f.branchSha, f.mainSha]);
+    expect(f.broker.pushes()).toHaveLength(1);
+    expect(f.broker.comments()[0]!.args).toMatchObject({ number: 42 });
+  });
+
   it("clean merge with passing tests: pushes the merge commit, comments, stays merge_pending", async () => {
     const f = await setup("clean");
     f.forge.queue.push(f.event());
