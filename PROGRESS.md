@@ -98,7 +98,7 @@ src/
   interfaces/           LEGACY  FactoryStore (136 methods) and the other plugin interfaces
   ui/                   LEGACY  HTTP API and pages for web/
   compose.ts            LEGACY  hand wiring (shrinks with M4–M7)
-  main.ts                       reads --config, finds the command among cli/handlers, runs it (45 lines)
+  main.ts                       reads --config, finds the command among cli/handlers, runs it (43 lines)
   plugins.ts                    plugin registry; walks all of src/ for *.plugin.ts and *.grant.ts
 schema/                 NEW     sqlite.sql, mysql.sql: generated snapshots of a fresh migration (npm run schema:snapshot)
 tests/architecture/     NEW     dependency-direction, file-budget, no-clock, table-ownership, schema-snapshot,
@@ -158,8 +158,8 @@ M2 (components and discovery):
 
 - The registry lives in `src/runtime/registry/`, not `src/shared/`, because discovery reads the file system and
   `shared/` does no I/O.
-- The time-based tick generator is a plain class for now. It becomes a `*.plugin.ts` choice when the plugin registry
-  moves into the runtime (M2).
+- The time-based tick generator is a plain class for now. The re-planned M2 kept the plugin registry in place (it walks
+  all of `src/`), so it becomes a `*.plugin.ts` choice when the runtime wires the bus schedules (M3 leftovers).
 - M2 re-planned (RFC §11): legacy code moves into its component in the milestone that rewrites it. The
   dependency-direction ratchet takes the newly visible `component-imports-legacy` entries with that move.
 
@@ -218,6 +218,8 @@ M10 (extension points):
   `approve_merge`. The RFC's "a lower level may never raise autonomy" would refuse that.
 - M10 gate list: `tests/architecture/` is not on it yet. A spec allowing `tests/` would then always need the owner (a
   folder holding a gate path touches it).
+- M10 auto mode and the Rule of Two: auto mode approves specs without a person but does not call
+  `ruleOfTwoRefusal` yet (implement and resolve hold all three facts). Wiring it is a gate change.
 
 ## Next
 
