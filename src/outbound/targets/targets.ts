@@ -3,6 +3,7 @@
 // waits for a process that has the adapter.
 
 import type { SourceRef } from "../../core/types.js";
+import { GIT_TARGET } from "../intents.js";
 import { act, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
 
 const GITHUB = "github_issue";
@@ -25,12 +26,31 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
   const prOf = (target: SourceRef) => forge?.prNumberOf(target) ?? null;
   return [
     {
-      // A PR closed with one comment naming who closed its issue (`{closer}` in `body_by`), through the forge.
+      // A run's commit, from the factory repo to its forge branch (RFC 0015 M7). The forge reconciles first.
+      name: "github-push",
+      accepts: (d) => d.kind === "action" && d.row.action === "push" && forge?.pushBranch !== undefined,
+      async deliver(d) {
+        if (d.kind !== "action" || !forge?.pushBranch) throw new Error("github-push delivers pushes only");
+        await forge.pushBranch({ repo: t.repo, branch: String(d.row.args.branch), sha: String(d.row.args.sha) });
+        return { url: null };
+      },
+    },
+    {
+      // A branch's PR opened or the open one updated (RFC 0015 M7), and a PR closed with one comment naming who
+      // closed its issue (`{closer}` in `body_by`), through the forge.
       name: "github-change",
-      accepts: (d) => d.kind === "action" && d.row.action === "close_pr" && forge !== null,
+      accepts: (d) =>
+        d.kind === "action" && ((d.row.action === "close_pr" && forge !== null) || (d.row.action === "pr" && forge?.openPr !== undefined)),
       async deliver(d) {
         if (d.kind !== "action" || !forge) throw new Error("github-change delivers PR actions only");
         const a = d.row.args;
+        if (d.row.action === "pr") {
+          const labels = a.labels ? (JSON.parse(String(a.labels)) as Record<string, boolean>) : undefined;
+          const pr = await forge.openPr!({
+            branch: String(a.branch), base_ref: String(a.base_ref), title: String(a.title), body: String(a.body), ...(labels ? { labels } : {}),
+          });
+          return { url: pr.url, ref: String(pr.number) };
+        }
         await forge.closePr({
           pr: Number(a.pr),
           closed: JSON.parse(String(a.closed)) as SourceRef,
@@ -78,7 +98,7 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
     },
     {
       name: "source",
-      accepts: (d) => ![GITHUB, SLACK, LOCAL].includes(typeOf(d)) && prStatus(d) === null && adapter(typeOf(d)) !== null,
+      accepts: (d) => ![GITHUB, SLACK, LOCAL, GIT_TARGET].includes(typeOf(d)) && prStatus(d) === null && adapter(typeOf(d)) !== null,
       deliver: (d) => (d.kind === "comment" ? adapter(d.source_type)!.postComment(d.target, d.body, d.marker) : act(adapter(typeOf(d))!, d.row)),
     },
   ];

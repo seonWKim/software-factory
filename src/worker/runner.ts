@@ -939,6 +939,24 @@ export class Worker {
    * not take the factory's own push for a person's. Written while the run still holds its lease: the controller
    * leaves a PR's head alone while any run of its item is running.
    */
+  /**
+   * The run's push and PR as keyed intents (RFC 0015 M7), after its last trusted step stored `sha` in this host's
+   * factory repo: the push, then the PR, in one destination (`git:<host>:<branch>`) so the PR waits behind the push.
+   * The push is keyed by branch and sha (a head pushed once is never pushed again), the PR by branch and run: each
+   * implement run's PR delivery is its own, so the controller can wait for it, and a re-run step records nothing new.
+   * Returns the PR intent's key, which the run's result names.
+   */
+  async recordPush(item: WorkItem, run: Run, p: { branch: string; sha: string; title: string; body: string; labels: Record<string, boolean> }): Promise<string> {
+    const target = { type: "git", id: `${this.host}:${p.branch}`, link: "" };
+    const key = `pr:${p.branch}:${run.id}`;
+    await this.d.store.recordRunIntent({ action: "push", target, work_item_id: item.id, key: `push:${p.branch}:${p.sha}`, args: { branch: p.branch, sha: p.sha } });
+    await this.d.store.recordRunIntent({
+      action: "pr", target, work_item_id: item.id, key,
+      args: { branch: p.branch, sha: p.sha, run_id: run.id, base_ref: this.cfg.repo.base_branch, title: p.title, body: p.body, labels: JSON.stringify(p.labels) },
+    });
+    return key;
+  }
+
   async recordPushedHead(run: Run, ctx: ToolCallContext, sha: string): Promise<void> {
     const r = await this.d.store.recordPushedHead(run.id, ctx.lease_token, sha);
     if (!r.ok) throw new RunFailure("lease_lost", "lease lost while recording the pushed head", true);

@@ -31,7 +31,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth,
+  FakeForge, FakeAuth,
   FakeBroker,
   PROJECT as PROJECT_REF,
   FakeGitHubDiff,
@@ -378,7 +378,7 @@ describe("golden run", () => {
       implement: () => ({ output: { summary: "s", next_steps: "n" } }),
       review: () => ({ output: REVIEW_PASS }),
     });
-    const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
       clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),

@@ -11,10 +11,23 @@ import type { SqlDriver, SqlExecutor } from "../state/index.js";
 import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
 
 /**
- * A write that is no thread entry. `status`, `seen` are best effort; `close`, `post` and `close_pr` (a PR closed with
- * a comment, through the forge) retry until delivered.
+ * A write that is no thread entry. `status`, `seen` are best effort; `close`, `post`, `close_pr` (a PR closed with
+ * a comment, through the forge), `push` (a run's commit from the factory repo to its forge branch) and `pr` (the
+ * branch's PR opened or updated) retry until delivered.
  */
-export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr";
+export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "push" | "pr";
+
+/** The actions whose failure retries their batch with backoff; the rest are best effort. */
+export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "push", "pr"];
+
+/**
+ * Where a run's push and PR go (RFC 0015 M7): the host whose factory repo holds the commit, and the branch, so
+ * both wait in one destination order (`git:<host>:<branch>`) and only that host's outbound flushes them.
+ */
+export const GIT_TARGET = "git";
+export function gitTarget(host: string, branch: string): SourceRef {
+  return { type: GIT_TARGET, id: `${host}:${branch}`, link: "" };
+}
 
 export interface NewAction {
   readonly action: ActionKind;
@@ -31,6 +44,9 @@ export interface ActionRow extends NewAction {
   readonly seq: number;
   readonly source_type: string;
   readonly delivered_at: string | null;
+  /** What the delivery made, when it names one (a PR's number), and its link. */
+  readonly delivered_ref: string | null;
+  readonly delivered_url: string | null;
 }
 
 /** Thread entries' intents are `int_<seq>`, actions `act_<seq>` (RFC 0015 §12 backfill rule). */
@@ -65,6 +81,12 @@ export async function actionsOf(db: SqlExecutor, intent_ids: readonly string[]):
   return rows.map(actionOf);
 }
 
+/** The action stored under `key`, or null. */
+export async function actionByKey(db: SqlExecutor, key: string): Promise<ActionRow | null> {
+  const [row] = await db.all("SELECT * FROM outbound_actions WHERE intent_key = ?", [key]);
+  return row ? actionOf(row) : null;
+}
+
 export function actionOf(row: Record<string, unknown>): ActionRow {
   return {
     seq: Number(row.seq),
@@ -74,6 +96,8 @@ export function actionOf(row: Record<string, unknown>): ActionRow {
     work_item_id: (row.work_item_id as string | null) ?? null,
     args: JSON.parse(String(row.args)) as NewAction["args"],
     delivered_at: (row.delivered_at as string | null) ?? null,
+    delivered_ref: (row.delivered_ref as string | null) ?? null,
+    delivered_url: (row.delivered_url as string | null) ?? null,
   };
 }
 

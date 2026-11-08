@@ -16,7 +16,7 @@ import { type AgentRunner, TOOLS_NOT_EXPOSED } from "../src/interfaces/agent-run
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import {
-  FakeAuth, FakeBroker, FakeNoteBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup,
+  FakeAuth, FakeBroker, FakeForge, FakeNoteBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup,
   issueRef, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
@@ -143,12 +143,12 @@ describe("the GitHub broker's read_only flags", () => {
       client: {} as never, credentials: {} as never, store: {} as never, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const flags = Object.fromEntries(broker.allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "github.push_branch": false, "github.open_pr": false, "github.preflight": true });
+    expect(flags).toEqual({ "git.store_branch": false, "github.push_branch": false, "github.open_pr": false, "github.preflight": true });
   });
 
   it("FakeBroker lists the same flags", () => {
     const flags = Object.fromEntries(new FakeBroker().allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "github.push_branch": false, "github.open_pr": false, "github.preflight": true });
+    expect(flags).toEqual({ "git.store_branch": false, "github.push_branch": false, "github.open_pr": false, "github.preflight": true });
     expect(new FakeBroker().listTools(["github.preflight"]).map((t) => t.name)).toEqual(["github.preflight"]);
   });
 });
@@ -158,7 +158,8 @@ async function flow(cfg: FactoryConfig, runner: AgentRunner & { specs?: unknown[
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
+  // A forge to push and open the PR through outbound (RFC 0015 M7).
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config: cfg, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),

@@ -789,7 +789,7 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     expect(users.map((f) => f.slice(REPO_ROOT.length + 1)).sort()).toEqual(["src/impl/github/app-credentials.ts", "src/impl/github/token-credentials.ts"]);
   });
 
-  it("build() makes one client and hands it to every context that needs one; only the broker gets credentials", async () => {
+  it("build() makes one client and hands it to every context that needs one; only the broker and the forge get credentials", async () => {
     const credentials = { token: async () => null };
     const api = { tag: "the one client", shareBudget: () => {} } as unknown as GitHubApi;
     let made = 0;
@@ -814,12 +814,14 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
       expect(seen[kind]?.github, kind).toBe(api);
       expect(seen[kind]!.repo, kind).toEqual({ owner: (REAL.repo as { owner: string }).owner, name: (REAL.repo as { name: string }).name });
     }
-    for (const kind of ["source", "auth", "grant", "forge"]) {
+    for (const kind of ["source", "auth", "grant"]) {
       expect(Object.keys(seen[kind]!), kind).not.toContain("credentials");
       expect(Object.keys(seen[kind]!), kind).not.toContain("token");
       expect(Object.values(seen[kind]!), kind).not.toContain(credentials);
     }
     expect(seen.broker!.credentials).toBe(credentials);
+    // The forge's writes are outbound's (RFC 0015 M7): its run pushes need them.
+    expect(seen.forge!.credentials).toBe(credentials);
   });
 
   it("Plugins.githubApi() builds the credential plugin once and returns its client every time", async () => {

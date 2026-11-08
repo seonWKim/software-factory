@@ -23,7 +23,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
-  OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionsOf, announce, buildTargets, policyFor, recordAction,
+  GIT_TARGET, OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, policyFor, recordAction,
 } from "../../outbound/index.js";
 import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -137,6 +137,7 @@ export class ControllerRole implements Decisions {
       // The intents go out on the controller's bus; wired before its transaction opens.
       announce: async (now) => announce(db(), (await this.wire()).controllerBus, this.role.settings.config().project.key, now, CONTROLLER),
       actions: (ids) => actionsOf(db(), ids),
+      byKey: (key) => actionByKey(db(), key),
       emit: async (draft, now) => {
         const bus = (await this.wire()).controllerBus;
         const cause = { id: null, correlation_id: newMessageId(), project_id: this.role.settings.config().project.key, passport_id: null, occurred_at: now };
@@ -433,11 +434,15 @@ export class ControllerRole implements Decisions {
     const sync = (await this.router()).unit("sync");
     // Only the sync lease's holder writes the synced type (design 05-coordination), whatever the budget.
     const canSend = (type: string) => type !== SYNCED || !sync.syncedElsewhere();
+    // A run's push leaves from the factory repo of the host whose worker wrote it (RFC 0015 M7): this process flushes
+    // its own host's pushes. With no replica id (one process, tests) it flushes every host's: solo is one machine.
+    const host = d.replica_id?.split(":")[0];
+    const pushes = this.kernel.forge?.pushBranch ? [host ? `${GIT_TARGET}:${host}` : GIT_TARGET] : [];
     const outbound = new Outbound({
       db,
       bus: outboundBus,
       store: d.store,
-      targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge }),
+      targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge, repo: this.kernel.cfg.repo.path }),
       scanner: d.scanner,
       log: d.log,
       config: () => {
@@ -445,7 +450,7 @@ export class ControllerRole implements Decisions {
         return { lease_ms: c.lease_ms, retry_base_ms: c.retry_base_ms, retry_max_ms: c.retry_max_ms, project_key: c.project.key };
       },
       canSend,
-      kinds: () => [...new Set([...this.kernel.byType.keys(), ...(this.kernel.forge ? [SYNCED] : [])])].filter(canSend),
+      kinds: () => [...[...new Set([...this.kernel.byType.keys(), ...(this.kernel.forge ? [SYNCED] : [])])].filter(canSend), ...pushes],
       fenceFor: (type) => sync.fenceFor(type),
       fenceRefused: (fence) => sync.fenceRefused(fence),
     });

@@ -12,7 +12,7 @@ import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js
 import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
 import type { AgentRunSpec, GateHooks } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
-import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
+import { STORE_BRANCH, type ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
@@ -225,40 +225,33 @@ async function implement(
   });
 
   const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-  const wip = (): WipRef => wipAt(head);
   const db = await w.database(run);
-  let content: { number: number; url?: string } | null = null;
+  // The run's last trusted step (RFC 0015 M7): after the gates, its HEAD goes to a ref of this host's factory repo,
+  // through the broker's trusted-git checks and G5 branch scan. The worker holds no forge credential: the push and
+  // the PR are keyed intents outbound delivers, and the controller applies the PR number when that delivery
+  // completes. A local item's branch in the factory repo is the change itself: nothing goes to a forge.
+  let stored: { sha: string; forge: boolean };
   try {
-    const { broker } = w.route(item);
-    // Pushes and PR writes stay in the worker until outbound takes them (RFC 0015 M7).
-    await step("push-branch", async () => {
-      const pushed = await broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
-      if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
+    stored = await step("store-branch", async () => {
+      const r = await w.route(item).broker.call(ctx, STORE_BRANCH, { workdir: handle.workdir, branch, base_ref: base });
+      if (!r.ok) throw new RunFailure(r.error_code, r.message);
       await w.recordPushedHead(run, ctx, head);
-      return head;
+      const content = r.content as { sha?: unknown; forge?: unknown };
+      return { sha: typeof content.sha === "string" ? content.sha : head, forge: content.forge === true };
     });
-    // A broker with no PR tool (the local one): the branch is the review's input and `factory merge` its merge.
-    if (hasTool(broker, "github.open_pr")) {
-      content = await step("open-pr", async () => {
-        const pr = await broker.call(ctx, "github.open_pr", {
-          branch,
-          base_ref: base,
-          title: prTitle(item),
-          ...w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null })),
-        });
-        if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
-        return pr.content as { number: number; url?: string };
-      });
-    }
   } catch (err) {
-    throw await keepWip(w, run, item, ctx, handle, err, wip(), resumed !== null && head === resumed.head);
+    throw await keepWip(w, run, item, ctx, handle, err, wipAt(head), resumed !== null && head === resumed.head);
+  }
+  let pr_intent: string | null = null;
+  if (stored.forge) {
+    const description = w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null }));
+    pr_intent = await step("record-push", () => w.recordPush(item, run, { branch, sha: stored.sha, title: prTitle(item), ...description }));
   }
   // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict). `files`: what the PR
   // changes, stored as the item's pr_files for the coordination cost (design §5, 2026-11-03).
   return {
-    pr_number: content?.number ?? null,
-    // The forge's PR link, stored as the item's change_url (design 02).
-    pr_url: typeof content?.url === "string" ? content.url : null,
+    // The PR is outbound's to open: the controller waits for the delivery of this intent (`blocked_reason: pr_pending`).
+    ...(pr_intent ? { pr_pending: true, pr_intent } : {}),
     commits: work.commits,
     files: paths.slice(0, MAX_PR_FILES),
     // What the PR body was built from, so an update run can rebuild it and the CI gate can hold an incomplete PR.

@@ -10,7 +10,7 @@ import { type AgentRunResult, PROVIDER_SETUP } from "../src/interfaces/agent-run
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, config as baseConfig, gates, issueRef, prompts, recordingLog, settingsWith, triageSpec,
 } from "./helpers/fakes.js";
 
@@ -44,7 +44,7 @@ async function factory(opts: {
   });
   const log = recordingLog();
   const scanner = new PatternEgressScanner(async () => []);
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log, scanner: opts.scanner ?? scanner , repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log, scanner: opts.scanner ?? scanner , repeated_failure_rule: false });
   const worker = (id: string) =>
     new Worker({
       id: id as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
-import { GitHubToolBroker, forgeAuthRefused } from "../src/impl/github/github-tool-broker.js";
+import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import { forgeAuthRefused } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ToolResult } from "../src/interfaces/tool-broker.js";
@@ -70,18 +71,6 @@ describe("forge-auth pause", () => {
     expect(await f.store.getClaimPause("forge_auth")).toBe(iso(start + 5 * 60_000));
   });
 
-  it("a 401/403 on the push or on the PR pauses too", async () => {
-    for (const tool of ["github.push_branch", "github.open_pr"]) {
-      const f = await pipeline();
-      f.broker.responses[tool] = [AUTH];
-      const a = await f.submit();
-      await f.step();
-      expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ status: "failed", error_code: "forge_auth", infra: false });
-      expect(await f.store.getClaimPause("forge_auth")).not.toBeNull();
-      expect(await f.item(a)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
-    }
-  });
-
   it("each pause posts one comment on the item whose run started it and logs one line", async () => {
     const f = await pipeline();
     const a = await f.submit();
@@ -102,13 +91,13 @@ describe("forge-auth pause", () => {
       return { output: { summary: "s", next_steps: "n" } };
     };
     f.broker.responses["github.preflight"] = [{ ok: true, content: {} }, AUTH];
-    // Then a's push is refused too, during the same pause (it moves the pause later, but starts none).
-    f.broker.responses["github.push_branch"] = [AUTH];
+    // a's run, already past its preflight, finishes: its push and PR are outbound's (RFC 0015 M7), so no forge
+    // refusal reaches the run.
     await f.w1.tick();
     await f.controller.tickRuns();
     await f.controller.tickRuns();
 
-    expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ error_code: "forge_auth" });
+    expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ status: "succeeded" });
     expect((await f.runs(b, "implement"))[0]!.outcome).toMatchObject({ error_code: "forge_auth" });
     const pauseComments = () => f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:forge-auth:"));
     expect(pauseComments()).toHaveLength(1);
@@ -125,7 +114,8 @@ describe("forge-auth pause", () => {
     f.clock.advance(f.config.retry_max_ms + 1);
     f.runner.script.implement = () => ({ output: { summary: "s", next_steps: "n" } });
     f.broker.responses["github.preflight"] = [AUTH];
-    await f.w1.tick();
+    // a's review is queued too: claim until b's implement retry has run its preflight.
+    while (f.broker.responses["github.preflight"].length > 0 && (await f.w1.tick())) await f.controller.tickRuns();
     await f.controller.tickRuns();
     expect(pauseComments()).toHaveLength(2);
     expect(lines()).toHaveLength(2);

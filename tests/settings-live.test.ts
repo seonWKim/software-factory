@@ -12,7 +12,7 @@ import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runne
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { PROJECT_KEY, issue, newStore, system, w2 } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
+  FakeForge, FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage,
   alice, cleanScanner, config as baseConfig, issueRef, prompts, recordingLog, settingsWith, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 
@@ -36,7 +36,7 @@ async function harness(opts: { triage?: Fn; implement?: Fn; review?: Fn; config?
   });
   const log = recordingLog();
   const settings = new LiveSettings({ config, base: baseFromConfig(config, { table: DEFAULT_MODEL_TABLE, names: NAMES }), source: store, log });
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings, repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, settings, repeated_failure_rule: false });
   const w1 = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), settings,

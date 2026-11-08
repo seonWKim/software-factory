@@ -1,23 +1,32 @@
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
-import { branchAllowed, factoryCommit, holdsLease, scanBranch, trustedRunFolder } from "./trusted-git.js";
+import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../interfaces/tool-broker.js";
+import { branchAllowed, holdsLease, storeBranch } from "./trusted-git.js";
+
+const SCHEMA = {
+  type: "object",
+  required: ["workdir", "branch", "base_ref"],
+  properties: { workdir: { type: "string" }, branch: { type: "string" }, base_ref: { type: "string" } },
+};
 
 /**
- * The local broker's only tool. Named like the GitHub broker's push so the worker calls one name (a neutral
- * rename is its own work item); it pushes to no remote. No `github.open_pr` or `github.preflight`: a local item
- * has no PR.
+ * The local broker's tools: `git.store_branch` (the implement run's last step, RFC 0015 M7) and the same write under
+ * the GitHub broker's push name, for the runs that still push through the broker (resolve, update, the session's
+ * finish, a wip branch) until they move to outbound. Neither pushes to a remote. No `github.open_pr` or
+ * `github.preflight`: a local item has no PR.
  */
 const TOOLS: readonly ToolDescriptor[] = [
+  {
+    name: STORE_BRANCH,
+    read_only: false,
+    description: "Store the current HEAD of a run folder as its factory branch in the factory repo itself, as a local branch. Pushes to no remote.",
+    input_schema: SCHEMA,
+  },
   {
     name: "github.push_branch",
     read_only: false,
     description: "Commit the current HEAD of a run folder to its factory branch in the factory repo itself, as a local branch. Pushes to no remote.",
-    input_schema: {
-      type: "object",
-      required: ["workdir", "branch", "base_ref"],
-      properties: { workdir: { type: "string" }, branch: { type: "string" }, base_ref: { type: "string" } },
-    },
+    input_schema: SCHEMA,
   },
 ];
 
@@ -55,7 +64,7 @@ export class LocalToolBroker implements ToolBroker {
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
-    if (name === "github.push_branch") return this.commitBranch(args as PushArgs);
+    if (name === STORE_BRANCH || name === "github.push_branch") return this.commitBranch(args as PushArgs);
     return { ok: false, error_code: "unknown_tool", message: name };
   }
 
@@ -68,15 +77,7 @@ export class LocalToolBroker implements ToolBroker {
     const refused = branchAllowed(a.branch, this.deps.branchPrefix);
     if (refused) return refused;
     const repo = this.deps.repoPath;
-    const base = await factoryCommit(repo, `refs/heads/${a.base_ref}`);
-    if (!("sha" in base)) return base;
-    const folder = await trustedRunFolder(a.workdir);
-    if (!("git" in folder)) return folder;
-    const blocked = await scanBranch(folder.git, base.sha, this.deps.scanner);
-    if (blocked) return blocked;
-    const r = await folder.git(["-c", "credential.helper=", "push", "--quiet", "--no-verify", repo, `HEAD:refs/heads/${a.branch}`]);
-    if (r.exit_code !== 0) return { ok: false, error_code: "push_failed", message: r.stderr.trim().slice(0, 500) };
-    const head = await folder.git(["rev-parse", "HEAD"]);
-    return { ok: true, content: { sha: head.stdout.trim() } };
+    const r = await storeBranch(a.workdir, { repo, base: `refs/heads/${a.base_ref}`, ref: `refs/heads/${a.branch}`, force: false }, this.deps.scanner);
+    return "sha" in r ? { ok: true, content: { sha: r.sha, forge: false } } : r;
   }
 }

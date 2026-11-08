@@ -17,8 +17,8 @@ import { MYSQL_SKIPPED, NoTestDatabase } from "../src/impl/test-database/no-test
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { TestDatabase } from "../src/interfaces/test-database.js";
-import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
+import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
+import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // The pre-push checks (design §4, decided 2026-11-03): an implement run runs repo.check_commands after sync and
@@ -73,6 +73,12 @@ class GitPushBroker implements ToolBroker {
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;
     if (name === "github.preflight") return { ok: true, content: {} };
+    // The run's last step: the bare origin stands in for the forge, so the stored branch lands there at once;
+    // outbound's push and PR (RFC 0015 M7) are logged into \`calls\` by the controller's FakeForge.
+    if (name === STORE_BRANCH) {
+      git(String(a.workdir), "push", "--quiet", "origin", `HEAD:refs/heads/${String(a.branch)}`);
+      return { ok: true, content: { sha: git(String(a.workdir), "rev-parse", "HEAD").trim(), forge: true } };
+    }
     this.calls.push({ ctx, name, args: a });
     if (name === "github.push_branch") {
       git(String(a.workdir), "push", "--quiet", "origin", `HEAD:refs/heads/${String(a.branch)}`);
@@ -195,7 +201,7 @@ async function setup(opts: {
   const log = recordingLog();
   const scanner = opts.scanner ?? cleanScanner;
   const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log, scanner });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(null, broker.calls), auth: new FakeAuth(), clock, config: cfg, log, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: cfg,
     prompts: { triage: "T", implement: "I", review: "R", resolve: "S" }, log, scanner, toolEnv, awake: new NoKeepAwake(),
@@ -271,7 +277,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
       const handoffs = await f.store.listHandoffs(item.id);
       expect(handoffs.map((h) => h.worked_on)).toEqual(["implementer edits a (1)", "add a fault", `fix: remove ${c.file}`]);
       const run = (await f.implementRuns(item.id))[0]!;
-      expect(run.outcome).toMatchObject({ status: "succeeded", data: { commits: 3, pr_number: 42 } });
+      expect(run.outcome).toMatchObject({ status: "succeeded", data: { commits: 3, pr_pending: true } });
       // The whole list ran again after the fix: every command once more, in order.
       const ran = f.checkExecs().map((e) => e.cmd);
       const failedAt = CHECKS.findIndex((x) => x === c.cmd);
@@ -410,7 +416,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     await f.step();
 
     const done = (await f.implementRuns(item.id))[1]!;
-    expect(done.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42 } });
+    expect(done.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true } });
     expect(f.implementCount()).toBe(1); // no new implement agent: the retry started from the kept commits
     const branch = `refs/heads/factory/${item.id}`;
     git(f.origin, "merge-base", "--is-ancestor", wipHead, branch);

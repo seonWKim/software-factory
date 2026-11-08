@@ -1174,7 +1174,7 @@ CREATE TABLE outbound_actions (
   delivered_at  TEXT,
   outcome       TEXT,
   last_error    TEXT
-, intent_key TEXT);
+, intent_key TEXT, delivered_ref TEXT, delivered_url TEXT);
 
 CREATE TABLE outbound_base_pushes (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,

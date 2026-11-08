@@ -3,6 +3,14 @@ import type { RunId, WorkItemId } from "../core/types.js";
 // G2: credentialed actions run here, in the worker process, outside the sandbox.
 // The agent sends a tool name + args and gets a result back, never the credential.
 
+/**
+ * The run's last trusted step (RFC 0015 M7): the run folder's HEAD written to a ref of the factory repo, after the
+ * trusted-git checks and the G5 branch scan. Args `{ workdir, branch, base_ref }`; content `{ sha, forge }`:
+ * `forge` true when the commit still has to reach the forge (the worker then records the push and PR intents
+ * outbound delivers), false when the factory repo's branch is the change itself (the local broker).
+ */
+export const STORE_BRANCH = "git.store_branch";
+
 export interface ToolDescriptor {
   name: string; // e.g. "github.push_branch", "github.open_pr"
   description: string;

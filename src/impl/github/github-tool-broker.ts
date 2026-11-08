@@ -2,13 +2,33 @@ import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
-import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
+import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
-import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "../broker/trusted-git.js";
+import { forgeAuthRefused, openOrUpdatePr } from "./pull-requests.js";
+import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, storeBranch, trustedRunFolder } from "../broker/trusted-git.js";
+
+/**
+ * Where a run's last step stores its branch in the factory repo (RFC 0015 M7): a staging ref outbound's
+ * `github-push` pushes from, outside `refs/heads/`, so no person's branch is ever written. Forced: only runs write it,
+ * and each push intent names its sha.
+ */
+export function stagingRef(branch: string): string {
+  return `refs/factory/outbound/${branch}`;
+}
 
 const TOOLS: readonly ToolDescriptor[] = [
+  {
+    name: STORE_BRANCH,
+    read_only: false,
+    description: "Store the current HEAD of a run folder in the factory repo, for outbound to push to its factory branch on the forge.",
+    input_schema: {
+      type: "object",
+      required: ["workdir", "branch", "base_ref"],
+      properties: { workdir: { type: "string" }, branch: { type: "string" }, base_ref: { type: "string" } },
+    },
+  },
   {
     name: "github.push_branch",
     read_only: false,
@@ -98,6 +118,8 @@ export class GitHubToolBroker implements ToolBroker {
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
     switch (name) {
+      case STORE_BRANCH:
+        return this.store(args as PushArgs);
       case "github.push_branch":
         return this.push(args as PushArgs);
       case "github.open_pr":
@@ -107,6 +129,16 @@ export class GitHubToolBroker implements ToolBroker {
       default:
         return { ok: false, error_code: "unknown_tool", message: name };
     }
+  }
+
+  /** The run's last step (RFC 0015 M7): its HEAD stored on the factory repo's staging ref, no remote, no credential. */
+  private async store(a: PushArgs): Promise<ToolResult> {
+    const refused = branchAllowed(a.branch, this.deps.branchPrefix);
+    if (refused) return refused;
+    const repo = this.deps.repoPath;
+    if (!repo) return { ok: false, error_code: "no_trusted_repo", message: "the broker has no factory repo path" };
+    const r = await storeBranch(a.workdir, { repo, base: `origin/${a.base_ref}`, ref: stagingRef(a.branch), force: true }, this.deps.scanner);
+    return "sha" in r ? { ok: true, content: { sha: r.sha, forge: true } } : r;
   }
 
   /**
@@ -161,37 +193,9 @@ export class GitHubToolBroker implements ToolBroker {
     const scan = await this.deps.scanner.scan("pr", [a.title, a.body, ...Object.keys(a.labels ?? {})].join("\n"));
     if (!scan.clean) return { ok: false, error_code: "egress_blocked", message: scan.findings.map((f) => f.rule).join(",") };
 
-    const { owner, name } = this.deps.repo;
     try {
-      const open = await this.deps.client.request<{ number: number; html_url: string }[]>(
-        "GET",
-        `/repos/${owner}/${name}/pulls?state=open&head=${encodeURIComponent(`${owner}:${a.branch}`)}`,
-      );
-      // An open PR gets this push's title and body (issue #229): the description follows the branch.
-      const pr = open[0]
-        ? await this.deps.client.request<{ number: number; html_url: string }>("PATCH", `/repos/${owner}/${name}/pulls/${open[0].number}`, {
-          title: a.title,
-          body: a.body,
-        })
-        : await this.deps.client.request<{ number: number; html_url: string }>("POST", `/repos/${owner}/${name}/pulls`, {
-          head: a.branch,
-          base: a.base_ref,
-          title: a.title,
-          body: a.body,
-        });
-      for (const [label, present] of Object.entries(a.labels ?? {})) {
-        const path = `/repos/${owner}/${name}/issues/${pr.number}/labels`;
-        if (present) {
-          await this.deps.client.request("POST", path, { labels: [label] });
-          continue;
-        }
-        try {
-          await this.deps.client.request("DELETE", `${path}/${encodeURIComponent(label)}`);
-        } catch (err) {
-          if (!(err instanceof GitHubError && err.status === 404)) throw err;
-        }
-      }
-      return { ok: true, content: { number: pr.number, url: pr.html_url } };
+      const pr = await openOrUpdatePr(this.deps.client, this.deps.repo, a);
+      return { ok: true, content: pr };
     } catch (err) {
       // A rate limit or a 401/403 is a result, not an exception (design §5 Restarts). Any other error throws, as before.
       const limited = rateLimited("open_pr", err);
@@ -261,17 +265,4 @@ function rateLimited(what: string, err: unknown): ToolResult | null {
 function refusedStatus(err: unknown): 401 | 403 | null {
   if (err instanceof GitHubRateLimitError) return null;
   return err instanceof GitHubError && (err.status === 401 || err.status === 403) ? err.status : null;
-}
-
-/**
- * Whether git's push stderr says the forge refused the credentials (HTTP 401/403, a denied permission, failed
- * authentication), as opposed to a rejected push (non-fast-forward, a hook, a protected branch).
- */
-export function forgeAuthRefused(stderr: string): boolean {
-  return (
-    /The requested URL returned error: (401|403)\b/.test(stderr) ||
-    /Authentication failed for/.test(stderr) ||
-    /Permission to \S+ denied/.test(stderr) ||
-    /Invalid username or (password|token)/.test(stderr)
-  );
 }

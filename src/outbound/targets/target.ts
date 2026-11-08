@@ -16,14 +16,16 @@ export interface DeliveryTarget {
   /** The RFC's handler name: `github-change`, `github-comment`, `github-labels`, `slack-thread`, `local`, `source`. */
   readonly name: string;
   accepts(d: Delivery): boolean;
-  /** Writes it; throws on a failure. A comment returns its URL. */
-  deliver(d: Delivery): Promise<{ url: string | null }>;
+  /** Writes it; throws on a failure. A comment returns its URL; a PR its number (`ref`) and link. */
+  deliver(d: Delivery): Promise<{ url: string | null; ref?: string }>;
 }
 
-/** What the targets write through: the configured sources by type, and the forge. */
+/** What the targets write through: the configured sources by type, the forge, and the factory repo it pushes from. */
 export interface TargetDeps {
   readonly byType: ReadonlyMap<string, SourceAdapter>;
   readonly forge: Forge | null;
+  /** The factory repo's path: where a run's last step wrote its commit (RFC 0015 M7). */
+  readonly repo: string;
 }
 
 /** An action on `adapter`: the status label, the 👀, the close, or a post with no thread entry. */
@@ -42,6 +44,8 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
     case "post":
       return adapter.postComment(row.target, String(a.body), String(a.marker));
     case "close_pr":
-      throw new Error("a PR close goes through the forge (github-change)");
+    case "push":
+    case "pr":
+      throw new Error(`a ${row.action} goes through the forge (github-change, github-push)`);
   }
 }

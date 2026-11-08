@@ -217,28 +217,6 @@ describe("worker and controller: the github_rate_limit pause", () => {
     expect(f.agentCalls("implement")).toBe(0);
   });
 
-  it("a PR open that hits the rate limit keeps its wip branch; the retry resumes from it with no agent run", async () => {
-    const f = await pipeline();
-    f.sandbox.commits = ["c1"];
-    f.sandbox.head = "headsha1\n";
-    const reset = iso(f.clock.now().getTime() + 5 * 60_000);
-    f.broker.responses["github.open_pr"] = [{ ok: false, error_code: GITHUB_RATE_LIMITED, message: githubRateLimitMessage("open_pr", reset) }];
-    const a = await f.submit();
-    await f.step();
-    const [failed] = await f.runs(a, "implement");
-    const wip = (failed!.outcome as Failed).wip!;
-    expect(failed!.outcome).toMatchObject({ error_code: GITHUB_RATE_LIMITED, wip: { head: "headsha1" } });
-    expect(f.broker.remote.has(wip.branch)).toBe(true);
-    f.sandbox.refs[`origin/${wip.branch}`] = wip.head;
-    expect(f.agentCalls("implement")).toBe(1);
-    // Nothing is claimed before the reset.
-    expect(await f.w1.tick()).toBe(false);
-    f.clock.advance(5 * 60_000);
-    await f.step();
-    expect(f.agentCalls("implement")).toBe(1);
-    expect(await f.item(a)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
-  });
-
   it("the controller skips its GitHub poll while the pause holds and logs nothing for it", async () => {
     const f = await pipeline();
     await f.controller.tickIntake();

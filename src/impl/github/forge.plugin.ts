@@ -20,6 +20,6 @@ export default definePlugin({
       c.github, c.repo, cfg.intake_label, cfg.branch_prefix, cfg.repo.base_branch, cfg.status_label_prefix, c.store ?? null,
     );
     const poll = c.clock && c.log ? { clock: c.clock, history_since: githubHistorySince(c.loaded.file.github), log: c.log } : null;
-    return new GitHubForge(c.github, c.repo, cfg.branch_prefix, cfg.repo.base_branch, issues, poll);
+    return new GitHubForge(c.github, c.repo, cfg.branch_prefix, cfg.repo.base_branch, issues, poll, c.credentials ?? null);
   },
 });

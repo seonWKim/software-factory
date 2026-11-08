@@ -18,8 +18,10 @@ export type Stage = "NEW" | "READY" | "RUNNING" | "REVIEW" | "CLOSED";
 /**
  * `dependency` (design 2026-11-03): the item's implement run waits for a linked item (`Depends on: #N`, a
  * sub-issue, a blocked-by link) to merge. Its status label is "implementing", never "needs human".
+ * `outbound` (RFC 0015 M7): the item waits for outbound to deliver a write its next step needs (`pr_pending`: the
+ * implement run's push and PR); it shows its stage, as `dependency` does.
  */
-export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "dependency";
+export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "dependency" | "outbound";
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
 

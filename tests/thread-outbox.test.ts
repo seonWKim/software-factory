@@ -210,8 +210,11 @@ describe("no source at all", () => {
       triage: () => ({ output: triageSpec }),
       implement: () => ({ output: { summary: "the summary", next_steps: "the next steps" } }),
     });
+    // A local item's branch in the factory repo is the change itself, as the local broker stores it.
+    const broker = new FakeBroker();
+    broker.toForge = false;
     const worker = new Worker({
-      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock, config,
+      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(), clock, config,
       prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
     });
     let n = 0;

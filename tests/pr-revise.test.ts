@@ -94,7 +94,7 @@ describe("/revise on a factory PR", () => {
     expect(reviews.map((r) => r.idempotency_key)).toEqual([`${f.it.id}:review:l0:r0`, `${f.it.id}:review:l1:r0`]);
     expect(await f.item(f.it)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 1, pr_number: PR });
     const reasons = (await f.store.listStateChanges(f.it.id)).map((c) => c.reason);
-    expect(reasons.slice(reasons.indexOf("pr_revise_requested"))).toEqual(["pr_revise_requested", "implemented", "review_passed"]);
+    expect(reasons.slice(reasons.indexOf("pr_revise_requested"))).toEqual(["pr_revise_requested", "implemented", "pr_delivered", "review_passed"]);
   });
 
   it("the implementer's prompt holds the feedback under an untrusted label, in a fence the feedback cannot close", async () => {

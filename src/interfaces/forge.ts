@@ -102,6 +102,23 @@ export interface BasePushInput {
   expected_sha: string;
 }
 
+/** What `pushBranch` needs: the factory repo holding the commit, the factory branch, and the commit. */
+export interface BranchPushInput {
+  /** The factory repo's path: the run's last step wrote `sha` to a ref there; its `origin` is where it goes. */
+  repo: string;
+  branch: string;
+  sha: string;
+}
+
+/** What `openPr` needs: the factory branch, its base, the PR text, and labels to add (true) or remove (false). */
+export interface OpenPrInput {
+  branch: string;
+  base_ref: string;
+  title: string;
+  body: string;
+  labels?: Readonly<Record<string, boolean>>;
+}
+
 /** The PR events, facts and writes the factory reads from and makes on a forge. Agents never call it. */
 export interface Forge {
   /** The source type of the PR refs this forge hands out (`prRef`): PR comments wait in the outbox under it. */
@@ -167,4 +184,16 @@ export interface Forge {
    * Absent: this forge cannot push a base, and a local merge queues none.
    */
   pushBase?(input: BasePushInput): Promise<void>;
+  /**
+   * A run's push (RFC 0015 M7): moves the remote factory branch to `input.sha` from the factory repo, never forced.
+   * Reconciles first: a remote branch already at the sha is `already`, with no push. Throws on any failure (an
+   * outage, a rate limit, a refused credential, a rejected push), its message starting with the failure class;
+   * outbound retries with backoff. Absent: this forge cannot push.
+   */
+  pushBranch?(input: BranchPushInput): Promise<"pushed" | "already">;
+  /**
+   * Opens the factory branch's PR, or updates the open one's title and body (reconcile: an open PR for the branch
+   * is updated, never a second one opened), then sets its labels. Returns its number and link. Throws on a failure.
+   */
+  openPr?(input: OpenPrInput): Promise<{ number: number; url: string | null }>;
 }

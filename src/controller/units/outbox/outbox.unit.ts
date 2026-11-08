@@ -144,13 +144,16 @@ export class OutboxUnit {
 
   /**
    * DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field); a closed PR
-   * clears its item's pending mark.
+   * clears its item's pending mark; a delivered PR goes on its item, which goes to review.
    */
   async delivered(intent_ids: readonly string[]): Promise<void> {
     const writes: ControllerWrite[] = intent_ids.filter((id) => id.startsWith(THREAD_INTENT)).map((id) => ({ kind: "link_delivery", seq: Number(id.slice(THREAD_INTENT.length)) }));
     await this.c.k.commit({ writes });
     for (const a of await this.c.k.deliveredActions(intent_ids)) {
       if (a.action === "close_pr" && a.work_item_id) await this.c.unit("closes").prClosed(a.work_item_id as WorkItemId);
+      if (a.action === "pr" && a.work_item_id && a.delivered_ref) {
+        await this.c.unit("run-results").prDelivered(a.work_item_id as WorkItemId, a.delivered_ref, a.delivered_url);
+      }
     }
   }
 

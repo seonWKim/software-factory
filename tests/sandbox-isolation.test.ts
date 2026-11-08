@@ -8,6 +8,7 @@ import type { WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
 import { EMPTY_HOOKS_DIR, NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
@@ -51,7 +52,8 @@ function factoryRepo() {
 function factoryState(repo: string) {
   return {
     branches: git(repo, "branch", "--list"),
-    refs: git(repo, "for-each-ref", "--format=%(refname) %(objectname)"),
+    // Outbound's staging refs (RFC 0015 M7) are where a run's last step stores its branch for the forge push.
+    refs: git(repo, "for-each-ref", "--format=%(refname) %(objectname)").split("\n").filter((l) => !l.startsWith("refs/factory/outbound/")).join("\n"),
     head: git(repo, "symbolic-ref", "HEAD") + git(repo, "rev-parse", "HEAD"),
     config: readFileSync(join(repo, ".git", "config"), "utf8"),
     index: readFileSync(join(repo, ".git", "index")).toString("base64"),
@@ -104,6 +106,12 @@ function brokerFor(repo: string, store: Awaited<ReturnType<typeof newStore>>["st
     credentials: { token: async () => ({ reveal: () => "not-a-real-token" }) as unknown as Secret },
     scanner: cleanScanner,
   });
+}
+
+/** The GitHub forge as outbound's `github-push` calls it; the origin is a local bare repo, so the token is never asked for. */
+function forgeFor(): GitHubForge {
+  const token = { token: async () => ({ reveal: () => "not-a-real-token" }) as unknown as Secret };
+  return new GitHubForge({} as never, { owner: "o", name: "r" }, "factory/", "main", {} as never, null, token);
 }
 
 describe("run folder isolation (NoOpSandbox)", () => {
@@ -284,6 +292,9 @@ describe("the worker's implement run in a real clone", { timeout: 30_000 }, () =
       toolEnv: { PATH: process.env.PATH ?? "", HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
     });
     expect(await worker.tick()).toBe(true);
+    // Outbound's push (RFC 0015 M7): from the factory repo, where the run stored its branch, to the trusted origin.
+    const [push] = await store.db.all("SELECT args FROM outbound_actions WHERE action = 'push'");
+    if (push) await forgeFor().pushBranch({ repo: f.repo, ...(JSON.parse(String(push.args)) as { branch: string; sha: string }) });
     const run = (await store.listRuns(created.id)).find((r) => r.kind === "implement")!;
     const branch = `factory/${created.id}`;
     const remote = (bare: string) => git(bare, "for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`);
@@ -298,7 +309,7 @@ describe("the worker's implement run in a real clone", { timeout: 30_000 }, () =
       workdir = wd;
       agentCommits(wd);
     });
-    expect(r.run.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, commits: 1 } });
+    expect(r.run.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true, commits: 1 } });
     expect(r.spec.writable_paths).toEqual([]);
     for (const p of r.spec.writable_paths) {
       expect(under(p, r.f.repo)).toBe(false);
@@ -321,7 +332,7 @@ describe("the worker's implement run in a real clone", { timeout: 30_000 }, () =
       git(wd, "remote", "set-url", "origin", join(root, "decoy.git"));
       gone = wd;
     });
-    expect(r.run.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42 } });
+    expect(r.run.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true } });
     expect(fired()).toEqual([]);
     expect(r.remote(r.f.origin)).not.toBe("");
     expect(r.remote(r.f.decoy)).toBe("");

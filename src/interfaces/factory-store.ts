@@ -922,6 +922,11 @@ export interface FactoryStore {
    * for that item is a no-op that reports the existing message with `created: false`.
    */
   recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }>;
+  /**
+   * Stores a run's keyed write for outbound (RFC 0015 M7: a push or a PR), which the controller's outbox step
+   * announces. A key already stored is a no-op, so a step re-run after a restart writes each once.
+   */
+  recordRunIntent(intent: RunIntent): Promise<void>;
   /** The messages of `work_item_id` only, oldest first. Empty for an item with none. Read-only. */
   listItemMessages(work_item_id: WorkItemId): Promise<ItemMessage[]>;
   /**
@@ -1368,4 +1373,14 @@ export interface ForgeBudget {
   limit: number;
   reset_at: Timestamp;
   updated_at: Timestamp;
+}
+
+/** A run's keyed write to the forge (RFC 0015 M7): `push` the stored sha to its branch, then `pr` open or update. */
+export interface RunIntent {
+  readonly action: "push" | "pr";
+  /** The destination: the host whose factory repo holds the commit, and the branch (`git:<host>:<branch>`). */
+  readonly target: SourceRef;
+  readonly work_item_id: string;
+  readonly args: Readonly<Record<string, string | number | null>>;
+  readonly key: string;
 }

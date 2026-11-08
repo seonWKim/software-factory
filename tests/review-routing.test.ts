@@ -37,9 +37,9 @@ async function factory(opts: { reviews?: Answer[]; implements?: Answer[]; cfg?: 
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
+  const forge = new FakeForge(source, broker.calls);
   const reviews = [...(opts.reviews ?? [])];
   const implementsQ = [...(opts.implements ?? [])];
   const runner = new FakeRunner({

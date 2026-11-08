@@ -71,6 +71,7 @@ import { assertProjectKey } from "../../../core/project.js";
 import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
+import { recordAction } from "../../../outbound/index.js";
 import type {
   AbandonedAttempt,
   AppCommandRequest,
@@ -78,6 +79,7 @@ import type {
   AnswerBudgetCheckpointInput,
   ApproveClaimHoldInput,
   ApproveClaimHoldResult,
+  RunIntent,
   BudgetCheckpointResult,
   ClaimInput,
   CliCommand,
@@ -2150,6 +2152,10 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   // Local work items (issue #198). Messages live in `item_thread`, commands in `command_inbox` (migration 24, issue #281).
+
+  async recordRunIntent(intent: RunIntent): Promise<void> {
+    await recordAction(this.db, intent, this.clock.now().toISOString());
+  }
 
   async recordItemMessage(input: NewItemMessage): Promise<{ created: boolean; message: ItemMessage }> {
     return this.db.transaction(async (tx) => {

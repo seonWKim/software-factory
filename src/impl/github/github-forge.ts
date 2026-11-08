@@ -1,10 +1,12 @@
 import type { WorkStatus } from "../../core/status-label.js";
 import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { BasePushInput, ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
-import type { GitHubApi } from "../../interfaces/github-credentials.js";
-import { factoryGit } from "../broker/trusted-git.js";
-import { GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
+import type { BasePushInput, BranchPushInput, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
+import type { GitHubApi, GitHubCredentials } from "../../interfaces/github-credentials.js";
+import { factoryGit, factoryRemoteUrl } from "../broker/trusted-git.js";
+import { GitHubError, GitHubRateLimitError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import { forgeAuthRefused, openOrUpdatePr } from "./pull-requests.js";
 import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "./github-issue-source.js";
 
 interface GhPull {
@@ -114,6 +116,8 @@ export class GitHubForge implements Forge {
     private readonly issues: Pick<GitHubIssueSource, "postComment" | "setStatus">,
     /** Required to poll. */
     private readonly pollContext: PollContext | null = null,
+    /** Required to push a run's branch (RFC 0015 M7): only outbound's targets call the forge, so only they hold it (G2). */
+    private readonly credentials: GitHubCredentials | null = null,
   ) {}
 
   private get base(): string {
@@ -357,6 +361,48 @@ export class GitHubForge implements Forge {
     const ref = `refs/heads/${input.base_ref}`;
     const r = await factoryGit(input.repo, ["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${input.expected_sha}`, "origin", `${input.sha}:${ref}`]);
     if (r.exit_code !== 0) throw new Error(`git push failed: ${r.stderr.trim().slice(0, 500)}`);
+  }
+
+  /**
+   * A run's push (RFC 0015 M7), from the factory repo where the run's last step wrote the commit: to the remote URL
+   * the factory repo names for origin, with the token only through this child's env and an inline credential helper
+   * (never argv), never forced, `--no-verify`. Reconciles first with one `ls-remote`: the branch already at the sha
+   * is `already`, no push. A failure throws with its class first (`network_unavailable`, `forge_auth`, `push_failed`).
+   */
+  async pushBranch(input: BranchPushInput): Promise<"pushed" | "already"> {
+    if (!input.branch.startsWith(this.branchPrefix)) throw new Error(`push_failed: refusing to push ${JSON.stringify(input.branch)}: not a factory branch`);
+    if (!/^[0-9a-f]{40,64}$/.test(input.sha)) throw new Error(`push_failed: not a commit sha: ${JSON.stringify(input.sha)}`);
+    const remote = await factoryRemoteUrl(input.repo);
+    if (!("url" in remote)) throw new Error(`push_failed: ${remote.message}`);
+    const token = await this.credentials?.token();
+    if (!token) throw new Error(`${FORGE_AUTH}: GitHub credentials missing`);
+    const helper = '!f() { echo username=x-access-token; echo "password=$SF_GIT_TOKEN"; }; f';
+    const auth = ["-c", "credential.helper=", "-c", `credential.helper=${helper}`];
+    const env = { SF_GIT_TOKEN: token.reveal() };
+    const ref = `refs/heads/${input.branch}`;
+    const fail = (stderr: string): Error => {
+      const host = unreachableHost(stderr);
+      if (host !== null) return new Error(`${NETWORK_UNAVAILABLE}: ${networkDetail(host)}`);
+      return new Error(`${forgeAuthRefused(stderr) ? FORGE_AUTH : "push_failed"}: ${stderr.trim().slice(0, 500)}`);
+    };
+    const ls = await factoryGit(input.repo, [...auth, "ls-remote", remote.url, ref], env);
+    if (ls.exit_code !== 0) throw fail(ls.stderr);
+    if (ls.stdout.split(/\s+/)[0] === input.sha) return "already";
+    const r = await factoryGit(input.repo, [...auth, "push", "--quiet", "--no-verify", remote.url, `${input.sha}:${ref}`], env);
+    if (r.exit_code !== 0) throw fail(r.stderr);
+    return "pushed";
+  }
+
+  /** The factory branch's PR opened, or the open one updated (`openOrUpdatePr`); a failure throws with its class first. */
+  async openPr(input: OpenPrInput): Promise<{ number: number; url: string | null }> {
+    if (!input.branch.startsWith(this.branchPrefix)) throw new Error(`pr_failed: refusing a PR for ${JSON.stringify(input.branch)}: not a factory branch`);
+    try {
+      return await openOrUpdatePr(this.client, this.repo, input);
+    } catch (err) {
+      if (err instanceof GitHubRateLimitError) throw new Error(`${GITHUB_RATE_LIMITED}: ${githubRateLimitMessage("open_pr", err.reset_at)}`);
+      if (err instanceof GitHubError && (err.status === 401 || err.status === 403)) throw new Error(`${FORGE_AUTH}: open_pr: GitHub refused the credentials (${err.status})`);
+      throw err;
+    }
   }
 
   /**

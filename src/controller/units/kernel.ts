@@ -140,6 +140,8 @@ export interface Deliveries {
   emit(d: Draft, now: string): Promise<void>;
   /** The action rows among delivered intent ids (DeliveryCompleted). */
   actions(intent_ids: readonly string[]): Promise<ActionRow[]>;
+  /** The action stored under `key`, or null. */
+  byKey(key: string): Promise<ActionRow | null>;
 }
 
 /** The hooks at the controller's points (RFC 0015 §8, M10): the role binds them to runHooks and the enabled names. */
@@ -253,6 +255,11 @@ export class Kernel {
   /** PR `pr` as a comment or label target on the forge (a pure mapping, no call); null when config selects no forge. */
   prRef(pr: number): SourceRef | null {
     return this.forge?.prRef(pr) ?? null;
+  }
+
+  /** The action a producer stored under `key` (a run's PR, RFC 0015 M7), delivered or not; null when none is. */
+  actionByKey(key: string): Promise<ActionRow | null> {
+    return this.deliveries.byKey(key);
   }
 
   /** The action rows among `intent_ids`, which outbound reported delivered. */

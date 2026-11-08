@@ -29,9 +29,9 @@ async function factory(
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const forge = new FakeForge(source);
   const sandbox = new FakeSandbox();
   const broker = new FakeBroker();
+  const forge = new FakeForge(source, broker.calls);
   const storage = new MemoryStorage();
   const scanner = new PatternEgressScanner(async () => knownSecrets);
   const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config, log, scanner , repeated_failure_rule: false });
@@ -87,8 +87,8 @@ describe("CI check gate before merge_pending", () => {
       review: review("pass"),
     });
     const f = await factory(runner);
-    const url = "https://github.example/o/r/pull/42";
-    f.broker.responses["github.open_pr"] = [{ ok: true, content: { number: 42, url } }];
+    // Outbound opens the PR (RFC 0015 M7): the forge's link for it.
+    const url = f.forge.prRef(42).link;
     const src = issueRef(62);
     f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
     await f.step();
@@ -96,7 +96,7 @@ describe("CI check gate before merge_pending", () => {
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
     const implement = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
-    expect(implement.outcome).toMatchObject({ status: "succeeded", data: { pr_number: 42, pr_url: url } });
+    expect(implement.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true } });
     expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, change_ref: "42", change_url: url });
   });
 
@@ -134,7 +134,7 @@ describe("CI check gate before merge_pending", () => {
     const failed = changes.find((c) => c.reason === "checks_failed")!;
     expect(failed.changes).toMatchObject({ stage: { from: "REVIEW", to: "RUNNING" }, loop_count: { from: 0, to: 1 } });
     expect(failed.detail).toMatchObject({ failed_checks: JSON.stringify(["test", "test-mysql"]) });
-    expect(changes.map((c) => c.reason).slice(-4)).toEqual(["implemented", "checks_failed", "implemented", "review_passed"]);
+    expect(changes.map((c) => c.reason).slice(-6)).toEqual(["implemented", "pr_delivered", "checks_failed", "implemented", "pr_delivered", "review_passed"]);
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 1 });
 
     const implementSpecs = f.runner.specs.filter((s) => s.role === "implement");
@@ -208,7 +208,7 @@ describe("failed checks after an implement run that pushed nothing", () => {
     expect(prompts[1]).not.toContain(NO_PUSH);
     expect(prompts[2]).toContain(NO_PUSH);
     // The third loop's unchanged head has passing checks: only its ack, with no field changed, as before.
-    expect(changes.slice(-2).map((c) => c.reason)).toEqual(["implemented", "review_unchanged_head"]);
+    expect(changes.slice(-3).map((c) => c.reason)).toEqual(["implemented", "pr_delivered", "review_unchanged_head"]);
     expect(changes.at(-1)!.changes).toEqual({});
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 2 });
   });
@@ -226,7 +226,7 @@ describe("failed checks after an implement run that pushed nothing", () => {
   it("an unchanged head whose checks are pending makes no state change", async () => {
     const f = await noPush(93, [failed, { state: "pending" }]);
     const changes = await f.store.listStateChanges(f.item.id);
-    expect(changes.slice(-3).map((c) => c.reason)).toEqual(["checks_failed", "implemented", "review_unchanged_head"]);
+    expect(changes.slice(-4).map((c) => c.reason)).toEqual(["checks_failed", "implemented", "pr_delivered", "review_unchanged_head"]);
     expect(changes.at(-1)!.changes).toEqual({});
     expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 1 });
     expect(skipped(await f.store.listRuns(f.item.id)).map((r) => r.acknowledged_at !== null)).toEqual([true]);
@@ -409,7 +409,8 @@ describe("one issue to one merged PR", () => {
 
     const trail = (await f.store.listStateChanges(item.id)).map((c) => c.reason);
     expect(trail).toEqual([
-      "intake", "triaged", "spec_approved", "implemented", "review_bug", "implemented", "review_passed", "implicit_verdict", "pr_merged",
+      "intake", "triaged", "spec_approved", "implemented", "pr_delivered", "review_bug", "implemented", "pr_delivered", "review_passed",
+      "implicit_verdict", "pr_merged",
     ]);
     // The merge with no commits by people is one implicit accept (design §4).
     expect(await f.store.listVerdicts(item.id)).toEqual([
@@ -907,7 +908,7 @@ describe("spec gate: /revise and /reject", () => {
     item = (await f.store.getWorkItem(f.item.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
     expect(await reasons(f)).toEqual([
-      "intake", "triaged", "spec_revision_requested", "triaged", "spec_approved", "implemented", "review_passed",
+      "intake", "triaged", "spec_revision_requested", "triaged", "spec_approved", "implemented", "pr_delivered", "review_passed",
     ]);
     expect(refusals(f)).toEqual([]);
   });

@@ -24,7 +24,7 @@ import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-s
 import { REGISTRY } from "../src/plugins.js";
 import { type FakeOpenAIServer, type ScriptedResponse, completion, startFakeOpenAIServer } from "./helpers/fake-openai-server.js";
 import {
-  FakeAuth, FakeBroker, FakeSandbox, FakeSource, MemoryStorage, alice, config as fakeConfig, issueRef, prompts, silent, waitFor,
+  FakeForge, FakeAuth, FakeBroker, FakeSandbox, FakeSource, MemoryStorage, alice, config as fakeConfig, issueRef, prompts, silent, waitFor,
 } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
@@ -516,7 +516,7 @@ async function factoryWith(script: ScriptedResponse[]) {
   // Specs auto-approved (tier 2 < 3), so implement and review follow triage.
   const cfg = { ...fakeConfig, dials: { spec_gate_min_tier: 3 as const, auto_merge_max_tier: 0 as const } };
   const runner = new OpenAICompatibleRunner({ sandbox, secrets: new MapSecrets({ OPENAI_COMPATIBLE_API_KEY: KEY }), config: { base_url: s.baseUrl, models: MODELS } });
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker: new FakeBroker(), storage: new MemoryStorage(), clock, config: cfg, prompts,
     log: silent, scanner, toolEnv: { PATH: "/usr/bin" }, awake: new NoKeepAwake(),

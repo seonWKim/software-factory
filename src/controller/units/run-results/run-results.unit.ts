@@ -75,6 +75,9 @@ function suggestedSplit(detail: string, paths: readonly string[], limits: { max_
   return out;
 }
 /** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
+/** An implement run's push and PR wait in outbound (RFC 0015 M7): `blocked_on: outbound`. */
+export const PR_PENDING = "pr_pending";
+
 function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
   return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};
 }
@@ -289,10 +292,28 @@ export class RunResultsUnit {
         }
         case "implement": {
           if (data.floor_block === true) return this.floorBlock(it, run, data, tokens);
-          // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
-          const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           // What the PR changes, for the coordination cost (design §5, 2026-11-03); absent on older outcomes.
           const files = Array.isArray(data.files) && data.files.every((f) => typeof f === "string") ? (data.files as string[]) : null;
+          // The run stored its push and PR as intents (RFC 0015 M7): the item waits for outbound, and `prDelivered`
+          // applies the PR number and queues the review once the PR delivery completes. One delivered before this
+          // result is applied (outbound ran first) is applied here, so the wait never misses it.
+          if (data.pr_pending === true) {
+            const delivered = typeof data.pr_intent === "string" ? await this.c.k.actionByKey(data.pr_intent) : null;
+            if (delivered?.delivered_ref) {
+              const applied = await this.prApplied(it, delivered.delivered_ref, delivered.delivered_url);
+              return { ...applied, patch: { ...applied.patch, token_cost: tokens, ...(files ? { pr_files: files } : {}) }, reason: "implemented", ack_run: run.id };
+            }
+            return {
+              patch: {
+                blocked_on: "outbound", blocked_reason: PR_PENDING, token_cost: tokens, ...(files ? { pr_files: files } : {}),
+              },
+              actor: SYSTEM,
+              reason: "implemented",
+              ack_run: run.id,
+            };
+          }
+          // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
+          const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
           return {
             patch: {
               stage: "REVIEW",
@@ -444,6 +465,27 @@ export class RunResultsUnit {
   }
 
   /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
+  /**
+   * Outbound delivered an implement run's PR (RFC 0015 M7): its number and link go on the item at its version, the
+   * wait ends, and the review is queued as an implement result's was. Only an item still waiting for its PR changes,
+   * so a redelivered result or a late one changes nothing.
+   */
+  async prDelivered(id: WorkItemId, ref: string, url: string | null): Promise<void> {
+    await this.c.unit("transitions").decide(id, async (it) =>
+      it.blocked_on === "outbound" && it.blocked_reason === PR_PENDING ? this.prApplied(it, ref, url) : null,
+    );
+  }
+
+  /** The PR on the item and the review queued, as an implement result with a PR number did before. */
+  private async prApplied(it: WorkItem, ref: string, url: string | null): Promise<NonNullable<Decision>> {
+    return {
+      patch: { stage: "REVIEW", change_ref: ref, ...(url ? { change_url: url } : {}), blocked_on: "none", blocked_reason: null },
+      actor: SYSTEM,
+      reason: "pr_delivered",
+      enqueue: { kind: "review", idempotency_key: runKey(it, "review"), input: await this.c.unit("checks-gate").reviewInput(Number(ref), it.id) },
+    };
+  }
+
   async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {

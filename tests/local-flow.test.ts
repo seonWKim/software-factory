@@ -140,7 +140,9 @@ async function gitFactory(o: { github: boolean }) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const gh = new FakeSource();
-  const forge = new FakeForge(gh);
+  // The GitHub broker: a recording fake whose calls are the GitHub calls, outbound's push and PR included.
+  const ghBroker = new FakeBroker();
+  const forge = new FakeForge(gh, ghBroker.calls);
   const github = new GitHubGrant();
   const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
   const local_auth = new LocalAuthProvider(store, grants);
@@ -150,8 +152,7 @@ async function gitFactory(o: { github: boolean }) {
     broker: new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo }),
     sandbox: new NoOpSandbox(wt, undefined, undefined, { local: true }),
   };
-  // The GitHub broker: a recording fake whose calls are the GitHub calls. With GitHub selected, the selected sandbox fetches origin.
-  const ghBroker = new FakeBroker();
+  // With GitHub selected, the selected sandbox fetches origin.
   const sandbox = o.github ? new NoOpSandbox(wt) : localRoute.sandbox;
   const controller = new ControllerRole({
     store, sources: o.github ? [gh, new LocalSource(store)] : [new LocalSource(store)], ...(o.github ? { forge } : {}), auth, local_auth, clock, config: cfg,

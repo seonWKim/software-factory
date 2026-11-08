@@ -754,7 +754,9 @@ export class Plugins {
    * selects none: then nothing is built. `sync`: the store, Clock and log build() also hands it, so the GitHub forge
    * records its PR comments and labels and can poll.
    */
-  async forge(github: GitHubApi, sync: { store: FactoryStore; clock: Clock; log: Logger } | null = null): Promise<Forge | null> {
+  async forge(
+    github: GitHubApi, sync: { store: FactoryStore; clock: Clock; log: Logger; credentials?: GitHubCredentials } | null = null,
+  ): Promise<Forge | null> {
     const name = this.loaded.plugins.forge;
     if (name === undefined) return null;
     const ctx = { ...this.base, github, ...sync };
@@ -778,7 +780,8 @@ export async function build(
   const scanner = await p.scanner(secrets);
   // G1 on the toolchain env values, by the configured scanner, before anything is built that could start an agent.
   await checkToolchainEnv(loaded.config.toolchain, scanner);
-  // The one forge client of this build: every plugin that calls the forge gets it; only the broker gets credentials.
+  // The one forge client of this build: every plugin that calls the forge gets it; only the broker and the forge (its
+  // writes are outbound's, RFC 0015 M7) get credentials.
   const { credentials, api: github } = await p.githubAccess({ secrets, clock });
   const sandbox = await p.sandbox();
 
@@ -789,7 +792,7 @@ export async function build(
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
   // PR events, PR facts, PR comments and PR status (issue #273); null when config selects no forge.
-  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge") });
+  const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const authPlugin = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });

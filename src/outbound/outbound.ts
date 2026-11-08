@@ -12,7 +12,7 @@ import type { FactoryStore, SyncFence } from "../interfaces/factory-store.js";
 import { envelope } from "../shared/envelope.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../state/index.js";
-import { ACTION_INTENT, THREAD_INTENT, actionOf } from "./intents.js";
+import { ACTION_INTENT, RETRIED_ACTIONS, THREAD_INTENT, actionOf, type ActionRow } from "./intents.js";
 import type { Delivery, DeliveryTarget } from "./targets/target.js";
 import { DELIVERY_COMPLETED } from "./topics/deliveries-results.topic.js";
 
@@ -205,13 +205,14 @@ export class Outbound {
     const row = d.row;
     let outcome = "sent";
     let error: string | null = null;
+    let made: { url: string | null; ref?: string } = { url: null };
     try {
-      const body = row.action === "post" ? await this.scanned(String(row.args.body), row.target.id) : null;
-      await target.deliver(body === null ? d : { ...d, row: { ...row, args: { ...row.args, body } } });
+      made = await target.deliver({ ...d, row: await this.scannedAction(row) });
     } catch (err) {
       error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
-      // A close, a post or a PR close retries with its batch; a status label or a 👀 is best effort: a warning, never a hold.
-      if (row.action === "close" || row.action === "post" || row.action === "close_pr") {
+      // A close, a post, a PR close, a push or a PR retries with its batch, which holds its destination meanwhile
+      // (later batches of it wait); a status label or a 👀 is best effort: a warning, never a hold.
+      if (RETRIED_ACTIONS.includes(row.action)) {
         const [b] = await this.d.db.all(
           "SELECT b.attempts FROM outbound_batches b JOIN outbound_batch_intents i ON i.batch_id = b.id WHERE i.intent_id = ?",
           [i.id],
@@ -223,9 +224,20 @@ export class Outbound {
       this.d.log.warn(row.action === "seen" ? "mark seen failed" : "set status failed", { target: target.name, source_id: row.target.id, error });
       outcome = "failed";
     }
-    await this.d.db.run("UPDATE outbound_actions SET delivered_at = ?, outcome = ?, last_error = ? WHERE seq = ? AND delivered_at IS NULL", [
-      now, outcome, error, row.seq,
-    ]);
+    await this.d.db.run(
+      "UPDATE outbound_actions SET delivered_at = ?, outcome = ?, last_error = ?, delivered_ref = ?, delivered_url = ? WHERE seq = ? AND delivered_at IS NULL",
+      [now, outcome, error, made.ref ?? null, made.url, row.seq],
+    );
+  }
+
+  /** G5 on an action's text: a post's body, a PR's title and body (a flagged PR text goes out as the notice only). */
+  private async scannedAction(row: ActionRow): Promise<ActionRow> {
+    if (row.action === "post") return { ...row, args: { ...row.args, body: await this.scanned(String(row.args.body), row.target.id) } };
+    if (row.action !== "pr") return row;
+    const text = [row.args.title, row.args.body, ...Object.keys(row.args.labels ? (JSON.parse(String(row.args.labels)) as object) : {})].join("\n");
+    const notice = await this.scanned(text, row.target.id);
+    if (notice === text) return row;
+    return { ...row, args: { ...row.args, title: `Factory change on ${String(row.args.branch)}`, body: notice, labels: null } };
   }
 }
 

@@ -2,7 +2,6 @@
   "broker-write|core/session.ts|github.open_pr",
   "broker-write|core/session.ts|github.push_branch",
   "broker-write|worker/runner.ts|github.open_pr",
-  "broker-write|worker/runs/implement/implement.run.ts|github.open_pr",
   "broker-write|worker/runs/implement/implement.run.ts|github.push_branch",
   "broker-write|worker/runs/resolve/resolve.run.ts|github.push_branch",
   "broker-write|worker/runs/update/update.run.ts|github.push_branch",

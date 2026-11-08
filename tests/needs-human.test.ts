@@ -11,7 +11,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { newStore } from "./helpers/store.js";
 import {
-  FakeAuth, FakeBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, gates, issueRef, prompts, silent, triageSpec,
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, config, gates, issueRef, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
 
 // The agent's needs_human answer and the repeated-failure rule (issue #167, decided 2026-11-07).
@@ -28,7 +28,7 @@ async function factory(runner: FakeRunner, opts: { repeated?: boolean } = {}) {
   const broker = new FakeBroker();
   const scanner = new PatternEgressScanner(async () => []);
   const controller = new ControllerRole({
-    store, source, auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: opts.repeated ?? true,
+    store, source, forge: new FakeForge(null, broker.calls), auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: opts.repeated ?? true,
   });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent, scanner,
