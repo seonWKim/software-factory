@@ -1158,6 +1158,19 @@ CREATE TABLE `worker_run_attempts` (
   CONSTRAINT `worker_run_attempts_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `worker_runs` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `worker_run_steps` (
+  `run_id` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `step_id` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `attempt` int NOT NULL,
+  `status` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `result_ref` mediumtext COLLATE utf8mb4_bin,
+  `error_code` varchar(64) COLLATE utf8mb4_bin DEFAULT NULL,
+  `started_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `finished_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`run_id`,`step_id`),
+  CONSTRAINT `worker_run_steps_run` FOREIGN KEY (`run_id`) REFERENCES `worker_runs` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `worker_runs` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -1184,11 +1197,14 @@ CREATE TABLE `worker_runs` (
   `actor_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
   `transcript_url` text CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
   `session_tokens` bigint DEFAULT NULL,
+  `code_version` varchar(64) COLLATE utf8mb4_bin DEFAULT NULL,
+  `deadline_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `seq` (`seq`),
   UNIQUE KEY `idempotency_key` (`idempotency_key`),
   KEY `runs_claim` (`status`,`kind`,`created_at`,`seq`),
   KEY `runs_work_item` (`work_item_id`),
   KEY `runs_finished` (`finished_at`),
+  KEY `worker_runs_lease` (`status`,`lease_expires_at`),
   CONSTRAINT `worker_runs_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
