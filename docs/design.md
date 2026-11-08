@@ -59,7 +59,3 @@ the `05-*` files.
 
 ## 10. Event-driven factory
 - [10-event-driven.md](design/10-event-driven.md): the RFC 0015 move, prefixed tables, timestamped migrations with backups and verified copies, and architecture tests.
-
-## Plans
-- [phase-2-backlog.md](design/phase-2-backlog.md): the design-side order of the Phase 2 work.
-- [first-build.md](design/first-build.md): the suggested build order for the first local version.

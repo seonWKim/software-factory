@@ -50,13 +50,13 @@ Interfaces stubbed with a single local impl: `FactoryStore`, `Sandbox` (`NoOpSan
 
 ## Phase 2 — The factory builds itself (dogfooding)
 
-From here, new features are GitHub issues on this repo, worked by the factory. Humans confirm specs and merge. `BACKLOG.md` seeds the issues.
+From here, new features are GitHub issues on this repo, worked by the factory. Humans confirm specs and merge.
 
 Order (each one makes the next safer or cheaper):
 
 | # | Step | Status (design topic) |
 |---|---|---|
-| 1 | Hard gates: CI scope gate (`allowed_paths`), diff-size limit, protected paths (the floor list) | done (`04-pre-push-gates.md`, `05-ci-gate.md`) |
+| 1 | Hard gates: CI scope gate (`allowed_paths`), diff-size limit, protected paths (the floor list) | partly: the scope, size and floor gates run before every push, and CI runs the tests (`04-pre-push-gates.md`, `05-ci-gate.md`); a hard CI scope gate is still open |
 | 2 | Human form (verdict + severity + reason) replacing free-form comments | done: `/verdict` (`04-gate-commands.md`) |
 | 3 | Measurement: weighted feedback rate per tier, revert / fix-forward tracking (`fixes_pr`), budgets, `restart_count` + dead-letter | done (`06-measurement.md`, `06-token-budget.md`, `05-restarts.md`) |
 | 4 | Golden PRs from rejected / reverted / held-up PRs; catch + false-alarm rate per agent | in progress: the reviewer's golden set exists; seeding and replay on prompt changes are open (#317, #369) |

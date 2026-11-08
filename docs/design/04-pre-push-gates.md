@@ -37,7 +37,7 @@
   5. **HEAD unchanged.** The gate commands run repo code; if HEAD is no longer the worker's commit afterwards, the run fails with `head_moved`.
   6. Store the branch through the broker's `git.store_branch` and record a keyed `push` intent; outbound pushes it (same branch, same PR, never a force push; RFC 0015 M7, 10-event-driven.md). A refused store fails with its broker code; a forge push failure is outbound's retry.
 
-  The implement run's pre-push step (scope against base, size, floor) does not run for a resolve, and the implement path keeps its own gate; a separate hard CI scope gate is still open (Phase 2 backlog item 2, [phase-2-backlog.md](phase-2-backlog.md); BACKLOG.md #1). **Known gap:** a resolve that touches a floor path inside `allowed_paths` is not floor-checked again. The review that follows rechecks the tier.
+  The implement run's pre-push step (scope against base, size, floor) does not run for a resolve, and the implement path keeps its own gate; a separate hard CI scope gate is still open (`PLAN.md`, Phase 2 step 1). **Known gap:** a resolve that touches a floor path inside `allowed_paths` is not floor-checked again. The review that follows rechecks the tier.
 
 **Pre-push checks.** The implement run runs the repo's checks before every push, with one fix step.
 
