@@ -243,11 +243,12 @@ export function cliConfig(
 }
 
 /**
- * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, and `toolchain`: what agents may read and
- * the env they get). On a shared store (MySQL: the enterprise case) they come only from the checked-in file, so a
- * user's own config cannot loosen them; solo use may set any key.
+ * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, `toolchain`: what agents may read and
+ * the env they get, and `hooks`: the owner's checks, such as a `before_merge` veto). On a shared store (MySQL: the
+ * enterprise case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use
+ * may set any key.
  */
-const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain"] as const;
+const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain", "hooks"] as const;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 

@@ -366,7 +366,8 @@ force.
   refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
   text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
   until the owner lists it in `hooks` (factory.config.json, a PR-only key, so enabling one is a reviewed and
-  audited change; startup fails on a name no discovered hook has). `before_run` is called at run start, after the
+  audited change; startup fails on a name no discovered hook has). On a shared store `hooks` is a reviewed key,
+  read only from the checked-in file like `dials` (since 2026-11-09), so a replica's own config cannot drop a veto. `before_run` is called at run start, after the
   guards (the claim and the run passport) allowed the run: a refusal fails the run `hook_refused` before its folder
   or agent; a note is logged. `before_merge` is called at the merge queue's landing (subject the work item): a veto
   removes the entry and posts the hook's reason. Not called yet: `before_delivery` (outbound). No hook ships.
@@ -550,3 +551,6 @@ force.
   when this host's runner still had it. A network requeue or a restart gives the retry a new folder, so the agent
   was resumed in an empty folder and told its earlier work was there. A pause still resumes its session, in the
   folder it kept.
+- **`hooks` on a shared store** (changed 2026-11-09, runtime review M1). Before: `hooks` was PR-only but not a
+  reviewed key, so a MySQL replica started with its own `--config` took `hooks` from that file; `hooks: []` there
+  skipped the owner's `before_merge` veto whenever that replica landed the merge queue.
