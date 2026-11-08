@@ -27,18 +27,21 @@ minutes; past that the main session takes over from their WIP commit.
 
 | Time | Step | Who | Status |
 |---|---|---|---|
-| 22:30 | M4 merged | main | done 22:40 (453af93); SQLite + MySQL suites green, rehearsal passed |
-| 22:40–23:50 | M5 router + units: `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | merged 23:50 (2b837d5), SQLite green |
-| 22:40–23:20 | M3 leftovers: bus + ticks plugins, `requires`, dead-letter alarms | agent | merged 23:25, SQLite green |
-| 22:40–00:30 | M6 `worker.ts` onto the engine (crash test resumes mid-run); M9 wiring (passports at the edge and in the ToolBroker, service passports, UI names) | agents | merged 00:15 (c086e15) and 00:35 (56b60f4), SQLite green |
-| –23:30 | M8 merge queue (depth 1); M7 outbound, controller half; M5 follow-up: pure units on ticks | agents + main | merged 23:30 (bf0e449, 39bcb41, 0964cd6), SQLite green; M7 fixes by main: flush starvation, G5 retry loop |
-| 23:35–01:05 | M7 worker half; M6 leftovers + M10 roles/hooks in the worker; M8 leftovers + router findings; pure units 2 + M9 command auth | 4 agents | running |
-| 23:25–23:45 | M11 contract migrations (main, done 23:30, e28aab9); review of bus, inbound, identity, state, runtime (read-only agent) | main + agent | review done 23:35: 10 findings. Fixed by main: contract drop order (cf1af90), forged passport links, consumer emits on a retried transaction, concurrent revoke, key-file race (0115682). Bus ordering, leases, new-group start, INSERT IGNORE: agent (bus-fixes) |
-| 23:45 | M8 leftovers merged: unit messages + MergeCheckTimedOut, speculative depth (`merge_queue.depth`), before_merge hooks, router and run-kind startup checks | agent + main | merged, SQLite green (3710) |
-| 23:55 | Pure units 2 + M9 command auth merged (02c065e): one reply path, 9 more units through reader/commit (ratchet 38 → 25), commands decided under their passport, auto mode under the controller's service passport, live `tick_ms`. Main fixed: command passport expiry checked at the command's recorded time (bc112cf) | agent + main | merged, SQLite green (3714); review of the controller started (read-only agent) |
-| 01:05–03:00 | Merge the four branches; finish what an agent left; full MySQL suite with no agents running | main | |
-| 03:00–05:00 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
-| 05:00–07:30 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
+| 22:07 | M4 merged (453af93) | main | done; SQLite + MySQL suites green, rehearsal passed |
+| 22:26 | M3 leftovers merged (487c50b): bus + ticks plugins, `requires`, dead-letter alarms | agent | SQLite green |
+| 22:50 | M5 router + units merged (2b837d5): `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | SQLite green |
+| 22:57, 23:04 | M6 `worker.ts` onto the engine (c086e15); M9 wiring: passports at the edge and in the ToolBroker, service passports, UI names (56b60f4) | agents | SQLite green |
+| 23:20–23:25 | Pure units on ticks (bf0e449); M8 merge queue, depth 1 (39bcb41); M7 outbound, controller half (0964cd6) | agents + main | SQLite green; main fixed flush starvation and the G5 retry loop |
+| 23:31, 23:40 | M11 contract migrations for `legacy_*` (e28aab9), drop order fix (cf1af90) | main | written, applied only by `migrate --contract` |
+| 23:43 | Review of bus, inbound, identity, state, runtime fixed (0115682): forged passport links, consumer emits on a retried transaction, concurrent revoke, key-file race | main | 10 findings; bus ordering/leases/start/INSERT IGNORE went to the bus-fixes agent |
+| 23:43 | M8 leftovers merged (42f815e): unit messages + MergeCheckTimedOut, speculative depth (`merge_queue.depth`), before_merge hooks, router and run-kind startup checks | agent + main | SQLite green (3710) |
+| 23:49, 23:56 | Pure units 2 + M9 command auth merged (02c065e): one reply path, 9 more units through reader/commit (ratchet 38 → 25), commands decided under their passport. Main: passport expiry checked at the command's recorded time (bc112cf) | agent + main | SQLite green (3714) |
+| 00:09–00:16 | M6 leftovers + M10 roles/hooks (645c82a); M7 worker half (5d7e597); bus review fixes: seq-ordered inserts, lease renew, explicit start, insert-or-skip (cfcbd20, 8435fb5) | agents + main | SQLite green |
+| 00:25 | Controller review fixes (adec77b): auto stop after a failed settings write, comment command passports, streamed event retried on a store error, merge-check invariant | main | SQLite green (3730); each new test fails without its fix |
+| 00:27 | One `addMs` in `shared/time.ts` (a2edc15) | main | SQLite green |
+| 00:10– | Merge queue review findings + local merge delivery (mq-fixes); M7 pushes + PR open/update via outbound (m7-push) | 2 agents | running, time box 90 min |
+| next | Merge both agents; M11 cleanup: file budget back to 600, ratchets, docs, ARCHITECTURE.md | main | |
+| then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
 
 Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
 owner decisions below. Status per row is updated here as each step lands.
