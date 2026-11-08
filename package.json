@@ -14,7 +14,8 @@
     "factory": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js",
     "migrate": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js migrate",
     "setup": "npm install --silent && npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js setup",
-    "schema:snapshot": "SF_SNAPSHOT_UPDATE=1 vitest run --configLoader runner tests/architecture/schema-snapshot.test.ts"
+    "schema:snapshot": "SF_SNAPSHOT_UPDATE=1 vitest run --configLoader runner tests/architecture/schema-snapshot.test.ts",
+    "settings:catalog": "SF_SNAPSHOT_UPDATE=1 vitest run --configLoader runner tests/architecture/settings-monotonic.test.ts"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.5",

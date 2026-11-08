@@ -822,6 +822,18 @@ CREATE TABLE runtime_child_restarts (
     recorded_at  TEXT NOT NULL
   );
 
+CREATE TABLE runtime_hook_decisions (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    hook         TEXT NOT NULL,
+    point        TEXT NOT NULL,
+    subject      TEXT NOT NULL,
+    project_id   TEXT NOT NULL,
+    passport_id  TEXT,
+    outcome      TEXT NOT NULL,
+    text         TEXT,
+    at           TEXT NOT NULL
+  );
+
 CREATE TABLE runtime_schema_migrations (
     id            TEXT PRIMARY KEY,
     component     TEXT NOT NULL,
@@ -1015,6 +1027,8 @@ CREATE INDEX runs_finished ON "legacy_runs" (finished_at);
 CREATE INDEX runs_work_item ON "legacy_runs" (work_item_id);
 
 CREATE INDEX runtime_child_restarts_at ON runtime_child_restarts (at);
+
+CREATE INDEX runtime_hook_decisions_subject ON runtime_hook_decisions (subject, seq);
 
 CREATE INDEX source_inbox_seq ON "legacy_source_inbox" (source_type, seq);
 

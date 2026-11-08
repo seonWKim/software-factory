@@ -13,11 +13,12 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
 import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
 import {
-  PROJECT_SETTABLE_KEYS, PR_ONLY_DESCRIPTIONS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, SETTING_APPLIES, SETTING_DESCRIPTIONS, type SettableKey,
+  PROJECT_SETTABLE_KEYS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettableKey,
   type GlobalSettableKey, type SettableValues, type SettingsBase, type SettingSource,
   effectiveSetting, isGateSettableKey, isProjectSettableKey, resolveSettings,
 } from "../core/settings.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import { loadSettingCatalog } from "../runtime/index.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
 import type { UiDeps } from "./pages.js";
 import { Withholder } from "./withhold.js";
@@ -119,6 +120,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     ? { ...s.base, layers: { ...s.base.layers, projects: rekeyProjectSettings(s.base.layers.projects, ownerName, ref.key) } }
     : s.base;
   const r = resolveSettings(base, rows, label);
+  const catalog = await loadSettingCatalog();
 
   const keys = [];
   for (const k of SETTABLE_KEYS) {
@@ -133,20 +135,20 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     }
     keys.push({
       key: k,
-      description: await text(SETTING_DESCRIPTIONS[k]),
+      description: await text(catalog.describe(k).description),
       kind: kindOf(k),
       value: await text(fmt(r.global[k].raw)),
       source: e.source,
       file_value: file === undefined ? null : await text(fmt(file)),
       default_value: fmt(SETTABLE_DEFAULTS[k]),
-      applies_at: SETTING_APPLIES[k],
+      applies_at: catalog.describe(k).applies,
       project_settable: isProjectSettableKey(k),
       projects,
       ...(k === "workers" ? { max: r.workers_cap, capped_at: r.values.workers < r.global.workers.value ? r.workers_cap : null } : {}),
     });
   }
   const prOnly = [];
-  for (const key of PR_ONLY_KEYS) prOnly.push({ key, note: "changes by PR only", description: await text(PR_ONLY_DESCRIPTIONS[key]) });
+  for (const key of PR_ONLY_KEYS) prOnly.push({ key, note: "changes by PR only", description: await text(catalog.describe(key).description) });
   const ignored = [];
   for (const i of r.ignored) {
     ignored.push({ key: i.key, project: i.project ? await text(label(i.project)) : null, value: await text(i.value), reason: await text(i.reason) });

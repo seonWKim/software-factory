@@ -9,7 +9,6 @@ import {
   MODES,
   PROJECT_SETTABLE_KEYS,
   SETTABLE_KEYS,
-  SETTING_APPLIES,
   type SettableKey,
   type SettingsBase,
   effectiveSetting,
@@ -20,6 +19,7 @@ import {
   workersCap,
 } from "./core/settings.js";
 import type { FactoryStore, SettingOverride } from "./interfaces/factory-store.js";
+import { loadSettingCatalog } from "./runtime/index.js";
 
 export const SETTINGS_USAGE = `usage: npm run factory -- settings <action>
   list                                        every settable key: its effective value and source (override, file, default)
@@ -213,7 +213,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
     ok: true,
     lines: [
       `${key}${where} = ${fmt(now.raw)} (${now.source}; was ${fmt(was.raw)}, ${was.source})`,
-      `applies at ${SETTING_APPLIES[key]}, with no restart`,
+      `applies at ${(await loadSettingCatalog()).describe(key).applies}, with no restart`,
     ],
   };
 }
