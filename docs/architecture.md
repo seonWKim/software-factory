@@ -70,11 +70,11 @@ graph TB
 | `SourceAdapter` | GitHub issues via REST / `gh` | Slack, GitLab |
 | `CapabilitySearch` | List everything (`list-all`); BM25 over `docs/` and `skills/` markdown (`bm25`) | vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
-| `ToolBroker` (G2) | GitHub REST + `git push` in the worker process; `local`: the run's branch as a local branch of the factory repo, no remote | same, per tool |
+| `ToolBroker` (G2) | In the worker process: `git.store_branch` stores the run's HEAD in the factory repo (`github`: a staging ref outbound pushes from; `local`: the run's branch as a local branch, no remote) and the read-only `github.preflight`. Pushes, PRs and comments are outbound deliveries through the forge and source plugins (RFC 0015 M7) | same, per tool |
 | `EgressScanner` (G5) | Known secret values + patterns | + a managed secret scanner |
 | `Clock` | `SystemClock` (tests: `FakeClock`) | `SystemClock` |
 
-Code layout: interfaces in `src/interfaces/`, control and agent-plane logic in `src/core/`, implementations in `src/impl/`, wiring in `src/compose.ts`, the status page in `src/ui/`. Why something is an interface: testability, infrastructure, or environment (see `AGENTS.md`).
+Code layout (RFC 0015, moving): components in `src/inbound/`, `src/controller/`, `src/worker/`, `src/outbound/`, `src/bus/`, `src/identity/`, `src/runtime/`, `src/state/` and `src/shared/` (map: `ARCHITECTURE.md`); legacy interfaces in `src/interfaces/`, shared legacy logic in `src/core/`, implementations in `src/impl/`, wiring in `src/compose.ts`, the status page in `src/ui/`. Why something is an interface: testability, infrastructure, or environment (see `AGENTS.md`).
 
 **Status page (`factory ui`, `src/ui/`).** A surface like the CLI, not a plugin interface: it has no `docs/plugins.md` entry and no registry name. It reads `FactoryStore` only, through its read methods (`listWorkItemsWhere`, `countWorkItemsByStage`, `listRunsByStatus`, `listRunsFinishedWithin`, `getWorkItem`, `listStateChanges`, `listRuns`), and never calls a method that writes. `buildUiParts` in `src/compose.ts` builds the configured clock, `SecretStore`, `FactoryStore` and `EgressScanner` through `Plugins`, not `build()`, so no controller, worker, source or runner starts. It loads the secret file because the MySQL store needs `MYSQL_PASSWORD` and the scanner needs the known secret values; those values stay in the store and scanner and never reach a page. Every value is HTML-escaped, and every free-text field is egress-scanned first and withheld whole on a finding (design §9). `node:http` only, bound to 127.0.0.1 (no host option), GET and HEAD only, Host header must be `127.0.0.1` or `localhost`. Like every other process it holds no state another replica needs, so any number can run.
 
@@ -113,34 +113,34 @@ sequenceDiagram
   C->>C: start loops: intake, scheduler, reaper, post-merge
   W->>W: load config, build Sandbox + AgentRunner
 
-  GH-->>C: issue labeled factory (webhook or poll)
+  GH-->>C: issue labeled factory (inbound's poll, on the bus)
   C->>ST: insert work item NEW (unique per source id)
   C->>ST: enqueue run: triage
   W->>ST: claim run with lease
   W->>AG: Sandbox.create, AgentRunner.run(triage)
   AG->>ST: spec fields + handoff row
-  AG->>GH: post spec comment
   W->>ST: run done, release lease
   C->>ST: READY, blocked_on human
+  C->>GH: spec comment (an outbound delivery)
   H->>GH: approve spec
   GH-->>C: approval
   C->>ST: blocked_on none, enqueue run: implement
 
   W->>ST: claim run with lease
   W->>AG: Sandbox.create(worktree + branch), run implementer
-  loop every commit
-    AG->>GH: push commit
+  loop while the agent runs
     AG->>ST: handoff row
     W->>ST: heartbeat (renew lease)
   end
-  AG->>GH: open PR
-  W->>ST: run done
+  W->>W: checks, git.store_branch (factory repo ref)
+  W->>ST: run done, push + PR intents
+  C->>GH: outbound pushes the branch, opens the PR
   C->>ST: REVIEW, enqueue run: review
 
   W->>ST: claim run with lease
   W->>AG: run reviewer (blind pass, then intent)
-  AG->>GH: acceptance tests + verdict
-  W->>ST: run done
+  AG->>W: acceptance tests + verdict
+  W->>ST: run done, review comment (an outbound delivery)
   alt bug found
     C->>ST: RUNNING, loop_count + 1, enqueue implement
   else passed
@@ -178,7 +178,9 @@ sequenceDiagram
   W->>R: review reads the local branch diff
   C->>ST: merge_pending (no PR checks)
   OP->>ST: factory merge <id> (approver role)
-  C->>R: Sandbox: merge commit, move refs/heads/<base> (no push, no checkout)
+  C->>ST: merge queue entry, enqueue merge-check run
+  W->>R: merge-check run: install + checks on the merged result
+  C->>R: landing through outbound's local target: move refs/heads/<base> only if still as checked (no push)
   C->>ST: CLOSED, completed, merge_sha
 ```
 
@@ -243,30 +245,30 @@ Scale workers for throughput. Scale controllers for availability.
 
 ### Intake: poll and push
 
-A source's `intake` says how its events arrive (`SourceAdapter` is a union, `src/interfaces/source-adapter.ts`). Both paths end in the same `Controller.handleEvent`, so an event is handled the same way whichever path brought it.
+A source's `intake` says how its events arrive (`SourceAdapter` is a union, `src/interfaces/source-adapter.ts`). Both paths end in the same place since RFC 0015 M4: inbound (`src/inbound/intake.ts`) stores each record in `inbound_raw_records` and publishes an `InboundReceived` on `inbound.records` in the transaction that moves its cursor; the `normalize-source` handler turns it into a `SourceEventReceived` on `controller.commands`, and the controller's router hands it to the unit that takes its kind. So an event is handled the same way whichever path brought it.
 
 ```mermaid
 graph LR
   subgraph POLL["intake: poll (GitHub issues)"]
-    P1["controller tick, every poll_interval_ms"] -->|"poll(cursor)"| P2["events"]
+    P1["inbound intake tick, every poll_interval_ms"] -->|"poll(cursor)"| P2["records + InboundReceived"]
   end
   subgraph PUSH["intake: stream (e.g. Slack Socket Mode)"]
     S1["listener (lease holder only)"] -->|"subscribe()"| S2["PushedEvent"]
-    S2 -->|"1. appendInbox (fenced by lease token)"| IN[("source_inbox")]
+    S2 -->|"1. appendInbox (fenced by lease token)"| IN[("inbound_raw_records")]
     S2 -.->|"2. ack() after commit"| S1
-    IN -->|"listInboxAfter(cursor), every tick, any replica"| S3["events"]
+    IN -->|"relay after the cursor, every intake tick, any replica"| S3["InboundReceived"]
   end
-  P2 --> H["handleEvent"]
+  P2 --> H["inbound.records, normalize-source,<br/>controller.commands, router"]
   S3 --> H
   H --> ST[("work items, state_changes")]
 ```
 
-- **Poll.** Unchanged: the controller calls `poll(cursor)` every `poll_interval_ms` and moves the cursor `intake:<source type>` with `advanceCursor`.
-- **Push: the inbox.** Each pushed event is written to the store table `inbound_raw_records` (seq, source type, `dedupe_key`, the event as JSON, received time) **before** it is acknowledged to the source. `ack()` runs only after that write commits; a duplicate `dedupe_key` (unique per source type) is a no-op and is acked too; a failed write is not acked, so the source redelivers it. Every controller replica reads the inbox rows after the cursor `inbox:<source type>` (every tick, since it is a store read), handles each through `handleEvent`, and moves the cursor with `advanceCursor`. A crash at any point loses nothing: before the commit the source still holds the event, after it the inbox does. Handling is idempotent, so two replicas reading the same rows at once is safe.
+- **Poll.** Inbound calls `poll(cursor)` every `poll_interval_ms` and stores the records, their messages and the move of the cursor `intake:<source type>` in one transaction (the synced type fenced by the sync lease).
+- **Push: the inbox.** Each pushed event is written to the store table `inbound_raw_records` (seq, source type, `dedupe_key`, the event as JSON, received time) **before** it is acknowledged to the source. `ack()` runs only after that write commits; a duplicate `dedupe_key` (unique per source type) is a no-op and is acked too; a failed write is not acked, so the source redelivers it. Inbound on any replica relays the rows after the cursor `inbox:<source type>` (every intake tick): it publishes their `InboundReceived` and moves the cursor conditionally in one transaction, so a row is announced once. A crash at any point loses nothing: before the commit the source still holds the event, after it the inbox does. Handling is idempotent, so two replicas reading the same rows at once is safe.
 - **Push: the listener lease.** A source should have one connection, not one per replica. The table `inbound_listener_leases` (one row per source type: owner, token, expiry) decides who connects; every change to it is a conditional update. Each replica's controller runs a listener (`src/core/listener.ts`) that tries to take the lease every `heartbeat_ms`; only the holder subscribes, and it renews every `heartbeat_ms` for `lease_ms`. Each take bumps the token, and the inbox write checks the token in the same transaction, so a listener that lost the lease cannot write. If the holder dies (stops renewing past expiry), another replica takes the lease and connects; a holder that cannot renew for `lease_ms` closes its own connection. The two can overlap briefly (the takeover and the self-close fall due at the same time, and a sleeping host notices late); that is harmless, because the old holder's inbox writes are refused and its unacked events are redelivered to the new one. On shutdown the holder releases the lease so another replica takes over at once.
 - **Ordering.** Appends of one source type lock its lease row, so they commit one at a time in seq order and a reader never moves its cursor past a row that commits later. Seqs are never reused (SQLite `AUTOINCREMENT`, InnoDB's persisted counter).
 - **Reconnects.** When the stream ends or fails, the listener reconnects with exponential backoff (1 s doubling to 60 s; it starts over after a connection that stored an event). It logs once per state change (lease taken, waiting, connected, disconnected, lease lost), not once per retry.
-- **Retention.** On the poll interval, the controller deletes inbox rows that are older than `inbox_retention_days` (default 14) **and** at or below the source's inbox cursor. A source with no cursor keeps every row.
+- **Retention.** On its `records` tick, inbound deletes inbox rows that are older than `inbox_retention_days` (default 14) **and** at or below the source's inbox cursor. A source with no cursor keeps every row.
 - **Slack is a stream plugin** (issue #109). The `slack` source (`src/impl/source/slack.plugin.ts`) is the first real stream source: one Socket Mode WebSocket, opened only by the lease holder, each envelope stored and then acked through the path above. Its dedupe key is Slack's `event_id` (a button press: team, user and `action_ts`), and intake is idempotent on the item's source id `slack:<team>:<channel>:<thread ts>`, so a mention Slack delivers as two events, or a redelivery after a reconnect, is one item and one transition. Its tokens stay inside the plugin (read from the `SecretStore` at the point of use); every message it posts is egress-scanned first. Off unless `plugins.source` lists it.
 - **Routing by source type.** With several sources (`plugins.source` a list), each item's comments, 👀, status and close go to the adapter whose `type` is the item's `source.type`, so a Slack item is answered in its thread and a GitHub item on its issue. A PR's status always goes to `github_issue`, and PR merge, close and unmergeable events come only from it, so a Slack item's PR is implemented, reviewed and merged through the GitHub path unchanged. Commands from every source run the same command table and the same `AuthProvider` check.
 - Out of scope so far: webhook HTTP endpoints (they would write to the same inbox).
@@ -279,7 +281,7 @@ graph LR
 graph LR
   subgraph HOST["Worker process (trusted)"]
     SS["SecretStore (~/.config file now, vault later)"]
-    TB["Tool broker: credentialed tools (GitHub, Slack, DB)"]
+    TB["Tool broker and outbound targets:<br/>credentialed tools and writes (GitHub, Slack, DB)"]
     SS --> TB
   end
   subgraph SBX["Sandbox (untrusted): agent run"]
@@ -295,17 +297,17 @@ graph LR
 | # | Guard | Stops |
 |---|---|---|
 | G1 | Secrets are loaded only by the worker process via `SecretStore`. The agent process gets an **allowlisted** environment (no secrets), never the worker's env. The only config-declared entries are `toolchain.env` (2026-11-08): startup refuses a key that looks like a credential (`FORBIDDEN_ENV`) or that the factory sets itself (`PATH`, `HOME`, `TMPDIR`, `CLAUDE_*`, `ANTHROPIC_*`, `GIT_*`, `SF_*`), and a value the configured egress scanner flags (a known secret value or a secret pattern); the error names the entry, never the value | `env`, `printenv`, `process.env` inside the agent |
-| G2 | Credentialed actions (push, PR, comment, DB query) are tools served by a broker **outside** the sandbox, which attaches credentials | The agent needing a token at all |
+| G2 | Credentialed actions happen **outside** the sandbox, where credentials are attached: a run's tools are served by the broker (`git.store_branch`, the read-only `github.preflight`), and the push, PR, comments, labels and closes are outbound deliveries through the forge and source plugins (RFC 0015 M7; `tests/architecture/forge-writes.test.ts`) | The agent needing a token at all |
 | G3 | The sandbox's filesystem view excludes secret files: run folders never contain `.env` (gitignored), and the secret file lives outside any path the sandbox mounts | `cat ~/…/.env`, path guessing |
 | G4 | Harness-level deny rules on secret paths for the agent's file and shell tools | Defense in depth while G3 is weak (`NoOpSandbox`) |
 | G5 | Egress scan: every agent output (commits, PR text, comments, handoff rows, logs) is checked for known secret values and secret patterns before it leaves; a hit fails the run (in a transcript, which only goes to storage, a pattern hit alone keeps the transcript out of storage instead: `docs/design/05-sandbox.md`) | A leak that got past G1–G4 reaching GitHub or the store |
 | G6 | Tests: a canary secret is planted; a test agent is told to find and print it; the run must fail to find it, or be stopped by G5 | Regressions in G1–G5 |
 
-**Run folder rule (2026-11-01):** an agent may write only to its own run folder, never to the owner's checkout or its `.git`. Every run gets its own clone with its own git folder inside the run folder (`NoOpSandbox`: objects borrowed from the factory repo through an alternates link), so the agent's branches, index, `HEAD`, refs, config and hooks stay in that folder. No run gets a writable path outside it (`AgentRunSpec.writable_paths` is empty for implement runs). The clone's `core.hooksPath` is an empty, read-only folder beside the run folders, outside every agent writable path. Trusted code treats the run folder's git state as agent-written: the worker and the GitHub broker run git there with `TRUSTED_GIT_ENV` (no hooks, no fsmonitor, no signing program, no replace refs or grafts). After an agent exits, the worker checks that the git folder is still the clone's own and removes every config key that is not plain data (`untrustedGitConfig`), and the broker refuses to push from a folder that still has one. The trusted values come from the factory repo, never from the run folder: the base commit the gates and the broker's scan diff from (the factory repo's `origin/<base>`, `SandboxHandle.base_sha`), and the remote the broker pushes to (the factory repo's `origin` URL, not the run folder's `origin`). Any later sandbox follows the same rule.
+**Run folder rule (2026-11-01):** an agent may write only to its own run folder, never to the owner's checkout or its `.git`. Every run gets its own clone with its own git folder inside the run folder (`NoOpSandbox`: objects borrowed from the factory repo through an alternates link), so the agent's branches, index, `HEAD`, refs, config and hooks stay in that folder. No run gets a writable path outside it (`AgentRunSpec.writable_paths` is empty for implement runs). The clone's `core.hooksPath` is an empty, read-only folder beside the run folders, outside every agent writable path. Trusted code treats the run folder's git state as agent-written: the worker and the brokers run git there with `TRUSTED_GIT_ENV` (no hooks, no fsmonitor, no signing program, no replace refs or grafts). After an agent exits, the worker checks that the git folder is still the clone's own and removes every config key that is not plain data (`untrustedGitConfig`), and the broker refuses to store a branch from a folder that still has one. The trusted values come from the factory repo, never from the run folder: the base commit the gates and the broker's scan diff from (the factory repo's `origin/<base>`, `SandboxHandle.base_sha`), and the remote outbound's push goes to (the factory repo's `origin` URL, not the run folder's `origin`; since RFC 0015 M7 the push leaves from the factory repo, where `git.store_branch` stored the run's commit). Any later sandbox follows the same rule.
 
 **Toolchain caches are read-only (2026-11-08, issue #334; decision in `docs/design/05-sandbox.md`):** a project may declare a `toolchain` block in `factory.config.json` (a PR-only key; on a shared store it comes only from the checked-in file). Its `caches` are folders the agent may **read and never write**: the Claude Code harness puts them in `sandbox.filesystem.allowRead` and `denyWrite` and adds an `Edit(//<cache>/**)` deny rule, never `allowWrite`; the shared file tools let Read, Glob and Grep read under them and refuse Write and Edit there. A cache that is, lies inside or holds a `deny_paths` entry (the secret file's folder, the owner's `~/.ssh`, `~/.gitconfig` and the rest) fails startup and is a doctor FAIL, so the read denylist always wins and the cache list never reopens a secret. The agent's writes do not widen: each run's toolchain homes (`npm_config_cache`, `CARGO_HOME`, `PIP_CACHE_DIR`, `GRADLE_USER_HOME`) point into its own TMPDIR. The agent still has no network; the worker fills the caches before the agent with `warm_command` (default `repo.install_command`), run with the worker's own env and the network but no credential or test database. No block: none of this, and every run is as before.
 
-**`.env.example`, the one exception (2026-11-02):** file tools deny `.env` and every `.env.*` file, wherever it is, with one exact-name exception: `.env.example`. It lists the secret names the plugins declare (`tests/secret-names.test.ts`) and must hold **no values**, only `NAME=` lines, blanks and `#` comments. Agents may read and edit it so they can keep it in sync with the code. The shared guard (`src/core/tools/guard.ts`) allows that exact name only: `.env.example.local` or `.env.EXAMPLE` stay denied, a `.env.example` symlink is checked by the name it resolves to (one pointing at `.env` is refused), and a hard-linked `.env.example` is refused. The value check (`envExampleValueLines`) runs in two places: the GitHub broker runs it on every `.env.example` in HEAD's tree before `git push` and refuses with `egress_blocked` (also for a committed `.env.example` symlink), and `tests/secret-names.test.ts` runs it on the repository's own file. It runs on the push path rather than in the egress scanner because the scanner sees text without file names. The scanner's known-value rule still applies to the whole diff.
+**`.env.example`, the one exception (2026-11-02):** file tools deny `.env` and every `.env.*` file, wherever it is, with one exact-name exception: `.env.example`. It lists the secret names the plugins declare (`tests/secret-names.test.ts`) and must hold **no values**, only `NAME=` lines, blanks and `#` comments. Agents may read and edit it so they can keep it in sync with the code. The shared guard (`src/core/tools/guard.ts`) allows that exact name only: `.env.example.local` or `.env.EXAMPLE` stay denied, a `.env.example` symlink is checked by the name it resolves to (one pointing at `.env` is refused), and a hard-linked `.env.example` is refused. The value check (`envExampleValueLines`) runs in two places: both brokers run it on every `.env.example` in HEAD's tree before `git.store_branch` stores the branch (the step before outbound's push) and refuse with `egress_blocked` (also for a committed `.env.example` symlink), and `tests/secret-names.test.ts` runs it on the repository's own file. It runs on the store path rather than in the egress scanner because the scanner sees text without file names. The scanner's known-value rule still applies to the whole diff.
 
 **Declared secret names:** a `SecretStore` loads and scans only the secret names the selected plugins declare in `src/plugins.ts` (no closed list), so a new plugin brings its own secret without touching guarded code, and plain settings in the same file are never treated as secrets.
 
