@@ -2,24 +2,26 @@
 
 | Role | Reads | Writes | Model |
 |---|---|---|---|
-| Triage | Slack thread, issues, code (API, no clone) | its fields, `READY` / `CLOSED` | cheap |
+| Triage | Slack thread, issues, code (API, no clone) | its fields, `READY` / `CLOSED` | cheap; standard on a retry after an `agent_failed` attempt |
 | Manager | `READY` queue | lease, assignment | none (code) |
 | Implementer | work item + pointers + previous mistakes | code on its branch, TDD tests, handoff row per commit | standard at tier 1–2, strong at tier 3–5 |
 | Reviewer | pass 1: work item + diff + CI results + `worked_on` (no transcript); pass 2: intent, how_to_test | verdict (tests run only to confirm a finding), cumulative mistakes, tier recheck | standard, different if measured to help |
 | Resolver (`/resolve`) | conflicting files + work item + notes | the merge resolution | standard at tier 1–2, strong at tier 3–5 |
 
-The model column is the shipped `model_by` table (below); a retry after a review loop goes one class up.
+The model column is the shipped `model_by` table (below); a retry after a review loop, or a triage retry after an `agent_failed` attempt, goes one class up.
 
 **Model class per run kind and tier.** There are three classes, `cheap`, `standard` and `strong`; `models` in `factory.config.json` maps each to a model name (shipped: `haiku`, `sonnet`, `opus`, CLI aliases, not pinned versions) and must list all three. `model_by` maps run kind and tier to a class: one entry per run kind (`triage`, `implement`, `review`, `resolve`), each either one class for every tier or an object with a class for each of tiers `"1"` to `"5"`, plus `retry_up` (default true). Shipped, and used when `model_by` is absent:
 
-| Run kind | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Tier 5 | Retry after a review loop |
+| Run kind | Tier 1 | Tier 2 | Tier 3 | Tier 4 | Tier 5 | Retry |
 |---|---|---|---|---|---|---|
-| triage | cheap | cheap | cheap | cheap | cheap | not moved |
-| implement | standard | standard | strong | strong | strong | one class up |
+| triage | cheap | cheap | cheap | cheap | cheap | one class up after an `agent_failed` attempt |
+| implement | standard | standard | strong | strong | strong | one class up after a review loop |
 | review | standard | standard | standard | standard | standard | not moved |
-| resolve | standard | standard | strong | strong | strong | one class up |
+| resolve | standard | standard | strong | strong | strong | one class up after a review loop |
 
-A retry is an implement or resolve run for an item whose `loop_count` is 1 or more (review or failed checks sent it back); it goes one class up (`cheap` → `standard` → `strong`, `strong` stays) unless `retry_up` is false. Restart retries (`/retry`, backoff) do not move `loop_count` and are not bumped. An item with no tier yet takes its run kind's tier-5 entry. The merge-conflict steps inside an implement run use the implement run's class. Golden reviewer replays use the review class (tier-5 entry, no bump), so they match production review. `loadConfig` checks both keys at startup: an unknown run kind or tier key, a value that is not a class, a tier object missing a tier, or `models` without one of the three classes fails loading with the key or value named. The choice is one pure function (`modelClassFor` in `src/core/model-choice.ts`). Each agent run's succeeded outcome data records `model_class` and `model` (the configured name) next to `tokens`; no schema change. Review moves from strong to standard by default, which lowers the reviewer's model: a human confirms this at merge. Out of scope: suggest, canary and setup's check stay `cheap`; stats per class; per-item overrides.
+**Triage retry after `agent_failed` (decision changed 2026-11-08, issue #457; before: triage was never moved up, see History).** A triage run goes one class up (`cheap` → `standard` by default) when `retry_up` is on and the latest finished attempt record of the item's triage runs (`listRunAttempts`) failed with `agent_failed` (for example `error_max_structured_output_retries`), so the same cheap model does not fail the same way again. A failed triage run is retried as a new run, so the item's earlier triage runs count, and this run's own earlier claims too. An attempt that ended any other way (`lease_expired`, a network or rate-limit pause, a stall, a timeout, `paused`, `succeeded`) is not `agent_failed`, so a restart retry that never reached the model is not bumped; a later successful triage resets it. Implement and resolve runs are not bumped after `agent_failed`. The worker reads the records; `modelClassFor` takes the result as one boolean.
+
+A review-loop retry is an implement or resolve run for an item whose `loop_count` is 1 or more (review or failed checks sent it back); it goes one class up (`cheap` → `standard` → `strong`, `strong` stays) unless `retry_up` is false. Restart retries (`/retry`, backoff) do not move `loop_count` and are not bumped by it. An item with no tier yet takes its run kind's tier-5 entry. The merge-conflict steps inside an implement run use the implement run's class. Golden reviewer replays use the review class (tier-5 entry, no bump), so they match production review. `loadConfig` checks both keys at startup: an unknown run kind or tier key, a value that is not a class, a tier object missing a tier, or `models` without one of the three classes fails loading with the key or value named. The choice is one pure function (`modelClassFor` in `src/core/model-choice.ts`). Each agent run's succeeded outcome data records `model_class` and `model` (the configured name) next to `tokens`; no schema change. Review moves from strong to standard by default, which lowers the reviewer's model: a human confirms this at merge. Out of scope: suggest, canary and setup's check stay `cheap`; stats per class; per-item overrides.
 
 Instructions are soft; tools and permissions are hard. Credentials live only inside tool wrappers: agents never read secrets, only tools do, enforced by guards G1–G6 (architecture §5).
 
@@ -45,5 +47,6 @@ Instructions are soft; tools and permissions are hard. Credentials live only ins
 - **PR body and incomplete PRs** (decision changed 2026-11-07, issue #229). Before: the PR body was the agent's summary, the check lines, `Closes #<issue>` and the work item line, written once when the PR opened and never updated; a gap the agent mentioned in prose (a file outside the allowed paths) left no mark, and such PRs merged as done.
 - **Broker tools in agent runs** (2026-11-07, issue #164). Before: agents got no broker tools (decided 2026-10-31); the runner refused a run with grants.
 - **Spec layout** (decision changed 2026-11-07, issue #229). Before: In short, "Please check" (tier raise only), What changes, Done when (every criterion), Not included (one `scope` text that also named what was in scope), Problem, Files, Risk.
+- **Triage retry after `agent_failed`** (decision changed 2026-11-08, issue #457). Before: triage was not moved up on retry; only implement and resolve runs with `loop_count` ≥ 1 went one class up, so a triage run that failed with `agent_failed` was retried on the same cheap model and failed the same way again.
 - **Model class per run kind and tier** (decision changed 2026-11-02, issue #137). Before: two classes, `cheap` and `strong`, hard-coded per run kind in the worker: triage cheap, implement, review and resolve strong, whatever the tier or loop, and runs did not record which model they used.
 - **In short opening** (decision changed 2026-11-01). Before: the spec comment opened with the first one or two sentences of the problem, and the PR description was the implementer's summary with no plain statement of the change at the top.

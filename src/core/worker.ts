@@ -1,7 +1,7 @@
 import { AGENT_STOP_CHECKS_DEFAULT, type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "./config.js";
 import { issueNumber, prNumber } from "./change-ref.js";
 import { type LearnedSettingsSource, LiveSettings, settingValues } from "./settings.js";
-import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
+import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "./model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "./diff-gate.js";
 import { MAX_COMMAND_PATHS, retryPathsReply } from "./commands.js";
 import { NumstatError, diffGates, scopeGate } from "./pre-push.js";
@@ -215,6 +215,9 @@ const WIP_TEXT_CHARS = 4000;
 export const DIFF_CHECK_MS = 30_000;
 /** The wip ref's next steps of a run the mid-run diff check stopped. */
 const BUDGET_NEXT_STEPS = "the run stopped mid-way: its diff went over max_diff_lines or max_diff_files";
+/** The code of a run whose agent exited with an error (`agent_${result.status}` of a failed step). */
+const AGENT_FAILED = "agent_failed";
+
 /**
  * The agent-step failures that stop an implement run mid-work (design §5 Restarts): its commits and changes go to a
  * wip branch, and the retry continues the agent from there.
@@ -514,7 +517,7 @@ export class Worker {
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
       // One class for every agent step of the run, the merge-conflict steps of an implement run included.
-      const model = isModelRunKind(run.kind) ? this.modelFor(run.kind, item) : null;
+      const model = isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
       // An update run has no agent, so the class it is handed is never used.
       const data = await this.role(run, item, ctx, lease.signal, model ?? "cheap");
       // Recorded next to the run's usage, so cost and failure rate can be compared per class. data.tokens: the
@@ -733,9 +736,27 @@ export class Worker {
     }
   }
 
-  /** The model class of this run kind for this item (src/core/model-choice.ts). */
-  private modelFor(kind: "triage" | "implement" | "review" | "resolve", item: WorkItem): ModelClass {
-    return modelClassFor(this.runModels?.table ?? DEFAULT_MODEL_TABLE, kind, item.tier, item.loop_count);
+  /**
+   * The model class of this run kind for this item (src/core/model-choice.ts). A triage run also reads whether
+   * the item's latest finished triage attempt failed with `agent_failed`.
+   */
+  private async modelFor(run: Run, kind: ModelRunKind, item: WorkItem): Promise<ModelClass> {
+    const table = this.runModels?.table ?? DEFAULT_MODEL_TABLE;
+    const previousAgentFailed = kind === "triage" && table.retry_up && (await this.lastTriageAttemptAgentFailed(run));
+    return modelClassFor(table, kind, item.tier, item.loop_count, previousAgentFailed);
+  }
+
+  /**
+   * Whether the latest finished attempt record of the item's triage runs failed with `agent_failed`. A failed
+   * triage run is retried as a new run, so the earlier runs count, and this run's own earlier claims too: a
+   * restart retry (lease_expired, a network or rate-limit pause, a stall) ends with another status or code, so
+   * it is the latest record and the retry is not bumped.
+   */
+  private async lastTriageAttemptAgentFailed(run: Run): Promise<boolean> {
+    const triage = new Set((await this.d.store.listRuns(run.work_item_id)).filter((r) => r.kind === "triage").map((r) => r.id));
+    const finished = (await this.d.store.listRunAttempts(run.work_item_id)).filter((a) => triage.has(a.run_id) && a.finished_at !== null);
+    const last = finished.at(-1);
+    return last?.status === "failed" && last.error_code === AGENT_FAILED;
   }
 
   /** `model_class` and `model` (the configured name; null when the worker has no names) for an outcome. */
