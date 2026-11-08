@@ -12,7 +12,7 @@ import {
   BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type EventBus, type Inbox, type Relay, type RetryScheduler,
 } from "../../bus/index.js";
 import {
-  CONTROLLER, type ControllerContext, type ControllerEvent, type ControllerReader, type ControllerWrite, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
+  CONTROLLER, CONTROLLER_EVENTS, CONTROLLER_EVENT_KINDS, type ControllerContext, type ControllerEvent, type ControllerReader, type ControllerWrite, type Decisions, type ControllerUnits, Kernel, Router, type UnitName, type UnitOperations,
 } from "../../controller/index.js";
 import type { ControllerDeps, GitHubBudgetStatus } from "../../core/controller-deps.js";
 import type { FactoryConfig } from "../../core/config.js";
@@ -26,10 +26,14 @@ import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
   OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, announce, buildTargets, policyFor, recordAction,
 } from "../../outbound/index.js";
+import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick, type TickGenerator, type TickSource } from "../../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../../state/index.js";
 import { ComponentConsumer } from "../consumer.js";
+import { loadHooks, runHooks } from "../hooks/run-hooks.js";
+import { SqlHookAudit } from "../hooks/sql-hook-audit.js";
+import type { HookDescriptor, HookPoint } from "../../shared/hook.js";
 import { loadDescriptors, loadRegistry, type Registry } from "../registry/registry.js";
 import { ensureDiscoveredTopicTables } from "../registry/topic-tables.js";
 
@@ -44,6 +48,11 @@ export interface ControllerRoleDeps extends ControllerDeps {
   ticks?: TickSource;
   /** Identity (M9): inbound gives a command row without a passport its actor's edge passport. Absent: none. */
   identity?: Pick<IdentityRuntime, "commandPassport">;
+  /**
+   * Hooks (RFC 0015 §8, M10): the names the owner enabled, and the hooks to choose from (absent: the discovered
+   * ones). Absent: none enabled, solo and enterprise alike, until the stored enable setting lands.
+   */
+  hooks?: { readonly enabled: readonly string[]; readonly list?: readonly HookDescriptor[] };
 }
 
 type ComponentBus = EventBus & Inbox & Relay;
@@ -130,7 +139,29 @@ export class ControllerRole implements Decisions {
       record: (a, now) => recordAction(db(), a, now),
       // The intents go out on the controller's bus; wired before its transaction opens.
       announce: async (now) => announce(db(), (await this.wire()).controllerBus, this.role.settings.config().project.key, now, CONTROLLER),
+      emit: async (draft, now) => {
+        const bus = (await this.wire()).controllerBus;
+        const cause = { id: null, correlation_id: newMessageId(), project_id: this.role.settings.config().project.key, passport_id: null, occurred_at: now };
+        await db().transaction((tx) => bus.publish(tx, [envelope(draft, cause, CONTROLLER)]));
+      },
+    }, { beforeMerge: (subject, passport_id, at) => this.runHooks("before_merge", subject, passport_id, at) });
+  }
+
+  /**
+   * The enabled hooks of `point` on `subject` (fail closed), each decision audited. The guards already allowed the
+   * action at every call site, so the hooks may only refuse it.
+   */
+  private async runHooks(point: HookPoint, subject: string, passport_id: string | null, at: string): Promise<{ allowed: true } | { allowed: false; reason: string }> {
+    const enabled = new Set(this.role.hooks?.enabled ?? []);
+    if (enabled.size === 0) return { allowed: true };
+    const list = this.role.hooks?.list ?? (await loadHooks()).map((h) => h.descriptor);
+    const r = await runHooks({
+      input: { point, subject, project_id: this.kernel.project(), passport_id, at },
+      hooks: list, enabled, guard: { allowed: true },
+      timer: { after: (ms, signal) => this.role.clock.sleep(ms, signal) },
+      audit: new SqlHookAudit(driverOf(this.role.store)),
     });
+    return r.allowed ? { allowed: true } : { allowed: false, reason: r.reason ?? "refused by a hook" };
   }
 
   /** Outbound delivered these intents: the outbox unit records them on their items. */
@@ -307,6 +338,11 @@ export class ControllerRole implements Decisions {
     await this.outboxStep();
   }
 
+  /** A message a unit emitted for itself, back to that unit; a failure is retried by the bus. */
+  async receive(m: Envelope): Promise<void> {
+    await (await this.router()).receive(m);
+  }
+
   /**
    * One event a source or the forge reported, delivered by the bus (RFC 0015 M4). A failure is logged and passed,
    * as a polled event's always was: the next poll or the person's next comment brings it again.
@@ -349,6 +385,8 @@ export class ControllerRole implements Decisions {
   private router(): Promise<ControllerRouter> {
     return (this.routed ??= units().then((list) => {
       const r: ControllerRouter = new Router(list, this.kernel, {
+        kinds: CONTROLLER_EVENT_KINDS,
+        messages: Object.keys(CONTROLLER_EVENTS.messages),
         guard: (what, fn) => this.kernel.guard(what, fn),
         reader: this.kernel.reader,
         commit: (d) => this.kernel.commit(d),

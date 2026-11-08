@@ -69,6 +69,7 @@ export const TOP_LEVEL_KEYS = [
   "budget_min_sample",
   "inbox_retention_days",
   "outbound",
+  "merge_queue",
   "max_coordination_cost",
   "hotspot_paths",
   "hotspot_weight",

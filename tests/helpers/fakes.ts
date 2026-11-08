@@ -72,6 +72,7 @@ export const config: FactoryConfig = {
   // Tests that are not about batching send each commit at once (`commit`): the `auto` debounce waits on time these
   // tests never advance. Batching has its own tests (tests/outbound/).
   outbound_batching: { "*": { mode: "commit", debounce_ms: 2_000, max_wait_ms: 30_000, max_messages: 10 } },
+  merge_queue_depth: 1,
   workers: 1,
   deny_paths: ["/home/u/.config/software-factory"],
   agent_git_identity: { name: "bot", email: "bot@example.com" },

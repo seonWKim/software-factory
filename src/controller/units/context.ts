@@ -9,6 +9,19 @@ import type { ControllerReader, ControllerWrite, Kernel } from "./kernel.js";
 
 export type ControllerEvent = SourceEvent | ForgeEvent;
 
+/**
+ * Every event kind the sources and the forge report: a kind missing here, or one that is not a kind, fails the
+ * typecheck, and a kind no unit accepts is a router startup problem (it would be dropped).
+ */
+const KINDS = {
+  item_requested: true, spec_approved: true, spec_rejected: true, revise_requested: true, retry_requested: true,
+  help_requested: true, standing_requested: true, unknown_command: true, plain_comment: true, source_closed: true,
+  budget_continue: true, resolve_requested: true, verdict_submitted: true, base_commit: true,
+  change_merged: true, change_closed: true, change_open: true, change_unmergeable: true, pr_changes_requested: true,
+} as const satisfies Record<ControllerEvent["kind"], true>;
+
+export const CONTROLLER_EVENT_KINDS = Object.keys(KINDS) as ControllerEvent["kind"][];
+
 export type Ctx = UnitContext<Kernel, ControllerEvent>;
 
 /** What a pure controller unit decides. */

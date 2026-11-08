@@ -1,6 +1,7 @@
 // The MergeQueue actor (RFC 0015 §7 Merge queue, §8; M8): one per project and base branch, snapshot in
-// `controller_merge_queues`. idle: nothing is being checked. checking: the head entry's merge-check run is out.
-// merging: a green entry is landing. paused: the queue takes no entry to check (no command sets it yet).
+// `controller_merge_queues`. idle: no check is out. checking: at least one entry's merge-check run is out (up to the
+// speculative depth). merging: the head entry is landing; nothing else starts meanwhile. paused: the queue starts no
+// check and lands nothing (no command sets it yet: neither the design nor the RFC names one).
 
 import { defineActor } from "../../router/actor.js";
 
@@ -13,10 +14,12 @@ export default defineActor<MergeQueueState>({
   terminal: [],
   transitions: [
     ["idle", "checking"],
-    ["checking", "merging"],
-    // A red check, a timed-out check, or a check whose entry left: back to idle, and the next entry is checked.
+    // Every check came back (red, timed out, passed behind an entry still landing): idle.
     ["checking", "idle"],
-    // Landed, or refused because the base moved: back to idle.
+    // The head passed: it lands, whether or not checks behind it are still out.
+    ["idle", "merging"],
+    ["checking", "merging"],
+    // Landed, or refused: back to idle, and the queue settles to checking if checks are still out.
     ["merging", "idle"],
     ["idle", "paused"],
     ["checking", "paused"],

@@ -74,6 +74,66 @@ CREATE TABLE `bus_controller_commands_retries` (
   KEY `bus_controller_commands_retries_due` (`next_attempt_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `bus_controller_events` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `type` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `schema_version` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition` bigint NOT NULL,
+  `project_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key_ttl_ms` bigint DEFAULT NULL,
+  `causation_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `correlation_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `passport_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `producer` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `occurred_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `not_before` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `payload` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `published_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `id` (`id`),
+  KEY `bus_controller_events_partition` (`partition`,`seq`),
+  KEY `bus_controller_events_due` (`not_before`),
+  KEY `bus_controller_events_published` (`published_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_controller_events_cursors` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition` bigint NOT NULL,
+  `last_seq` bigint NOT NULL DEFAULT '0',
+  `owner` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `lease_token` bigint NOT NULL DEFAULT '0',
+  `lease_until` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`consumer_group`,`partition`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_controller_events_dead_letters` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_seq` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `attempts` bigint NOT NULL,
+  `error_code` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `last_error` text COLLATE utf8mb4_bin,
+  `dead_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `replayed_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `replayed_by` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`consumer_group`,`message_seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_controller_events_retries` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_seq` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `attempt` bigint NOT NULL,
+  `next_attempt_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `last_error` text COLLATE utf8mb4_bin,
+  PRIMARY KEY (`consumer_group`,`message_seq`),
+  KEY `bus_controller_events_retries_due` (`next_attempt_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `bus_deliveries_requests` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,

@@ -7,6 +7,7 @@ import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
 import type { NewAction } from "../../outbound/index.js";
+import type { Draft } from "../../shared/envelope.js";
 import type { SqlDriver } from "../../state/index.js";
 
 /**
@@ -47,8 +48,19 @@ export type ControllerWrite =
   | { kind: "thread_entry"; entry: Parameters<Store["recordItemMessage"]>[0] }
   /** A CLI command whose mirror on its item's issue was delivered (or that has nothing to mirror). */
   | { kind: "cli_mirrored"; key: string }
-  /** Runs whose lease expired, requeued after the retry backoff or failed at max_attempts (design §5 Restarts). */
-  | { kind: "expire_leases"; max_attempts: number; backoff_ms: (attempt: number) => number };
+  /**
+   * Runs whose lease expired, requeued after the retry backoff or failed at max_attempts (design §5 Restarts);
+   * `then` decides the writes that follow from what expired (the reaper's log lines).
+   */
+  | { kind: "expire_leases"; max_attempts: number; backoff_ms: (attempt: number) => number; then: (r: ExpiredLeases) => readonly ControllerWrite[] }
+  /** A message on the controller's bus (controller.events), delayed until `draft.not_before` when it is set. */
+  | { kind: "emit"; draft: Draft };
+
+/** What one lease expiry did: each attempt it cut off, and the runs it requeued or failed. */
+export interface ExpiredLeases {
+  readonly abandoned: readonly Parameters<NonNullable<Parameters<Store["expireLeases"]>[2]>>[0][];
+  readonly run_ids: readonly string[];
+}
 
 type ThreadEntry = Extract<ControllerWrite, { kind: "thread_entry" }>["entry"];
 
@@ -79,6 +91,14 @@ export type ItemCommitted = Awaited<ReturnType<Store["openBudgetCheckpoint"]>> |
 export interface Deliveries {
   record(a: NewAction, now: string): Promise<void>;
   announce(now: string): Promise<number>;
+  /** Publishes one message on the controller's bus, caused by the decision at `now`. */
+  emit(d: Draft, now: string): Promise<void>;
+}
+
+/** The hooks at the controller's points (RFC 0015 §8, M10): the role binds them to runHooks and the enabled names. */
+export interface ControllerHooks {
+  /** The `before_merge` hooks on the item about to land, after the guards; a veto, timeout or error refuses. */
+  beforeMerge(subject: string, passport_id: string | null, at: string): Promise<{ allowed: true } | { allowed: false; reason: string }>;
 }
 
 /**
@@ -96,7 +116,7 @@ export class Kernel {
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   readonly live: LiveSettings;
 
-  constructor(readonly d: ControllerDeps, private readonly deliveries: Deliveries) {
+  constructor(readonly d: ControllerDeps, private readonly deliveries: Deliveries, readonly hooks: ControllerHooks) {
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.forge = d.forge ?? null;
@@ -115,7 +135,8 @@ export class Kernel {
       if (w.kind === "log") log[w.level](w.msg, w.fields);
       else if (w.kind === "thread_entry") await store.recordItemMessage(w.entry);
       else if (w.kind === "cli_mirrored") await store.markCliCommandMirrored(w.key);
-      else await this.expireLeases(w);
+      else if (w.kind === "emit") await this.deliveries.emit(w.draft, this.d.clock.now().toISOString());
+      else await this.commit({ writes: w.then(await this.expireLeases(w)) });
     }
   }
 
@@ -128,28 +149,16 @@ export class Kernel {
     return w.kind === "transition" ? this.d.store.transition(w.input) : this.d.store.openBudgetCheckpoint(w.input);
   }
 
-  /**
-   * Each attempt the store's conditional update cut off gets its end line (issue #210): the run's last heartbeat is
-   * its end. Only an expired lease is seen here, so the reason is always lease_expired.
-   */
-  private async expireLeases(w: Extract<ControllerWrite, { kind: "expire_leases" }>): Promise<void> {
-    const log = this.d.log;
-    const ids = await this.d.store.expireLeases(
-      w.max_attempts,
-      w.backoff_ms,
-      (a) =>
-        log.warn("run abandoned", {
-          run_id: a.run_id,
-          work_item_id: a.work_item_id,
-          attempt: a.attempt,
-          status: "abandoned",
-          reason: "lease_expired",
-          started_at: a.started_at,
-          ended_at: a.ended_at,
-          duration_ms: a.duration_ms,
-        }),
-    );
-    for (const id of ids) log.warn("lease expired", { run_id: id });
+  /** One lease expiry: what it cut off and which runs it moved, for the decision's `then`. */
+  private async expireLeases(w: Extract<ControllerWrite, { kind: "expire_leases" }>): Promise<ExpiredLeases> {
+    const abandoned: ExpiredLeases["abandoned"][number][] = [];
+    const run_ids = await this.d.store.expireLeases(w.max_attempts, w.backoff_ms, (a) => void abandoned.push(a));
+    return { abandoned, run_ids };
+  }
+
+  /** Publishes a unit's message on the controller's bus (the `emit` write, for a unit that still writes inline). */
+  async emit(draft: Draft): Promise<void> {
+    await this.commit({ writes: [{ kind: "emit", draft }] });
   }
 
   /** Stores an intent for outbound (RFC 0015 M7); the outbox step announces it. */
