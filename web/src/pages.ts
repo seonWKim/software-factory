@@ -50,9 +50,4 @@ export function routeFor(pathname: string): Route {
   return { page: ALL_PAGES.find((p) => p.path === rest) ?? PAGES[0]!, itemId: null };
 }
 
-/** The page for a location path under /app/ (the sidebar's current entry). */
-export function pageFor(pathname: string): PageDef {
-  return routeFor(pathname).page;
-}
-
 export const itemPath = (id: string) => `${BASE}items/${encodeURIComponent(id)}`;

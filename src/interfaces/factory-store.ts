@@ -1243,8 +1243,6 @@ export const LINK_CODE_MAX_FAILURES = 5;
 /** A local user's role (issue #318): `owner` (one, the first identity; may manage users) > `approver` > `requester`. */
 export type LocalRole = "owner" | "approver" | "requester";
 
-export const LOCAL_ROLES: readonly LocalRole[] = ["owner", "approver", "requester"];
-
 export interface LocalUser {
   user_id: UserId;
   role: LocalRole;
