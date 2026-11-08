@@ -1,6 +1,6 @@
 // The local merge (design 05-sources, Local items): `factory merge <id>` merges an item's local branch into the
 // factory repo's local base branch, through the sandbox the controller already holds (as the merge check does),
-// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which the
+// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which
 // outbound's `local` target brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
 
 import type { SourceRef, SourceType, WorkItem } from "./types.js";
