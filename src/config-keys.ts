@@ -17,8 +17,7 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297, `hold_policy` and `hotspot_mode`
  * from issue #314) are checked here at load
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
- * local CLI commands act as, read by src/core/config.ts once #200 lands; listed here first so that change needs no
- * edit to this file.
+ * local CLI commands act as, read by src/core/config.ts.
  */
 type CoreOnlyKey = "auth_pause_ms" | "cli_user" | (typeof COORDINATION_KEYS)[number];
 

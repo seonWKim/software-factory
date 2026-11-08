@@ -685,7 +685,7 @@ describe("ui api: item commands POST (issue #227)", () => {
 
   async function setup(actor: UserId | null = ACTOR) {
     const s = await seeded();
-    s.d.commands = { actor, token: TOKEN };
+    s.d.commands = { actor, source: actor === null ? null : "config", token: TOKEN };
     return s;
   }
 
@@ -763,7 +763,7 @@ describe("ui api: item commands POST (issue #227)", () => {
     await nothingWritten(store);
   });
 
-  it("without ui.user_id (or without the route wired) a POST is a 503 and writes nothing", async () => {
+  it("without an actor (a non-loopback server without ui.user_id, or the route not wired) a POST is a 503 and writes nothing", async () => {
     const { d, store, items } = await setup(null);
     await refused(await post(d, items.approve.id, { command: "approve" }), 503, "no user_id");
     expect(JSON.parse((await post(d, items.approve.id, { command: "approve" })).body).error).toContain("ui.user_id");
@@ -799,6 +799,16 @@ describe("ui api: item commands POST (issue #227)", () => {
     expect((await store.listAppCommandRequestsForItem(items.approve.id, 50)).map((r) => r.command)).toEqual([
       "reject", "revise", "retry", "resolve", "budget", "verdict",
     ]);
+  });
+
+  it("merge is accepted with no note, and a 400 with one", async () => {
+    const { d, store, items } = await setup();
+    await refused(await post(d, items.merge.id, { command: "merge", note: "now" }), 400, "note");
+    await nothingWritten(store);
+    const r = await post(d, items.merge.id, { command: "merge" });
+    expect(r.status).toBe(202);
+    const [row] = await store.listAppCommandRequestsForItem(items.merge.id, 50);
+    expect(row).toMatchObject({ actor: ACTOR, command: "merge", args: { work_item_id: items.merge.id } });
   });
 
   it("reject or revise with no text is a 400 and writes nothing", async () => {
@@ -862,10 +872,10 @@ describe("ui api: item commands POST (issue #227)", () => {
   it("GET /api/v1/session gives the token behind the Host guard; 404 when commands are not wired", async () => {
     const { d } = await setup();
     const s = await json<{ csrf_token: string; commands_enabled: boolean }>(d, "/api/v1/session");
-    expect(s).toMatchObject({ csrf_token: TOKEN, commands_enabled: true });
+    expect(s).toMatchObject({ csrf_token: TOKEN, commands_enabled: true, actor: ACTOR, actor_source: "config" });
     expect((await get(d, "/api/v1/session", { host: "evil.example" })).status).toBe(403);
     expect((await get(d, "/api/v1/session", { host: "evil.example" })).body).not.toContain(TOKEN);
-    d.commands = { actor: null, token: TOKEN };
+    d.commands = { actor: null, source: null, token: TOKEN };
     expect((await json<{ commands_enabled: boolean }>(d, "/api/v1/session")).commands_enabled).toBe(false);
     const { commands: _, ...unwired } = d;
     expect((await get(unwired, "/api/v1/session")).status).toBe(404);
@@ -908,6 +918,43 @@ describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227
       { seq: b.seq, command: "retry", created_at: b.created_at, handled_at: clock.now().toISOString(), refusal: "[withheld: github_token]" },
     ]);
     expect((await json<Detail>(d, `/api/v1/items/${encodeURIComponent(items.queued.id)}`)).replies).toEqual([]);
+  });
+});
+
+describe("ui api: can_merge on GET /api/v1/items/:id (the Merge button)", () => {
+  const TOKEN = newCsrfToken();
+  const ACTOR = "local:me" as UserId;
+  const MERGE_PENDING = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" } as const;
+
+  async function localItem(store: FactoryStore, n: number) {
+    return (await store.createWorkItem({ ...issue(n), source: { type: "local", id: `local-${n}`, link: `local:local-${n}` } }, system)).item;
+  }
+  const canMerge = async (d: UiDeps, id: WorkItemId) => (await json<{ can_merge: boolean }>(d, `/api/v1/items/${encodeURIComponent(id)}`)).can_merge;
+
+  it("true only for a local item at merge_pending with no change_ref, for a user allowed approve_merge", async () => {
+    const { d, store, items } = await seeded();
+    let allowed = true;
+    const asked = vi.fn(async () => allowed);
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: asked };
+    const ready = await patch(store, await localItem(store, 40), MERGE_PENDING);
+    const withPr = await patch(store, await localItem(store, 41), { ...MERGE_PENDING, change_ref: "7" });
+    const spec = await patch(store, await localItem(store, 42), { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    const closed = await patch(store, await localItem(store, 43), { stage: "CLOSED", close_reason: "completed" });
+
+    expect(await canMerge(d, ready.id)).toBe(true);
+    for (const it of [withPr, spec, closed]) expect(await canMerge(d, it.id), it.id).toBe(false);
+    // A GitHub item never shows it, at any state, merge_pending included.
+    for (const it of Object.values(items)) expect(await canMerge(d, it.id), it.id).toBe(false);
+    expect(asked).toHaveBeenCalledTimes(1);
+
+    allowed = false;
+    expect(await canMerge(d, ready.id)).toBe(false);
+    d.commands = { actor: null, source: null, token: TOKEN, mergeAllowed: async () => true };
+    expect(await canMerge(d, ready.id)).toBe(false);
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN };
+    expect(await canMerge(d, ready.id)).toBe(false);
+    const { commands: _, ...unwired } = d;
+    expect(await canMerge(unwired, ready.id)).toBe(false);
   });
 });
 

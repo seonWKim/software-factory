@@ -1,0 +1,20 @@
+diff --git a/tests/migrate-drain.test.ts b/tests/migrate-drain.test.ts
+index ddb1a0f..9978157 100644
+--- a/tests/migrate-drain.test.ts
++++ b/tests/migrate-drain.test.ts
+@@ -101,10 +101,14 @@ describe("migrate: drain handshake with factory dev", { timeout: 30_000 }, () =>
+     s.consume();
+     let code: number | null = null;
+     void done.then((c) => (code = c));
+-    for (let t = 0; t < 121 && code === null; t++) {
++    // Advance until withDrain resolves: its file reads between sleeps can take
++    // longer than any fixed pause under load, so a real-time deadline bounds it.
++    const deadline = Date.now() + 20_000;
++    while (code === null && Date.now() < deadline) {
+       clock.advance(1000);
+       await new Promise((r) => setTimeout(r, 5)); // the file reads between sleeps
+     }
++    if (code === null) throw new Error("withDrain did not resolve within 20 s of real time");
+     expect(code).toBe(1);
+     expect(applied).toBe(false);
+     expect(s.request()).toBe("cancel");

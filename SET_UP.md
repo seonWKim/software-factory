@@ -135,7 +135,7 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
 - `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
 - `factory resolve <id> [notes]`: Store `/resolve` for the item; the controller applies it.
-- `factory merge <id>`: Approver only: merge a local item's branch into the local base branch once its review passed (no push, never automatic); the controller applies it.
+- `factory merge <id>`: Approver only: merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself); the controller applies it.
 - `factory users list`: Print your CLI identity and every local user with its role (owner, approver, requester).
 - `factory users add <user_id> --role approver|requester`: Owner only: give a local user a role, e.g. `local:dev@example.com`.
 - `factory users remove <user_id>`: Owner only: remove a local user's role.
@@ -172,6 +172,15 @@ To let the phases of a split you approved run without an `/approve` each, run `n
 Items whose allowed paths overlap still wait for each other, so their PRs do not conflict; triage and review never wait. Each worker passes its number (0, 1, 2, …) to the agent and to the update test command as `SF_WORKER_INDEX`. If your tests start a server or use a database, use it to pick a port or database name per worker so parallel runs do not collide, e.g. `PORT=$((3000 + SF_WORKER_INDEX))`. The number is unique only inside one process: two factory processes on one machine both have a worker 0.
 
 Unknown config keys are rejected at load: a typo in `factory.config.json` (for example `"plugin"` or a `"hots"` in `store`) stops every command with an error that names the key, lists the valid keys and suggests the closest one; `doctor` shows each as a FAIL line.
+
+### Auto mode (`factory mode`)
+
+By default the factory is in **manual** mode: a person approves every spec and merges every change. In **auto** mode it approves a spec itself when the spec is below tier 4, touches no path on the gate list (prompts, gates, permissions, tools, guard settings) and every decision has a proposed default that is not owner-only; it posts the answers it took in the thread. It also merges a reviewed local change itself, through the same local merge as `factory merge` (the checks run on the merge commit first), when the change is below tier 4, off the gate list, complete, and at or under the auto-merge tier. GitHub items are never merged automatically.
+
+- `npm run factory -- mode auto` (or `manual`; `--project <owner/name>` for one project): the same as `settings set mode`. One audit row names who flipped it and when; running factories pick it up at their next tick.
+- `npm run factory -- settings set auto_merge_max_tier <0-3>`: the highest tier auto mode merges at. The default 0 merges nothing, so raise it to let auto mode merge. 4 or more is refused.
+
+Both need `approve_merge` on the project: solo, the local owner (you, after your first writing command) has it with no setup; on a team, an approver or the owner. The Settings page and the dashboard's top bar show the mode with a switch, and the auto-merge tier next to it. A failing check on the base branch after an automatic merge, a failure alarm or a budget checkpoint sets the mode back to manual, with one alarm in Needs you and one audit row by `system:auto`.
 
 ### Your own LLM session (`factory session`)
 
@@ -316,13 +325,13 @@ With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve fro
 
 `npm run factory -- ui` serves the factory app at <http://127.0.0.1:4310/> (it redirects to `/app/`; the port is `ui.port` in `factory.config.json`): Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue and Health. The older server-rendered page described below is at <http://127.0.0.1:4310/classic>. The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. It has no action buttons: approve, reject, retry and merge stay on GitHub. It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
 
-**Commands from the page (`ui.user_id`).** To let the page send item commands, set `ui.user_id` in `factory.config.json` to a factory user ID (the ID the factory knows you by, e.g. `github:<numeric id>`; never a display name), and restart `npm run factory -- ui`:
+**Commands from the page.** The page sends item commands as the same user the CLI uses on this machine (`cli_user`, else your git `user.email`, else your OS login), with no setup; the item page shows "Acting as <user>". To act as another user, set `ui.user_id` in `factory.config.json` to a factory user ID (the ID the factory knows you by, e.g. `github:<numeric id>`; never a display name), and restart `npm run factory -- ui`:
 
 ```json
 "ui": { "port": 4310, "user_id": "github:12345" }
 ```
 
-Every command sent from the page acts as that user, with that user's permissions: the controller runs the same permission check as for a comment from that user, and refuses (with a reply on the issue and in the item's replies) what that user may not do. Anyone who can open the page on this machine acts as that user, so set it only on a machine you alone use. Without `ui.user_id` the page cannot send commands (the endpoint answers 503); it still shows everything. An empty or non-string value stops startup with an error naming `ui.user_id`. The checked-in config does not set it; keep your own ID out of the repository. Only `approve` is applied from the page today; any other command is recorded and answered with a refusal pointing at the issue.
+Every command sent from the page acts as that user, with that user's permissions: the controller runs the same permission check as for a comment from that user, and refuses (with a reply on the issue and in the item's replies) what that user may not do. Anyone who can open the page on this machine acts as that user, so set it only on a machine you alone use. A server not bound to loopback would need `ui.user_id` (the endpoint answers 503 without it); today the server binds only 127.0.0.1. An empty or non-string value stops startup with an error naming `ui.user_id`. The checked-in config does not set it; keep your own ID out of the repository. Only `approve` is applied from the page today; any other command is recorded and answered with a refusal pointing at the issue.
 
 The list's order:
 1. Ready to merge

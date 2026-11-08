@@ -71,6 +71,22 @@ export async function serverRevision(root: string): Promise<string | null> {
   }
 }
 
+/**
+ * Why a `factory ui` started by hand must stop (design 08 Self-update): the factory runs a newer commit than this
+ * server (`serverRev` is an ancestor of `factoryRev` in `root`). Null when it may keep serving: either revision is
+ * unknown, they are equal, or git cannot order them (another branch, a commit this checkout lacks).
+ */
+export async function olderThanFactory(root: string, serverRev: string | null, factoryRev: string | null): Promise<string | null> {
+  if (serverRev === null || factoryRev === null || serverRev === factoryRev) return null;
+  try {
+    await promisify(execFile)("git", ["merge-base", "--is-ancestor", serverRev, factoryRev], { cwd: root, timeout: 5000 });
+  } catch {
+    return null;
+  }
+  return `factory ui: this page runs ${short(serverRev)}, the factory runs the newer ${short(factoryRev)}; stopping so it never serves old code. ` +
+    "Under git-worktree open the page `factory dev` serves; otherwise rebuild and start `factory ui` again.";
+}
+
 /** A revision the dashboard sends (`?rev=`): a hex commit id, else ignored. */
 export function parseRevision(raw: string | null): string | null {
   return raw !== null && /^[0-9a-f]{7,40}$/.test(raw) ? raw : null;

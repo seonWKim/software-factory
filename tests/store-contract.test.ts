@@ -896,16 +896,16 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await sorted()).toEqual(before);
     });
 
-    it("takeStallProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
+    it("claimProbe moves a due model_stall probe time once: a second caller for the same due time gets false", async () => {
       const { store, clock } = await make();
       const due = later(clock, 1_000);
       await store.pauseClaims(due, "model_stall");
       clock.advance(1_000);
       const next = later(clock, 60_000);
-      expect(await store.takeStallProbe(due, next)).toEqual({ taken: true });
+      expect(await store.claimProbe("model_stall", due, next)).toBe(true);
       expect(await store.getClaimPause("model_stall")).toBe(next);
       // The same due time again, also with another next time: already taken, nothing moves.
-      expect(await store.takeStallProbe(due, later(clock, 90_000))).toEqual({ taken: false });
+      expect(await store.claimProbe("model_stall", due, later(clock, 90_000))).toBe(false);
       expect(await store.getClaimPause("model_stall")).toBe(next);
     });
 
@@ -917,14 +917,14 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.getClaimPause("model_stall")).toBe(later(clock, 60_000));
     });
 
-    it("takeStallProbe takes nothing once the pause ended, so it never starts the pause again", async () => {
+    it("claimProbe takes no model_stall probe once the pause ended, so it never starts the pause again", async () => {
       const { store, clock } = await make();
-      expect(await store.takeStallProbe(later(clock, 0), later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.claimProbe("model_stall", later(clock, 0), later(clock, 60_000))).toBe(false);
       const due = later(clock, 1_000);
       await store.pauseClaims(due, "model_stall");
       clock.advance(1_000);
       await store.endClaimPause("model_stall");
-      expect(await store.takeStallProbe(due, later(clock, 60_000))).toEqual({ taken: false });
+      expect(await store.claimProbe("model_stall", due, later(clock, 60_000))).toBe(false);
       expect(await store.getClaimPause("model_stall")).toBeNull();
     });
 
@@ -1921,6 +1921,53 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.putForgeBudget(reading(10, at(0), OTHER_PROJECT_KEY))).toBe(true);
       expect(await store.getForgeBudget(PROJECT_KEY, "github")).toEqual(reading(812, at(2)));
       expect(await store.getForgeBudget(PROJECT_KEY, "other")).toBeNull();
+    });
+  });
+
+  describe("base pushes (migration 41): one row per local merge, claimed by one replica", () => {
+    /** An item closed by a local merge that queued its base push in the same transition. */
+    const merged = async (store: FactoryStore, n: number, base_push?: { base_ref: string; merge_sha: string }) => {
+      const { item } = await store.createWorkItem(issue(n), system);
+      const r = await store.transition({
+        id: item.id, expected_version: item.version, actor: system, reason: "local_merged",
+        patch: { stage: "CLOSED", close_reason: "completed", merge_sha: base_push?.merge_sha ?? "m" },
+        ...(base_push ? { base_push } : {}),
+      });
+      if (!r.ok) throw new Error("transition failed");
+      return item.id;
+    };
+
+    it("the close transition writes the row; a transition without one writes none", async () => {
+      const { store } = await make();
+      const pushed = await merged(store, 1, { base_ref: "main", merge_sha: "a".repeat(40) });
+      const plain = await merged(store, 2);
+      expect(await store.getBasePush(pushed)).toMatchObject({
+        work_item_id: pushed, base_ref: "main", merge_sha: "a".repeat(40), attempts: 0, finished_at: null, outcome: null,
+      });
+      expect(await store.getBasePush(plain)).toBeNull();
+      expect((await store.listPendingBasePushes(10)).map((p) => p.work_item_id)).toContain(pushed);
+    });
+
+    it("a second claim of the same row gets nothing while the first holds it; a stale token finishes nothing", async () => {
+      const { store, clock } = await make();
+      const id = await merged(store, 3, { base_ref: "main", merge_sha: "b".repeat(40) });
+      const { seq } = (await store.getBasePush(id))!;
+      const [a, b] = await Promise.all([store.claimBasePush(seq, LEASE), store.claimBasePush(seq, LEASE)]);
+      expect([a, b].filter((t) => t !== null)).toHaveLength(1);
+      const token = (a ?? b)!;
+      expect(await store.listPendingBasePushes(10)).toEqual([]);
+      // A failed try: one attempt, the error kept, the claim released, the next try later.
+      expect(await store.failBasePush(seq, token, "rate limited", 5_000)).toBe(true);
+      expect(await store.getBasePush(id)).toMatchObject({ attempts: 1, last_error: "rate limited", finished_at: null });
+      expect(await store.listPendingBasePushes(10)).toEqual([]);
+      clock.advance(5_000);
+      const again = (await store.claimBasePush(seq, LEASE))!;
+      expect(again).not.toBeNull();
+      expect(await store.finishBasePush(seq, token, { outcome: "pushed", pushed_sha: "c" })).toBe(false);
+      expect(await store.finishBasePush(seq, again, { outcome: "pushed", pushed_sha: "c".repeat(40) })).toBe(true);
+      expect(await store.getBasePush(id)).toMatchObject({ outcome: "pushed", pushed_sha: "c".repeat(40) });
+      expect(await store.claimBasePush(seq, LEASE)).toBeNull();
+      expect(await store.listPendingBasePushes(10)).toEqual([]);
     });
   });
 

@@ -5,7 +5,8 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
-import { GitHubError, GitHubRateLimitError, type GitHubClient, type RepoRef } from "./github-client.js";
+import type { GitHubApi } from "../../interfaces/github-credentials.js";
+import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
 import { brokerToolName } from "../broker/tool-alias.js";
 import { branchAllowed, holdsLease, factoryCommit, factoryRemoteUrl, scanBranch, trustedRunFolder } from "../broker/trusted-git.js";
 
@@ -91,7 +92,7 @@ interface CommentArgs {
 export class GitHubToolBroker implements ToolBroker {
   constructor(
     private readonly deps: {
-      client: GitHubClient;
+      client: GitHubApi;
       credentials: GitHubCredentials;
       store: FactoryStore;
       scanner: EgressScanner;

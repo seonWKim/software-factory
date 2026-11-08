@@ -24,6 +24,8 @@
     { "prefix": "src/impl/github/github.plugin.ts", "tier": 4 },
     { "prefix": "src/impl/github/app-credentials.ts", "tier": 4 },
     { "prefix": "src/impl/github/token-credentials.ts", "tier": 4 },
+    { "prefix": "src/impl/github/app.plugin.ts", "tier": 4 },
+    { "prefix": "src/impl/github/token.plugin.ts", "tier": 4 },
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",

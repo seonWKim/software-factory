@@ -2,7 +2,7 @@
 /// <reference lib="dom" />
 /// <reference lib="dom.iterable" />
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingRow, SettingsView } from "../web/src/api.js";
@@ -53,10 +53,13 @@ const view: SettingsView = {
 };
 
 let posts: { url: string; init: RequestInit }[] = [];
+const ON = { as_of: "2026-11-08T00:00:00Z", csrf_token: "t", commands_enabled: true, actor: "local:me@example.com", actor_source: "environment" };
+let session: Record<string, unknown> = ON;
 let answer: { status: number; body: unknown } = { status: 200, body: { ok: true, lines: ["saved"] } };
 
 beforeEach(() => {
   posts = [];
+  session = ON;
   answer = { status: 200, body: { ok: true, lines: ["max_loops = 5 (override; was 4, override)"] } };
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
@@ -64,6 +67,7 @@ beforeEach(() => {
       return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "content-type": "application/json" } });
     }
     if (url === "/api/v1/settings") return new Response(JSON.stringify(view), { status: 200, headers: { "content-type": "application/json" } });
+    if (url === "/api/v1/session") return new Response(JSON.stringify(session), { status: 200, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 404 });
   }));
 });
@@ -82,6 +86,21 @@ async function show() {
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 
 describe("Settings page", () => {
+  it("has a Commands from the page section (#page-commands): who commands act as, and that ui.user_id is what to set", async () => {
+    await show();
+    const section = await screen.findByRole("region", { name: "Commands from the page" });
+    expect(section.closest("#page-commands")).not.toBeNull();
+    await waitFor(() => expect(section.textContent).toContain("Item commands act as local:me@example.com (from environment)"));
+    expect(section.textContent).toContain("set ui.user_id in factory.config.json");
+  });
+
+  it("says commands are off when the session has no actor", async () => {
+    session = { ...session, commands_enabled: false, actor: null, actor_source: null };
+    await show();
+    const section = await screen.findByRole("region", { name: "Commands from the page" });
+    await waitFor(() => expect(section.textContent).toContain("Item commands are off"));
+  });
+
   it("shows a row per settable key with its value, source and applies-at", async () => {
     const table = await show();
     expect([...table.querySelectorAll("tbody > tr")].map((r) => r.getAttribute("data-key"))).toEqual(view.keys.map((k) => k.key));

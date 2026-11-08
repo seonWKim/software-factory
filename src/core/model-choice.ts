@@ -1,6 +1,7 @@
-// Model class per agent run (design §4, decision 2026-11-02): run kind × tier, plus one class up for a
-// retry after a review loop. Pure: the composition root parses `model_by` and `models` from
-// factory.config.json once at startup; the worker and golden only look classes up.
+// Model class per agent run (design §4, decision 2026-11-08): run kind × tier, plus one class up for a
+// retry after a review loop, or for a triage retry after an `agent_failed` attempt. Pure: the composition
+// root parses `model_by` and `models` from factory.config.json once at startup; the worker and golden only
+// look classes up.
 
 import type { RunKind, Tier } from "./types.js";
 
@@ -20,7 +21,7 @@ export type ModelNames = Record<ModelClass, string>;
 /** `model_by`, checked and expanded: a class for every run kind at every tier. */
 export interface ModelTable {
   by: Record<ModelRunKind, Record<Tier, ModelClass>>;
-  /** Implement and resolve runs of an item with loop_count ≥ 1 go one class up. Default true. */
+  /** Implement and resolve runs of an item with loop_count ≥ 1, and a triage run after an `agent_failed` attempt, go one class up. Default true. */
   retry_up: boolean;
 }
 
@@ -110,14 +111,24 @@ export function bumpClass(c: ModelClass): ModelClass {
 }
 
 /**
- * The class for an agent run. `tier` null (an item not triaged yet) takes the tier-5 entry. A retry is an
- * implement or resolve run for an item with `loop_count` ≥ 1 (review or failed checks sent it back): it goes
- * one class up when `retry_up` is on. Restart retries do not change `loop_count`, so they are not bumped.
+ * The class for an agent run. `tier` null (an item not triaged yet) takes the tier-5 entry. With `retry_up` on,
+ * two kinds of retry go one class up:
+ * - an implement or resolve run for an item with `loop_count` ≥ 1 (review or failed checks sent it back);
+ * - a triage run whose previous attempt failed with `agent_failed` (`previousAgentFailed`), so the same cheap
+ *   model does not fail the same way again.
+ * Restart retries (lease expiry, network pause, rate limits) change neither input, so they are not bumped.
  */
-export function modelClassFor(table: ModelTable, kind: ModelRunKind, tier: Tier | null, loopCount: number): ModelClass {
+export function modelClassFor(
+  table: ModelTable,
+  kind: ModelRunKind,
+  tier: Tier | null,
+  loopCount: number,
+  previousAgentFailed = false,
+): ModelClass {
   const base = table.by[kind][tier ?? 5];
-  const retry = table.retry_up && loopCount >= 1 && (kind === "implement" || kind === "resolve");
-  return retry ? bumpClass(base) : base;
+  const loopRetry = loopCount >= 1 && (kind === "implement" || kind === "resolve");
+  const triageRetry = previousAgentFailed && kind === "triage";
+  return table.retry_up && (loopRetry || triageRetry) ? bumpClass(base) : base;
 }
 
 /** Whether a run kind runs an agent and so has a model class. */

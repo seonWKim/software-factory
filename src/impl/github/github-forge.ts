@@ -1,8 +1,10 @@
 import type { WorkStatus } from "../../core/status-label.js";
 import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
-import type { ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
-import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import type { BasePushInput, ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
+import type { GitHubApi } from "../../interfaces/github-credentials.js";
+import { factoryGit } from "../broker/trusted-git.js";
+import { GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "./github-issue-source.js";
 
 interface GhPull {
@@ -105,7 +107,7 @@ export class GitHubForge implements Forge {
   readonly handover_cursor = "intake:github_issue";
 
   constructor(
-    private readonly client: GitHubClient,
+    private readonly client: GitHubApi,
     private readonly repo: RepoRef,
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
@@ -339,6 +341,22 @@ export class GitHubForge implements Forge {
     await this.client.commentOnce(this.repo, input.pr, input.body(closer), input.marker);
     await this.client.request("PATCH", `${this.base}/pulls/${input.pr}`, { state: "closed" });
     return "closed";
+  }
+
+  /**
+   * The base push (design 05-sources, Local items): one `git push` from the factory repo to its `origin`, of `sha` to
+   * the base branch, with `--force-with-lease` on `expected_sha`, so it lands only while the remote base is still
+   * the one the factory read (and `sha` descends from it, so it is a fast-forward). `--no-verify`: no hook runs. The
+   * push goes through the factory repo's own git configuration for origin, as its fetches do; it makes no API call.
+   */
+  async pushBase(input: BasePushInput): Promise<void> {
+    if (input.base_ref !== this.baseBranch) throw new Error(`refusing to push ${JSON.stringify(input.base_ref)}: the base branch is ${this.baseBranch}`);
+    for (const sha of [input.sha, input.expected_sha]) {
+      if (!/^[0-9a-f]{40,64}$/.test(sha)) throw new Error(`not a commit sha: ${JSON.stringify(sha)}`);
+    }
+    const ref = `refs/heads/${input.base_ref}`;
+    const r = await factoryGit(input.repo, ["push", "--quiet", "--no-verify", `--force-with-lease=${ref}:${input.expected_sha}`, "origin", `${input.sha}:${ref}`]);
+    if (r.exit_code !== 0) throw new Error(`git push failed: ${r.stderr.trim().slice(0, 500)}`);
   }
 
   /**

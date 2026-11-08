@@ -201,7 +201,7 @@ describe("POST /api/v1/settings", () => {
     // buildUiParts takes the actor main.ts builds as the CLI identity (issue #318): cli_user, git user.email, the OS
     // login, or anonymous; an ID, never a display name (tests/local-cli.test.ts covers the order).
     const main = readFileSync(join(import.meta.dirname, "../src/main.ts"), "utf8");
-    expect(main).toContain("buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user })");
+    expect(main).toContain("buildUiParts(loaded, { identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)) })");
   });
 
   it("refuses heartbeat_ms × 2 ≥ lease_ms with the CLI's message and stores nothing", async () => {
@@ -372,6 +372,35 @@ describe("POST /api/v1/settings", () => {
     const { settings: _, ...without } = d;
     expect((await post(without, { action: "set", key: "max_loops", value: "2" }, { csrf: "x" })).status).toBe(405);
     await nothingStored(store);
+  });
+});
+
+describe("the mode and the auto-merge tier on the Settings page (design 09)", () => {
+  it("GET shows the mode (manual by default, kind mode, per project) and the auto-merge tier (0 by default)", async () => {
+    const { d, store } = await setup();
+    let v = await view(d);
+    const row = (key: string) => v.keys.find((k: { key: string }) => k.key === key);
+    expect(row("mode")).toMatchObject({ kind: "mode", value: '"manual"', source: "default", project_settable: true, projects: [] });
+    expect(row("auto_merge_max_tier")).toMatchObject({ kind: "number", value: "0", source: "default", project_settable: false });
+    await store.setSettingOverride({ key: "mode", project: PROJECT.key, value: '"auto"', actor: ACTOR });
+    v = await view(d);
+    expect(row("mode").projects).toEqual([{ project: PROJECT.label, value: '"auto"', source: "override" }]);
+  });
+
+  it("a flip writes one audit row naming the actor; without approve_merge it is refused (422) and writes no row", async () => {
+    const { d, store, settings } = await setup();
+    settings.mayApproveMerge = async () => "the requester role cannot approve_merge";
+    for (const body of [{ action: "set", key: "mode", value: '"auto"' }, { action: "set", key: "auto_merge_max_tier", value: "2" }]) {
+      const r = await post(d, body);
+      expect(r.status).toBe(422);
+      expect(JSON.parse(r.body).error).toContain("approve_merge");
+    }
+    await nothingStored(store);
+
+    settings.mayApproveMerge = async () => null;
+    expect((await post(d, { action: "set", key: "mode", value: '"auto"' })).status).toBe(200);
+    expect(await store.listSettingChanges(50)).toEqual([expect.objectContaining({ key: "mode", new_value: '"auto"', actor: ACTOR })]);
+    expect((await post(d, { action: "set", key: "auto_merge_max_tier", value: "4" })).status).toBe(422);
   });
 });
 

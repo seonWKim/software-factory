@@ -27,6 +27,9 @@ const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES];
 
 export const BASE = "/app/";
 
+/** The Settings page's "Commands from the page" section: what to set when the page's commands are off. */
+export const PAGE_COMMANDS_PATH = `${BASE}settings#page-commands`;
+
 /** Where a location path under /app/ leads: a sidebar page, or one work item (`items/<id>`, under Work items). */
 export interface Route {
   page: PageDef;
@@ -48,11 +51,6 @@ export function routeFor(pathname: string): Route {
     if (id) return { page: PAGES[1]!, itemId: id };
   }
   return { page: ALL_PAGES.find((p) => p.path === rest) ?? PAGES[0]!, itemId: null };
-}
-
-/** The page for a location path under /app/ (the sidebar's current entry). */
-export function pageFor(pathname: string): PageDef {
-  return routeFor(pathname).page;
 }
 
 export const itemPath = (id: string) => `${BASE}items/${encodeURIComponent(id)}`;

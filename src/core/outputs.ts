@@ -21,10 +21,13 @@ export interface TriageOutput {
   /** Out-of-scope items, one per entry. Absent on an older output. */
   out_of_scope?: string[];
   /**
-   * Decisions the human must make before approving: risky choices, open questions (at most 5 shown). Optional in
-   * the schema (a cheap model often leaves it out when there are none); the validator defaults it to [].
+   * Decisions the human must make before approving: risky choices, open questions (at most 5 shown), one line each
+   * as the spec comment shows it. Optional in the schema (a cheap model often leaves it out when there are none);
+   * the validator defaults it to [].
    */
   decisions?: string[];
+  /** The same decisions with their proposed default and owner-only flag (issue #444), for auto mode. [] when none. */
+  decision_items?: SpecDecision[];
   /**
    * Owner defaults triage applied instead of asking (issue #315), one rule per entry. Optional in the schema;
    * the validator defaults it to [].
@@ -44,6 +47,17 @@ export interface TriageOutput {
    * split threshold (src/core/split.ts); absent for an ordinary spec.
    */
   phases?: TriagePhase[];
+}
+
+/**
+ * One triage decision (issue #444): the question, the default triage proposes, and whether only the owner may answer
+ * it. Auto mode approves a spec with each default unless a decision is owner-only. A plain-text decision (an older
+ * answer), or one with no flag or no default, counts as owner-only.
+ */
+export interface SpecDecision {
+  text: string;
+  default: string | null;
+  owner_only: boolean;
 }
 
 /** One phase of a split spec. On /approve it becomes a sub-issue and then an ordinary work item. */
@@ -169,7 +183,20 @@ export const TRIAGE_SCHEMA = {
     in_short: { type: "string" },
     problem: { type: "string" },
     done_criteria: { ...strings, minItems: 1 },
-    decisions: { ...strings, maxItems: MAX_DECISIONS },
+    decisions: {
+      type: "array",
+      maxItems: MAX_DECISIONS,
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["text", "default", "owner_only"],
+        properties: {
+          text: { type: "string" },
+          default: { type: "string", description: "The answer you propose; the factory takes it when it approves on its own." },
+          owner_only: { type: "boolean", description: "true when only the owner may answer: no default fits, or the choice is risky." },
+        },
+      },
+    },
     applied_defaults: { ...strings, maxItems: MAX_APPLIED_DEFAULTS },
     desired_output: { type: "string" },
     in_scope: strings,
@@ -297,6 +324,47 @@ function isSafePath(p: string): boolean {
   return p.length > 0 && !p.startsWith("/") && !p.split("/").includes("..");
 }
 
+/**
+ * Tool-call markup (issue #454): an opening or closing parameter, invoke or function_calls tag, or any tag in the
+ * runner's antml namespace. Text in backticks or a fenced code block is not checked, so a spec can quote markup.
+ */
+const TOOL_MARKUP = /<\/?(?:antml:[\w-]+|parameter|invoke|function_calls)\b/i;
+/** A code span or fenced block: a run of backticks up to the next run of the same length. */
+const CODE = /(`+)[\s\S]*?\1/g;
+
+/** The first field whose text holds tool-call markup outside code, as an error naming it; null when none does. */
+function markupError(fields: Record<string, string | readonly string[] | undefined>): string | null {
+  for (const [name, value] of Object.entries(fields)) {
+    const texts = value === undefined ? [] : typeof value === "string" ? [value] : value;
+    if (texts.some((t) => TOOL_MARKUP.test(t.replace(CODE, "")))) return `${name}: tool-call markup outside code`;
+  }
+  return null;
+}
+
+/**
+ * The decisions of a triage answer, or null when they are not a list of decisions. A plain string (an older answer)
+ * is an owner-only decision with no default; an object with no `owner_only` flag or no default is owner-only too.
+ */
+function parseDecisions(v: unknown): SpecDecision[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: SpecDecision[] = [];
+  for (const d of v) {
+    if (isStr(d)) out.push({ text: d, default: null, owner_only: true });
+    else if (isObj(d) && isStr(d.text) && (d.default === undefined || d.default === null || isStr(d.default))) {
+      const def = isStr(d.default) && d.default.trim() !== "" ? d.default : null;
+      out.push({ text: d.text, default: def, owner_only: d.owner_only !== false || def === null });
+    } else return null;
+  }
+  return out;
+}
+
+/** A decision as the spec comment lists it: the question, its proposed default, and whether only the owner answers. */
+function decisionLine(d: SpecDecision): string {
+  // No default (an older plain-text decision included): the line as triage wrote it.
+  if (d.default === null) return d.text;
+  return `${d.text} Proposed default: ${d.default}.${d.owner_only ? " (owner only)" : ""}`;
+}
+
 /** A phase list: absent or empty is no split; otherwise 2 to 4 phases, each with every field filled in. */
 function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
   if (v === undefined || (Array.isArray(v) && v.length === 0)) return { ok: true, value: undefined };
@@ -312,6 +380,8 @@ function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
     if (!isStr(p.problem) || p.problem.trim() === "") return bad("problem");
     if (!isStrs(p.done_criteria) || p.done_criteria.length === 0) return bad("done_criteria");
     if (!isStrs(p.allowed_paths) || p.allowed_paths.length === 0 || !p.allowed_paths.every(isSafePath)) return bad("allowed_paths");
+    const markup = markupError({ title: p.title, problem: p.problem, done_criteria: p.done_criteria });
+    if (markup) return { ok: false, error: `phases[${i}].${markup}` };
     phases.push({ title: p.title, problem: p.problem, done_criteria: p.done_criteria, allowed_paths: p.allowed_paths });
   }
   return { ok: true, value: phases };
@@ -328,21 +398,30 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     estimated_files,
   } = v;
   if (!isStr(in_short) || !isStr(problem) || !isStr(desired_output) || !isStr(tier_reason)) {
-    return { ok: false, error: "missing text field" };
+    const name = (["in_short", "problem", "desired_output", "tier_reason"] as const).find((k) => !isStr(v[k]));
+    return { ok: false, error: `${name}: must be a string` };
   }
   // Separate lists (issue #229) when both are given; an older output's `scope` text otherwise.
   const lists = v.in_scope !== undefined || v.out_of_scope !== undefined;
   if (lists && (!isStrs(v.in_scope) || !isStrs(v.out_of_scope))) return { ok: false, error: "in_scope/out_of_scope" };
-  if (!lists && !isStr(scope)) return { ok: false, error: "missing text field" };
+  if (!lists && !isStr(scope)) return { ok: false, error: "scope: must be a string, or in_scope and out_of_scope lists" };
   const scoped = lists
     ? { scope: scopeText(v.in_scope as string[], v.out_of_scope as string[]), in_scope: v.in_scope as string[], out_of_scope: v.out_of_scope as string[] }
     : { scope: scope as string };
-  // Optional: a triage output without `decisions` means none (the schema does not require it).
-  const decisions = v.decisions ?? [];
-  if (!isStrs(decisions)) return { ok: false, error: "decisions" };
+  // Optional: a triage output without `decisions` means none (the schema does not require it). A stored, already
+  // parsed answer (the worker keeps parseTriage's value) carries them as `decision_items`, its `decisions` the lines.
+  const decision_items = parseDecisions(v.decision_items ?? v.decisions ?? []);
+  if (!decision_items) return { ok: false, error: "decisions: must be a list of { text, default, owner_only }" };
+  const decisions = decision_items.map(decisionLine);
   const applied_defaults = v.applied_defaults ?? [];
-  if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults" };
+  if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults: must be a list of strings" };
   if (!isStrs(done_criteria) || done_criteria.length === 0) return { ok: false, error: "done_criteria" };
+  // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
+  const markup = markupError({
+    in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
+    done_criteria, decisions, applied_defaults,
+  });
+  if (markup) return { ok: false, error: markup };
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
     return { ok: false, error: "allowed_paths" };
   }
@@ -363,7 +442,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     ok: true,
     value: {
       in_short, problem, done_criteria, desired_output, ...scoped, allowed_paths, files_to_change, tier, tier_reason, estimated_lines,
-      estimated_files, decisions, applied_defaults, ...(phases.value ? { phases: phases.value } : {}),
+      estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}),
     },
   };
 }

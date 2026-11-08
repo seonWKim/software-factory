@@ -7,7 +7,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
-  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, localProject, resolveProject, settingsBase, uiPort,
+  CODE_ROOT_ENV, type Loaded, Plugins, approveMergeCheck, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, localProject, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
 import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./session-cmd.js";
 import { runCanary } from "./canary.js";
@@ -18,7 +18,7 @@ import { enqueueImprove } from "./core/improver.js";
 import { collectStats, formatStatsText } from "./core/stats.js";
 import { addCase, buildGoldenRunDeps, compareCases, formatCompare, formatReport, parseAddArgs, parseCompareArgs, parseRunArgs, runCases } from "./golden.js";
 import { llmCheckFromPlugins, parseLlmCheckArgs } from "./llm-check.js";
-import { FORGE_BUDGET_PLUGIN, GitHubClient } from "./impl/github/github-client.js";
+import { FORGE_BUDGET_PLUGIN } from "./impl/github/github-client.js";
 import { linkCodeCommand } from "./impl/auth/link-code.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { WorkItemId } from "./core/types.js";
@@ -30,11 +30,11 @@ import { SUPERVISED_ENV, processChannel, runDev, runDevChild } from "./superviso
 import { HealthMonitor, syncChecks } from "./ui/health.js";
 import { startUi } from "./ui/server.js";
 import { storeProjectResolver } from "./ui/settings-api.js";
-import { LastChecks, serverRevision } from "./ui/system-actions.js";
+import { LastChecks, olderThanFactory, serverRevision } from "./ui/system-actions.js";
 import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
-import { ISSUE_USAGE, parseIssueArgs, runIssue } from "./issue-cmd.js";
-import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
+import { ISSUE_USAGE, issueDeps, parseIssueArgs, runIssue } from "./issue-cmd.js";
+import { MODE_USAGE, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "./settings-cmd.js";
 import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
@@ -73,9 +73,15 @@ const USAGE = `factory [--config <path>] <command>
                change a settable key while the factory runs (design 2026-11-03): max_attempts, max_loops,
                max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve, hold_policy,
-               alarm_repeat_count, alarm_window_minutes, alarm_restart_count. No restart. Every set and
-               reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
-               --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
+               alarm_repeat_count, alarm_window_minutes, alarm_restart_count, standing_approvals.threshold, mode,
+               auto_merge_max_tier. No restart. Every set and reset is audited; PR-only keys (plugins, repo, store,
+               floors, dials, auth, guards) are refused. mode and auto_merge_max_tier need approve_merge.
+               --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only) and mode
+  mode auto|manual [--project <owner/name>]
+               settings set mode: auto approves specs below tier 4 with no owner-only decision and merges
+               reviewed local changes up to auto_merge_max_tier (never tier 4 or the gate list); manual
+               waits for a person. Needs approve_merge; audited; a red main, a failure alarm or a budget
+               checkpoint sets it back to manual
   ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker. Under the
                git-worktree updater, dev runs it too and restarts it on each new revision
   migrate [--status | --dry-run]
@@ -121,6 +127,9 @@ async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", si
   await Promise.all(loops);
   await app.close();
 }
+
+/** How often a `factory ui` started by hand checks that the factory has not moved past its revision. */
+const UI_REVISION_CHECK_MS = 30_000;
 
 function stopOnSignals(): AbortSignal {
   const stop = new AbortController();
@@ -237,12 +246,15 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       return 0;
     }
+    case "mode":
     case "settings": {
-      const action = parseSettingsArgs(args);
+      // `factory mode auto|manual [--project <owner/name>]` is `settings set mode <mode>` (design 03-risk).
+      const action = cmd === "mode" ? parseModeArgs(args) : parseSettingsArgs(args);
       if ("error" in action) {
-        console.log(`${action.error}\n${SETTINGS_USAGE}`);
+        console.log(`${action.error}\n${cmd === "mode" ? MODE_USAGE : SETTINGS_USAGE}`);
         return 1;
       }
+      const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
       await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
       const store = await buildStatsStore(loaded);
       try {
@@ -260,12 +272,11 @@ async function main(argv: readonly string[]): Promise<number> {
               const stored = await storeProjectResolver(store, { owner, name })();
               if (stored) return stored;
               if (loaded.config.local_only) return localProject({ owner, name });
-              const p = new Plugins(loaded);
-              const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
-              return resolveProject(github, { owner, name });
+              return resolveProject(await new Plugins(loaded).githubApi(), { owner, name });
             },
-            // An ID, never a display name: the OS login of the local owner.
-            actor: `local:${userInfo().username}`,
+            // An ID, never a display name: the CLI identity (issue #318), the one the approve_merge check asks about.
+            actor: identity.user,
+            mayApproveMerge: await approveMergeCheck(loaded, store, identity.user),
           },
           action,
         );
@@ -278,9 +289,21 @@ async function main(argv: readonly string[]): Promise<number> {
     case "ui": {
       // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
       // sees one user for the UI and the terminal.
-      const parts = await buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user });
+      const parts = await buildUiParts(loaded, { identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)) });
       // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
       const lastChecks = new LastChecks();
+      const revision = await serverRevision(loaded.codeRoot);
+      const factoryStatus = () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers);
+      // A page started by hand (not the supervisor's child, which it swaps) never serves code older than the
+      // factory runs (design 08 Self-update): it refuses to start, and stops once the factory moves past it.
+      const supervised = process.env[SUPERVISED_ENV] === "1" && process.send !== undefined;
+      const older = async () => (supervised ? null : olderThanFactory(loaded.codeRoot, revision, (await factoryStatus())?.rev ?? null));
+      const refused = await older();
+      if (refused !== null) {
+        console.log(refused);
+        await parts.close();
+        return 1;
+      }
       const ui = await startUi(
         {
           store: parts.store,
@@ -303,29 +326,42 @@ async function main(argv: readonly string[]): Promise<number> {
           ),
           lastChecks,
           // The revision this server runs (its code root's HEAD): the app shows a banner when its own differs.
-          revision: await serverRevision(loaded.codeRoot),
+          revision,
           // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
-          factoryStatus: () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers),
+          factoryStatus,
           // The Settings page (GET and POST /api/v1/settings): the same checks as `factory settings`, no forge call.
           settings: parts.settings,
           // The configured shared storage, read only by the transcript view (byte ranges, design §9).
           storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
-          // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
+          // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id, or this machine's CLI identity, for the controller to apply.
           commands: parts.commands,
           // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
           pauses: parts.pauses,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands when ui.user_id is set; Ctrl-C to stop)`);
+      const { actor, source } = parts.commands;
+      const actsAs = actor === null ? "nobody: set ui.user_id" : `${actor} from ${source}`;
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands as ${actsAs}; Ctrl-C to stop)`);
       // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
       const orphan = new AbortController();
-      if (process.env[SUPERVISED_ENV] === "1" && process.send) process.once("disconnect", () => orphan.abort());
-      const signal = AbortSignal.any([stopOnSignals(), orphan.signal]);
+      if (supervised) process.once("disconnect", () => orphan.abort());
+      // The hand-started page rereads the supervisor's status file (a local read) every 30 s.
+      const stale = new AbortController();
+      let staleText: string | null = null;
+      const watch = setInterval(() => {
+        void older().then((t) => {
+          if (t !== null && staleText === null) { staleText = t; stale.abort(); }
+        });
+      }, UI_REVISION_CHECK_MS);
+      watch.unref();
+      const signal = AbortSignal.any([stopOnSignals(), orphan.signal, stale.signal]);
       await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      clearInterval(watch);
+      if (staleText !== null) console.log(staleText);
       await ui.close();
       await parts.close();
-      return 0;
+      return staleText === null ? 0 : 1;
     }
     case "migrate": {
       // --json (with --status): one JSON line for the supervisor's check. --no-drain: apply without asking a
@@ -349,8 +385,7 @@ async function main(argv: readonly string[]): Promise<number> {
         const print = (line: string) => console.log(line);
         // The project-key data step (design 2026-11-01) asks GitHub only when owner/name rows are left.
         const resolveRepo = async (): Promise<ResolveRepo> => {
-          const p = new Plugins(loaded);
-          const github = new GitHubClient(await p.githubCredentials(await p.secrets(), await p.clock()));
+          const github = await new Plugins(loaded).githubApi();
           return (ownerName) => {
             const [owner = "", name = ""] = ownerName.split("/");
             return resolveProject(github, { owner, name });
@@ -420,11 +455,7 @@ async function main(argv: readonly string[]): Promise<number> {
         console.error(ISSUE_USAGE);
         return 1;
       }
-      const p = new Plugins(loaded);
-      const secrets = await p.secrets();
-      const client = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
-      const { owner, name } = loaded.config.repo;
-      console.log(await runIssue({ client, repo: { owner, name }, scanner: await p.scanner(secrets) }, action));
+      console.log(await runIssue(await issueDeps(new Plugins(loaded)), action));
       return 0;
     }
     case "session": {
@@ -541,7 +572,7 @@ async function golden(loaded: Loaded, sub: string | undefined, args: string[]): 
     try {
       await store.migrate();
       const { owner, name } = loaded.config.repo;
-      const github = new GitHubClient(await p.githubCredentials(secrets, await p.clock()));
+      const github = await p.githubApi();
       const r = await addCase(
         {
           store,

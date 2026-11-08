@@ -23,9 +23,17 @@ import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
 import { GitHubClient, GitHubError } from "../../src/impl/github/github-client.js";
-import type { GitHubCredentials } from "../../src/interfaces/github-credentials.js";
+import type { GitHubAccess, GitHubApi, GitHubCredentials } from "../../src/interfaces/github-credentials.js";
 import { newStore } from "./store.js";
 import { type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult, forgeToolName } from "../../src/interfaces/tool-broker.js";
+
+/**
+ * A github_auth plugin's build for tests: `credentials`, and `api` (absent: a client over them whose calls go to
+ * the global fetch, which a test stubs; never a live call).
+ */
+export function fakeGitHubAccess(credentials: GitHubCredentials, api: GitHubApi = new GitHubClient(credentials)): GitHubAccess {
+  return { credentials, api };
+}
 
 /** The configured repo o/r as startup resolves it: keyed by its (fake) node ID, labelled by its path. */
 export const PROJECT: ProjectRef = { key: "github:github.com:R_kgDOrepo1", label: "github.com/o/r" };

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { uiCommandsActor } from "../src/compose.js";
 import { Controller } from "../src/core/controller.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -18,10 +20,11 @@ const READER = "github:666" as UserId;
 const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" };
 const IMPLEMENTING: WorkItemPatch = { stage: "RUNNING" };
 
-async function harness() {
+async function harness(opts: { localAuth?: boolean } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
-  const controller = new Controller({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  const auth = opts.localAuth ? new LocalAuthProvider(store) : new FakeAuth();
+  const controller = new Controller({ store, source, auth, clock, config, log: silent, scanner: cleanScanner });
   const actor = { kind: "system" as const, id: "system:test" };
   /** A work item on issue `n`, put in the state `patch` describes. */
   const itemIn = async (patch: WorkItemPatch, n: number): Promise<WorkItem> => {
@@ -174,9 +177,22 @@ describe("app command requests: refusals", () => {
     expect(await h.store.listRuns(it1.id)).toEqual([]);
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
     expect(posted).toHaveLength(1);
-    expect(posted[0]!.body).toBe("`reject` was not applied: only `approve` is applied from an app request; reply `/reject` on the issue instead.");
+    expect(posted[0]!.body).toBe("`reject` was not applied: only `approve` and `merge` are applied from an app request; reply `/reject` on the issue instead.");
     expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(posted[0]!.body);
     expect(h.source.comments).toHaveLength(1);
+  });
+
+  it("a merge request on a GitHub item is refused once with no state change: the page merges local items only", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" }, 1);
+    const r = await h.request("k1", WRITER, "merge", { work_item_id: it1.id });
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
+
+    expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
+    const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
+    expect(posted.map((c) => c.body)).toEqual([`\`merge\` was not applied: ${it1.id} is not a local item: merge its PR instead.`]);
+    expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(posted[0]!.body);
   });
 
   it("an odd command name is not echoed into the reply", async () => {
@@ -185,7 +201,7 @@ describe("app command requests: refusals", () => {
     const r = await h.request("k1", WRITER, "@everyone <b>", { work_item_id: it1.id });
     await h.controller.tickCommands();
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
-    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve` is applied from an app request."]);
+    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve` and `merge` are applied from an app request."]);
   });
 
   it("a request for no known work item is refused on its row only: nothing is posted", async () => {
@@ -270,10 +286,10 @@ describe("app command requests: from the page's POST (issue #227)", () => {
   const HOST = "127.0.0.1:4310";
   const TOKEN = newCsrfToken();
 
-  function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): UiDeps {
+  function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId, source: "config" | "environment" = "config"): UiDeps {
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
-      health: new HealthMonitor(async () => [], h.clock), commands: { actor, token: TOKEN },
+      health: new HealthMonitor(async () => [], h.clock), commands: { actor, source, token: TOKEN },
     };
   }
 
@@ -306,7 +322,62 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     const replies = (JSON.parse(r.body) as { replies: { command: string; refusal: string | null; handled_at: string | null }[] }).replies;
     expect(replies.map((x) => x.command)).toEqual(["approve", "reject"]);
     expect(replies[0]!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
-    expect(replies[1]!.refusal).toContain("only `approve` is applied from an app request");
+    expect(replies[1]!.refusal).toContain("only `approve` and `merge` are applied from an app request");
     for (const x of replies) expect(x.handled_at).not.toBeNull();
+  });
+
+  it("without ui.user_id, a loopback page acts as the CLI identity: the local owner's approve applies, a requester's is refused", async () => {
+    const h = await harness({ localAuth: true });
+    const owner = "local:owner@example.com" as UserId;
+    const helper = "local:helper@example.com" as UserId;
+    const env = (user: UserId) => uiCommandsActor(null, { user, from: "git user.email" }, "127.0.0.1");
+    expect(env(owner)).toEqual({ actor: owner, source: "environment" });
+    await h.store.claimLocalOwner(owner);
+    expect(await h.store.setLocalUserRole(helper, "requester", owner)).toMatchObject({ ok: true });
+
+    const it1 = await h.itemIn(SPEC_PENDING, 1);
+    expect((await post(page(h, env(helper).actor!, "environment"), it1, { command: "approve" })).status).toBe(202);
+    await h.controller.tickCommands();
+    expect((await h.store.getWorkItem(it1.id))!.blocked_reason).toBe("spec_pending");
+    const [refused] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
+    expect(refused!.refusal).toMatch(/^`\/approve` was not applied/);
+
+    expect((await post(page(h, env(owner).actor!, "environment"), it1, { command: "approve" })).status).toBe(202);
+    await h.controller.tickCommands();
+    const s = await h.shape(it1);
+    expect(s.item).toEqual({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect(s.changes).toEqual([expect.objectContaining({ reason: "spec_approved", actor: { kind: "user", id: owner } })]);
+  });
+});
+
+describe("the page's commands actor (uiCommandsActor, design 09)", () => {
+  const env = { user: "local:me@example.com" as UserId, from: "git user.email" as const };
+  const TOKEN = newCsrfToken();
+
+  it("ui.user_id overrides the environment, on any bind address", () => {
+    for (const bind of ["127.0.0.1", "0.0.0.0"]) expect(uiCommandsActor("github:7" as UserId, env, bind)).toEqual({ actor: "github:7", source: "config" });
+  });
+
+  it("on loopback without ui.user_id it is the CLI identity; cli_user counts as config", () => {
+    for (const bind of ["127.0.0.1", "::1", "localhost"]) expect(uiCommandsActor(null, env, bind)).toEqual({ actor: env.user, source: "environment" });
+    expect(uiCommandsActor(null, { user: "github:9" as UserId, from: "cli_user" }, "127.0.0.1")).toEqual({ actor: "github:9", source: "config" });
+  });
+
+  it("a non-loopback server without ui.user_id has no actor, and a POST is the 503 naming ui.user_id", async () => {
+    const off = uiCommandsActor(null, env, "0.0.0.0");
+    expect(off).toEqual({ actor: null, source: null });
+    const h = await harness();
+    const it1 = await h.itemIn(SPEC_PENDING, 1);
+    const d: UiDeps = {
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
+      health: new HealthMonitor(async () => [], h.clock), commands: { ...off, token: TOKEN },
+    };
+    const r = await respond(d, {
+      method: "POST", url: `/api/v1/items/${encodeURIComponent(it1.id)}/commands`, host: "127.0.0.1:4310", origin: "http://127.0.0.1:4310",
+      contentType: "application/json", csrfToken: TOKEN, body: JSON.stringify({ command: "approve" }),
+    });
+    expect(r.status).toBe(503);
+    expect(JSON.parse(r.body).error).toBe("Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.");
+    expect(await h.store.listAppCommandRequestsForItem(it1.id, 10)).toEqual([]);
   });
 });
