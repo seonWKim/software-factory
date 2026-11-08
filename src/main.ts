@@ -327,12 +327,14 @@ async function main(argv: readonly string[]): Promise<number> {
           commands: parts.commands,
           // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
           pauses: parts.pauses,
+          // The Users page (GET and POST /api/v1/users): local roles through the CLI's `users` actions, as this machine's CLI identity.
+          users: parts.users,
         },
         uiPort(loaded.file.ui),
       );
       const { actor, source } = parts.commands;
       const actsAs = actor === null ? "nobody: set ui.user_id" : `${actor} from ${source}`;
-      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands as ${actsAs}; Ctrl-C to stop)`);
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, Users as ${parts.users.identity.user}, and item commands as ${actsAs}; Ctrl-C to stop)`);
       // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
       const orphan = new AbortController();
       if (supervised) process.once("disconnect", () => orphan.abort());

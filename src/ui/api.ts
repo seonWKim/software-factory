@@ -5,10 +5,10 @@
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
 // table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
 //
-// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The four write routes, POST
+// Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The five write routes, POST
 // /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts), POST /api/v1/pauses/resume
-// (pause-api.ts) and POST /api/v1/standing (standing-api.ts), are handled behind server.ts's write guards; GET
-// /api/v1/settings, GET /api/v1/session, GET /api/v1/pauses and GET /api/v1/standing are here.
+// (pause-api.ts), POST /api/v1/standing (standing-api.ts) and POST /api/v1/users (users-api.ts), are handled behind
+// server.ts's write guards; GET /api/v1/settings, /session, /pauses, /standing and /users are here.
 
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
@@ -26,6 +26,7 @@ import { failures } from "./failures.js";
 import { readGitHubBudget } from "./github-budget.js";
 import { effectiveGlobal, readSettings } from "./settings-api.js";
 import { readStanding } from "./standing-api.js";
+import { type UsersDeps, readUsers } from "./users-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -53,8 +54,8 @@ export function isApiPath(pathname: string): boolean {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
 }
 
-/** The API's dependencies: the pause routes' and the overview's system actions'. */
-export type ApiDeps = PauseDeps & SystemDeps;
+/** The API's dependencies: the pause and users routes' and the overview's system actions'. */
+export type ApiDeps = PauseDeps & UsersDeps & SystemDeps;
 
 /** Answers one GET (or HEAD) under /api/v1. */
 export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
@@ -89,6 +90,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return pauses(d);
     case "/standing":
       return ok(await readStanding(d));
+    case "/users":
+      return d.users ? ok(await readUsers(d, d.users)) : apiError(404, "Not found.");
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {

@@ -48,6 +48,8 @@ import type { UiCommands } from "./ui/commands.js";
 import { BIND as UI_BIND } from "./ui/server.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
+import { type UiUsers, staticUsers } from "./ui/users-api.js";
+import { staticGrantConfig } from "./impl/grant/static.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
@@ -945,6 +947,8 @@ export interface UiParts {
   commands: UiCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
+  /** The Users page (GET and POST /api/v1/users, issue #445): the viewer's identity, the static grant's users, the CSRF token. */
+  users: UiUsers;
   close(): Promise<void>;
 }
 
@@ -959,7 +963,9 @@ const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `identity` is the
  * CLI identity main.ts resolves (cliIdentity); its user is the Settings writer. The CSRF token is made here, per
  * process, and kept only in memory. The commands route acts as uiCommandsActor says and takes the same token. The pause route's owner
- * check uses the auth plugin over the local grants only, with a client that makes no forge call.
+ * check uses the auth plugin over the local grants only, with a client that makes no forge call. The users route
+ * acts as `identity` too, with its source (cli_user, git user.email, OS user or anonymous) shown as the viewer's,
+ * and lists the `static` grant's users from config when that grant is selected.
  */
 export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -1003,7 +1009,13 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
-  return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
+  const users: UiUsers = {
+    identity: opts.identity,
+    staticUsers: loaded.grants.includes("static") ? staticUsers(staticGrantConfig(loaded.file.permissions?.static).roles) : [],
+    csrfToken: token,
+    log: pauses.log,
+  };
+  return { clock, store, scanner, settings, commands, pauses, users, close: () => store.close() };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
