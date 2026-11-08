@@ -412,6 +412,36 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     expect(await runRow(db[0], fresh)).toMatchObject({ code_version: "v2" });
   });
 
+  it("a journal write that fails while recording a failed step keeps the step's own error and logs the write", async () => {
+    const { db, store } = await backend.open();
+    let down = false;
+    // The database goes away after the step body started: recording its failure throws.
+    const flaky: SqlDriver = {
+      dialect: db[0].dialect,
+      all: (sql, params) => db[0].all(sql, params),
+      run: (sql, params) => db[0].run(sql, params),
+      migrate: () => db[0].migrate(),
+      schemaVersion: () => db[0].schemaVersion(),
+      transaction: (fn) => (down ? Promise.reject(new Error("database is locked")) : db[0].transaction(fn)),
+      isDuplicateKey: (err) => db[0].isDuplicateKey(err),
+      close: () => db[0].close(),
+    };
+    const warned: unknown[] = [];
+    const a = worker(flaky, "worker-a", { log: { warn: (msg, fields) => warned.push({ msg, ...fields }) } });
+    const id = await newRun(store);
+    await a.tick(T0);
+    const run = (await a.engine.claim(id))!;
+    const paused = new Crash("paused");
+    const err = await outcome(
+      a.engine.step(run, "run-agent", async () => {
+        down = true;
+        throw paused;
+      }),
+    );
+    expect(err).toBe(paused);
+    expect(warned).toEqual([expect.objectContaining({ msg: "step failure not journaled", run_id: id, step_id: "run-agent", error: "database is locked" })]);
+  });
+
   it("a run whose journal holds only a failed step (a paused or network-requeued agent) is resumed by other code", async () => {
     const opened = await backend.open();
     const { db, store } = opened;

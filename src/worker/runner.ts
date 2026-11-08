@@ -207,6 +207,7 @@ export class Worker {
       kinds: Object.fromEntries([...kinds.values()].map((k: RunKindDescriptor) => [k.name, k.timeouts])),
       leaseMs: () => this.live.values().lease_ms,
       onLost: (ref) => this.leases.get(ref.id)?.abort(new Error("lease_lost")),
+      log: this.d.log,
     }));
     return this.engineReady;
   }

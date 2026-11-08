@@ -153,7 +153,14 @@ export class JournalEngine implements ExecutionEngine {
       stored = JSON.stringify((await Promise.race([work, aborted])) ?? null);
     } catch (err) {
       held.inFlight = null;
-      if (!(err instanceof LeaseLostError)) await this.finish(run, stepId, { status: "failed", error_code: errorCode(err) });
+      // The step's own error is the failure: a journal write that fails here is only logged. The row stays
+      // `running`, which the next attempt's `begin` overwrites.
+      if (!(err instanceof LeaseLostError)) {
+        await this.finish(run, stepId, { status: "failed", error_code: errorCode(err) }).catch((journal: unknown) =>
+          this.opts.log?.warn("step failure not journaled", {
+            run_id: run.id, step_id: stepId, error_code: errorCode(err), error: journal instanceof Error ? journal.message.slice(0, 300) : "unknown",
+          }));
+      }
       throw err;
     }
     held.inFlight = null;

@@ -8,6 +8,7 @@
 // the controller's reaper requeues a run whose lease expired, and the next claim resumes it from the journal
 // (design 10-event-driven, "Runs execute as journaled steps").
 
+import type { Logger } from "../../core/log.js";
 import type { Tick } from "../../shared/ticks/tick-generator.js";
 
 /** A step's name within its run kind: prepare-branch, run-agent, pre-push-checks, store-artifacts, ... */
@@ -85,6 +86,8 @@ export interface EngineOptions {
   readonly leaseMs?: (run: RunRef) => number;
   /** Called when the worker loses a held run (requeued, finished elsewhere, or past its deadline). */
   readonly onLost?: (run: RunRef, reason: Error) => void;
+  /** Where a journal write that must not replace a step's own error is logged; default: dropped. */
+  readonly log?: Pick<Logger, "warn">;
 }
 
 /** The `engine` plugin (`plugins.engine`, default `journal`): one ExecutionEngine per worker loop. */
