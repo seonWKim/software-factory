@@ -40,7 +40,7 @@ async function harness(stop: Partial<AgentRunResult>, work = true) {
   return { f, startedOn, stored };
 }
 
-const RATE_LIMITED: Partial<AgentRunResult> = { status: "rate_limited", error: "rate_limited", reset_at: "2030-01-01T00:00:00.000Z" };
+const RATE_LIMITED: Partial<AgentRunResult> = { status: "rate_limited", error: "rate_limited", reset_at: "2026-01-02T00:00:00.000Z" };
 const implementSpecs = (f: Harness) => f.runner.specs.filter((s) => s.role === "implement");
 const pushedBranches = (f: Harness) => f.broker.calls.filter((c) => c.name === "github.push_branch").map((c) => (c.args as { branch: string }).branch);
 
@@ -52,9 +52,9 @@ async function firstRun(f: Harness) {
   return { it0, failed: failed!, outcome: failed!.outcome as Failed };
 }
 
-/** Lets the retry be claimed: past the rate-limit pause and its not_before. */
+/** Lets the retry be claimed: past the rate-limit pause and its not_before, within the run's schedule_to_close. */
 async function retry(f: Harness) {
-  f.clock.set(new Date("2030-01-01T00:01:00.000Z"));
+  f.clock.set(new Date("2026-01-02T00:01:00.000Z"));
   await f.step();
 }
 

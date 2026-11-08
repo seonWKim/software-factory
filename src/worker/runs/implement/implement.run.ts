@@ -16,7 +16,8 @@ import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, WRITE_TOOLS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
-import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
+import type { NeedsHuman } from "../../../core/outputs.js";
+import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
 /**
  * The implement run. Before any agent: the preflight (push access, PR API, base fetch). A retry whose input
@@ -33,8 +34,9 @@ async function implement(
   ctx: ToolCallContext,
   signal: AbortSignal,
   model: ModelClass,
-  plan: ResumePlan | null = null,
-  kept: string | null = null,
+  plan: ResumePlan | null,
+  kept: string | null,
+  step: RunCall["step"],
 ) {
   const base = w.cfg.repo.base_branch;
   const branch = branchFor(item, w.cfg.branch_prefix);
@@ -64,72 +66,95 @@ async function implement(
       missing: resumed.missing ?? [], deviations: resumed.deviations ?? [],
     };
   } else {
-    const previous = await previousContext(w, item);
-    const notes = await w.approverNotes(item);
-    const feedback = await prFeedback(w, item, run);
-    // The item's project's limits, as the size gate reads them (design §4, issue #217).
-    const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
-    const limits = { max_diff_lines, max_diff_files };
-    const budget = renderBudget(limits);
-    const prompt = plan?.session || kept
-      ? [renderSessionResume(plan ? plan.state.head : continued!.head, plan ? null : "stopped"), budget].join("\n\n")
-      : await w.withIndex(
-        [
-          renderWorkItem(item, { includeSpec: true }), budget, notes, feedback, previous,
-          plan ? renderNewSessionResume(restored ? plan.state.head : null) : "",
-          continued ? renderContinueNewSession(continued.head) : "",
-        ].filter(Boolean).join("\n\n"),
-        specQuery(item),
-      );
-    // The mid-run diff check: every DIFF_CHECK_MS on the clock while the agent step runs.
-    const watch: DiffBudget = { limits, stop: new AbortController(), over: null };
-    const stopWatch = new AbortController();
-    const watching = watchDiff(w, run, handle, baseSha, dirs, watch, stopWatch.signal);
-    const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), {
-      system_prompt: w.d.prompts.implement,
-      prompt,
-      tools: WRITE_TOOLS,
-      model_class: model,
-      output_schema: IMPLEMENT_SCHEMA,
-      // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
-      writable_paths: [],
-      env_allowlist: gitIdentity(w.cfg.agent_git_identity),
-      gate_hooks: gateHooks(w, run, item, start, baseSha),
-    }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? kept }).catch(async (err: unknown) => {
-      stopWatch.abort();
+    // The agent step (RFC 0015 §7): its result is journaled with a bundle of its commits, so a worker that takes
+    // the run over after it restores the commits instead of running the agent again. Its partial result is the
+    // agent's session id, resumed when this host's runner still has it.
+    let ran = false;
+    const agentStep = await step("run-agent", async (s): Promise<AgentStep> => {
+      ran = true;
+      const prior = plan || kept ? null : await liveSession(w, s.partial);
+      const previous = await previousContext(w, item);
+      const notes = await w.approverNotes(item);
+      const feedback = await prFeedback(w, item, run);
+      // The item's project's limits, as the size gate reads them (design §4, issue #217).
+      const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);
+      const limits = { max_diff_lines, max_diff_files };
+      const budget = renderBudget(limits);
+      const prompt = plan?.session || kept || prior
+        ? [renderSessionResume(plan ? plan.state.head : continued?.head ?? null, plan || prior ? null : "stopped"), budget].join("\n\n")
+        : await w.withIndex(
+          [
+            renderWorkItem(item, { includeSpec: true }), budget, notes, feedback, previous,
+            plan ? renderNewSessionResume(restored ? plan.state.head : null) : "",
+            continued ? renderContinueNewSession(continued.head) : "",
+          ].filter(Boolean).join("\n\n"),
+          specQuery(item),
+        );
+      // The mid-run diff check: every DIFF_CHECK_MS on the clock while the agent step runs.
+      const watch: DiffBudget = { limits, stop: new AbortController(), over: null };
+      const stopWatch = new AbortController();
+      const watching = watchDiff(w, run, handle, baseSha, dirs, watch, stopWatch.signal);
+      const result = await w.agent(run, item, handle, AbortSignal.any([signal, watch.stop.signal]), {
+        system_prompt: w.d.prompts.implement,
+        prompt,
+        tools: WRITE_TOOLS,
+        model_class: model,
+        output_schema: IMPLEMENT_SCHEMA,
+        // None: the run's git folder is inside its workdir. Never the owner's checkout or its .git (architecture §5).
+        writable_paths: [],
+        env_allowlist: gitIdentity(w.cfg.agent_git_identity),
+        gate_hooks: gateHooks(w, run, item, start, baseSha),
+      }, plan ? `resumed-${ctx.lease_token}` : undefined, {
+        pausable: true, resume: plan?.session ?? kept ?? prior, onSession: (id) => s.savePartial(id),
+      }).catch(async (err: unknown) => {
+        stopWatch.abort();
+        await watching;
+        // Stopped for its budget, not for its lease: an agent abort the budget caused is diff_too_large. Any other
+        // failure of the step (a flagged transcript, an agent error) keeps its own code.
+        const stopped = err instanceof RunPaused || (err instanceof RunFailure && err.code === "lease_lost");
+        if (watch.over && stopped && !signal.aborted) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
+        if (err instanceof RunPaused) throw await pauseImplement(w, run, item, handle, ctx, start, dirs, err);
+        // A usage limit, a stall or a timeout stopped the agent mid-work: its work goes to a wip branch.
+        if (err instanceof RunFailure && STOPPED_CODES.includes(err.code) && !signal.aborted) {
+          throw await keepStopped(w, run, item, handle, ctx, start, dirs, err);
+        }
+        throw err;
+      }).finally(() => stopWatch.abort());
       await watching;
-      // Stopped for its budget, not for its lease: an agent abort the budget caused is diff_too_large. Any other
-      // failure of the step (a flagged transcript, an agent error) keeps its own code.
-      const stopped = err instanceof RunPaused || (err instanceof RunFailure && err.code === "lease_lost");
-      if (watch.over && stopped && !signal.aborted) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
-      if (err instanceof RunPaused) throw await pauseImplement(w, run, item, handle, ctx, start, dirs, err);
-      // A usage limit, a stall or a timeout stopped the agent mid-work: its work goes to a wip branch.
-      if (err instanceof RunFailure && STOPPED_CODES.includes(err.code) && !signal.aborted) {
-        throw await keepStopped(w, run, item, handle, ctx, start, dirs, err);
-      }
-      throw err;
-    }).finally(() => stopWatch.abort());
-    await watching;
-    // A runner that finished the step although the check had stopped it: the run still fails, before any sync.
-    if (watch.over) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
-    const out = parseImplement(result.output);
-    if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
-    await w.distrustAgentGit(handle, dirs);
-    // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with
-    // the run folder; none is kept on a wip branch.
-    if (out.value.needs_human) return { needs_human: out.value.needs_human };
-    // A criterion the spec does not let it meet (issue #222): the run fails with the reason before any commit
-    // count, sync or push, and the controller starts a spec revision. Its commits go with the run folder.
-    if (out.value.spec_conflict) throw new RunFailure(SPEC_CONFLICT, out.value.spec_conflict);
+      // A runner that finished the step although the check had stopped it: the run still fails, before any sync.
+      if (watch.over) throw await overBudget(w, run, item, handle, ctx, start, dirs, watch);
+      const out = parseImplement(result.output);
+      if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
+      await w.distrustAgentGit(handle, dirs);
+      // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with
+      // the run folder; none is kept on a wip branch.
+      if (out.value.needs_human) return { needs_human: out.value.needs_human };
+      // A criterion the spec does not let it meet (issue #222): the run fails with the reason before any commit
+      // count, sync or push, and the controller starts a spec revision. Its commits go with the run folder.
+      if (out.value.spec_conflict) throw new RunFailure(SPEC_CONFLICT, out.value.spec_conflict);
 
-    const commits = await runCommits((args) => w.git(handle, args), start, baseSha);
-    if (commits.length === 0) {
-      throw new RunFailure("no_commits", NO_COMMITS_DETAIL, false, { output_tail: tail(result.transcript) });
+      const commits = await runCommits((args) => w.git(handle, args), start, baseSha);
+      if (commits.length === 0) {
+        throw new RunFailure("no_commits", NO_COMMITS_DETAIL, false, { output_tail: tail(result.transcript) });
+      }
+      const done = {
+        commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [],
+        missing: out.value.missing, deviations: out.value.deviations,
+      };
+      const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
+      return { work: done, start, head, bundle: await saveBundle(w, run, item, handle, dirs, start) };
+    });
+    if ("needs_human" in agentStep) return { needs_human: agentStep.needs_human };
+    if (!ran) {
+      // Taken over after the agent step finished: its commits come back from the bundle; no agent runs.
+      const resume = { host: w.host, folder: handle.id, base_sha: handle.base_sha ?? null, start_sha: agentStep.start, head: agentStep.head, bundle: agentStep.bundle };
+      if (!(await restoreWip(w, run, handle, branch, gitDir, resume))) {
+        throw new RunFailure(RESUME_LOST, "the finished agent step's commits could not be restored", true);
+      }
+      start = agentStep.start;
+      w.d.log.info("run resumes after its agent step", { run_id: run.id, attempt: run.attempt });
     }
-    work = {
-      commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [],
-      missing: out.value.missing, deviations: out.value.deviations,
-    };
+    work = agentStep.work;
   }
   // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in. A resumed
   // run has no agent, so a conflict there fails with merge_conflict.
@@ -187,16 +212,19 @@ async function implement(
     "rev-list", "--reverse", ...(sync.merged || resumed ? ["--first-parent"] : []), `${start}..HEAD`,
   ])).split("\n").filter(Boolean);
   // A resumed run's commits were recorded by the run that made them: no second row for one commit.
-  const recorded = resumed ? new Set((await w.d.store.listHandoffs(item.id)).map((h) => h.commit_sha)) : new Set<string>();
-  for (const sha of pushedCommits) {
-    if (recorded.has(sha)) continue;
-    const subject = (await w.git(handle, ["log", "-1", "--format=%s", sha])).trim();
-    const h = await w.d.store.appendHandoff(
-      { run_id: run.id, work_item_id: item.id, commit_sha: sha, worked_on: subject, next_steps: work.next_steps },
-      ctx.lease_token,
-    );
-    if (!h.ok) throw new RunFailure("lease_lost", "lease lost while writing handoffs", true);
-  }
+  await step("record-handoffs", async () => {
+    const recorded = resumed ? new Set((await w.d.store.listHandoffs(item.id)).map((h) => h.commit_sha)) : new Set<string>();
+    for (const sha of pushedCommits) {
+      if (recorded.has(sha)) continue;
+      const subject = (await w.git(handle, ["log", "-1", "--format=%s", sha])).trim();
+      const h = await w.d.store.appendHandoff(
+        { run_id: run.id, work_item_id: item.id, commit_sha: sha, worked_on: subject, next_steps: work.next_steps },
+        ctx.lease_token,
+      );
+      if (!h.ok) throw new RunFailure("lease_lost", "lease lost while writing handoffs", true);
+    }
+    return pushedCommits.length;
+  });
 
   const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   const wip = (): WipRef => wipAt(head);
@@ -204,19 +232,25 @@ async function implement(
   let content: { number: number; url?: string } | null = null;
   try {
     const { broker } = w.route(item);
-    const pushed = await broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
-    if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
-    await w.recordPushedHead(run, ctx, head);
+    // Pushes and PR writes stay in the worker until outbound takes them (RFC 0015 M7).
+    await step("push-branch", async () => {
+      const pushed = await broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: base });
+      if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
+      await w.recordPushedHead(run, ctx, head);
+      return head;
+    });
     // A broker with no PR tool (the local one): the branch is the review's input and `factory merge` its merge.
     if (hasTool(broker, "github.open_pr")) {
-      const pr = await broker.call(ctx, "github.open_pr", {
-        branch,
-        base_ref: base,
-        title: prTitle(item),
-        ...w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null })),
+      content = await step("open-pr", async () => {
+        const pr = await broker.call(ctx, "github.open_pr", {
+          branch,
+          base_ref: base,
+          title: prTitle(item),
+          ...w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null })),
+        });
+        if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
+        return pr.content as { number: number; url?: string };
       });
-      if (!pr.ok) throw new RunFailure(pr.error_code, pr.message);
-      content = pr.content as { number: number; url?: string };
     }
   } catch (err) {
     throw await keepWip(w, run, item, ctx, handle, err, wip(), resumed !== null && head === resumed.head);
@@ -417,7 +451,8 @@ async function saveBundle(w: Worker, run: Run, item: WorkItem, handle: SandboxHa
   }
   const file = `${dirs.split("\n").at(-1)}/sf-pause.bundle`;
   const made = await w.gitRaw(handle, ["bundle", "create", file, `${start}..HEAD`]);
-  const text = made.exit_code === 0 ? await w.d.sandbox.exec(handle, ["sh", "-c", 'base64 < "$1"', "sh", file], { env: w.d.toolEnv }) : null;
+  // `-i`: the input file on BSD base64; ignore-garbage, a no-op when encoding, on GNU (which reads `file` itself).
+  const text = made.exit_code === 0 ? await w.d.sandbox.exec(handle, ["base64", "-i", file], { env: w.d.toolEnv }) : null;
   await w.d.sandbox.exec(handle, ["rm", "-f", "--", file], { env: w.d.toolEnv });
   if (!text || text.exit_code !== 0) {
     w.d.log.warn("pause: git bundle failed; no bundle kept", { run_id: run.id });
@@ -1142,5 +1177,25 @@ export default defineRunKind({
   name: "implement",
   folder: true,
   timeouts: DEFAULT_TIMEOUTS,
-  execute: (w, c) => implement(w, c.run, c.item, c.handle!, c.ctx, c.signal, c.model, c.plan ?? null, c.kept ?? null),
+  execute: (w, c) => implement(w, c.run, c.item, c.handle!, c.ctx, c.signal, c.model, c.plan ?? null, c.kept ?? null, c.step),
 });
+
+/** The journaled result of the implement agent step: a human was asked for, or the work and its commits' bundle. */
+type AgentStep =
+  | { readonly needs_human: NeedsHuman }
+  | {
+    readonly work: { commits: number; summary: string; next_steps: string; conflicts: string[]; missing: string[]; deviations: string[] };
+    readonly start: string;
+    readonly head: string;
+    /** Shared-storage key of the bundle of start..head; null when the commits did not scan clean (G5). */
+    readonly bundle: string | null;
+  };
+
+/** A taken-over run whose finished agent step left no bundle to restore: it fails (infra) and is retried afresh. */
+const RESUME_LOST = "resume_lost";
+
+/** The session an interrupted agent step saved, when this host's runner still has it; else null (a new session). */
+async function liveSession(w: Worker, partial: unknown): Promise<string | null> {
+  if (typeof partial !== "string" || !w.d.runner.hasSession) return null;
+  return (await w.d.runner.hasSession(partial).catch(() => false)) ? partial : null;
+}

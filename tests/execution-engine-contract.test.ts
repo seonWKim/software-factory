@@ -180,6 +180,22 @@ describe.each(BACKENDS)("execution-engine contract: journal on $name", (backend)
     });
   });
 
+  it("adopts a run another claim path leased under its token, refuses a stale token, and forgets it on release", async () => {
+    const { db, store } = await backend.open();
+    const a = worker(db[0], "worker-a");
+    const id = await newRun(store);
+    const claimed = (await store.claimRun({ worker_id: "worker-a" as never, kinds: ["implement"], lease_ms: 5 * MIN }))!;
+    const ref = { id, kind: "implement", attempt: claimed.attempt, lease_token: claimed.lease!.token };
+    const now = { schedule: "claim", now: new Date(T0 + S).toISOString(), slot: 0 };
+    expect(await a.engine.adopt({ ...ref, lease_token: ref.lease_token + 1 }, now)).toBe(false);
+    await expect(a.engine.step(ref, "prepare-branch", async () => 1)).rejects.toThrow(/lease/);
+    expect(await a.engine.adopt(ref, now)).toBe(true);
+    expect(await a.engine.step(ref, "prepare-branch", async () => 1)).toBe(1);
+    expect(await runRow(db[0], id)).toMatchObject({ status: "running", code_version: "v1", deadline_at: new Date(T0 + 60 * MIN).toISOString() });
+    a.engine.release(ref);
+    await expect(a.engine.step(ref, "run-agent", async () => 2)).rejects.toThrow(/lease/);
+  });
+
   it("refuses to work before its first tick, a second claim, and a step id used twice", async () => {
     const { db, store } = await backend.open();
     const a = worker(db[0], "worker-a");

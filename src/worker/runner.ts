@@ -1,4 +1,8 @@
-import { type RunCall, loadRunKinds } from "./run-kind.js";
+import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
+import { type ExecutionEngine, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
+import { JournalEngine } from "./engine/plugins/journal/journal-engine.js";
+import { tickAt } from "../shared/ticks/tick-generator.js";
+import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type FactoryConfig, STALL_DEFAULTS, grantsFor } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
@@ -42,6 +46,12 @@ export class Worker {
 
   /** The pause request and agent sessions of the run being executed. Scratch for one execute() call only. */
   readonly scratch = new WeakMap<Run, RunScratch>();
+
+  /** This worker's ExecutionEngine, built at its first run (it needs the discovered run kinds). */
+  engineReady: Promise<ExecutionEngine> | null = null;
+
+  /** The lease signal of each run the engine holds: aborted when the engine loses the run. */
+  readonly leases = new Map<string, AbortController>();
 
   constructor(readonly d: WorkerDeps) {
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
@@ -120,13 +130,46 @@ export class Worker {
     this.d.log.warn(`keep-awake ${op} failed`, { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
   }
 
+  /**
+   * The journal engine over the store's database (RFC 0015 §7 Workers): each run kind with its named timeouts,
+   * this worker's id as lease owner, the live `lease_ms` at each renewal.
+   */
+  engine(): Promise<ExecutionEngine> {
+    this.engineReady ??= loadRunKinds().then((kinds) => new JournalEngine({
+      db: storeSql(this.d.store),
+      workerId: this.d.id,
+      codeVersion: this.d.code_version ?? DEV_CODE_VERSION,
+      kinds: Object.fromEntries([...kinds.values()].map((k: RunKindDescriptor) => [k.name, k.timeouts])),
+      leaseMs: () => this.live.values().lease_ms,
+      onLost: (ref) => this.leases.get(ref.id)?.abort(new Error("lease_lost")),
+    }));
+    return this.engineReady;
+  }
+
+  /**
+   * Holds the claimed run in the engine, then executes it. A run journaled by code this worker cannot resume
+   * (another code_version) fails as `not_resumable`, infra: its retry is a new run with a new journal.
+   */
   async execute(run: Run, token: number): Promise<void> {
+    const engine = await this.engine();
+    const ref: RunRef = { id: run.id, kind: run.kind, attempt: run.attempt, lease_token: token };
+    const lease = new AbortController();
+    this.leases.set(run.id, lease);
+    try {
+      const held = await engine.adopt(ref, tickAt("claim", this.cfg.tick_ms, this.d.clock.now().getTime()));
+      await this.executeHeld(run, token, engine, held ? ref : null, lease);
+    } finally {
+      this.leases.delete(run.id);
+      engine.release(ref);
+    }
+  }
+
+  async executeHeld(run: Run, token: number, engine: ExecutionEngine, ref: RunRef | null, lease: AbortController): Promise<void> {
     const log = { run_id: run.id, work_item_id: run.work_item_id, kind: run.kind, attempt: run.attempt, worker_id: this.d.id };
     const startedAt = this.d.clock.now().getTime();
     this.d.log.info("run start", log);
-    const lease = new AbortController();
     const stopHeartbeat = new AbortController();
-    const heartbeat = this.heartbeat(run, token, lease, stopHeartbeat.signal);
+    const heartbeat = this.heartbeat(run, engine, stopHeartbeat.signal);
     // `workers pause` reaches a running implement or review run within one tick_ms (design §5 Pause).
     const scratch: RunScratch = { pause: new AbortController(), paused_by: null, sessions: new Set(run.session_id ? [run.session_id] : []) };
     this.scratch.set(run, scratch);
@@ -140,6 +183,7 @@ export class Worker {
     let outcome: RunOutcome | null = null;
     let paused: RunPaused | null = null;
     try {
+      if (!ref) throw new RunFailure(NOT_RESUMABLE, "the run was journaled by code this worker cannot resume", true);
       const item = await this.d.store.getWorkItem(run.work_item_id);
       if (!item) throw new RunFailure("work_item_missing", run.work_item_id);
       const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id, lease_token: token };
@@ -147,7 +191,7 @@ export class Worker {
       const model = isModelRunKind(run.kind) ? await this.modelFor(run, run.kind, item) : null;
       // An update run has no agent, so the class it is handed is never used.
       const signal = lease.signal;
-      const step: RunCall["step"] = (_id, fn) => fn({ signal, attempt: run.attempt, partial: null, savePartial: async () => {} });
+      const step: RunCall["step"] = (id, fn) => engine.step(ref, id, fn).catch((err: unknown) => { throw stepFailure(err); });
       const data = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
       // Recorded next to the run's usage, so cost and failure rate can be compared per class. data.tokens: the
       // full count, where readers from before usage existed look for it.
@@ -339,7 +383,7 @@ export class Worker {
    * token (nobody reaped or reclaimed it), so a late wake keeps the run instead of counting a new attempt.
    * Timers always fire a little late, so only a gap over 2 * heartbeat_ms is logged as late; renewal is unconditional.
    */
-  async heartbeat(run: Run, token: number, lease: AbortController, stop: AbortSignal): Promise<void> {
+  async heartbeat(run: Run, engine: ExecutionEngine, stop: AbortSignal): Promise<void> {
     while (!stop.aborted) {
       // Read each round: a heartbeat_ms or lease_ms change applies at the next renewal (design 2026-11-03).
       const { heartbeat_ms } = this.live.values();
@@ -354,12 +398,12 @@ export class Worker {
       await this.live.refresh();
       const { lease_ms } = this.live.values();
       if (gap > 2 * heartbeat_ms) this.d.log.warn("heartbeat late; renewing now", { run_id: run.id, gap_ms: gap, lease_ms });
-      const r = await this.d.store.heartbeat(run.id, token, lease_ms);
+      // The engine renews the lease (the live lease_ms) and times out steps; a lost lease aborts the run (onLost).
+      await engine.heartbeat(tickAt("heartbeat", heartbeat_ms, woke));
       // Recorded after the renewal, so a late wake renews first (design §5 Host sleep).
       await this.checkWake(slept + heartbeat_ms, woke, run);
-      if (!r.ok) {
+      if (this.leases.get(run.id)?.signal.aborted) {
         this.d.log.warn("lease lost; aborting run", { run_id: run.id });
-        lease.abort(new Error("lease_lost"));
         return;
       }
     }
@@ -690,7 +734,7 @@ export class Worker {
      * `pausable`: `workers pause` may stop this step (design §5 Pause); then RunPaused is thrown instead of a
      * failure. `resume`: the stored session this step continues (`--resume`); null starts a new one.
      */
-    opts: { pausable?: boolean; resume?: string | null } = {},
+    opts: { pausable?: boolean; resume?: string | null; onSession?: (id: string) => Promise<void> } = {},
   ): Promise<AgentRunResult> {
     const s = this.scratch.get(run);
     const pause = opts.pausable ? s?.pause.signal : undefined;
@@ -710,6 +754,8 @@ export class Worker {
       s.warmed = true;
     }
     if (session) s?.sessions.add(session.id);
+    // A new session is journaled as the step's partial result before the agent starts (RFC 0015 §7).
+    if (session && !session.resume) await opts.onSession?.(session.id);
     if (s) s.step_session = session?.id ?? null;
     const liveBefore = await this.liveUntracked(handle);
     const result = await this.d.runner.run({
@@ -948,4 +994,18 @@ export class Worker {
     const left = untrustedGitConfig(await list());
     if (left.length > 0) throw new RunFailure("untrusted_git_config", `git config keys left: ${left.join(", ")}`.slice(0, 500));
   }
+}
+
+/** WorkerDeps.code_version when the process names none. */
+const DEV_CODE_VERSION = "dev";
+
+/** A run another code_version journaled, which this worker's code cannot resume. */
+const NOT_RESUMABLE = "not_resumable";
+
+/** The engine's errors as run failures: a lost lease and a step timeout are infra; a passed deadline is not. */
+function stepFailure(err: unknown): unknown {
+  if (err instanceof LeaseLostError) return new RunFailure("lease_lost", err.message, true);
+  if (err instanceof StepTimeoutError) return new RunFailure(err.code, err.message, true);
+  if (err instanceof RunDeadlineError) return new RunFailure(err.code, err.message, false);
+  return err;
 }

@@ -51,11 +51,15 @@ export function defineRunKind(d: Omit<RunKindDescriptor, "kind">): RunKindDescri
   return { kind: "run", ...d };
 }
 
-/** The defaults most kinds share: a step may take the agent's whole run timeout; a run lives at most a day. */
+/**
+ * The defaults most kinds share. A step may take an hour: above the agent's own `run_timeout_ms` (45 min by
+ * default), so the agent's timeout fires first. `heartbeat_ms` is the default `lease_ms`. A run may live a week from
+ * its creation: runs wait in claim pauses and coordination holds, which a shorter deadline would fail.
+ */
 export const DEFAULT_TIMEOUTS: RunTimeouts = {
-  start_to_close_ms: 2_700_000,
+  start_to_close_ms: 3_600_000,
   heartbeat_ms: 300_000,
-  schedule_to_close_ms: 24 * 3_600_000,
+  schedule_to_close_ms: 7 * 24 * 3_600_000,
 };
 
 const loaded = new Map<string, Promise<ReadonlyMap<string, RunKindDescriptor>>>();

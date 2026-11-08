@@ -109,6 +109,7 @@
   "component-imports-legacy|worker/runner.ts|core/settings.ts",
   "component-imports-legacy|worker/runner.ts|core/tools/index.ts",
   "component-imports-legacy|worker/runner.ts|core/types.ts",
+  "component-imports-legacy|worker/runner.ts|impl/store/sql/store-sql.ts",
   "component-imports-legacy|worker/runner.ts|interfaces/agent-runner.ts",
   "component-imports-legacy|worker/runner.ts|interfaces/keep-awake.ts",
   "component-imports-legacy|worker/runner.ts|interfaces/sandbox.ts",

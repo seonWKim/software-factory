@@ -149,4 +149,9 @@ export interface WorkerDeps {
    * 05-sources, Local items). Compose always sets it. Absent: `broker` and `sandbox` serve every item.
    */
   local?: LocalRoute;
+  /**
+   * The revision this process runs, stamped on each run it executes (`worker_runs.code_version`): a run journaled by
+   * another revision is resumed only by code that can resume it (RFC 0015 §8). Absent: `dev`.
+   */
+  code_version?: string;
 }

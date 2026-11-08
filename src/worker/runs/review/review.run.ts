@@ -7,7 +7,7 @@ import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { type ResumePlan, RunFailure, WRITE_TOOLS, ciResults, gitIdentity, hasTool, lastVerdictHead, renderAdoptedPr, renderSessionResume, renderWorkItem, reviewComment, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
-import { DEFAULT_TIMEOUTS, defineRunKind } from "../../run-kind.js";
+import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
 async function review(
   w: Worker,
@@ -17,7 +17,8 @@ async function review(
   ctx: ToolCallContext,
   signal: AbortSignal,
   model: ModelClass,
-  plan: ResumePlan | null = null,
+  plan: ResumePlan | null,
+  step: RunCall["step"],
 ) {
   // A local item (no PR tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
   // on it, and a missing one must not be reviewed as the empty diff of a fresh branch.
@@ -45,21 +46,25 @@ async function review(
   const subject = item.origin === "adopted" ? renderAdoptedPr(item) : renderWorkItem(item, { includeSpec: true });
   // Blind pass: work item + diff only, no implementer transcript (design §4). A paused review resumes its own
   // session on the same host; anywhere else it reviews afresh (design §5 Pause).
-  const result = await w.agent(run, item, handle, signal, {
-    system_prompt: w.d.prompts.review,
-    prompt: plan?.session
-      ? renderSessionResume(null)
-      : await w.withIndex(
-        [subject, notes, ciResults(run), `## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``].filter(Boolean).join("\n\n"),
-        specQuery(item),
-      ),
-    tools: WRITE_TOOLS,
-    model_class: model,
-    output_schema: REVIEW_SCHEMA,
-    env_allowlist: gitIdentity(w.cfg.agent_git_identity),
-  }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null });
-  const review = parseReview(result.output);
-  if (!review.ok) throw new RunFailure("invalid_output", review.error, false, { output_tail: tail(result.transcript) });
+  // The agent step's parsed verdict is journaled, so a takeover posts it without reviewing again.
+  const review = await step("run-agent", async (s) => {
+    const result = await w.agent(run, item, handle, signal, {
+      system_prompt: w.d.prompts.review,
+      prompt: plan?.session
+        ? renderSessionResume(null)
+        : await w.withIndex(
+          [subject, notes, ciResults(run), `## Diff\n\n\`\`\`diff\n${diff}\n\`\`\``].filter(Boolean).join("\n\n"),
+          specQuery(item),
+        ),
+      tools: WRITE_TOOLS,
+      model_class: model,
+      output_schema: REVIEW_SCHEMA,
+      env_allowlist: gitIdentity(w.cfg.agent_git_identity),
+    }, plan ? `resumed-${ctx.lease_token}` : undefined, { pausable: true, resume: plan?.session ?? null, onSession: (id) => s.savePartial(id) });
+    const parsed = parseReview(result.output);
+    if (!parsed.ok) throw new RunFailure("invalid_output", parsed.error, false, { output_tail: tail(result.transcript) });
+    return parsed;
+  });
   // The reviewer asked for a human: no review comment on the PR; the controller blocks the item.
   if (review.value.needs_human) return { needs_human: review.value.needs_human };
 
@@ -68,12 +73,16 @@ async function review(
   // only the rule names, and the controller blocks the item on a human.
   const scan = await w.d.scanner.scan("comment", [...v.findings.map((f) => f.text), ...unverifiedOf(v)].join("\n"));
   if (!scan.clean) return { egress_rules: [...new Set(scan.findings.map((f) => f.rule))] };
-  const posted = await w.forgeComment(item, ctx, {
-    number: prNumber(item),
-    body: reviewComment(v),
-    marker: `<!-- factory:review:${run.id} -->`,
+  // The comment write stays in the worker until outbound takes it (RFC 0015 M7).
+  await step("post-review", async () => {
+    const posted = await w.forgeComment(item, ctx, {
+      number: prNumber(item),
+      body: reviewComment(v),
+      marker: `<!-- factory:review:${run.id} -->`,
+    });
+    if (!posted.ok) throw new RunFailure(posted.error_code, posted.message);
+    return true;
   });
-  if (!posted.ok) throw new RunFailure(posted.error_code, posted.message);
   return { review: v, head_sha };
 }
 
@@ -81,5 +90,5 @@ export default defineRunKind({
   name: "review",
   folder: true,
   timeouts: DEFAULT_TIMEOUTS,
-  execute: (w, c) => review(w, c.run, c.item, c.handle!, c.ctx, c.signal, c.model, c.plan ?? null),
+  execute: (w, c) => review(w, c.run, c.item, c.handle!, c.ctx, c.signal, c.model, c.plan ?? null, c.step),
 });
