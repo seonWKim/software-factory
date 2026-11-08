@@ -31,11 +31,11 @@ minutes; past that the main session takes over from their WIP commit.
 | 22:40–23:50 | M5 router + units: `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | merged 23:50 (2b837d5), SQLite green |
 | 22:40–23:20 | M3 leftovers: bus + ticks plugins, `requires`, dead-letter alarms | agent | merged 23:25, SQLite green |
 | 22:40–00:30 | M6 `worker.ts` onto the engine (crash test resumes mid-run); M9 wiring (passports at the edge and in the ToolBroker, service passports, UI names) | agents | merged 00:15 (c086e15) and 00:35 (56b60f4), SQLite green |
-| 23:55–01:55 | M8 merge queue; M7 outbound (controller side); M5 follow-up: pure units on ticks | agents | running |
-| 00:40–02:30 | Merge M6, M9; M7 worker half after M6; finish what an agent left (main takes over past its time box) | main | |
-| 02:30–05:00 | Merge M7, M8, pure units; M10 call sites (hooks, roles); full MySQL suite with no agents running | agents + main | |
-| 05:00–06:30 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
-| 06:30–08:00 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
+| –23:30 | M8 merge queue (depth 1); M7 outbound, controller half; M5 follow-up: pure units on ticks | agents + main | merged 23:30 (bf0e449, 39bcb41, 0964cd6), SQLite green; M7 fixes by main: flush starvation, G5 retry loop |
+| 23:35–01:05 | M7 worker half; M6 leftovers + M10 roles/hooks in the worker; M8 leftovers + router findings; pure units 2 + M9 command auth | 4 agents | running |
+| 01:05–03:00 | Merge the four branches; finish what an agent left; full MySQL suite with no agents running | main | |
+| 03:00–05:00 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
+| 05:00–07:30 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
 
 Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
 owner decisions below. Status per row is updated here as each step lands.
