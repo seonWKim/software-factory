@@ -1,5 +1,5 @@
 import type { AuthProvider as IdentityProvider, PassportService, Principal as IdentityPrincipal, Provider, ResourceRef } from "../../identity/index.js";
-import type { AuthAction, AuthDecision, AuthProvider, AuthResource, ExternalIdentity, Principal } from "../../interfaces/auth-provider.js";
+import type { AuthAction, AuthDecision, AuthProvider, AuthResource, CommandPassport, ExternalIdentity, Principal } from "../../interfaces/auth-provider.js";
 
 /**
  * The provider mapping of an auth plugin as Identity's provider (RFC 0015 §8 "Edge"): a forge or chat account
@@ -36,14 +36,15 @@ export class AuditedAuthProvider implements AuthProvider {
     return this.inner.resolve(identity);
   }
 
-  async authorize(principal: Principal, action: AuthAction, resource: AuthResource, passport_id?: string): Promise<AuthDecision> {
+  async authorize(principal: Principal, action: AuthAction, resource: AuthResource, passport?: CommandPassport): Promise<AuthDecision> {
     const ref = resourceRef(resource);
-    if (passport_id !== undefined) {
-      const r = await this.identity.authorize(passport_id, action, ref, async (holder) => {
+    if (passport !== undefined) {
+      const roles = async (holder: string) => {
         if (holder !== principal.user_id) return "passport_principal_mismatch";
         const d = await this.inner.authorize(principal, action, resource);
         return d.allow ? "allowed" : d.reason;
-      });
+      };
+      const r = await this.identity.authorize(passport.id, action, ref, roles, passport.at);
       return r.allow ? { allow: true } : { allow: false, reason: r.reason };
     }
     const decision = await this.inner.authorize(principal, action, resource);

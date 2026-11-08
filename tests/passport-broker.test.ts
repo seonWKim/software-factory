@@ -165,14 +165,22 @@ describe("audited legacy auth", () => {
     const bob = (await identity.authenticate({ provider: "local", subject: "bob" }, "cli")).passport.id;
     const who = { user_id: "local:ada" as never, attributes: {} };
     const item = { kind: "work_item" as const, id: "wi_1" };
-    expect(await auth.authorize(who, "approve_spec", item, ada)).toEqual({ allow: true });
+    const at = (ms: number) => new Date(T0 + ms).toISOString();
+    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(0) })).toEqual({ allow: true });
     // Another person's passport, or a revoked one, refuses although the plugin would allow.
-    expect(await auth.authorize(who, "approve_spec", item, bob)).toEqual({ allow: false, reason: "passport_principal_mismatch" });
+    expect(await auth.authorize(who, "approve_spec", item, { id: bob, at: at(0) })).toEqual({ allow: false, reason: "passport_principal_mismatch" });
+    // Two hours on (the passport lasts one): a command recorded while it was valid, which waited behind a failing
+    // command, is still decided under it; one recorded after it expired is not.
+    await ticks.tick(REVOCATIONS_TICK, T0 + 2 * 3_600_000);
+    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(60_000) })).toEqual({ allow: true });
+    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(2 * 3_600_000) })).toEqual({ allow: false, reason: "expired" });
     await identity.revoke(ada, "local:owner", "lost laptop");
-    expect(await auth.authorize(who, "approve_spec", item, ada)).toEqual({ allow: false, reason: "revoked" });
+    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(60_000) })).toEqual({ allow: false, reason: "revoked" });
     expect(await db.all("SELECT passport_id, principal, decision, reason FROM authz_audit ORDER BY seq")).toEqual([
       { passport_id: ada, principal: "local:ada", decision: "allow", reason: "allowed" },
       { passport_id: bob, principal: "local:bob", decision: "deny", reason: "passport_principal_mismatch" },
+      { passport_id: ada, principal: "local:ada", decision: "allow", reason: "allowed" },
+      { passport_id: ada, principal: "local:ada", decision: "deny", reason: "expired" },
       { passport_id: ada, principal: "local:ada", decision: "deny", reason: "revoked" },
     ]);
   });

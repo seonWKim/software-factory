@@ -2,7 +2,7 @@
 // forge's auth plugin's grants (forge identities) or the local one's (the CLI and the app) decide the role. The
 // controller's automatic steps are authorized under its service passport. Each is a check through the kernel's reader.
 
-import type { AuthAction, AuthProvider, ExternalIdentity, Principal } from "../../../interfaces/auth-provider.js";
+import type { AuthAction, AuthProvider, CommandPassport, ExternalIdentity, Principal } from "../../../interfaces/auth-provider.js";
 import { type Refusal } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -18,7 +18,7 @@ export class AuthUnit {
       if (local) return { refuse: "your local identity resolves to no factory user under the local auth plugin" };
       return { refuse: "your account is not linked to a factory user; link it with `/link <code>` (code from `factory link-code <user_id>`)" };
     }
-    return this.allowed(principal, action, resource, local, identity.passport_id);
+    return this.allowed(principal, action, resource, local, identity.passport);
   }
 
   /** The auth plugin of a command's origin: the local one for the CLI and the local UI (issue #318), else the forge's. */
@@ -29,11 +29,11 @@ export class AuthUnit {
 
   /**
    * The permission half of `authorize`, for a principal already known (an app request names its user). `local`:
-   * a command from the CLI or the local UI, checked by the local auth plugin. `passport_id`: the command's edge
+   * a command from the CLI or the local UI, checked by the local auth plugin. `passport`: the command's edge
    * passport, which Identity checks first (absent: a row from before M9; the plugin alone decides).
    */
-  async allowed(principal: Principal, action: AuthAction, resource: string, local = false, passport_id?: string): Promise<Principal | Refusal> {
-    const decision = await this.plugin(local).authorize(principal, action, { kind: "work_item", id: resource }, passport_id);
+  async allowed(principal: Principal, action: AuthAction, resource: string, local = false, passport?: CommandPassport): Promise<Principal | Refusal> {
+    const decision = await this.plugin(local).authorize(principal, action, { kind: "work_item", id: resource }, passport);
     if (!decision.allow) {
       this.c.k.d.log.warn("unauthorized", { user_id: principal.user_id, action, reason: decision.reason });
       if (local && this.c.k.reader.auth.local) {

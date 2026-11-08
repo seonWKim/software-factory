@@ -131,8 +131,11 @@ export type AuthzResult =
 
 /** RFC 0015 §6.2: the sync API other components call through identity/index.ts. */
 export interface Authorization {
-  /** `roles`: the role half decided by the caller's grants (an auth plugin) in place of Identity's own. */
-  authorize(passport: PassportId, action: Action, resource: ResourceRef, roles?: RoleCheck): Promise<AuthzResult>;
+  /**
+   * `roles`: the role half decided by the caller's grants (an auth plugin) in place of Identity's own. `valid_at`:
+   * when the request was recorded (a queued command); expiry is checked then, revocation now.
+   */
+  authorize(passport: PassportId, action: Action, resource: ResourceRef, roles?: RoleCheck, valid_at?: string): Promise<AuthzResult>;
   narrow(passport: PassportId, restrictions: NarrowRequest): Promise<Issued>;
 }
 

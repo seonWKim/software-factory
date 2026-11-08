@@ -16,9 +16,14 @@ export function commandEvent(c: CliCommand, source: SourceRef): SourceEvent | nu
   return commentEvent(source, c.key, commandIdentity(c, localIdentity(c.actor)), rebuilt(c));
 }
 
-/** `identity` with the command row's edge passport (RFC 0015 §8), which the controller's authorize checks. */
-export function commandIdentity(c: Pick<NewCliCommand, "passport_id">, identity: ExternalIdentity): ExternalIdentity {
-  return c.passport_id === undefined ? identity : { ...identity, passport_id: c.passport_id };
+/**
+ * `identity` with the command row's edge passport (RFC 0015 §8) and the row's recorded time, which the controller's
+ * authorize checks. A command never stored (a poll with no store) has neither.
+ */
+export function commandIdentity(c: Pick<NewCliCommand, "passport_id"> & Partial<Pick<CliCommand, "created_at">>, identity: ExternalIdentity): ExternalIdentity {
+  if (c.passport_id === undefined) return identity;
+  if (c.created_at === undefined) throw new Error("a command's passport is checked at the time its row was recorded");
+  return { ...identity, passport: { id: c.passport_id, at: c.created_at } };
 }
 
 /** `/<command> <text>`, the comment a command row was read from or stands for. */
@@ -65,7 +70,7 @@ export function githubCommand(c: {
  * keyed as before. A command on a PR's conversation gets the PR the poll read: `/revise` and `/resolve` as `pr`,
  * `/verdict` as its target. `source` is where it was written; `event` is null for a row that maps to no event.
  */
-export function syncedCommand(c: NewCliCommand): { source: SourceRef; event: SourceEvent | null } | null {
+export function syncedCommand(c: NewCliCommand & Partial<Pick<CliCommand, "created_at">>): { source: SourceRef; event: SourceEvent | null } | null {
   const id = GITHUB_KEY.exec(c.key)?.[1];
   const subject = GITHUB_ACTOR.exec(c.actor)?.[1];
   const source = sourceRef(c.args.source);

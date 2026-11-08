@@ -12,6 +12,11 @@ import { controllerUnit } from "../context.js";
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
 
+/** The page's edge passport, checked for expiry at the time the request was recorded (absent: none). */
+function appPassport(r: AppCommandRequest) {
+  return r.passport_id === undefined ? undefined : { id: r.passport_id, at: r.created_at };
+}
+
 /** Applies the status page's requests (approve, reject, retry, merge, ...). */
 export class AppRequestsUnit {
   constructor(private readonly c: Ctx) {}
@@ -39,12 +44,12 @@ export class AppRequestsUnit {
     if (r.command === MERGE_COMMAND) {
       // mergeLocal posts its own reply, under the same marker as finishAppRequest's, so the thread gets it once.
       refusal = item.source.type === LOCAL_SOURCE
-        ? await this.c.unit("local-merge").mergeLocal(item.id, { user_id: r.actor, passport_id: r.passport_id }, `app-${r.seq}`, { [APP_REQUEST]: r.seq })
+        ? await this.c.unit("local-merge").mergeLocal(item.id, { user_id: r.actor, passport: appPassport(r) }, `app-${r.seq}`, { [APP_REQUEST]: r.seq })
         : `${item.id} is not a local item: merge its PR instead`;
     } else if (r.command !== "approve") {
       refusal = "only `approve` and `merge` are applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     } else {
-      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true, r.passport_id);
+      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true, appPassport(r));
       if ("refuse" in principal) refusal = principal.refuse;
       else {
         const note = await this.c.unit("commands").approvalNote(item.id, typeof r.args.note === "string" ? r.args.note : undefined);

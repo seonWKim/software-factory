@@ -189,9 +189,12 @@ export class PassportService implements Authorization, PassportChecker {
   }
 
   /** Decides on a stored passport by id (messages carry ids). Audited. */
-  async authorize(passport: PassportId, action: Action, resource: ResourceRef, roles?: RoleCheck): Promise<AuthzResult> {
+  async authorize(passport: PassportId, action: Action, resource: ResourceRef, roles?: RoleCheck, valid_at?: string): Promise<AuthzResult> {
     const now = this.now();
-    return this.decide(passport, await this.chainById(passport, now), action, resource, now, roles);
+    // A command's passport proves who sent it when it was recorded: expiry is checked then (never later than now),
+    // revocation now.
+    const at = valid_at !== undefined && valid_at < now ? valid_at : now;
+    return this.decide(passport, await this.chainById(passport, at), action, resource, now, roles);
   }
 
   /** Decides on a bearer token, offline: signature, expiry, the deny list of the last refresh. Audited. */
