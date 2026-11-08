@@ -15,6 +15,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "health", label: "Health", icon: HeartPulse },
   { path: "failures", label: "Failures", icon: OctagonAlert },
   { path: "settings", label: "Settings", icon: Settings },
+  { path: "users", label: "Users", icon: Users },
 ];
 
 /**
@@ -23,13 +24,7 @@ export const PAGES: readonly PageDef[] = [
  */
 export const TOOL_PAGES: readonly PageDef[] = [{ path: "data", label: "Data", icon: Database }];
 
-/**
- * Pages reached by their URL only, not listed in the sidebar: Users (`/app/users`, design 09-dashboard-app). Its
- * sidebar entry after Settings waits on the shell tests that list the sidebar's links (see that topic file).
- */
-export const URL_PAGES: readonly PageDef[] = [{ path: "users", label: "Users", icon: Users }];
-
-const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES, ...URL_PAGES];
+const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES];
 
 export const BASE = "/app/";
 
