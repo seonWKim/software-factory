@@ -165,21 +165,4 @@ describe("GitHub comments return their URL", () => {
       url: "https://github.com/o/r/issues/7#issuecomment-5",
     });
   });
-
-  it("the tool broker's github.comment result carries the url unchanged", async () => {
-    const clock = new FakeClock();
-    const { store } = await newStore(clock);
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
-    const run = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
-    const client = new FakeClient();
-    const broker = new GitHubToolBroker({
-      client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-      credentials: { token: async () => null },
-      scanner: cleanScanner,
-    });
-    const r = await broker.call({ run_id: run.id, work_item_id: item.id, lease_token: run.lease!.token }, "github.comment", {
-      number: 1, body: "x", marker: "m",
-    });
-    expect(r).toEqual({ ok: true, content: { created: true, url: client.postedUrl } });
-  });
 });

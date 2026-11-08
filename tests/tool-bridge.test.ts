@@ -189,7 +189,7 @@ describe("ToolGate (the worker side of the bridge)", () => {
     const broker = new FakeNoteBroker({ a: "x" });
     const gate = new ToolGate({ broker, scanner: cleanScanner }, gateSpec());
     expect(await answerBridgeRequest(gate, { op: "call", name: "test.write_note", args: {} })).toMatchObject({ result: { ok: false, error_code: NOT_GRANTED } });
-    expect(await answerBridgeRequest(gate, { op: "call", name: "github.comment", args: {} })).toMatchObject({ result: { ok: false, error_code: NOT_GRANTED } });
+    expect(await answerBridgeRequest(gate, { op: "call", name: "github.open_pr", args: {} })).toMatchObject({ result: { ok: false, error_code: NOT_GRANTED } });
     expect(await answerBridgeRequest(gate, { op: "exec", cmd: "env" })).toEqual({ error: "unknown request" });
     expect(await answerBridgeRequest(gate, null)).toEqual({ error: "unknown request" });
     expect(broker.calls).toEqual([]);

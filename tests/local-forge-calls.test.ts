@@ -142,24 +142,3 @@ describe("a GitHub item's implement run", () => {
     expect(posted[0]!.body).toContain("## Factory scope check: push blocked");
   });
 });
-
-describe("github.comment in the broker", () => {
-  it("returns a failed result and makes no request when its number is not a positive integer", async () => {
-    const { store } = await newStore();
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
-    const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
-    const client = new NanGuardClient();
-    const broker = new GitHubToolBroker({
-      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
-      clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-    });
-    const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
-    for (const number of [Number.NaN, null, undefined, 0, -1, 1.5, "3", Number.POSITIVE_INFINITY]) {
-      const r = await broker.call(ctx, "github.comment", { number, body: "b", marker: "<!-- m -->" });
-      expect(r).toMatchObject({ ok: false, error_code: "invalid_args" });
-    }
-    expect(client.requests).toEqual([]);
-    expect(await broker.call(ctx, "github.comment", { number: 1, body: "b", marker: "<!-- m -->" })).toMatchObject({ ok: true });
-    expect(client.requests.some((r) => r.includes("/issues/1/comments"))).toBe(true);
-  });
-});

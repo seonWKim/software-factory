@@ -131,13 +131,12 @@ describe("broker: github_rate_limited", () => {
     const calls = {
       preflight: () => broker.call(ctx, "github.preflight", { branch, base_ref: "main" }),
       open_pr: () => broker.call(ctx, "github.open_pr", { branch, base_ref: "main", title: "t", body: "b" }),
-      comment: () => broker.call(ctx, "github.comment", { number: 1, body: "hello", marker: "<!-- m -->" }),
     };
     return { calls, now: fake.now().getTime() };
   }
 
-  it("a rate-limit 403 gives github_rate_limited with the header's reset on preflight, open_pr and comment", async () => {
-    for (const tool of ["preflight", "open_pr", "comment"] as const) {
+  it("a rate-limit 403 gives github_rate_limited with the header's reset on preflight and open_pr", async () => {
+    for (const tool of ["preflight", "open_pr"] as const) {
       let reset = 0;
       const b = await brokerWith(() => primary(reset));
       reset = Math.floor(b.now / 1000) + 900;
@@ -149,7 +148,7 @@ describe("broker: github_rate_limited", () => {
 
   it("a 429 or a 403 with retry-after gives github_rate_limited with the retry-after reset", async () => {
     for (const status of [429, 403]) {
-      for (const tool of ["preflight", "open_pr", "comment"] as const) {
+      for (const tool of ["preflight", "open_pr"] as const) {
         const b = await brokerWith(() => ({ status, body: SECONDARY_BODY, headers: { "retry-after": "60" } }));
         const r = await b.calls[tool]();
         expect(r).toMatchObject({ ok: false, error_code: GITHUB_RATE_LIMITED });

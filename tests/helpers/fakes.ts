@@ -677,7 +677,6 @@ export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
   { name: "github.push_branch", description: "push", input_schema: OBJECT_SCHEMA, read_only: false },
   { name: "github.open_pr", description: "open a PR", input_schema: OBJECT_SCHEMA, read_only: false },
   { name: "github.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
-  { name: "github.comment", description: "comment", input_schema: OBJECT_SCHEMA, read_only: false },
 ];
 
 /**
