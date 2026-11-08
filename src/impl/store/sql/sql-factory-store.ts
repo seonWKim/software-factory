@@ -1825,19 +1825,27 @@ export class SqlFactoryStore implements FactoryStore {
       if (row && row.role === "owner") return { ok: false as const, reason: "owner" as const };
       if (row) {
         await tx.run("UPDATE local_users SET role = ?, added_by = ? WHERE user_id = ?", [role, added_by, user_id]);
+        // Setting the role a user already has changes nothing, so it is not audited.
+        if (row.role !== role) await auditLocalUser(tx, { user_id, action: "change", old_role: row.role as string, new_role: role, actor: added_by, at: now });
         return { ok: true as const, created: false };
       }
       await tx.run("INSERT INTO local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, ?, NULL, ?, ?)", [user_id, role, added_by, now]);
+      await auditLocalUser(tx, { user_id, action: "add", old_role: null, new_role: role, actor: added_by, at: now });
       return { ok: true as const, created: true };
     });
   }
 
+  /** The audit row's actor is the owner: only the owner may remove a user (`factory users remove`, the Users page). */
   async removeLocalUser(user_id: UserId): Promise<"removed" | "missing" | "owner"> {
+    const now = this.now();
     return this.db.transaction(async (tx) => {
-      const [row] = await tx.all(`SELECT role FROM local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
+      const [row] = await tx.all(`SELECT role, added_by FROM local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
       if (!row) return "missing" as const;
       if (row.role === "owner") return "owner" as const;
+      const [owner] = await tx.all("SELECT user_id FROM local_users WHERE owner_slot = 1");
       await tx.run("DELETE FROM local_users WHERE user_id = ?", [user_id]);
+      const actor = (owner?.user_id ?? row.added_by) as string;
+      await auditLocalUser(tx, { user_id, action: "remove", old_role: row.role as string, new_role: null, actor, at: now });
       return "removed" as const;
     });
   }
@@ -2961,6 +2969,17 @@ function toCell(v: unknown): TableCell {
   if (v instanceof Date) return v.toISOString();
   if (v instanceof Uint8Array) return Buffer.from(v).toString("utf8");
   return String(v);
+}
+
+/** One `local_user_changes` row (design 08-permissions), inside the caller's transaction. */
+async function auditLocalUser(
+  tx: SqlExecutor,
+  c: { user_id: string; action: "add" | "change" | "remove"; old_role: string | null; new_role: string | null; actor: string; at: string },
+): Promise<void> {
+  await tx.run(
+    "INSERT INTO local_user_changes (user_id, action, old_role, new_role, actor, at) VALUES (?, ?, ?, ?, ?, ?)",
+    [c.user_id, c.action, c.old_role, c.new_role, c.actor, c.at],
+  );
 }
 
 function rowToLocalUser(r: Row): LocalUser {
