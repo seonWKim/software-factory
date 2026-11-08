@@ -3,6 +3,7 @@ import { Moon, RefreshCw, Sun } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Button } from "./components/ui/button.js";
+import { LINK_CLASS } from "./components/ui/link-style.js";
 import { cn } from "./lib/cn.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, PAGES, type PageDef, TOOL_PAGES, routeFor } from "./pages.js";
@@ -10,7 +11,7 @@ import { type Theme, saveTheme, storedTheme } from "./theme.js";
 import { DataPage } from "./views/data.js";
 import { FailuresPage } from "./views/failures.js";
 import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, WorkersPage } from "./views/pages.js";
-import { SettingsPage } from "./views/settings.js";
+import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 
@@ -115,6 +116,10 @@ export function App() {
               )}
             >
               Needs you ({needs ?? "…"})
+            </Link>
+            <ModeSwitch />
+            <Link href={`${BASE}settings`} className={cn("text-sm", LINK_CLASS)}>
+              Settings
             </Link>
             <span className="ml-auto text-sm text-zinc-600 tabular-nums dark:text-zinc-400" aria-live="polite">
               {overview.isError ? "update failed" : ago}

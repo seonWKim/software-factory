@@ -3,6 +3,7 @@
 // model call (no tools) for a draft cause and fix; one report is stored. After the run, the controller files each
 // new group as an item (fileReport) or comments its new runs on the open item filed for it before.
 
+import { PROTECTED_PATHS } from "./standing.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
@@ -131,19 +132,37 @@ function cmp(a: string, b: string): number {
 }
 
 /**
- * The owner-only paths (design §7): a change to any of them needs a human merge. One list, so the merge check can
- * reuse it. A path ending in `/` covers everything under it; any other names one file.
+ * The owner-only paths (design §7 and 03-risk): a change to any of them needs a human merge, and auto mode never
+ * approves or merges one. One list, the merge check's and auto mode's: these paths, widened with every standing-rule
+ * protected path (`PROTECTED_PATHS`, which holds `src/impl/grant/` and `src/core/tools/`). A path ending in `/`
+ * covers everything under it; any other names one file.
  */
-export const GATE_PATHS: readonly string[] = [
+export const GATE_PATHS: readonly string[] = [...new Set([
   "prompts/", "src/impl/broker/", "src/impl/egress/", "src/impl/secrets/", "src/impl/sandbox/", "src/impl/auth/",
   "src/impl/github/github-auth-provider.ts", "src/impl/github/github.plugin.ts",
   "src/core/checks.ts", "src/core/policy.ts", ".claude/", "factory.config.json",
-];
+  ...Object.values(PROTECTED_PATHS).flat(),
+])];
+
+/** Repo-relative, with a leading `./` or `/` dropped. */
+const repoPath = (path: string) => path.trim().replace(/^(?:\.\/|\/)+/, "");
 
 /** Whether a repo-relative path (a leading `./` or `/` ignored) is on the gate list or under one of its folders. */
 export function isGatePath(path: string): boolean {
-  const p = path.trim().replace(/^(?:\.\/|\/)+/, "");
+  const p = repoPath(path);
   return GATE_PATHS.some((g) => (g.endsWith("/") ? p === g.slice(0, -1) || p.startsWith(g) : p === g));
+}
+
+/**
+ * The first allowed path or changed file that touches the gate list, or null: one on it or under it, or a folder
+ * (ending in `/`) that holds a gate path (`src/` holds `src/core/policy.ts`). What auto mode refuses (design 03-risk).
+ */
+export function gatePathTouched(paths: readonly string[]): string | null {
+  for (const raw of paths) {
+    const p = repoPath(raw).replace(/\*+$/, "");
+    if (isGatePath(p) || ((p === "" || p.endsWith("/")) && GATE_PATHS.some((g) => g.startsWith(p)))) return raw;
+  }
+  return null;
 }
 
 /** At most this many model calls per improve run: the largest groups first; the rest are marked skipped. */
