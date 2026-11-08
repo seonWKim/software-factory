@@ -4,7 +4,7 @@
 
 import { ensureTopicTables } from "../../bus/index.js";
 import type { Dialect, SqlExecutor } from "../../state/index.js";
-import { CODE_ROOT } from "../settings/catalog.js";
+import { CODE_ROOT } from "../../state/index.js";
 import { loadRegistry } from "./registry.js";
 
 export async function ensureDiscoveredTopicTables(dialect: Dialect, db: SqlExecutor, root: string = CODE_ROOT): Promise<void> {

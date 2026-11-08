@@ -5,7 +5,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { RoleDescriptor } from "../../shared/role.js";
 import { type Located, loadDescriptors } from "../registry/registry.js";
-import { CODE_ROOT } from "../settings/catalog.js";
+import { CODE_ROOT } from "../../state/index.js";
 
 /** The role of a golden case with no `role` field. */
 export const DEFAULT_GOLDEN_ROLE = "review";

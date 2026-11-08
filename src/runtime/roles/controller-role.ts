@@ -7,7 +7,6 @@
 // The sync lease is made here and shared: inbound polls under it, the sync unit fences deliveries with it. Tests
 // drive the same path one step at a time through the tick* methods, which drain the bus.
 
-import { join } from "node:path";
 import {
   BUS_PERIODS, SqlBus, scheduleBus, scheduleComponent, type BusPlugin, type EventBus, type Inbox, type Relay, type RetryScheduler,
 } from "../../bus/index.js";
@@ -29,7 +28,7 @@ import {
 import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { tickAt, type Tick, type TickGenerator, type TickSource } from "../../shared/ticks/tick-generator.js";
-import type { SqlDriver } from "../../state/index.js";
+import { CODE_ROOT, type SqlDriver } from "../../state/index.js";
 import { ComponentConsumer } from "../consumer.js";
 import { loadHooks, runHooks } from "../hooks/run-hooks.js";
 import { SqlHookAudit } from "../hooks/sql-hook-audit.js";
@@ -61,8 +60,6 @@ type ComponentBus = EventBus & Inbox & Relay;
 const SYNC_OWNER = "controller";
 /** The forge's source type: the one synced type (design 05-coordination). */
 const SYNCED: SourceType = "github_issue";
-/** Where discovery looks: src/ (dist/ once built). */
-const CODE_ROOT = join(import.meta.dirname, "..", "..");
 /** Rounds of relay and consume one manual step runs at most before it leaves the rest to the next. */
 const MAX_DRAIN_ROUNDS = 50;
 

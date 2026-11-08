@@ -6,6 +6,6 @@ export { backupTables, restoreBackup, tableChecksum, verifyCopy, type BackupMani
 export { mysqlSnapshot, sqliteSnapshot } from "./snapshot.js";
 export { findDescriptorFiles } from "./discovery.js";
 export { defineMigration, migrationSpecProblems, type Dialect, type Migration, type MigrationDb, type MigrationDescriptor } from "./migrate/migration.js";
-export { applyMigrations, discoverMigrations, MIGRATIONS_TABLE, pendingMigrations } from "./migrate/runner.js";
+export { applyMigrations, CODE_ROOT, discoverMigrations, MIGRATIONS_TABLE, pendingMigrations } from "./migrate/runner.js";
 export { dropTables, LEGACY_PREFIX, renameTablesByCopy, tableColumns, tableExists, verifyRenamedTables, type Rename } from "./migrate/copy-tables.js";
 export { fingerprintTables, lostRows, type Fingerprint } from "./migrate/rehearse.js";

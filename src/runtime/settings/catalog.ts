@@ -3,10 +3,8 @@
 
 import { join } from "node:path";
 import type { SettingDescriptor } from "../../shared/setting.js";
+import { CODE_ROOT } from "../../state/index.js";
 import { type Located, loadDescriptors } from "../registry/registry.js";
-
-/** The code root: src/ (tests) or dist/ (built); this file is src/runtime/settings/catalog.ts. */
-export const CODE_ROOT = join(import.meta.dirname, "..", "..");
 
 export class SettingCatalog {
   private readonly byKey = new Map<string, Located<SettingDescriptor>>();

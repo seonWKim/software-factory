@@ -5,7 +5,7 @@
 import type { HookDescriptor, HookInput, HookPoint, Timer } from "../../shared/hook.js";
 import type { Located } from "../registry/registry.js";
 import { loadDescriptors } from "../registry/registry.js";
-import { CODE_ROOT } from "../settings/catalog.js";
+import { CODE_ROOT } from "../../state/index.js";
 
 export type HookOutcomeKind = "pass" | "veto" | "annotate" | "timeout" | "error";
 
