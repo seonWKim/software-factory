@@ -16,6 +16,11 @@ What it does: the forge is where pull requests live. The `Forge` interface (`src
 - Solo default: no forge; local items take the local broker and the local merge with no config, and no push row is written.
 - Enterprise: the `github` forge and GitHub broker for GitHub items, with local items on the local path beside them on the shared store, where a local merge is one conditional ref update and one conditional item transition, and its base push one claimed row, so two replicas never merge or push one change twice.
 
+- **Run push and PR** (`pushBranch(input)`, `openPr(input)`, optional; RFC 0015 M7): outbound's `github-push` and
+  `github-change` targets deliver an implement run's push and PR through them. `pushBranch` moves the remote factory
+  branch to the sha the run stored in the factory repo, reconciling first (already there: `already`); `openPr` opens
+  the branch's PR or updates the open one. Both throw on a failure, the message starting with its class; outbound
+  retries. Absent: no process here delivers a run's push.
 - **Base push** (`pushBase(input)`, optional; absent: the forge cannot push a base and no row is queued). Moves the remote base branch to `input.sha` only while it is still at `input.expected_sha`, never running a hook; throws on any failure, and the caller retries.
 
 `"none"` (or `null`, `false`, `""`) selects no forge. Next to `github-issues` an off value fails startup with a message naming `plugins.forge` and `github-issues`: that source's PRs would never close their items (one silent path fewer; it may be allowed later if someone needs it). An unknown name fails startup, naming `Forge`, `plugins.forge` and every available name. The forge is never a guard.
@@ -31,6 +36,12 @@ Plugins:
   - `commitsBetween`: one GET of the compare endpoint (`/compare/<from>...<to>`), its `ahead_by`. A 404 or 422 (a sha GitHub does not know, e.g. after a force-push) or no count gives null; any other failure throws, and the controller then records the count as unknown.
   - Events carry `change_ref` as `String(<PR number>)`; the forge turns it back into a number only at a GitHub API call. `setPrStatus` hands the issue source the PR as its `change_ref`.
   - Enable: list `github-issues` in `plugins.source`, or set `"plugins": { "forge": "github", ... }`.
+  - `pushBranch`: one `git ls-remote` and, unless the branch is already at the sha, one unforced
+    `git push --no-verify <sha>:refs/heads/<branch>` from the factory repo to its origin URL, factory branches only.
+    The token comes from the configured GitHub credentials (the forge plugin gets them since RFC 0015 M7) and reaches
+    git only through the child's env and an inline credential helper. `openPr`: the open PR for the branch updated
+    or a new one opened, then its labels (`src/impl/github/pull-requests.ts`, shared with the broker's
+    `github.open_pr`).
   - `pushBase`: one `git push --no-verify --force-with-lease=refs/heads/<base>:<expected_sha> origin <sha>:refs/heads/<base>` from the factory repo (`repo.path`), only for the configured base branch. It goes through the factory repo's own git configuration for origin, as the sandbox's fetches do, and makes no API call. Not built: pushing with the App credentials.
   - Secrets: none of its own (the shared client's `GitHubCredentials`).
 

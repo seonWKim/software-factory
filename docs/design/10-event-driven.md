@@ -237,8 +237,9 @@ force.
   effects until outbound's `local` delivery takes them. The `legacy-controller` bridge keeps "inbox row after the
   effect" for every message: no message it carries is exactly-once yet, since `commands` and the event units do not
   return one decision to commit with the inbox row. Solo and enterprise: the same; each replica runs every unit.
-- **Writes to the outside world leave through outbound** (since 2026-11-09, RFC 0015 M7, controller half and the
-  worker's comments; the worker's pushes and PR writes are still worker steps). Controller units store intents (thread
+- **Writes to the outside world leave through outbound** (since 2026-11-09, RFC 0015 M7, controller half, the
+  worker's comments and the implement run's push and PR; the resolve, update, wip and session pushes and the PR body
+  refresh are still broker calls). Controller units store intents (thread
   entries in `outbound_intents`; status labels, 👀, issue closes and posts with no thread entry in
   `outbound_actions`) instead of calling a source or the forge. The outbox step announces them as
   `DeliveryRequested{commit_id, commit_count, destination, intent_ids, reply}` on `deliveries.requests`
@@ -259,8 +260,8 @@ force.
   URLs (`delivery-results` handler). Changes in effect order: a reject or a split's close is recorded in the store
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
-  ratchets the writes still outside outbound (the worker's pushes and PR writes, the session's, base push, sub-issue
-  filing).
+  ratchets the writes still outside outbound (the resolve, update and wip pushes, the PR body refresh, the session's
+  push and PR, base push, sub-issue filing).
   - Keyed intents and the PR close (M7 worker half): an action may carry a key (`outbound_actions.intent_key`,
     unique when set; migration `20261109T0415-outbound-action-keys`), and recording it again stores nothing. The
     source close of an item with a PR records one `close_pr` action keyed `close_pr:<item>` (the comment's two
@@ -274,29 +275,49 @@ force.
     the outbox step announces like the controller's. The worker imports nothing of outbound: it writes the thread
     through the store and gets the forge's `prRef` (a pure function) from compose. A restart re-runs at most the
     step, whose entry is keyed by its marker, so it is delivered once. The broker's `github.comment` is gone.
-  - Pushes and PR open/update: decided, not built (M7 worker half, rest). A run will end with its commits in the
-    factory repo, not on the forge: its last trusted step (after the gates and the G5 branch scan) writes the run
-    folder's HEAD to a local ref of the factory repo with git's local transport, as the `local` broker does today,
-    so the worker holds no forge credential at all. It then records keyed intents: `push:<branch>:<sha>` and
-    `pr:<branch>` (title, body, labels). Outbound's `github-push` pushes the sha to the branch from the factory repo
-    with the credentials only its target holds (G1/G2), reconciling first (the remote ref already at the sha is
-    delivered with no push); `github-change` opens the PR or updates the open one (reconcile: an open PR for the
-    branch). The PR number does not come back to the run: the delivery records it on the action row, and the
-    controller applies it on `DeliveryCompleted` (the `delivery-results` handler: `change_ref` and `change_url` at
-    the item's version; the item waits meanwhile with `blocked_on: outbound`, `blocked_reason: pr_pending`, no new
-    stage), then queues the review as today. Not a run step that waits for the delivery: that would hold a worker
-    slot for up to `max_wait` under a low forge budget, tie run capacity to outbound's liveness, and put an item
-    decision in the worker. Restart safety: the steps are journaled, intents are keyed (a unique key on
-    `outbound_actions.intent_key`, built), and the targets reconcile before they send (§5.2). The
-    push failure classes the run reports today (`network_unavailable`, `forge_auth`, `github_rate_limited`,
-    `push_failed`) become delivery failures: retried by outbound with backoff, with the claim pauses moving to a
-    hold of the destination. The wip push of a failed run becomes the local ref only. The session's push
+  - An implement run's push and PR (decision changed 2026-11-09, M7 worker half; see History). The run's last
+    trusted step, after the gates, is `git.store_branch` (`STORE_BRANCH`, both brokers): the broker's trusted-git
+    checks and the G5 branch scan, then the run folder's HEAD written to a ref of this host's factory repo with git's
+    local transport (`storeBranch` in `src/impl/broker/trusted-git.ts`), no remote, no credential. The `local`
+    broker writes `refs/heads/<branch>` (unforced; the branch is the change, `forge: false`); the `github` broker
+    writes the staging ref `refs/factory/outbound/<branch>` (forced: only runs write it and each push names its sha;
+    outside `refs/heads/`, so no person's branch is touched), `forge: true`. The worker then records, through the
+    store (`FactoryStore.recordRunIntent`, outbound's `recordAction`; the worker imports nothing of outbound), the
+    action `push` keyed `push:<branch>:<sha>` and the action `pr` keyed `pr:<branch>:<run>` (title, body, labels,
+    base, run id), both to the destination `git:<host>:<branch>`, so the PR waits behind the push in one destination
+    order. The PR key names the run, not only the branch as decided before: each implement run's PR delivery is its
+    own, so an implement loop that pushes no new head still gets a delivery for the controller to wait on, and the
+    open PR's title and body follow each run (issue #229). The run's result carries `pr_pending: true` and the PR
+    key (`pr_intent`); no PR number. Outbound's `github-push` calls `Forge.pushBranch` (the GitHub forge: one
+    `ls-remote` to reconcile, a branch already at the sha is delivered with no push, then an unforced
+    `git push --no-verify <sha>:refs/heads/<branch>` from the factory repo to its origin URL, the token only in the
+    child's env through an inline credential helper; the forge plugin now gets the credentials, G1/G2: no agent and
+    no worker sees them). `github-change` calls `Forge.openPr` (reconcile: the branch's open PR is updated, never a
+    second opened; the same code as the broker's `github.open_pr`, `src/impl/github/pull-requests.ts`) and records
+    the PR number and link on the action row (`delivered_ref`, `delivered_url`; migration
+    `20261109T1130-outbound-action-results`). The PR's title, body and labels are egress-scanned there (G5); a
+    flagged text opens the PR with the withheld notice only. The controller sets the item `blocked_on: outbound`,
+    `blocked_reason: pr_pending` (stage stays `RUNNING`; `outbound` is a new `blocked_on` value, shown as its stage
+    like `dependency`), and on `DeliveryCompleted` the outbox unit hands the delivered `pr` action to
+    `run-results.prDelivered`, which, at the item's version and only while it waits, sets `REVIEW`, `change_ref`,
+    `change_url` and queues the review as an implement result did (state change `pr_delivered`). A PR delivered
+    before the run's result is applied (outbound ran first) is read by its key and applied with the result
+    (`implemented`). Restart safety: the steps are journaled, the intents keyed, the targets reconcile, and a worker
+    that lost its lease records nothing (`recordPushedHead` refuses it first). Failures: `network_unavailable`,
+    `forge_auth`, `github_rate_limited` and `push_failed` from the push or the PR are delivery failures, the message
+    starting with the class; outbound retries the batch with its backoff, and the failed batch holds its destination
+    (later batches of the branch wait). Changed from the run-time behaviour: these no longer fail the run, keep a
+    wip branch or pause claims (the implement preflight still pauses claims on `forge_auth`, a rate limit and the
+    network, before any agent runs); a forge outage delays the PR instead of spending a run attempt. A failure of
+    the store step itself still keeps the commits on the run's wip branch, which still goes through the broker's
+    `github.push_branch` (the run passport names that branch, `wip_branch`). Solo default: one machine; a process
+    with no replica id flushes every host's pushes (`git`), one with a replica id only its own host's
+    (`git:<host>`). Enterprise setting: a factory repo per host, so a push's destination names the host that holds
+    the ref, and only that host's outbound flushes it (the flush's "kinds this process can write now"). Not built
+    yet: the resolve, update and wip pushes, the PR body refresh after them (`runner.ts`), the session's push and PR
     (`factory session finish`), the base push (the `local` target over `base_pushes`) and sub-issue filing (a keyed
-    `file_sub_issue` action whose delivered ref the phases unit records) take the same path, as the PR close does. Solo default: the factory repo is on the one
-    machine, and every process's outbound can push from it. Enterprise setting: a factory repo per host, so a
-    push's destination names the host that holds the ref (`git:<host>:<branch>`) and only that host's outbound
-    flushes it (the flush's "kinds this process can write now"); the PR intent waits behind the push in the same
-    destination order. Outbound uses its service passport (M9) for these deliveries once they exist.
+    `file_sub_issue` action whose delivered ref the phases unit records) take the same path next; outbound uses
+    its service passport (M9) once it has one.
 - **Run roles declare a Rule of Two profile and drive the agent** (since 2026-11-08, RFC 0015 M10; decision changed
   in the M6 leftovers: roles now drive prompts and tools, see History). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
@@ -420,6 +441,10 @@ force.
   which also hid values cut to their column.
 - **Contract migrations** (decision changed 2026-11-09, RFC 0015 M11). Before: the runner applied every pending
   migration, a contract one too, on open (SQLite) and on `npm run migrate` (MySQL); none was written yet.
+- **An implement run's push and PR** (decision changed 2026-11-09, RFC 0015 M7 worker half). Before: the implement
+  run pushed its branch (`github.push_branch`) and opened or updated its PR (`github.open_pr`) through the broker in
+  its own steps, returned the PR number in its result, and a push or PR failure failed the run, kept a wip branch and,
+  for `forge_auth` or a rate limit, paused claims. The decision before the build keyed the PR intent `pr:<branch>`.
 - **A run's comments** (decision changed 2026-11-09, RFC 0015 M7 worker half). Before: the worker posted its gate,
   review and update comments itself through the broker's `github.comment`, inside the run, and an update run failed
   when its comment failed.
