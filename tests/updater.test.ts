@@ -23,8 +23,6 @@ import { recordingLog, waitFor } from "./helpers/fakes.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
-const RUNTIME = ".factory/runtime";
-const STAGING = ".factory/runtime-next";
 const DEPS = ".factory/deps";
 /** The version folder for a revision. */
 const V = (rev: string) => `.factory/versions/${rev}`;
@@ -244,8 +242,7 @@ function setup(
   const clock = new FakeClock();
   const updater = new GitWorktreeUpdater({
     repoPath: world.root,
-    runtimeDir: join(world.root, RUNTIME),
-    stagingDir: join(world.root, STAGING),
+    stateDir: join(world.root, ".factory"),
     baseBranch: "main",
     run: world.run,
     launcher,
@@ -382,7 +379,7 @@ describe("updater: code root and state root", () => {
     await expect(loadConfig(bad)).rejects.toThrow(/repo\.install_command/);
   });
 
-  it("the registry wires git-worktree to the main checkout; versions/ and deps/ sit in the state dir beside the legacy runtime/", async () => {
+  it("the registry wires git-worktree to the main checkout; versions/ and deps/ sit in the state dir", async () => {
     vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", "/nonexistent/.env");
     const main = checkout({ ...REAL, store: { type: "sqlite" } }, "main");
     const loaded = await loadConfig(main);
@@ -390,8 +387,8 @@ describe("updater: code root and state root", () => {
     const world = new World();
     const u = await createUpdater(loaded, { run: world.run, launcher: new FakeLauncher(world), clock: new FakeClock(), log: recordingLog() });
     expect(u).toBeInstanceOf(GitWorktreeUpdater);
-    const o = (u as unknown as { o: { repoPath: string; runtimeDir: string; baseBranch: string } }).o;
-    expect(o).toMatchObject({ repoPath: main, runtimeDir: join(main, ".factory", "runtime"), baseBranch: "main" });
+    const o = (u as unknown as { o: { repoPath: string; stateDir: string; baseBranch: string } }).o;
+    expect(o).toMatchObject({ repoPath: main, stateDir: join(main, ".factory"), baseBranch: "main" });
     const dirs = u as unknown as { versionsDir: string; depsDir: string };
     expect(dirs.versionsDir).toBe(join(main, ".factory", "versions"));
     expect(dirs.depsDir).toBe(join(main, ".factory", "deps"));
@@ -1162,31 +1159,6 @@ describe("updater: git-worktree cleanup", () => {
     a.launcher.children[0]!.exit(0);
     await b.updater.poll();
     expect(a.world.versions()).toEqual(["c2", "c3"]);
-  });
-
-  it("first start under the new layout removes the legacy runtime/ and runtime-next/ through git worktree remove", async () => {
-    const { world, updater } = setup();
-    for (const d of [RUNTIME, STAGING]) {
-      mkdirSync(world.path(d), { recursive: true });
-      writeFileSync(world.path(`${d}/.git`), "gitdir: x");
-    }
-    await updater.start();
-    expect(world.removed).toEqual([RUNTIME, STAGING]);
-    expect(world.calls).toContain(`.: git worktree remove --force ${world.path(RUNTIME)}`);
-    expect(existsSync(world.path(RUNTIME))).toBe(false);
-    expect(existsSync(world.path(STAGING))).toBe(false);
-  });
-
-  it("the legacy folders wait while the sweep finds a live child", async () => {
-    const world = new World();
-    mkdirSync(world.path(RUNTIME), { recursive: true });
-    mkdirSync(world.path(V("c0")), { recursive: true });
-    writeFileSync(world.path(`${V("c0")}/${PID_FILE}`), "4242\n");
-    world.alive.add(4242);
-    const { updater } = setup({ world });
-    await updater.start();
-    expect(existsSync(world.path(RUNTIME))).toBe(true);
-    expect(world.versions()).toContain("c0");
   });
 
   it("removal through a real git repository: git worktree list has no entry, and the linked install survives", async () => {

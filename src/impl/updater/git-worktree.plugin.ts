@@ -45,8 +45,7 @@ export default definePlugin({
     const at: MigrateAt = { repoPath: c.loaded.root, configFile: c.loaded.externalConfig };
     return new GitWorktreeUpdater({
       repoPath: c.loaded.root,
-      runtimeDir: join(c.loaded.stateDir, "runtime"),
-      stagingDir: join(c.loaded.stateDir, "runtime-next"),
+      stateDir: c.loaded.stateDir,
       baseBranch: c.loaded.config.repo.base_branch,
       ...(c.loaded.config.local_only ? { local: true } : {}),
       run: c.run,

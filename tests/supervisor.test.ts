@@ -141,8 +141,7 @@ function setup(opts: { ui?: boolean } = {}) {
   const log = recordingLog();
   const updater = new GitWorktreeUpdater({
     repoPath: f.root,
-    runtimeDir: join(f.root, ".factory", "runtime"),
-    stagingDir: join(f.root, ".factory", "runtime-next"),
+    stateDir: join(f.root, ".factory"),
     baseBranch: "main",
     run: f.run,
     launcher: f.launcher,
