@@ -5,7 +5,7 @@ import { aggregate } from "../../src/outbound/aggregator/aggregator.js";
 import type { Delivery, DeliveryTarget } from "../../src/outbound/targets/target.js";
 import { tickAt } from "../../src/shared/ticks/tick-generator.js";
 import { cleanScanner, silent } from "../helpers/fakes.js";
-import { newStore } from "../helpers/store.js";
+import { BACKENDS, newStore } from "../helpers/store.js";
 
 // A flush sends at most 50 batches. Batches for a destination kind this process cannot write (no adapter here, or
 // the sync lease is another replica's) stay due; they must not fill those 50 and starve the kinds it can write.
@@ -96,8 +96,8 @@ describe("outbound flush", () => {
     expect(rows[0]).toMatchObject({ outcome: "failed", last_error: "Not Found" });
   });
 
-  it("an intent that joins the batch between the flush's read and its claim is still delivered", async () => {
-    const { store } = await newStore();
+  it.each(BACKENDS)("$name: an intent that joins the batch between the flush's read and its claim is still delivered", async (backend) => {
+    const { store } = (await backend.make()) as unknown as Awaited<ReturnType<typeof newStore>>;
     const target: SourceRef = { type: "local", id: "local-1", link: "l" };
     await batch(store.db, 0, target, { action: "post", args: { body: "first", marker: "m0" } });
     await recordAction(store.db, { action: "post", args: { body: "joined", marker: "m1" }, target }, at);
