@@ -1601,6 +1601,10 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t)),
       ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
       "runtime_schema_migrations",
+      // Tables of timestamped component migrations (RFC 0015 §6.3).
+      "authz_audit",
+      "identity_passports",
+      "identity_revocations",
     ];
 
     it("lists every table of the schema with its row count, columns, primary key and order", async () => {
