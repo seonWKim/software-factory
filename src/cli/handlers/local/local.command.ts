@@ -3,6 +3,8 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildStatsStore } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
+import { ProfileStore } from "../../../identity/index.js";
+import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import { CLI_COMMANDS, CLI_TOP_WORDS, cliIdentity, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
@@ -46,6 +48,7 @@ export default defineCommand({
           project: async () => (await resolveProject())?.key ?? null,
           read: (path) => readFile(path, "utf8"),
           newId: () => randomUUID(),
+          displayNames: (ids) => new ProfileStore(storeSql(store)).displayNames(ids),
         },
         action,
       );
