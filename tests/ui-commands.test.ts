@@ -179,6 +179,19 @@ describe("app command requests: refusals", () => {
     expect(h.source.comments).toHaveLength(1);
   });
 
+  it("a merge request on a GitHub item is refused once with no state change: the page merges local items only", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" }, 1);
+    const r = await h.request("k1", WRITER, "merge", { work_item_id: it1.id });
+    await h.controller.tickCommands();
+    await h.controller.tickCommands();
+
+    expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
+    const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
+    expect(posted.map((c) => c.body)).toEqual([`\`merge\` was not applied: ${it1.id} is not a local item: merge its PR instead.`]);
+    expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(posted[0]!.body);
+  });
+
   it("an odd command name is not echoed into the reply", async () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);

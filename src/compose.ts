@@ -36,7 +36,7 @@ import type { Forge } from "./interfaces/forge.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
-import type { AuthProvider } from "./interfaces/auth-provider.js";
+import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -950,22 +950,25 @@ export async function buildUiParts(loaded: Loaded, opts: { actor: string }): Pro
     resolveProject: storeProjectResolver(store, { owner, name }),
     csrfToken: token,
   };
-  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
-  const commands: UiCommands = { actor: uiUserId(loaded.file.ui), token };
-  // The owner check for "Resume now": the configured auth plugin over the local grants only (a remote grant such as
-  // github-permission would call the forge, so it is left out here; `factory resume` needs no grant).
+  // The owner check for "Resume now" and the Merge button's approve_merge check: the configured auth plugin over the
+  // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
+  // `factory resume` needs no grant). A remote-only grant therefore shows no Merge button.
   const base = p.base;
   const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
   const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
+    const project = await settings.resolveProject();
+    if (!project) return { allow: false, reason: "no project is stored yet" };
+    return auth.authorize({ user_id, attributes: {} }, action, { kind: "project", id: project.key });
+  };
+  // One token per process for every write route; held only in memory, never written to a file, the store or a log.
+  const actor = uiUserId(loaded.file.ui);
+  const commands: UiCommands = { actor, token, mergeAllowed: async () => actor !== null && (await onProject(actor, "approve_merge")).allow };
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
     principal: async () => (await auth.resolve({ provider: "local", subject: opts.actor.replace(/^local:/, "") }))?.user_id ?? cliUser,
-    authorize: async (user_id) => {
-      const project = await settings.resolveProject();
-      if (!project) return { allow: false, reason: "no project is stored yet" };
-      return auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: project.key });
-    },
+    authorize: (user_id) => onProject(user_id, "approve_spec"),
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
