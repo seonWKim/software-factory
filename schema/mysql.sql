@@ -74,6 +74,126 @@ CREATE TABLE `bus_controller_commands_retries` (
   KEY `bus_controller_commands_retries_due` (`next_attempt_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `bus_deliveries_requests` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `type` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `schema_version` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition` bigint NOT NULL,
+  `project_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key_ttl_ms` bigint DEFAULT NULL,
+  `causation_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `correlation_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `passport_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `producer` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `occurred_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `not_before` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `payload` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `published_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `id` (`id`),
+  KEY `bus_deliveries_requests_partition` (`partition`,`seq`),
+  KEY `bus_deliveries_requests_due` (`not_before`),
+  KEY `bus_deliveries_requests_published` (`published_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_deliveries_requests_cursors` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition` bigint NOT NULL,
+  `last_seq` bigint NOT NULL DEFAULT '0',
+  `owner` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `lease_token` bigint NOT NULL DEFAULT '0',
+  `lease_until` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`consumer_group`,`partition`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_deliveries_requests_dead_letters` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_seq` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `attempts` bigint NOT NULL,
+  `error_code` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `last_error` text COLLATE utf8mb4_bin,
+  `dead_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `replayed_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `replayed_by` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`consumer_group`,`message_seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_deliveries_requests_retries` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_seq` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `attempt` bigint NOT NULL,
+  `next_attempt_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `last_error` text COLLATE utf8mb4_bin,
+  PRIMARY KEY (`consumer_group`,`message_seq`),
+  KEY `bus_deliveries_requests_retries_due` (`next_attempt_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_deliveries_results` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `type` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `schema_version` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition` bigint NOT NULL,
+  `project_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key_ttl_ms` bigint DEFAULT NULL,
+  `causation_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `correlation_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `passport_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `producer` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `occurred_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `not_before` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `payload` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `published_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `id` (`id`),
+  KEY `bus_deliveries_results_partition` (`partition`,`seq`),
+  KEY `bus_deliveries_results_due` (`not_before`),
+  KEY `bus_deliveries_results_published` (`published_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_deliveries_results_cursors` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `partition` bigint NOT NULL,
+  `last_seq` bigint NOT NULL DEFAULT '0',
+  `owner` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `lease_token` bigint NOT NULL DEFAULT '0',
+  `lease_until` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`consumer_group`,`partition`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_deliveries_results_dead_letters` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_seq` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `attempts` bigint NOT NULL,
+  `error_code` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `last_error` text COLLATE utf8mb4_bin,
+  `dead_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `replayed_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `replayed_by` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`consumer_group`,`message_seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `bus_deliveries_results_retries` (
+  `consumer_group` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_seq` bigint NOT NULL,
+  `subject` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `attempt` bigint NOT NULL,
+  `next_attempt_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `last_error` text COLLATE utf8mb4_bin,
+  PRIMARY KEY (`consumer_group`,`message_seq`),
+  KEY `bus_deliveries_results_retries_due` (`next_attempt_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `bus_inbound_records` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
@@ -1277,6 +1397,21 @@ CREATE TABLE `legacy_work_items` (
   KEY `work_items_change` (`project`,`change_ref`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `outbound_actions` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `work_item_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `source_type` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `target` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `action` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `args` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `delivered_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `outcome` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `last_error` mediumtext COLLATE utf8mb4_bin,
+  PRIMARY KEY (`seq`),
+  KEY `outbound_actions_pending` (`delivered_at`,`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `outbound_base_pushes` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `work_item_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
@@ -1295,6 +1430,39 @@ CREATE TABLE `outbound_base_pushes` (
   UNIQUE KEY `base_pushes_item` (`work_item_id`),
   KEY `base_pushes_pending` (`finished_at`,`next_attempt_at`),
   CONSTRAINT `outbound_base_pushes_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `outbound_batch_intents` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `intent_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `batch_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `commit_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `commit_count` bigint NOT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `intent_id` (`intent_id`),
+  KEY `outbound_batch_intents_batch` (`batch_id`,`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `outbound_batches` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `destination` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `state` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `intent_count` bigint NOT NULL,
+  `reply` bigint NOT NULL DEFAULT '0',
+  `attempts` bigint NOT NULL DEFAULT '0',
+  `last_error` mediumtext COLLATE utf8mb4_bin,
+  `opened_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `flush_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `sent_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `claim_token` bigint NOT NULL DEFAULT '0',
+  `claimed_until` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `id` (`id`),
+  UNIQUE KEY `idempotency_key` (`idempotency_key`),
+  KEY `outbound_batches_flush` (`state`,`flush_at`),
+  KEY `outbound_batches_destination` (`destination`,`seq`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE `outbound_deliveries` (
@@ -1320,6 +1488,16 @@ CREATE TABLE `outbound_forge_budget` (
   `reset_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `updated_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   PRIMARY KEY (`project_key`,`plugin`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `outbound_inbox` (
+  `consumer` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `idempotency_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `processed_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `expires_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`consumer`,`idempotency_key`),
+  KEY `outbound_inbox_expiry` (`expires_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE `outbound_intents` (
@@ -1356,6 +1534,28 @@ CREATE TABLE `outbound_label_states` (
   `updated_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   PRIMARY KEY (`source_id`,`target`),
   UNIQUE KEY `seq` (`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `outbound_outbox` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `topic` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `message_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `envelope` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `commit_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `published_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `message_id` (`message_id`),
+  KEY `outbound_outbox_pending` (`published_at`,`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `outbound_requests` (
+  `intent_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `destination` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `commit_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `commit_count` bigint NOT NULL,
+  `requested_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`intent_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE `runtime_child_restarts` (

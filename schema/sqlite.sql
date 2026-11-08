@@ -65,6 +65,114 @@ CREATE TABLE bus_controller_commands_retries (
   PRIMARY KEY (consumer_group, message_seq)
 );
 
+CREATE TABLE bus_deliveries_requests (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  partition_key TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  idempotency_key_ttl_ms INTEGER,
+  causation_id TEXT,
+  correlation_id TEXT NOT NULL,
+  passport_id TEXT,
+  producer TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  not_before TEXT,
+  payload TEXT NOT NULL,
+  published_at TEXT NOT NULL
+);
+
+CREATE TABLE bus_deliveries_requests_cursors (
+  consumer_group TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  owner TEXT,
+  lease_token INTEGER NOT NULL DEFAULT 0,
+  lease_until TEXT,
+  PRIMARY KEY (consumer_group, `partition`)
+);
+
+CREATE TABLE bus_deliveries_requests_dead_letters (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  error_code TEXT NOT NULL,
+  last_error TEXT,
+  dead_at TEXT NOT NULL,
+  replayed_at TEXT,
+  replayed_by TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_deliveries_requests_retries (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_deliveries_results (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  id TEXT NOT NULL UNIQUE,
+  type TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  partition_key TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  idempotency_key_ttl_ms INTEGER,
+  causation_id TEXT,
+  correlation_id TEXT NOT NULL,
+  passport_id TEXT,
+  producer TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  not_before TEXT,
+  payload TEXT NOT NULL,
+  published_at TEXT NOT NULL
+);
+
+CREATE TABLE bus_deliveries_results_cursors (
+  consumer_group TEXT NOT NULL,
+  `partition` INTEGER NOT NULL,
+  last_seq INTEGER NOT NULL DEFAULT 0,
+  owner TEXT,
+  lease_token INTEGER NOT NULL DEFAULT 0,
+  lease_until TEXT,
+  PRIMARY KEY (consumer_group, `partition`)
+);
+
+CREATE TABLE bus_deliveries_results_dead_letters (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempts INTEGER NOT NULL,
+  error_code TEXT NOT NULL,
+  last_error TEXT,
+  dead_at TEXT NOT NULL,
+  replayed_at TEXT,
+  replayed_by TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
+CREATE TABLE bus_deliveries_results_retries (
+  consumer_group TEXT NOT NULL,
+  message_seq INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  attempt INTEGER NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  last_error TEXT,
+  PRIMARY KEY (consumer_group, message_seq)
+);
+
 CREATE TABLE bus_inbound_records (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   id TEXT NOT NULL UNIQUE,
@@ -973,6 +1081,19 @@ CREATE TABLE "legacy_work_items" (
     UNIQUE (source_type, source_id)
   );
 
+CREATE TABLE outbound_actions (
+  seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+  work_item_id  TEXT,
+  source_type   TEXT NOT NULL,
+  target        TEXT NOT NULL,
+  action        TEXT NOT NULL,
+  args          TEXT NOT NULL,
+  created_at    TEXT NOT NULL,
+  delivered_at  TEXT,
+  outcome       TEXT,
+  last_error    TEXT
+);
+
 CREATE TABLE outbound_base_pushes (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,
     work_item_id     TEXT NOT NULL UNIQUE REFERENCES controller_work_items(id),
@@ -988,6 +1109,31 @@ CREATE TABLE outbound_base_pushes (
     last_error       TEXT,
     created_at       TEXT NOT NULL
   );
+
+CREATE TABLE outbound_batch_intents (
+  seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+  intent_id     TEXT NOT NULL UNIQUE,
+  batch_id      TEXT NOT NULL,
+  commit_id     TEXT NOT NULL,
+  commit_count  INTEGER NOT NULL
+);
+
+CREATE TABLE outbound_batches (
+  seq              INTEGER PRIMARY KEY AUTOINCREMENT,
+  id               TEXT NOT NULL UNIQUE,
+  destination      TEXT NOT NULL,
+  idempotency_key  TEXT NOT NULL UNIQUE,
+  state            TEXT NOT NULL,
+  intent_count     INTEGER NOT NULL,
+  reply            INTEGER NOT NULL DEFAULT 0,
+  attempts         INTEGER NOT NULL DEFAULT 0,
+  last_error       TEXT,
+  opened_at        TEXT NOT NULL,
+  flush_at         TEXT NOT NULL,
+  sent_at          TEXT,
+  claim_token      INTEGER NOT NULL DEFAULT 0,
+  claimed_until    TEXT
+);
 
 CREATE TABLE outbound_deliveries (
     source_id        TEXT NOT NULL,
@@ -1011,6 +1157,15 @@ CREATE TABLE outbound_forge_budget (
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (project_key, plugin)
   );
+
+CREATE TABLE outbound_inbox (
+  consumer TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  message_id TEXT NOT NULL,
+  processed_at TEXT NOT NULL,
+  expires_at TEXT,
+  PRIMARY KEY (consumer, idempotency_key)
+);
 
 CREATE TABLE outbound_intents (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1039,6 +1194,24 @@ CREATE TABLE outbound_label_states (
     updated_at    TEXT NOT NULL,
     PRIMARY KEY (source_id, target)
   );
+
+CREATE TABLE outbound_outbox (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  envelope TEXT NOT NULL,
+  commit_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  published_at TEXT
+);
+
+CREATE TABLE outbound_requests (
+  intent_id     TEXT NOT NULL PRIMARY KEY,
+  destination   TEXT NOT NULL,
+  commit_id     TEXT NOT NULL,
+  commit_count  INTEGER NOT NULL,
+  requested_at  TEXT NOT NULL
+);
 
 CREATE TABLE runtime_child_restarts (
     restart_key  TEXT PRIMARY KEY,
@@ -1187,6 +1360,22 @@ CREATE INDEX bus_controller_commands_published ON bus_controller_commands (publi
 
 CREATE INDEX bus_controller_commands_retries_due ON bus_controller_commands_retries (next_attempt_at);
 
+CREATE INDEX bus_deliveries_requests_due ON bus_deliveries_requests (not_before) WHERE not_before IS NOT NULL;
+
+CREATE INDEX bus_deliveries_requests_partition ON bus_deliveries_requests (`partition`, seq);
+
+CREATE INDEX bus_deliveries_requests_published ON bus_deliveries_requests (published_at);
+
+CREATE INDEX bus_deliveries_requests_retries_due ON bus_deliveries_requests_retries (next_attempt_at);
+
+CREATE INDEX bus_deliveries_results_due ON bus_deliveries_results (not_before) WHERE not_before IS NOT NULL;
+
+CREATE INDEX bus_deliveries_results_partition ON bus_deliveries_results (`partition`, seq);
+
+CREATE INDEX bus_deliveries_results_published ON bus_deliveries_results (published_at);
+
+CREATE INDEX bus_deliveries_results_retries_due ON bus_deliveries_results_retries (next_attempt_at);
+
 CREATE INDEX bus_inbound_records_due ON bus_inbound_records (not_before) WHERE not_before IS NOT NULL;
 
 CREATE INDEX bus_inbound_records_partition ON bus_inbound_records (`partition`, seq);
@@ -1275,11 +1464,23 @@ CREATE INDEX inbound_raw_records_seq ON inbound_raw_records (source_type, seq);
 
 CREATE INDEX link_codes_live ON "legacy_link_codes" (used_at, expires_at);
 
+CREATE INDEX outbound_actions_pending ON outbound_actions (delivered_at, seq);
+
 CREATE INDEX outbound_base_pushes_pending ON outbound_base_pushes (finished_at, next_attempt_at);
+
+CREATE INDEX outbound_batch_intents_batch ON outbound_batch_intents (batch_id, seq);
+
+CREATE INDEX outbound_batches_destination ON outbound_batches (destination, seq);
+
+CREATE INDEX outbound_batches_flush ON outbound_batches (state, flush_at);
+
+CREATE INDEX outbound_inbox_expiry ON outbound_inbox (expires_at);
 
 CREATE INDEX outbound_intents_item ON outbound_intents (work_item_id, seq);
 
 CREATE INDEX outbound_intents_pending ON outbound_intents (delivered_at, source_type, next_attempt_at);
+
+CREATE INDEX outbound_outbox_pending ON outbound_outbox (published_at, seq);
 
 CREATE INDEX runs_claim ON "legacy_runs" (status, kind, created_at);
 
