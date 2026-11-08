@@ -289,6 +289,21 @@ describe("split spec flow", () => {
     expect(f.source.comments.some((c) => c.body.includes("already approved"))).toBe(false);
   });
 
+  it("a phase whose text the egress scan flags is filed with the withheld notice only, under its marker (G5)", async () => {
+    const f = await setup();
+    const parent = await f.intake(76);
+    const token = `ghp_${"a".repeat(36)}`;
+    const spec = bigSpec(2);
+    await f.finish("triage", f.triaged({ ...spec, phases: [{ ...spec.phases[0]!, problem: `Rotate ${token}` }, spec.phases[1]!] }));
+    await f.approve(issueRef(76));
+    const [s1, s2] = f.source.subIssues;
+    expect(s1!.body).not.toContain(token);
+    expect(s1!.body).toContain("withheld by the leak scanner (github_token)");
+    expect(s1!.marker).toBe(phaseMarker(parent.id, 1));
+    expect(s2!.body).toContain("Problem of part 2");
+    expect(await f.get(parent)).toMatchObject({ blocked_reason: PHASES_OPEN });
+  });
+
   it("a filing whose process stopped right after the claim goes on at the next phase tick; /approve meanwhile is refused", async () => {
     const f = await setup();
     const parent = await f.intake(79);
