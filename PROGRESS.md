@@ -49,7 +49,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 2 | Components and discovery | done | 2279de4, 8e46469; re-planned: CLI + plugin discovery now, legacy code moves with its rewrite |
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core merged | merge 8823984; bus contract green on SQLite and MySQL; components' outboxes not wired yet |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | done (strangler) | inbound polls and stores, `normalize-source` → `controller.commands` → legacy decisions; command tables merged (D7) |
-| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; the units' I/O is in its ratchet (pure load/decide split next) |
+| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; split into load/decide: reaper, mirror, transitions; reading through the reader and writing through the kernel: outbox (the one reply path), auth, checks-gate, run-results, commands, app-requests, standing, verdicts, merge-check; the rest in its ratchet |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker half (push, PR open, review comments) left |
 | 8 | Merge queue | depth 1 merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands. Left: `MergeCheckTimedOut` (units cannot emit yet), the depth setting and speculative depth, the outbound merge deliveries (M7 takes over `LocalMergeUnit.land`), `github-change` merge |
@@ -173,7 +173,7 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 | file-budget | 0 files | src files over 60,000 lines: the owner raised the 600 limit 100× for the refactor; M11 sets it back to 600 and relists the big files |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
-| unit-purity | 39 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); each goes as its unit gets a pure load/decide split (reaper, mirror, transitions are off it) |
+| unit-purity | 25 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); a unit goes once its reads go through the kernel's reader and its writes through `commit`/`commitItem` (reaper, mirror, transitions also split into load/decide) |
 | dependency-direction | 295 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
 
 ## Decisions taken while implementing
@@ -327,9 +327,13 @@ M5 follow-up (pure units, partial):
   optional time source). `tick_ms` is read again before each wait (`Period`), as it was each pass before.
 - Pure: `reaper`, `mirror`, `transitions`. `transitions`' follow-ups (`outbox.showStatus`, `local-merge.stopAuto`)
   are still other units' operations, which the unit-purity regex does not see.
-- Not converted: `run-results` and `commands`. Their decisions post through `outbox.comment` (whose returned URL
-  goes into the patch) and call `checks-gate`, `standing`, `local-merge`, `auth` inline, so they become pure only
-  after those operations are reads and writes; converting them first would only hide the I/O behind other units.
+- Follow-up (second pass): every reply is a `threadEntry` write (`outbox.post` commits it; the earlier delivery's
+  URL is read first), `auth` and the forge's PR check reads are on the reader, and `stopAuto`, verdicts, budget
+  answers, coordination approvals, app request marks and standing rules are kernel writes. That takes `outbox`,
+  `auth`, `checks-gate`, `run-results`, `commands`, `app-requests`, `standing`, `verdicts` and `merge-check` off the
+  ratchet. They are not split into load/decide: `run-results` and `commands` still interleave reads, other units'
+  operations and writes in one method, so their messages cannot yet commit with the inbox row in one transaction
+  (not built for that reason). `merge-check` still hands the store and sandbox to `MergeChecker`, which the regex misses.
 - The `legacy-controller` bridge keeps "inbox row after the effect" for every message; nothing it carries is
   exactly-once yet.
 - Still reading `clock.now()` in units: `run-results` (2), `coordination` (5), `model-probe` (2), `commands` (1),
@@ -351,11 +355,13 @@ M5 follow-up (pure units, partial):
 0. M6 leftovers: the runner's waits (idle loop, heartbeat interval, pause and diff watches, host-sleep check) onto a
    TickGenerator; the engine's reaper tick once the controller's reaper unit stops requeueing; steps for update and
    resolve; compose passes the deployed revision as `code_version`; roles drive prompts and tools.
-1. M5 follow-up: pure units, leaves first. The contract, the TickGenerator loop and `reaper`, `mirror`,
-   `transitions` are done. Next: the shared reply path (`outbox.comment`/`post` as `threadEntry` writes, with the
-   existing delivery's URL read in `load`) once M7 lands, `checks-gate`/`local-merge` once M8 lands, `auth` as a read;
-   then `run-results` and `commands`; then a store call that runs a decision's writes and the inbox row in one
-   transaction, and the `legacy-controller` bridge's "inbox row after the effect" goes.
+1. M5 follow-up: pure units, leaves first. Done: the contract, the TickGenerator loop (`tick_ms` live), `reaper`,
+   `mirror`, `transitions` split; the one reply path; `outbox`, `auth`, `checks-gate`, `run-results`, `commands`,
+   `app-requests`, `standing`, `verdicts`, `merge-check` read through the reader and write through the kernel. Next:
+   split `commands` and `run-results` into load/decide (their methods still interleave reads, other units' operations
+   and writes); `merge-check`'s `MergeChecker` off the store; the rest of the ratchet (`intake`, `closes`, `phases`,
+   `coordination`, `pr-events`, `sync`, `improve`, `alarms`, `model-probe`); then a store call that runs a decision's
+   writes and the inbox row in one transaction, and the `legacy-controller` bridge's "inbox row after the effect" goes.
 2. M3 leftovers (the bus plugin, `requires` and dead-letter alarms are done):
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
    - the worker declares its `capabilities` when `runs.requests` lands (M6);
