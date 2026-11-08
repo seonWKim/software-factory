@@ -77,6 +77,34 @@ describe("an implement run's push and PR leave through outbound", () => {
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42", blocked_on: "none" });
   });
 
+  it("a PR delivered while the run's result is decided (its handler found the item not waiting yet) still goes on the item", async () => {
+    const f = await pipeline();
+    const it0 = await f.submit();
+    await f.w1.tick(); // triage
+    await f.controller.tickRuns();
+    await f.w1.tick(); // implement: its intents are stored, its result not applied yet
+    const results = await f.controller.unit("run-results");
+    const k = (results as unknown as { c: { k: { actionByKey(key: string): Promise<{ delivered_ref: string | null } | null> } } }).c.k;
+    const read = k.actionByKey.bind(k);
+    let raced = false;
+    k.actionByKey = async (key) => {
+      const seen = await read(key);
+      if (!raced && key.startsWith("pr:")) {
+        raced = true;
+        // Outbound delivers the PR now, and its DeliveryCompleted handler runs before the result commits the wait.
+        await f.store.db.run("UPDATE outbound_actions SET delivered_at = ?, outcome = 'sent', delivered_ref = CASE WHEN action = 'pr' THEN '42' ELSE NULL END WHERE action IN ('push', 'pr')", [
+          f.clock.now().toISOString(),
+        ]);
+        await results.prDelivered(it0.id, "42", null);
+        expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+      }
+      return seen;
+    };
+    await f.controller.tickRuns();
+    expect(raced).toBe(true);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42", blocked_on: "none" });
+  });
+
   it("a host's push waits for that host's outbound: another host's replica on a shared store leaves it", async () => {
     const f = await pipeline();
     const other = new ControllerRole({

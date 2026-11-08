@@ -442,9 +442,25 @@ export class RunResultsUnit {
       }
     };
     await this.c.unit("transitions").decide(run.work_item_id, async (it) => withSpent(await decision(it), run, it));
+    await this.deliveredMeanwhile(run);
   }
 
-  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
+  /**
+   * A PR or push outbound delivered while this result was decided (the delivery's handler on another tick or
+   * replica found the item not waiting yet, so it changed nothing): read once more after the wait is written, so
+   * the wait never misses it. Only an item still waiting changes, as in `prDelivered` and `pushDelivered`.
+   */
+  private async deliveredMeanwhile(run: Run): Promise<void> {
+    if (run.outcome?.status !== "succeeded") return;
+    const data = run.outcome.data;
+    const id = run.work_item_id as WorkItemId;
+    if (typeof data.pr_intent === "string") {
+      const pr = await this.c.k.actionByKey(data.pr_intent);
+      if (pr?.delivered_ref) await this.prDelivered(id, pr.delivered_ref, pr.delivered_url);
+    }
+    if (typeof data.push_intent === "string" && (await this.c.k.actionByKey(data.push_intent))?.delivered_at) await this.pushDelivered(id, run.id);
+  }
+
   /**
    * Outbound delivered an implement run's PR (RFC 0015 M7): its number and link go on the item at its version, the
    * wait ends, and the review is queued as an implement result's was. Only an item still waiting for its PR changes,
@@ -514,6 +530,7 @@ export class RunResultsUnit {
     };
   }
 
+  /** A failed or cancelled run's decision, before its usage is added (`apply` does that). */
   async applyFailedRun(it: WorkItem, run: Run): Promise<Decision> {
     // One owner comment per forge-auth pause, from the run that started it (marker-keyed on the pause end).
     if (run.outcome?.status === "failed" && run.outcome.error_code === FORGE_AUTH && run.outcome.pause_started) {
