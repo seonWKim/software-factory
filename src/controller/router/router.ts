@@ -1,25 +1,34 @@
 // The controller's router (RFC 0015 §7, M5): builds the discovered units over one kernel, hands each event to the
-// unit that accepts its kind, and runs the units' steps on a tick in their order. It names no unit and holds no
-// feature logic; the role (src/runtime/roles) discovers the units and drives the ticks.
+// unit that accepts its kind, and runs the units' steps on a tick in their order. A pure step or event is loaded
+// through the read-only accessors, decided, and its decision committed here; a legacy one runs as it is. It names no
+// unit and holds no feature logic; the role (src/runtime/roles) discovers the units and drives the ticks.
 
-import type { UnitContext, UnitDescriptor, UnitName, UnitOperations, UnitStep } from "./unit.js";
+import type { Tick } from "../../shared/ticks/tick-generator.js";
+import { isPure, type PureEvent, type UnitContext, type UnitDecision, type UnitDescriptor, type UnitName, type UnitOperations, type UnitStep } from "./unit.js";
 
-type AnyUnit<K, E extends { kind: string }> = UnitDescriptor<K, E, unknown>;
+type AnyUnit<K, E extends { kind: string }, R, W> = UnitDescriptor<K, E, unknown, R, W>;
+type Handler<E, R, W> = ((u: unknown, e: E) => Promise<void>) | PureEvent<unknown, E, R, W, unknown>;
 
-export interface RouterOptions {
+export interface RouterOptions<R, W> {
   /** Runs one step or event so that its failure is logged and passed. */
   guard(what: string, fn: () => Promise<void>): Promise<void>;
+  /** The read-only accessors a pure unit's `load` reads through. */
+  readonly reader: R;
+  /** Commits a pure unit's decision. */
+  commit(d: UnitDecision<W>): Promise<void>;
+  /** The tick an event is decided on when the caller gives none (an event the bus delivered). */
+  now(): Tick;
 }
 
-export class Router<K, E extends { kind: string }> {
+export class Router<K, E extends { kind: string }, R = unknown, W = unknown> {
   private readonly instances = new Map<string, unknown>();
-  private readonly byKind = new Map<string, { unit: string; on: (u: unknown, e: E) => Promise<void> }[]>();
-  private readonly steps: { unit: string; step: UnitStep<unknown> }[] = [];
+  private readonly byKind = new Map<string, { unit: string; on: Handler<E, R, W> }[]>();
+  private readonly steps: { unit: string; step: UnitStep<unknown, R, W> }[] = [];
 
   constructor(
-    units: readonly AnyUnit<K, E>[],
+    units: readonly AnyUnit<K, E, R, W>[],
     readonly k: K,
-    private readonly opts: RouterOptions,
+    private readonly opts: RouterOptions<R, W>,
   ) {
     const ctx: UnitContext<K, E> = { k, unit: (name) => this.unit(name), dispatch: (e) => this.dispatch(e) };
     for (const u of units) {
@@ -27,7 +36,7 @@ export class Router<K, E extends { kind: string }> {
       this.instances.set(u.name, u.create(ctx));
       for (const [kind, on] of Object.entries(u.events ?? {})) {
         if (!on) continue;
-        this.byKind.set(kind, [...(this.byKind.get(kind) ?? []), { unit: u.name, on: on as (u: unknown, e: E) => Promise<void> }]);
+        this.byKind.set(kind, [...(this.byKind.get(kind) ?? []), { unit: u.name, on: on as Handler<E, R, W> }]);
       }
       for (const step of u.steps ?? []) this.steps.push({ unit: u.name, step });
     }
@@ -54,16 +63,34 @@ export class Router<K, E extends { kind: string }> {
     return u as UnitOperations[N];
   }
 
-  /** The event to the unit that accepts its kind; an event no unit accepts is dropped. */
-  async dispatch(e: E): Promise<void> {
+  /** The event to the unit that accepts its kind, on `tick` (default: now); an event no unit accepts is dropped. */
+  async dispatch(e: E, tick: Tick = this.opts.now()): Promise<void> {
     const h = this.byKind.get(e.kind)?.[0];
-    if (h) await h.on(this.instances.get(h.unit), e);
+    if (!h) return;
+    const u = this.instances.get(h.unit);
+    if (typeof h.on === "function") return h.on(u, e);
+    const loaded = await h.on.load(u, e, this.opts.reader, tick);
+    await this.opts.commit(h.on.decide(u, e, loaded, tick));
   }
 
-  /** Every step whose `every` is in `kinds`, in order, each guarded. */
-  async tick(kinds: readonly string[]): Promise<void> {
-    for (const { unit, step } of this.steps) {
-      if (kinds.includes(step.every)) await this.opts.guard(step.name, () => step.run(this.instances.get(unit)));
+  /** Every step whose `every` is in `kinds`, in order, each guarded, on `tick`. */
+  async tick(kinds: readonly string[], tick: Tick): Promise<void> {
+    for (const s of this.steps) {
+      if (kinds.includes(s.step.every)) await this.opts.guard(s.step.name, () => this.run(s, tick));
     }
+  }
+
+  /** One step by name, unguarded (a manual tick in a test or the CLI). */
+  async step(name: string, tick: Tick): Promise<void> {
+    const s = this.steps.find((x) => x.step.name === name);
+    if (!s) throw new Error(`no controller step "${name}"`);
+    await this.run(s, tick);
+  }
+
+  private async run({ unit, step }: { unit: string; step: UnitStep<unknown, R, W> }, tick: Tick): Promise<void> {
+    const u = this.instances.get(unit);
+    if (!isPure(step)) return step.run(u);
+    const loaded = await step.load(u, this.opts.reader, tick);
+    await this.opts.commit(step.decide(u, loaded, tick));
   }
 }
