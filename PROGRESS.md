@@ -22,7 +22,7 @@ background agents) is paused until it lands.
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | — |
 | 8 | Merge queue | — |
 | 9 | Identity and passports | core merged: passport service, tables, `tests/passport.test.ts`; not wired yet (ToolBroker check, edge adapters, service passports) |
-| 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | — |
+| 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done (branch refactor/rfc-0015-m10-extensions): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | — |
 
 ## Architecture today
@@ -30,8 +30,17 @@ background agents) is paused until it lands.
 ```
 src/
   shared/              NEW  envelope (ids-only payloads), defineHandler, defineTopic (+ partitions, backoff),
+                            defineSetting, defineRole (+ ruleOfTwoRefusal, approvalRefusal), defineHook (+ Timer),
                             ticks/ (TickGenerator; time-based and manual plugins). Imports nothing outside itself.
-  runtime/registry/    NEW  discovery of *.handler.ts and *.topic.ts; dispatch rules (a command has one handler)
+  runtime/registry/    NEW  discovery of *.handler.ts and *.topic.ts (and *.setting.ts, *.role.ts, *.hook.ts through
+                            loadDescriptors); dispatch rules (a command has one handler)
+  runtime/             NEW  index.ts (public API). settings/: catalog.ts (loadSettingCatalog, generated docs/settings.md),
+                            monotonic.ts (resolveLevels: owner > org > project > pack > user, never looser).
+                            run-roles/ (loadRoles, golden cases per role). hooks/: runHooks (after the guards, budgeted,
+                            fail closed), SqlHookAudit. migrations/20261108T2310-runtime-hook-decisions
+  <component>/settings/ NEW  one <key>.setting.ts per settable and PR-only key (defineSetting), in its owner component:
+                            controller, worker, inbound, runtime, state, identity, guards
+  worker/roles/        NEW  one <kind>.role.ts per agent run kind (defineRole): prompt, tools, Rule of Two facts, golden
   cli/                 NEW  command.ts (defineCommand), index.ts (loadCommands), support.ts, and one folder per command
                             under handlers/ (dev, loops, status, stats, workers, resume, link-code, settings, ui,
                             migrate, setup, doctor, llm-check, golden, issue, session, local, improve, canary)
@@ -57,7 +66,7 @@ src/
 schema/                NEW  sqlite.sql, mysql.sql: generated snapshots of a fresh migration (npm run schema:snapshot)
 tests/architecture/    NEW  dependency-direction, file-budget, no-clock, table-ownership, schema-snapshot,
                             registry-rules (handler-layout, dispatch-coverage, topic-ownership, envelope-shape),
-                            migration-naming; known-violations/*.json are the ratchet lists (they only shrink)
+                            migration-naming, settings-monotonic, rule-of-two; known-violations/*.json are the ratchet lists (they only shrink)
 ```
 
 The store (`impl/store/sql`) now speaks the prefixed names; the old tables sit as `legacy_<old>` until M11.
@@ -73,7 +82,8 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
 | file-budget | see `known-violations/file-budget.json` | src files over 600 lines |
 | no-clock | see `known-violations/no-clock.json` | legacy clock reads and timers |
-| dependency-direction | 66 | `component-imports-legacy` from cli/ (commands still call compose/core); they go as legacy code goes |
+| rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
+| dependency-direction | 66 | `component-imports-legacy` from cli/ (commands still call compose/core) and `controller/settings/floors.setting.ts` (reuses the legacy floors order); they go as legacy code goes |
 
 ## Decisions taken while implementing
 
@@ -102,6 +112,21 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
 - 2026-11-08 (M9): the solo identity is git `user.email`, then the OS user, then `anonymous`, as in the legacy
   CLI. Git `user.name` is a display name and is not used.
 
+- 2026-11-08 (M10): settings live in their owner component (`src/<owner>/settings/<key>.setting.ts`); the legacy
+  resolver keeps its key lists (it types values by them) and `tests/settings-catalog.test.ts` holds both equal.
+  Descriptions and "applies at" moved out of `src/core/settings.ts` into the setting files. Runtime overrides map onto
+  the levels as they are: a global override is the owner's live value, a project override the project level.
+- 2026-11-08 (M10): `mode` is `free`, not tighten-only: #444 lets a project choose auto under a global manual, with
+  `approve_merge`; the RFC's "a lower level may never raise autonomy" would refuse that. Left for the owner.
+- 2026-11-08 (M10): Rule of Two facts are classified strictly; output the factory later posts through outbound is not
+  the run's own `external_effect`. `implement` and `resolve` hold all three and are declared not autonomous;
+  `ruleOfTwoRefusal` refuses them without a person's approval, but auto mode does not call it yet (gate change).
+- 2026-11-08 (M10): role profiles live in one folder, `src/worker/roles/`, so one gate-list prefix covers them (the
+  RFC's `handlers/role-<kind>/` stays for the role's run code in M6). `runtime/run-roles/` avoids the RFC's
+  `runtime/roles/` (process roles). Hooks fail closed on timeout or error.
+- 2026-11-08 (M10): `tests/architecture/` is not on the gate list yet: a spec allowing `tests/` would then always need
+  the owner (a folder holding a gate path touches it). Left for the owner.
+
 ## Live database
 
 Not migrated yet. The owner runs `npm run migrate` after reviewing the branch; the rehearsal on a copy
@@ -110,4 +135,5 @@ Not migrated yet. The owner runs `npm run migrate` after reviewing the branch; t
 ## Next
 
 M3 (bus) lands from its background branch, then M4 inbound on top of it. M6 engine and M9 passports land
-from their branches when ready.
+from their branches when ready. M10 wiring follows its call sites: hooks at the merge queue (M8), run start (M6) and
+delivery (M7); roles drive the worker's prompts and tools (M6); a stored setting to enable hooks.
