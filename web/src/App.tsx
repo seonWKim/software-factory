@@ -8,6 +8,7 @@ import { cn } from "./lib/cn.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, PAGES, type PageDef, TOOL_PAGES, routeFor } from "./pages.js";
 import { type Theme, saveTheme, storedTheme } from "./theme.js";
+import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
 import { FailuresPage } from "./views/failures.js";
 import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, WorkersPage } from "./views/pages.js";
@@ -17,11 +18,7 @@ import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 
 /** "updated Ns ago", ticking each second. */
 function useAgo(at: number): string {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(t);
-  }, []);
+  const now = useNow();
   if (at === 0) return "not updated yet";
   return `updated ${Math.max(0, Math.floor((now - at) / 1000))}s ago`;
 }

@@ -3,6 +3,7 @@
 // items, agent runs in a row that used no tokens, and a child crash loop. Each pattern is stored as one alert per
 // 6 hours through the store's conditional insert. No forge, LLM or sandbox call; the alert's text is scanned first.
 
+import { cyrb53 } from "./hash.js";
 import { normalizeDetail } from "./improver.js";
 import type { Logger } from "./log.js";
 import { MODEL_STALL } from "./policy.js";
@@ -71,7 +72,7 @@ function repeatedErrors(newestFirst: readonly Run[], threshold: number): AlarmFi
   return [...groups.entries()]
     .filter(([, g]) => g.items.size >= threshold)
     .sort(([a], [b]) => cmp(a, b))
-    .map(([key, g]) => ({ pattern: "repeated_error", pattern_key: `repeated_error:${hash(key)}`, error_code: g.code, count: g.runs, detail: g.detail }));
+    .map(([key, g]) => ({ pattern: "repeated_error", pattern_key: `repeated_error:${cyrb53(key)}`, error_code: g.code, count: g.runs, detail: g.detail }));
 }
 
 function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFinding[] {
@@ -126,20 +127,6 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
     }
   }
   return stored;
-}
-
-/** A short stable hash of a pattern's code and detail (cyrb53), so the dedupe key never holds the detail. */
-function hash(text: string): string {
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 2654435761);
-    h2 = Math.imul(h2 ^ c, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
 }
 
 function cmp(a: string, b: string): number {

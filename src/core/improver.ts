@@ -3,6 +3,7 @@
 // model call (no tools) for a draft cause and fix; one report is stored. After the run, the controller files each
 // new group as an item (fileReport) or comments its new runs on the open item filed for it before.
 
+import { cyrb53 } from "./hash.js";
 import { PROTECTED_PATHS } from "./standing.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -329,17 +330,7 @@ export interface FilingDeps {
 
 /** A group's pattern key: a short stable hash of its code and normalized detail (cyrb53), the same in every run. */
 export function patternKey(g: Pick<FailureGroup, "error_code" | "detail">): string {
-  const text = `${g.error_code}\n${g.detail}`;
-  let h1 = 0xdeadbeef;
-  let h2 = 0x41c6ce57;
-  for (let i = 0; i < text.length; i++) {
-    const c = text.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 2654435761);
-    h2 = Math.imul(h2 ^ c, 1597334677);
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, "0");
+  return cyrb53(`${g.error_code}\n${g.detail}`);
 }
 
 /** The marker of the item filed for `key` by the report that claimed it: a retry or a later run finds it. */
