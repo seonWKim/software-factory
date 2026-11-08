@@ -1,0 +1,175 @@
+diff --git a/docs/design/02-work-item.md b/docs/design/02-work-item.md
+index 1e5baac..b7a40f3 100644
+--- a/docs/design/02-work-item.md
++++ b/docs/design/02-work-item.md
+@@ -1,6 +1,6 @@
+ # 2. Work item (one shape, all sources)
+ 
+-`source{type, link}`, `requester_id`, `problem`, `resources` (pointers), `done_criteria` (frozen after confirm), `desired_output`, `scope` + *`allowed_paths`*, `tier 1–5`, `stage NEW|READY|RUNNING|REVIEW|CLOSED`, `blocked_on none|human|upstream|ci|budget` + `blocked_reason`, `close_reason completed|duplicate|wont_do|failed|rejected`, `loop_count`, `restart_count`, `token_cost`, `project`, `pr_number`, `merge_sha`, *`fixes_pr`*, `issue_text` (the issue as received at intake; triage overwrites `problem`, so a revision reads this), `revision_count` (`/revise` commands that started a triage run; not `loop_count`, which counts review loops), `spec_feedback` (text of the latest `/revise` or `/reject`; untrusted), `origin factory|adopted`, `head_branch` (an adopted PR's own branch), `last_head_sha` (the PR head the factory last recorded; §5, pull requests a person opens). Every change → `state_changes` row (IDs only, never names).
++`source{type, link}`, `requester_id`, `problem`, `resources` (pointers), `done_criteria` (frozen after confirm), `desired_output`, `scope` + *`allowed_paths`*, `tier 1–5`, `stage NEW|READY|RUNNING|REVIEW|CLOSED`, `blocked_on none|human|upstream|ci|budget` + `blocked_reason`, `close_reason completed|duplicate|wont_do|failed|rejected`, `loop_count`, `restart_count`, `token_cost`, `project`, `pr_number`, `change_ref` + `change_url` (the PR number as text and the PR link, written by the store with `pr_number` and returned on every read since 2026-11-08; `change_url` only for a GitHub project with a stored label; both null without a PR and on rows from before migration 35; never patched directly), `merge_sha`, *`fixes_pr`*, `issue_text` (the issue as received at intake; triage overwrites `problem`, so a revision reads this), `revision_count` (`/revise` commands that started a triage run; not `loop_count`, which counts review loops), `spec_feedback` (text of the latest `/revise` or `/reject`; untrusted), `origin factory|adopted`, `head_branch` (an adopted PR's own branch), `last_head_sha` (the PR head the factory last recorded; §5, pull requests a person opens). Every change → `state_changes` row (IDs only, never names).
+ 
+ **Projects are keyed by the forge's repository ID.** A renamed or transferred repository split its items between the old and new path, and the path could not tell apart repositories on different hosts or providers. Now every project column (`work_items.project`, `unreviewed_merges.project`) and every lookup by project holds the **key** `<provider>:<host>:<repository id>`; for GitHub, `github:github.com:<repo node id>` (e.g. `github:github.com:R_kgDOabc123`). The node ID never changes with a rename or a transfer, so lookups by key still find the items created before one. The readable path is only a **label**, `<host>/<owner>/<name>` (e.g. `github.com/seonWKim/software-factory`), kept in the store (a `cursors` row `project_label:<key>`) so the status page shows it without calling GitHub.
+ 
+@@ -8,5 +8,6 @@
+ 
+ ## History
+ 
++- **Work items carry `change_ref` and `change_url`** (decision changed 2026-11-08). Before: the store wrote both columns (migration 35) but the work item shape listed only `pr_number`, so no read returned them and the item intake returned for an adopted PR did not match its stored row.
+ - **Startup reads the project key from the store** (decision changed 2026-11-07). Before: every start resolved the configured repo through GitHub and stopped if it could not, so a rate-limited GitHub App installation (403) kept a new `factory dev` child from starting.
+ - **Projects are keyed by the forge's repository ID** (decision changed 2026-11-01). Before: `project` was the repository's path, `owner/name`, e.g. `seonWKim/software-factory`.
+diff --git a/src/core/types.ts b/src/core/types.ts
+index 477cccc..56ff486 100644
+--- a/src/core/types.ts
++++ b/src/core/types.ts
+@@ -64,6 +64,13 @@ export interface WorkItem {
+   restart_count: number;
+   token_cost: number;
+   pr_number: number | null;
++  /**
++   * The change columns the store writes with pr_number (migration 35): `change_ref` is the PR number as text,
++   * `change_url` the PR link when the project is a GitHub key with a stored label. Both null without a PR number,
++   * and on rows written before migration 35. Store-derived: never patched directly.
++   */
++  change_ref: string | null;
++  change_url: string | null;
+   merge_sha: string | null;
+   fixes_pr: number | null;
+   /** URL of the posted spec comment, set with READY + spec_pending. Null before it, and on older items. */
+@@ -122,7 +129,7 @@ export type WorkItemPatch = Partial<
+   Omit<
+     WorkItem,
+     | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
+-    | "parent_id" | "phase" | "created_at" | "updated_at"
++    | "parent_id" | "phase" | "change_ref" | "change_url" | "created_at" | "updated_at"
+   >
+ >;
+ 
+diff --git a/src/impl/store/sql/change-fields.ts b/src/impl/store/sql/change-fields.ts
+index 3f41058..221768c 100644
+--- a/src/impl/store/sql/change-fields.ts
++++ b/src/impl/store/sql/change-fields.ts
+@@ -1,6 +1,6 @@
+ // The change columns written beside pr_number (SQLite migration 35, MySQL step 0035): `change_ref`, the PR number
+ // as text, and `change_url`, the PR link. Every store write that sets pr_number takes both from `changeFields`, so
+-// the adopted insert, a patch and an unreviewed merge insert never differ. Nothing outside the store reads them yet.
++// the adopted insert, a patch and an unreviewed merge insert never differ. Every work item read returns both.
+ 
+ import { projectLabelCursor } from "../../../core/project.js";
+ import type { SqlExecutor } from "./driver.js";
+diff --git a/src/impl/store/sql/rows.ts b/src/impl/store/sql/rows.ts
+index 0f65215..3ca45db 100644
+--- a/src/impl/store/sql/rows.ts
++++ b/src/impl/store/sql/rows.ts
+@@ -67,7 +67,8 @@ export function newId(prefix: string): string {
+   return `${prefix}_${randomUUID().replaceAll("-", "")}`;
+ }
+ 
+-export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
++/** `change` is changeFields of the adopted PR's number (none otherwise), so the item matches its stored row. */
++export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Timestamp): WorkItem {
+   const a = input.adopted;
+   return {
+     id: newId("wi") as WorkItemId,
+@@ -91,6 +92,8 @@ export function newWorkItem(input: NewWorkItem, now: Timestamp): WorkItem {
+     restart_count: 0,
+     token_cost: 0,
+     pr_number: a ? a.pr_number : null,
++    change_ref: change.change_ref,
++    change_url: change.change_url,
+     merge_sha: null,
+     fixes_pr: null,
+     spec_comment_url: null,
+@@ -120,11 +123,10 @@ const WORK_ITEM_COLUMNS =
+   "files_to_change, pr_files";
+ 
+ /**
+- * The columns and values of INSERT INTO work_items; `change` is changeFields of the item's pr_number (the adopted
+- * PR's, else none). The change columns are listed only with a PR number: without one they are NULL by default,
++ * The columns and values of INSERT INTO work_items, the change columns taken from the item (newWorkItem). The change columns are listed only with a PR number: without one they are NULL by default,
+  * and intake inserts exactly as before migration 35, also on a schema without them (tests of older steps do).
+  */
+-export function workItemInsert(i: WorkItem, change: ChangeFields): { columns: string; values: SqlValue[] } {
++export function workItemInsert(i: WorkItem): { columns: string; values: SqlValue[] } {
+   const values: SqlValue[] = [
+     i.id, i.version, i.source.type, i.source.id, i.source.link, i.requester_id, i.project, i.problem,
+     JSON.stringify(i.resources), i.done_criteria && JSON.stringify(i.done_criteria), i.desired_output, i.scope,
+@@ -135,8 +137,8 @@ export function workItemInsert(i: WorkItem, change: ChangeFields): { columns: st
+     i.parent_id, i.phase,
+     i.files_to_change && JSON.stringify(i.files_to_change), i.pr_files && JSON.stringify(i.pr_files),
+   ];
+-  if (change.change_ref === null) return { columns: WORK_ITEM_COLUMNS, values };
+-  return { columns: `${WORK_ITEM_COLUMNS}, change_ref, change_url`, values: [...values, change.change_ref, change.change_url] };
++  if (i.change_ref === null) return { columns: WORK_ITEM_COLUMNS, values };
++  return { columns: `${WORK_ITEM_COLUMNS}, change_ref, change_url`, values: [...values, i.change_ref, i.change_url] };
+ }
+ 
+ /** Only the fields that actually change, as state_changes entries and `column = ?` assignments. */
+@@ -193,6 +195,8 @@ export function rowToWorkItem(r: Row): WorkItem {
+     restart_count: Number(r.restart_count),
+     token_cost: Number(r.token_cost),
+     pr_number: r.pr_number === null ? null : Number(r.pr_number),
++    change_ref: (r.change_ref as string | null | undefined) ?? null,
++    change_url: (r.change_url as string | null | undefined) ?? null,
+     merge_sha: r.merge_sha as string | null,
+     fixes_pr: r.fixes_pr === null ? null : Number(r.fixes_pr),
+     spec_comment_url: (r.spec_comment_url as string | null | undefined) ?? null,
+diff --git a/src/impl/store/sql/sql-factory-store.ts b/src/impl/store/sql/sql-factory-store.ts
+index 287b91e..9a95e79 100644
+--- a/src/impl/store/sql/sql-factory-store.ts
++++ b/src/impl/store/sql/sql-factory-store.ts
+@@ -198,8 +198,8 @@ export class SqlFactoryStore implements FactoryStore {
+       const existing = await this.selectItemBySource(tx, input.source.type, input.source.id);
+       if (existing) return { item: existing, created: false };
+ 
+-      const item = newWorkItem(input, this.now());
+-      const { columns, values } = workItemInsert(item, await changeFields(tx, item.project, item.pr_number));
++      const item = newWorkItem(input, await changeFields(tx, input.project, input.adopted?.pr_number ?? null), this.now());
++      const { columns, values } = workItemInsert(item);
+       const inserted = await this.insertOnce(
+         tx,
+         `INSERT INTO work_items (${columns}) VALUES (${placeholders(values.length)})`,
+diff --git a/tests/store-contract.test.ts b/tests/store-contract.test.ts
+index cf4150d..dc59e6e 100644
+--- a/tests/store-contract.test.ts
++++ b/tests/store-contract.test.ts
+@@ -1062,6 +1062,40 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
+       expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, 35))!.id).toBe(b.id);
+     });
+ 
++    it("every work item read returns change_ref and change_url from the row, and intake returns the stored item", async () => {
++      const { store } = await make();
++      await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
++      const labelled = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
++      const unlabelled = await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human);
++      const plain = await store.createWorkItem(issue(7), system);
++      const factory = (await store.createWorkItem(issue(8), system)).item;
++      const patched = await store.transition({ id: factory.id, expected_version: 1, patch: { pr_number: 40 }, actor: system, reason: "x" });
++      const want = new Map([
++        [labelled.item.id, { change_ref: "5", change_url: prUrl(LABEL, 5) }],
++        [unlabelled.item.id, { change_ref: "6", change_url: null }],
++        [plain.item.id, { change_ref: null, change_url: null }],
++        [factory.id, { change_ref: "40", change_url: prUrl(LABEL, 40) }],
++      ]);
++      // Intake (created or adopted) returns the same change fields as its stored row; so does a transition.
++      for (const r of [labelled, unlabelled, plain]) {
++        expect(r.created).toBe(true);
++        expect(r.item).toEqual(await store.getWorkItem(r.item.id));
++        expect(r.item).toMatchObject(want.get(r.item.id)!);
++      }
++      expect(patched.ok && patched.item).toMatchObject(want.get(factory.id)!);
++      // An intake that finds the item already there returns the stored row too.
++      const again = await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human);
++      expect(again).toMatchObject({ created: false, item: want.get(labelled.item.id) });
++      for (const [id, fields] of want) {
++        expect(await store.getWorkItem(id)).toMatchObject(fields);
++        const it = (await store.getWorkItem(id))!;
++        expect(await store.getWorkItemBySource(it.source.type, it.source.id)).toMatchObject(fields);
++      }
++      expect(await store.getWorkItemByPr(PROJECT_KEY, 5)).toMatchObject(want.get(labelled.item.id)!);
++      const listed = await store.listWorkItems(50);
++      for (const [id, fields] of want) expect(listed.find((i) => i.id === id)).toMatchObject(fields);
++    });
++
+     it("an unreviewed merge insert writes change_ref", async () => {
+       const { store } = await make();
+       const { merge } = await store.recordUnreviewedMerge({ project: PROJECT_KEY, pr_number: 7, merge_sha: "m7", merger_id: null });
