@@ -116,6 +116,8 @@ import type {
   RecordPrHeadResult,
   RecordVerdictInput,
   ThreadDelivery,
+  BasePush,
+  BasePushOutcome,
   ThreadLinkField,
   RecordVerdictResult,
   LocalRole,
@@ -330,6 +332,14 @@ export class SqlFactoryStore implements FactoryStore {
       await tx.run("UPDATE runs SET acknowledged_at = ?, updated_at = ? WHERE id = ?", [now, now, input.ack_run]);
     }
     const enqueued = input.enqueue ? await this.insertRun(tx, { ...input.enqueue, work_item_id: input.id }) : null;
+    if (input.base_push) {
+      await this.insertOnce(
+        tx,
+        `INSERT INTO base_pushes (work_item_id, base_ref, merge_sha, attempts, next_attempt_at, claim_token, created_at)
+         VALUES (?, ?, ?, 0, ?, 0, ?)`,
+        [input.id, input.base_push.base_ref, input.base_push.merge_sha, now, now],
+      );
+    }
     const cancelled = [
       ...(input.cancel_queued_runs ? await this.cancelRuns(tx, input.id, "queued", now) : []),
       ...(input.cancel_running_runs ? await this.cancelRuns(tx, input.id, "running", now) : []),
@@ -2201,19 +2211,7 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async claimDelivery(seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {
-    return this.db.transaction(async (tx) => {
-      if (fence && !(await this.fenceHeld(tx, fence))) return null;
-      const now = this.now();
-      const until = new Date(this.clock.now().getTime() + Math.max(0, lease_ms)).toISOString();
-      const n = await tx.run(
-        `UPDATE thread_outbox SET claim_token = claim_token + 1, claimed_until = ?
-         WHERE seq = ? AND delivered_at IS NULL AND (claimed_until IS NULL OR claimed_until <= ?)`,
-        [until, seq, now],
-      );
-      if (n === 0) return null;
-      const [row] = await tx.all("SELECT claim_token FROM thread_outbox WHERE seq = ?", [seq]);
-      return Number(row!.claim_token);
-    });
+    return this.claimQueued(QUEUES.outbox, seq, lease_ms, fence);
   }
 
   async finishDelivery(seq: number, token: number, url: string | null): Promise<boolean> {
@@ -2240,10 +2238,66 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async failDelivery(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
+    return this.failQueued(QUEUES.outbox, seq, token, error, retry_in_ms);
+  }
+
+  // The base push (design 05-sources, Local items): the outbox's claim rules on its own table.
+
+  async listPendingBasePushes(limit: number): Promise<BasePush[]> {
+    const now = this.now();
+    const rows = await this.db.all(
+      `SELECT * FROM base_pushes WHERE finished_at IS NULL AND next_attempt_at <= ? AND (claimed_until IS NULL OR claimed_until <= ?)
+       ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
+      [now, now],
+    );
+    return rows.map(rowToBasePush);
+  }
+
+  async getBasePush(work_item_id: WorkItemId): Promise<BasePush | null> {
+    const [row] = await this.db.all("SELECT * FROM base_pushes WHERE work_item_id = ?", [work_item_id]);
+    return row ? rowToBasePush(row) : null;
+  }
+
+  async claimBasePush(seq: number, lease_ms: number): Promise<number | null> {
+    return this.claimQueued(QUEUES.base_push, seq, lease_ms);
+  }
+
+  async finishBasePush(seq: number, token: number, result: { outcome: BasePushOutcome; pushed_sha: string | null; error?: string }): Promise<boolean> {
+    const n = await this.db.run(
+      `UPDATE base_pushes SET finished_at = ?, outcome = ?, pushed_sha = ?, last_error = ?, claimed_until = NULL
+       WHERE seq = ? AND claim_token = ? AND finished_at IS NULL AND claimed_until IS NOT NULL`,
+      [this.now(), result.outcome, result.pushed_sha, result.error?.slice(0, 1000) ?? null, seq, token],
+    );
+    return n > 0;
+  }
+
+  async failBasePush(seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
+    return this.failQueued(QUEUES.base_push, seq, token, error, retry_in_ms);
+  }
+
+  /** Claims row `seq` of a queue for `lease_ms`: only an unfinished row with no live claim (and, with `fence`, a held lease). */
+  private async claimQueued(q: Queue, seq: number, lease_ms: number, fence?: SyncFence): Promise<number | null> {
+    return this.db.transaction(async (tx) => {
+      if (fence && !(await this.fenceHeld(tx, fence))) return null;
+      const now = this.now();
+      const until = new Date(this.clock.now().getTime() + Math.max(0, lease_ms)).toISOString();
+      const n = await tx.run(
+        `UPDATE ${q.table} SET claim_token = claim_token + 1, claimed_until = ?
+         WHERE seq = ? AND ${q.done} IS NULL AND (claimed_until IS NULL OR claimed_until <= ?)`,
+        [until, seq, now],
+      );
+      if (n === 0) return null;
+      const [row] = await tx.all(`SELECT claim_token FROM ${q.table} WHERE seq = ?`, [seq]);
+      return Number(row!.claim_token);
+    });
+  }
+
+  /** A failed try of row `seq` under claim `token`: one more attempt, the error, the claim released, the next try later. */
+  private async failQueued(q: Queue, seq: number, token: number, error: string, retry_in_ms: number): Promise<boolean> {
     const next = new Date(this.clock.now().getTime() + Math.max(0, retry_in_ms)).toISOString();
     const n = await this.db.run(
-      `UPDATE thread_outbox SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?, claimed_until = NULL
-       WHERE seq = ? AND claim_token = ? AND delivered_at IS NULL AND claimed_until IS NOT NULL`,
+      `UPDATE ${q.table} SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?, claimed_until = NULL
+       WHERE seq = ? AND claim_token = ? AND ${q.done} IS NULL AND claimed_until IS NOT NULL`,
       [error.slice(0, 1000), next, seq, token],
     );
     return n > 0;
@@ -2701,6 +2755,29 @@ function rowToForgeBudget(row: Row): ForgeBudget {
 
 const DELIVERY_SELECT =
   "SELECT o.*, t.marker AS thread_marker, t.body AS thread_body FROM thread_outbox o JOIN item_thread t ON t.seq = o.thread_seq";
+
+/** The claimed queues: their table and the column that marks a row done. Fixed names, never input. */
+type Queue = { table: string; done: string };
+const QUEUES = {
+  outbox: { table: "thread_outbox", done: "delivered_at" },
+  base_push: { table: "base_pushes", done: "finished_at" },
+} as const satisfies Record<string, Queue>;
+
+function rowToBasePush(row: Row): BasePush {
+  return {
+    seq: Number(row.seq),
+    work_item_id: row.work_item_id as WorkItemId,
+    base_ref: row.base_ref as string,
+    merge_sha: row.merge_sha as string,
+    attempts: Number(row.attempts),
+    next_attempt_at: row.next_attempt_at as Timestamp,
+    finished_at: (row.finished_at as Timestamp | null) ?? null,
+    outcome: (row.outcome as BasePushOutcome | null) ?? null,
+    pushed_sha: (row.pushed_sha as string | null) ?? null,
+    last_error: (row.last_error as string | null) ?? null,
+    created_at: row.created_at as Timestamp,
+  };
+}
 
 function rowToDelivery(row: Row): ThreadDelivery {
   return {
