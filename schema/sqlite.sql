@@ -310,6 +310,32 @@ CREATE TABLE controller_merge_checks (
     checked_at    TEXT NOT NULL
   );
 
+CREATE TABLE controller_merge_queue_entries (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id      TEXT NOT NULL UNIQUE,
+    queue_id      TEXT NOT NULL,
+    work_item_id  TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    entered_by    TEXT NOT NULL,
+    merge_key     TEXT NOT NULL,
+    detail        TEXT NOT NULL,
+    run_id        TEXT,
+    base_sha      TEXT,
+    reason        TEXT,
+    version       INTEGER NOT NULL,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+  );
+
+CREATE TABLE controller_merge_queues (
+    queue_id     TEXT PRIMARY KEY,
+    project_id   TEXT NOT NULL,
+    base_ref     TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    version      INTEGER NOT NULL,
+    updated_at   TEXT NOT NULL
+  );
+
 CREATE TABLE controller_outbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   topic TEXT NOT NULL,
@@ -1220,6 +1246,10 @@ CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
 
 CREATE INDEX controller_inbox_expiry ON controller_inbox (expires_at);
+
+CREATE INDEX controller_merge_queue_entries_item ON controller_merge_queue_entries (work_item_id, state);
+
+CREATE INDEX controller_merge_queue_entries_queue ON controller_merge_queue_entries (queue_id, state, seq);
 
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 
