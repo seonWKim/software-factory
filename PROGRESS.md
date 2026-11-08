@@ -14,14 +14,14 @@ background agents) is paused until it lands.
 |---|---|---|
 | 0 | Foundations: shared kernel, architecture tests + ratchet, schema snapshot, migration safety kit | done (6235fc9) |
 | 1 | Table renames to `<component>_` prefixes (backup → expand → backfill → verify → swap) | done; rehearsed on a copy of the live MySQL DB |
-| 2 | Components and discovery (`src/<component>/`, `index.ts`, no central wiring) | — |
-| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | — |
+| 2 | Components and discovery (re-planned: CLI + plugin discovery now; legacy code moves with its rewrite) | done (2279de4, 8e46469) |
+| 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core in progress (background agent, branch refactor/rfc-0015-m3-bus) |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | — |
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | — |
-| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | — |
+| 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core in progress (background agent, branch refactor/rfc-0015-m6-engine) |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | — |
 | 8 | Merge queue | — |
-| 9 | Identity and passports | — |
+| 9 | Identity and passports | passport core in progress (background agent, branch refactor/rfc-0015-m9-passports) |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | — |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | — |
 
@@ -32,6 +32,9 @@ src/
   shared/              NEW  envelope (ids-only payloads), defineHandler, defineTopic (+ partitions, backoff),
                             ticks/ (TickGenerator; time-based and manual plugins). Imports nothing outside itself.
   runtime/registry/    NEW  discovery of *.handler.ts and *.topic.ts; dispatch rules (a command has one handler)
+  cli/                 NEW  command.ts (defineCommand), index.ts (loadCommands), support.ts, and one folder per command
+                            under handlers/ (dev, loops, status, stats, workers, resume, link-code, settings, ui,
+                            migrate, setup, doctor, llm-check, golden, issue, session, local, improve, canary)
   state/               NEW  SqlDriver interface (moved from impl/store/sql/driver.ts), schema snapshots, discovery,
                             migrate/: backup.ts (backup, verify a copy, restore; order-independent checksums),
                             migration.ts (defineMigration), runner.ts (timestamped migrations after the frozen
@@ -42,7 +45,9 @@ src/
   impl/                LEGACY  plugin implementations (store, github, slack, sandbox, runner, ...)
   interfaces/          LEGACY  FactoryStore (136 methods) and the other plugin interfaces
   ui/                  LEGACY  HTTP API and pages for web/
-  compose.ts, main.ts  LEGACY  hand wiring and the CLI switch
+  compose.ts           LEGACY  hand wiring (shrinks with M4–M7)
+  main.ts              reads --config, finds the command among cli/handlers, runs it (45 lines)
+  plugins.ts           plugin registry; walks all of src/ for *.plugin.ts and *.grant.ts
 schema/                NEW  sqlite.sql, mysql.sql: generated snapshots of a fresh migration (npm run schema:snapshot)
 tests/architecture/    NEW  dependency-direction, file-budget, no-clock, table-ownership, schema-snapshot,
                             registry-rules (handler-layout, dispatch-coverage, topic-ownership, envelope-shape),
@@ -62,7 +67,7 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
 | file-budget | see `known-violations/file-budget.json` | src files over 600 lines |
 | no-clock | see `known-violations/no-clock.json` | legacy clock reads and timers |
-| dependency-direction | 0 | new components only; legacy folders are checked by tests/boundaries.test.ts |
+| dependency-direction | 66 | `component-imports-legacy` from cli/ (commands still call compose/core); they go as legacy code goes |
 
 ## Decisions taken while implementing
 
@@ -78,6 +83,10 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
 - 2026-11-08: `cli_commands` and `item_messages` had no code left; M1 only archives them as `legacy_*`.
 - 2026-11-08: tests that rolled a migrated database back to an old schema step and re-ran it were removed
   (they cannot work once the store only knows the new names); upgrade tests from old states still run.
+- 2026-11-08: M2 re-planned (RFC §11): legacy code moves into its component in the milestone that rewrites it;
+  the dependency-direction ratchet takes the newly visible `component-imports-legacy` entries with that move.
+- 2026-11-08: M3 bus core, M6 engine core and M9 passport core run as background agents in their own worktrees
+  (new folders only), while the main session does the moves that touch every file.
 - 2026-11-08: added `npm run migrate -- --rehearse` (D8) and wired the D1 backup folder
   (`<stateDir>/db/backups`) into MySQL `npm run migrate`, which had none.
 
@@ -88,4 +97,5 @@ Not migrated yet. The owner runs `npm run migrate` after reviewing the branch; t
 
 ## Next
 
-M2: components and discovery (`src/<component>/` with `index.ts`, plugin registry into the runtime).
+M3 (bus) lands from its background branch, then M4 inbound on top of it. M6 engine and M9 passports land
+from their branches when ready.
