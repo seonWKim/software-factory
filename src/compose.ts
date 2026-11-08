@@ -1103,7 +1103,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     mergeAllowed: async () => actor !== null && (await onProject(actor, "approve_merge")).allow,
     ...(actor !== null ? { passport: () => identity.edge({ provider: "local", subject: actor }, "ui") } : {}),
   };
-  // The mode switch and the auto-merge tier need approve_merge on the project (design 08-settings), as the Merge button.
+  // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
@@ -1123,7 +1123,7 @@ function refusalOf(d: AuthDecision): string | null {
 }
 
 /**
- * The approve_merge check of `factory settings` and `factory mode` for `mode` and `auto_merge_max_tier` (design
+ * The approve_merge check of `factory settings` and `factory mode` for `mode`, `auto_merge_max_tier` and a loosening change (design
  * 08-settings): `user` on the configured project, through the local auth plugin over the local grants, with no forge
  * call. Solo: the first local identity is the owner and holds it with no setup. The refusal, or null.
  */

@@ -19,7 +19,7 @@ import { FakeAuth, type FakeSandbox, FakeSource, alice, cleanScanner, config, pi
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 const ALL: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
-const WORKER = "src/core/worker.ts";
+const WORKER = "src/worker/runner.ts";
 
 /** FakeSource that also offers dependency links and states, as the GitHub source does. */
 class DepSource extends FakeSource implements DependencySource {
@@ -231,7 +231,7 @@ describe("coordination-cost holds (design §5, 2026-11-03)", () => {
     const comments = f.source.comments.filter((c) => c.marker === `<!-- factory:coordination-hold:${run!.id}:#92 -->`);
     expect(comments).toHaveLength(1);
     expect(comments[0]!.body).toContain(
-      "waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times), cost 4.0 > 2.5",
+      "waiting for #92 to merge: both change src/worker/runner.ts (conflicted 6 times), cost 4.0 > 2.5",
     );
     expect(comments[0]!.body).toContain("`/approve`");
     const it0 = await f.get(f.waiting);

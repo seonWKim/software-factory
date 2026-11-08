@@ -16,7 +16,8 @@ export default defineCommand({
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve, hold_policy,
                alarm_repeat_count, alarm_window_minutes, alarm_restart_count, standing_approvals.threshold, mode,
                auto_merge_max_tier. No restart. Every set and reset is audited; PR-only keys (plugins, repo, store,
-               floors, dials, auth, guards) are refused. mode and auto_merge_max_tier need approve_merge.
+               floors, dials, auth, guards) are refused. mode, auto_merge_max_tier and a change that loosens a
+               tighten-only key need approve_merge.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only) and mode
   mode auto|manual [--project <owner/name>]
                settings set mode: auto approves specs below tier 4 with no owner-only decision and merges

@@ -338,7 +338,7 @@ M10 (extension points):
 - Descriptions and "applies at" moved out of `src/core/settings.ts` into the setting files.
 - Runtime overrides map onto the levels as they are: a global override is the owner's live value, a project override
   the project level.
-- `mode` is `free`, not tighten-only (see "Waiting on the owner").
+- `mode` is `free`, not tighten-only (owner confirmed 2026-11-09, see "Owner decisions").
 - Rule of Two facts are classified strictly. Output the factory later posts through outbound is not the run's own
   `external_effect`. `implement` and `resolve` hold all three and are declared not autonomous. `ruleOfTwoRefusal`
   refuses them without a person's approval.
@@ -364,8 +364,8 @@ M5 (controller units):
 - The `legacy-controller` handler keeps its name: it is the inbox consumer name of every handled message.
 - The standing-rule gate list (`PROTECTED_PATHS`, and so `GATE_PATHS`) names `src/controller/` in place of the
   removed `src/core/controller.ts`: the same protection, now for the units, the router and the state tables.
-- The coordination default `hotspot_paths` still names `src/core/controller.ts` (now matches nothing). Choosing its
-  replacement (a unit file, the units folder, or none) changes how items are held, so it waits on the owner.
+- The coordination default `hotspot_paths` named `src/core/controller.ts` (matched nothing after the move); the owner
+  chose `src/controller/` on 2026-11-09 (see "Owner decisions").
 M5 follow-up (pure units, partial):
 
 - The contract: `PureStep`/`PureEvent` (`load(…, reader, tick)`, `decide(…, loaded, tick)` → `{ writes }`); the
@@ -444,16 +444,21 @@ Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
   for a topic `bus_topics` lists; a handler no role consumes fails startup; a failed build or discovery is not cached
   (design 10-event-driven).
 
+Owner decisions (2026-11-09):
+
+- `factory settings set` and `reset` that loosen a tighten-only key (the catalog's `direction`, `loosens`) need
+  `approve_merge`, the check `mode` already uses (`SettingsDeps.mayApproveMerge`); tightening is free (design
+  08-settings).
+- `tests/architecture/` is on the gate list (`PROTECTED_PATHS.gates`, so `GATE_PATHS`). A spec allowing all of
+  `tests/` now always waits for the owner; one naming its test files or a narrower folder does not (design 03-risk).
+- Default `hotspot_paths`: `src/controller/` replaces `src/core/controller.ts`, and `src/worker/` replaces
+  `src/core/worker.ts` (also removed, M6); the other defaults match real paths. A test fails when a default hotspot
+  or mechanical path names nothing (design 05-coordination).
+- M10 `mode` stays `free`, not tighten-only: #444 lets a project choose auto under a global manual, with
+  `approve_merge` (owner confirmed).
+
 ## Waiting on the owner
 
-- M5 `hotspot_paths` default: it still names the removed `src/core/controller.ts`; pick its replacement or drop it.
-- M10 `mode`: it is `free`, not tighten-only, because #444 lets a project choose auto under a global manual, with
-  `approve_merge`. The RFC's "a lower level may never raise autonomy" would refuse that.
-- M10 gate list: `tests/architecture/` is not on it yet. A spec allowing `tests/` would then always need the owner (a
-  folder holding a gate path touches it).
-- `factory settings set` can loosen a setting the catalog marks tighten-only (e.g. `phases_auto_approve true`, a
-  higher `max_diff_lines`) with no permission check; the tighten-only check runs only in tests. Keep (an owner's
-  CLI is trusted) or require `approve_merge` for a loosening set, as for `mode`?
 - Contract migrations: `npm run migrate -- --contract` drops the `legacy_*` tables and `outbound_base_pushes`
   (14 days after their migrations, archiving rows first). Live database migrated 2026-11-09 06:06, so the drops
   can run from 2026-11-23.

@@ -205,6 +205,7 @@ describe("standing approvals: the rule at the spec gate", () => {
 
   const protectedCases: [string, string][] = [
     ["gates", "src/core/policy.ts"],
+    ["gates", "tests/architecture/known-violations/unit-purity.json"],
     ["prompts", "prompts/triage.md"],
     ["permissions", "src/impl/grant/github-grant.ts"],
     ["permissions", ".claude/settings.json"],

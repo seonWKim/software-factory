@@ -11,7 +11,7 @@ import { BACKENDS, PROJECT_KEY, human, issue, system, w1, w2 } from "./helpers/s
 
 const LEASE = 60_000;
 const ALL: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
-const WORKER = "src/core/worker.ts"; // a hotspot by default (weight 3.0)
+const WORKER = "src/worker/runner.ts"; // under a default hotspot folder (weight 3.0)
 const ok = { status: "succeeded" as const, summary: "", data: {} };
 
 describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
@@ -36,8 +36,8 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
   describe("cost threshold", () => {
     it("two items at or above max_coordination_cost never run at once: the second claim is refused while the first runs", async () => {
       const { store, clock } = await make();
-      const a = await item(store, clock, 1, { files_to_change: [WORKER], allowed_paths: ["src/core/"] });
-      const b = await item(store, clock, 2, { files_to_change: [WORKER], allowed_paths: ["src/core/"] });
+      const a = await item(store, clock, 1, { files_to_change: [WORKER], allowed_paths: ["src/worker/"] });
+      const b = await item(store, clock, 2, { files_to_change: [WORKER], allowed_paths: ["src/worker/"] });
       const first = (await claim(store))!;
       expect(first.work_item_id).toBe(a);
       expect(await claim(store, w2)).toBeNull();
@@ -90,17 +90,17 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       expect(await store.listClaimDecisions(b)).toEqual([]);
     });
 
-    it("two items that both change src/core/controller.ts are still held; the stored decision shows a mechanical path with its weight", async () => {
+    it("two items that both change a file under src/controller/ are still held; the stored decision shows a mechanical path with its weight", async () => {
       const { store, clock } = await make();
-      const a = await item(store, clock, 1, { files_to_change: ["src/core/controller.ts", "docs/design.md"] });
-      const b = await item(store, clock, 2, { files_to_change: ["src/core/controller.ts", "docs/design.md"] });
+      const a = await item(store, clock, 1, { files_to_change: ["src/controller/router/router.ts", "docs/design.md"] });
+      const b = await item(store, clock, 2, { files_to_change: ["src/controller/router/router.ts", "docs/design.md"] });
       expect((await claim(store))?.work_item_id).toBe(a);
       expect(await claim(store, w2)).toBeNull();
       const [held] = await store.listClaimDecisions(b);
       expect(held).toMatchObject({ decision: "held", cost: 3.25, threshold: 2.5 });
       expect(held!.shared).toEqual([
         { path: "docs/design.md", weight: 0.25, conflicts: 0, hotspot: false, mechanical: true },
-        { path: "src/core/controller.ts", weight: 3, conflicts: 0, hotspot: true },
+        { path: "src/controller/router/router.ts", weight: 3, conflicts: 0, hotspot: true },
       ]);
     });
 
@@ -174,7 +174,7 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
 
     it("a PR opened before PR file lists were stored falls back to its allowed_paths, and the decision says so", async () => {
       const { store, clock } = await make();
-      await item(store, clock, 1, { stage: "REVIEW", change_ref: "92", allowed_paths: ["src/core/"], pr_files: null }, []);
+      await item(store, clock, 1, { stage: "REVIEW", change_ref: "92", allowed_paths: ["src/worker/"], pr_files: null }, []);
       const b = await item(store, clock, 2, { files_to_change: [WORKER] });
       expect(await claim(store)).toBeNull();
       expect((await store.listClaimDecisions(b))[0]).toMatchObject({ holder_ref: "#92", holder_kind: "pr", fallback: true, cost: 3 });
