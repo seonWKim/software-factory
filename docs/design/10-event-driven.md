@@ -102,6 +102,14 @@ force.
   text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
   until the owner enables it; the caller passes the enabled names. Not wired yet: no call site (merge queue M8, run
   start M6, outbound M7) and no stored enable setting; no hook ships.
+- **Commands and runs carry passports** (since 2026-11-08, RFC 0015 M9 wiring; details in 08-permissions.md,
+  "Passports in the running factory"). A CLI or UI command row stores its actor's passport id; inbound mints one for
+  a comment command at relay time, before its commit (a passport minted for a commit that loses its cursor race is
+  never used), and puts it on `InboundReceived`, so `CommandReceived` inherits it as its cause's `passport_id`. The
+  RFC puts this in the normalizer; it is at the relay because the normalizer runs inside the consumer's
+  transaction, and Identity writes `identity_passports` on its own connection. A run passport is minted at run start
+  and checked by the ToolBroker on every call. The auth plugins still decide commands; every decision is written to
+  `authz_audit`.
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
@@ -116,6 +124,8 @@ force.
 - **Messaging between parts** (decision changed 2026-11-08, RFC 0015 M3). Before: no bus; the controller tick
   polls sources and the store, and workers claim runs from the store (still how the factory runs until components
   are wired to the bus in M4 and later).
+- **Passports on commands and runs** (decision changed 2026-11-08, RFC 0015 M9 wiring). Before: every message
+  had `passport_id` null, and no run held a passport.
 - **Intake** (decision changed 2026-11-08, RFC 0015 M4). Before: the controller tick polled every source and the
   forge, read the command inbox and the app requests (two tables) by `seq` cursor, and handled each in the same
   tick.
