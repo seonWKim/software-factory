@@ -150,8 +150,7 @@ describe("external config: reviewed keys", () => {
     const main = checkout(REAL);
     const plugins = { ...(REAL.plugins as Record<string, unknown>), updater: "none" };
     const loaded = await loadConfig(main, { configFile: external({ ...REAL, ...loosened, plugins, workers: 2 }) });
-    for (const k of ["dials", "floors", "plugins", "auth"]) expect(loaded.file[k as keyof typeof loaded.file], k).toEqual(REAL[k]);
-    expect(loaded.file.permissions).toBeUndefined();
+    for (const k of ["dials", "floors", "plugins", "auth", "permissions"]) expect(loaded.file[k as keyof typeof loaded.file], k).toEqual(REAL[k]);
     expect(loaded.plugins.updater).toBe((REAL.plugins as Record<string, unknown>).updater);
     // Any other key is the user's.
     expect(loaded.file.intake_label).toBe("external");
