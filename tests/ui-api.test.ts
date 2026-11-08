@@ -1332,7 +1332,7 @@ describe("ui api: items for the tree (issue #295)", () => {
 
   it("a held run carries the latest claim decision: holder, cost and threshold, from one batched read", async () => {
     const { d, store, clock } = await seeded();
-    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const PATHS = { files_to_change: ["src/worker/runner.ts"], allowed_paths: ["src/worker/"] };
     const a = await make(store, 60, "Holder");
     await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
     clock.advance(1_000);
@@ -1351,7 +1351,7 @@ describe("ui api: items for the tree (issue #295)", () => {
 
   it("claim reads one batch and no per-item decisions, and a stale hold from an earlier run is left out", async () => {
     const { d, store, clock } = await seeded();
-    const PATHS = { files_to_change: ["src/core/worker.ts"], allowed_paths: ["src/core/"] };
+    const PATHS = { files_to_change: ["src/worker/runner.ts"], allowed_paths: ["src/worker/"] };
     const a = await make(store, 70, "Holder");
     await enqueue(store, a, "implement", "h:a", { stage: "RUNNING", ...PATHS });
     clock.advance(1_000);

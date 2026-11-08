@@ -17,7 +17,7 @@ import { FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, confi
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 type ClaimInput = Parameters<FactoryStore["claimRun"]>[0];
-const HOTSPOT = "src/core/worker.ts";
+const HOTSPOT = "src/worker/runner.ts";
 const ALL: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
 
 /** The claim input one worker tick sends, with `coordination` set from the config or left out. */

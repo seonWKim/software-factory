@@ -360,7 +360,7 @@ describe("workers: the pool grows and shrinks with no restart", () => {
     const ids = [];
     for (const n of [1, 2, 3]) {
       const { item } = await store.createWorkItem(issue(n), system);
-      await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", files_to_change: ["src/core/worker.ts"] } });
+      await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "RUNNING", files_to_change: ["src/worker/runner.ts"] } });
       await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: `${n}` } });
       ids.push(item.id);
       clock.advance(1_000);

@@ -275,7 +275,7 @@ export class CoordinationUnit {
 
   /**
    * One comment per coordination-cost hold (run, holder) the claim recorded on the item's queued implement run,
-   * naming the hold reason, e.g. `waiting for #92 to merge: both change src/core/worker.ts (conflicted 6 times),
+   * naming the hold reason, e.g. `waiting for #92 to merge: both change src/worker/runner.ts (conflicted 6 times),
    * cost 4.0 > 2.5`. The status stays implementing.
    */
   async holdComment(id: WorkItemId): Promise<void> {
