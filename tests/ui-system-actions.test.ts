@@ -58,7 +58,6 @@ async function setup(opts: { version?: SchemaVersion | Error; checks?: Check[]; 
     scanner: new PatternEgressScanner(async () => []),
     clock,
     lease_ms: 60_000,
-    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health,
     lastChecks,
     revision: opts.revision ?? null,

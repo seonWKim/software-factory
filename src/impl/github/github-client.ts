@@ -2,23 +2,10 @@ import type { GitHubBudgetStatus } from "../../core/controller.js";
 import type { Timestamp } from "../../core/types.js";
 import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
-import type { FactoryStore } from "../../interfaces/factory-store.js";
-import type { GitHubCredentials } from "../../interfaces/github-credentials.js";
+import { ConsoleLogger } from "../log/console-logger.js";
+import type { GitHubApi, GitHubCredentials, RepoIdentity, RepoPath, SharedBudget } from "../../interfaces/github-credentials.js";
 
-export interface RepoRef {
-  owner: string;
-  name: string;
-}
-
-/** A repository as GitHub knows it now: its permanent node ID and its current path (after any rename or move). */
-export interface RepoIdentity {
-  /** GitHub's global node ID, e.g. "R_kgDOabc123". Never changes with a rename or a transfer. */
-  node_id: string;
-  owner: string;
-  name: string;
-  /** The web host the repository lives on: "github.com", or a GitHub Enterprise Server host. */
-  host: string;
-}
+export type RepoRef = RepoPath;
 
 /** The web host for an API base URL: api.github.com → github.com; GHES (https://<host>/api/v3) → <host>. */
 export function webHost(baseUrl: string): string {
@@ -109,18 +96,6 @@ export interface GitHubClientOptions {
 /** The plugin name the shared budget row is stored under (`forge_budget.plugin`). */
 export const FORGE_BUDGET_PLUGIN = "github";
 
-/**
- * Where the client shares GitHub's rate limit with every replica (design 05-sources, call budget): the store's
- * `forge_budget` row of `project`. Read at most once per `refresh_ms` (the controller's tick), written after each
- * response that carried the limit; a newer reading wins.
- */
-export interface SharedBudget {
-  store: Pick<FactoryStore, "getForgeBudget" | "putForgeBudget">;
-  /** The project key. */
-  project: string;
-  refresh_ms: number;
-}
-
 /** This process's counted calls in one rate-limit window, the window named by its reset time. */
 interface Window {
   reset_at: string;
@@ -155,6 +130,14 @@ export function githubBudgetShare(github: { budget_share?: unknown } | undefined
 }
 
 /**
+ * The client's settings from factory.config.json (`github`), with its log lines under "github". What both
+ * credential plugins build their one client with.
+ */
+export function clientOptions(github: { min_remaining?: unknown; budget_share?: unknown } | undefined, clock: Clock): GitHubClientOptions {
+  return { clock, log: new ConsoleLogger(clock, "github"), min_remaining: githubMinRemaining(github), budget_share: githubBudgetShare(github) };
+}
+
+/**
  * REST client. The token comes from GitHubCredentials at call time and never leaves this class.
  *
  * Every GET is conditional (design §5 Sources, GitHub call budget): the last ETag and body per URL are kept in a
@@ -175,7 +158,7 @@ export function githubBudgetShare(github: { budget_share?: unknown } | undefined
  * Catch-up reads (a first start's backlog) take a per-minute allowance, `takeCatchUp`: at most
  * (budget_share × limit) / 60 a minute, so a new start spreads them over several polls.
  */
-export class GitHubClient {
+export class GitHubClient implements GitHubApi {
   private readonly cache = new Map<string, Cached>();
   private readonly fetchFn: typeof fetch;
   private readonly maxEntries: number;

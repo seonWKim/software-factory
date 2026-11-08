@@ -276,7 +276,6 @@ describe("the label, never the key, is shown", () => {
       scanner: new PatternEgressScanner(async () => []),
       clock,
       lease_ms: 60_000,
-      prUrl: (label, n) => `https://${label}/pull/${n}`,
       health: new HealthMonitor(async () => [{ ok: true, msg: "ok" }], clock),
     };
   }

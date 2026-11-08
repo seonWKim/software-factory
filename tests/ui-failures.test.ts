@@ -26,7 +26,6 @@ async function setup() {
     scanner: new PatternEgressScanner(async () => []),
     clock,
     lease_ms: LEASE,
-    prUrl: (label, n) => `https://${label}/pull/${n}`,
     health: new HealthMonitor(async () => [], clock),
   };
   return { d, store, clock };

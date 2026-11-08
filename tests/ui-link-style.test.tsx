@@ -15,13 +15,13 @@ const AT = "2026-11-07T00:00:00.000Z";
 const row = (n: number, extra: object = {}) => ({
   id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title: `Title ${n}`, level: "needs_approval",
   badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null,
-  pr_number: null, pr_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 },
+  change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 },
   issue: { number: n, url: `https://github.com/o/r/issues/${n}` }, ...extra,
 });
-const withPr = row(1, { pr_number: 9, pr_url: "https://github.com/o/r/pull/9" });
+const withPr = row(1, { change_ref: "9", change_url: "https://github.com/o/r/pull/9" });
 const overview = {
   as_of: AT, stages: {}, needs_you: 1, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 },
-  plugins: { issues: "github", prs: "github" },
+  plugins: { issues: "github" },
 };
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": overview,
@@ -94,15 +94,16 @@ describe("shared link style", () => {
     for (const a of side.querySelectorAll("a")) expect(a.className).not.toContain(LINK_CLASS);
   });
 
-  it("renders a number with no URL, and the placeholder, as plain text", () => {
-    const rows = [row(2, { issue: null, pr_number: 5, pr_url: null })];
-    const { container } = render(<ItemsTable items={rows} now={Date.parse(AT)} label="Needs you" empty="none" plugins={{ issues: "github", prs: "github" }} />);
+  it("renders a change_ref with no change_url, and the placeholder, as plain text", () => {
+    const rows = [row(2, { issue: null, change_ref: "5", change_url: null })];
+    const { container } = render(<ItemsTable items={rows} now={Date.parse(AT)} label="Needs you" empty="none" plugins={{ issues: "github" }} />);
     const cells = [...container.querySelectorAll("td")];
     const last = cells.slice(-2);
     expect(last.map((c) => c.textContent)).toEqual(["–", "#5"]);
     for (const c of last) expect(c.querySelector("a")).toBeNull();
     expect(last.map((c) => c.innerHTML).join()).not.toContain("blue");
   });
+
 });
 
 describe("no per-call-site blue", () => {

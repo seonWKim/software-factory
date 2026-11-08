@@ -1,7 +1,5 @@
 import { definePlugin } from "../../plugin-api.js";
 import type { Contexts } from "../../plugin-api.js";
-import { GitHubIssueSource, githubHistorySince } from "./github-issue-source.js";
-import { GitHubForge } from "./github-forge.js";
 
 /**
  * What build() passes beside the forge context (src/compose.ts): the store its PR comments and labels are recorded
@@ -14,7 +12,8 @@ type GitHubForgeContext = Contexts["forge"] & Partial<Pick<Contexts["source"], "
 export default definePlugin({
   kind: "forge",
   name: "github",
-  create: (ctx) => {
+  create: async (ctx) => {
+    const [{ GitHubIssueSource, githubHistorySince }, { GitHubForge }] = await Promise.all([import("./github-issue-source.js"), import("./github-forge.js")]);
     const c = ctx as GitHubForgeContext;
     const cfg = c.loaded.config;
     const issues = new GitHubIssueSource(

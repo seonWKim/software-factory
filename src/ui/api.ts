@@ -10,7 +10,6 @@
 // (pause-api.ts) and POST /api/v1/standing (standing-api.ts), are handled behind server.ts's write guards; GET
 // /api/v1/settings, GET /api/v1/session, GET /api/v1/pauses and GET /api/v1/standing are here.
 
-import { UNKNOWN_PROJECT_LABEL } from "../core/project.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
@@ -169,11 +168,9 @@ class ApiCtx {
     return p;
   }
 
-  /** The PR's URL, built from the project's stored label (never its key); null with no PR or no stored label. */
-  async prUrl(it: WorkItem): Promise<string | null> {
-    if (it.pr_number === null) return null;
-    const label = await this.projectLabel(it.project);
-    return label === UNKNOWN_PROJECT_LABEL ? null : this.d.prUrl(label, it.pr_number);
+  /** The item's change as the API returns it: the stored change_ref and change_url, each through the Withholder. */
+  async change(it: WorkItem) {
+    return { change_ref: await this.text(it.change_ref), change_url: await this.text(it.change_url) };
   }
 
   /** The issue the item came from; null for an adopted PR (its source link is a /pull/ URL) or an id without a number. */
@@ -204,7 +201,7 @@ class ApiCtx {
    */
   async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
     const n = await needOf(
-      { store: this.d.store, prUrl: (i) => this.prUrl(i), text: async (v, o) => (await this.w.plain(v, o)).text },
+      { store: this.d.store, text: async (v, o) => (await this.w.plain(v, o)).text },
       it,
       check && { state: check.state, conflicts: check.conflicts.length },
     );
@@ -277,7 +274,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     as_of: c.now.toISOString(),
     /** The git revision this UI server runs; the app compares it with the one built into it. */
     server_rev: c.d.revision ?? null,
-    plugins: c.d.plugins ?? { issues: null, prs: null },
+    plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
     needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + system_actions.length,
@@ -315,8 +312,9 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
     const sha = await c.text(m.merge_sha);
     out.push({
       project: await c.text(label),
-      pr_number: m.pr_number,
-      pr_url: c.d.plugins?.prs === "github" && label !== UNKNOWN_PROJECT_LABEL ? await c.text(c.d.prUrl(label, m.pr_number)) : null,
+      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the number): text only.
+      change_ref: String(m.pr_number),
+      change_url: null,
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
       recorded_at: m.at,
@@ -352,8 +350,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       blocked_reason: await c.text(it.blocked_reason),
       close_reason: it.close_reason,
       run_status: r.runStatus,
-      pr_number: it.pr_number,
-      pr_url: await c.prUrl(it),
+      ...(await c.change(it)),
       issue: c.issue(it),
       since: r.input.since,
       updated_at: it.updated_at,
@@ -443,8 +440,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       loop_count: it.loop_count,
       restart_count: it.restart_count,
       token_cost: it.token_cost,
-      pr_number: it.pr_number,
-      pr_url: await c.prUrl(it),
+      ...(await c.change(it)),
       spec_comment_url: await c.text(it.spec_comment_url),
       // A phase of a split spec links to its parent; a split parent lists its phases (the store's listPhases).
       parent_id: it.parent_id,

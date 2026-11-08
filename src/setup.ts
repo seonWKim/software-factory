@@ -11,15 +11,15 @@ import { runCanary } from "./canary.js";
 import { type LoadedConfig, toolchainCacheOverlaps } from "./core/config.js";
 import { describeSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
-import { GitHubClient, GitHubError, type RepoRef } from "./impl/github/github-client.js";
-import { ensureLabel, prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
+import { GitHubError } from "./impl/github/github-client.js";
+import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import type { SchemaVersion } from "./interfaces/factory-store.js";
+import type { GitHubApi } from "./interfaces/github-credentials.js";
 import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
-import { type SecretDeclaration, declaredSecrets } from "./plugins.js";
+import { type SecretDeclaration, declaredSecrets, selectedSetups } from "./plugins.js";
 
 const MAX_TOKEN_DAYS = 30;
-const LABEL = { color: "5319e7", description: "Work item for the software factory" };
 
 const CLAUDE_CODE_OAUTH_TOKEN = secretName("CLAUDE_CODE_OAUTH_TOKEN");
 const ANTHROPIC_API_KEY = secretName("ANTHROPIC_API_KEY");
@@ -107,8 +107,10 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     }
   }
 
+  // No GitHub plugin selected (design 05-sources, Local startup): nothing on GitHub to check, no credential read.
+  if (loaded.config.local_only === true) return checks;
   // A missing GITHUB_TOKEN or GITHUB_APP_ID is already a FAIL above when the selected plugin declares it.
-  const credentials = await plugins.githubCredentials(secrets, await plugins.clock());
+  const { credentials } = await plugins.githubAccess({ secrets, clock: await plugins.clock() });
   try {
     if (!(await credentials.token())) return checks;
   } catch (err) {
@@ -116,7 +118,7 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
     return checks;
   }
 
-  const client = new GitHubClient(credentials);
+  const client = await plugins.githubApi();
   const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
   try {
     const r = await client.request<{ permissions?: { push?: boolean } }>("GET", `/repos/${repo.owner}/${repo.name}`);
@@ -178,8 +180,8 @@ export const TOKEN_WARN_DAYS = 3;
  * carries the number, so the dashboard's Needs you can read the last run's value without asking GitHub again.
  */
 export async function tokenExpiryCheck(
-  client: Pick<GitHubClient, "tokenExpiration">,
-  repo: RepoRef,
+  client: Pick<GitHubApi, "tokenExpiration">,
+  repo: { owner: string; name: string },
   now: Date,
   grant: object | null = null,
 ): Promise<Check> {
@@ -274,7 +276,7 @@ export async function secretsToPrompt(
  * One check per status label and PR flag label. A missing one is a warning, never a FAIL: the factory creates it on first
  * use, so it only means setup has not run since status labels were added.
  */
-export async function statusLabelChecks(client: GitHubClient, repo: RepoRef, prefix: string): Promise<Check[]> {
+export async function statusLabelChecks(client: Pick<GitHubApi, "request">, repo: { owner: string; name: string }, prefix: string): Promise<Check[]> {
   const checks: Check[] = [];
   for (const l of [...statusLabels(prefix), ...prFlagLabels(prefix)]) {
     try {
@@ -288,22 +290,6 @@ export async function statusLabelChecks(client: GitHubClient, repo: RepoRef, pre
     }
   }
   return checks;
-}
-
-/** Creates each label, printing created / already exists / could not create per label. */
-export async function createLabels(
-  client: GitHubClient,
-  repo: RepoRef,
-  labels: readonly { name: string; color: string; description: string }[],
-): Promise<void> {
-  for (const l of labels) {
-    try {
-      const r = await ensureLabel(client, repo, l);
-      console.log(`   "${l.name}": ${r === "created" ? "created" : "already exists"}`);
-    } catch (err) {
-      console.log(`   "${l.name}": could not create it: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
-    }
-  }
 }
 
 /** `llm`: one extra line that runs the LLM check (two real provider calls). Plain doctor calls no model. */
@@ -392,19 +378,8 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
     await setSecret(file, d.name, await askSecret(`   Paste ${d.name} (hidden): `));
   }
 
-  step(6, `Labels on ${repo.owner}/${repo.name}: intake "${loaded.config.intake_label}" and the status labels`);
-  secrets = await plugins.secrets();
-  const credentials = await plugins.githubCredentials(secrets, await plugins.clock());
-  if (!(await credentials.token())) {
-    console.log("   skipped: no GitHub credentials");
-  } else {
-    const client = new GitHubClient(credentials);
-    await createLabels(client, repo, [
-      { name: loaded.config.intake_label, ...LABEL },
-      ...statusLabels(loaded.config.status_label_prefix),
-      ...prFlagLabels(loaded.config.status_label_prefix),
-    ]);
-  }
+  step(6, "Setup of the selected plugins (github-issues: the intake and status labels)");
+  await runSetupHooks(loaded, new Plugins(loaded));
 
   step(7, "Checks");
   const code = await doctor(loaded);
@@ -427,6 +402,27 @@ export async function setup(loaded: Loaded, opts: { rotate: SecretName[] }): Pro
 
   console.log(`\nReady. Start the factory with \`npm run factory -- dev\`, then label an issue "${loaded.config.intake_label}".`);
   return 0;
+}
+
+/**
+ * Runs each selected plugin's setup hook (selectedSetups), with the process's forge client. Hooks call the forge,
+ * so with no forge credentials set they are skipped; a fresh Plugins sees the secrets setup just saved.
+ */
+async function runSetupHooks(loaded: Loaded, plugins: Plugins): Promise<void> {
+  const hooks = selectedSetups(loaded.registry, loaded.plugins);
+  if (hooks.length === 0) {
+    console.log("   nothing to do");
+    return;
+  }
+  if (!(await (await plugins.githubAccess()).credentials.token())) {
+    console.log("   skipped: no GitHub credentials");
+    return;
+  }
+  const ctx = { ...plugins.base, github: await plugins.githubApi(), print: (line: string) => console.log(line) };
+  for (const h of hooks) {
+    console.log(`   ${h.kind} ${h.name}:`);
+    await h.setup(ctx);
+  }
 }
 
 /**

@@ -1,13 +1,13 @@
 import { resolve } from "node:path";
 import { definePlugin } from "../../plugin-api.js";
-import { GitHubToolBroker } from "./github-tool-broker.js";
 
 export default definePlugin({
   kind: "broker",
   name: "github",
   default: true,
-  create: (c) =>
-    new GitHubToolBroker({
+  create: async (c) => {
+    const { GitHubToolBroker } = await import("./github-tool-broker.js");
+    return new GitHubToolBroker({
       client: c.github,
       credentials: c.credentials,
       store: c.store,
@@ -16,5 +16,6 @@ export default definePlugin({
       repo: c.repo,
       branchPrefix: c.loaded.config.branch_prefix,
       repoPath: resolve(c.loaded.root, c.loaded.config.repo.path),
-    }),
+    });
+  },
 });

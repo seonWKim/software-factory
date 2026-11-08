@@ -246,7 +246,7 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
 /** The status page's dependencies, enough for the item page. */
 function uiDeps(store: UiDeps["store"]): UiDeps {
   return {
-    store, scanner: cleanScanner, clock: new FakeClock(), lease_ms: 60_000, prUrl: (l, n) => `https://${l}/pull/${n}`,
+    store, scanner: cleanScanner, clock: new FakeClock(), lease_ms: 60_000,
     health: new HealthMonitor(async () => [{ ok: true, msg: "ok" }], new FakeClock()),
   };
 }

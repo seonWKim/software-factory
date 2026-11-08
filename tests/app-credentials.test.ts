@@ -6,6 +6,9 @@ import { describe, expect, it } from "vitest";
 import type { Clock } from "../src/interfaces/clock.js";
 import { type SecretStore, secretName } from "../src/interfaces/secret-store.js";
 import { AppCredentials } from "../src/impl/github/app-credentials.js";
+import { GitHubClient } from "../src/impl/github/github-client.js";
+import { REGISTRY } from "../src/plugins.js";
+import type { Contexts } from "../src/plugin-api.js";
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 
 // A throwaway key made at run time: no key text is ever written into the repository.
@@ -89,5 +92,17 @@ describe("AppCredentials (plugins.github_auth: app)", () => {
     const missing = join(dir, "nope.pem");
     await expect(new AppCredentials({ ...base, secrets: secrets("1"), keyFile: missing }).token()).rejects.toThrow(missing);
     expect(gh.calls).toEqual([]);
+  });
+
+  it("the app plugin's build reads no secret and no key file: both are read only when a call mints a token", async () => {
+    const read: string[] = [];
+    const recording: SecretStore = { get: async (n) => (read.push(n), null), valuesForScan: async () => [] };
+    const loaded = { secretsFile: join(dir, "missing", ".env"), file: {} } as unknown as Contexts["github_auth"]["loaded"];
+    const access = await REGISTRY.github_auth.plugins.app!({ loaded, repo: { owner: "o", name: "r" }, extraScanValues: [], secrets: recording, clock: new TestClock(0) });
+    expect(access.credentials).toBeInstanceOf(AppCredentials);
+    expect(access.api).toBeInstanceOf(GitHubClient);
+    expect(read).toEqual([]);
+    expect(await access.credentials.token()).toBeNull();
+    expect(read).toEqual(["GITHUB_APP_ID"]);
   });
 });

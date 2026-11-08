@@ -310,8 +310,8 @@ describe("host sleep: the app's pages", () => {
     const { API } = (await import(WEB_API)) as { API: { item: (id: string) => string } };
     const item = {
       id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://github.com/o/r/issues/1" }, title: "Item one", stage: "RUNNING",
-      close_reason: null, blocked_on: "none", blocked_reason: null, tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, pr_number: null,
-      pr_url: null, version: 2, created_at: "2026-11-07T06:00:00.000Z", updated_at: "2026-11-07T09:00:00.000Z",
+      close_reason: null, blocked_on: "none", blocked_reason: null, tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null,
+      change_url: null, version: 2, created_at: "2026-11-07T06:00:00.000Z", updated_at: "2026-11-07T09:00:00.000Z",
     };
     const change = (version: number, at: string, reason: string) => ({ version, at, actor: { kind: "system", id: "system:x" }, reason, changes: {}, detail: null });
     const html = await renderPage("ItemPage", {

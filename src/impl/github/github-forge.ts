@@ -2,8 +2,9 @@ import type { WorkStatus } from "../../core/status-label.js";
 import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { BasePushInput, ClosePrInput, Forge, ForgeEvent, ForgePollResult, PrChecks, PrLineComment } from "../../interfaces/forge.js";
+import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { factoryGit } from "../broker/trusted-git.js";
-import { type GitHubClient, GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
+import { GitHubError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "./github-issue-source.js";
 
 interface GhPull {
@@ -106,7 +107,7 @@ export class GitHubForge implements Forge {
   readonly handover_cursor = "intake:github_issue";
 
   constructor(
-    private readonly client: GitHubClient,
+    private readonly client: GitHubApi,
     private readonly repo: RepoRef,
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
