@@ -211,6 +211,9 @@ for (const backend of BACKENDS) {
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["checking"]);
 
+      // Every attempt the reaper may give the run, each with its lease and the longest backoff before the retry.
+      const { run_timeout_ms, lease_ms, retry_max_ms } = f.cfg;
+      expect(queue.checkTimeoutMs()).toBe(f.cfg.settings.defaults.max_attempts! * (run_timeout_ms + lease_ms + retry_max_ms));
       // Just before the timer nothing moves; past it, the delayed message ends the check.
       f.clock.advance(queue.checkTimeoutMs() - 1);
       await f.controller.tickRuns();
