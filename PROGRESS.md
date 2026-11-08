@@ -49,7 +49,7 @@ minutes; past that the main session takes over from their WIP commit.
 | 02:05–02:14 | Review of outbound, the controller's delivery side, and the migrations since 00:00 (read-only agent): 8 findings (3 high: batch joined mid-flush loses a delivery, carried base pushes go to a host no controller flushes, a failing base push blocks all merges) | agent | fixes running from 02:15 (outbound-fixes) |
 | 02:15–02:18 | Docs naming the deleted broker tools fixed (585cf33); contract migration dropping `outbound_base_pushes` (a56afe0); owner items: sub-issue filing through outbound, contract drops | main | SQLite green (3753), contract tests green on MySQL |
 | 02:18– | ARCHITECTURE.md brought in line with the components, bus topics and outbound (docs agent) | agent | running |
-| 02:19– | Review of runtime (settings, hooks, roles), compose, plugin discovery, CLI migrate and supervisor wiring (read-only agent): the areas no earlier review covered | agent | running |
+| 02:19–02:28 | Review of runtime (settings, hooks, roles), compose, plugin discovery, CLI migrate and supervisor wiring (read-only agent): 10 findings (4 high: SQLite self-update migrates under the old child, `migrate --status`/`--dry-run` write, guard code off the gate list, Rule of Two not called) | agent | 1–3, 5, 7–10 to runtime-fixes (from 02:27); 4 doc corrected by main (b67a2ca), wiring is the owner's; 6 to the owner |
 | next | Merge outbound-fixes and the ARCHITECTURE.md rewrite; M11 cleanup: file budget back to 600, ratchets; full SQLite + MySQL + rehearsal | main | |
 | then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
 
@@ -395,8 +395,12 @@ Worker review fixes (2026-11-09, findings 3–7):
   `approve_merge`. The RFC's "a lower level may never raise autonomy" would refuse that.
 - M10 gate list: `tests/architecture/` is not on it yet. A spec allowing `tests/` would then always need the owner (a
   folder holding a gate path touches it).
-- M10 auto mode and the Rule of Two: auto mode approves specs without a person but does not call
-  `ruleOfTwoRefusal` yet (implement and resolve hold all three facts). Wiring it is a gate change.
+- M10 auto mode and the Rule of Two: auto mode approves specs without a person, and no run start calls
+  `ruleOfTwoRefusal` (implement and resolve hold all three facts), so in auto mode they run with no person.
+  Wiring it is a gate change.
+- `factory settings set` can loosen a setting the catalog marks tighten-only (e.g. `phases_auto_approve true`, a
+  higher `max_diff_lines`) with no permission check; the tighten-only check runs only in tests. Keep (an owner's
+  CLI is trusted) or require `approve_merge` for a loosening set, as for `mode`?
 - M7 sub-issue filing through outbound: phase N+1's text names phase N's ref, so it would be filed only after
   phase N's delivery, and a partial failure of `/approve` on a split spec becomes outbound's retry instead of a
   refusal. That changes what `/approve` reports; until you choose, the phases unit still files inline (the last
