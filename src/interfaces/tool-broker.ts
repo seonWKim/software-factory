@@ -35,3 +35,27 @@ export interface ToolBroker {
   /** Results pass through the EgressScanner before returning to the agent. */
   call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult>;
 }
+
+/** What a run passport is minted for (RFC 0015 §8 "Run passports"). */
+export interface RunPassportRequest {
+  run: RunId;
+  /** The run kind: picks the broker tools the passport names. */
+  kind: string;
+  item: WorkItemId;
+  project: string;
+  /** The run's branch (`factory/<item>` or the item's head branch): the only branch its tools may touch. */
+  branch: string;
+  /** The read-only tools `tool_grants` gives this run kind. */
+  grants: readonly string[];
+}
+
+/**
+ * G2's run passports: the worker mints one at run start, narrowed from its service passport to the run, and the
+ * broker checks it on every call (src/impl/broker/passport-broker.ts). A broker call for a run with no passport is
+ * refused. `begin` throws when Identity refuses to narrow (a revoked worker passport), and the run fails.
+ */
+export interface RunPassportIssuer {
+  begin(req: RunPassportRequest): Promise<unknown>;
+  /** Forgets the run's token; the passport itself expires with its parent. */
+  end(run: RunId): void;
+}

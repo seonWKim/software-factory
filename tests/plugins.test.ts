@@ -9,6 +9,8 @@ import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js"
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { NoAuthProvider } from "../src/impl/auth/none-auth-provider.js";
+import { AuditedAuthProvider } from "../src/impl/auth/audited-auth.js";
+import { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
@@ -475,7 +477,9 @@ describe("plugin registry: guards can be switched", () => {
       expect(built.secrets).toBe(made.secrets);
       const w = (built.worker as unknown as { d: WorkerDeps }).d;
       expect(w.scanner).toBe(made.scanner);
-      expect(w.broker).toBe(made.broker);
+      // Behind the run passport guard (M9).
+      expect(w.broker).toBeInstanceOf(PassportToolBroker);
+      expect((w.broker as PassportToolBroker).inner).toBe(made.broker);
       // The other plugins get the swapped guards, not the built-in ones.
       expect((w.runner as unknown as { opts: { secrets: unknown } }).opts.secrets).toBe(made.secrets);
       expect(made.brokerCtx?.secrets).toBe(made.secrets);
@@ -532,7 +536,8 @@ describe("plugin registry: existing config keys keep working", () => {
       const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
       try {
         const d = built.controller.kernel.d;
-        return [d.auth, d.local_auth];
+        // Each behind the audit of its decisions (M9).
+        return [d.auth, d.local_auth].map((a) => (a as AuditedAuthProvider).inner);
       } finally {
         await built.close();
       }
@@ -552,7 +557,7 @@ describe("plugin registry: existing config keys keep working", () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth: "none" }));
     const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      expect(built.controller.kernel.d.auth).toBeInstanceOf(NoAuthProvider);
+      expect((built.controller.kernel.d.auth as AuditedAuthProvider).inner).toBeInstanceOf(NoAuthProvider);
     } finally {
       await built.close();
     }

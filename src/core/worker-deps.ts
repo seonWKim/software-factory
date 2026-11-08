@@ -19,7 +19,7 @@ import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
 import type { TestDatabase } from "../interfaces/test-database.js";
-import type { ToolBroker } from "../interfaces/tool-broker.js";
+import type { RunPassportIssuer, ToolBroker } from "../interfaces/tool-broker.js";
 
 /** Where a local item's runs go: the local broker (no remote, no PR) and a sandbox on the local base branch. */
 export interface LocalRoute {
@@ -82,6 +82,8 @@ export function firstLine(s: string): string {
 }
 
 export interface WorkerDeps {
+  /** G2 run passports (RFC 0015 §8, M9): minted at run start, checked by the broker. Compose always sets it. */
+  passports?: RunPassportIssuer;
   /** `<host>:<pid>:<n>` under a WorkerPool: unique per worker loop, stored as the lease owner. */
   id: WorkerId;
   /**

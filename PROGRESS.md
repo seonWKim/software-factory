@@ -30,7 +30,7 @@ minutes; past that the main session takes over from their WIP commit.
 | 22:30 | M4 merged | main | done 22:40 (453af93); SQLite + MySQL suites green, rehearsal passed |
 | 22:40–23:50 | M5 router + units: `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | merged 23:50 (2b837d5), SQLite green |
 | 22:40–23:20 | M3 leftovers: bus + ticks plugins, `requires`, dead-letter alarms | agent | merged 23:25, SQLite green |
-| 22:40–00:40 | M6 `worker.ts` onto the engine; M9 wiring (passports at the edge and in the ToolBroker, UI names) | agents | running |
+| 22:40–00:30 | M6 `worker.ts` onto the engine (crash test resumes mid-run); M9 wiring (passports at the edge and in the ToolBroker, service passports, UI names) | agents | merged 00:15 (c086e15) and 00:35 (56b60f4), SQLite green |
 | 23:55–01:55 | M8 merge queue; M7 outbound (controller side); M5 follow-up: pure units on ticks | agents | running |
 | 00:40–02:30 | Merge M6, M9; M7 worker half after M6; finish what an agent left (main takes over past its time box) | main | |
 | 02:30–05:00 | Merge M7, M8, pure units; M10 call sites (hooks, roles); full MySQL suite with no agents running | agents + main | |
@@ -53,7 +53,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | not started | |
 | 8 | Merge queue | not started | |
-| 9 | Identity and passports | core merged | merge 6be1042: passport service, tables, `tests/passport.test.ts`; not wired yet (ToolBroker check, edge adapters, service passports) |
+| 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; left: SecretStore key for enterprise, the controller and outbound service passports in use, decisions by `authorize()` (M5) |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | not started | |
 
@@ -273,6 +273,17 @@ M9 (identity and passports):
   column on `identity_local_users`, because a person with no role and an enterprise user have no local row (design
   08-permissions).
 - `narrow` is called only from `worker/` and `identity/` (`tests/architecture/passport.test.ts`).
+- Wiring: the run passport token stays in the worker process keyed by run id (`RunPassports`), and the broker
+  wrapper (`PassportToolBroker`) reads it there, so neither `ToolCallContext` nor the agent runner spec carries it.
+- Wiring: run passports have no `paths` caveat (the broker sees no file list; the scope gate checks
+  `allowed_paths`) and no tier caveat. Their tools are the worker's own forge tools per run kind plus `tool_grants`.
+- Wiring: comment commands get their passport at inbound's relay, not in the normalizer (the normalizer runs in
+  the consumer's transaction; Identity writes on its own connection). `CommandReceived` inherits it.
+- Wiring: the auth plugins still decide; `AuditedAuthProvider` records each decision with passport id `none`.
+- Wiring: the solo key is `<state>/passport.key` (0600, on `deny_paths`); `SF_PASSPORT_KEY` from the SecretStore
+  is not wired.
+- Wiring: service passports last 24 h and renew at half-life; revoking one ends its runs' passports, and the next
+  run gets a fresh one.
 
 M10 (extension points):
 
@@ -336,7 +347,13 @@ M5 (controller units):
    - roles drive the worker's prompts and tools (M6);
    - a stored setting to enable hooks.
 4. M9 follow-up:
-   - the UI does not show display names yet (the CLI's `users list` does);
+   - M5: command units decide through `authorize(passport_id, ...)` and audit with the command's passport (today the
+     auth plugins decide and the audit row says `none`); the controller's automatic steps use its service passport;
+   - M7: outbound uses its service passport;
+   - the enterprise key: `SF_PASSPORT_KEY` declared and read through the SecretStore, the key file only for solo;
+   - sessions (`factory session`) push through an unguarded broker: give them a passport;
+   - a `paths` caveat once a git proxy at the sandbox edge sees the files;
+   - the web app shows `actor.name` and `merged_by_name` (the server pages already do);
    - an OIDC or GitHub provider implementing `AuthProvider.displayName`;
    - components get their SQL driver from the runtime (today `storeSql` takes it from the legacy store).
 5. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by

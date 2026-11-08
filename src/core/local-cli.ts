@@ -183,6 +183,8 @@ export interface LocalCliDeps {
   newId: () => string;
   /** Display names by user ID (Identity's identity_profiles), looked up only to show; absent: IDs only. */
   displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
+  /** The CLI identity's edge passport (Identity, RFC 0015 §8), stored on each command row. Absent: none. */
+  passport?: () => Promise<string>;
 }
 
 export interface CliResult {
@@ -234,7 +236,10 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface.
       const mirror = item.source.type !== "local";
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
+      const passport_id = await d.passport?.();
+      const { command } = await d.store.appendCliCommand({
+        key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}), ...(passport_id ? { passport_id } : {}),
+      });
       return {
         code: 0,
         lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
