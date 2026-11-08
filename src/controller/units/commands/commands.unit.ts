@@ -53,9 +53,12 @@ function reviewFeedback(e: PrReviewEvent): string {
   if (lines.length) parts.push(["Line comments:", ...lines].join("\n"));
   return parts.join("\n\n");
 }
-/** A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. */
+/**
+ * A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. A split
+ * whose phase filing outbound gave up waits too: `/approve` again files the rest under new keys, none twice.
+ */
 function awaitingSpec(it: WorkItem): boolean {
-  return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions");
+  return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions" || splitFilingFailed(it));
 }
 /**
  * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
@@ -557,17 +560,12 @@ export class CommandsUnit {
     }
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note, this.widen(it, paths));
     if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
-    if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it))) {
-      // The same `/approve` delivered again (a second poll, another replica): the pass that claimed the filing answers it.
+    if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it) || splitFilingFailed(it))) {
+      // The same `/approve` delivered again (a second poll, another replica, or the one whose filing was given up):
+      // the pass that claimed the filing answers it.
       if ((await this.c.unit("phases").splitClaim(it.id))?.detail?.comment_id === e.comment_id) return null;
       // Outbound files them and retries a failure; a stopped process leaves nothing for a person to take over.
       if (splitFiling(it)) return { refuse: "an earlier `/approve` queued this split's phases for filing; this issue lists them once all are filed" };
-    }
-    if (e.kind === "spec_approved" && splitFilingFailed(it)) {
-      // Outbound gave up filing a phase: `/approve` again files the rest under new keys; none is filed twice.
-      const phases = await this.c.unit("phases").specPhases(it);
-      if (phases && paths.length > 0) return { refuse: SPLIT_PATHS };
-      if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, note, e.comment_id, tag);
     }
     if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
       return {

@@ -195,7 +195,7 @@ The lists in `tests/architecture/known-violations/*.json` only shrink. Counts ch
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
 | table-ownership-sql | 0 | empty list |
 | forge-writes | 0 | empty list (sub-issue filing moved to outbound, 2026-11-09) |
-| file-budget | 15 files, 15,840 lines | src files over 600 lines (M11 set the limit back from the refactor's 60,000 and relisted them); the largest are `impl/store/sql/sql-factory-store.ts` (3017), `compose.ts` (1408), `interfaces/factory-store.ts` (1361), `run-results.unit.ts` (1175), `worker/runner.ts` (1130), `implement.run.ts` (1122) |
+| file-budget | 15 files, 15,838 lines | src files over 600 lines (M11 set the limit back from the refactor's 60,000 and relisted them); the largest are `impl/store/sql/sql-factory-store.ts` (3017), `compose.ts` (1408), `interfaces/factory-store.ts` (1361), `run-results.unit.ts` (1175), `worker/runner.ts` (1130), `implement.run.ts` (1122) |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
 | unit-purity | 24 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); a unit goes once its reads go through the kernel's reader and its writes through `commit`/`commitItem` (reaper, mirror, transitions also split into load/decide) |
