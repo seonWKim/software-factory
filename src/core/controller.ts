@@ -1129,8 +1129,8 @@ export class Controller {
 
   /**
    * One app command request (design §4, app requests): `approve` goes through the comment command path and gets
-   * the `/approve` permission check, note scan and transition; `merge` on a local item goes to mergeLocal, the
-   * same local merge as `factory merge`, and on any other item to mergePr (design §9, the Merge button). Both put the request's seq on
+   * the `/approve` permission check, note scan and transition; `merge` on a local item with no PR goes to
+   * mergeLocal, the same local merge as `factory merge`, and on any item with a PR to mergePr (design §9, the Merge button). Both put the request's seq on
    * the state change. Any other command is refused. A refusal is posted once on the item's source, keyed on the request, then stored on the
    * row by the conditional mark. A failed post leaves the request pending for the next tick. Safe to run twice:
    * a request whose transition is already stored (an earlier try, another replica) is marked applied.
@@ -1148,10 +1148,11 @@ export class Controller {
 
     let refusal: string | null;
     if (r.command === MERGE_COMMAND) {
-      // A local item takes the local merge, any other its PR's merge on the forge (design 05-sources, by source
-      // type). mergeLocal posts its own refusal under the same marker as finishAppRequest's, so the thread gets it once.
+      // A local item with no PR takes the local merge; an item with a PR (a local item from the PR era too) its
+      // PR's merge on the forge (design 05-sources). mergeLocal posts its own refusal under the same marker as
+      // finishAppRequest's, so the thread gets it once.
       const key = `app-${r.seq}`;
-      refusal = item.source.type === LOCAL_SOURCE
+      refusal = item.source.type === LOCAL_SOURCE && item.change_ref === null
         ? await this.mergeLocal(item.id, r.actor, key, { [APP_REQUEST]: r.seq })
         : await this.mergePr(item.id, r.actor, key, { [APP_REQUEST]: r.seq });
     } else if (r.command !== "approve") {

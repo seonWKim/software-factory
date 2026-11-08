@@ -36,23 +36,23 @@ async function loaded(plugins: Record<string, unknown> = {}): Promise<Loaded> {
   return loadConfig(dir);
 }
 
-/** The readiness of a GitHub PR and a local item, both waiting for their merge, under the parts' commands. */
+/** The readiness of a GitHub PR and a local item with no PR, both waiting for their merge, under the parts' commands. */
 async function readiness(l: Loaded) {
   const parts = await buildUiParts(l, { identity: ME });
   try {
-    const at = async (source: WorkItem["source"]) => {
+    const at = async (source: WorkItem["source"], change_ref: string | null) => {
       const { item } = await parts.store.createWorkItem({ ...issue(1), source }, system);
       const r = await parts.store.transition({
         id: item.id, expected_version: item.version, actor: system, reason: "seed",
-        patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" },
+        patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref },
       });
       if (!r.ok) throw new Error(r.reason);
       // Only the commands reach the readiness: the rest of UiDeps is not read.
       return mergeReadiness({ commands: parts.commands } as UiDeps, r.item, null, async () => true);
     };
     return {
-      github: await at({ type: "github_issue", id: "o/r#1", link: "https://github.com/o/r/issues/1" }),
-      local: await at({ type: "local", id: "local-1", link: "local:local-1" }),
+      github: await at({ type: "github_issue", id: "o/r#1", link: "https://github.com/o/r/issues/1" }, "42"),
+      local: await at({ type: "local", id: "local-1", link: "local:local-1" }, null),
     };
   } finally {
     await parts.close();

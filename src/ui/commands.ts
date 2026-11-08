@@ -184,13 +184,14 @@ const off = (reason: string): MergeReadiness => ({ enabled: false, reason });
 
 /**
  * The item API's `merge`, from stored state only (no forge call): enabled for an item waiting for its merge that
- * the page's user may merge. A local item merges through the local merge, any other through its PR on the forge
- * (design 05-sources, by source type). The merge check applies to a factory PR, the one item it runs for. The
+ * the page's user may merge. A local item with no PR merges through the local merge, any item with a PR through
+ * its PR on the forge (design 05-sources). The merge check applies to a factory PR, the one item it runs for. The
  * controller checks everything again when it applies the request; GitHub checks the head at merge time.
  */
 export async function mergeReadiness(d: UiDeps, it: WorkItem, check: MergeCheckState | null, allowed: () => Promise<boolean>): Promise<MergeReadiness> {
   if (commandPhase(it) !== "merge_pending") return off(NOT_WAITING);
-  const local = it.source.type === LOCAL_SOURCE;
+  // The controller's route: a local item with no PR takes the local merge, an item with a PR its PR's merge.
+  const local = it.source.type === LOCAL_SOURCE && it.change_ref === null;
   if (!local && it.change_ref === null) return off("no PR to merge");
   if (!local && d.commands?.forge === false) return off("no forge selected");
   if (local && d.commands?.localMerge === false) return off("no sandbox that can merge");

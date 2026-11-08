@@ -985,6 +985,17 @@ describe("ui api: the merge field on /api/v1/items and /api/v1/items/:id (the Me
     const { commands: _, ...unwired } = d;
     expect(await mergeOf(unwired, local.id)).toEqual(off("commands are off"));
   });
+
+  it("a local item that already has a PR merges through its PR: it needs a forge, not a sandbox that can merge", async () => {
+    const { d, store } = await seeded();
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: async () => true, forge: true, localMerge: false };
+    const withPr = await patch(store, await localItem(store, 41), { ...MERGE_PENDING, change_ref: "77" });
+    await store.recordMergeCheck({ work_item_id: withPr.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
+
+    expect(await mergeOf(d, withPr.id)).toEqual(enabled);
+    d.commands = { ...d.commands, forge: false, localMerge: true };
+    expect(await mergeOf(d, withPr.id)).toEqual(off("no forge selected"));
+  });
 });
 
 describe("ui api: local merge check (issue #248)", () => {

@@ -206,6 +206,17 @@ describe("Merge on a local item (the one local merge of `factory merge`)", () =>
     expect(await h.replies(it1, r)).toEqual([expect.stringContaining("has no role that allows it")]);
   });
 
+  it("a local item that already has a PR merges its PR through the forge, with no local merge", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(localRef(1), { ...READY, change_ref: "42" }, "h1");
+    const r = await h.merge(it1);
+
+    expect(h.forge.mergeCalls).toEqual([{ pr: 42, head_sha: "h1", method: "merge" }]);
+    expect(h.sandboxCalls()).toBe(0);
+    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "merge-42" });
+    expect(r.refusal).toBeNull();
+  });
+
   it("a refusal from the merge (a conflict) leaves the item merge_pending with one reply", async () => {
     const h = await harness();
     const it1 = await h.localReady();
