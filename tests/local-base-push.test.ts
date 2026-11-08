@@ -19,8 +19,9 @@ import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { BasePushInput, Forge } from "../src/interfaces/forge.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
+import carry from "../src/outbound/migrations/20261109T1200-outbound-carry-base-pushes.migration.js";
 import { actionOf } from "../src/outbound/intents.js";
-import type { SqlDriver } from "../src/state/index.js";
+import type { MigrationDb, SqlDriver } from "../src/state/index.js";
 import { cleanScanner, config, silent } from "./helpers/fakes.js";
 import { newStore, system, w1 } from "./helpers/store.js";
 
@@ -32,6 +33,7 @@ import { newStore, system, w1 } from "./helpers/store.js";
 const ME = "local:me@example.com" as UserId;
 const WHO = { provider: "local" as const, subject: "me@example.com" };
 const SHA = (c: string) => c.repeat(40);
+const T0 = "2026-11-08T10:00:00.000Z";
 const project = localProject({ owner: "o", name: "r" });
 const cfg: FactoryConfig = { ...config, project, local_only: true, repo: { ...config.repo, path: "/nowhere" } };
 
@@ -155,6 +157,23 @@ describe("base push: queued by the merge's delivery, made by outbound's local ta
     expect(await basePush(f)).toMatchObject([{ delivered: false }]);
     // The item did not change at all.
     expect(await f.store.getWorkItem(f.id)).toEqual(closed);
+  });
+
+  it("a base push pending in the old table at upgrade becomes one keyed push_base action, and outbound pushes it once", async () => {
+    const g = fakeForge();
+    const f = await setup({ forge: g.forge });
+    const db = (f.store as unknown as { db: SqlDriver }).db;
+    const insert = "INSERT INTO outbound_base_pushes (work_item_id, base_ref, merge_sha, next_attempt_at, finished_at, created_at) VALUES (?, ?, ?, ?, ?, ?)";
+    await db.run(insert, [f.id, "main", SHA("a"), T0, null, T0]);
+    const mdb: MigrationDb = { dialect: db.dialect.name, all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) };
+    await carry.up(mdb);
+    await carry.up(mdb);
+    expect(await basePush(f)).toMatchObject([
+      { key: `push_base:${f.id}:${SHA("a")}`, target: { type: "git", id: "local:main" }, args: { base_ref: "main", merge_sha: SHA("a") }, delivered: false },
+    ]);
+    await f.controller.tickOutbox();
+    expect(g.pushes).toHaveLength(1);
+    expect(await basePush(f)).toMatchObject([{ delivered: true }]);
   });
 
   it("a rate limit or outage keeps the push pending and retries it with backoff", async () => {
