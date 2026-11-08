@@ -190,8 +190,7 @@ M2 (components and discovery):
 
 - The registry lives in `src/runtime/registry/`, not `src/shared/`, because discovery reads the file system and
   `shared/` does no I/O.
-- The time-based tick generator is a plain class for now. The re-planned M2 kept the plugin registry in place (it walks
-  all of `src/`), so it becomes a `*.plugin.ts` choice when the runtime wires the bus schedules (M3 leftovers).
+- The tick generator became a plugin choice in the M3 leftovers (`plugins.ticks`: `time-based`, `manual`).
 - M2 re-planned (RFC §11): legacy code moves into its component in the milestone that rewrites it. The
   dependency-direction ratchet takes the newly visible `component-imports-legacy` entries with that move.
 
@@ -204,6 +203,13 @@ M3 (bus):
   messages and claim leases are due against it, so consumers never read a clock.
 - A delayed message on a partitioned topic is parked (retries row, attempt 0) and the cursor moves past it, so a timer
   never holds up its partition. It is delivered when due, outside partition order.
+- Leftovers done: `plugins.bus` (`sql`) and `plugins.ticks` (`time-based`, `manual`) are built by compose through the
+  plugin registry and handed to the controller role. Their descriptors sit in `src/impl/bus/` and `src/impl/ticks/`:
+  a component file importing `plugin-api.ts` would be a new dependency-direction violation (the plugins test accepts
+  a legacy descriptor whose implementation is in a component's `plugins/` folder). Competing topics filter by
+  `requires` against a consumer's `capabilities` (column added by `20261109T0100-bus-competing-requires`). Dead
+  letters announce themselves on `system.alerts`; the controller's `dead-letter-alarm` handler stores a
+  `dead_letter` alert that Needs you shows. Details: `docs/design/10-event-driven.md`.
 
 M6 (engine):
 
@@ -256,11 +262,10 @@ M10 (extension points):
 ## Next
 
 1. M5: controller units (router + pure `decide()` units; `controller.ts` gone; the M4 seams go with it).
-2. M3 leftovers:
+2. M3 leftovers (the bus plugin, `requires` and dead-letter alarms are done):
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
-   - the runtime builds the sql bus as a plugin (today the controller role builds it);
-   - `requires` on competing topics (worker filtering);
-   - dead-letter alerts on `system.alerts`.
+   - the worker declares its `capabilities` when `runs.requests` lands (M6);
+   - `factory dead-letters replay` (the scheduler's `replay` exists) and `blocked_on: dead_letter` in the router (M5).
 3. M10 wiring follows its call sites:
    - hooks at the merge queue (M8), run start (M6) and delivery (M7);
    - roles drive the worker's prompts and tools (M6);
