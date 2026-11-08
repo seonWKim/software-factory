@@ -30,6 +30,7 @@ import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
+import { displayName } from "./names.js";
 import { Withholder } from "./withhold.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
@@ -317,6 +318,7 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
       change_url: null,
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
+      merged_by_name: m.merger_id === null ? null : await c.text(await displayName(c.d.displayNames, m.merger_id)),
       recorded_at: m.at,
     });
   }
@@ -515,7 +517,7 @@ async function stateChange(c: ApiCtx, sc: StateChange) {
     detail = {};
     for (const [k, v] of Object.entries(sc.detail)) detail[k] = await c.text(String(v));
   }
-  return { version: sc.version, at: sc.at, actor: { kind: sc.actor.kind, id: await c.text(sc.actor.id) }, reason: await c.text(sc.reason), changes, detail };
+  return { version: sc.version, at: sc.at, actor: { kind: sc.actor.kind, id: await c.text(sc.actor.id), name: await c.text(await displayName(c.d.displayNames, sc.actor.id)) }, reason: await c.text(sc.reason), changes, detail };
 }
 
 /** One claim of a run: the worker id and error code pass the Withholder; the fencing token is not in the record. */

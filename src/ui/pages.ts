@@ -21,6 +21,7 @@ import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import type { UiSettings } from "./settings-api.js";
 import type { UiCommands } from "./commands.js";
+import { type DisplayNames, userLabel } from "./names.js";
 import { Withholder } from "./withhold.js";
 
 export { STAGES } from "./filters.js";
@@ -55,6 +56,8 @@ export interface UiDeps {
    * and the per-process token. Absent: the session is a 404 and a commands POST a 503.
    */
   commands?: UiCommands;
+  /** Display names by user id (Identity's identity_profiles), read only to show. Absent: ids only. */
+  displayNames?: DisplayNames;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -384,14 +387,14 @@ async function pausedSection(c: Ctx): Promise<string> {
         await c.itemLink(await c.item(r.work_item_id), r.work_item_id),
         esc(r.attempt),
         `<time>${esc(r.paused_at)}</time> (${esc(c.ago(r.paused_at))} ago)`,
-        r.paused_by ? await c.w.text(r.paused_by) : `<span class="muted">unknown</span>`,
+        r.paused_by ? await c.w.text(await userLabel(c.d.displayNames, r.paused_by)) : `<span class="muted">unknown</span>`,
       ],
     });
   }
   const workers = await c.d.store.listWorkerPauses();
   const names = [];
   for (const p of workers) {
-    names.push(`${p.worker_id === "*" ? "every worker" : await c.w.text(p.worker_id)} (by ${await c.w.text(p.paused_by)}, since <time>${esc(p.paused_at)}</time>)`);
+    names.push(`${p.worker_id === "*" ? "every worker" : await c.w.text(p.worker_id)} (by ${await c.w.text(await userLabel(c.d.displayNames, p.paused_by))}, since <time>${esc(p.paused_at)}</time>)`);
   }
   const line = workers.length
     ? `<p>Paused workers: ${names.join("; ")}. They claim nothing until <code>factory workers resume</code>.</p>`
@@ -499,7 +502,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
       cells: [
         esc(sc.version),
         esc(sc.at),
-        await c.w.text(sc.actor.id),
+        await c.w.text(await userLabel(c.d.displayNames, sc.actor.id)),
         await c.w.text(sc.reason),
         await renderChanges(c, sc),
         await renderDetail(c, sc),

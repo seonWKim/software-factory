@@ -42,6 +42,11 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
+import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
+import { AuditedAuthProvider, PluginIdentityProvider } from "./impl/auth/audited-auth.js";
+import { PassportToolBroker } from "./impl/broker/passport-broker.js";
+import { storeSql } from "./impl/store/sql/store-sql.js";
+import { RunPassports } from "./worker/passports/run-passports.js";
 import { GitHubError, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
@@ -441,6 +446,8 @@ export async function loadConfig(
       join(stateDir, "storage"),
       // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
       join(stateDir, "test-mysql.url"),
+      // The solo passport key (Identity): an agent that read it could mint passports.
+      join(stateDir, LOCAL_KEY_FILE),
       join(home, ".ssh"),
       join(home, ".aws"),
       join(home, ".config", "gh"),
@@ -774,9 +781,13 @@ export async function build(
   const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge") });
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
-  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
+  const authPlugin = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
   // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
-  const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
+  const localAuthPlugin = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
+  // Identity (RFC 0015 §8, M9): edge, service and run passports, and the audit of every authorize decision.
+  const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
+  const auth = new AuditedAuthProvider(authPlugin, identity.passports);
+  const local_auth = new AuditedAuthProvider(localAuthPlugin, identity.passports);
   // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
@@ -786,8 +797,13 @@ export async function build(
   // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
   // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
-  const local = await p.localRoute({ broker, sandbox }, brokerDeps);
-  const runner = await p.runner(sandbox, secrets, { broker, scanner });
+  const unguardedLocal = await p.localRoute({ broker, sandbox }, brokerDeps);
+  // G2 with run passports: every broker the worker pool or an agent's granted tools reach checks the run passport.
+  const passports = new RunPassports(identity.passports);
+  const guard = (b: ToolBroker): ToolBroker => new PassportToolBroker(b, { checker: identity.passports, passportOf: (run) => passports.passportOf(run) });
+  const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
+  const guarded = guard(broker);
+  const runner = await p.runner(sandbox, secrets, { broker: guarded, scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
     throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${selectedRunners(sel).join(", ")} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
@@ -826,6 +842,7 @@ export async function build(
   await settings.refresh();
 
   const controller = new ControllerRole({
+    identity,
     store,
     sources,
     forge,
@@ -861,8 +878,9 @@ export async function build(
     store,
     sandbox,
     runner,
-    broker,
+    broker: guarded,
     local,
+    passports,
     scanner,
     storage,
     llm,
@@ -881,7 +899,21 @@ export async function build(
     engines,
   });
 
-  return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => store.close()) };
+  return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };
+}
+
+/**
+ * This process's Identity on the store's database, its key in the state folder (denied to agents). Forge and chat
+ * accounts resolve through the selected auth plugin's mapping; local ones through Identity's own.
+ */
+export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, clock: Clock, auth?: AuthProvider): Promise<IdentityRuntime> {
+  const log = new ConsoleLogger(clock, "identity");
+  return startIdentity({
+    db: storeSql(store),
+    stateDir: loaded.stateDir,
+    ...(auth ? { providers: (["github", "slack", "oidc"] as const).map((p) => new PluginIdentityProvider(p, auth)) } : {}),
+    onError: (schedule, err) => log.error("identity tick failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }),
+  });
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
@@ -958,6 +990,8 @@ export interface UiParts {
   commands: UiCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
+  /** Display names by user id from Identity's identity_profiles (M9), only to show. */
+  displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
   close(): Promise<void>;
 }
 
@@ -996,7 +1030,10 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // `factory resume` needs no grant). A remote-only grant therefore shows no Merge button.
   const base = p.base;
   const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
-  const auth = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  const authPlugin = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, github: NO_FORGE, store, grants });
+  // Identity (M9): the page's commands carry the actor's edge passport, and every decision here is audited.
+  const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
+  const auth = new AuditedAuthProvider(authPlugin, identity.passports);
   const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
     const project = await settings.resolveProject();
     if (!project) return { allow: false, reason: "no project is stored yet" };
@@ -1004,9 +1041,11 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, UI_BIND);
+  const actor = who.actor;
   const commands: UiCommands = {
     ...who, token,
-    mergeAllowed: async () => who.actor !== null && (await onProject(who.actor, "approve_merge")).allow,
+    mergeAllowed: async () => actor !== null && (await onProject(actor, "approve_merge")).allow,
+    ...(actor !== null ? { passport: () => identity.edge({ provider: "local", subject: actor }, "ui") } : {}),
   };
   // The mode switch and the auto-merge tier need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
@@ -1018,7 +1057,9 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
-  return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
+  const profiles = new ProfileStore(storeSql(store));
+  const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
+  return { clock, store, scanner, settings, commands, pauses, displayNames, close: () => identity.stop().then(() => store.close()) };
 }
 
 function refusalOf(d: AuthDecision): string | null {

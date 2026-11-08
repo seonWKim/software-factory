@@ -2297,8 +2297,8 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { created: false, command: existing };
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0],
+        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0, input.passport_id ?? null],
       );
       return { created, command: (await this.selectCliCommand(tx, input.key))! };
     });
@@ -2334,8 +2334,8 @@ export class SqlFactoryStore implements FactoryStore {
       if (existing) return { created: false, request: existing };
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at) VALUES (?, 'app', ?, ?, ?, ?, ?)",
-        [commandId(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now()],
+        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, passport_id) VALUES (?, 'app', ?, ?, ?, ?, ?, ?)",
+        [commandId(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.passport_id ?? null],
       );
       return { created, request: (await this.selectAppCommandRequest(tx, input.key))! };
     });
@@ -2789,6 +2789,7 @@ function rowToCliCommand(row: Row): CliCommand {
     command: row.command as string,
     args: JSON.parse(row.args as string) as Record<string, unknown>,
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
+    ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
     created_at: row.created_at as Timestamp,
   };
 }
