@@ -17,9 +17,9 @@ graph TB
   subgraph SURF["Surfaces"]
     direction LR
     GH["GitHub (forge and sync plugin, optional): issues, PRs, reviews"]
-    SL["Slack (later)"]
+    SL["Slack (sync plugin, optional)"]
     CLI["factory CLI"]
-    UI["factory ui: read-only status page"]
+    UI["factory ui: status page and dashboard"]
   end
 
   subgraph CORE["Core: factory logic, no vendor code"]
@@ -67,7 +67,7 @@ graph TB
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |
 | `AuthProvider` | NoAuth | SSO / OIDC, GitHub permissions, policy engine |
 | `SecretStore` | `~/.config/software-factory/.env` (outside the repo) | Vault / cloud secret manager |
-| `SourceAdapter` | GitHub issues via REST / `gh` | Slack, GitLab |
+| `SourceAdapter` | GitHub issues via REST / `gh` | Slack (`slack`), GitLab |
 | `CapabilitySearch` | List everything (`list-all`); BM25 over `docs/` and `skills/` markdown (`bm25`) | vector, hybrid |
 | `SharedStorage` | Local filesystem | PV / PVC |
 | `ToolBroker` (G2) | GitHub REST + `git push` in the worker process; `local`: the run's branch as a local branch of the factory repo, no remote | same, per tool |
@@ -76,7 +76,7 @@ graph TB
 
 Code layout: interfaces in `src/interfaces/`, control and agent-plane logic in `src/core/`, implementations in `src/impl/`, wiring in `src/compose.ts`, the status page in `src/ui/`. Why something is an interface: testability, infrastructure, or environment (see `AGENTS.md`).
 
-**Status page (`factory ui`, `src/ui/`).** A surface like the CLI, not a plugin interface: it has no `docs/plugins.md` entry and no registry name. It reads `FactoryStore` only, through its read methods (`listWorkItemsWhere`, `countWorkItemsByStage`, `listRunsByStatus`, `listRunsFinishedWithin`, `getWorkItem`, `listStateChanges`, `listRuns`), and never calls a method that writes. `buildUiParts` in `src/compose.ts` builds the configured clock, `SecretStore`, `FactoryStore` and `EgressScanner` through `Plugins`, not `build()`, so no controller, worker, source or runner starts. It loads the secret file because the MySQL store needs `MYSQL_PASSWORD` and the scanner needs the known secret values; those values stay in the store and scanner and never reach a page. Every value is HTML-escaped, and every free-text field is egress-scanned first and withheld whole on a finding (design §9). `node:http` only, bound to 127.0.0.1 (no host option), GET and HEAD only, Host header must be `127.0.0.1` or `localhost`. Like every other process it holds no state another replica needs, so any number can run.
+**Status page (`factory ui`, `src/ui/`).** A surface like the CLI, not a plugin interface: it has no `docs/plugins.md` entry and no registry name. It reads `FactoryStore` through its read methods (`listWorkItemsWhere`, `countWorkItemsByStage`, `listRunsByStatus`, `listRunsFinishedWithin`, `getWorkItem`, `listStateChanges`, `listRuns`). It writes only item commands, settings and pauses (and standing approvals), each behind the Host, Origin, Content-Type and CSRF guards (`docs/design/09-dashboard-app.md`); an item command is stored as a request the controller applies, never applied by the page. `buildUiParts` in `src/compose.ts` builds the configured clock, `SecretStore`, `FactoryStore` and `EgressScanner` through `Plugins`, not `build()`, so no controller, worker, source or runner starts. It loads the secret file because the MySQL store needs `MYSQL_PASSWORD` and the scanner needs the known secret values; those values stay in the store and scanner and never reach a page. Every value is HTML-escaped, and every free-text field is egress-scanned first and withheld whole on a finding (design §9). `node:http` only, bound to 127.0.0.1 (no host option), GET and HEAD for reads and POST for those writes, Host header must be `127.0.0.1` or `localhost`. Like every other process it holds no state another replica needs, so any number can run.
 
 ## 2. Control plane vs agent plane
 

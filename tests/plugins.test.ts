@@ -866,6 +866,21 @@ describe("docs/plugins/<interface>.md", () => {
     });
   }
 
+  it("docs/plugins.md lists every registered plugin in its interface's row", () => {
+    const rows = new Map<string, string>();
+    for (const line of readFileSync(join(REPO_ROOT, "docs", "plugins.md"), "utf8").split("\n")) {
+      const cells = line.split("|").map((c) => c.trim());
+      if (cells.length < 4 || !cells[1]) continue;
+      rows.set(cells[1].replace(/\s*\(.*$/, ""), cells[2]!);
+    }
+    for (const kind of PLUGIN_KINDS) {
+      const entry = REGISTRY[kind];
+      const cell = rows.get(entry.interface);
+      expect(cell, `docs/plugins.md row for ${entry.interface}`).toBeDefined();
+      for (const name of Object.keys(entry.plugins)) expect(cell, `${entry.interface} row names \`${name}\``).toContain(`\`${name}\``);
+    }
+  });
+
   it("KeepAwake says how to switch it, the platform default, the startup failure and the lid", () => {
     const s = section("KeepAwake")!;
     expect(s).toContain("plugins.awake");
