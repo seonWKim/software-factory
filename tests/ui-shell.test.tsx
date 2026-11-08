@@ -126,7 +126,7 @@ describe("app shell", () => {
     mount();
     expect(await screen.findByText("Needs you (4)")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Pages" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Floor", "Work items", "Workers", "Queue", "Health", "Failures", "Settings"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Floor", "Work items", "Workers", "Queue", "Health", "Failures", "Settings", "Users"]);
     fireEvent.click(within(nav).getByText("Queue"));
     expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
     expect(location.pathname).toBe("/app/queue");
