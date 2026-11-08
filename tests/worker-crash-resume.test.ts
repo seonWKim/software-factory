@@ -38,8 +38,8 @@ function commitFile(repo: string, path: string, content: string, msg: string): v
 }
 
 /**
- * Pushes to the local bare origin, for the implement run's branch store (RFC 0015 M7: the origin stands in for
- * the factory repo and the forge) and the resolve run's push; `hang` makes one never return (the process died there).
+ * Pushes to the local bare origin, for a run's branch store (RFC 0015 M7: the origin stands in for the factory repo
+ * and the forge); `hang` makes one never return (the process died there).
  */
 class Broker implements ToolBroker {
   readonly calls: { worker: string; name: string }[] = [];
@@ -55,12 +55,11 @@ class Broker implements ToolBroker {
     if (name === "github.preflight") return { ok: true, content: {} };
     this.calls.push({ worker: this.worker, name });
     const a = args as Record<string, unknown>;
-    if (name === "github.push_branch" || name === STORE_BRANCH) {
+    if (name === STORE_BRANCH) {
       if (this.hang) await new Promise<void>((r) => (this.release = r));
       git(String(a.workdir), "push", "--quiet", "--force", "origin", `HEAD:refs/heads/${String(a.branch)}`);
-      return { ok: true, content: name === STORE_BRANCH ? { sha: git(String(a.workdir), "rev-parse", "HEAD"), forge: true } : {} };
+      return { ok: true, content: { sha: git(String(a.workdir), "rev-parse", "HEAD"), forge: true } };
     }
-    if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
 }
@@ -197,7 +196,8 @@ describe.each(BACKENDS)("worker crash mid-resolve on $name", { timeout: 60_000 }
     });
     const source = new FakeSource();
     const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
-    const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
+    const forge = new FakeForge();
+    const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
     const storage = new MemoryStorage();
     const worker = (id: string, broker: Broker, own: FakeClock) => new Worker({
       id: id as WorkerId, store, sandbox: new NoOpSandbox(join(repo, `.worktrees-${id}`)), runner, broker, storage, clock: own, config: cfg,
@@ -215,11 +215,11 @@ describe.each(BACKENDS)("worker crash mid-resolve on $name", { timeout: 60_000 }
     expect((await resolveRun()).status).toBe("queued");
 
     const crashed = w1.tick();
-    await waitUntil(() => dying.calls.some((c) => c.name === "github.push_branch"));
+    await waitUntil(() => dying.calls.some((c) => c.name === STORE_BRANCH));
     const steps = async () =>
       (await storeSql(store).all("SELECT step_id, attempt, status FROM worker_run_steps WHERE run_id = ?", [(await resolveRun()).id]))
         .map((r) => `${String(r.step_id)}@${Number(r.attempt)}:${String(r.status)}`);
-    expect(await steps()).toEqual(["resolve@1:succeeded"]);
+    expect((await steps()).sort()).toEqual(["resolve@1:succeeded", "store-branch@1:running"]);
 
     clock.advance(cfg.lease_ms + 1);
     await controller.tickReaper();
@@ -229,7 +229,8 @@ describe.each(BACKENDS)("worker crash mid-resolve on $name", { timeout: 60_000 }
 
     expect(await resolveRun()).toMatchObject({ status: "succeeded", attempt: 2 });
     expect(agentRuns).toBe(1);
-    expect(healthy.calls.map((c) => c.name)).toContain("github.push_branch");
+    expect(healthy.calls.map((c) => c.name)).toContain(STORE_BRANCH);
+    expect((await steps()).sort()).toEqual(["record-push@2:succeeded", "resolve@1:succeeded", "store-branch@2:succeeded"]);
     const head = git(origin, "rev-parse", `refs/heads/${branch}`);
     expect(git(origin, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1)).toEqual([branchSha, mainSha]);
     expect(git(origin, "show", `${head}:src/gate.ts`)).toBe("export const gate = both();");
@@ -238,6 +239,12 @@ describe.each(BACKENDS)("worker crash mid-resolve on $name", { timeout: 60_000 }
     dying.release();
     await crashed;
     expect(await resolveRun()).toMatchObject({ status: "succeeded", attempt: 2 });
+    // The dead worker's late store records nothing: one push intent, delivered once by outbound.
+    await controller.tickRuns();
+    await controller.tickOutbox();
+    const pushes = await storeSql(store).all("SELECT intent_key FROM outbound_actions WHERE action = 'push'");
+    expect(pushes.map((r) => String(r.intent_key))).toEqual([`push:${branch}:${head}`]);
+    expect(forge.pushes.map((p) => p.sha)).toEqual([head]);
   });
 });
 

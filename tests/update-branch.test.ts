@@ -15,8 +15,8 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ForgeEvent } from "../src/interfaces/forge.js";
-import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
-import { FAKE_GITHUB_TOOLS, FakeAuth, FakeForge, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner, fakePrRef, runComments } from "./helpers/fakes.js";
+import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
+import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, GitForge, FakeSource, MemoryStorage, alice, config, silent, cleanScanner, fakePrRef, runComments } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -41,8 +41,11 @@ class RecordingSandbox extends NoOpSandbox {
   }
 }
 
-/** Like the real broker's push_branch (never a force push), but to the local bare remote with no credential. */
-class GitPushBroker implements ToolBroker {
+/**
+ * Like the real GitHub broker's `git.store_branch` (RFC 0015 M7): the run folder's HEAD written to the factory repo's
+ * staging ref, nothing on the forge. `pushError`: the store is refused.
+ */
+class GitStoreBroker implements ToolBroker {
   calls: { ctx: ToolCallContext; name: string; args: Record<string, unknown> }[] = [];
   pushError: { error_code: string; message: string } | null = null;
 
@@ -56,16 +59,17 @@ class GitPushBroker implements ToolBroker {
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;
     this.calls.push({ ctx, name, args: a });
-    if (name === "github.push_branch") {
+    if (name === STORE_BRANCH) {
       if (this.pushError) return { ok: false, ...this.pushError };
       const workdir = String(a.workdir);
-      git(workdir, "push", "--quiet", "origin", `HEAD:refs/heads/${String(a.branch)}`);
-      return { ok: true, content: { sha: git(workdir, "rev-parse", "HEAD") } };
+      git(workdir, "push", "--quiet", "--force", this.repo, `HEAD:refs/factory/outbound/${String(a.branch)}`);
+      return { ok: true, content: { sha: git(workdir, "rev-parse", "HEAD"), forge: true } };
     }
     return { ok: true, content: {} };
   }
-  pushes() {
-    return this.calls.filter((c) => c.name === "github.push_branch");
+  constructor(private readonly repo: string) {}
+  stores() {
+    return this.calls.filter((c) => c.name === STORE_BRANCH);
   }
 }
 
@@ -129,10 +133,10 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[]; localIt
     repo: { ...config.repo, path: repo, test_command: opts.testCommand ?? ["sh", "-c", "exit 0"] },
   };
   const source = new FakeSource();
-  const forge = new FakeForge(source);
+  const forge = new GitForge(source);
   // Inside the checkout, as in production (.worktrees): each run clones into its own folder there.
   const sandbox = new RecordingSandbox(join(repo, ".worktrees"));
-  const broker = new GitPushBroker();
+  const broker = new GitStoreBroker(repo);
   const runner = new FakeRunner({}); // no script: any agent start throws
   const toolEnv = { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" };
   const controller = new ControllerRole({ store, source, forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner });
@@ -174,7 +178,7 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[]; localIt
   const reasons = async () =>
     (await store.listStateChanges(id)).map((c) => c.reason).filter((r) => r.startsWith("update_") || r.startsWith("run_") || r === "retry_requested");
   return {
-    store, source, forge, sandbox, broker, runner, controller, worker, step, event, id: id as WorkItemId, branch,
+    clock, store, source, forge, sandbox, broker, runner, controller, worker, step, event, id: id as WorkItemId, branch,
     origin, branchSha, mainSha, remoteSha, updateRuns, resolveRuns, reasons, toolEnv, waitForMerge, moveMain,
     /** The update runs' comments, handed to outbound as thread entries (RFC 0015 M7). */
     comments: async () => (await runComments(store, id)).filter((c) => c.marker.includes("factory:update:")),
@@ -235,7 +239,7 @@ describe("update run: worker", () => {
     expect(run).toMatchObject({ status: "succeeded" });
     expect(run!.outcome?.status === "failed" ? run!.outcome.detail : "").not.toContain("git rev-parse:");
     expect(git(f.origin, "rev-list", "--parents", "-n", "1", f.remoteSha()).split(" ").slice(1)).toEqual([f.branchSha, f.mainSha]);
-    expect(f.broker.pushes()).toHaveLength(1);
+    expect([f.broker.stores().length, f.forge.pushes.length]).toEqual([1, 1]);
     expect((await f.comments())[0]!).toMatchObject({ number: 42, pr: true });
   });
 
@@ -248,7 +252,10 @@ describe("update run: worker", () => {
     expect(head).not.toBe(f.branchSha);
     expect(git(f.origin, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1)).toEqual([f.branchSha, f.mainSha]);
 
-    expect(f.broker.pushes()).toHaveLength(1);
+    // The run stored the merge; outbound pushed it (RFC 0015 M7): the worker wrote nothing to the forge.
+    expect(f.broker.stores()).toHaveLength(1);
+    expect(f.broker.calls.map((c) => c.name)).toEqual([STORE_BRANCH]);
+    expect(f.forge.pushes.map((p) => [p.branch, p.sha])).toEqual([[f.branch, head]]);
     const [run] = await f.updateRuns();
     expect(run).toMatchObject({ status: "succeeded", attempt: 1 });
     expect(run!.acknowledged_at).not.toBeNull();
@@ -288,10 +295,11 @@ describe("update run: worker", () => {
     f.forge.queue.push(f.event());
     await f.step();
 
-    const refresh = f.broker.calls.filter((c) => c.name === "github.open_pr");
+    // The refresh is a PR intent behind the push, which outbound delivers (RFC 0015 M7).
+    const refresh = f.forge.prOpens;
     expect(refresh).toHaveLength(1);
-    expect(refresh[0]!.args).toMatchObject({ branch: f.branch, base_ref: "main", labels: { "sf: incomplete": true } });
-    const body = String(refresh[0]!.args.body);
+    expect(refresh[0]!).toMatchObject({ branch: f.branch, base_ref: "main", labels: { "sf: incomplete": true } });
+    const body = String(refresh[0]!.body);
     expect(body).toContain("## In short\n\nthe change");
     expect(body).toContain("- **Not done:** the MySQL step");
     expect(body).toContain("Checked before push: `sh -c exit 0` passed");
@@ -306,7 +314,7 @@ describe("update run: worker", () => {
     await f.controller.tickRuns();
 
     expect(f.remoteSha()).toBe(f.branchSha);
-    expect(f.broker.pushes()).toHaveLength(0);
+    expect([f.broker.stores().length, f.forge.pushes.length]).toEqual([0, 0]);
     // No /resolve needed: RUNNING, unblocked, one automatic resolve run keyed on the base commit and attempt 1.
     expect((await f.store.getWorkItem(f.id))!).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
     const resolves = await f.resolveRuns();
@@ -428,7 +436,7 @@ describe("update run: worker", () => {
     await f.step();
 
     expect(f.remoteSha()).toBe(f.branchSha);
-    expect(f.broker.pushes()).toHaveLength(0);
+    expect([f.broker.stores().length, f.forge.pushes.length]).toEqual([0, 0]);
     expect((await f.store.getWorkItem(f.id))!).toMatchObject({
       stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending",
     });
@@ -447,7 +455,7 @@ describe("update run: worker", () => {
     f.forge.queue.push(f.event());
     await f.step();
     const pushed = f.remoteSha();
-    expect(f.broker.pushes()).toHaveLength(1);
+    expect([f.broker.stores().length, f.forge.pushes.length]).toEqual([1, 1]);
     expect((await f.comments())).toHaveLength(1);
 
     // GitHub has not recomputed mergeability yet and reports our new head as unmergeable.
@@ -457,7 +465,7 @@ describe("update run: worker", () => {
     const runs = await f.updateRuns();
     expect(runs).toHaveLength(2);
     expect(runs[1]!.outcome).toMatchObject({ status: "succeeded", data: { result: "up_to_date" } });
-    expect(f.broker.pushes()).toHaveLength(1);
+    expect([f.broker.stores().length, f.forge.pushes.length]).toEqual([1, 1]);
     expect((await f.comments())).toHaveLength(1);
     expect(f.remoteSha()).toBe(pushed);
     expect((await f.store.getWorkItem(f.id))!).toMatchObject({
@@ -465,7 +473,7 @@ describe("update run: worker", () => {
     });
   });
 
-  it("push error: run fails, run_failed:update:<code>; /retry re-enqueues an update run that then pushes", async () => {
+  it("a refused store: run fails, run_failed:update:<code>; /retry re-enqueues an update run that then pushes", async () => {
     const f = await setup("clean");
     f.broker.pushError = { error_code: "push_failed", message: "remote rejected" };
     f.forge.queue.push(f.event());
@@ -503,7 +511,23 @@ describe("update run: worker", () => {
     expect((await f.store.getWorkItem(f.id))!).toMatchObject({
       stage: "REVIEW", blocked_on: "human", blocked_reason: "run_failed:update:git_failed",
     });
-    expect(f.broker.pushes()).toHaveLength(0);
+    expect([f.broker.stores().length, f.forge.pushes.length]).toEqual([0, 0]);
+  });
+
+  it("a forge push failure is outbound's retry, not a failed run: the same merge commit is pushed once it goes through", async () => {
+    const f = await setup("clean");
+    f.forge.pushErrors = [new Error("network_unavailable: could not reach github.com")];
+    f.forge.queue.push(f.event());
+    await f.step();
+    const [run] = await f.updateRuns();
+    expect(run).toMatchObject({ status: "succeeded" });
+    expect(f.remoteSha()).toBe(f.branchSha);
+    expect((await f.store.getWorkItem(f.id))!).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    f.clock.advance(config.retry_max_ms);
+    await f.controller.tickOutbox();
+    expect(f.forge.pushes).toHaveLength(2);
+    expect(f.remoteSha()).toBe(run!.outcome?.status === "succeeded" ? run!.outcome.data.merge_sha : "");
+    expect(f.broker.stores()).toHaveLength(1);
   });
 });
 

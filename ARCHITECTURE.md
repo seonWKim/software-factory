@@ -139,7 +139,7 @@ graph TB
   WRK -- "queue + lease" --> STO
   WRK -- call --> SBX
   WRK -- call --> RUN
-  WRK -- "call: push_branch, open_pr" --> BRK
+  WRK -- "call: store_branch, preflight" --> BRK
   WRK -- call --> TDB
   WRK -- call --> AWK
   WRK -- "file: transcripts" --> SHS
@@ -167,7 +167,7 @@ graph TB
 | `AgentRunner` | One tool-using agent loop for a run; a list is a fallback chain (`FallbackRunner`) | `claude -p` subprocess, or an OpenAI-compatible HTTP API |
 | `LLMProvider` | Single model calls without tools (triage helpers, improve drafts); a list is a fallback chain | Claude CLI or an OpenAI-compatible API |
 | `Sandbox` | Where the agent's files and commands live; also the controller's merge check and local merge | Git worktree on the host today; container sandboxes later |
-| `ToolBroker` (G2) | The only place credentialed actions happen (push, open PR, preflight, comment). The `local` broker serves local items with one tool, `github.push_branch`, that pushes to no remote | GitHub REST and `git push`, in the worker process, outside the sandbox; local: none |
+| `ToolBroker` (G2) | The only place credentialed actions happen (push, open PR, preflight, comment). The `local` broker serves local items with one tool, `git.store_branch`, that pushes to no remote | GitHub REST and `git push`, in the worker process, outside the sandbox; local: none |
 | `EgressScanner` (G5) | Scans every agent output before it leaves (commits, PR text, comments, logs, alerts) | none (pure) |
 | `SecretStore` (G1) | Holds credentials; only tool implementations read it | `~/.config/software-factory/.env` |
 | `GitHubCredentials` | Mints the GitHub token for the GitHub client (App installation token or PAT). A required kind today, even with no GitHub plugin (RFC 0011) | GitHub App API |
@@ -276,10 +276,10 @@ sequenceDiagram
   W->>A: run implementer in a worktree
   A-->>W: done (granted read-only tools only, over tool RPC)
   W->>W: pre-push checks, egress scan
-  W->>B: github.push_branch, github.open_pr
-  B->>F: git push + REST (credential stays in the broker)
-  W->>DB: outcome (change_ref, change_url)
-  C->>DB: REVIEW, enqueue review
+  W->>B: git.store_branch (factory repo ref, no credential)
+  W->>DB: push and pr intents, outcome (pr_pending)
+  C->>F: outbound: git push + REST (credential stays in the forge plugin)
+  C->>DB: REVIEW, change_ref, enqueue review
   W->>A: run reviewer
   C->>F: read checks (CI gate)
   C->>DB: merge check via Sandbox, merge_checks row
@@ -315,7 +315,7 @@ sequenceDiagram
   P->>DB: factory approve id (command_inbox)
   C->>DB: authorize via local_auth, enqueue implement
   W->>A: run implementer in a local worktree
-  W->>LB: github.push_branch (commits the local branch, no remote)
+  W->>LB: git.store_branch (commits the local branch, no remote)
   LB->>R: refs/heads/factory/item
   W->>DB: outcome (no change_ref)
   C->>DB: enqueue review

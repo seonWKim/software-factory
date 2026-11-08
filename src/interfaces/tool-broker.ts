@@ -12,7 +12,7 @@ import type { RunId, WorkItemId } from "../core/types.js";
 export const STORE_BRANCH = "git.store_branch";
 
 export interface ToolDescriptor {
-  name: string; // e.g. "github.push_branch", "github.open_pr"
+  name: string; // e.g. "git.store_branch", "github.preflight"
   description: string;
   input_schema: Record<string, unknown>; // JSON Schema
   /**

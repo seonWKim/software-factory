@@ -20,8 +20,8 @@ import { type AgentRunResult, type AgentRunSpec, PROVIDER_SETUP, SESSION_ROLES, 
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
-import type { ToolCallContext, ToolResult } from "../interfaces/tool-broker.js";
-import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, hasTool, prTitle, routeFor, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
+import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
+import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /**
  * Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a
@@ -623,26 +623,41 @@ export class Worker {
   }
 
   /**
-   * After an update or resolve run pushed (issue #229): rebuild the PR body from the last implement run's notes
-   * and this run's checks, so it describes the branch as it is now. Best effort: the push already happened, so a
-   * failed refresh is logged and the run still succeeds. No stored notes (older runs, adopted PRs): no change.
+   * The PR text an update or resolve run's push sends with it (issue #229): the PR body rebuilt from the last
+   * implement run's notes and this run's checks, so it describes the branch as it is now. No stored notes (older
+   * runs, adopted PRs): null, and the PR is left as it is.
    */
-  async refreshPr(run: Run, item: WorkItem, ctx: ToolCallContext, branch: string, checks: readonly string[]): Promise<void> {
-    const { broker } = this.route(item);
+  async prRefresh(item: WorkItem, checks: readonly string[]): Promise<PrText | null> {
     const notes = lastPrNotes(await this.d.store.listRuns(item.id));
-    // A local item has no PR body to refresh.
-    if (!notes || !hasTool(broker, "github.open_pr")) return;
-    try {
-      const r = await broker.call(ctx, "github.open_pr", {
-        branch,
-        base_ref: this.cfg.repo.base_branch,
-        title: prTitle(item),
-        ...this.prDescription(item, notes, checks),
-      });
-      if (!r.ok) this.d.log.warn("PR body refresh failed", { run_id: run.id, error_code: r.error_code });
-    } catch (err) {
-      this.d.log.warn("PR body refresh failed", { run_id: run.id, error: err instanceof Error ? err.message.slice(0, 200) : "error" });
-    }
+    return notes ? { title: prTitle(item), ...this.prDescription(item, notes, checks) } : null;
+  }
+
+  /**
+   * A run's HEAD stored in this host's factory repo (RFC 0015 M7) through the broker's trusted-git checks and G5
+   * branch scan (`git.store_branch`): no remote, no credential. `forge`: the branch must still reach the forge (the
+   * GitHub broker's staging ref, which `recordPush` hands to outbound); false, the local branch is the change itself.
+   */
+  async storeBranch(item: WorkItem, ctx: ToolCallContext, workdir: string, branch: string, head: string): Promise<{ sha: string; forge: boolean }> {
+    const r = await this.route(item).broker.call(ctx, STORE_BRANCH, { workdir, branch, base_ref: this.cfg.repo.base_branch });
+    if (!r.ok) throw new RunFailure(r.error_code, r.message);
+    const content = r.content as { sha?: unknown; forge?: unknown };
+    return { sha: typeof content.sha === "string" ? content.sha : head, forge: content.forge === true };
+  }
+
+  /**
+   * An update or resolve run's push (RFC 0015 M7), as the implement run's: the branch stored, its head recorded,
+   * then the keyed push intent and, with `pr`, the PR refresh behind it. Two journaled steps, so a run taken over
+   * after them records nothing again. Returns the push intent's key, which the controller waits on; null for a
+   * local branch (nothing goes to a forge).
+   */
+  async pushBranch(c: Pick<RunCall, "run" | "item" | "ctx" | "step">, workdir: string, branch: string, head: string, pr: () => Promise<PrText | null>): Promise<string | null> {
+    const stored = await c.step("store-branch", async () => {
+      const s = await this.storeBranch(c.item, c.ctx, workdir, branch, head);
+      await this.recordPushedHead(c.run, c.ctx, head);
+      return s;
+    });
+    if (!stored.forge) return null;
+    return c.step("record-push", async () => (await this.recordPush(c.item, c.run, { branch, sha: stored.sha }, await pr())).push);
   }
 
   /**
@@ -956,22 +971,11 @@ export class Worker {
    * not take the factory's own push for a person's. Written while the run still holds its lease: the controller
    * leaves a PR's head alone while any run of its item is running.
    */
-  /**
-   * The run's push and PR as keyed intents (RFC 0015 M7), after its last trusted step stored `sha` in this host's
-   * factory repo: the push, then the PR, in one destination (`git:<host>:<branch>`) so the PR waits behind the push.
-   * The push is keyed by branch and sha (a head pushed once is never pushed again), the PR by branch and run: each
-   * implement run's PR delivery is its own, so the controller can wait for it, and a re-run step records nothing new.
-   * Returns the PR intent's key, which the run's result names.
-   */
-  async recordPush(item: WorkItem, run: Run, p: { branch: string; sha: string; title: string; body: string; labels: Record<string, boolean> }): Promise<string> {
-    const target = { type: "git", id: `${this.host}:${p.branch}`, link: "" };
-    const key = `pr:${p.branch}:${run.id}`;
-    await this.d.store.recordRunIntent({ action: "push", target, work_item_id: item.id, key: `push:${p.branch}:${p.sha}`, args: { branch: p.branch, sha: p.sha } });
-    await this.d.store.recordRunIntent({
-      action: "pr", target, work_item_id: item.id, key,
-      args: { branch: p.branch, sha: p.sha, run_id: run.id, base_ref: this.cfg.repo.base_branch, title: p.title, body: p.body, labels: JSON.stringify(p.labels) },
-    });
-    return key;
+  /** A run's push and PR (`runPushIntents`) recorded through the store; returns the intents' keys. */
+  async recordPush(item: WorkItem, run: Run, p: { branch: string; sha: string }, pr: PrText | null): Promise<{ push: string; pr: string | null }> {
+    const r = runPushIntents({ host: this.host, work_item_id: item.id, run_id: run.id, ...p, base_ref: this.cfg.repo.base_branch, pr });
+    for (const intent of r.intents) await this.d.store.recordRunIntent(intent);
+    return { push: r.push, pr: r.pr };
   }
 
   async recordPushedHead(run: Run, ctx: ToolCallContext, sha: string): Promise<void> {

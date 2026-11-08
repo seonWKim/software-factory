@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RunOutcome, WipRef } from "../src/core/types.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { pipeline } from "./helpers/fakes.js";
 
 // Design §5 Restarts, stopped runs keep their work: an implement run that stops mid-work (rate_limited,
@@ -114,9 +115,10 @@ describe("a run stopped mid-work keeps its commits", () => {
     expect(startedOn).toEqual(["base", "base"]);
   });
 
-  it("a failed wip push fails the run with its original code, no wip ref, and the retry starts fresh", async () => {
+  it("a failed wip store fails the run with its original code, no wip ref, and the retry starts fresh", async () => {
     const { f } = await harness(RATE_LIMITED);
-    f.broker.responses["github.push_branch"] = [{ ok: false, error_code: "push_failed", message: "rejected" }];
+    // A stopped run stores only its wip branch.
+    f.broker.responses[STORE_BRANCH] = [{ ok: false, error_code: "push_failed", message: "rejected" }];
     const { it0, outcome } = await firstRun(f);
     expect(outcome).toMatchObject({ error_code: "rate_limited" });
     expect(outcome.wip).toBeUndefined();

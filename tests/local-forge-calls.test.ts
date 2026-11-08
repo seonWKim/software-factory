@@ -4,7 +4,6 @@ import type { SourceRef, WorkItem, WorkItemId, WorkerId } from "../src/core/type
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { FakeGitHubClient, FakeSandbox, MemoryStorage, alice, cleanScanner, issueRef, pipeline, prompts, runComments } from "./helpers/fakes.js";
@@ -60,7 +59,7 @@ async function withGitHub(source: SourceRef, sandbox: FakeSandbox = new FakeSand
   const f = await pipeline();
   const client = new NanGuardClient();
   const broker = new GitHubToolBroker({
-    client, credentials: { token: async () => null } as unknown as GitHubCredentials, store: f.store, scanner: cleanScanner,
+    client, store: f.store, scanner: cleanScanner,
     clock: f.clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
   });
   const worker = new Worker({

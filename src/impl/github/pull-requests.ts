@@ -1,5 +1,5 @@
-// The PR write both the GitHub broker's `github.open_pr` (sessions, the PR body refresh) and the forge's `openPr`
-// (outbound's `github-change`, RFC 0015 M7) make: one implementation until the broker's tool goes.
+// The PR write of the forge's `openPr` (outbound's `github-change`, RFC 0015 M7): the branch's open PR updated,
+// or a new one opened, then its labels.
 
 import type { OpenPrInput } from "../../interfaces/forge.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";

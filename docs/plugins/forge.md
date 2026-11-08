@@ -40,8 +40,9 @@ Plugins:
     `git push --no-verify <sha>:refs/heads/<branch>` from the factory repo to its origin URL, factory branches only.
     The token comes from the configured GitHub credentials (the forge plugin gets them since RFC 0015 M7) and reaches
     git only through the child's env and an inline credential helper. `openPr`: the open PR for the branch updated
-    or a new one opened, then its labels (`src/impl/github/pull-requests.ts`, shared with the broker's
-    `github.open_pr`).
+    or a new one opened, then its labels (`src/impl/github/pull-requests.ts`). Outbound's
+    `github-push` and `github-change` targets are their only callers (RFC 0015 M7; the broker's `github.push_branch`
+    and `github.open_pr` are gone).
   - `pushBase`: one `git push --no-verify --force-with-lease=refs/heads/<base>:<expected_sha> origin <sha>:refs/heads/<base>` from the factory repo (`repo.path`), only for the configured base branch. It goes through the factory repo's own git configuration for origin, as the sandbox's fetches do, and makes no API call. Not built: pushing with the App credentials.
   - Secrets: none of its own (the shared client's `GitHubCredentials`).
 

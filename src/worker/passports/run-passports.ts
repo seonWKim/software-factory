@@ -9,7 +9,7 @@ import type { Issued, PassportService } from "../../identity/index.js";
 export const BROKER_AUDIENCE = "tool-broker";
 
 /** Forge tools the worker itself calls per run kind (src/worker/runs/). A kind not listed calls none. */
-const FORGE_TOOLS = ["git.store_branch", "github.push_branch", "github.open_pr", "github.preflight"] as const;
+const FORGE_TOOLS = ["git.store_branch", "github.preflight"] as const;
 const WORKER_TOOLS: Readonly<Record<string, readonly string[]>> = {
   implement: FORGE_TOOLS,
   update: FORGE_TOOLS,

@@ -10,22 +10,14 @@ const SCHEMA = {
 };
 
 /**
- * The local broker's tools: `git.store_branch` (the implement run's last step, RFC 0015 M7) and the same write under
- * the GitHub broker's push name, for the runs that still push through the broker (resolve, update, the session's
- * finish, a wip branch) until they move to outbound. Neither pushes to a remote. No `github.open_pr` or
- * `github.preflight`: a local item has no PR.
+ * The local broker's one tool: `git.store_branch` (a run's push, RFC 0015 M7: the implement, update and resolve
+ * runs, a wip branch, the session's finish). It pushes to no remote. No `github.preflight`: a local item has no PR.
  */
 const TOOLS: readonly ToolDescriptor[] = [
   {
     name: STORE_BRANCH,
     read_only: false,
     description: "Store the current HEAD of a run folder as its factory branch in the factory repo itself, as a local branch. Pushes to no remote.",
-    input_schema: SCHEMA,
-  },
-  {
-    name: "github.push_branch",
-    read_only: false,
-    description: "Commit the current HEAD of a run folder to its factory branch in the factory repo itself, as a local branch. Pushes to no remote.",
     input_schema: SCHEMA,
   },
 ];
@@ -64,7 +56,7 @@ export class LocalToolBroker implements ToolBroker {
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
-    if (name === STORE_BRANCH || name === "github.push_branch") return this.commitBranch(args as PushArgs);
+    if (name === STORE_BRANCH) return this.commitBranch(args as PushArgs);
     return { ok: false, error_code: "unknown_tool", message: name };
   }
 

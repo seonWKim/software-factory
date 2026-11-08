@@ -59,7 +59,7 @@ function githubBroker(store: FactoryStore, clock: FakeClock) {
   } as unknown as GitHubClient;
   const broker = new RecordingBroker(new GitHubToolBroker({
     client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-    credentials: { token: async () => null }, scanner: cleanScanner,
+    scanner: cleanScanner,
   }));
   return { broker, remote };
 }

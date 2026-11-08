@@ -9,7 +9,6 @@ export default definePlugin({
     const { GitHubToolBroker } = await import("./github-tool-broker.js");
     return new GitHubToolBroker({
       client: c.github,
-      credentials: c.credentials,
       store: c.store,
       scanner: c.scanner,
       clock: c.clock,

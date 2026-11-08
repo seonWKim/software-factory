@@ -49,12 +49,11 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
     const { conflicts, head, base_sha: baseSha } = done;
     if (!ran) await restoreResolution(w, run, handle, branch, done);
 
-    const pushed = await w.route(item).broker.call(ctx, "github.push_branch", { workdir: handle.workdir, branch, base_ref: repo.base_branch });
-    if (!pushed.ok) throw new RunFailure(pushed.error_code, pushed.message);
-    await w.recordPushedHead(run, ctx, head);
+    // Stored and recorded as keyed intents (RFC 0015 M7): outbound pushes it and refreshes the PR body behind it.
     const passed = checkCommands(repo).map((command) => ({ command, ok: true, how: "passed", tail: "" }));
-    await w.refreshPr(run, item, ctx, branch, checkedLines(passed, { fixed: false, skipped: null }));
-    return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha };
+    const push_intent = await w.pushBranch({ run, item, ctx, step }, handle.workdir, branch, head, () =>
+      w.prRefresh(item, checkedLines(passed, { fixed: false, skipped: null })));
+    return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha, ...(push_intent ? { push_intent } : {}) };
   } finally {
     await w.d.sandbox.destroy(handle);
   }

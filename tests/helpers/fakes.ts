@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { FactoryConfig, Prompts } from "../../src/core/config.js";
 import type { ProjectRef } from "../../src/core/project.js";
 import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
@@ -381,6 +382,20 @@ export class FakeForge implements Forge {
 }
 
 /**
+ * A FakeForge whose pushBranch also pushes for real, as the GitHub forge does (RFC 0015 M7): the stored sha from the
+ * factory repo to its origin (a local bare repo, no credential), never forced.
+ */
+export class GitForge extends FakeForge {
+  override async pushBranch(input: BranchPushInput): Promise<"pushed" | "already"> {
+    const r = await super.pushBranch(input);
+    execFileSync("git", ["push", "--quiet", "origin", `${input.sha}:refs/heads/${input.branch}`], {
+      cwd: input.repo, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" },
+    });
+    return r;
+  }
+}
+
+/**
  * A second poll source, of type `slack_thread`: FakeSource's replay contract and records, under another
  * source type. Test-only plugin name `fake-slack-poll` (docs/plugins.md), through `fakeSlackPollRegistry()`.
  */
@@ -713,8 +728,6 @@ const OBJECT_SCHEMA = { type: "object" } as const;
 /** What FakeBroker lists: the GitHub broker's tool names and read_only flags. */
 export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
   { name: STORE_BRANCH, description: "store the branch in the factory repo", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.push_branch", description: "push", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.open_pr", description: "open a PR", input_schema: OBJECT_SCHEMA, read_only: false },
   { name: "github.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
 ];
 
@@ -759,8 +772,8 @@ export class FakeNoteBroker implements ToolBroker {
 
 export class FakeBroker implements ToolBroker {
   /**
-   * Every call that acts on the forge (push, PR, comment), in order, and, when a FakeForge logs to it, outbound's
-   * pushes and PR opens (no `ctx`: outbound holds no run's lease). The read-only preflight is in `preflights`.
+   * Every other tool call, in order, and, when a FakeForge logs to it, outbound's pushes and PR opens under the names
+   * of the broker tools they replaced (no `ctx`: outbound holds no run's lease). The preflight is in `preflights`.
    */
   calls: { ctx?: ToolCallContext; name: string; args: unknown }[] = [];
   /** Every read-only `github.preflight` call, in order. */
@@ -772,7 +785,7 @@ export class FakeBroker implements ToolBroker {
   toForge = true;
   /**
    * Scripted results per tool name, used in order before the default. A function gets the call's args, so a
-   * test can fail a push to one branch only (e.g. the PR branch, not the wip branch).
+   * test can fail a store of one branch only (e.g. the wip branch, not the PR branch); null falls through.
    */
   responses: Record<string, (ToolResult | ((args: unknown) => ToolResult | null))[]> = {};
   /** The GitHub broker's tools, flagged as it flags them: only the preflight is read-only. */
@@ -783,17 +796,13 @@ export class FakeBroker implements ToolBroker {
   allTools(): readonly ToolDescriptor[] {
     return this.tools;
   }
-  /** The fake forge's branches: a successful `github.push_branch` sets its branch here. Nothing deletes one. */
-  remote = new Map<string, string>();
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     (name === "github.preflight" ? this.preflights : name === STORE_BRANCH ? this.stores : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
     // A stored branch must still reach the forge: outbound pushes it. Each store names a new sha.
     if (name === STORE_BRANCH && !scripted) return { ok: true, content: { sha: (++this.stored).toString(16).padStart(40, "0"), forge: this.toForge } };
-    if (name === "github.push_branch" && (scripted?.ok ?? true)) this.remote.set((args as { branch: string }).branch, "pushed");
     if (scripted) return scripted;
-    if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
 }

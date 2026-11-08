@@ -8,6 +8,7 @@ import type { WorkerId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
@@ -103,7 +104,6 @@ function brokerFor(repo: string, store: Awaited<ReturnType<typeof newStore>>["st
   } as unknown as GitHubClient;
   return new GitHubToolBroker({
     client, store, clock, repo: { owner: "o", name: "r" }, branchPrefix: "factory/", repoPath: repo,
-    credentials: { token: async () => ({ reveal: () => "not-a-real-token" }) as unknown as Secret },
     scanner: cleanScanner,
   });
 }
@@ -206,26 +206,28 @@ describe("the broker in a run folder", () => {
     const sbx = new NoOpSandbox(f.worktrees);
     const h = await sbx.create({ repo: f.repo, branch: "factory/wi_b", base_ref: "main" });
     const broker = brokerFor(f.repo, store, clock);
-    const push = () => broker.call(ctx, "github.push_branch", { workdir: h.workdir, branch: "factory/wi_b", base_ref: "main" });
+    // The run's last step (RFC 0015 M7): the branch stored in the factory repo, for outbound to push from there.
+    const push = () => broker.call(ctx, STORE_BRANCH, { workdir: h.workdir, branch: "factory/wi_b", base_ref: "main" });
+    const stored = () => git(f.repo, "for-each-ref", "--format=%(objectname)", "refs/factory/outbound/factory/wi_b");
     const remoteHas = (bare: string) => git(bare, "for-each-ref", "refs/heads/factory/wi_b") !== "";
-    return { f, h, push, remoteHas };
+    return { f, h, push, stored, remoteHas };
   }
 
-  it("pushes to the factory repo's remote, not to the origin the run folder's config names", async () => {
-    const { f, h, push, remoteHas } = await setup();
+  it("stores in the factory repo and pushes to no remote, not even the origin the run folder's config names", async () => {
+    const { f, h, push, stored, remoteHas } = await setup();
     commit(h.workdir, "src/b.txt", "b\n", "b");
     git(h.workdir, "remote", "set-url", "origin", f.decoy);
     expect(git(h.workdir, "remote", "get-url", "origin")).toBe(f.decoy);
 
     const r = await push();
-    expect(r).toMatchObject({ ok: true });
-    expect(remoteHas(f.origin)).toBe(true);
+    expect(r).toMatchObject({ ok: true, content: { sha: git(h.workdir, "rev-parse", "HEAD"), forge: true } });
+    expect(stored()).toBe(git(h.workdir, "rev-parse", "HEAD"));
+    expect(remoteHas(f.origin)).toBe(false);
     expect(remoteHas(f.decoy)).toBe(false);
-    expect(git(f.origin, "rev-parse", "refs/heads/factory/wi_b")).toBe(git(h.workdir, "rev-parse", "HEAD"));
   });
 
   it("scans the diff from the factory repo's origin/<base>, even when the run folder moved its own origin/<base>", async () => {
-    const { h, push, f, remoteHas } = await setup();
+    const { h, push, stored } = await setup();
     const token = ["ghp", "A".repeat(36)].join("_"); // built at runtime so this file holds no token-shaped text
     commit(h.workdir, "src/leak.txt", `${token}\n`, "leak");
     commit(h.workdir, "src/more.txt", "m\n", "more");
@@ -234,11 +236,11 @@ describe("the broker in a run folder", () => {
 
     const r = await push();
     expect(r).toMatchObject({ ok: false, error_code: "egress_blocked" });
-    expect(remoteHas(f.origin)).toBe(false);
+    expect(stored()).toBe("");
   });
 
-  it("refuses a run folder whose config names a program, and runs none of it during push, diff or rev-parse", async () => {
-    const { h, push, f, remoteHas } = await setup();
+  it("refuses a run folder whose config names a program, and runs none of it during the store, diff or rev-parse", async () => {
+    const { h, push, f, stored, remoteHas } = await setup();
     commit(h.workdir, "src/b.txt", "b\n", "b");
     const t = plantTraps(h.workdir, f.root);
     git(h.workdir, "config", `url.${f.decoy}.insteadOf`, f.origin);
@@ -246,7 +248,7 @@ describe("the broker in a run folder", () => {
     const r = await push();
     expect(r).toMatchObject({ ok: false, error_code: "untrusted_git_config" });
     expect(t.fired()).toEqual([]);
-    expect(remoteHas(f.origin)).toBe(false);
+    expect(stored()).toBe("");
     expect(remoteHas(f.decoy)).toBe(false);
   });
 

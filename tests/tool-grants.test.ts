@@ -87,7 +87,7 @@ describe("tool_grants at startup", () => {
     await expect(startWith({ review: ["test.write_note"] })).rejects.toThrow(/"test\.write_note", which is not read-only.*valid read-only tools of the test-notes broker: test\.read_note/);
   });
 
-  for (const tool of ["github.push_branch", "github.open_pr"]) {
+  for (const tool of ["git.store_branch"]) {
     it(`fails on ${tool} with the github broker: not read-only; the valid name is github.preflight`, async () => {
       const err = await startWith({ implement: [tool] }, "github").then(
         () => null,
@@ -140,15 +140,15 @@ describe("tool_grants at startup", () => {
 describe("the GitHub broker's read_only flags", () => {
   it("only github.preflight is read-only", () => {
     const broker = new GitHubToolBroker({
-      client: {} as never, credentials: {} as never, store: {} as never, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
+      client: {} as never, store: {} as never, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const flags = Object.fromEntries(broker.allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "git.store_branch": false, "github.push_branch": false, "github.open_pr": false, "github.preflight": true });
+    expect(flags).toEqual({ "git.store_branch": false, "github.preflight": true });
   });
 
   it("FakeBroker lists the same flags", () => {
     const flags = Object.fromEntries(new FakeBroker().allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "git.store_branch": false, "github.push_branch": false, "github.open_pr": false, "github.preflight": true });
+    expect(flags).toEqual({ "git.store_branch": false, "github.preflight": true });
     expect(new FakeBroker().listTools(["github.preflight"]).map((t) => t.name)).toEqual(["github.preflight"]);
   });
 });

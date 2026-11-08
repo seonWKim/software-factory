@@ -44,7 +44,7 @@ import type { SecretStore } from "./interfaces/secret-store.js";
 import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
-import { AuditedAuthProvider, PluginIdentityProvider, controllerServiceAuth } from "./impl/auth/audited-auth.js";
+import { AuditedAuthProvider, PluginIdentityProvider, controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
 import { RunPassports } from "./worker/passports/run-passports.js";
@@ -864,6 +864,7 @@ export async function build(
     auth,
     local_auth,
     service_auth: controllerServiceAuth(identity.passports),
+    outbound_auth: outboundServiceAuth(identity.passports),
     clock,
     config,
     log: new ConsoleLogger(clock, "controller"),

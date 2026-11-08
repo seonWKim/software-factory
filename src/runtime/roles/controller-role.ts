@@ -450,6 +450,7 @@ export class ControllerRole implements Decisions {
       bus: outboundBus,
       store: d.store,
       targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge, repo: this.kernel.cfg.repo.path, git }),
+      ...(d.outbound_auth ? { authorize: d.outbound_auth } : {}),
       scanner: d.scanner,
       log: d.log,
       config: () => {

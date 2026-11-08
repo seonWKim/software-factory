@@ -2,12 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { canAutoMerge } from "../src/core/policy.js";
 import { lastPrNotes, prBody, splitSummary } from "../src/core/pr-body.js";
-import type { Run, WorkItemId, WorkerId } from "../src/core/types.js";
-import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import type { Run } from "../src/core/types.js";
+import { openOrUpdatePr } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
-import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
-import { cleanScanner, pipeline } from "./helpers/fakes.js";
-import { issue, newStore, system } from "./helpers/store.js";
+import { pipeline } from "./helpers/fakes.js";
 
 const SUMMARY = [
   "## In short (AS-IS → TO-BE)",
@@ -127,11 +125,9 @@ describe("the worker keeps the PR body current (issue #229)", () => {
   });
 });
 
-describe("open_pr updates an open PR (issue #229)", () => {
-  async function brokerWith(open: { number: number }[], fail404 = false) {
-    const { store } = await newStore();
-    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
-    const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
+describe("openPr updates an open PR (issue #229)", () => {
+  // The forge's PR write (outbound's github-change, RFC 0015 M7).
+  function clientWith(open: { number: number }[], fail404 = false) {
     const calls: { method: string; path: string; body?: unknown }[] = [];
     const client = {
       request: async (method: string, path: string, body?: unknown) => {
@@ -141,20 +137,14 @@ describe("open_pr updates an open PR (issue #229)", () => {
         return { number: open[0]?.number ?? 9, html_url: "u" };
       },
     } as unknown as GitHubClient;
-    const broker = new GitHubToolBroker({
-      client, credentials: { token: async () => null } as unknown as GitHubCredentials, store, scanner: cleanScanner,
-      clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
-    });
-    const ctx = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
-    return { broker, ctx, calls, branch: `factory/${item.id}` };
+    const open_pr = (a: Parameters<typeof openOrUpdatePr>[2]) => openOrUpdatePr(client, { owner: "o", name: "r" }, a);
+    return { open_pr, calls, branch: "factory/wi_1" };
   }
 
   it("an open PR gets the new title and body; labels are added and removed", async () => {
-    const b = await brokerWith([{ number: 5 }]);
-    const r = await b.broker.call(b.ctx, "github.open_pr", {
-      branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": true, "sf: other": false },
-    });
-    expect(r).toMatchObject({ ok: true, content: { number: 5 } });
+    const b = clientWith([{ number: 5 }]);
+    const r = await b.open_pr({ branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": true, "sf: other": false } });
+    expect(r).toMatchObject({ number: 5 });
     expect(b.calls.slice(1)).toEqual([
       { method: "PATCH", path: "/repos/o/r/pulls/5", body: { title: "T", body: "B" } },
       { method: "POST", path: "/repos/o/r/issues/5/labels", body: { labels: ["sf: incomplete"] } },
@@ -163,9 +153,9 @@ describe("open_pr updates an open PR (issue #229)", () => {
   });
 
   it("removing a label the PR does not have is not an error; no open PR means one is opened", async () => {
-    const b = await brokerWith([], true);
-    const r = await b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": false } });
-    expect(r).toMatchObject({ ok: true, content: { number: 9 } });
+    const b = clientWith([], true);
+    const r = await b.open_pr({ branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": false } });
+    expect(r).toMatchObject({ number: 9 });
     expect(b.calls[1]).toMatchObject({ method: "POST", path: "/repos/o/r/pulls" });
   });
 });

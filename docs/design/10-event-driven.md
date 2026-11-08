@@ -298,9 +298,9 @@ force.
     `git push --no-verify <sha>:refs/heads/<branch>` from the factory repo to its origin URL, the token only in the
     child's env through an inline credential helper; the forge plugin now gets the credentials, G1/G2: no agent and
     no worker sees them). `github-change` calls `Forge.openPr` (reconcile: the branch's open PR is updated, never a
-    second opened; the same code as the broker's `github.open_pr`, `src/impl/github/pull-requests.ts`) and records
+    second opened; `src/impl/github/pull-requests.ts`) and records
     the PR number and link on the action row (`delivered_ref`, `delivered_url`; migration
-    `20261109T1130-outbound-action-results`). The PR's title, body and labels are egress-scanned there (G5); a
+    `20261109T1130-outbound-action-results`). The broker's `github.push_branch` and `github.open_pr` are gone. The PR's title, body and labels are egress-scanned there (G5); a
     flagged text opens the PR with the withheld notice only. The controller sets the item `blocked_on: outbound`,
     `blocked_reason: pr_pending` (stage stays `RUNNING`; `outbound` is a new `blocked_on` value, shown as its stage
     like `dependency`), and on `DeliveryCompleted` the outbox unit hands the delivered `pr` action to
@@ -314,15 +314,35 @@ force.
     (later batches of the branch wait). Changed from the run-time behaviour: these no longer fail the run, keep a
     wip branch or pause claims (the implement preflight still pauses claims on `forge_auth`, a rate limit and the
     network, before any agent runs); a forge outage delays the PR instead of spending a run attempt. A failure of
-    the store step itself still keeps the commits on the run's wip branch, which still goes through the broker's
-    `github.push_branch` (the run passport names that branch, `wip_branch`). Solo default: one machine; a process
+    the store step itself still keeps the commits on the run's wip branch: `git.store_branch` of the wip branch,
+    then a keyed `push` intent when the broker says `forge: true` (the run passport names that branch,
+    `wip_branch`); a failed wip store is logged, as a failed wip push was. Solo default: one machine; a process
     with no replica id flushes every host's pushes (`git`), one with a replica id only its own host's
     (`git:<host>`). Enterprise setting: a factory repo per host, so a push's destination names the host that holds
     the ref, and only that host's outbound flushes it (the flush's "kinds this process can write now"). Not built
-    yet: the resolve, update and wip pushes, the PR body refresh after them (`runner.ts`), the session's push and PR
-    (`factory session finish`) and sub-issue filing (a keyed
-    `file_sub_issue` action whose delivered ref the phases unit records) take the same path next; outbound uses
-    its service passport (M9) once it has one.
+    yet: sub-issue filing (a keyed `file_sub_issue` action whose delivered ref the phases unit records; the phases
+    unit still calls `fileSubIssue` inline). The base push is the `local` target's (the merge queue, M8).
+  - Update and resolve pushes, the PR body refresh, and the session's push and PR (decision changed 2026-11-09, M7
+    rest; see History). They take the implement path: `git.store_branch`, then the keyed `push` intent and, for a
+    PR text, the `pr` intent (`runPushIntents`, `src/core/worker-deps.ts`; the update and resolve runs' `pr` intent
+    carries the body rebuilt from the last implement run's notes, so the refresh is the PR delivery, and with no
+    stored notes only the push is recorded). The run's result carries `push_intent`. A refused store still fails the
+    run (`push_failed`, the broker's code); a forge push failure is outbound's retry, no longer a failed run. The
+    controller does not queue the review on a pushed update or resolve result while the push is undelivered: the
+    item waits `blocked_on: outbound`, `blocked_reason: push_pending`, and on `DeliveryCompleted` of the `push`
+    action (its `run_id`) `run-results.pushDelivered` sets `REVIEW` and queues the review keyed
+    `<item>:review:after-<kind>:<run>` (state change `push_delivered`), so the review never reads the head before
+    the push. A push delivered before the result is applied is applied with it. `factory session finish` stores
+    the branch the same way and records `push` and `pr` (empty labels) to `git:<host>:<branch>`; the session's
+    result carries `pr_pending` and `pr_intent`, and the controller waits on it as on an implement run's PR
+    (`pr_pending`, `prDelivered`). Solo and enterprise: the same; the local broker returns `forge: false`, so a local
+    item records no intent and waits on nothing.
+  - Outbound's service passport (decision changed 2026-11-09, M7 rest / M9). Every delivery is `use_tool` on its
+    target (`github-push`, `github-change`, ...) by `service:outbound` (`outboundServiceAuth`,
+    `src/impl/auth/audited-auth.ts`; compose passes it as `outbound_auth`), decided and audited in `authz_audit`. A
+    denied write is not sent: the batch fails with `passport_denied: <reason>` and retries with its backoff, so it
+    goes out once the passport is allowed again. `DeliveryCompleted` carries the passport id. With no Identity (tests,
+    a startup check) every delivery is allowed under no passport, as before. Solo and enterprise: the same.
 - **Run roles declare a Rule of Two profile and drive the agent** (since 2026-11-08, RFC 0015 M10; decision changed
   in the M6 leftovers: roles now drive prompts and tools, see History). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
@@ -510,6 +530,12 @@ force.
   run pushed its branch (`github.push_branch`) and opened or updated its PR (`github.open_pr`) through the broker in
   its own steps, returned the PR number in its result, and a push or PR failure failed the run, kept a wip branch and,
   for `forge_auth` or a rate limit, paused claims. The decision before the build keyed the PR intent `pr:<branch>`.
+- **Update, resolve, wip and session pushes** (decision changed 2026-11-09, RFC 0015 M7 rest). Before: the update
+  and resolve runs, the wip branch and `factory session finish` pushed through the broker's `github.push_branch`,
+  the PR body refresh and the session's PR went through `github.open_pr`, a forge failure failed the run, and the
+  review after an update or resolve was queued as soon as the result was applied.
+- **Outbound's passport** (decision changed 2026-11-09, RFC 0015 M7 rest / M9). Before: outbound delivered under no
+  passport and `DeliveryCompleted` carried `passport_id` null.
 - **A run's comments** (decision changed 2026-11-09, RFC 0015 M7 worker half). Before: the worker posted its gate,
   review and update comments itself through the broker's `github.comment`, inside the run, and an update run failed
   when its comment failed.
