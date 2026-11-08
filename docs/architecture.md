@@ -19,7 +19,7 @@ graph TB
     GH["GitHub (forge and sync plugin, optional): issues, PRs, reviews"]
     SL["Slack (later)"]
     CLI["factory CLI"]
-    UI["factory ui: read-only status page"]
+    UI["factory ui: status page + four write routes"]
   end
 
   subgraph CORE["Core: factory logic, no vendor code"]
@@ -76,7 +76,7 @@ graph TB
 
 Code layout (RFC 0015, moving): components in `src/inbound/`, `src/controller/`, `src/worker/`, `src/outbound/`, `src/bus/`, `src/identity/`, `src/runtime/`, `src/state/` and `src/shared/` (map: `ARCHITECTURE.md`); legacy interfaces in `src/interfaces/`, shared legacy logic in `src/core/`, implementations in `src/impl/`, wiring in `src/compose.ts`, the status page in `src/ui/`. Why something is an interface: testability, infrastructure, or environment (see `AGENTS.md`).
 
-**Status page (`factory ui`, `src/ui/`).** A surface like the CLI, not a plugin interface: it has no `docs/plugins.md` entry and no registry name. It reads `FactoryStore` only, through its read methods (`listWorkItemsWhere`, `countWorkItemsByStage`, `listRunsByStatus`, `listRunsFinishedWithin`, `getWorkItem`, `listStateChanges`, `listRuns`), and never calls a method that writes. `buildUiParts` in `src/compose.ts` builds the configured clock, `SecretStore`, `FactoryStore` and `EgressScanner` through `Plugins`, not `build()`, so no controller, worker, source or runner starts. It loads the secret file because the MySQL store needs `MYSQL_PASSWORD` and the scanner needs the known secret values; those values stay in the store and scanner and never reach a page. Every value is HTML-escaped, and every free-text field is egress-scanned first and withheld whole on a finding (design §9). `node:http` only, bound to 127.0.0.1 (no host option), GET and HEAD only, Host header must be `127.0.0.1` or `localhost`. Like every other process it holds no state another replica needs, so any number can run.
+**Status page (`factory ui`, `src/ui/`).** A surface like the CLI, not a plugin interface: it has no `docs/plugins.md` entry and no registry name. Its pages read `FactoryStore` through its read methods (`listWorkItemsWhere`, `countWorkItemsByStage`, `listRunsByStatus`, `listRunsFinishedWithin`, `getWorkItem`, `listStateChanges`, `listRuns`). Four write routes take a POST (`src/ui/server.ts`): settings, an item's commands, pause resume and standing rules; each checks Origin, Content-Type and the CSRF token (`x-csrf-token`) first, and resume and standing also check the owner (`approve_spec`). `buildUiParts` in `src/compose.ts` builds the configured clock, `SecretStore`, `FactoryStore` and `EgressScanner` through `Plugins`, not `build()`, so no controller, worker, source or runner starts. It loads the secret file because the MySQL store needs `MYSQL_PASSWORD` and the scanner needs the known secret values; those values stay in the store and scanner and never reach a page. Every value is HTML-escaped, and every free-text field is egress-scanned first and withheld whole on a finding (design §9). `node:http` only, bound to 127.0.0.1 (no host option), GET and HEAD everywhere else, Host header must be `127.0.0.1` or `localhost`. Like every other process it holds no state another replica needs, so any number can run.
 
 ## 2. Control plane vs agent plane
 
