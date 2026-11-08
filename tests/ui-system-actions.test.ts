@@ -193,7 +193,7 @@ describe("system actions: revisions", () => {
   it("a UI server on another revision than the running factory is listed", async () => {
     const factory = { state: "running", rev: REV_B, target_rev: null, child_pid: 1, since: "x", workers: 1 } as FactoryStatus;
     const o = await (await setup({ revision: REV_A, factory })).overview();
-    expect(o.system_actions).toMatchObject([{ code: "revision_mismatch", command: "restart `factory ui`" }]);
+    expect(o.system_actions).toMatchObject([{ code: "revision_mismatch", text: "UI server and factory differ: the UI runs aaaaaaa, the factory bbbbbbb", command: "restart the older: `factory ui` or `factory dev`" }]);
   });
 
   it("only a hex commit id counts as a dashboard revision", () => {

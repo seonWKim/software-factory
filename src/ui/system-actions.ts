@@ -144,7 +144,9 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   }
   const factoryRev = x.factory?.state === "running" ? x.factory.rev : null;
   if (server !== null && factoryRev && factoryRev !== server) {
-    add("revision_mismatch", `UI server out of date: it runs ${short(server)}, the factory runs ${short(factoryRev)}`, "restart `factory ui`");
+    // Either side may be the newer one (a UI started after a commit the factory has not picked up yet), so neither is
+    // called out of date.
+    add("revision_mismatch", `UI server and factory differ: the UI runs ${short(server)}, the factory ${short(factoryRev)}`, "restart the older: `factory ui` or `factory dev`");
   }
   return out;
 }
