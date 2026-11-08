@@ -382,7 +382,7 @@ CREATE TABLE `controller_merge_queue_entries` (
   `entered_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,
   `merge_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
   `detail` text COLLATE utf8mb4_bin NOT NULL,
-  `run_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `run_key` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
   `base_sha` varchar(64) COLLATE utf8mb4_bin DEFAULT NULL,
   `reason` text COLLATE utf8mb4_bin,
   `version` bigint NOT NULL,
