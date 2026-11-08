@@ -387,6 +387,18 @@ Worker review fixes (2026-11-09, findings 3–7):
 - A resume on other code is blocked only by a succeeded step row; ending a run passport needs the claim's lease
   token; a journal write failing in a step's error path is logged and the step's error stays the failure.
 
+Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
+
+- SQLite breaking migrations wait for `npm run migrate`: the supervisor's check reports them, so a self-update
+  keeps the old child and migrates nothing (refusing was chosen over draining inside the update); every other open
+  refuses one with `migration_pending`; `--status` and `--dry-run` only read (design 08-self-update).
+- The gate list covers `src/identity/`, `src/compose.ts` (G1, the passport broker wrapper),
+  `src/outbound/outbound.ts` and the default GitHub broker files; a guard descriptor may not take a per-platform
+  default (design 08-plugins, 05-standing-approvals).
+- `hooks` is a reviewed key on a shared store; an enabled `before_delivery` hook fails startup; no topic DDL at start
+  for a topic `bus_topics` lists; a handler no role consumes fails startup; a failed build or discovery is not cached
+  (design 10-event-driven).
+
 ## Waiting on the owner
 
 - Migrate the live database: `npm run migrate` after reviewing the branch.
@@ -418,7 +430,8 @@ Worker review fixes (2026-11-09, findings 3–7):
    - outbox and inbox migrations for the components not on the bus yet (worker, outbound);
    - the worker declares its `capabilities` when `runs.requests` lands (M6);
    - `factory dead-letters replay` (the scheduler's `replay` exists) and `blocked_on: dead_letter` in the router (M5).
-3. M10 wiring follows its call sites: hooks at delivery (`before_delivery`, M7); the run start (`before_run`),
+3. M10 wiring follows its call sites: hooks at delivery (`before_delivery`, M7; startup refuses an enabled one
+   until then, so drop it from `UNCALLED_HOOK_POINTS` when outbound calls it); the run start (`before_run`),
    the merge queue's landing (`before_merge`), the `hooks` setting and roles driving prompts and tools are done.
 4. M7 worker half, rest (design in 10-event-driven.md, "An implement run's push and PR"; every run's and the
    session's push and PR are done; the base push is the `local` target's, M8): sub-issue filing as a keyed `file_sub_issue`
