@@ -52,7 +52,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; the units' I/O is in its ratchet (pure load/decide split next) |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (reaper and tick waits left) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash test resumes mid-implement on SQLite and MySQL. Left: the engine's reaper tick (the controller's reaper still takes runs over), the runner's clock waits, update/resolve steps |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker half (push, PR open, review comments) left |
-| 8 | Merge queue | depth 1 merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands. Left: `MergeCheckTimedOut` (units cannot emit yet), the depth setting and speculative depth, the outbound merge deliveries (M7 takes over `LocalMergeUnit.land`), `github-change` merge |
+| 8 | Merge queue | depth N, timeout, hook (branch `refactor/rfc-0015-m8-leftovers`) | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Left: the outbound `local` merge delivery (M7 takes over `LocalMergeUnit.land`), `github-change` merge, batches with bisect, partitions; the `paused` state has no command (none is named in the design or RFC) |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; left: SecretStore key for enterprise, the controller and outbound service passports in use, decisions by `authorize()` (M5) |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table; not wired into the run, merge or delivery path yet |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | not started | |
@@ -359,7 +359,7 @@ M5 follow-up (pure units, partial):
    - the worker declares its `capabilities` when `runs.requests` lands (M6);
    - `factory dead-letters replay` (the scheduler's `replay` exists) and `blocked_on: dead_letter` in the router (M5).
 3. M10 wiring follows its call sites:
-   - hooks at the merge queue (M8), run start (M6) and delivery (M7);
+   - hooks at run start (M6) and delivery (M7) (the merge queue's landing runs `before_merge` since the M8 leftovers);
    - roles drive the worker's prompts and tools (M6);
    - a stored setting to enable hooks.
 4. M9 follow-up:
@@ -374,6 +374,9 @@ M5 follow-up (pure units, partial):
    - components get their SQL driver from the runtime (today `storeSql` takes it from the legacy store).
 5. M4 follow-up (with M5/M11, as `FactoryStore` shrinks): `listInboxAfter` and `listCliCommandsAfter` are read only by
    tests now; the store's command-row mapping duplicates `commandOf` in `src/inbound/records.ts`.
+6. M8 leftovers: the outbound `local` merge delivery (the merge queue emits `DeliveryRequested{kind: merge}` and
+   outbound's delivery handler runs `LocalMergeUnit.land`), the `github-change` merge delivery, batches with bisect
+   and partitions; a command for the queue's `paused` state once the design names one.
 
 ## After the refactor: acceptance runs (owner request, 2026-11-08)
 

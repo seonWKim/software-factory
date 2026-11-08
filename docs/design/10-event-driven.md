@@ -142,13 +142,22 @@ force.
   deps, the configured sources and forge, the live settings, the step guard); declarations two or more units use
   are in `units/support.ts`. Every decided stage change is checked against the WorkItem state table
   (`transitions.inTable`); a move not in the table is refused with a warning. Solo and enterprise: unchanged; each
-  replica runs every unit, and every write is still a conditional update.
+  replica runs every unit, and every write is still a conditional update. Startup checks (since 2026-11-08, M8
+  leftovers): every source and forge event kind is in a type-checked list (`CONTROLLER_EVENT_KINDS`,
+  `units/context.ts`), and the router refuses to start when a kind has no unit (it was dropped at dispatch before)
+  or a message type of `controller.events` has none; the worker pool refuses to start when a run kind it claims has
+  no run file (`runKindProblems`; before, each such run failed only when claimed). Units emit bus messages: an
+  `emit` write (or `Kernel.emit` from a unit that still writes inline) publishes on the controller's bus, delayed
+  until the draft's `not_before`, on `controller.events`; the `unit-messages` handler hands each back to the unit
+  that names its type under `messages` in its unit file.
 - **Pure units: load, decide, the router commits** (decision changed 2026-11-08, M5 follow-up; see History). A
   step or event may be split in two (`PureStep`, `PureEvent` in `src/controller/router/unit.ts`): `load(…, reader,
   tick)` reads what the decision needs through the kernel's read-only accessors (`Kernel.reader`: named store reads
   and the egress scan, nothing that writes), and `decide(…, loaded, tick)` returns a `UnitDecision`, the writes to
   commit, with no I/O and no clock. The router runs both and hands the decision to `Kernel.commit`, which applies
-  the writes in order (`ControllerWrite`: a thread entry, a CLI mirror mark, the lease expiry, a log line). Each
+  the writes in order (`ControllerWrite`: a thread entry, a CLI mirror mark, the lease expiry, a bus message, a log
+  line; the lease expiry's `then` decides the log lines that follow from what it expired, so the reaper's lines are
+  its own decision, not `Kernel.commit`'s). Each
   write is one keyed or conditional store write, so committing a decision twice changes nothing the first commit
   did; the writes of one decision are not one transaction yet. An item decision ends in `Kernel.commitItem`: its
   keyed writes first (the budget checkpoint comment), then the conditional transition or budget checkpoint at the
@@ -208,8 +217,9 @@ force.
   point runs in name order; a veto, a hook over its budget (`hook_timeout`) or one that throws (`hook_error`)
   refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
   text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
-  until the owner enables it; the caller passes the enabled names. Not wired yet: no call site (merge queue M8, run
-  start M6, outbound M7) and no stored enable setting; no hook ships.
+  until the owner enables it; the caller passes the enabled names. Wired at the merge queue's landing
+  (`before_merge`, subject the work item; the controller role's `hooks.enabled`, none unless given). Not wired yet:
+  run start (M6), outbound (M7), and the stored enable setting; no hook ships.
 - **Commands and runs carry passports** (since 2026-11-08, RFC 0015 M9 wiring; details in 08-permissions.md,
   "Passports in the running factory"). A CLI or UI command row stores its actor's passport id; inbound mints one for
   a comment command at relay time, before its commit (a passport minted for a commit that loses its cursor race is
@@ -218,27 +228,34 @@ force.
   transaction, and Identity writes `identity_passports` on its own connection. A run passport is minted at run start
   and checked by the ToolBroker on every call. The auth plugins still decide commands; every decision is written to
   `authz_audit`.
-- **The merge queue** (decision changed 2026-11-08, RFC 0015 M8; see History). A local change merges only through
+- **The merge queue** (decision changed 2026-11-08, RFC 0015 M8 and its leftovers; see History). A local change merges only through
   the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
   `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
   migration `20261109T0300-controller-merge-queue`; each entry is a `MergeQueueEntry` actor). Entry: only a ready
   change (merge_pending: reviewed, its own checks green) approved by `factory merge` / the Merge button (the
   approver role) or by auto mode where its tier allows, so a change waiting on a person is never in the queue. A
-  branch that conflicts with the base is refused at once, as before. Check: the head entry's `merge-check` run
-  (`src/worker/runs/merge-check/`, no agent, no push) merges the branches ahead of it and then its own onto the base
-  in a fresh run folder and runs the install command and the checks there. Green: `LocalMergeUnit.land` moves the
-  base only while it is still at the checked commit, so the tree that lands is the tree that was checked (no check
-  runs again; a moved base sends the entry back to be checked again). Red, or a failed check run: the entry leaves
-  with the reason posted on the item (which stays in merge_pending), the entries behind it are rebuilt, and the next
-  one is checked. Every move is conditional on the state it leaves; entries of one queue are made one at a time (the
-  queue row is locked). Auto mode tries once per passed review run (its key no longer names the item version, which
-  the queue's state changes bump). Solo default and the only path built: depth 1, no batching. Not built yet: the
-  enterprise depth setting (speculative depth N, default 2, as a discovered `*.setting.ts`), batches with bisect and
-  partitions; the delayed `MergeCheckTimedOut{entry_id}` message (`MergeQueueUnit.timedOut` exists; the units have
-  no way to emit a bus message yet, so a stuck check waits for the run's own timeouts and the reaper); the `paused`
-  state's command; the `github-change` merge delivery (the factory merges no PR today; a person merges it on the
-  forge) and the outbound `local` merge delivery: `land` is the one function the M7 delivery handler takes over.
-  The unit's I/O goes through the actor's store and `local-merge` (unit-purity follow-up).
+  branch that conflicts with the base is refused at once, as before. Check: each of the first `merge_queue.depth`
+  entries gets a `merge-check` run (`src/worker/runs/merge-check/`, no agent, no push), all out at once, which merges
+  the branches of the entries ahead of it and then its own onto the base in a fresh run folder and runs the install
+  command and the checks there. `merge_queue.depth` (`src/controller/settings/merge-queue-depth.setting.ts`, PR
+  only, 1 to 10): solo default 1 (RFC 0009), enterprise speculative depth N, 2 typical (RFC 0015 §7). A green check
+  passes the entry (`passed`); the head lands once it passed. Landing: the `before_merge` hooks first (a veto
+  removes the entry with the hook's reason), then `LocalMergeUnit.land` moves the base only while it is still at the
+  commit the check expects: the checked base for an entry nothing was ahead of, else the commit the last entry ahead
+  landed as (that landing writes it on every entry checked with it ahead). So the tree that lands is the tree that
+  was checked and no check runs again; a moved base sends the entry and every entry checked with it ahead back to
+  be checked. Red, a failed check run, or a check that did not come back in time: the entry leaves with the reason
+  posted on the item (which stays in merge_pending), every entry checked with it ahead is rebuilt (queued again; its
+  old run's result then changes nothing), and the queue moves on. The time limit: starting a check emits a delayed
+  `MergeCheckTimedOut{entry_id, run_key}` on `controller.events`, due after max_attempts × (run_timeout_ms +
+  lease_ms), every attempt the reaper may give the run. Queue states: `checking` while a check is out, `merging`
+  while the head lands (nothing starts meanwhile), `paused` takes no check and lands nothing; neither this design nor
+  the RFC names a command that sets it, so none exists. Every move is conditional on the state it leaves; entries
+  of one queue are made one at a time (the queue row is locked). Auto mode tries once per passed review run (its key
+  no longer names the item version, which the queue's state changes bump). Not built yet: batches with bisect and
+  partitions; the `github-change` merge delivery (the factory merges no PR today; a person merges it on the forge)
+  and the outbound `local` merge delivery: `land` is the one function the M7 delivery handler takes over. The
+  unit's I/O goes through the actor's store and `local-merge` (unit-purity follow-up).
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
@@ -247,6 +264,11 @@ force.
 - **Merging a local change** (decision changed 2026-11-08, RFC 0015 M8). Before: `factory merge` and auto mode
   merged at once in the controller's sandbox, running the install command and the checks on the merge commit; two
   changes approved together were each checked against the base alone (05-sources.md "Merge").
+- **Merge queue depth and time limit** (decision changed 2026-11-08, M8 leftovers). Before: depth 1 only (one
+  check out at a time, the queue row's `idle → checking` move as the lock), and a stuck check waited for its run's
+  own timeouts and the reaper, since units could not emit a bus message.
+- **Unhandled event kinds** (decision changed 2026-11-08, M8 leftovers). Before: the router dropped an event no unit
+  accepted, and a run kind with no run file failed each of its runs when claimed.
 
 - **Table names and schema steps** (decision changed 2026-11-08, RFC 0015 M1). Before: unprefixed tables shared
   by every part of the code, schema changes appended to SQLite's numbered list and to `migrations/mysql/`
