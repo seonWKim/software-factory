@@ -119,6 +119,18 @@ describe("service passports", () => {
     expect(await identity.authorize(c.passport.id, "approve_merge", { project: "p" })).toMatchObject({ allow: true });
     expect(await identity.authorize(c.passport.id, "use_tool", { project: "p" })).toMatchObject({ allow: false, reason: "outside_actions" });
   });
+
+  it("lasts 24h and is reissued at half-life, so a new run passport has at least 12h ahead", async () => {
+    const { identity, ticks, begin } = await setup();
+    const first = await identity.service("worker");
+    expect(first.passport.expires_at).toBe("2026-11-09T12:00:00.000Z");
+    await ticks.tick(REVOCATIONS_TICK, T0 + 11 * 3_600_000);
+    expect(await identity.service("worker")).toBe(first);
+    await ticks.tick(REVOCATIONS_TICK, T0 + 12 * 3_600_000);
+    const run = await begin();
+    expect(run.passport.parent_id).not.toBe(first.passport.id);
+    expect(run.passport.expires_at).toBe("2026-11-10T00:00:00.000Z");
+  });
 });
 
 describe("audited legacy auth", () => {

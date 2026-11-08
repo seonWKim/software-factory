@@ -37,6 +37,9 @@ const OPEN_ACTIONS: readonly Action[] = ["submit_work"];
 
 export const REVOCATIONS_TICK = "revocations";
 
+/** A service passport's lifetime: a run passport narrowed from it gets at least half of it (12h) ahead. */
+const SERVICE_TTL_MS = 24 * 3_600_000;
+
 export interface IdentityOptions {
   readonly db: SqlExecutor;
   readonly keys: PassportKeyring;
@@ -140,13 +143,15 @@ export class PassportService implements Authorization, PassportChecker {
 
   /**
    * This replica's passport for a component acting with no person behind it, limited to that service's actions
-   * (SERVICE_ACTIONS). Reused until it is revoked or within two refresh periods of its expiry, then reissued.
+   * (SERVICE_ACTIONS). It lasts SERVICE_TTL_MS (capped by maxTtlMs) and is reissued once half of that has passed
+   * or it is revoked, so a run passport narrowed from it always has at least half the lifetime ahead.
    */
   async service(name: ServiceName): Promise<Issued> {
     const now = this.now();
+    const ttl = Math.min(SERVICE_TTL_MS, this.maxTtlMs);
     const held = this.services.get(name);
-    if (held && plusMs(now, 2 * this.refreshMs) < held.passport.expires_at && !this.revoked.has(held.passport.id)) return held;
-    const issued = await this.authenticate({ provider: "service", subject: name }, "service", { restrictions: serviceRestrictions(name) });
+    if (held && plusMs(now, ttl / 2) < held.passport.expires_at && !this.revoked.has(held.passport.id)) return held;
+    const issued = await this.authenticate({ provider: "service", subject: name }, "service", { ttl_ms: ttl, restrictions: serviceRestrictions(name) });
     this.services.set(name, issued);
     return issued;
   }
