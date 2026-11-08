@@ -143,11 +143,15 @@ describe("doctor: GitHub token expiry thresholds (design §9 Health)", () => {
     expect((await check(inDays(10))).token_days).toBe(10);
   });
 
-  it("a token that never expires stays a warn; an App token's expiry comes from its grant, with no GitHub read", async () => {
+  it("a token that never expires stays a warn", async () => {
     expect(checkStatus(await check(null))).toBe("warn");
+  });
+
+  it("an App grant expiring in one hour is ok with no token_days and no GitHub read", async () => {
     const client = new ExpiryClient(null);
-    const c = await tokenExpiryCheck(client, repo, NOW, { expires_at: inDays(1) });
-    expect(checkStatus(c)).toBe("warn");
+    const c = await tokenExpiryCheck(client, repo, NOW, { expires_at: inDays(0, 3_600_000) });
+    expect(c).toEqual({ ok: true, msg: "GitHub App token minted (renewed automatically)" });
+    expect(c.token_days).toBeUndefined();
     expect(client.reads).toBe(0);
   });
 });
