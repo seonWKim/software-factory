@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
@@ -14,13 +13,12 @@ import { EMPTY_HOOKS_DIR, NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.j
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
 import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, settingsWith, silent } from "./helpers/fakes.js";
+import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Issue #78: a run's working copy must not share the owner's git folder, and the worker's and broker's own git
 // calls in a run folder must not run anything the agent configured there.
 
-const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
 const real = (p: string) => realpathSync(p);
 const under = (p: string, dir: string) => !relative(real(dir), p).startsWith("..");
 
@@ -32,19 +30,23 @@ function commit(dir: string, path: string, content: string, msg: string) {
 }
 
 /** A bare origin and the factory repo cloned from it, with main pushed; plus a decoy bare repo. */
-function factoryRepo() {
-  const root = mkdtempSync(join(tmpdir(), "sf-iso-"));
+const repos = gitTemplate((root) => {
   const origin = join(root, "origin.git");
-  const decoy = join(root, "decoy.git");
   const repo = join(root, "repo");
   git(root, "init", "--quiet", "--bare", "-b", "main", origin);
-  git(root, "init", "--quiet", "--bare", "-b", "main", decoy);
+  git(root, "init", "--quiet", "--bare", "-b", "main", join(root, "decoy.git"));
   git(root, "clone", "--quiet", origin, repo);
   commit(repo, "README.md", "hi\n", "init");
   commit(repo, "src/a.txt", "a\n", "a");
   git(repo, "push", "--quiet", "origin", "main");
   git(repo, "fetch", "--quiet", "origin");
-  return { root, origin, decoy, repo, worktrees: join(repo, ".worktrees") };
+});
+
+/** A test's own copy of the template. */
+function factoryRepo() {
+  const root = repos.copy();
+  const repo = join(root, "repo");
+  return { root, origin: join(root, "origin.git"), decoy: join(root, "decoy.git"), repo, worktrees: join(repo, ".worktrees") };
 }
 
 /** The factory repo's git state an agent must never change. */

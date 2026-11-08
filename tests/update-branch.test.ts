@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -17,13 +16,8 @@ import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/s
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import { FAKE_GITHUB_TOOLS, FakeAuth, FakeForge, FakeRunner, FakeSource, MemoryStorage, alice, config, silent, cleanScanner } from "./helpers/fakes.js";
+import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
-
-const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", env: GIT_ENV }).trim();
-}
 
 function commitFile(repo: string, path: string, content: string, msg: string): void {
   mkdirSync(dirname(join(repo, path)), { recursive: true });
@@ -74,8 +68,20 @@ class GitPushBroker implements ToolBroker {
 
 type Scenario = "clean" | "conflict";
 
+/** A bare origin with main (README, a.txt, src/c.txt) pushed from a dev clone. */
+const repos = gitTemplate((root) => {
+  const origin = join(root, "origin.git");
+  const dev = join(root, "dev");
+  git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  git(root, "clone", "--quiet", origin, dev);
+  commitFile(dev, "README.md", "hi\n", "init");
+  commitFile(dev, "a.txt", "a\n", "a");
+  commitFile(dev, "src/c.txt", "c\n", "c");
+  git(dev, "push", "--quiet", "origin", "main");
+});
+
 /**
- * A bare origin, a factory/<id> branch with one commit, and main advanced after it: a change to another
+ * A copy of the template, a factory/<id> branch with one commit, and main advanced after it: a change to another
  * file ("clean") or to the same files ("conflict"). The item waits for a human merge of PR 42.
  */
 async function setup(scenario: Scenario, opts: { testCommand?: string[]; localItem?: boolean } = {}) {
@@ -95,19 +101,10 @@ async function setup(scenario: Scenario, opts: { testCommand?: string[]; localIt
   const id = created.id;
   const branch = `factory/${id}`;
 
-  const root = mkdtempSync(join(tmpdir(), "sf-update-"));
+  const root = repos.copy();
   const origin = join(root, "origin.git");
   const dev = join(root, "dev");
   const repo = join(root, "repo");
-  git(root, "init", "--quiet", "--bare", "-b", "main", origin);
-  git(root, "clone", "--quiet", origin, dev);
-  git(dev, "config", "user.email", "t@example.com");
-  git(dev, "config", "user.name", "t");
-  commitFile(dev, "README.md", "hi\n", "init");
-  commitFile(dev, "a.txt", "a\n", "a");
-  commitFile(dev, "src/c.txt", "c\n", "c");
-  git(dev, "push", "--quiet", "origin", "main");
-
   git(dev, "checkout", "--quiet", "-b", branch);
   if (scenario === "clean") commitFile(dev, "feature.txt", "feature\n", "feature");
   else {

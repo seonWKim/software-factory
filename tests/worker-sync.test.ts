@@ -1,6 +1,4 @@
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
@@ -14,21 +12,11 @@ import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runne
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../src/interfaces/tool-broker.js";
 import { FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, gates, issueRef, silent } from "./helpers/fakes.js";
+import { git, gitTemplate } from "./helpers/git-fixture.js";
 import { newStore } from "./helpers/store.js";
 
 // Sync before push (design §4, decided 2026-11-01): an implement run merges the freshly fetched
 // origin/<base> into its branch before the pre-push checks, and resolves a conflict in the same run.
-
-const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
-const AGENT_ENV = {
-  ...GIT_ENV,
-  GIT_AUTHOR_NAME: "agent", GIT_AUTHOR_EMAIL: "agent@example.com",
-  GIT_COMMITTER_NAME: "agent", GIT_COMMITTER_EMAIL: "agent@example.com",
-};
-
-function git(cwd: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8", env: AGENT_ENV }).trim();
-}
 
 function write(repo: string, path: string, content: string): void {
   mkdirSync(dirname(join(repo, path)), { recursive: true });
@@ -102,10 +90,24 @@ const spec = {
 
 type AgentStep = (workdir: string, spec: AgentRunSpec) => void;
 
+/** A bare origin with main (README, src/a.txt, docs/x.txt), a dev clone and a factory checkout. */
+const buildRepos = (root: string) => {
+  const origin = join(root, "origin.git");
+  const dev = join(root, "dev");
+  git(root, "init", "--quiet", "--bare", "-b", "main", origin);
+  git(root, "clone", "--quiet", origin, dev);
+  commitFile(dev, "README.md", "hi\n", "init");
+  commitFile(dev, "src/a.txt", "a\n", "add a");
+  commitFile(dev, "docs/x.txt", "x\n", "add x");
+  git(dev, "push", "--quiet", "origin", "main");
+  git(root, "clone", "--quiet", origin, join(root, "repo"));
+};
+const repos = gitTemplate(buildRepos);
+
 /**
- * A bare origin with main (README, src/a.txt, docs/x.txt) and a factory checkout. The implementer edits
- * src/a.txt and commits; `moveMain` runs while it works, standing in for a merge to main mid-run. The
- * conflict step runs only when the worker asks for a conflict resolution.
+ * A copy of the template's repositories. The implementer edits src/a.txt and commits; `moveMain` runs while it
+ * works, standing in for a merge to main mid-run. The conflict step runs only when the worker asks for a
+ * conflict resolution.
  */
 async function setup(opts: {
   moveMain?: (dev: string) => void;
@@ -121,17 +123,10 @@ async function setup(opts: {
 } = {}) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "sf-sync-")));
+  const root = repos.copy();
   const origin = join(root, "origin.git");
   const dev = join(root, "dev");
   const repo = join(root, "repo");
-  git(root, "init", "--quiet", "--bare", "-b", "main", origin);
-  git(root, "clone", "--quiet", origin, dev);
-  commitFile(dev, "README.md", "hi\n", "init");
-  commitFile(dev, "src/a.txt", "a\n", "add a");
-  commitFile(dev, "docs/x.txt", "x\n", "add x");
-  git(dev, "push", "--quiet", "origin", "main");
-  git(root, "clone", "--quiet", origin, repo);
 
   const cfg: FactoryConfig = {
     ...config,
