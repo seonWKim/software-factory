@@ -7,7 +7,7 @@ import { userInfo } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import {
-  CODE_ROOT_ENV, type Loaded, Plugins, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, localProject, resolveProject, settingsBase, uiPort,
+  CODE_ROOT_ENV, type Loaded, Plugins, approveMergeCheck, build, buildSessionParts, buildStatsStore, buildUiParts, cliConfig, loadConfig, localProject, resolveProject, settingsBase, uiPort,
 } from "./compose.js";
 import { SESSION_USAGE, parseSessionArgs, runSession, sessionDeps } from "./session-cmd.js";
 import { runCanary } from "./canary.js";
@@ -34,7 +34,7 @@ import { LastChecks, olderThanFactory, serverRevision } from "./ui/system-action
 import { modelStallChecks, modelStallLine, projectKeyChecks, readFactoryStatus } from "./ui/factory-status.js";
 import { CHILD_ERROR_MESSAGE, SUPERVISOR_STATUS_FILE } from "./interfaces/updater.js";
 import { ISSUE_USAGE, issueDeps, parseIssueArgs, runIssue } from "./issue-cmd.js";
-import { SETTINGS_USAGE, parseSettingsArgs, runSettings } from "./settings-cmd.js";
+import { MODE_USAGE, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "./settings-cmd.js";
 import { RESUME_USAGE, parseResumeArgs, runResume } from "./resume-cmd.js";
 import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "./impl/store/mysql/migrate-command.js";
 import { MysqlDriver } from "./impl/store/mysql/mysql-driver.js";
@@ -73,9 +73,15 @@ const USAGE = `factory [--config <path>] <command>
                change a settable key while the factory runs (design 2026-11-03): max_attempts, max_loops,
                max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve, hold_policy,
-               alarm_repeat_count, alarm_window_minutes, alarm_restart_count. No restart. Every set and
-               reset is audited; PR-only keys (plugins, repo, store, floors, dials, auth, guards) are refused.
-               --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only)
+               alarm_repeat_count, alarm_window_minutes, alarm_restart_count, standing_approvals.threshold, mode,
+               auto_merge_max_tier. No restart. Every set and reset is audited; PR-only keys (plugins, repo, store,
+               floors, dials, auth, guards) are refused. mode and auto_merge_max_tier need approve_merge.
+               --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only) and mode
+  mode auto|manual [--project <owner/name>]
+               settings set mode: auto approves specs below tier 4 with no owner-only decision and merges
+               reviewed local changes up to auto_merge_max_tier (never tier 4 or the gate list); manual
+               waits for a person. Needs approve_merge; audited; a red main, a failure alarm or a budget
+               checkpoint sets it back to manual
   ui           status page at http://127.0.0.1:<ui.port>/ (default 4310); no controller or worker. Under the
                git-worktree updater, dev runs it too and restarts it on each new revision
   migrate [--status | --dry-run]
@@ -240,12 +246,15 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       return 0;
     }
+    case "mode":
     case "settings": {
-      const action = parseSettingsArgs(args);
+      // `factory mode auto|manual [--project <owner/name>]` is `settings set mode <mode>` (design 03-risk).
+      const action = cmd === "mode" ? parseModeArgs(args) : parseSettingsArgs(args);
       if ("error" in action) {
-        console.log(`${action.error}\n${SETTINGS_USAGE}`);
+        console.log(`${action.error}\n${cmd === "mode" ? MODE_USAGE : SETTINGS_USAGE}`);
         return 1;
       }
+      const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
       await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
       const store = await buildStatsStore(loaded);
       try {
@@ -265,8 +274,9 @@ async function main(argv: readonly string[]): Promise<number> {
               if (loaded.config.local_only) return localProject({ owner, name });
               return resolveProject(await new Plugins(loaded).githubApi(), { owner, name });
             },
-            // An ID, never a display name: the OS login of the local owner.
-            actor: `local:${userInfo().username}`,
+            // An ID, never a display name: the CLI identity (issue #318), the one the approve_merge check asks about.
+            actor: identity.user,
+            mayApproveMerge: await approveMergeCheck(loaded, store, identity.user),
           },
           action,
         );

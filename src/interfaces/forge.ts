@@ -91,6 +91,17 @@ export interface ClosePrInput {
   body(closer: ExternalIdentity | null): string;
 }
 
+/** What `pushBase` needs: the factory repo, its base branch, the commit to push, and the remote base it read. */
+export interface BasePushInput {
+  /** The factory repo's path: its `origin` is where the base goes. */
+  repo: string;
+  base_ref: string;
+  /** The local base to push: a descendant of `expected_sha`. */
+  sha: string;
+  /** The remote base the factory read before this push: the push applies only while the remote is still there. */
+  expected_sha: string;
+}
+
 /** The PR events, facts and writes the factory reads from and makes on a forge. Agents never call it. */
 export interface Forge {
   /** The source type of the PR refs this forge hands out (`prRef`): PR comments wait in the outbox under it. */
@@ -149,4 +160,11 @@ export interface Forge {
    * another. Throws on a forge failure; the caller retries.
    */
   closePr(input: ClosePrInput): Promise<"closed" | "not_open">;
+  /**
+   * The base push (design 05-sources, Local items): moves the remote base branch to `input.sha`, only while it is
+   * still at `input.expected_sha`, so a base that moved again is never overwritten. Never a hook. Throws on any
+   * failure (an outage, a rate limit, a refused credential, a base that moved): the caller retries with backoff.
+   * Absent: this forge cannot push a base, and a local merge queues none.
+   */
+  pushBase?(input: BasePushInput): Promise<void>;
 }

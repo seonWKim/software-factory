@@ -25,7 +25,44 @@ export function needsSpecApproval(tier: Tier, dials: FactoryConfig["dials"]): bo
 
 /** Never for an incomplete PR, one whose implementer reports missing work (issue #229), whatever its tier. */
 export function canAutoMerge(tier: Tier, dials: FactoryConfig["dials"], incomplete = false): boolean {
-  return !incomplete && tier <= dials.auto_merge_max_tier;
+  return autoMergeRefusal({ tier, max_tier: dials.auto_merge_max_tier, incomplete, gate_path: null, local: true }) === null;
+}
+
+/** The actor of every automatic approval, merge and stop in auto mode (design 03-risk). */
+export const AUTO_ACTOR = "system:auto";
+/** The lowest tier auto mode never approves or merges, whatever the settings say. */
+export const AUTO_NEVER_TIER = 4;
+
+/** One triage decision as auto mode reads it: its proposed default (null: none) and its owner-only flag. */
+export interface AutoDecision {
+  default: string | null;
+  owner_only: boolean;
+}
+
+/**
+ * Why auto mode leaves a spec for `/approve` (design 03-risk), or null when it approves it with each decision's
+ * proposed default. Tier 4 and up, allowed paths that touch the gate list (`gate_path`, the first that does), and
+ * an owner-only decision or one with no default always wait.
+ */
+export function autoApproveRefusal(o: { tier: Tier; decisions: readonly AutoDecision[]; gate_path: string | null }): string | null {
+  if (o.tier >= AUTO_NEVER_TIER) return `a tier ${o.tier} spec always waits for \`/approve\``;
+  if (o.gate_path !== null) return `its allowed paths touch the gate list (\`${o.gate_path}\`)`;
+  if (o.decisions.some((d) => d.owner_only || d.default === null)) return "it has a decision only the owner can make";
+  return null;
+}
+
+/**
+ * Why auto mode leaves a reviewed change for a person's merge (design 03-risk), or null when it merges it. Only a
+ * local item merges by itself (there is no forge merge to call); tier 4 and up, a change that touches the gate list,
+ * an incomplete change (issue #229) and a tier above `max_tier` (the `auto_merge_max_tier` setting) never do.
+ */
+export function autoMergeRefusal(o: { tier: Tier; max_tier: number; incomplete: boolean; gate_path: string | null; local: boolean }): string | null {
+  if (!o.local) return "only a local item merges automatically; its PR waits for a person";
+  if (o.tier >= AUTO_NEVER_TIER) return `a tier ${o.tier} change never merges automatically`;
+  if (o.gate_path !== null) return `it touches the gate list (\`${o.gate_path}\`)`;
+  if (o.incomplete) return "it is incomplete";
+  if (o.tier > o.max_tier) return `its tier ${o.tier} is above auto_merge_max_tier (${o.max_tier})`;
+  return null;
 }
 
 /** One run per (item, kind, loop, restart): re-enqueueing the same step is a no-op. */

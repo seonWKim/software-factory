@@ -81,7 +81,7 @@ export const CLI_COMMANDS: readonly CliCommandSpec[] = [
   {
     name: "merge",
     usage: "merge <id>",
-    description: "Approver only: merge a local item's branch into the local base branch once its review passed (no push, never automatic); the controller applies it",
+    description: "Approver only: merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself); the controller applies it",
   },
   { name: "users list", usage: "users list", description: "Print your CLI identity and every local user with its role (owner, approver, requester)" },
   { name: "users add", usage: "users add <user_id> --role approver|requester", description: "Owner only: give a local user a role, e.g. `local:dev@example.com`" },

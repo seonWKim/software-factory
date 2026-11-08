@@ -482,6 +482,7 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
     ["tokens", esc(item.token_cost)],
     ["merge conflicts", esc(`${conflicts.automatic} resolved automatically, ${conflicts.person} needed a person`)],
     ["PR", c.prLink(item)],
+    ...(await localMergeFacts(c, item.id, changes)),
     ["created / updated", `${esc(item.created_at)} / ${esc(item.updated_at)}`],
   ];
   const title = item.title ? await c.w.text(item.title) : esc(item.source.id);
@@ -541,6 +542,29 @@ export async function renderItem(d: UiDeps, id: WorkItemId): Promise<string | nu
       "no runs",
     )}</section>`;
   return page(`${item.source.id} — software-factory`, body, `/items/${encodeURIComponent(item.id)}`);
+}
+
+/**
+ * A local merge's facts (design 05-sources, Local items): a checkout of the base it left as it was (uncommitted
+ * changes there), and its base push: pending with its failed tries, pushed, or a conflict to push by hand.
+ */
+async function localMergeFacts(c: Ctx, id: WorkItemId, changes: readonly StateChange[]): Promise<[string, string][]> {
+  const facts: [string, string][] = [];
+  const stale = changes.find((sc) => sc.reason === "local_merged")?.detail?.checkout_not_updated;
+  if (typeof stale === "string" && stale !== "") {
+    facts.push(["local checkout", `not updated: ${await c.w.text(stale, { max: 300 })} has uncommitted changes (its HEAD is detached where it was)`]);
+  }
+  const push = await c.d.store.getBasePush(id);
+  if (push) {
+    const state = push.outcome === "pushed"
+      ? `pushed to origin/${esc(push.base_ref)} at ${esc((push.pushed_sha ?? "").slice(0, 12))}`
+      : push.outcome === "conflict"
+        ? `not pushed: origin/${esc(push.base_ref)} moved and conflicts; merge and push it by hand`
+        : `pending, ${esc(push.attempts)} failed ${push.attempts === 1 ? "try" : "tries"}` +
+          (push.last_error ? `: ${await c.w.text(push.last_error, { max: 200 })}` : "");
+    facts.push(["base push", state]);
+  }
+  return facts;
 }
 
 async function renderChanges(c: Ctx, sc: StateChange): Promise<string> {

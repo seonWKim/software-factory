@@ -5,6 +5,8 @@
 import { type ProjectRef, rekeyProjectSettings } from "./core/project.js";
 import { readProjectLabel } from "./core/project-labels.js";
 import {
+  APPROVE_MERGE_KEYS,
+  MODES,
   PROJECT_SETTABLE_KEYS,
   SETTABLE_KEYS,
   SETTING_APPLIES,
@@ -24,7 +26,19 @@ export const SETTINGS_USAGE = `usage: npm run factory -- settings <action>
   set <key> <value> [--project <owner/name>]  stores an override; <value> is JSON (2, '{"cheap":"haiku",...}')
   reset <key> [--project <owner/name>]        removes an override; the file value (else the default) applies again
   history [--limit <n>]                       audit rows of every set and reset, newest first (default 50)
---project: only for ${PROJECT_SETTABLE_KEYS.join(", ")}, and only with the configured repo's owner/name.`;
+--project: only for ${PROJECT_SETTABLE_KEYS.join(", ")}, and only with the configured repo's owner/name.
+${APPROVE_MERGE_KEYS.join(" and ")}: only with approve_merge on the project.`;
+
+export const MODE_USAGE = `usage: npm run factory -- mode auto|manual [--project <owner/name>]
+  the same as settings set mode <auto|manual>: needs approve_merge on the project, and writes one audit row`;
+
+/** `factory mode <auto|manual> [--project <owner/name>]`: the `settings set mode` action, or an error to print with the usage. */
+export function parseModeArgs(args: readonly string[]): SettingsAction | { error: string } {
+  const [mode, ...rest] = args;
+  if (!(MODES as readonly (string | undefined)[]).includes(mode)) return { error: `mode needs ${MODES.join(" or ")}` };
+  const parsed = parseSettingsArgs(["set", "mode", JSON.stringify(mode), ...rest]);
+  return "error" in parsed ? { error: parsed.error.replace(/^set needs <key> <value>$/, "mode takes only --project <owner/name>") } : parsed;
+}
 
 export type SettingsAction =
   | { action: "list" }
@@ -82,6 +96,11 @@ export interface SettingsDeps {
   resolveProject(): Promise<ProjectRef>;
   /** Who runs the command, as an ID (`local:<OS login>`), never a display name. */
   actor: string;
+  /**
+   * Whether `actor` holds `approve_merge` on the configured project (design 08-settings): asked before a set or reset
+   * of `mode` or `auto_merge_max_tier`; the refusal, or null. Solo: the local owner holds it with no setup. Absent: no check.
+   */
+  mayApproveMerge?(): Promise<string | null>;
 }
 
 export interface SettingsResult {
@@ -129,6 +148,10 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   const refused = keyRefusal(a.key);
   if (refused) return fail(refused);
   const key = a.key as SettableKey;
+  if (APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {
+    const refused = await deps.mayApproveMerge();
+    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}`);
+  }
   let ref: ProjectRef | undefined;
   if (a.project !== undefined) {
     if (!isProjectSettableKey(key)) return fail(`--project applies only to ${PROJECT_SETTABLE_KEYS.join(", ")}; ${key} is global`);

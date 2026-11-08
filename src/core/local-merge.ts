@@ -1,6 +1,7 @@
-// The local merge (design 05-sources, Local startup): `factory merge <id>` merges an item's local branch into the
+// The local merge (design 05-sources, Local items): `factory merge <id>` merges an item's local branch into the
 // factory repo's local base branch, through the sandbox the controller already holds (as the merge check does),
-// so core runs no git. Never a push, never the owner's checkout, never automatic.
+// so core runs no git. Never automatic. With a forge selected, the merge queues one base push, which the
+// controller's base push step brings to the remote later (`BaseSyncSandbox` here, `Forge.pushBase` there).
 
 import type { SourceType } from "./types.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
@@ -37,10 +38,14 @@ export interface LocalMergeSpec {
 /**
  * `merged`: the base branch now contains the branch, at `sha` (`already`: it did before this call, so a repeat
  * changes nothing). `conflicts`: the conflicting file paths, sorted; nothing moved. `refused`: why nothing moved
- * (no such branch, the base branch checked out in a worktree, a failing check, the base moved during the merge).
+ * (no such branch, a failing check, the base moved during the merge).
  */
 export type LocalMergeResult =
-  | { merged: true; sha: string; already: boolean }
+  /**
+   * `not_updated`: the checkouts of the base branch whose files were left as they were because they have
+   * uncommitted changes (their HEAD is detached at the base before the merge); empty when there were none.
+   */
+  | { merged: true; sha: string; already: boolean; not_updated: string[] }
   | { merged: false; conflicts: string[] }
   | { merged: false; refused: string };
 
@@ -50,6 +55,37 @@ export type LocalMergeResult =
  * `refs/heads/<base_ref>`, conditionally on the base it merged.
  */
 export type LocalMergeSandbox = Sandbox & { mergeLocal(spec: LocalMergeSpec): Promise<LocalMergeResult> };
+
+/** What the base push step asks the sandbox: bring the remote base into the local one before the push. */
+export interface BaseSyncSpec {
+  repo: string;
+  base_ref: string;
+  /** The local merge the push is for: the remote already containing it means nothing is left to push. */
+  merge_sha: string;
+  /** The merge commit's message and identity, when the remote base moved and is merged into the local one. */
+  message: string;
+  identity: { name: string; email: string };
+}
+
+/**
+ * `synced`: push `local` (the local base, a descendant of `remote`) conditionally on `remote`, the remote base the
+ * sandbox read; `contains`: the remote base already contains the merge, so nothing is pushed. `conflicts`: the
+ * remote base moved and does not merge cleanly into the local one (the paths, sorted); nothing moved.
+ */
+export type BaseSyncResult =
+  | { synced: true; local: string; remote: string; contains: boolean; not_updated: string[] }
+  | { synced: false; conflicts: string[] };
+
+/**
+ * A sandbox that can bring the remote base into the local one: fetches only the remote base branch, and when it
+ * moved and is not an ancestor of the local base, merges it into the local base (objects and one conditional ref
+ * update, as the local merge). Throws on a failed fetch or a base that moved under it: the caller retries.
+ */
+export type BaseSyncSandbox = Sandbox & { syncBase(spec: BaseSyncSpec): Promise<BaseSyncResult> };
+
+export function canSyncBase(sandbox: Sandbox | undefined): sandbox is BaseSyncSandbox {
+  return !!sandbox && typeof (sandbox as Partial<BaseSyncSandbox>).syncBase === "function";
+}
 
 export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMergeSandbox {
   return !!sandbox && typeof (sandbox as Partial<LocalMergeSandbox>).mergeLocal === "function";

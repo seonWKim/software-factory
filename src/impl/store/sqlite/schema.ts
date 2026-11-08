@@ -695,7 +695,29 @@ export const MIGRATIONS: readonly string[] = [
   );
   ALTER TABLE item_thread ADD COLUMN actor TEXT;
   `,
-  // 41: the audit of local users (design 08-permissions, issue #445). One row per add, role change or removal of a
+  // 41: the base push (design 05-sources, Local items). One row per local merge that closed its item while a forge is
+  // selected: the base branch and the merge commit to bring to the remote, the attempts and next try, a claim (token
+  // and expiry) so one replica pushes it, and how it finished: `pushed` (with the sha the remote base now has) or
+  // `conflict` (the remote base moved and does not merge cleanly). One row per item. IF NOT EXISTS: safe to run again.
+  `
+  CREATE TABLE IF NOT EXISTS base_pushes (
+    seq              INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id     TEXT NOT NULL UNIQUE REFERENCES work_items(id),
+    base_ref         TEXT NOT NULL,
+    merge_sha        TEXT NOT NULL,
+    attempts         INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at  TEXT NOT NULL,
+    claim_token      INTEGER NOT NULL DEFAULT 0,
+    claimed_until    TEXT,
+    finished_at      TEXT,
+    outcome          TEXT,
+    pushed_sha       TEXT,
+    last_error       TEXT,
+    created_at       TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS base_pushes_pending ON base_pushes (finished_at, next_attempt_at);
+  `,
+  // 42: the audit of local users (design 08-permissions, issue #445). One row per add, role change or removal of a
   // `local_users` row, written in the same transaction: `action` add | change | remove, `old_role` NULL for an add,
   // `new_role` NULL for a remove, `actor` the user who made the change. No backfill. IF NOT EXISTS: safe to run again.
   `

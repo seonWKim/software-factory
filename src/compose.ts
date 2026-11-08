@@ -367,7 +367,10 @@ export async function loadConfig(
   const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
   if (file.dials.auto_merge_max_tier !== 0) {
-    throw new Error("auto_merge_max_tier must be 0: auto-merge is not implemented, and loosening is a human decision");
+    throw new Error(
+      "dials.auto_merge_max_tier must be 0: the auto-merge tier is the live auto_merge_max_tier setting (0 to 3, " +
+        "`factory settings set auto_merge_max_tier <n>` or the Settings page, with approve_merge), read only in auto mode",
+    );
   }
   if (!isTier(file.dials.spec_gate_min_tier)) {
     throw new Error("tiers must be integers 1–5");
@@ -842,6 +845,8 @@ export async function build(
     // With no GitHub plugin selected (Local startup) there is no GitHub client and no budget to record.
     // The shared budget is read before each tick's optional reads, at most once per tick.
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
+    // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
+    check_env: baseEnv(),
   });
 
   const worker = new WorkerPool({
@@ -1001,6 +1006,8 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     ...who, token,
     mergeAllowed: async () => who.actor !== null && (await onProject(who.actor, "approve_merge")).allow,
   };
+  // The mode switch and the auto-merge tier need approve_merge on the project (design 08-settings), as the Merge button.
+  settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
@@ -1016,6 +1023,27 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     log: pauses.log,
   };
   return { clock, store, scanner, settings, commands, pauses, users, close: () => store.close() };
+}
+
+function refusalOf(d: AuthDecision): string | null {
+  return d.allow ? null : d.reason;
+}
+
+/**
+ * The approve_merge check of `factory settings` and `factory mode` for `mode` and `auto_merge_max_tier` (design
+ * 08-settings): `user` on the configured project, through the local auth plugin over the local grants, with no forge
+ * call. Solo: the first local identity is the owner and holds it with no setup. The refusal, or null.
+ */
+export async function approveMergeCheck(loaded: Loaded, store: FactoryStore, user: UserId): Promise<() => Promise<string | null>> {
+  const base = new Plugins(loaded).base;
+  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
+  const auth = await createPlugin(loaded.registry, "auth", selectedLocalAuth(loaded.plugins), { ...base, github: NO_FORGE, store, grants });
+  const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
+  return async () => {
+    const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);
+    if (!project) return "no project key is stored yet; start the factory once first";
+    return refusalOf(await auth.authorize({ user_id: user, attributes: {} }, "approve_merge", { kind: "project", id: project.key }));
+  };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */

@@ -1,4 +1,4 @@
--- The audit of local users (design 08-permissions, issue #445): the same table as SQLite migration 41. One row per
+-- The audit of local users (design 08-permissions, issue #445): the same table as SQLite migration 42. One row per
 -- add, role change or removal of a `local_users` row, written in the same transaction: `action` add | change |
 -- remove, `old_role` NULL for an add, `new_role` NULL for a remove, `actor` the user who made the change. No backfill.
 -- Safe to rerun: the table is created only when missing.

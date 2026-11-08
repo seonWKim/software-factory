@@ -275,13 +275,26 @@ export const SETTABLE_KEYS = [
   "alarm_window_minutes",
   "alarm_restart_count",
   "standing_approvals.threshold",
+  "mode",
+  "auto_merge_max_tier",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
-/** Settable keys that take `--project`: gates a project may tighten. */
-export const PROJECT_SETTABLE_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files"] as const;
+/** Settable keys that are per-project gates: a project value may only tighten the global one. */
+export const GATE_SETTABLE_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files"] as const;
+export type GateSettableKey = (typeof GATE_SETTABLE_KEYS)[number];
+/** Settable keys that take `--project`: the gates a project may tighten, and `mode` (design 08-settings). */
+export const PROJECT_SETTABLE_KEYS = [...GATE_SETTABLE_KEYS, "mode"] as const;
 export type ProjectSettableKey = (typeof PROJECT_SETTABLE_KEYS)[number];
 export type GlobalSettableKey = Exclude<SettableKey, ProjectSettableKey>;
+
+/** The factory's two modes (design 03-risk): `manual` waits for a person at both gates; `auto` may pass them itself. */
+export const MODES = ["manual", "auto"] as const;
+export type Mode = (typeof MODES)[number];
+/** The highest `auto_merge_max_tier` the setting takes: tier 4 and up never merge automatically. */
+export const AUTO_MERGE_TIER_MAX = 3;
+/** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
+export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -316,6 +329,8 @@ export const SETTING_DESCRIPTIONS: Readonly<Record<SettableKey, string>> = {
   alarm_window_minutes: "Minutes over which the alarm counts matching failed runs and zero-token runs.",
   alarm_restart_count: "Child restarts within 30 minutes that raise an alert.",
   "standing_approvals.threshold": "Spec approvals in a row, with the spec unchanged, before a standing rule is proposed.",
+  mode: "Manual waits for a person at every spec and merge; auto approves and merges what it may itself.",
+  auto_merge_max_tier: "In auto mode, the highest tier (0 to 3) a reviewed local change merges at by itself; 0 is none.",
 };
 
 /** What each PR-only key controls, as SETTING_DESCRIPTIONS does for the settable keys. */
@@ -324,7 +339,7 @@ export const PR_ONLY_DESCRIPTIONS: Readonly<Record<PrOnlyKey, string>> = {
   repo: "The repository the factory works on, its base branch and its install and test commands.",
   store: "Where the factory keeps its state: the store's driver and location.",
   floors: "Paths that raise a work item's tier to at least a given tier when a change touches them.",
-  dials: "The lowest tier that needs a spec approval, and the highest tier that may merge itself.",
+  dials: "The lowest tier that needs a spec approval; its auto_merge_max_tier stays 0 (the setting decides).",
   auth: "Which auth plugin checks who a request comes from.",
   permissions: "Which grant sources decide who may act on the factory, and their settings.",
   secrets: "Which secret store tools read credentials from; agents never see them.",
@@ -359,6 +374,8 @@ export const SETTING_APPLIES: Readonly<Record<SettableKey, string>> = {
   alarm_window_minutes: "the next alarm step (each poll)",
   alarm_restart_count: "the next alarm step (each poll)",
   "standing_approvals.threshold": "the controller's next spec approval",
+  mode: "the controller's next spec approval or merge",
+  auto_merge_max_tier: "the controller's next merge",
 };
 
 export interface SettableValues {
@@ -384,6 +401,8 @@ export interface SettableValues {
   alarm_window_minutes: number;
   alarm_restart_count: number;
   "standing_approvals.threshold": number;
+  mode: Mode;
+  auto_merge_max_tier: number;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -408,6 +427,8 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   hold_policy: DEFAULT_COORDINATION.hold_policy,
   ...ALARM_DEFAULTS,
   "standing_approvals.threshold": 10,
+  mode: "manual",
+  auto_merge_max_tier: 0,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -419,6 +440,10 @@ export function isSettableKey(key: string): key is SettableKey {
 
 export function isProjectSettableKey(key: string): key is ProjectSettableKey {
   return (PROJECT_SETTABLE_KEYS as readonly string[]).includes(key);
+}
+
+export function isGateSettableKey(key: string): key is GateSettableKey {
+  return (GATE_SETTABLE_KEYS as readonly string[]).includes(key);
 }
 
 export function isPrOnlyKey(key: string): boolean {
@@ -472,7 +497,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "max_attempts":
     case "max_diff_lines":
     case "max_diff_files":
-      return parseSetting(key as ProjectSettableKey, value, key) as SettableValues[K];
+      return parseSetting(key as GateSettableKey, value, key) as SettableValues[K];
     case "models":
       return parseModels(value) as SettableValues[K];
     case "model_by":
@@ -485,6 +510,14 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy":
       return parseHoldPolicy(value) as SettableValues[K];
+    case "mode":
+      if (!(MODES as readonly unknown[]).includes(value)) throw new Error(`mode must be ${MODES.map((m) => `"${m}"`).join(" or ")}`);
+      return value as SettableValues[K];
+    case "auto_merge_max_tier":
+      if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > AUTO_MERGE_TIER_MAX) {
+        throw new Error(`auto_merge_max_tier must be a whole number from 0 to ${AUTO_MERGE_TIER_MAX}; tier 4 and the gate list never merge automatically`);
+      }
+      return value as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -532,7 +565,7 @@ export interface ResolvedSettings {
   /** The per-project layers with the overrides applied, for settingsFor. */
   layers: SettingsLayers;
   /** Per project with a file block or a project override: the value and source of each key it sets. */
-  projects: Record<string, Partial<Record<ProjectSettableKey, { value: number; source: "override" | "file" }>>>;
+  projects: Record<string, Partial<Record<ProjectSettableKey, { value: number | Mode; source: "override" | "file" }>>>;
   /** Stored overrides that failed a check, with the reason. Their key keeps the file value. */
   ignored: IgnoredOverride[];
   /** The file's `max_workers` (else its `workers`, else 1): sizes the supervisor's index block, so no override goes above it. */
@@ -557,7 +590,7 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
   const ignored: IgnoredOverride[] = [];
   const ignore = (o: OverrideRow, reason: string) => ignored.push({ key: o.key, project: o.project, value: o.value, reason });
   const globalOv = new Map<SettableKey, { o: OverrideRow; value: unknown; raw: unknown }>();
-  const projectOv: { o: OverrideRow; key: ProjectSettableKey; value: number }[] = [];
+  const projectOv: { o: OverrideRow; key: ProjectSettableKey; value: number | Mode }[] = [];
   for (const o of overrides) {
     const refused = keyRefusal(o.key);
     if (refused) {
@@ -584,11 +617,11 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
       continue;
     }
     if (o.project === "") globalOv.set(key, { o, value, raw });
-    else projectOv.push({ o, key: key as ProjectSettableKey, value: value as number });
+    else projectOv.push({ o, key: key as ProjectSettableKey, value: value as number | Mode });
   }
 
   const fromFile = (k: SettableKey): ResolvedSetting => {
-    const f = isProjectSettableKey(k) ? base.layers.defaults[k] : base.file[k as GlobalSettableKey];
+    const f = isGateSettableKey(k) ? base.layers.defaults[k] : isProjectSettableKey(k) ? undefined : base.file[k];
     return f === undefined
       ? { value: parseSettable(k, SETTABLE_DEFAULTS[k]), raw: SETTABLE_DEFAULTS[k], source: "default" }
       : { value: parseSettable(k, f), raw: f, source: "file" };
@@ -617,7 +650,7 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
     global = build();
   }
   // A global override may not leave a project's file value looser than itself (it would be refused at load).
-  for (const k of PROJECT_SETTABLE_KEYS) {
+  for (const k of GATE_SETTABLE_KEYS) {
     const ov = globalOv.get(k);
     if (!ov) continue;
     for (const [p, block] of Object.entries(base.layers.projects)) {
@@ -631,23 +664,26 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
   global = build();
 
   const defaults: Partial<ProjectSettings> = { ...base.layers.defaults };
-  for (const k of PROJECT_SETTABLE_KEYS) if (globalOv.has(k)) defaults[k] = global[k].value;
+  for (const k of GATE_SETTABLE_KEYS) if (globalOv.has(k)) defaults[k] = global[k].value;
   const projects: Record<string, Partial<ProjectSettings>> = {};
   const sources: ResolvedSettings["projects"] = {};
   for (const [p, block] of Object.entries(base.layers.projects)) {
     projects[p] = { ...block };
-    for (const k of PROJECT_SETTABLE_KEYS) {
+    for (const k of GATE_SETTABLE_KEYS) {
       const v = block[k];
       if (v !== undefined) (sources[p] ??= {})[k] = { value: v, source: "file" };
     }
   }
   for (const po of projectOv) {
-    const why = loosening(po.key, po.value, global[po.key].value);
-    if (why !== null) {
-      ignore(po.o, `${projectPath(label(po.o.project), po.key)} ${why}; a project may only tighten a gate`);
-      continue;
+    // `mode` is no gate (design 08-settings): a project's mode stands on its own, outside the per-project layers.
+    if (isGateSettableKey(po.key)) {
+      const why = loosening(po.key, po.value as number, global[po.key].value);
+      if (why !== null) {
+        ignore(po.o, `${projectPath(label(po.o.project), po.key)} ${why}; a project may only tighten a gate`);
+        continue;
+      }
+      projects[po.o.project] = { ...projects[po.o.project], [po.key]: po.value };
     }
-    projects[po.o.project] = { ...projects[po.o.project], [po.key]: po.value };
     (sources[po.o.project] ??= {})[po.key] = { value: po.value, source: "override" };
   }
 
@@ -664,6 +700,16 @@ export function effectiveSetting<K extends SettableKey>(r: ResolvedSettings, key
   }
   if (key === "workers") return { ...r.global.workers, value: r.values.workers } as ResolvedSetting<K>;
   return r.global[key];
+}
+
+/**
+ * A project's mode (design 03-risk): its own override, else the global override, else `manual`. `level`: the
+ * override row's project ("" global) the mode is stored in, so a stop writes that row; null when none is stored.
+ */
+export function modeOf(r: ResolvedSettings, project: string): { mode: Mode; level: string | null } {
+  if (r.projects[project]?.mode) return { mode: r.projects[project].mode.value as Mode, level: project };
+  const g = r.global.mode;
+  return { mode: g.value, level: g.source === "override" ? "" : null };
 }
 
 /** The most worker slots a process has: the file's `max_workers`, else its `workers`, else 1. */
