@@ -369,6 +369,16 @@ M5 follow-up (pure units, partial):
 - Still reading `clock.now()` in units: `run-results` (2), `coordination` (5), `model-probe` (2), `commands` (1),
   `improve` (2, one is its `fileReport` deps).
 
+Worker review fixes (2026-11-09, findings 3–7):
+
+- A step's timeout or the run deadline also aborts the run kind's signal, in the runner's `step` wrapper (one place
+  for every kind), and a failed step settles only after its work has, so the folder outlives the agent. This relies
+  on the work honouring its signal (agent runners kill their process on abort).
+- `deadline_at` stays enforced by the worker (heartbeat, next step), as design 10-event-driven decided; only the
+  migration's note claimed the reaper. Update and improve, which journal no step, still never fail on it.
+- A resume on other code is blocked only by a succeeded step row; ending a run passport needs the claim's lease
+  token; a journal write failing in a step's error path is logged and the step's error stays the failure.
+
 ## Waiting on the owner
 
 - Migrate the live database: `npm run migrate` after reviewing the branch.
