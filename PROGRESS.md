@@ -238,3 +238,17 @@ M10 (extension points):
    - the UI does not show display names yet (the CLI's `users list` does);
    - an OIDC or GitHub provider implementing `AuthProvider.displayName`;
    - components get their SQL driver from the runtime (today `storeSql` takes it from the legacy store).
+
+## After the refactor: acceptance runs (owner request, 2026-11-08)
+
+Once M0–M11 are done, the factory is run for real, end to end, on the new architecture:
+
+1. GitHub: an issue filed on GitHub goes intake → triage → implement → review → merge, with comments and labels synced.
+2. Slack: a work item started from a Slack thread goes the same way, with replies in the thread.
+3. Local: a `factory task create` item goes the same way with no external plugin selected.
+4. Concurrency: several items from all three sources at once, with several workers. No double runs, no lost
+   commands, dependent items wait for each other, conflicting changes are coordinated.
+5. Feedback and self-improvement: review feedback and failed runs reach the improve loop. The factory files its own
+   improvements, and they land through the same gates.
+
+Each run records what broke. Fixes go through the factory itself where possible.
