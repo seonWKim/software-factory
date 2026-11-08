@@ -765,9 +765,9 @@ export class Controller {
   }
 
   private async handleInboxCommand(c: CliCommand): Promise<void> {
-    const app = c.args.app_request;
-    if (typeof app === "number") {
-      const r = await this.d.store.getAppCommandRequest(app);
+    if (c.origin === "app") {
+      // An app request (RFC 0015 D7): its own row, or a row from before the merge that points at it by seq.
+      const r = await this.d.store.getAppCommandRequest(typeof c.args.app_request === "number" ? c.args.app_request : c.key);
       if (r && r.handled_at === null) await this.applyAppRequest(r);
       return;
     }

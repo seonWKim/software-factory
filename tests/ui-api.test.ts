@@ -707,7 +707,7 @@ describe("ui api: item commands POST (issue #227)", () => {
   }
 
   async function appRequestRows(store: FactoryStore): Promise<number | undefined> {
-    return (await store.listTables()).find((t) => t.name === "inbound_app_requests")?.rows;
+    return (await store.listCliCommandsAfter(0, 100)).filter((c) => c.origin === "app").length;
   }
 
   async function nothingWritten(store: FactoryStore) {

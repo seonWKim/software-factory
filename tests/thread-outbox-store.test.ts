@@ -112,12 +112,12 @@ for (const backend of BACKENDS) {
       expect(await store.getWorkItem(id)).toMatchObject({ failure_comment_url: "u-new", spec_comment_url: "u-spec", version });
     });
 
-    it("an app request also lands in the command inbox, keyed on its seq", async () => {
+    it("an app request is one row of the command inbox (RFC 0015 D7), with origin app and its own key", async () => {
       const { store } = await backend.make();
       const { request } = await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "approve", args: { work_item_id: "x" } });
       await store.recordAppCommandRequest({ key: "k1", actor: "github:1" as UserId, command: "approve", args: {} });
-      const inbox = (await store.listCliCommandsAfter(0, 100)).filter((c) => c.args.app_request === request.seq);
-      expect(inbox).toEqual([expect.objectContaining({ key: `app:${request.seq}`, actor: "github:1", command: "approve" })]);
+      const inbox = await store.listCliCommandsAfter(0, 100);
+      expect(inbox).toEqual([expect.objectContaining({ seq: request.seq, origin: "app", key: "k1", actor: "github:1", command: "approve" })]);
     });
   });
 }

@@ -1597,8 +1597,12 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     // Every table the baseline creates, under its RFC 0015 name, plus its legacy copy (kept until the contract step).
     const BASELINE_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
     const renamed = new Map(RENAMES.map((r) => [r.from, r.to]));
+    // RFC 0015 M4 (D7): inbound_app_requests merged into inbound_commands; both old tables are kept as legacy_*.
+    const merged = ["inbound_app_requests"];
     const DOMAIN_TABLES = [
-      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t)),
+      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t) && !merged.includes(t)),
+      "legacy_inbound_app_requests",
+      "legacy_inbound_commands",
       ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
       "runtime_schema_migrations",
       // Tables of timestamped component migrations (RFC 0015 §6.3).

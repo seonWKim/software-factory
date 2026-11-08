@@ -271,23 +271,23 @@ CREATE TABLE identity_user_links (
     PRIMARY KEY (provider, subject)
   );
 
-CREATE TABLE inbound_app_requests (
-    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-    request_key  TEXT NOT NULL UNIQUE,
-    actor        TEXT NOT NULL,
-    command      TEXT NOT NULL,
-    args         TEXT NOT NULL,
-    created_at   TEXT NOT NULL
-  , handled_at TEXT, refusal TEXT);
-
-CREATE TABLE inbound_commands (
-    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
-    command_key  TEXT NOT NULL UNIQUE,
-    actor        TEXT NOT NULL,
-    command      TEXT NOT NULL,
-    args         TEXT NOT NULL,
-    created_at   TEXT NOT NULL
-  , mirror INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT);
+CREATE TABLE "inbound_commands" (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            TEXT NOT NULL UNIQUE,
+    origin        TEXT NOT NULL,
+    command_key   TEXT NOT NULL UNIQUE,
+    actor         TEXT NOT NULL,
+    command       TEXT NOT NULL,
+    args          TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    handled_at    TEXT,
+    refusal       TEXT,
+    mirror        INTEGER NOT NULL DEFAULT 0,
+    mirrored_at   TEXT,
+    passport_id   TEXT,
+    legacy_table  TEXT,
+    legacy_seq    INTEGER
+  );
 
 CREATE TABLE inbound_cursors (
     name   TEXT PRIMARY KEY,
@@ -497,6 +497,24 @@ CREATE TABLE "legacy_improve_reports" (
     patterns        TEXT NOT NULL,
     created_at      TEXT NOT NULL
   );
+
+CREATE TABLE "legacy_inbound_app_requests" (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_key  TEXT NOT NULL UNIQUE,
+    actor        TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    args         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+  , handled_at TEXT, refusal TEXT);
+
+CREATE TABLE "legacy_inbound_commands" (
+    seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+    command_key  TEXT NOT NULL UNIQUE,
+    actor        TEXT NOT NULL,
+    command      TEXT NOT NULL,
+    args         TEXT NOT NULL,
+    created_at   TEXT NOT NULL
+  , mirror INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT);
 
 CREATE TABLE "legacy_item_messages" (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -994,9 +1012,13 @@ CREATE INDEX identity_user_links_user ON identity_user_links (user_id);
 
 CREATE INDEX improve_reports_project ON "legacy_improve_reports" (project_key, created_at);
 
-CREATE INDEX inbound_app_requests_pending ON inbound_app_requests (handled_at, seq);
+CREATE INDEX inbound_app_requests_pending ON "legacy_inbound_app_requests" (handled_at, seq);
 
-CREATE INDEX inbound_commands_mirror ON inbound_commands (mirror, mirrored_at, seq);
+CREATE INDEX inbound_commands_mirror ON "legacy_inbound_commands" (mirror, mirrored_at, seq);
+
+CREATE INDEX inbound_commands_pending ON inbound_commands (handled_at, created_at);
+
+CREATE INDEX inbound_commands_unmirrored ON inbound_commands (mirror, mirrored_at, seq);
 
 CREATE INDEX inbound_raw_records_seq ON inbound_raw_records (source_type, seq);
 

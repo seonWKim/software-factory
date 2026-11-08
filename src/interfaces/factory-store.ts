@@ -1013,8 +1013,8 @@ export interface FactoryStore {
    * so a second mark of the same request changes nothing and returns false. Returns whether this call marked it.
    */
   markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
-  /** The request with `seq`, or null. Read-only. */
-  getAppCommandRequest(seq: number): Promise<AppCommandRequest | null>;
+  /** The request with `seq` (a number) or idempotency key (a string), or null. Read-only. */
+  getAppCommandRequest(ref: number | string): Promise<AppCommandRequest | null>;
   /**
    * The requests whose `args.work_item_id` is `id`, oldest (lowest seq) first: the newest `limit` of them.
    * Pending and handled alike. Read-only (the item API's `replies`, issue #227).
@@ -1178,15 +1178,15 @@ export interface NewCliCommand {
   command: string;
   /** The command's arguments, stored as JSON. */
   args: Record<string, unknown>;
-  /**
-   * The command is to be mirrored once to its item's sync source (a CLI command on a sync source's item), best effort:
-   * listed by `listUnmirroredCliCommands` until `markCliCommandMirrored`. Absent or false: nothing to mirror.
-   */
+  /** Mirrored once to its item's sync source, best effort: listed by `listUnmirroredCliCommands` until marked. */
   mirror?: boolean;
 }
 
 export interface CliCommand extends NewCliCommand {
   seq: number;
+  /** Its id (CommandReceived carries it) and origin (`cli`, `app`, or the provider of a comment poll), RFC 0015 D7. */
+  id: string;
+  origin: string;
   /** Store clock's now when the command was first appended. */
   created_at: Timestamp;
 }

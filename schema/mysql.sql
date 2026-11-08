@@ -374,32 +374,27 @@ CREATE TABLE `identity_user_links` (
   KEY `user_links_user` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
-CREATE TABLE `inbound_app_requests` (
-  `seq` bigint NOT NULL AUTO_INCREMENT,
-  `request_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `actor` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `command` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `args` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `created_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `handled_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
-  `refusal` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
-  PRIMARY KEY (`seq`),
-  UNIQUE KEY `app_command_requests_key` (`request_key`),
-  KEY `app_command_requests_pending` (`handled_at`,`seq`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
-
 CREATE TABLE `inbound_commands` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
-  `command_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `actor` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `command` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `args` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `created_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `origin` varchar(32) COLLATE utf8mb4_bin NOT NULL,
+  `command_key` varchar(255) COLLATE utf8mb4_bin NOT NULL,
+  `actor` varchar(128) COLLATE utf8mb4_bin NOT NULL,
+  `command` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `args` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `handled_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `refusal` mediumtext COLLATE utf8mb4_bin,
   `mirror` tinyint NOT NULL DEFAULT '0',
-  `mirrored_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
+  `mirrored_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `passport_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `legacy_table` varchar(64) COLLATE utf8mb4_bin DEFAULT NULL,
+  `legacy_seq` bigint DEFAULT NULL,
   PRIMARY KEY (`seq`),
-  UNIQUE KEY `command_inbox_key` (`command_key`),
-  KEY `command_inbox_mirror` (`mirror`,`mirrored_at`,`seq`)
+  UNIQUE KEY `inbound_commands_id` (`id`),
+  UNIQUE KEY `inbound_commands_key` (`command_key`),
+  KEY `inbound_commands_pending` (`handled_at`,`created_at`),
+  KEY `inbound_commands_unmirrored` (`mirror`,`mirrored_at`,`seq`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE `inbound_cursors` (
@@ -671,6 +666,34 @@ CREATE TABLE `legacy_improve_reports` (
   UNIQUE KEY `improve_reports_run` (`run_id`),
   KEY `improve_reports_project` (`project_key`,`created_at`),
   CONSTRAINT `legacy_improve_reports_ibfk_1` FOREIGN KEY (`run_id`) REFERENCES `legacy_runs` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `legacy_inbound_app_requests` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `request_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `actor` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `command` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `args` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `handled_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
+  `refusal` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `app_command_requests_key` (`request_key`),
+  KEY `app_command_requests_pending` (`handled_at`,`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `legacy_inbound_commands` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `command_key` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `actor` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `command` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `args` mediumtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `mirror` tinyint NOT NULL DEFAULT '0',
+  `mirrored_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `command_inbox_key` (`command_key`),
+  KEY `command_inbox_mirror` (`mirror`,`mirrored_at`,`seq`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE `legacy_item_messages` (

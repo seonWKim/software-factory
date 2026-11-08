@@ -17,6 +17,12 @@ export interface TableSummary {
   readonly checksum: string;
 }
 
+/** Only the rows whose `column` equals `value` (a merge copies several tables into one, RFC 0015 §12 D7). */
+export interface RowFilter {
+  readonly column: string;
+  readonly value: SqlValue;
+}
+
 export interface BackupManifest {
   readonly id: string;
   readonly reason: string;
@@ -29,11 +35,12 @@ function checkName(table: string): string {
   return table;
 }
 
-async function* pages(db: SqlExecutor, table: string): AsyncGenerator<Row[]> {
+async function* pages(db: SqlExecutor, table: string, filter?: RowFilter): AsyncGenerator<Row[]> {
+  const where = filter ? ` WHERE ${checkName(filter.column)} = ?` : "";
   for (let offset = 0; ; offset += PAGE) {
     // Stable order for paging: every factory table has a primary key or rowid; ORDER BY 1 is enough
     // because the copy is verified with an order-independent checksum, not by position.
-    const rows = await db.all(`SELECT * FROM ${checkName(table)} ORDER BY 1 LIMIT ${PAGE} OFFSET ${offset}`);
+    const rows = await db.all(`SELECT * FROM ${checkName(table)}${where} ORDER BY 1 LIMIT ${PAGE} OFFSET ${offset}`, filter ? [filter.value] : []);
     if (rows.length === 0) return;
     yield rows;
     if (rows.length < PAGE) return;
@@ -64,10 +71,10 @@ const MOD = 1n << 64n;
  * Row count and order-independent checksum of `table` over `columns`, hashed by position so renamed columns
  * still compare (all columns, sorted by name, when omitted).
  */
-export async function tableChecksum(db: SqlExecutor, table: string, columns?: readonly string[]): Promise<TableSummary> {
+export async function tableChecksum(db: SqlExecutor, table: string, columns?: readonly string[], filter?: RowFilter): Promise<TableSummary> {
   let rows = 0;
   let sum = 0n;
-  for await (const page of pages(db, table)) {
+  for await (const page of pages(db, table, filter)) {
     for (const row of page) {
       const cols = columns ?? Object.keys(row).sort();
       sum = (sum + hash64(canonical(row, cols))) % MOD;
@@ -79,18 +86,20 @@ export async function tableChecksum(db: SqlExecutor, table: string, columns?: re
 
 /**
  * D2 verify: `to` holds exactly the rows of `from` over `columns`. Returns the problems; empty means equal.
- * `columns` maps a column of `from` to its name in `to` (identity when the names match).
+ * `columns` maps a column of `from` to its name in `to` (identity when the names match). `toFilter`: only those
+ * rows of `to` are compared (the part of a merged table that came from `from`).
  */
 export async function verifyCopy(
   db: SqlExecutor,
   from: string,
   to: string,
   columns: readonly string[] | Readonly<Record<string, string>>,
+  toFilter?: RowFilter,
 ): Promise<string[]> {
   const fromCols = Array.isArray(columns) ? [...columns] : Object.keys(columns);
   const toCols = Array.isArray(columns) ? [...columns] : Object.values(columns);
   const a = await tableChecksum(db, from, fromCols);
-  const b = await tableChecksum(db, to, toCols);
+  const b = await tableChecksum(db, to, toCols, toFilter);
   const out: string[] = [];
   if (a.rows !== b.rows) out.push(`${to} has ${b.rows} rows, ${from} has ${a.rows}`);
   else if (a.checksum !== b.checksum) out.push(`${to} differs from ${from} over ${fromCols.length} columns (checksum ${b.checksum} vs ${a.checksum})`);
