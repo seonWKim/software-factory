@@ -231,6 +231,8 @@ export interface ItemDetail {
   commands?: ItemCommand[];
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
+  /** Show the Merge button: a local item waiting for its merge, and the page's user allowed approve_merge. */
+  can_merge?: boolean;
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
 }
