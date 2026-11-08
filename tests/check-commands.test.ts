@@ -115,8 +115,9 @@ describe("update and resolve runs run the check list", () => {
     if (!moved.ok) throw new Error("setup");
     return moved.item;
   }
+  // The worker's own file commands (conflict reads, index copies, the resolve step's bundle) are not gates.
   const gateCommands = (f: Awaited<ReturnType<typeof pipeline>>) =>
-    f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "));
+    f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp ") && !c.includes("sf-run.bundle"));
 
   it("update: every check runs on the merged branch in place of test_command, then the push", async () => {
     const f = await pipeline({ config: { repo: { ...config.repo, check_commands: checks } } });

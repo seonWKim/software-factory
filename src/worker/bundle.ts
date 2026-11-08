@@ -2,9 +2,10 @@
 // journaled step whose work is commits (implement's agent step, resolve's checked merge), so a run resumed on
 // another host restores the commits instead of running the step again.
 
-import type { Run, WorkItem } from "../core/types.js";
-import type { SandboxHandle } from "../interfaces/sandbox.js";
 import type { Worker } from "./runner.js";
+
+/** The run's folder, as the worker's own commands take it. */
+type Folder = Parameters<Worker["gitRaw"]>[0];
 
 /** A taken-over run whose finished step left no bundle to restore: it fails (infra) and is retried afresh. */
 export const RESUME_LOST = "resume_lost";
@@ -17,9 +18,9 @@ export const RESUME_LOST = "resume_lost";
  */
 export async function saveBundle(
   w: Worker,
-  run: Run,
-  item: WorkItem,
-  handle: SandboxHandle,
+  run: { readonly id: string },
+  item: { readonly id: string },
+  handle: Folder,
   dirs: string,
   o: { revs: readonly string[]; patch: string; what: string; suffix?: string },
 ): Promise<string | null> {
@@ -46,7 +47,7 @@ export async function saveBundle(
  * Fetches the bundle stored under `key` into the run's git folder. The fetched commit must be `head`, the one the
  * journal or the store recorded, so a changed bundle is never trusted. Nothing is checked out.
  */
-export async function fetchBundle(w: Worker, handle: SandboxHandle, gitDir: string, key: string | null, head: string | null): Promise<"restored" | "missing" | "failed"> {
+export async function fetchBundle(w: Worker, handle: Folder, gitDir: string, key: string | null, head: string | null): Promise<"restored" | "missing" | "failed"> {
   const data = key && head ? await w.d.storage.get(key) : null;
   if (!data || !head) return "missing";
   const file = `${gitDir}/sf-resume.bundle`;
