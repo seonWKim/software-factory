@@ -238,8 +238,8 @@ force.
   `checks-gate`, `run-results`, `commands`, `app-requests`, `standing`, `verdicts`, and `merge-check` (it still hands
   the store and the sandbox to its `MergeChecker`, which the ratchet's patterns do not see).
   `tests/architecture/unit-purity.test.ts` lists the rest, and the list only shrinks. `local-merge` reads through
-  the reader and stops auto mode with a write, but its merge, base push and red-main check are sandbox and forge
-  effects until outbound's `local` delivery takes them. The `legacy-controller` bridge keeps "inbox row after the
+  the reader and writes its merge and base push as outbound intents in the commit (the `intent` write); its conflict
+  probe at entry and its red-main check are still sandbox effects. The `legacy-controller` bridge keeps "inbox row after the
   effect" for every message: no message it carries is exactly-once yet, since `commands` and the event units do not
   return one decision to commit with the inbox row. Solo and enterprise: the same; each replica runs every unit.
 - **Writes to the outside world leave through outbound** (since 2026-11-09, RFC 0015 M7, controller half, the
@@ -266,7 +266,7 @@ force.
   first and lands on the issue with its batch, after the comment before it; a low forge budget may delay outbox
   delivery by up to `max_wait` (it no longer runs regardless of the budget). `tests/architecture/forge-writes.test.ts`
   ratchets the writes still outside outbound (the resolve, update and wip pushes, the PR body refresh, the session's
-  push and PR, base push, sub-issue filing).
+  push and PR, sub-issue filing).
   - Keyed intents and the PR close (M7 worker half): an action may carry a key (`outbound_actions.intent_key`,
     unique when set; migration `20261109T0415-outbound-action-keys`), and recording it again stores nothing. The
     source close of an item with a PR records one `close_pr` action keyed `close_pr:<item>` (the comment's two
@@ -320,7 +320,7 @@ force.
     (`git:<host>`). Enterprise setting: a factory repo per host, so a push's destination names the host that holds
     the ref, and only that host's outbound flushes it (the flush's "kinds this process can write now"). Not built
     yet: the resolve, update and wip pushes, the PR body refresh after them (`runner.ts`), the session's push and PR
-    (`factory session finish`), the base push (the `local` target over `base_pushes`) and sub-issue filing (a keyed
+    (`factory session finish`) and sub-issue filing (a keyed
     `file_sub_issue` action whose delivered ref the phases unit records) take the same path next; outbound uses
     its service passport (M9) once it has one.
 - **Run roles declare a Rule of Two profile and drive the agent** (since 2026-11-08, RFC 0015 M10; decision changed
@@ -359,7 +359,7 @@ force.
   and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
   it, the origin's auth plugin decides the role) and auto mode under its service passport; every decision is
   written to `authz_audit`.
-- **The merge queue** (decision changed 2026-11-09, review fixes; see History). A local change merges only through
+- **The merge queue** (decision changed 2026-11-09, the landing is an outbound delivery; see History). A local change merges only through
   the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
   `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
   migrations `20261109T0300-controller-merge-queue` and `20261109T1030-controller-merge-queue-heads`; each entry is
@@ -374,12 +374,48 @@ force.
   enterprise speculative depth N, 2 typical (RFC 0015 §7). A green check passes the entry (`passed`, with its
   `heads`); the head lands once it passed. Landing: for an automatic entry, auto mode and the controller's service
   passport are checked again (a person may have switched to manual, a stop condition fired); then the
-  `before_merge` hooks (a veto removes the entry with the hook's reason); then `LocalMergeUnit.land` moves the base
-  only while it is still at the commit the check expects (the checked base for an entry nothing was ahead of, else
+  `before_merge` hooks (a veto removes the entry with the hook's reason); then the merge leaves through outbound
+  (below), and it moves the base only while it is still at the commit the check expects (the checked base for an entry nothing was ahead of, else
   the commit the last entry ahead landed as, which that landing writes on every entry checked with it ahead) and the
   branch is still at the head its check merged. So the tree that lands is the tree that was checked and no check
   runs again; a moved base or a commit on the branch meanwhile sends the entry and every entry checked with it ahead
-  back to be checked. Red main runs after the landing, once the queue is given back. Red, a failed check run, or a
+  back to be checked. Red main runs after the landing, once the queue is given back.
+  - The landing as an outbound delivery (decision changed 2026-11-09, RFC 0015 M7/M8). `LocalMergeUnit.requestMerge`
+    writes one `merge` action in the unit's commit (the kernel's `intent` write), keyed `merge:<entry>:<check run
+    key>` (one per check, so an entry checked again after a moved base lands anew), to the destination
+    `git:<host>:<base>`, with the branch, the expected base and head, the commit message, the entry id and its check.
+    Outbound's `local` target makes it through `LocalGit` (`src/outbound/targets/local-git.ts`, the target's
+    dependency in `TargetDeps.git`, built from the sandbox the role holds; the sandbox's `mergeLocal` is the only git
+    write) and records the outcome as the action's `delivered_ref`: merged (sha, already, checkouts not updated),
+    moved (the base or the branch moved, or they conflict now: the entry is checked again and the check names the
+    conflicts) or refused. The queue stays `merging` until `DeliveryCompleted`: the outbox unit hands the delivered
+    `merge` to `merge-queue.mergeDelivered`, which closes the item (`LocalMergeUnit.merged`; the close moved here
+    from the landing), marks the entry merged and tells the entries behind it the commit it landed as, or sends it
+    back, or removes it with the refusal; then gives the queue back and moves on. Only an entry still `merging` under
+    that check changes, so a redelivered or late result changes nothing. A delivery that throws (a git lock, a full
+    disk) is retried by outbound with its batch's backoff, holding the destination; the entry stays `merging`
+    meanwhile and lands when the retry does. A merge written but not recorded delivered (a crash in the target) is
+    delivered again and finds the branch in the base (`already`), so it lands once. The lease: not extended for
+    outbound's delay; a takeover after `lease_ms` is safe instead because the request is keyed and the landing is a
+    reconcile step: it finds the keyed action, requests nothing again, re-runs neither the auto-mode check nor the
+    hooks, and applies the result itself when the action is delivered (a lost or failed DeliveryCompleted). A close
+    that did not apply throws, so the delivery result is retried (the bus's nack) or the takeover applies it.
+  - The base push (the same destination, after the merge; 05-sources.md "Base push"). With a remote to push to (a
+    forge with `pushBase` and a sandbox with `syncBase`), the delivered merge stores one `push_base` action keyed
+    `push_base:<item>:<merge sha>` before the item's close, so a crash between them pushes once. The `local` target
+    fetches the remote base, merges it into the local base when it moved, and has the forge push conditionally on
+    the remote sha it read; a failure is a retried delivery; a remote base that conflicts is delivered as a conflict
+    and posts one message on the closed item. The status page reads it through `FactoryStore.getBasePush` (the newest
+    `push_base` action, its batch's failed tries). The `outbound_base_pushes` table and the outbox step's base push
+    step are gone from the code; the table stays until a contract migration drops it (M11), and a row still pending
+    there at the upgrade is not pushed: the next merge's base push carries its commit.
+  - Solo default: no replica id; the destination's host is `local` and the one process flushes every `git`
+    destination, so the merge and the push run where the factory repo is, with no setup; with no forge there is no
+    push. Enterprise setting: each replica flushes only `git:<host>` of its own host, so a landing is made in the
+    factory repo of the replica that took the queue, and its push follows from there; the merge queue's row
+    serializes landings across replicas, the keyed actions and outbound's batch claim make each merge and push once.
+    The branches of local items must be in that replica's factory repo (a shared factory repo, or one controller
+    host), as before. Red, a failed check run, or a
   check that did not come back in time: the entry leaves with the reason posted on the item (which stays in
   merge_pending), every entry checked with it ahead is rebuilt (queued again), and the queue moves on. A result or
   timer moves an entry only while it is still on that run (`run_key` in the conditional update), so the result of
@@ -398,9 +434,8 @@ force.
   (its key no longer names the item version, which the queue's state changes bump). Not built yet: a `paused`
   state (dropped until a command needs it; neither this design nor the RFC names one), cancelling a removed entry's
   queued check run (its result changes nothing; it only uses a worker), batches with bisect and partitions; the
-  `github-change` merge delivery (the factory merges no PR today; a person merges it on the forge) and the outbound
-  `local` merge delivery: `land` is the one function the M7 delivery handler takes over. The unit's I/O goes through
-  the actor's store and `local-merge` (unit-purity follow-up).
+  `github-change` merge delivery (the factory merges no PR today; a person merges it on the forge). The unit's I/O
+  goes through the actor's store and `local-merge` (unit-purity follow-up).
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
@@ -422,6 +457,10 @@ force.
   branch's current head landed, not the head that was checked; an automatic entry landed after auto mode was turned
   off; the time limit left out retry backoff; red main ran inside the landing; a `paused` state existed that nothing
   could set; the queue id was `mq:<project>:<base>` (too long for MySQL's key with a long project key).
+- **The landing as an outbound delivery** (decision changed 2026-11-09, RFC 0015 M7/M8). Before: the landing called
+  `LocalMergeUnit.land`, which merged in the controller's sandbox inline and closed the item in the same step, and
+  gave the queue back in a `finally`; the base push was an `outbound_base_pushes` row written in the close
+  transition and pushed by the outbox step's base push step (claim, backoff of its own).
 - **Unhandled event kinds** (decision changed 2026-11-08, M8 leftovers). Before: the router dropped an event no unit
   accepted, and a run kind with no run file failed each of its runs when claimed.
 
