@@ -568,10 +568,12 @@ CREATE TABLE `controller_merge_queue_entries` (
   `version` bigint NOT NULL,
   `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
   `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `heads` text COLLATE utf8mb4_bin,
   PRIMARY KEY (`seq`),
   UNIQUE KEY `controller_merge_queue_entries_entry` (`entry_id`),
   KEY `controller_merge_queue_entries_queue` (`queue_id`,`state`,`seq`),
-  KEY `controller_merge_queue_entries_item` (`work_item_id`,`state`)
+  KEY `controller_merge_queue_entries_item` (`work_item_id`,`state`),
+  KEY `controller_merge_queue_entries_run` (`run_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
 CREATE TABLE `controller_merge_queues` (

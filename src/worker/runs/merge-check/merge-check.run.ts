@@ -23,7 +23,10 @@ async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Re
   });
   try {
     const base_sha = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
+    // Each branch's head as merged here: the landing merges only these commits (one made meanwhile is checked again).
+    const heads: Record<string, string> = {};
     for (const branch of branches) {
+      heads[branch] = (await w.git(handle, ["rev-parse", "--verify", "--end-of-options", `origin/${branch}^{commit}`])).trim();
       const merge = await w.gitRaw(
         handle,
         [...NO_HOOKS, "merge", "--no-ff", "--no-edit", "-m", `Merge ${branch} (merge check)`, `origin/${branch}`],
@@ -40,7 +43,7 @@ async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Re
       const r = await w.runCheckList(run, handle, signal, round);
       if (r.failed) return { result: "red", why: "checks", command: r.failed.command.join(" "), how: r.failed.how, base_sha, merged_sha };
     }
-    return { result: "green", base_sha, merged_sha };
+    return { result: "green", base_sha, merged_sha, heads };
   } finally {
     await w.d.sandbox.destroy(handle);
   }

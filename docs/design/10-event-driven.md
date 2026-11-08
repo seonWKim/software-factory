@@ -72,12 +72,17 @@ force.
   - Claims still go through the store's `claimRun` (coordination, claim pauses, one branch writer per item): the
     runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
     engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run
-    journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new run. Each process
+    with a succeeded step journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new
+    run; failed or running rows hold only a partial, so a paused or requeued run whose steps all failed survives a
+    deploy with its WIP (decision changed 2026-11-09, worker review finding 4; see History). Each process
     stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
   - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step (above the agent's
     own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
     the run's creation (runs wait in claim pauses and coordination holds). A step over its timeout fails
-    `start_to_close` (infra); a run past its deadline fails `schedule_to_close`.
+    `start_to_close` (infra); a run past its deadline fails `schedule_to_close`. Either one stops the step's work:
+    the step's abort also aborts the signal the runner hands the run kind, and a failed step settles only after its
+    work has, so the run's folder is never removed under a running agent (decision changed 2026-11-09, worker review
+    finding 3; see History).
   - **One takeover path: the controller's reaper** (decision changed 2026-11-08, M6 leftovers; see History). The
     `reaper` unit requeues a run whose lease expired (with the retry backoff, `max_attempts`, a closed item's run
     cancelled, an interactive session failed `session_lost`, the attempt record closed), and the next claim resumes
@@ -354,34 +359,48 @@ force.
   and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
   it, the origin's auth plugin decides the role) and auto mode under its service passport; every decision is
   written to `authz_audit`.
-- **The merge queue** (decision changed 2026-11-08, RFC 0015 M8 and its leftovers; see History). A local change merges only through
+- **The merge queue** (decision changed 2026-11-09, review fixes; see History). A local change merges only through
   the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
   `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
-  migration `20261109T0300-controller-merge-queue`; each entry is a `MergeQueueEntry` actor). Entry: only a ready
-  change (merge_pending: reviewed, its own checks green) approved by `factory merge` / the Merge button (the
+  migrations `20261109T0300-controller-merge-queue` and `20261109T1030-controller-merge-queue-heads`; each entry is
+  a `MergeQueueEntry` actor; the queue id is a hash of project and base, so any length fits MySQL's key). Entry: only
+  a ready change (merge_pending: reviewed, its own checks green) approved by `factory merge` / the Merge button (the
   approver role) or by auto mode where its tier allows, so a change waiting on a person is never in the queue. A
   branch that conflicts with the base is refused at once, as before. Check: each of the first `merge_queue.depth`
   entries gets a `merge-check` run (`src/worker/runs/merge-check/`, no agent, no push), all out at once, which merges
-  the branches of the entries ahead of it and then its own onto the base in a fresh run folder and runs the install
-  command and the checks there. `merge_queue.depth` (`src/controller/settings/merge-queue-depth.setting.ts`, PR
-  only, 1 to 10): solo default 1 (RFC 0009), enterprise speculative depth N, 2 typical (RFC 0015 §7). A green check
-  passes the entry (`passed`); the head lands once it passed. Landing: the `before_merge` hooks first (a veto
-  removes the entry with the hook's reason), then `LocalMergeUnit.land` moves the base only while it is still at the
-  commit the check expects: the checked base for an entry nothing was ahead of, else the commit the last entry ahead
-  landed as (that landing writes it on every entry checked with it ahead). So the tree that lands is the tree that
-  was checked and no check runs again; a moved base sends the entry and every entry checked with it ahead back to
-  be checked. Red, a failed check run, or a check that did not come back in time: the entry leaves with the reason
-  posted on the item (which stays in merge_pending), every entry checked with it ahead is rebuilt (queued again; its
-  old run's result then changes nothing), and the queue moves on. The time limit: starting a check emits a delayed
+  the branches of the entries ahead of it and then its own onto the base in a fresh run folder, records each
+  branch's head, and runs the install command and the checks there. `merge_queue.depth`
+  (`src/controller/settings/merge-queue-depth.setting.ts`, PR only, 1 to 10): solo default 1 (RFC 0009),
+  enterprise speculative depth N, 2 typical (RFC 0015 §7). A green check passes the entry (`passed`, with its
+  `heads`); the head lands once it passed. Landing: for an automatic entry, auto mode and the controller's service
+  passport are checked again (a person may have switched to manual, a stop condition fired); then the
+  `before_merge` hooks (a veto removes the entry with the hook's reason); then `LocalMergeUnit.land` moves the base
+  only while it is still at the commit the check expects (the checked base for an entry nothing was ahead of, else
+  the commit the last entry ahead landed as, which that landing writes on every entry checked with it ahead) and the
+  branch is still at the head its check merged. So the tree that lands is the tree that was checked and no check
+  runs again; a moved base or a commit on the branch meanwhile sends the entry and every entry checked with it ahead
+  back to be checked. Red main runs after the landing, once the queue is given back. Red, a failed check run, or a
+  check that did not come back in time: the entry leaves with the reason posted on the item (which stays in
+  merge_pending), every entry checked with it ahead is rebuilt (queued again), and the queue moves on. A result or
+  timer moves an entry only while it is still on that run (`run_key` in the conditional update), so the result of
+  a replaced check never passes the rebuilt entry. The time limit: starting a check emits a delayed
   `MergeCheckTimedOut{entry_id, run_key}` on `controller.events`, due after max_attempts × (run_timeout_ms +
-  lease_ms), every attempt the reaper may give the run. Queue states: `checking` while a check is out, `merging`
-  while the head lands (nothing starts meanwhile), `paused` takes no check and lands nothing; neither this design nor
-  the RFC names a command that sets it, so none exists. Every move is conditional on the state it leaves; entries
-  of one queue are made one at a time (the queue row is locked). Auto mode tries once per passed review run (its key
-  no longer names the item version, which the queue's state changes bump). Not built yet: batches with bisect and
-  partitions; the `github-change` merge delivery (the factory merges no PR today; a person merges it on the forge)
-  and the outbound `local` merge delivery: `land` is the one function the M7 delivery handler takes over. The
-  unit's I/O goes through the actor's store and `local-merge` (unit-purity follow-up).
+  lease_ms + retry_max_ms), every attempt the reaper may give the run with its longest backoff. Crash safety: the
+  timer is emitted before the entry moves to checking, and the run is queued after it; a checking entry whose run
+  is missing gets it again on the next step. The queue is taken for a landing conditionally on its version and given
+  back in a `finally`; a landing whose process died is taken over after `lease_ms`, and a head left `merging` (a
+  throw) is landed again. `land` is safe to repeat: an item already closed by its merge is landed, a branch already
+  in the base closes the item on that base, and a close that did not apply after the base moved throws so it is
+  landed again. A result whose decision threw is not acked, so the next runs step decides it again. The leave step
+  never removes a `merging` entry (its item closes as it lands). Queue states: `checking` while a check is out,
+  `merging` while the head lands (nothing starts meanwhile). Every move is conditional on the state it leaves;
+  entries of one queue are made one at a time (the queue row is locked). Auto mode tries once per passed review run
+  (its key no longer names the item version, which the queue's state changes bump). Not built yet: a `paused`
+  state (dropped until a command needs it; neither this design nor the RFC names one), cancelling a removed entry's
+  queued check run (its result changes nothing; it only uses a worker), batches with bisect and partitions; the
+  `github-change` merge delivery (the factory merges no PR today; a person merges it on the forge) and the outbound
+  `local` merge delivery: `land` is the one function the M7 delivery handler takes over. The unit's I/O goes through
+  the actor's store and `local-merge` (unit-purity follow-up).
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
@@ -397,6 +416,12 @@ force.
 - **Merge queue depth and time limit** (decision changed 2026-11-08, M8 leftovers). Before: depth 1 only (one
   check out at a time, the queue row's `idle → checking` move as the lock), and a stuck check waited for its run's
   own timeouts and the reaper, since units could not emit a bus message.
+- **Merge queue crash safety and the landed tree** (decision changed 2026-11-09, controller review fixes). Before:
+  a throw or restart while the head landed left the queue `merging` for good; a crash between the move to checking
+  and the run left an entry checking with no run or timer; a stale check's result could pass a rebuilt entry; the
+  branch's current head landed, not the head that was checked; an automatic entry landed after auto mode was turned
+  off; the time limit left out retry backoff; red main ran inside the landing; a `paused` state existed that nothing
+  could set; the queue id was `mq:<project>:<base>` (too long for MySQL's key with a long project key).
 - **Unhandled event kinds** (decision changed 2026-11-08, M8 leftovers). Before: the router dropped an event no unit
   accepted, and a run kind with no run file failed each of its runs when claimed.
 
@@ -448,3 +473,9 @@ force.
 - **A run's comments** (decision changed 2026-11-09, RFC 0015 M7 worker half). Before: the worker posted its gate,
   review and update comments itself through the broker's `github.comment`, inside the run, and an update run failed
   when its comment failed.
+- **Resume across a deploy** (decision changed 2026-11-09, worker review finding 4). Before: any journal row, a
+  failed one included, made a run journaled by another `code_version` fail `not_resumable`, so a paused or
+  network-requeued run lost its WIP on every deploy.
+- **Stopping a timed-out step** (decision changed 2026-11-09, worker review finding 3). Before: a step timeout or
+  the run deadline rejected the step but no run kind passed the step's signal to its work, so the agent kept
+  running (and spending) in a folder the runner had already removed, beside the retry's agent.

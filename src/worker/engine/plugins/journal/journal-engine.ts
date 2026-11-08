@@ -10,8 +10,8 @@
 // - Time is the latest tick's: `heartbeat` renews this worker's leases, times out steps and aborts a run past
 //   deadline_at. No takeover here: the controller's reaper requeues a run whose lease expired, and the next claim
 //   resumes it from the journal (one takeover path).
-// - code_version: a run journaled by other code is resumed only if `resumes(version)` says so; otherwise it is
-//   left for a worker on that revision (RFC 0015 §8 version pinning).
+// - code_version: a run with a stored step result from other code is resumed only if `resumes(version)` says so;
+//   otherwise it is left for a worker on that revision (RFC 0015 §8 version pinning).
 
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../../state/index.js";
 import type { Tick } from "../../../../shared/ticks/tick-generator.js";
@@ -153,7 +153,14 @@ export class JournalEngine implements ExecutionEngine {
       stored = JSON.stringify((await Promise.race([work, aborted])) ?? null);
     } catch (err) {
       held.inFlight = null;
-      if (!(err instanceof LeaseLostError)) await this.finish(run, stepId, { status: "failed", error_code: errorCode(err) });
+      // The step's own error is the failure: a journal write that fails here is only logged. The row stays
+      // `running`, which the next attempt's `begin` overwrites.
+      if (!(err instanceof LeaseLostError)) {
+        await this.finish(run, stepId, { status: "failed", error_code: errorCode(err) }).catch((journal: unknown) =>
+          this.opts.log?.warn("step failure not journaled", {
+            run_id: run.id, step_id: stepId, error_code: errorCode(err), error: journal instanceof Error ? journal.message.slice(0, 300) : "unknown",
+          }));
+      }
       throw err;
     }
     held.inFlight = null;
@@ -248,11 +255,15 @@ export class JournalEngine implements ExecutionEngine {
     return rows.length > 0;
   }
 
-  /** A run journaled by other code is resumed only when this code says it can; a run with no journal yet adopts it. */
+  /**
+   * A run with a stored step result from other code is resumed only when this code says it can. A run with none
+   * adopts this code: a failed or running row holds only a partial, which its step checks again anyway, so a
+   * paused or requeued run whose only step failed survives a deploy.
+   */
   private async mayResume(tx: SqlExecutor, runId: string, version: unknown): Promise<boolean> {
     if (version === null || version === this.opts.codeVersion) return true;
     if (this.opts.resumes?.(String(version))) return true;
-    return (await tx.all("SELECT 1 AS x FROM worker_run_steps WHERE run_id = ? LIMIT 1", [runId])).length === 0;
+    return (await tx.all("SELECT 1 AS x FROM worker_run_steps WHERE run_id = ? AND status = 'succeeded' LIMIT 1", [runId])).length === 0;
   }
 
   private hold(ref: RunRef, deadline: string): RunRef {

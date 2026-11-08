@@ -344,12 +344,14 @@ export class ControllerRole implements Decisions {
   }
 
   /**
-   * One event a source or the forge reported, delivered by the bus (RFC 0015 M4). A failure is logged and passed,
-   * as a polled event's always was: the next poll or the person's next comment brings it again.
+   * One event a source or the forge reported, delivered by the bus (RFC 0015 M4). Throws when its handling failed (a
+   * store error, a forge rate limit): the bus retries it with backoff and dead-letters it past its attempts. A
+   * streamed record's cursor has moved on, so no next poll would bring it again; every unit is safe to run twice.
    */
   async consumeEvent(e: ControllerEvent): Promise<void> {
     const r = await this.router();
-    await this.kernel.guard(`event:${e.kind}`, () => r.dispatch(e));
+    const failed = await this.kernel.guard(`event:${e.kind}`, () => r.dispatch(e));
+    if (failed !== null) throw failed;
   }
 
   /**
@@ -387,7 +389,7 @@ export class ControllerRole implements Decisions {
       const r: ControllerRouter = new Router(list, this.kernel, {
         kinds: CONTROLLER_EVENT_KINDS,
         messages: Object.keys(CONTROLLER_EVENTS.messages),
-        guard: (what, fn) => this.kernel.guard(what, fn),
+        guard: async (what, fn) => void (await this.kernel.guard(what, fn)),
         reader: this.kernel.reader,
         commit: (d) => this.kernel.commit(d),
         now: () => this.tick("event"),

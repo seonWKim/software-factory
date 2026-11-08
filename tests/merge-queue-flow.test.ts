@@ -16,6 +16,8 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole, type ControllerRoleDeps } from "../src/runtime/roles/controller-role.js";
 import { defineHook } from "../src/shared/hook.js";
+import type { SqlDriver } from "../src/state/index.js";
+import { MergeQueueStore } from "../src/controller/actors/merge-queue/merge-queue.store.js";
 import { Worker } from "../src/worker/index.js";
 import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
 import { BACKENDS } from "./helpers/store.js";
@@ -102,7 +104,39 @@ async function factory(backend: (typeof BACKENDS)[number], o: Options = {}) {
     expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     return id;
   };
-  return { repo, store, clock, controller, worker, step, cli, toMergePending };
+  return { repo, cfg, store, clock, sandbox, controller, worker, step, cli, toMergePending };
+}
+
+type Factory = Awaited<ReturnType<typeof factory>>;
+
+/** Makes `obj[name]` throw once when `when` holds for its arguments (a store error, a crash mid-step). */
+function failOnce<T extends object, K extends keyof T>(obj: T, name: K, when: (...a: never[]) => boolean): () => boolean {
+  const orig = obj[name] as (...a: unknown[]) => unknown;
+  let failed = false;
+  (obj as Record<K, unknown>)[name] = function (this: unknown, ...a: never[]) {
+    if (!failed && when(...a)) {
+      failed = true;
+      return Promise.reject(new Error(`injected failure in ${String(name)}`));
+    }
+    return orig.apply(this, a);
+  };
+  return () => failed;
+}
+
+/** The item's local branch in the factory repo. */
+async function branchOf(f: Factory, id: WorkItemId): Promise<string> {
+  return (await f.controller.unit("local-merge")).branchOf((await f.store.getWorkItem(id))!);
+}
+
+/** The merge queue's own tick step (the decide schedule runs it every tick_ms). */
+async function tickQueue(f: Factory): Promise<void> {
+  await (await f.controller.unit("merge-queue")).queueStep();
+}
+
+/** The merge queue's row, read straight from the database. */
+async function queueRow(f: Factory) {
+  const db = (f.store as unknown as { db: SqlDriver }).db;
+  return (await db.all("SELECT * FROM controller_merge_queues"))[0]!;
 }
 
 /** The merge-check runs of the items, in order, with what each merged and how it came back. */
@@ -177,6 +211,9 @@ for (const backend of BACKENDS) {
       const queue = await f.controller.unit("merge-queue");
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["checking"]);
 
+      // Every attempt the reaper may give the run, each with its lease and the longest backoff before the retry.
+      const { run_timeout_ms, lease_ms, retry_max_ms } = f.cfg;
+      expect(queue.checkTimeoutMs()).toBe(f.cfg.settings.defaults.max_attempts! * (run_timeout_ms + lease_ms + retry_max_ms));
       // Just before the timer nothing moves; past it, the delayed message ends the check.
       f.clock.advance(queue.checkTimeoutMs() - 1);
       await f.controller.tickRuns();
@@ -220,6 +257,136 @@ for (const backend of BACKENDS) {
       expect((await queue.entries(a)).map((e) => e.state)).toEqual(["removed"]);
       const refused = (await f.store.listItemMessages(a)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
       expect(refused[0]).toContain("hook freeze: the base is frozen");
+    });
+
+    it("a close that fails after the base moved is landed again: the item closes on that merge, nothing merges twice", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const mainBefore = git(f.repo, "rev-parse", "main");
+      const failed = failOnce(f.store, "transition", (i: { reason: string }) => i.reason === "local_merged");
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.step();
+      expect(failed()).toBe(true);
+      // The base holds the change, the item is not closed yet, and the queue is not stuck landing.
+      const queue = await f.controller.unit("merge-queue");
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+      expect((await queueRow(f)).state).toBe("idle");
+
+      await tickQueue(f);
+      const main = git(f.repo, "rev-parse", "main");
+      expect(git(f.repo, "rev-list", "--parents", "-n", "1", main).split(" ")[1]).toBe(mainBefore);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: main });
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merged"]);
+    });
+
+    it("a landing whose process died is taken over after a lease; an entry closed by its landing is never removed", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      // The landing fails after the close, before the entry is marked merged.
+      const move = MergeQueueStore.prototype.move;
+      try {
+        failOnce(MergeQueueStore.prototype, "move", (_id: string, _from: unknown, to: string) => to === "merged");
+        await f.cli({ action: "command", command: "merge", id: a, text: "" });
+        await f.step();
+      } finally {
+        MergeQueueStore.prototype.move = move;
+      }
+      const main = git(f.repo, "rev-parse", "main");
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", merge_sha: main });
+      const queue = await f.controller.unit("merge-queue");
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
+      // And its process died before it gave the queue back.
+      const db = (f.store as unknown as { db: SqlDriver }).db;
+      await db.run("UPDATE controller_merge_queues SET state = 'merging', updated_at = ?", [f.clock.now().toISOString()]);
+
+      // Within the lease nothing moves; past it the landing is taken over and finds its own merge.
+      await tickQueue(f);
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merging"]);
+      f.clock.advance(f.cfg.lease_ms);
+      await tickQueue(f);
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["merged"]);
+      expect((await queueRow(f)).state).toBe("idle");
+      expect(git(f.repo, "rev-parse", "main")).toBe(main);
+    });
+
+    it("a check whose run was never queued gets it on the next step", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const failed = failOnce(f.store, "transition", (i: { reason: string }) => i.reason === "merge_check_queued");
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.controller.tickCommands();
+      expect(failed()).toBe(true);
+      const queue = await f.controller.unit("merge-queue");
+      expect((await queue.entries(a)).map((e) => e.state)).toEqual(["checking"]);
+      expect(await checks(f, a)).toEqual([]);
+
+      await tickQueue(f);
+      await f.step();
+      expect(await checks(f, a)).toEqual([{ branches: 1, result: "green" }]);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    });
+
+    it("a merge-check result whose decision threw is decided again, not dropped", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const byRun = MergeQueueStore.prototype.byRun;
+      let thrown = false;
+      MergeQueueStore.prototype.byRun = async function (this: MergeQueueStore, k: string) {
+        if (!thrown) {
+          thrown = true;
+          throw new Error("injected store error");
+        }
+        return byRun.call(this, k);
+      };
+      try {
+        await f.cli({ action: "command", command: "merge", id: a, text: "" });
+        await f.step();
+      } finally {
+        MergeQueueStore.prototype.byRun = byRun;
+      }
+      expect(thrown).toBe(true);
+      // The green result was not lost: the item closed without waiting for the time limit.
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+      expect(await checks(f, a)).toEqual([{ branches: 1, result: "green" }]);
+    });
+
+    it("a commit on the branch during its check does not land unchecked: the entry is checked again", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      await f.cli({ action: "command", command: "merge", id: a, text: "" });
+      await f.controller.tickCommands();
+      expect(await f.worker.tick()).toBe(true);
+      // The check ran on the branch as it was; a person commits c.yml on the branch before the result is decided.
+      const branch = await branchOf(f, a);
+      const wt = join(f.repo, "..", "person");
+      git(f.repo, "worktree", "add", "--quiet", wt, branch);
+      writeFileSync(join(wt, "c.yml"), "late\n");
+      git(wt, "add", "-A");
+      git(wt, ...ident, "commit", "--quiet", "-m", "late commit");
+      git(f.repo, "worktree", "remove", wt);
+      await f.controller.tickRuns();
+      expect(git(f.repo, "ls-tree", "-r", "--name-only", "main").split("\n")).not.toContain("c.yml");
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+
+      // Checked again with the late commit, then it lands.
+      await f.step();
+      expect(await checks(f, a)).toEqual([{ branches: 1, result: "green" }, { branches: 1, result: "green" }]);
+      expect(git(f.repo, "ls-tree", "-r", "--name-only", "main").split("\n")).toContain("c.yml");
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    });
+
+    it("an automatic entry does not land once auto mode is off", async () => {
+      const f = await factory(backend, { test: ["sh", "-c", "exit 0"] });
+      const a = await f.toMergePending("Add a");
+      const mainBefore = git(f.repo, "rev-parse", "main");
+      // Entered by auto mode; the project is in manual mode by the time it lands.
+      const queue = await f.controller.unit("merge-queue");
+      expect(await queue.enter((await f.store.getWorkItem(a))!, "system:auto", "auto-merge:test", {})).toBeNull();
+      await f.step();
+      expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+      expect((await queue.entries(a)).map((e) => [e.state, e.reason?.split(",")[0]])).toEqual([["removed", "auto mode is off now; a person merges it: `factory merge` (approver role)"]]);
+      expect(await f.store.getWorkItem(a)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     });
   });
 }

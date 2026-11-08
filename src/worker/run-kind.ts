@@ -22,7 +22,7 @@ export interface RunCall {
   readonly run: Run;
   readonly item: WorkItem;
   readonly ctx: ToolCallContext;
-  /** Aborts when the lease is lost. */
+  /** Aborts when the lease is lost, a step times out or the run passes its deadline. */
   readonly signal: AbortSignal;
   /** The run's model class (`cheap` for a kind with no agent). */
   readonly model: ModelClass;

@@ -48,6 +48,12 @@ export interface LocalMergeSpec {
    * another commit moves nothing (`base_moved`), so what lands is the tree that was checked.
    */
   expected_base?: string;
+  /**
+   * The merge queue's landing: the branch head its merge-check run merged. A branch at another commit (a commit made
+   * on it during the check) moves nothing (`head_moved`), so no unchecked commit lands. A branch already in the base
+   * is `already` first, whatever the base: a landing re-run after its base moved finds its own merge.
+   */
+  expected_head?: string;
 }
 
 /**
@@ -63,7 +69,8 @@ export type LocalMergeResult =
   | { merged: true; sha: string; already: boolean; not_updated: string[] }
   | { merged: false; conflicts: string[] }
   | { merged: false; refused: string }
-  | { merged: false; base_moved: string };
+  | { merged: false; base_moved: string }
+  | { merged: false; head_moved: string };
 
 /**
  * A sandbox that can merge locally: `mergeLocal` writes the merge commit in the factory repo's object store

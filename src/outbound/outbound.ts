@@ -11,6 +11,7 @@ import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, SyncFence } from "../interfaces/factory-store.js";
 import { envelope } from "../shared/envelope.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
+import { addMs } from "../shared/time.js";
 import type { SqlDriver } from "../state/index.js";
 import { ACTION_INTENT, RETRIED_ACTIONS, THREAD_INTENT, actionOf, type ActionRow } from "./intents.js";
 import type { Delivery, DeliveryTarget } from "./targets/target.js";
@@ -95,7 +96,7 @@ export class Outbound {
     }
     // Not every intent can be written here (no adapter, or the sync lease is another replica's): left for one that can.
     if (!intents.every((i) => i.done || (this.target(i.delivery) !== null && this.d.canSend(typeOf(i.delivery))))) return false;
-    const until = new Date(Date.parse(now) + this.d.config().lease_ms).toISOString();
+    const until = addMs(now, this.d.config().lease_ms);
     const claimed = await this.d.db.run(
       `UPDATE outbound_batches SET state = 'sending', claim_token = claim_token + 1, claimed_until = ?
        WHERE id = ? AND state <> 'sent' AND claim_token = ?`,
@@ -108,7 +109,7 @@ export class Outbound {
     } catch (err) {
       if (!(err instanceof Stop)) throw err;
       const state = err.retry_in_ms === null ? "open" : "failed";
-      const flush = err.retry_in_ms === null ? now : new Date(Date.parse(now) + err.retry_in_ms).toISOString();
+      const flush = err.retry_in_ms === null ? now : addMs(now, err.retry_in_ms);
       await this.d.db.run(
         `UPDATE outbound_batches SET state = ?, attempts = attempts + ?, last_error = ?, flush_at = ?, claimed_until = NULL
          WHERE id = ? AND claim_token = ?`,

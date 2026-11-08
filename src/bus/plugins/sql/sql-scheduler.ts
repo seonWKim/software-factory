@@ -8,7 +8,8 @@ import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { SqlDriver } from "../../../state/index.js";
 import type { RetryScheduler } from "../../index.js";
 import { SCHEDULER_TABLE, topicTables } from "./ddl.js";
-import { addMs, readHorizon } from "./rows.js";
+import { addMs } from "../../../shared/time.js";
+import { readHorizon } from "./rows.js";
 
 export class SqlRetryScheduler implements RetryScheduler {
   private readonly byName: ReadonlyMap<string, TopicDescriptor>;

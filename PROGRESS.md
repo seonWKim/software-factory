@@ -27,18 +27,25 @@ minutes; past that the main session takes over from their WIP commit.
 
 | Time | Step | Who | Status |
 |---|---|---|---|
-| 22:30 | M4 merged | main | done 22:40 (453af93); SQLite + MySQL suites green, rehearsal passed |
-| 22:40–23:50 | M5 router + units: `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | merged 23:50 (2b837d5), SQLite green |
-| 22:40–23:20 | M3 leftovers: bus + ticks plugins, `requires`, dead-letter alarms | agent | merged 23:25, SQLite green |
-| 22:40–00:30 | M6 `worker.ts` onto the engine (crash test resumes mid-run); M9 wiring (passports at the edge and in the ToolBroker, service passports, UI names) | agents | merged 00:15 (c086e15) and 00:35 (56b60f4), SQLite green |
-| –23:30 | M8 merge queue (depth 1); M7 outbound, controller half; M5 follow-up: pure units on ticks | agents + main | merged 23:30 (bf0e449, 39bcb41, 0964cd6), SQLite green; M7 fixes by main: flush starvation, G5 retry loop |
-| 23:35–01:05 | M7 worker half; M6 leftovers + M10 roles/hooks in the worker; M8 leftovers + router findings; pure units 2 + M9 command auth | 4 agents | running |
-| 23:25–23:45 | M11 contract migrations (main, done 23:30, e28aab9); review of bus, inbound, identity, state, runtime (read-only agent) | main + agent | review done 23:35: 10 findings. Fixed by main: contract drop order (cf1af90), forged passport links, consumer emits on a retried transaction, concurrent revoke, key-file race (0115682). Bus ordering, leases, new-group start, INSERT IGNORE: agent (bus-fixes) |
-| 23:45 | M8 leftovers merged: unit messages + MergeCheckTimedOut, speculative depth (`merge_queue.depth`), before_merge hooks, router and run-kind startup checks | agent + main | merged, SQLite green (3710) |
-| 23:55 | Pure units 2 + M9 command auth merged (02c065e): one reply path, 9 more units through reader/commit (ratchet 38 → 25), commands decided under their passport, auto mode under the controller's service passport, live `tick_ms`. Main fixed: command passport expiry checked at the command's recorded time (bc112cf) | agent + main | merged, SQLite green (3714); review of the controller started (read-only agent) |
-| 01:05–03:00 | Merge the four branches; finish what an agent left; full MySQL suite with no agents running | main | |
-| 03:00–05:00 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
-| 05:00–07:30 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
+| 22:07 | M4 merged (453af93) | main | done; SQLite + MySQL suites green, rehearsal passed |
+| 22:26 | M3 leftovers merged (487c50b): bus + ticks plugins, `requires`, dead-letter alarms | agent | SQLite green |
+| 22:50 | M5 router + units merged (2b837d5): `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | SQLite green |
+| 22:57, 23:04 | M6 `worker.ts` onto the engine (c086e15); M9 wiring: passports at the edge and in the ToolBroker, service passports, UI names (56b60f4) | agents | SQLite green |
+| 23:20–23:25 | Pure units on ticks (bf0e449); M8 merge queue, depth 1 (39bcb41); M7 outbound, controller half (0964cd6) | agents + main | SQLite green; main fixed flush starvation and the G5 retry loop |
+| 23:31, 23:40 | M11 contract migrations for `legacy_*` (e28aab9), drop order fix (cf1af90) | main | written, applied only by `migrate --contract` |
+| 23:43 | Review of bus, inbound, identity, state, runtime fixed (0115682): forged passport links, consumer emits on a retried transaction, concurrent revoke, key-file race | main | 10 findings; bus ordering/leases/start/INSERT IGNORE went to the bus-fixes agent |
+| 23:43 | M8 leftovers merged (42f815e): unit messages + MergeCheckTimedOut, speculative depth (`merge_queue.depth`), before_merge hooks, router and run-kind startup checks | agent + main | SQLite green (3710) |
+| 23:49, 23:56 | Pure units 2 + M9 command auth merged (02c065e): one reply path, 9 more units through reader/commit (ratchet 38 → 25), commands decided under their passport. Main: passport expiry checked at the command's recorded time (bc112cf) | agent + main | SQLite green (3714) |
+| 00:09–00:16 | M6 leftovers + M10 roles/hooks (645c82a); M7 worker half (5d7e597); bus review fixes: seq-ordered inserts, lease renew, explicit start, insert-or-skip (cfcbd20, 8435fb5) | agents + main | SQLite green |
+| 00:25 | Controller review fixes (adec77b): auto stop after a failed settings write, comment command passports, streamed event retried on a store error, merge-check invariant | main | SQLite green (3730); each new test fails without its fix |
+| 00:27 | One `addMs` in `shared/time.ts` (a2edc15) | main | SQLite green |
+| 00:12–00:28 | Merge queue review findings (b2464a7, 99f4c4b): crash-safe landing with a lease, only the checked head lands, stale results and timers ignored, auto entries re-checked against auto mode | agent | merged 00:32 (fast-forward), SQLite green (3738); MySQL merge-queue tests green |
+| 00:12– | M7 pushes + PR open/update via outbound (m7-push) | agent | running, time box 90 min |
+| 00:30–00:36 | Review of the worker (read-only agent): 7 findings. 1 (wip-branch push refused by the run passport) handed to m7-push; 2 (resume in a fresh folder) waits for m7-push; 3–7 (step abort signal, resume blocked by failed rows, passport end vs lease, recording error hides the cause, deadline) to an agent | agents | 3–7 fixed by worker-fixes (151453e…0112ca5): abort reaches the agent and the folder outlives it, only succeeded rows block a resume, passport end needs the minting lease token, the step error survives a journal failure, deadline comment corrected (update/improve still never hit the deadline: in Next); merged 00:48, SQLite green (3742), engine tests green on MySQL |
+| after m7-push | Worker finding 2: an interrupted agent step resumes its session in a fresh folder | main | |
+| after m7-push | Outbound `local` merge delivery (landing finishes on DeliveryCompleted); left by the mq-fixes agent, it touches outbound | main or agent | |
+| next | Merge both agents; M11 cleanup: file budget back to 600, ratchets, docs, ARCHITECTURE.md | main | |
+| then | Review of the whole branch, fixes applied; full SQLite + MySQL suites and rehearsal with no agents running | main | |
 
 Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
 owner decisions below. Status per row is updated here as each step lands.
@@ -55,7 +62,7 @@ owner decisions below. Status per row is updated here as each step lands.
 | 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | units done, not pure yet | branch `refactor/rfc-0015-m5-controller`: router + `defineUnit`, 22 units, `controller.ts` gone, WorkItem table checked on every stage change, `unit-purity` test; split into load/decide: reaper, mirror, transitions; reading through the reader and writing through the kernel: outbox (the one reply path), auth, checks-gate, run-results, commands, app-requests, standing, verdicts, merge-check; the rest in its ratchet |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | done (update steps left, with M7) | branch `refactor/rfc-0015-m6-worker`: `core/worker.ts` gone; `src/worker/` runner + `runs/<kind>/` (discovered); every run on the engine (`plugins.engine`, default `journal`); named timeouts per kind; crash tests resume mid-implement and mid-resolve on SQLite and MySQL. Leftovers (branch `refactor/rfc-0015-m6-leftovers`): the runner's waits on a TickGenerator, one takeover path (the controller's reaper; the engine's `reap` deleted), the resolve step with a bundle, `SF_CODE_VERSION` as `code_version`. Left: update steps (its effects are the forge writes M7 moves) |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | controller half, worker comments, implement push and PR done | `src/outbound/`: intents, §15.1 batching, targets, flush with G5 withheld notices; `outbound.batching` setting; `forge-writes` ratchet. Worker comments (gate, review, update) are thread entries outbound delivers; the broker's `github.comment` is gone; keyed actions (`intent_key`) and the PR close through `github-change`. Implement push and PR (branch `refactor/rfc-0015-m7-push`): the run's last step `git.store_branch` writes HEAD to a factory-repo ref and records keyed `push`/`pr` intents to `git:<host>:<branch>`; `github-push` (`Forge.pushBranch`, reconciling) and `github-change` (`Forge.openPr`) deliver them; the item waits `blocked_on: outbound`/`pr_pending` until the PR delivery puts `change_ref` on it and queues the review; push/PR failures are delivery retries holding the destination (no claim pause); flow test `tests/outbound/run-push.test.ts`; the run passport names the wip branch. Left: resolve, update, wip and session pushes, the PR body refresh, base push (`local` target), sub-issue filing, outbound's service passport |
-| 8 | Merge queue | depth N, timeout, hook merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Left: the outbound `local` merge delivery (M7 takes over `LocalMergeUnit.land`), `github-change` merge, batches with bisect, partitions; the `paused` state has no command (none is named in the design or RFC) |
+| 8 | Merge queue | depth N, timeout, hook merged | `merge-queue` unit, `MergeQueue` + `MergeQueueEntry` actors and tables, `merge-check` run kind; `factory merge` and auto mode go through the queue; `merge_queue.depth` (speculative depth, solo default 1); delayed `MergeCheckTimedOut` on `controller.events` (units emit bus messages); `before_merge` hooks at the landing; flow test (`tests/merge-queue-flow.test.ts`, SQLite and MySQL): a red merged result never lands, depth 2 lands two changes on one check each, a stuck check times out, a hook veto keeps the base. Review fixes: crash-safe landing (lease take-over, finally, `land` repeatable), missing check runs queued again, results and timers conditional on the run, the checked branch head pinned, automatic entries re-authorized at the landing, `run_key` index, hashed queue id; `paused` dropped. Left: the outbound `local` merge delivery (M7 takes over `LocalMergeUnit.land`), `github-change` merge, batches with bisect, partitions; cancelling a removed entry's queued check run |
 | 9 | Identity and passports | wired | merge 6be1042 (core); branch `refactor/rfc-0015-m9-wiring`: run passports checked by the ToolBroker (G2), service passports, edge passports on command rows, every auth decision in `authz_audit`, display names on the status page; commands decided under their passport through `authorize(passport_id, …)` with the origin's plugin grants, auto mode under the controller's service passport; left: SecretStore key for enterprise, outbound's service passport |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | core done, run path wired | merge 1162d29 (branch `refactor/rfc-0015-m10-extensions`): settings catalog + `settings-monotonic`, run roles + `rule-of-two`, hooks + audit table. Branch `refactor/rfc-0015-m6-leftovers`: roles drive every agent step's prompt and tools; `before_run` hooks at run start, enabled by the PR-only `hooks` setting. Left: `before_merge` (merge queue) and `before_delivery` (outbound) |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | contract migrations written | e28aab9: `legacy_*` drops for M1 and M4, run only by `npm run migrate -- --contract` 14 days after their rename (not applied); docs, ratchets and the file budget left |
@@ -364,6 +371,16 @@ M5 follow-up (pure units, partial):
 - Still reading `clock.now()` in units: `run-results` (2), `coordination` (5), `model-probe` (2), `commands` (1),
   `improve` (2, one is its `fileReport` deps).
 
+Worker review fixes (2026-11-09, findings 3–7):
+
+- A step's timeout or the run deadline also aborts the run kind's signal, in the runner's `step` wrapper (one place
+  for every kind), and a failed step settles only after its work has, so the folder outlives the agent. This relies
+  on the work honouring its signal (agent runners kill their process on abort).
+- `deadline_at` stays enforced by the worker (heartbeat, next step), as design 10-event-driven decided; only the
+  migration's note claimed the reaper. Update and improve, which journal no step, still never fail on it.
+- A resume on other code is blocked only by a succeeded step row; ending a run passport needs the claim's lease
+  token; a journal write failing in a step's error path is logged and the step's error stays the failure.
+
 ## Waiting on the owner
 
 - Migrate the live database: `npm run migrate` after reviewing the branch.
@@ -407,7 +424,7 @@ M5 follow-up (pure units, partial):
    tests now; the store's command-row mapping duplicates `commandOf` in `src/inbound/records.ts`.
 7. M8 leftovers: the outbound `local` merge delivery (the merge queue emits `DeliveryRequested{kind: merge}` and
    outbound's delivery handler runs `LocalMergeUnit.land`), the `github-change` merge delivery, batches with bisect
-   and partitions; a command for the queue's `paused` state once the design names one.
+   and partitions; a `paused` state with the command that needs it; cancelling a removed entry's queued check run.
 
 ## After the refactor: acceptance runs (owner request, 2026-11-08)
 

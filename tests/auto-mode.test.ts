@@ -307,6 +307,29 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await stopped(f, "failure_alert");
   });
 
+  it("a stop whose settings write failed after its alert: the next stop sets manual, not one 6 h later", async () => {
+    const budgets = { 2: 20 };
+    const f = await autoFactory({ config: { settings: { ...config.settings, defaults: { ...config.settings.defaults, budgets } } } });
+    await f.mode("auto");
+    const write = f.store.setSettingOverride.bind(f.store);
+    let failed = false;
+    f.store.setSettingOverride = async (o) => {
+      if (o.actor === AUTO_ACTOR && !failed) {
+        failed = true;
+        throw new Error("store down");
+      }
+      return write(o);
+    };
+    await f.create();
+    await f.step().catch(() => undefined);
+    expect(failed).toBe(true);
+    expect(await f.modeRows()).toHaveLength(1);
+    // The alert is recorded and deduped for 6 h; a second checkpoint's stop finds the mode still auto and sets it.
+    await f.create();
+    await f.step();
+    await stopped(f, "budget_checkpoint");
+  });
+
   it("a budget checkpoint sets the mode to manual", async () => {
     const budgets = { 2: 20 };
     const f = await autoFactory({ config: { settings: { ...config.settings, defaults: { ...config.settings.defaults, budgets } } } });

@@ -85,6 +85,8 @@ export interface EngineOptions {
   readonly leaseMs?: (run: RunRef) => number;
   /** Called when the worker loses a held run (requeued, finished elsewhere, or past its deadline). */
   readonly onLost?: (run: RunRef, reason: Error) => void;
+  /** Where a journal write that must not replace a step's own error is logged; default: dropped. */
+  readonly log?: { warn(msg: string, fields?: Readonly<Record<string, string | number>>): void };
 }
 
 /** The `engine` plugin (`plugins.engine`, default `journal`): one ExecutionEngine per worker loop. */

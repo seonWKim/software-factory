@@ -3,7 +3,8 @@
 // - worker_run_steps: one row per (run, step); a succeeded step's stored result is returned instead of running
 //   the step again, so a resumed run skips finished steps.
 // - worker_runs.code_version: the revision that runs the run; a resume on other code is detected (§8).
-// - worker_runs.deadline_at: created_at + the run kind's schedule_to_close; the reaper fails runs past it.
+// - worker_runs.deadline_at: created_at + the run kind's schedule_to_close. The worker enforces it: its heartbeat
+//   aborts a run past it, and the engine refuses its next step (design 10-event-driven; the reaper never reads it).
 // - worker_runs_lease: the reaper's scan of running runs by lease expiry.
 // passport_id (also new on worker_runs in the target schema) comes with the passports (M9).
 //
