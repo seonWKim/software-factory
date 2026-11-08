@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { API, type CommandReply, type ItemCommand, type Session, postCommand, useApi } from "../api.js";
+import { API, type CommandReply, type ItemCommand, type ItemDetail, type Session, postCommand, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Section } from "../components/ui/parts.js";
@@ -12,7 +12,9 @@ import { PAGE_COMMANDS_PATH } from "../pages.js";
 // in its order, and one text box that is the note every send carries when it has text (the reason for reject,
 // the feedback for revise, tokens for budget, `accept|changes|reject <severity> <reason>` for verdict). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
-// next tick, and the item's `replies` say how that went.
+// next tick, and the item's `replies` say how that went. A local item waiting for its merge also gets a Merge
+// button when the item API's `can_merge` is true: it sends `merge` with no note (the local merge of `factory
+// merge`), and its refusal (a conflict, a failing check, no approve_merge) shows beside it.
 
 /** Commands the server refuses without text. */
 const NEEDS_TEXT = ["reject", "revise"];
@@ -58,21 +60,25 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<Record<string, LocalSend>>({});
-  if (commands.length === 0) return null;
+  // The page's own item query (same key and options), read here for its `can_merge`.
+  const canMerge = useApi<ItemDetail>(API.item(id)).data?.can_merge === true;
+  if (commands.length === 0 && !canMerge) return null;
   const token = session.data?.csrf_token;
   const enabled = !!token && session.data?.commands_enabled === true;
   const off = session.isError || session.data?.commands_enabled === false;
   const blank = note.trim() === "";
 
+  /** `merge` takes no note, and leaves the box as it is. */
   const send = async (command: string) => {
     if (!token) return;
+    const withNote = command !== "merge";
     setBusy(true);
     setConfirming(false);
     try {
-      const r = await postCommand(token, id, command, note);
+      const r = await postCommand(token, id, command, withNote ? note : "");
       setLocal((m) => ({ ...m, [command]: r.ok ? { seq: r.seq } : { error: r.error } }));
       if (r.ok) {
-        setNote("");
+        if (withNote) setNote("");
         await client.invalidateQueries({ queryKey: [API.item(id)] });
       }
     } catch (err) {
@@ -138,6 +144,20 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             </li>
           );
         })}
+        {canMerge && (
+          <li data-command="merge" className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              className={textButton}
+              disabled={!enabled || busy}
+              title="Merge the item's local branch into the local base branch (factory merge), after the install and checks pass"
+              onClick={() => void send("merge")}
+            >
+              Merge
+            </Button>
+            <OutcomeText outcome={commandOutcome(replies, "merge", local.merge)} />
+          </li>
+        )}
       </ul>
     </Section>
   );

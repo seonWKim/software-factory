@@ -7,10 +7,13 @@
 // http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403), a
 // an actor (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
 // a known item (404). Success is 202 with the request's ID. GET /api/v1/session hands out the token behind the
-// same Host guard. The item API's `commands` and `replies` fields are built here too.
+// same Host guard. The item API's `commands`, `replies` and `can_merge` fields are built here too.
+// `merge` (design §9, the Merge button) is an app command beside the item commands: the local merge of
+// `factory merge`, with no note, shown only for a local item waiting for its merge.
 
 import { randomUUID } from "node:crypto";
-import { COMMANDS, type CommandName, commandState, commandsFor } from "../core/commands.js";
+import { COMMANDS, type CommandName, commandPhase, commandState, commandsFor } from "../core/commands.js";
+import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
 import { AGENT_NEEDS_HUMAN, blockingRunKind } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { UiDeps } from "./pages.js";
@@ -24,6 +27,11 @@ export interface UiCommands {
   source: "config" | "environment" | null;
   /** Random, per process; held only in memory. GET /api/v1/session returns it, POST must send it in x-csrf-token. */
   token: string;
+  /**
+   * Whether `actor` is allowed approve_merge on the project, over the local grants only (no forge call). Absent
+   * (a page with no auth wired) means false: no Merge button.
+   */
+  mergeAllowed?: () => Promise<boolean>;
 }
 
 /** The largest commands body read. A command and a 2000-character note fit well inside it. */
@@ -32,10 +40,15 @@ export const MAX_COMMAND_BODY = 16 * 1024;
 export const MAX_NOTE = 2000;
 /** The replies the item API lists: the newest this many of the item's requests. */
 export const REPLIES_LIMIT = 50;
-/** Commands the page may send: every item command but `/help` and the account command `/link`. */
-export const APP_COMMANDS: readonly CommandName[] = COMMANDS.map((c) => c.name).filter((n) => n !== "help" && n !== "link");
+/** A command the page may send: an item command, or the local merge, which has no comment command. */
+export type AppCommand = CommandName | typeof MERGE_COMMAND;
+/** Commands the page may send: every item command but `/help` and the account command `/link`, then `merge`. */
+export const APP_COMMANDS: readonly AppCommand[] = [
+  ...COMMANDS.map((c) => c.name).filter((n) => n !== "help" && n !== "link"),
+  MERGE_COMMAND,
+];
 /** Commands that need text: the reason or the feedback. */
-const NEEDS_TEXT: readonly CommandName[] = ["reject", "revise"];
+const NEEDS_TEXT: readonly AppCommand[] = ["reject", "revise"];
 
 const PATH = /^\/api\/v1\/items\/([^/]+)\/commands$/;
 
@@ -67,19 +80,20 @@ function mediaType(value: string | undefined): string {
 }
 
 /** The body as a command, or why it is not one. */
-export function parseCommand(body: unknown): { command: CommandName; note?: string } | { error: string } {
+export function parseCommand(body: unknown): { command: AppCommand; note?: string } | { error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
   const extra = Object.keys(b).find((k) => k !== "command" && k !== "note");
   if (extra) return { error: `unknown field "${extra}"` };
-  if (typeof b.command !== "string" || !APP_COMMANDS.includes(b.command as CommandName)) {
+  if (typeof b.command !== "string" || !APP_COMMANDS.includes(b.command as AppCommand)) {
     return { error: `command must be one of ${APP_COMMANDS.join(", ")}` };
   }
-  const command = b.command as CommandName;
+  const command = b.command as AppCommand;
   if (b.note !== undefined && typeof b.note !== "string") return { error: "note must be a string" };
   const note = typeof b.note === "string" ? b.note : "";
   if (note.length > MAX_NOTE) return { error: `note must be at most ${MAX_NOTE} characters` };
   const text = note.trim();
+  if (command === MERGE_COMMAND && text !== "") return { error: "merge takes no note" };
   if (NEEDS_TEXT.includes(command) && text === "") return { error: `${command} needs text: ${command === "reject" ? "your reason" : "your feedback"}` };
   return text === "" ? { command } : { command, note: text };
 }
@@ -139,4 +153,13 @@ export async function itemReplies(d: UiDeps, id: WorkItemId, text: (v: string | 
     out.push({ seq: r.seq, command: await text(r.command), created_at: r.created_at, handled_at: r.handled_at, refusal: await text(r.refusal) });
   }
   return out;
+}
+
+/**
+ * The item API's `can_merge`: a local item waiting for its merge with no PR, and the page's user allowed
+ * approve_merge. The controller checks both again when it applies the request.
+ */
+export async function canMerge(d: UiDeps, it: WorkItem): Promise<boolean> {
+  if (commandPhase(it) !== "merge_pending" || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) return false;
+  return d.commands?.actor != null && (await d.commands.mergeAllowed?.()) === true;
 }
