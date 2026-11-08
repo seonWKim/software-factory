@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterAll, beforeAll } from "vitest";
 
 // Shared git fixtures for the tests that run real git (issue #469): one git call with a fixed identity and no
@@ -55,6 +55,9 @@ export function gitTemplate(build: (root: string) => void): { copy: () => string
       for (const config of gitConfigs(root)) {
         const text = readFileSync(config, "utf8");
         if (text.includes(template)) writeFileSync(config, text.replaceAll(template, root));
+        // A copied index holds the template's file stats (inode, ctime), so plumbing such as diff-files sees every
+        // file as changed and the first porcelain call rewrites the index. Refresh it so the copy is a clean clone.
+        if (basename(dirname(config)) === ".git") git(dirname(dirname(config)), "update-index", "-q", "--refresh");
       }
       return root;
     },
