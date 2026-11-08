@@ -68,8 +68,8 @@ force.
   handled before the issue close it caused), relays stream records and command rows, and prunes old records. Each
   record and its `InboundReceived` message are written in one transaction with the fenced cursor move. The
   `normalize-source` handler turns it into `CommandReceived{command_id}` or `SourceEventReceived{record_id, kind}`
-  on `controller.commands`; the controller's `legacy-controller` handler hands each to the old decision code
-  (`consumeEvent`, `consumeCommand`). Both topics (`inbound.records`, `controller.commands`) are partitioned by
+  on `controller.commands`; the controller's `legacy-controller` handler hands each to the controller role
+  (`consumeEvent`, `consumeCommand`), whose router gives it to its unit (M5). Both topics (`inbound.records`, `controller.commands`) are partitioned by
   stream (the source type, `local` for CLI and UI commands), so one source's records keep their poll order.
   The bridge runs the old code first and writes the inbox row after it (the old code commits its own writes and
   SQLite cannot nest transactions): at-least-once, safe because those handlers may run twice. A failed command is
@@ -82,6 +82,29 @@ force.
   0.5 s later than in the old same-tick loop. `npm run migrate` creates every discovered topic's tables, so an
   enterprise MySQL user needs no DDL rights at run time; a role creates them again at start (idempotent), so solo
   needs no migrate step.
+- **The controller decides in discovered units** (since 2026-11-08, RFC 0015 M5; the units still do their own I/O).
+  `src/core/controller.ts` is gone. Each feature is one unit, `src/controller/units/<unit>/<unit>.unit.ts`
+  (`defineUnit`, `src/controller/router/unit.ts`), found by discovery: the event kinds it decides on (exactly one
+  unit per kind), its steps on the controller's tick, and its operations. Today's units: `intake`, `commands`,
+  `phases`, `closes`, `standing`, `verdicts`, `pr-events`, `run-results`, `checks-gate`, `coordination`,
+  `merge-check`, `alarms`, `mirror`, `app-requests`, `local-merge`, `reaper`, `model-probe`, `improve`, `sync`,
+  `auth`, `transitions` and `outbox` (the thread outbox, until M7 moves it to outbound). The router
+  (`src/controller/router/router.ts`) names no unit: it hands each event to the unit that accepts its kind and runs
+  the steps of a tick in their `order`, each guarded so one failing step never stops the others. A unit calls
+  another unit's operation through `ctx.unit(name)`, typed by the `UnitOperations` interface each unit file
+  extends, so no unit imports another; this is for what a message would be overkill for (a shared reply, a
+  transition, a check another decision needs now). What all units share is the `Kernel` (`units/kernel.ts`: the
+  deps, the configured sources and forge, the live settings, the step guard); declarations two or more units use
+  are in `units/support.ts`. Every decided stage change is checked against the WorkItem state table
+  (`transitions.inTable`); a move not in the table is refused with a warning. The controller role runs `tick`
+  steps each `tick_ms` and `poll` steps once per `poll_interval_ms`, in the old loop's order; that loop still
+  sleeps on the injected `Clock` (FakeClock-driven tests), and units still read `clock.now()` through the kernel
+  (follow-up: a TickGenerator plugin over `Clock`, and decisions that take the tick's time). Follow-up (the RFC's
+  pure units): each unit gets a `load` the router runs and a `decide` that returns a decision the router commits
+  with the inbox and outbox in one transaction; `tests/architecture/unit-purity.test.ts` lists today's units, which
+  still read and write the store, the forge and the sources inline, in its ratchet, and the list shrinks as each
+  unit is split. Solo and enterprise: unchanged; each replica runs every unit, and every write is still a
+  conditional update.
 - **Run roles declare a Rule of Two profile** (since 2026-11-08, RFC 0015 M10). Each agent run kind (`triage`,
   `implement`, `review`, `resolve`) is one `src/worker/roles/<name>.role.ts` (`defineRole`, `src/shared/role.ts`): its
   prompt, tools, whether it is autonomous, its three facts (`untrusted_input`, `sensitive_access`,
@@ -116,6 +139,9 @@ force.
 - **Messaging between parts** (decision changed 2026-11-08, RFC 0015 M3). Before: no bus; the controller tick
   polls sources and the store, and workers claim runs from the store (still how the factory runs until components
   are wired to the bus in M4 and later).
+- **Controller decisions** (decision changed 2026-11-08, RFC 0015 M5). Before: one `Controller` class in
+  `src/core/controller.ts` (4,790 lines) held every decision, dispatched events with a `switch` on their kind, and
+  ran its steps in one hand-ordered loop; the controller role extended it.
 - **Intake** (decision changed 2026-11-08, RFC 0015 M4). Before: the controller tick polled every source and the
   forge, read the command inbox and the app requests (two tables) by `seq` cursor, and handled each in the same
   tick.
