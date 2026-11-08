@@ -40,7 +40,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
-import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
+import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { AuditedAuthProvider, PluginIdentityProvider } from "./impl/auth/audited-auth.js";
@@ -879,6 +879,8 @@ export async function build(
     id_prefix: `${hostname()}:${process.pid}`,
     // The supervisor's block for this child (git-worktree updater); unset: 0.
     index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
+    // The revision the supervisor built this child from, stamped on each run (`worker_runs.code_version`); unset: dev.
+    ...codeVersion(process.env[CODE_VERSION_ENV]),
     store,
     sandbox,
     runner,
@@ -943,6 +945,12 @@ export function settingsBase(loaded: Pick<Loaded, "file" | "config">): SettingsB
 export function workerIndexBase(value: string | undefined): number {
   if (value === undefined || !/^\d+$/.test(value.trim())) return 0;
   return Number.parseInt(value.trim(), 10);
+}
+
+/** SF_CODE_VERSION as set by the supervisor: the revision, trimmed; unset or blank: none (the worker stamps `dev`). */
+export function codeVersion(value: string | undefined): { code_version?: string } {
+  const rev = value?.trim();
+  return rev ? { code_version: rev } : {};
 }
 
 export const DEFAULT_UI_PORT = 4310;

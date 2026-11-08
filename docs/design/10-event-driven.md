@@ -60,7 +60,7 @@ force.
     runner hands the leased run to the engine (`adopt`, which stamps `code_version` and `deadline_at`), and the
     engine renews the lease on each heartbeat with the live `lease_ms` and aborts the run when it is lost. A run
     journaled by another `code_version` fails `not_resumable` (infra) and its retry is a new run. Each process
-    stamps `dev` until compose passes its revision (`WorkerDeps.code_version`).
+    stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
   - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step (above the agent's
     own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
     the run's creation (runs wait in claim pauses and coordination holds). A step over its timeout fails
