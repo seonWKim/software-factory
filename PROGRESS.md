@@ -56,9 +56,10 @@ minutes; past that the main session takes over from their WIP commit.
 | 02:19–02:28 | Review of runtime (settings, hooks, roles), compose, plugin discovery, CLI migrate and supervisor wiring (read-only agent): 10 findings (4 high: SQLite self-update migrates under the old child, `migrate --status`/`--dry-run` write, guard code off the gate list, Rule of Two not called) | agents | 1–3, 5, 7–10 fixed by runtime-fixes (f1caffb…38afb81): SQLite breaking migrations wait for `npm run migrate` (self-update keeps the old child), `--status`/`--dry-run` only read, guard code on the gate list (`src/identity/`, `src/compose.ts`, `src/outbound/outbound.ts`, the default broker), a guard plugin cannot take a platform default, `hooks` reviewed, no topic DDL for listed topics, unwired hook points and unconsumed handlers fail startup, failed builds not cached; merged (040e46e), SQLite green (3774). 4 doc corrected by main (b67a2ca), wiring is the owner's; 6 to the owner |
 | 03:15 | M11: file budget back to 600, the 15 files over it relisted (65ea072); ratchet table recounted | main | architecture tests green |
 | 03:15–03:47 | Final verification with no agents running: SQLite suite green (3774); MySQL suite: 80 timeouts at 4 workers under machine load (two orphaned `yes` processes at 100% CPU since 2026-11-08 05:31), the failing files green on rerun at 2 workers (491 tests), so every MySQL test passes; MySQL schema snapshot matches; rehearsal passed (every row of 42 tables kept) | main | done |
+| 06:00–06:08 | Owner answers (1, 2, 3, 5 yes; kill the `yes` processes and find why; clean up worktrees). The two `yes` processes killed. Cause: factory agent run `run_06783a0656f54e6ab817658dddbba7f5` (2026-11-08 05:31:15) stress-tested a flaky test with `N=$(sysctl -n hw.ncpu); for i in $(seq 1 $((N*2))); do (yes > /dev/null &); done; …; pkill yes`; the sandbox denied `sysctl` (N empty, macOS `seq 1 0` gave 2 iterations), `( … &)` reparented both to launchd, and `pkill` failed ("Cannot get process list"). The runner kills the agent's process group only on timeout or abort, not when the agent exits. Merged agent worktrees and their 20 merged branches removed | main | anomaly detector RFC 0017 drafted from it (owner request) |
+| 06:06–06:08 | Live MySQL database migrated: `mysqldump` backup (`.factory/backups/software_factory-pre-rfc0015-20261109T0606.sql`), rehearsal passed (every row of 42 tables kept), `npm run migrate` to state 41 with nothing pending; breaking steps backed up their tables to `.factory/db/backups/`. `--contract` skipped all three drops: they wait until 2026-11-23 | main | done |
 
-Not done without the owner: migrating the live database, applying the `legacy_*` drop, pushing the branch, the open
-owner decisions below. Status per row is updated here as each step lands.
+Not done without the owner: applying the `legacy_*` drop (from 2026-11-23), the open owner decisions below. Status per row is updated here as each step lands.
 
 ## Milestones
 
@@ -421,9 +422,6 @@ Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
 
 ## Waiting on the owner
 
-- Migrate the live database: `npm run migrate` after reviewing the branch.
-- Two `yes` processes (pids 6377, 6379, started 2026-11-08 05:31, parent gone) use two cores at 100%; the MySQL suite
-  times out at 4 workers while they run. Not started by this session as far as I can tell; I did not kill them.
 - M5 `hotspot_paths` default: it still names the removed `src/core/controller.ts`; pick its replacement or drop it.
 - M10 `mode`: it is `free`, not tighten-only, because #444 lets a project choose auto under a global manual, with
   `approve_merge`. The RFC's "a lower level may never raise autonomy" would refuse that.
@@ -440,7 +438,8 @@ Runtime review fixes (2026-11-09, H1–H3, M1, M3, L1–L3):
   refusal. That changes what `/approve` reports; until you choose, the phases unit still files inline (the last
   `forge-writes` entry).
 - Contract migrations: `npm run migrate -- --contract` drops the `legacy_*` tables and `outbound_base_pushes`
-  (14 days after their migrations, archiving rows first). Written, not applied.
+  (14 days after their migrations, archiving rows first). Live database migrated 2026-11-09 06:06, so the drops
+  can run from 2026-11-23.
 
 ## Next
 
