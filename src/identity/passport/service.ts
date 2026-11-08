@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import type { TickGenerator } from "../../shared/ticks/tick-generator.js";
 import type { SqlExecutor } from "../../state/index.js";
+import { SERVICE_PREFIX, ServiceAuthProvider, ServiceGrant, serviceRestrictions, type ServiceName } from "../plugins/service/service-identity.js";
 import { ProfileStore, checkDisplayName } from "../profiles/profiles.js";
 import { checkRestrictions, outside } from "./restrictions.js";
 import { PassportStore } from "./store.js";
@@ -64,19 +65,38 @@ export class PassportService implements Authorization, PassportChecker {
   private readonly personTtlMs: number;
   private readonly maxTtlMs: number;
   private readonly newId: () => string;
+  private readonly providers: readonly AuthProvider[];
+  private readonly grants: readonly GrantSource[];
+  private readonly refreshMs: number;
+  /** This replica's own service passports, reissued before they expire. Each replica holds its own. */
+  private readonly services = new Map<ServiceName, Issued>();
   private clock: string | null = null;
   private revoked = new Set<string>();
 
   constructor(private readonly o: IdentityOptions) {
+    // The service provider and grant are built in: a component acting as itself needs no configuration.
+    this.providers = [new ServiceAuthProvider(), ...o.providers.filter((p) => p.provider !== "service")];
+    this.grants = [new ServiceGrant(), ...o.grants];
+    this.refreshMs = o.refreshMs ?? 10_000;
     this.store = new PassportStore(o.db);
     this.profiles = new ProfileStore(o.db);
     this.personTtlMs = o.personTtlMs ?? 3_600_000;
     this.maxTtlMs = o.maxTtlMs ?? 7 * 86_400_000;
     this.newId = o.newId ?? (() => `pp_${randomUUID()}`);
-    o.ticks.schedule(REVOCATIONS_TICK, o.refreshMs ?? 10_000, async (tick) => {
+    let ticked!: () => void;
+    this.firstTick = new Promise((resolve) => (ticked = resolve));
+    o.ticks.schedule(REVOCATIONS_TICK, this.refreshMs, async (tick) => {
       this.revoked = await this.store.liveRevocations(tick.now);
       this.clock = tick.now;
+      ticked();
     });
+  }
+
+  private readonly firstTick: Promise<void>;
+
+  /** Resolves after the first `revocations` tick: from then on the service has a time and a deny list. */
+  ready(): Promise<void> {
+    return this.firstTick;
   }
 
   private now(): string {
@@ -87,9 +107,13 @@ export class PassportService implements Authorization, PassportChecker {
   /** Edge authentication: the proof's provider resolves it to a principal, which gets a person passport. */
   async authenticate(identity: ExternalIdentity, origin: Origin, opts: { ttl_ms?: number; restrictions?: Restrictions } = {}): Promise<Issued> {
     const now = this.now();
-    const provider = this.o.providers.find((p) => p.provider === identity.provider);
+    const provider = this.providers.find((p) => p.provider === identity.provider);
     const principal = provider ? await provider.resolve(identity) : null;
     if (!principal) throw new NotAuthenticated(`no ${identity.provider} identity resolves to a factory user`);
+    // A service principal comes only from the service provider: a person's proof never mints one.
+    if (principal.user_id.startsWith(SERVICE_PREFIX) !== (identity.provider === "service")) {
+      throw new NotAuthenticated(`a ${identity.provider} identity cannot be ${principal.user_id}`);
+    }
     // The enterprise hook: a provider that knows the person's name hands it over here, stored once by id.
     const name = await provider!.displayName?.(identity);
     const checked = name ? checkDisplayName(name) : null;
@@ -112,6 +136,19 @@ export class PassportService implements Authorization, PassportChecker {
     const token = mintToken(key, root);
     await this.store.insert(root, tokenHash(token));
     return { token, passport: passportOf([root]) };
+  }
+
+  /**
+   * This replica's passport for a component acting with no person behind it, limited to that service's actions
+   * (SERVICE_ACTIONS). Reused until it is revoked or within two refresh periods of its expiry, then reissued.
+   */
+  async service(name: ServiceName): Promise<Issued> {
+    const now = this.now();
+    const held = this.services.get(name);
+    if (held && plusMs(now, 2 * this.refreshMs) < held.passport.expires_at && !this.revoked.has(held.passport.id)) return held;
+    const issued = await this.authenticate({ provider: "service", subject: name }, "service", { restrictions: serviceRestrictions(name) });
+    this.services.set(name, issued);
+    return issued;
   }
 
   /**
@@ -161,6 +198,22 @@ export class PassportService implements Authorization, PassportChecker {
     else if (v.links.some((l) => this.revoked.has(l.id))) chain = { ok: false, reason: "revoked", principal: v.passport.principal, links: v.links };
     else chain = { ok: true, links: v.links };
     return this.decide(id, chain, action, resource, now);
+  }
+
+  /**
+   * Records a decision taken outside Identity, so authz_audit holds every decision while the legacy authorize
+   * (src/core/authorize.ts) still decides commands. `passport_id` is the command's edge passport when known.
+   */
+  async record(e: { passport_id: PassportId | null; principal: string; action: Action; resource: ResourceRef; allow: boolean; reason: string }): Promise<void> {
+    await this.store.audit({
+      passport_id: e.passport_id ?? "none",
+      principal: e.principal,
+      action: e.action,
+      resource: e.resource,
+      decision: e.allow ? "allow" : "deny",
+      reason: e.reason,
+      at: this.now(),
+    });
   }
 
   /** Puts a passport, and so every passport narrowed from it, on the deny list. */
@@ -223,9 +276,9 @@ export class PassportService implements Authorization, PassportChecker {
   /** The legacy rule: any deny refuses; open actions pass; else a role covering the action, local sources first. */
   private async grantsAllow(user_id: string, action: Action, project: string | null): Promise<string> {
     const subject: GrantSubject = { user_id, accounts: await this.store.accounts(user_id) };
-    for (const g of this.o.grants) if (await g.denies(subject, project)) return "denied";
+    for (const g of this.grants) if (await g.denies(subject, project)) return "denied";
     if (OPEN_ACTIONS.includes(action)) return "allowed";
-    const ordered = [...this.o.grants.filter((g) => !g.remote), ...this.o.grants.filter((g) => g.remote)];
+    const ordered = [...this.grants.filter((g) => !g.remote), ...this.grants.filter((g) => g.remote)];
     for (const g of ordered) {
       const roles = await g.roles(subject, project);
       if (roles.some((r) => ROLE_ACTIONS[r].includes(action))) return "allowed";

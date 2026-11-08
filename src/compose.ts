@@ -42,6 +42,11 @@ import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
+import { LOCAL_KEY_FILE, startIdentity, type IdentityRuntime } from "./identity/index.js";
+import { AuditedAuthProvider } from "./impl/auth/audited-auth.js";
+import { PassportToolBroker } from "./impl/broker/passport-broker.js";
+import { storeSql } from "./impl/store/sql/store-sql.js";
+import { RunPassports } from "./worker/passports/run-passports.js";
 import { GitHubError, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
@@ -441,6 +446,8 @@ export async function loadConfig(
       join(stateDir, "storage"),
       // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
       join(stateDir, "test-mysql.url"),
+      // The solo passport key (Identity): an agent that read it could mint passports.
+      join(stateDir, LOCAL_KEY_FILE),
       join(home, ".ssh"),
       join(home, ".aws"),
       join(home, ".config", "gh"),
@@ -756,6 +763,8 @@ export async function build(
   const secrets = await p.secrets();
   const store = await p.store(secrets, clock);
   await store.migrate();
+  // Identity (RFC 0015 §8, M9): service and run passports, and the audit of every authorize decision.
+  const identity = await startProcessIdentity(loaded, store, clock);
 
   const scanner = await p.scanner(secrets);
   // G1 on the toolchain env values, by the configured scanner, before anything is built that could start an agent.
@@ -774,9 +783,9 @@ export async function build(
   const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge") });
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
-  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
+  const auth = new AuditedAuthProvider(await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants }), identity.passports);
   // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
-  const local_auth = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
+  const local_auth = new AuditedAuthProvider(await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants }), identity.passports);
   // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
@@ -786,8 +795,13 @@ export async function build(
   // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
   // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
-  const local = await p.localRoute({ broker, sandbox }, brokerDeps);
-  const runner = await p.runner(sandbox, secrets, { broker, scanner });
+  const unguardedLocal = await p.localRoute({ broker, sandbox }, brokerDeps);
+  // G2 with run passports: every broker the worker pool or an agent's granted tools reach checks the run passport.
+  const passports = new RunPassports(identity.passports);
+  const guard = (b: ToolBroker): ToolBroker => new PassportToolBroker(b, { checker: identity.passports, passportOf: (run) => passports.passportOf(run) });
+  const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
+  const guarded = guard(broker);
+  const runner = await p.runner(sandbox, secrets, { broker: guarded, scanner });
   const granted = [...new Set(Object.values(tool_grants ?? {}).flat())];
   if (granted.length > 0 && !runner.exposes_tools) {
     throw new Error(`tool_grants grants ${granted.join(", ")}, but the ${selectedRunners(sel).join(", ")} agent runner cannot expose broker tools; remove tool_grants or pick a runner that can`);
@@ -854,8 +868,9 @@ export async function build(
     store,
     sandbox,
     runner,
-    broker,
+    broker: guarded,
     local,
+    passports,
     scanner,
     storage,
     llm,
@@ -873,7 +888,17 @@ export async function build(
     settings,
   });
 
-  return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => store.close()) };
+  return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };
+}
+
+/** This process's Identity on the store's database, its key in the state folder (denied to agents). */
+async function startProcessIdentity(loaded: Loaded, store: FactoryStore, clock: Clock): Promise<IdentityRuntime> {
+  const log = new ConsoleLogger(clock, "identity");
+  return startIdentity({
+    db: storeSql(store),
+    stateDir: loaded.stateDir,
+    onError: (schedule, err) => log.error("identity tick failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }),
+  });
 }
 
 /** `workers` from factory.config.json: absent means 1, otherwise an integer of 1 or more or startup fails. */
