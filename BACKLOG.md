@@ -1,6 +1,6 @@
 # Backlog (seed issues for Phase 2)
 
-Each line becomes a GitHub issue labeled `factory` once Phase 1 works. Order matters; see `PLAN.md`.
+The seed list Phase 2 started from, kept for the record. Each line became a GitHub issue labelled `factory`; what was built and what is still open is in `PLAN.md` (Phase 2 table). New work is filed as issues, not added here.
 
 ## Phase 1 PoC (before the exit criterion)
 

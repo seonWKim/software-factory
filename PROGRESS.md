@@ -2,8 +2,9 @@
 
 ## Summary
 
-The factory now runs as RFC 0015's event-driven factory on `refactor/rfc-0015`: M0–M11 are in, reviewed, and the
-review fixes are applied (2026-11-09). Inbound polls and stores records and relays them on the bus; the controller
+**Landed on main on 2026-11-09** (fast-forward to dd2c11d, with main's #458 ported in); the factory runs it from
+`origin/main` under the `git-worktree` updater, and the live MySQL database is migrated. M0–M11 are in, reviewed,
+and the review fixes are applied. Inbound polls and stores records and relays them on the bus; the controller
 is a router plus discovered units; the worker runs every run through the ExecutionEngine's step journal; outbound
 makes every forge and repo write (pushes, PRs, comments, closes, the local merge and its base push) as keyed
 deliveries under its service passport; the merge queue lands through outbound; passports are checked at the edge, in
@@ -13,15 +14,12 @@ the owner (below).
 Verification with no agents running: SQLite suite green (3774), MySQL suite green (every test passes; at 4 workers
 the loaded machine times some out, at 2 workers all pass), schema snapshots match, rehearsal lost no row.
 What is not done: units are not all pure (`unit-purity` 24), and
-legacy code remains behind `component-imports-legacy` (298) until it is rewritten. The live database is not migrated
-and the contract drops are not applied: the owner runs `npm run migrate` (and later `--contract`) after review.
+legacy code remains behind `component-imports-legacy` (298) until it is rewritten. The contract drops of the
+`legacy_*` tables are not applied: `npm run migrate -- --contract` from 2026-11-23.
 
 The RFC and the target schema live in `~/Desktop/software-factory-rfcs/` (`0015-event-driven-factory.md`,
-`0015-target-schema.sql`). This file says what exists today on the `refactor/rfc-0015` branch, what is still legacy,
-and what comes next. It is updated with every milestone.
-
-The refactor runs in the main session, not through the factory. The factory (supervisor, cron loops, background agents)
-is paused until it lands.
+`0015-target-schema.sql`). This file says what exists today on main, what is still legacy, and what comes next. It is updated with every
+milestone.
 
 ## Overnight timeline (2026-11-08 → 09, owner asleep)
 
@@ -60,6 +58,7 @@ minutes; past that the main session takes over from their WIP commit.
 | 06:06–06:08 | Live MySQL database migrated: `mysqldump` backup (`.factory/backups/software_factory-pre-rfc0015-20261109T0606.sql`), rehearsal passed (every row of 42 tables kept), `npm run migrate` to state 41 with nothing pending; breaking steps backed up their tables to `.factory/db/backups/`. `--contract` skipped all three drops: they wait until 2026-11-23 | main | done |
 | 06:09–06:40 | Owner: run the factory, fix the top bar, check the UI. The factory runs in place from this branch (`plugins.updater: none`, a local uncommitted edit: main's code cannot open the migrated database). UI: the top bar stays one line and the mode refusal floats below the switch (d10fd7b); `hold_policy` edited as JSON, not in a number input (45e7e71); the revision banner names neither side out of date (8c290af). A `no_role` refusal now says local grants decide (the UI and CLI never call GitHub), so the owner needs a `static` approver grant to switch mode or merge from the page | main | every page loads; the static grant waits on the owner |
 | 06:10–06:30 | Item 3 owner decisions, three agents: the Rule of Two at run start (auto mode holds implement and resolve for a person's `/approve`), sub-issue filing through outbound (`file_sub_issue`, the `forge-writes` ratchet empty), a loosening `settings set`/`reset` needs `approve_merge`, `tests/architecture/` on the gate list, hotspots `src/controller/` and `src/worker/`, `mode` stays `free`; RFC 0017 (anomaly watchdog) drafted | agents | merged (8698828, 5ee8cd1, da46f95); SQLite suite green (3783; the 3 config tests that read the checked-in config pass against it, not against the local updater edit) |
+| 07:50–09:00 | Owner: merge to main, keep merging. Main's #458 (the dashboard's PR merge) ported as an outbound `merge_pr` action; the branch fast-forwarded main (dd2c11d). Factory PRs written against the old main re-tested on the new main and merged: #474, #476, #475 (gate hooks: same behaviour, one socket host), #473, #477, #456 (Users page, its audit table ported to an Identity migration, applied with `npm run migrate`). #472 closed: a UI reviewer is a local dev agent (`.claude/agents/ui-reviewer.md`, #478). Slack tested end to end (new `tests/slack-e2e-flow.test.ts`, `<details>` fix); gaps filed as #479–#486. Factory restarted on main under `git-worktree` | main + agents | done; SQLite suite green on each merge |
 
 Not done without the owner: applying the `legacy_*` drop (from 2026-11-23), the open owner decisions below. Status per row is updated here as each step lands.
 
