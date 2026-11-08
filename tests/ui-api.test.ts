@@ -685,7 +685,7 @@ describe("ui api: item commands POST (issue #227)", () => {
 
   async function setup(actor: UserId | null = ACTOR) {
     const s = await seeded();
-    s.d.commands = { actor, token: TOKEN };
+    s.d.commands = { actor, source: actor === null ? null : "config", token: TOKEN };
     return s;
   }
 
@@ -763,7 +763,7 @@ describe("ui api: item commands POST (issue #227)", () => {
     await nothingWritten(store);
   });
 
-  it("without ui.user_id (or without the route wired) a POST is a 503 and writes nothing", async () => {
+  it("without an actor (a non-loopback server without ui.user_id, or the route not wired) a POST is a 503 and writes nothing", async () => {
     const { d, store, items } = await setup(null);
     await refused(await post(d, items.approve.id, { command: "approve" }), 503, "no user_id");
     expect(JSON.parse((await post(d, items.approve.id, { command: "approve" })).body).error).toContain("ui.user_id");
@@ -862,10 +862,10 @@ describe("ui api: item commands POST (issue #227)", () => {
   it("GET /api/v1/session gives the token behind the Host guard; 404 when commands are not wired", async () => {
     const { d } = await setup();
     const s = await json<{ csrf_token: string; commands_enabled: boolean }>(d, "/api/v1/session");
-    expect(s).toMatchObject({ csrf_token: TOKEN, commands_enabled: true });
+    expect(s).toMatchObject({ csrf_token: TOKEN, commands_enabled: true, actor: ACTOR, actor_source: "config" });
     expect((await get(d, "/api/v1/session", { host: "evil.example" })).status).toBe(403);
     expect((await get(d, "/api/v1/session", { host: "evil.example" })).body).not.toContain(TOKEN);
-    d.commands = { actor: null, token: TOKEN };
+    d.commands = { actor: null, source: null, token: TOKEN };
     expect((await json<{ commands_enabled: boolean }>(d, "/api/v1/session")).commands_enabled).toBe(false);
     const { commands: _, ...unwired } = d;
     expect((await get(unwired, "/api/v1/session")).status).toBe(404);

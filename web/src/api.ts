@@ -312,11 +312,14 @@ export interface CommandReply {
   refusal: string | null;
 }
 
-/** `/api/v1/session`: the token item commands send, and whether `ui.user_id` is set. */
+/** `/api/v1/session`: the token item commands send, whether commands are on, and who they act as. */
 export interface Session {
   as_of: string;
   csrf_token: string;
   commands_enabled: boolean;
+  /** The factory user commands act as: `ui.user_id`, else on loopback the CLI identity; null when off. */
+  actor: string | null;
+  actor_source: "config" | "environment" | null;
 }
 
 export type CommandResult = { ok: true; seq: number } | { ok: false; error: string };

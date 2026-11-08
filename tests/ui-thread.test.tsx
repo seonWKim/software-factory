@@ -53,7 +53,7 @@ beforeEach(() => {
     const bodies: Record<string, unknown> = {
       "/api/v1/items/wi_1": detail,
       "/api/v1/items": { as_of: AT, total: 1, items: [ROW], facets: { state: {}, allStates: 1 } },
-      "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true },
+      "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
       "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 1, system_actions: [], running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
     };
     const body = bodies[path];

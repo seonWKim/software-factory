@@ -2,8 +2,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { API, type CommandReply, type ItemCommand, type Session, postCommand, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
+import { Link } from "../nav.js";
+import { PAGE_COMMANDS_PATH } from "../pages.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
 // in its order, and one text box that is the note every send carries when it has text (the reason for reject,
@@ -83,7 +86,16 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
     <Section title="Commands">
       {off && (
         <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-          Commands are off: set ui.user_id in factory.config.json and restart factory ui.
+          Commands are off: this server is not on loopback, so it needs ui.user_id.{" "}
+          <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
+            Settings
+          </Link>{" "}
+          says what to set.
+        </p>
+      )}
+      {enabled && session.data?.actor && (
+        <p data-commands-actor className="mb-2 text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+          Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
         </p>
       )}
       <textarea

@@ -279,7 +279,7 @@ async function main(argv: readonly string[]): Promise<number> {
     case "ui": {
       // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
       // sees one user for the UI and the terminal.
-      const parts = await buildUiParts(loaded, { actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user });
+      const parts = await buildUiParts(loaded, { identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)) });
       // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
       const lastChecks = new LastChecks();
       const revision = await serverRevision(loaded.codeRoot);
@@ -323,14 +323,16 @@ async function main(argv: readonly string[]): Promise<number> {
           settings: parts.settings,
           // The configured shared storage, read only by the transcript view (byte ranges, design §9).
           storage: await createPlugin(loaded.registry, "storage", loaded.plugins.storage, new Plugins(loaded).base),
-          // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id for the controller to apply.
+          // Item commands (POST /api/v1/items/:id/commands): recorded as ui.user_id, or this machine's CLI identity, for the controller to apply.
           commands: parts.commands,
           // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
           pauses: parts.pauses,
         },
         uiPort(loaded.file.ui),
       );
-      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands when ui.user_id is set; Ctrl-C to stop)`);
+      const { actor, source } = parts.commands;
+      const actsAs = actor === null ? "nobody: set ui.user_id" : `${actor} from ${source}`;
+      console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, and item commands as ${actsAs}; Ctrl-C to stop)`);
       // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
       const orphan = new AbortController();
       if (supervised) process.once("disconnect", () => orphan.abort());

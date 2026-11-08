@@ -285,7 +285,7 @@ describe("ui app: item commands markup", () => {
     };
     const client = new QueryClient();
     client.setQueryData([API.item("wi_1")], detail);
-    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
+    client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true, actor: "local:me", actor_source: "environment" });
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
     const buttons = [...html.matchAll(/<li data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
     expect(buttons).toEqual(names.map((n) => [n, n]));

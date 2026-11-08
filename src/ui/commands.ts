@@ -1,10 +1,11 @@
 // Item commands from the status page (design §9, issue #227): POST /api/v1/items/:id/commands records one app
-// command request (FactoryStore.recordAppCommandRequest) with `ui.user_id` as the actor; the controller applies
+// command request (FactoryStore.recordAppCommandRequest) with the page's actor (`ui.user_id`, else on loopback the
+// CLI identity: compose.ts uiCommandsActor); the controller authorizes and applies
 // it on its next tick, or refuses it with a reply (design §4, app requests). This module never applies a command.
 //
 // Guards, in order, every refusal before any store write: Host (server.ts), then an Origin equal to the Host's own
 // http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403), a
-// configured ui.user_id (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
+// an actor (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
 // a known item (404). Success is 202 with the request's ID. GET /api/v1/session hands out the token behind the
 // same Host guard. The item API's `commands` and `replies` fields are built here too.
 
@@ -17,8 +18,10 @@ import { csrfMatches } from "./settings-api.js";
 
 /** What the commands route needs beside the store. Built once per UI process (compose.ts buildUiParts). */
 export interface UiCommands {
-  /** `ui.user_id`: the factory user the page's commands act as; null when not configured (POST answers 503). */
+  /** The factory user the page's commands act as; null on a non-loopback server without ui.user_id (POST answers 503). */
   actor: UserId | null;
+  /** Where the actor came from: `config` (ui.user_id or cli_user) or `environment` (git user.email, the OS user). */
+  source: "config" | "environment" | null;
   /** Random, per process; held only in memory. GET /api/v1/session returns it, POST must send it in x-csrf-token. */
   token: string;
 }
@@ -90,7 +93,7 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   if (req.origin === undefined || req.origin.trim().toLowerCase() !== own) return err(403, "Origin must be this page's own origin.");
   if (mediaType(req.contentType) !== "application/json") return err(415, "Content-Type must be application/json.");
   const c = d.commands;
-  const off = err(503, "Commands are off: set ui.user_id in factory.config.json and restart `factory ui`.");
+  const off = err(503, "Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.");
   if (!c) return off;
   if (!csrfMatches(c.token, req.csrfToken)) return err(403, "Missing or stale x-csrf-token; reload the page.");
   if (c.actor === null) return off;
@@ -117,10 +120,10 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   return { status: 202, value: { request_id: request.key, seq: request.seq, command: request.command, work_item_id: item.id } };
 }
 
-/** GET /api/v1/session: the per-process token and whether commands are on; null (a 404) when not wired. */
+/** GET /api/v1/session: the per-process token, whether commands are on, and who they act as; null (a 404) when not wired. */
 export function readSession(d: UiDeps, now: Date): Record<string, unknown> | null {
   if (!d.commands) return null;
-  return { as_of: now.toISOString(), csrf_token: d.commands.token, commands_enabled: d.commands.actor !== null };
+  return { as_of: now.toISOString(), csrf_token: d.commands.token, commands_enabled: d.commands.actor !== null, actor: d.commands.actor, actor_source: d.commands.source };
 }
 
 /** The item API's `commands`: what applies in the item's state, from the comment footer's table, `/help` last. */
