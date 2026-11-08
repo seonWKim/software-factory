@@ -17,11 +17,11 @@ background agents) is paused until it lands.
 | 2 | Components and discovery (re-planned: CLI + plugin discovery now; legacy code moves with its rewrite) | done (2279de4, 8e46469) |
 | 3 | Bus (EventBus, sql plugin, topics, outbox/inbox, retry scheduler) | core in progress (background agent, branch refactor/rfc-0015-m3-bus) |
 | 4 | Inbound (adapters + normalizers; GitHub sync out of the controller) | — |
-| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | — |
+| 5 | Controller units (router + pure `decide()` units; `controller.ts` gone) | groundwork: actor state tables + state-machines test (8dc1414) |
 | 6 | Workers (step journal, ExecutionEngine, timeouts, heartbeat/reaper) | engine core in progress (background agent, branch refactor/rfc-0015-m6-engine) |
 | 7 | Outbound (aggregators, batches, delivery handlers; no forge writes in workers) | — |
 | 8 | Merge queue | — |
-| 9 | Identity and passports | passport core in progress (background agent, branch refactor/rfc-0015-m9-passports) |
+| 9 | Identity and passports | core merged: passport service, tables, `tests/passport.test.ts`; not wired yet (ToolBroker check, edge adapters, service passports) |
 | 10 | Extension points (hooks, roles, Rule of Two, settings-monotonic) | — |
 | 11 | Cleanup (contract migrations, docs, empty ratchet lists) | — |
 
@@ -41,6 +41,12 @@ src/
                             baseline, recorded in runtime_schema_migrations), copy-tables.ts (rename by copy +
                             verify, old tables to legacy_*), rehearse.ts (D8: fingerprint, then no row lost)
                             migrations/20261108T1300-state-prefix-tables: the M1 rename of 39 tables
+  identity/            NEW  index.ts (public API). passport/: types.ts (Authorization, AuthProvider, GrantSource,
+                            PassportChecker), token.ts (HMAC chain: mint, narrow, verify offline), restrictions.ts
+                            (caveats that never widen), service.ts (PassportService: authenticate, narrow, authorize,
+                            check, revoke, audit; its clock is the `revocations` tick), keys.ts (keyring over a
+                            secret provider), store.ts. plugins/local/ (local identity, OwnerGrant).
+                            migrations/20261108T2000-identity-passports: identity_passports, _revocations, authz_audit
   core/                LEGACY  controller.ts (4,959 lines), worker.ts (3,098), policy, coordination, ...
   impl/                LEGACY  plugin implementations (store, github, slack, sandbox, runner, ...)
   interfaces/          LEGACY  FactoryStore (136 methods) and the other plugin interfaces
@@ -89,6 +95,12 @@ thread outbox; workers claim runs from the store and push/open PRs themselves.
   (new folders only), while the main session does the moves that touch every file.
 - 2026-11-08: added `npm run migrate -- --rehearse` (D8) and wired the D1 backup folder
   (`<stateDir>/db/backups`) into MySQL `npm run migrate`, which had none.
+
+- 2026-11-08 (M9): `narrow` returns the new passport's id and its token (`Issued`), not only the id as in the
+  RFC's sketch, because a run needs the token for the ToolBroker. Authorize by id re-signs the stored chain, so an
+  edited `identity_passports` row is refused (`tampered`). Person passports last 1h by default, 7 days at most.
+- 2026-11-08 (M9): the solo identity is git `user.email`, then the OS user, then `anonymous`, as in the legacy
+  CLI. Git `user.name` is a display name and is not used.
 
 ## Live database
 
