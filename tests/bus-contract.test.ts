@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEAD_LETTERED,
+  SYSTEM_ALERTS,
   SqlEventBus,
   SqlRetryScheduler,
   deliver,
@@ -42,7 +44,8 @@ const WORK = defineTopic({
   // What a test message needs, from its payload: `needs` lists requirements separated by spaces.
   requires: (m) => String(m.payload.needs ?? "").split(" ").filter((r) => r !== ""),
 });
-const TOPICS: readonly TopicDescriptor[] = [EVENTS, WORK];
+// system.alerts too: the bus writes a notice there for every dead letter.
+const TOPICS: readonly TopicDescriptor[] = [EVENTS, WORK, SYSTEM_ALERTS];
 const LEASE_MS = 30_000;
 
 interface Backend {
@@ -277,6 +280,33 @@ describe.each(BACKENDS)("bus contract ($name)", (backend) => {
     // The cursor moved on.
     const [next] = await s.a.consume("g", EVENTS.name, 10);
     expect(next?.message.id).toBe("m2");
+  });
+
+  it("announces each dead letter on system.alerts in its transaction, and a dead notice announces nothing", async () => {
+    const s = await setup(backend);
+    await s.publish(s.msg("Happened", "x"));
+    await s.relay();
+    const [e] = await s.a.consume("g", EVENTS.name, 10);
+    // A stale claim's nack changes nothing, so it announces nothing either.
+    await s.a.nack({ ...e!, token: e!.token + 1 }, { retryable: false, code: "bad_input" });
+    expect(await s.a.consume("alarms", SYSTEM_ALERTS.name, 10)).toEqual([]);
+    await s.a.nack(e!, { retryable: false, code: "bad_input", detail: "no such item" });
+
+    const [notice] = await s.a.consume("alarms", SYSTEM_ALERTS.name, 10);
+    expect(notice?.message).toMatchObject({
+      type: DEAD_LETTERED,
+      subject: "x",
+      causation_id: e!.message.id,
+      correlation_id: "corr-x",
+      producer: "bus",
+      payload: { pattern: "dead_letter:test.events", topic: "test.events", group: "g", seq: e!.seq, message_type: "Happened", attempts: 1, error_code: "non_retryable", last_error: "bad_input: no such item" },
+    });
+    // Fan-out: the UI's group gets the same notice.
+    expect((await s.a.consume("ui", SYSTEM_ALERTS.name, 10)).map((c) => c.message.id)).toEqual([notice!.message.id]);
+
+    await s.a.nack(notice!, { retryable: false, code: "bad_input" });
+    expect(await s.a.consume("alarms", SYSTEM_ALERTS.name, 10)).toEqual([]);
+    expect((await s.db.all("SELECT seq FROM bus_system_alerts")).length).toBe(1);
   });
 
   it("dead-letters a non-retryable or unhandled message at once, and a replay delivers it again with its key", async () => {

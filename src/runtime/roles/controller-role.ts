@@ -214,7 +214,13 @@ export class ControllerRole extends Controller {
       }),
       decisions: new ComponentConsumer<ControllerContext>({
         db, bus: controllerBus, registry: r, component: CONTROLLER, transactional: false,
-        context: (_tx, emit) => ({ db, emit, legacy: this }),
+        context: (_tx, emit) => ({
+          db, emit, legacy: this,
+          recordAlert: async (alert, dedupe_ms) => {
+            const scan = alert.detail === null ? null : await d.scanner.scan("ui", alert.detail);
+            await d.store.recordAlert({ ...alert, detail: scan?.clean ? alert.detail : null }, dedupe_ms);
+          },
+        }),
       }),
     };
   }

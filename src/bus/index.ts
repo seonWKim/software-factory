@@ -84,6 +84,7 @@ export interface BusPlugin {
   scheduler(db: SqlDriver, topics: readonly TopicDescriptor[]): RetryScheduler;
 }
 
+export { default as SYSTEM_ALERTS, DEAD_LETTERED } from "./topics/system-alerts.topic.js";
 export { BUS_PERIODS, scheduleBus, scheduleComponent } from "./scheduler/scheduler.js";
 export { deliver, type DeliverOutcome } from "./deliver.js";
 export { SqlBus, SqlEventBus, type SqlBusOptions } from "./plugins/sql/sql-bus.js";

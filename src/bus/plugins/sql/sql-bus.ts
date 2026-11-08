@@ -12,7 +12,7 @@
 //   waits alone.
 // - Every time comparison is against the scheduler's release horizon (bus_scheduler), never a clock.
 
-import { envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
+import { MAX_PAYLOAD_STRING, envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
 import { CAPABILITY, maxRedeliveryMs, partitionOf, requirementsOf, type TopicDescriptor } from "../../../shared/topic.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
@@ -20,6 +20,7 @@ import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackErro
 import { P, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { MESSAGE_COLUMNS, addMs, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
 import { SqlRetryScheduler } from "./sql-scheduler.js";
+import SYSTEM_ALERTS, { DEAD_LETTERED } from "../../topics/system-alerts.topic.js";
 
 /** The `sql` EventBus plugin (docs/plugins/event-bus.md): the topic tables live in the store's own database. */
 export class SqlBus implements BusPlugin {
@@ -74,7 +75,8 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     const bad = capabilities.filter((c) => !CAPABILITY.test(c));
     if (bad.length > 0) throw new Error(`capability ${bad.join(", ")} is not key=value`);
     this.capabilities = capabilities;
-    for (const t of o.topics) {
+    // The bus writes its own dead-letter notices, so it knows system.alerts whatever the caller lists.
+    for (const t of [SYSTEM_ALERTS, ...o.topics]) {
       this.byName.set(t.name, t);
       for (const type of Object.keys(t.messages)) this.byType.set(type, t);
     }
@@ -194,6 +196,8 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
           `INSERT INTO ${t.deadLetters} (consumer_group, message_seq, subject, attempts, error_code, last_error, dead_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
           [c.group, c.seq, c.message.subject, c.attempt, code, lastError, horizon],
         );
+        // The notice commits with the dead letter. A notice that is dead-lettered itself raises none (no loop).
+        if (topic.name !== SYSTEM_ALERTS.name) await this.insertMessage(tx, SYSTEM_ALERTS, deadLetterNotice(c, code, lastError, horizon), horizon);
         return;
       }
       const due = addMs(horizon, retryDelayMs(topic.backoff, c.attempt, `${c.group}:${c.seq}:${c.attempt}`));
@@ -340,6 +344,41 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     }
     this.cursorsReady.add(key);
   }
+}
+
+/**
+ * The DeadLettered notice on system.alerts (RFC 0015 §5.4): which message died for which group, and why. It follows
+ * from the dead message (same trace, project and passport); its key names the dead letter, so a notice published
+ * twice is handled once.
+ */
+function deadLetterNotice(c: Claimed, code: string, lastError: string, at: string): Envelope {
+  const m = c.message;
+  return {
+    id: newMessageId(),
+    type: DEAD_LETTERED,
+    schema_version: 1,
+    subject: m.subject,
+    project_id: m.project_id,
+    idempotency_key: `dead-letter:${c.topic}:${c.group}:${c.seq}:${at}`,
+    idempotency_key_ttl_ms: null,
+    causation_id: m.id,
+    correlation_id: m.correlation_id,
+    passport_id: m.passport_id,
+    producer: "bus",
+    occurred_at: at,
+    not_before: null,
+    payload: {
+      pattern: `dead_letter:${c.topic}`,
+      topic: c.topic,
+      group: c.group,
+      seq: c.seq,
+      message_id: m.id,
+      message_type: m.type,
+      attempts: c.attempt,
+      error_code: code,
+      last_error: lastError.slice(0, MAX_PAYLOAD_STRING),
+    },
+  };
 }
 
 function claimed(topic: TopicDescriptor, group: string, r: Row, token: number): Claimed {

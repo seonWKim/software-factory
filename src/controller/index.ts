@@ -2,7 +2,7 @@
 // handlers. Until the units land (M5), one handler bridges to the legacy controller's decision code. Other
 // components import only this file.
 
-import type { CliCommand } from "../interfaces/factory-store.js";
+import type { CliCommand, NewAlert } from "../interfaces/factory-store.js";
 import type { InboundEvent } from "../inbound/index.js";
 import type { HandlerContext } from "../shared/handler.js";
 import type { SqlExecutor } from "../state/index.js";
@@ -28,4 +28,9 @@ export interface ControllerContext extends HandlerContext {
   /** Reads through other components' index.ts. */
   readonly db: SqlExecutor;
   readonly legacy: LegacyDecisions;
+  /**
+   * Stores an alarm for the status page's Needs you (design 05-alarms), unless its pattern key alerted within
+   * `dedupe_ms`. Its detail is scanned as UI text first and dropped if flagged (G5).
+   */
+  recordAlert(alert: NewAlert, dedupe_ms: number): Promise<void>;
 }

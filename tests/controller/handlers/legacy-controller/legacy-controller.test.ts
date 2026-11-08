@@ -22,7 +22,7 @@ async function harness() {
     consumeEvent: async (e) => void calls.push(["event", e]),
     consumeCommand: async (c) => void calls.push(["command", c.key]),
   };
-  const run = (m: ReturnType<typeof message>) => legacy.handle(m, { db: store.db, legacy: decisions, emit: () => {} });
+  const run = (m: ReturnType<typeof message>) => legacy.handle(m, { db: store.db, legacy: decisions, emit: () => {}, recordAlert: async () => {} });
   return { store, calls, run };
 }
 
