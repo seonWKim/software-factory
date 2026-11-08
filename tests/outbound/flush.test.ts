@@ -27,11 +27,16 @@ async function batch(db: Db, n: number, target: SourceRef, a: { action: "status"
   await db.run("INSERT INTO outbound_batch_intents (intent_id, batch_id, commit_id, commit_count) VALUES (?, ?, ?, 1)", [`act_${seq}`, id, `c${n}`]);
 }
 
-function outboundOver(db: Db, store: ConstructorParameters<typeof Outbound>[0]["store"], sent: Delivery[]): Outbound {
+function outboundOver(db: Db, store: ConstructorParameters<typeof Outbound>[0]["store"], sent: Delivery[], fail?: (d: Delivery) => Error | null): Outbound {
   const local: DeliveryTarget = {
     name: "local",
     accepts: (d) => d.kind === "action" && d.row.target.type === "local",
-    deliver: async (d) => (sent.push(d), { url: null }),
+    deliver: async (d) => {
+      const err = fail?.(d);
+      if (err) throw err;
+      sent.push(d);
+      return { url: null };
+    },
   };
   return new Outbound({
     db: db as ConstructorParameters<typeof Outbound>[0]["db"], store, targets: [local], scanner: cleanScanner, log: silent,
@@ -73,6 +78,22 @@ describe("outbound flush", () => {
     const bodies = sent.map((d) => (d.kind === "action" ? String(d.row.args.body) : ""));
     expect(bodies).toEqual([expect.stringMatching(/^A factory message was withheld by the leak scanner \(.+\)\./), "all clear"]);
     expect(JSON.stringify(sent)).not.toContain("ghp_");
+  });
+
+  it("a post the target refuses for good (404) is given up on the third attempt, and the destination's next batch goes out", async () => {
+    const { store } = await newStore();
+    const target: SourceRef = { type: "local", id: "local-1", link: "l" };
+    await batch(store.db, 0, target, { action: "post", args: { body: "to a deleted issue", marker: "m0" } });
+    await batch(store.db, 1, target, { action: "post", args: { body: "next", marker: "m1" } });
+    const sent: Delivery[] = [];
+    const outbound = outboundOver(store.db, store, sent, (d) =>
+      d.kind === "action" && d.row.args.marker === "m0" ? Object.assign(new Error("Not Found"), { status: 404 }) : null);
+
+    for (let i = 0; i < 4; i++) await outbound.flush(tickAt("outbound-flush", 250, NOW + i * 3_600_000));
+
+    expect(sent.map((d) => (d.kind === "action" ? String(d.row.args.body) : ""))).toEqual(["next"]);
+    const rows = await store.db.all("SELECT outcome, last_error FROM outbound_actions ORDER BY seq");
+    expect(rows[0]).toMatchObject({ outcome: "failed", last_error: "Not Found" });
   });
 
   it("an intent that joins the batch between the flush's read and its claim is still delivered", async () => {

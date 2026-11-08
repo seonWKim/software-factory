@@ -60,6 +60,9 @@ export interface ActionRow extends NewAction {
   /** What the delivery made, when it names one (a PR's number), and its link. */
   readonly delivered_ref: string | null;
   readonly delivered_url: string | null;
+  /** `sent`, or `failed`: a best-effort action that failed, or a retried one given up (refused for good). */
+  readonly outcome: string | null;
+  readonly last_error: string | null;
 }
 
 /** Thread entries' intents are `int_<seq>`, actions `act_<seq>` (RFC 0015 §12 backfill rule). */
@@ -111,6 +114,8 @@ export function actionOf(row: Record<string, unknown>): ActionRow {
     delivered_at: (row.delivered_at as string | null) ?? null,
     delivered_ref: (row.delivered_ref as string | null) ?? null,
     delivered_url: (row.delivered_url as string | null) ?? null,
+    outcome: (row.outcome as string | null) ?? null,
+    last_error: (row.last_error as string | null) ?? null,
   };
 }
 

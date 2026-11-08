@@ -77,6 +77,40 @@ describe("an implement run's push and PR leave through outbound", () => {
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42", blocked_on: "none" });
   });
 
+  it("a PR the forge refuses for good is given up after 3 attempts: the item waits for a person, a dead-letter alarm is raised, the destination moves on", async () => {
+    const f = await pipeline();
+    const refused = () => Object.assign(new Error("Validation Failed: No commits between main and factory/x"), { status: 422 });
+    f.forge.prErrors = [refused(), refused(), refused(), refused()];
+    const it0 = await f.submit();
+    await f.step();
+    expect(f.forge.prOpens).toHaveLength(1);
+    for (let i = 0; i < 3; i++) {
+      f.clock.advance(f.config.retry_max_ms);
+      await f.controller.tickOutbox();
+    }
+    expect(f.forge.prOpens).toHaveLength(3);
+    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "delivery_failed" });
+    expect(await f.store.listAlerts({ limit: 10 })).toEqual([
+      expect.objectContaining({ pattern: "dead_letter", error_code: "non_retryable", detail: expect.stringContaining("No commits between") }),
+    ]);
+    const [batch] = await f.store.db.all("SELECT state FROM outbound_batches WHERE destination LIKE 'git:%' ORDER BY seq DESC LIMIT 1");
+    expect(batch).toMatchObject({ state: "sent" });
+  });
+
+  it("a PR that fails with no status (an outage) is never given up", async () => {
+    const f = await pipeline();
+    f.forge.prErrors = Array.from({ length: 5 }, () => new Error("network_unavailable: could not reach github.com"));
+    const it0 = await f.submit();
+    await f.step();
+    for (let i = 0; i < 5; i++) {
+      f.clock.advance(f.config.retry_max_ms);
+      await f.controller.tickOutbox();
+    }
+    expect(f.forge.prOpens).toHaveLength(6);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
+    expect(await f.store.listAlerts({ limit: 10 })).toEqual([]);
+  });
+
   it("a PR delivered while the run's result is decided (its handler found the item not waiting yet) still goes on the item", async () => {
     const f = await pipeline();
     const it0 = await f.submit();

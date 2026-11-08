@@ -144,12 +144,17 @@ export class OutboxUnit {
    * DeliveryCompleted: each delivered thread entry's URL is recorded on its item (its link field); a closed PR
    * clears its item's pending mark; a delivered PR goes on its item, which goes to review; a delivered update or
    * resolve push queues the review its run waited for; a delivered merge goes to the merge queue (RFC 0015 M8), a
-   * delivered base push to the local merge.
+   * delivered base push to the local merge. A PR or push outbound gave up (refused for good) stops its item's wait
+   * for a person's (`delivery_failed`).
    */
   async delivered(intent_ids: readonly string[]): Promise<void> {
     const writes: ControllerWrite[] = intent_ids.filter((id) => id.startsWith(THREAD_INTENT)).map((id) => ({ kind: "link_delivery", seq: Number(id.slice(THREAD_INTENT.length)) }));
     await this.c.k.commit({ writes });
     for (const a of await this.c.k.deliveredActions(intent_ids)) {
+      if ((a.action === "pr" || a.action === "push") && a.outcome === "failed") {
+        if (a.work_item_id) await this.c.unit("run-results").deliveryGaveUp(a.work_item_id as WorkItemId, a);
+        continue;
+      }
       if (a.action === "close_pr" && a.work_item_id) await this.c.unit("closes").prClosed(a.work_item_id as WorkItemId);
       if (a.action === "push" && a.work_item_id && typeof a.args.run_id === "string") {
         await this.c.unit("run-results").pushDelivered(a.work_item_id as WorkItemId, a.args.run_id);

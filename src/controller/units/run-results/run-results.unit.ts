@@ -14,6 +14,7 @@ import { parseSizeDetail, suggestSplit } from "../../../core/split.js";
 import { type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
+import type { ActionRow } from "../../../outbound/index.js";
 import { AUTO, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -79,6 +80,11 @@ function suggestedSplit(detail: string, paths: readonly string[], limits: { max_
 export const PR_PENDING = "pr_pending";
 /** An update or resolve run's push waits for outbound (RFC 0015 M7) before the review of its head is queued. */
 export const PUSH_PENDING = "push_pending";
+/**
+ * The PR or push a run waited for was given up by outbound (the forge refused it for good, RFC 0015 §7): the item
+ * waits for a person (`blocked_on: human`), with the action and its last error in the transition's detail.
+ */
+export const DELIVERY_FAILED = "delivery_failed";
 
 function prUrlOf(data: Record<string, unknown>): { change_url?: string } {
   return typeof data.pr_url === "string" ? { change_url: data.pr_url } : {};
@@ -454,11 +460,27 @@ export class RunResultsUnit {
     if (run.outcome?.status !== "succeeded") return;
     const data = run.outcome.data;
     const id = run.work_item_id as WorkItemId;
-    if (typeof data.pr_intent === "string") {
-      const pr = await this.c.k.actionByKey(data.pr_intent);
-      if (pr?.delivered_ref) await this.prDelivered(id, pr.delivered_ref, pr.delivered_url);
+    for (const key of [data.pr_intent, data.push_intent]) {
+      if (typeof key !== "string") continue;
+      const a = await this.c.k.actionByKey(key);
+      if (!a?.delivered_at) continue;
+      if (a.outcome === "failed") await this.deliveryGaveUp(id, a);
+      else if (a.action === "pr" && a.delivered_ref) await this.prDelivered(id, a.delivered_ref, a.delivered_url);
+      else if (a.action === "push") await this.pushDelivered(id, run.id);
     }
-    if (typeof data.push_intent === "string" && (await this.c.k.actionByKey(data.push_intent))?.delivered_at) await this.pushDelivered(id, run.id);
+  }
+
+  /**
+   * Outbound gave up a run's PR or push (refused for good): an item still waiting for it waits for a person instead
+   * (`delivery_failed`), with the action and its error; the dead-letter alarm names it too. A redelivery changes nothing.
+   */
+  async deliveryGaveUp(id: WorkItemId, a: ActionRow): Promise<void> {
+    const waiting = a.action === "pr" ? PR_PENDING : PUSH_PENDING;
+    await this.c.unit("transitions").decide(id, async (it) =>
+      it.blocked_on === "outbound" && it.blocked_reason === waiting
+        ? { patch: { blocked_on: "human", blocked_reason: DELIVERY_FAILED }, actor: SYSTEM, reason: DELIVERY_FAILED, detail: { action: a.action, error: a.last_error ?? "unknown" } }
+        : null,
+    );
   }
 
   /**
@@ -487,7 +509,9 @@ export class RunResultsUnit {
   /** Whether a run's result names a push intent (`push_intent`) outbound has not delivered yet. */
   private async pushPending(data: Record<string, unknown>): Promise<boolean> {
     if (typeof data.push_intent !== "string") return false;
-    return !(await this.c.k.actionByKey(data.push_intent))?.delivered_at;
+    const push = await this.c.k.actionByKey(data.push_intent);
+    // A given-up push waits too: the step after the result turns the wait into `delivery_failed`.
+    return !push?.delivered_at || push.outcome === "failed";
   }
 
   /** The item waits for its run's push (`blocked_on: outbound`, `push_pending`); `pushDelivered` ends the wait. */

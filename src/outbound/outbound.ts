@@ -4,17 +4,18 @@
 // is marked sent and DeliveryCompleted is published in one transaction. A failure retries the whole batch with
 // backoff: intents already delivered are skipped on the retry, so nothing is written twice.
 
-import type { EventBus } from "../bus/index.js";
+import { DEAD_LETTERED, type EventBus } from "../bus/index.js";
 import { retryDelayMs } from "../core/policy.js";
 import type { Logger } from "../core/log.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, SyncFence } from "../interfaces/factory-store.js";
-import { envelope } from "../shared/envelope.js";
+import { envelope, type Envelope } from "../shared/envelope.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
 import { addMs } from "../shared/time.js";
 import type { SqlDriver } from "../state/index.js";
 import { ACTION_INTENT, RETRIED_ACTIONS, THREAD_INTENT, actionOf, type ActionRow } from "./intents.js";
 import type { Delivery, DeliveryTarget } from "./targets/target.js";
+import DELIVERIES_REQUESTS from "./topics/deliveries-requests.topic.js";
 import { DELIVERY_COMPLETED } from "./topics/deliveries-results.topic.js";
 
 export interface OutboundDeps {
@@ -48,7 +49,27 @@ export interface OutboundDeps {
 /** Batches one flush sends at most. */
 const FLUSH_BATCH = 50;
 
+/**
+ * The attempts a batch gets while its target refuses an intent for good (`refusedForGood`) before that intent is
+ * given up: delivered with outcome `failed`, a dead-letter alarm raised, and the destination's next batch goes on.
+ */
+export const REFUSED_ATTEMPTS = 3;
+
+/**
+ * Whether the target refused a write for good: an HTTP 4xx (a deleted, moved or locked issue, an archived repo, a PR
+ * the forge rejects) that is no rate limit (429, or a 403 with a wait), no timeout (408) and no credential refusal
+ * (401, which a new token fixes). An error with no status (a network failure, a git push) is never one.
+ */
+export function refusedForGood(err: unknown): boolean {
+  const e = err as { status?: unknown; wait_until?: unknown } | null;
+  if (typeof e?.status !== "number" || e.status < 400 || e.status >= 500) return false;
+  return !e.wait_until && ![401, 408, 429].includes(e.status);
+}
+
 type Loaded = { id: string; delivery: Delivery; seq: number; done: boolean; attempts: number };
+
+/** An intent given up in this send: its kind, for the alarm, and why. */
+type GaveUp = { id: string; kind: string; error: string };
 
 /** Why a batch stopped: the failure retries it whole; a refused claim leaves it for its holder. */
 class Stop extends Error {
@@ -111,8 +132,10 @@ export class Outbound {
     const token = Number(b.claim_token) + 1;
     // The passport the batch was sent under, which DeliveryCompleted names (null with no Identity).
     let passport_id: string | null = null;
+    const gaveUp: GaveUp[] = [];
+    const attempts = Number(b.attempts ?? 0);
     try {
-      for (const i of intents) if (!i.done) passport_id = (await this.deliver(i, now)) ?? passport_id;
+      for (const i of intents) if (!i.done) passport_id = (await this.deliver(i, now, attempts, gaveUp)) ?? passport_id;
     } catch (err) {
       if (!(err instanceof Stop)) throw err;
       const state = err.retry_in_ms === null ? "open" : "failed";
@@ -132,11 +155,15 @@ export class Outbound {
         [now, id, token],
       );
       if (n === 0) return;
-      await this.d.bus.publish(tx, [envelope(
-        { type: DELIVERY_COMPLETED, subject: destination, idempotency_key: id, idempotency_key_ttl_ms: 7 * 86_400_000, payload: { batch_id: id, destination, intent_ids } },
-        { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id, occurred_at: now },
-        "outbound",
-      )]);
+      const from = { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id, occurred_at: now };
+      await this.d.bus.publish(tx, [
+        envelope(
+          { type: DELIVERY_COMPLETED, subject: destination, idempotency_key: id, idempotency_key_ttl_ms: 7 * 86_400_000, payload: { batch_id: id, destination, intent_ids } },
+          from,
+          "outbound",
+        ),
+        ...gaveUp.map((g) => gaveUpNotice(g, destination, attempts + 1, from)),
+      ]);
     });
     return true;
   }
@@ -177,12 +204,15 @@ export class Outbound {
     return `A factory message was withheld by the leak scanner (${rules}). It is not posted in any form.`;
   }
 
-  /** Delivers one intent under outbound's service passport; returns that passport's id (null with no Identity). */
-  private async deliver(i: Loaded, now: string): Promise<string | null> {
+  /**
+   * Delivers one intent under outbound's service passport; returns that passport's id (null with no Identity).
+   * `attempts`: the batch's failed sends so far; an intent given up is added to `gaveUp`.
+   */
+  private async deliver(i: Loaded, now: string, attempts: number, gaveUp: GaveUp[]): Promise<string | null> {
     const target = this.target(i.delivery)!;
     const cfg = this.d.config();
     if (!this.d.authorize) {
-      await this.write(i, now, target);
+      await this.write(i, now, target, attempts, gaveUp);
       return null;
     }
     const { passport_id, decision } = await this.d.authorize(cfg.project_key, target.name);
@@ -190,11 +220,20 @@ export class Outbound {
       this.d.log.warn("outbound's passport refused a delivery; retried later", { target: target.name, reason: decision.reason });
       throw new Stop(cfg.retry_base_ms, `passport_denied: ${decision.reason}`);
     }
-    await this.write(i, now, target);
+    await this.write(i, now, target, attempts, gaveUp);
     return passport_id;
   }
 
-  private async write(i: Loaded, now: string, target: DeliveryTarget): Promise<void> {
+  /** Whether a failed write is given up: refused for good on the batch's last allowed attempt. */
+  private givesUp(err: unknown, attempts: number, i: Loaded, target: DeliveryTarget, error: string, gaveUp: GaveUp[]): boolean {
+    if (!refusedForGood(err) || attempts + 1 < REFUSED_ATTEMPTS) return false;
+    const kind = i.delivery.kind === "comment" ? "comment" : i.delivery.row.action;
+    this.d.log.error("delivery refused for good; given up", { intent_id: i.id, kind, target: target.name, attempts: attempts + 1, error });
+    gaveUp.push({ id: i.id, kind, error });
+    return true;
+  }
+
+  private async write(i: Loaded, now: string, target: DeliveryTarget, attempts: number, gaveUp: GaveUp[]): Promise<void> {
     const cfg = this.d.config();
     const d = i.delivery;
     if (d.kind === "comment") {
@@ -218,6 +257,11 @@ export class Outbound {
         url = (await target.deliver({ ...d, body: await this.scanned(d.body, d.target.id) })).url;
       } catch (err) {
         const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
+        // Given up: the entry is done with no link, so the destination's later entries go on.
+        if (this.givesUp(err, attempts, i, target, error, gaveUp)) {
+          await this.d.store.finishDelivery(i.seq, token, null);
+          return;
+        }
         const delay = retryDelayMs(i.attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms);
         this.d.log.warn("outbox delivery failed; retried later", { outbox_seq: i.seq, target: target.name, attempts: i.attempts + 1, retry_in_ms: delay, error });
         await this.d.store.failDelivery(i.seq, token, error, delay);
@@ -235,17 +279,16 @@ export class Outbound {
     } catch (err) {
       error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
       // A close, a post, a PR close, a push or a PR retries with its batch, which holds its destination meanwhile
-      // (later batches of it wait); a status label or a 👀 is best effort: a warning, never a hold.
+      // (later batches of it wait), until it is given up; a status label or a 👀 is best effort: a warning, never a hold.
       if (RETRIED_ACTIONS.includes(row.action)) {
-        const [b] = await this.d.db.all(
-          "SELECT b.attempts FROM outbound_batches b JOIN outbound_batch_intents i ON i.batch_id = b.id WHERE i.intent_id = ?",
-          [i.id],
-        );
-        const delay = retryDelayMs(Number(b?.attempts ?? 0) + 1, cfg.retry_base_ms, cfg.retry_max_ms);
-        this.d.log.warn(`${row.action} failed; retried later`, { target: target.name, source_id: row.target.id, retry_in_ms: delay, error });
-        throw new Stop(delay, error);
+        if (!this.givesUp(err, attempts, i, target, error, gaveUp)) {
+          const delay = retryDelayMs(attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms);
+          this.d.log.warn(`${row.action} failed; retried later`, { target: target.name, source_id: row.target.id, retry_in_ms: delay, error });
+          throw new Stop(delay, error);
+        }
+      } else {
+        this.d.log.warn(row.action === "seen" ? "mark seen failed" : "set status failed", { target: target.name, source_id: row.target.id, error });
       }
-      this.d.log.warn(row.action === "seen" ? "mark seen failed" : "set status failed", { target: target.name, source_id: row.target.id, error });
       outcome = "failed";
     }
     await this.d.db.run(
@@ -264,6 +307,29 @@ export class Outbound {
     return { ...row, args: { ...row.args, title: `Factory change on ${String(row.args.branch)}`, body: notice, labels: null } };
   }
 }
+
+/**
+ * A given-up intent's DeadLettered notice on system.alerts, as the bus writes for a dead message (RFC 0015 §5.4):
+ * the controller's dead-letter alarm stores it as a `dead_letter` alert, so Needs you shows it. Its key names the
+ * intent, so a notice published twice is one alert.
+ */
+function gaveUpNotice(g: GaveUp, destination: string, attempts: number, from: Parameters<typeof envelope>[1]): Envelope {
+  const topic = DELIVERIES_REQUESTS.name;
+  return envelope(
+    {
+      type: DEAD_LETTERED, subject: destination, idempotency_key: `dead-letter:${topic}:${OUTBOUND_GROUP}:${g.id}`, idempotency_key_ttl_ms: null,
+      payload: {
+        pattern: `dead_letter:${topic}`, topic, group: OUTBOUND_GROUP, seq: g.id, message_id: g.id, message_type: g.kind, attempts,
+        error_code: "non_retryable", last_error: `${destination}: ${g.error}`,
+      },
+    },
+    from,
+    "outbound",
+  );
+}
+
+/** The group a given-up intent's alarm names: outbound itself, not a bus consumer group. */
+const OUTBOUND_GROUP = "outbound";
 
 function typeOf(d: Delivery): string {
   return d.kind === "comment" ? d.source_type : d.row.source_type;
