@@ -1605,6 +1605,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "authz_audit",
       "identity_passports",
       "identity_revocations",
+      "runtime_hook_decisions",
     ];
 
     it("lists every table of the schema with its row count, columns, primary key and order", async () => {

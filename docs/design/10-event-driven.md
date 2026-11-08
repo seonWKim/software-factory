@@ -52,6 +52,15 @@ force.
   (`tests/architecture/rule-of-two.test.ts`; triage, implement and resolve have no golden cases yet, listed in its
   ratchet). Not wired into the run path yet: the worker still picks prompts and tools itself (M6), and auto mode does
   not call `ruleOfTwoRefusal` (owner decision pending).
+- **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10). A hook is
+  `src/<component>/hooks/<name>/<name>.hook.ts` (`defineHook`, `src/shared/hook.ts`) at one point (`before_merge`,
+  `before_run`, `before_delivery`) with a budget of at most 10 s. `runHooks` (`src/runtime/hooks/`, on the gate list)
+  runs only after the guards allowed the action: a guard's refusal stands and no hook runs. Each enabled hook of the
+  point runs in name order; a veto, a hook over its budget (`hook_timeout`) or one that throws (`hook_error`)
+  refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
+  text at most 200 characters; migration `20261108T2310-runtime-hook-decisions`). Solo and enterprise: no hook runs
+  until the owner enables it; the caller passes the enabled names. Not wired yet: no call site (merge queue M8, run
+  start M6, outbound M7) and no stored enable setting; no hook ships.
 - **Architecture rules are tests** (since 2026-11-08): `tests/architecture/` with a ratchet of today's
   violations in `known-violations/*.json`, which may only shrink.
 
