@@ -27,10 +27,12 @@ minutes; past that the main session takes over from their WIP commit.
 | Time | Step | Who | Status |
 |---|---|---|---|
 | 22:30 | M4 merged | main | done 22:40 (453af93); SQLite + MySQL suites green, rehearsal passed |
-| 22:40–00:40 | M5 router, unit contract and units (`controller.ts` gone, `unit-purity` ratchet) | agent | running |
-| 22:40–00:40 | M6 port `worker.ts` onto the engine; M9 wiring (ToolBroker passport check, service passports, UI names); M3 leftovers (bus plugin, `requires`, dead-letter alerts) | agents | running |
-| 00:40–02:30 | Merge wave 1; finish what an agent left (main takes over past its time box) | main | |
-| 02:30–05:00 | M7 outbound (deliveries leave the controller and worker); M8 merge queue; M10 call sites (hooks, roles) | agents + main | |
+| 22:40–23:50 | M5 router + units: `controller.ts` gone (22 discovered units, unit-purity ratchet of 42) | agent | merged 23:50 (2b837d5), SQLite green |
+| 22:40–23:20 | M3 leftovers: bus + ticks plugins, `requires`, dead-letter alarms | agent | merged 23:25, SQLite green |
+| 22:40–00:40 | M6 `worker.ts` onto the engine; M9 wiring (passports at the edge and in the ToolBroker, UI names) | agents | running |
+| 23:55–01:55 | M8 merge queue; M7 outbound (controller side); M5 follow-up: pure units on ticks | agents | running |
+| 00:40–02:30 | Merge M6, M9; M7 worker half after M6; finish what an agent left (main takes over past its time box) | main | |
+| 02:30–05:00 | Merge M7, M8, pure units; M10 call sites (hooks, roles); full MySQL suite with no agents running | agents + main | |
 | 05:00–06:30 | M11 cleanup: ratchets, docs, ARCHITECTURE.md; `legacy_*` drops are written but not applied (owner confirms) | main | |
 | 06:30–08:00 | Review of the whole branch, fixes applied, full SQLite + MySQL + rehearsal | main | |
 
