@@ -44,7 +44,7 @@ async function setup() {
   const broker = new LocalToolBroker({ store, scanner: new PatternEgressScanner(async () => [SECRET]), branchPrefix: "factory/", repoPath: repo });
   const remoteRefs = () => git(origin, "for-each-ref");
   const localRef = (branch: string) => git(repo, "for-each-ref", "--format=%(objectname)", `refs/heads/${branch}`);
-  return { repo, workdir, broker, ctx, remoteRefs, localRef, push: (branch = BRANCH) => broker.call(ctx, "github.push_branch", { workdir, branch, base_ref: "main" }) };
+  return { repo, workdir, broker, ctx, remoteRefs, localRef, push: (branch = BRANCH) => broker.call(ctx, "forge.push_branch", { workdir, branch, base_ref: "main" }) };
 }
 
 describe("local broker", { timeout: 30_000 }, () => {
@@ -62,10 +62,18 @@ describe("local broker", { timeout: 30_000 }, () => {
 
   it("serves the push only: no PR, preflight or comment tool, so nothing can reach a forge", async () => {
     const f = await setup();
-    expect(f.broker.allTools().map((t) => t.name)).toEqual(["github.push_branch"]);
-    for (const name of ["github.open_pr", "github.preflight", "github.comment"]) {
+    expect(f.broker.allTools().map((t) => ({ name: t.name, read_only: t.read_only }))).toEqual([{ name: "forge.push_branch", read_only: false }]);
+    for (const name of ["forge.open_change", "forge.preflight", "forge.comment", "github.open_pr", "github.preflight", "github.comment"]) {
       expect(await f.broker.call(f.ctx, name, {})).toMatchObject({ ok: false, error_code: "unknown_tool" });
     }
+  });
+
+  it("runs the old name github.push_branch as forge.push_branch", async () => {
+    const f = await setup();
+    commit(f.workdir, { "src/gate.ts": "export const gate = 2;\n" }, "add the gate");
+    const r = await f.broker.call(f.ctx, "github.push_branch", { workdir: f.workdir, branch: BRANCH, base_ref: "main" });
+    expect(r).toEqual({ ok: true, content: { sha: git(f.workdir, "rev-parse", "HEAD") } });
+    expect(f.localRef(BRANCH)).toBe(git(f.workdir, "rev-parse", "HEAD"));
   });
 
   it("refuses a branch without the branch prefix and writes no branch", async () => {
@@ -97,7 +105,7 @@ describe("local broker", { timeout: 30_000 }, () => {
     git(f.workdir, "config", "core.fsmonitor", "touch /tmp/pwned");
     expect(await f.push()).toMatchObject({ ok: false, error_code: "untrusted_git_config" });
     expect(f.localRef(BRANCH)).toBe("");
-    const stale = await f.broker.call({ ...f.ctx, lease_token: f.ctx.lease_token + 1 }, "github.push_branch", { workdir: f.workdir, branch: BRANCH, base_ref: "main" });
+    const stale = await f.broker.call({ ...f.ctx, lease_token: f.ctx.lease_token + 1 }, "forge.push_branch", { workdir: f.workdir, branch: BRANCH, base_ref: "main" });
     expect(stale).toMatchObject({ ok: false, error_code: "lease_lost" });
   });
 });

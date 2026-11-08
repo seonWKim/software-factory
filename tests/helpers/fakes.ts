@@ -25,7 +25,7 @@ import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
 import { GitHubClient, GitHubError } from "../../src/impl/github/github-client.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials } from "../../src/interfaces/github-credentials.js";
 import { newStore } from "./store.js";
-import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../src/interfaces/tool-broker.js";
+import { type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult, forgeToolName } from "../../src/interfaces/tool-broker.js";
 
 /**
  * A github_auth plugin's build for tests: `credentials`, and `api` (absent: a client over them whose calls go to
@@ -648,10 +648,10 @@ export function recordingLog(): Logger & { lines: { level: string; msg: string; 
 const OBJECT_SCHEMA = { type: "object" } as const;
 /** What FakeBroker lists: the GitHub broker's tool names and read_only flags. */
 export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
-  { name: "github.push_branch", description: "push", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.open_pr", description: "open a PR", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
-  { name: "github.comment", description: "comment", input_schema: OBJECT_SCHEMA, read_only: false },
+  { name: "forge.push_branch", description: "push", input_schema: OBJECT_SCHEMA, read_only: false },
+  { name: "forge.open_change", description: "open a PR", input_schema: OBJECT_SCHEMA, read_only: false },
+  { name: "forge.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
+  { name: "forge.comment", description: "comment", input_schema: OBJECT_SCHEMA, read_only: false },
 ];
 
 /**
@@ -696,7 +696,7 @@ export class FakeNoteBroker implements ToolBroker {
 export class FakeBroker implements ToolBroker {
   /** Every call that acts on the forge (push, PR, comment), in order. The read-only preflight is in `preflights`. */
   calls: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
-  /** Every read-only `github.preflight` call, in order. */
+  /** Every read-only `forge.preflight` call (or its `github.preflight` alias), in order. */
   preflights: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
   /**
    * Scripted results per tool name, used in order before the default. A function gets the call's args, so a
@@ -711,15 +711,17 @@ export class FakeBroker implements ToolBroker {
   allTools(): readonly ToolDescriptor[] {
     return this.tools;
   }
-  /** The fake forge's branches: a successful `github.push_branch` sets its branch here. Nothing deletes one. */
+  /** The fake forge's branches: a successful `forge.push_branch` sets its branch here. Nothing deletes one. */
   remote = new Map<string, string>();
+  /** Records and scripts by the name called; runs a github.* alias as its forge.* tool, as the real brokers do. */
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    (name === "github.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
+    const tool = forgeToolName(name);
+    (tool === "forge.preflight" ? this.preflights : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
-    if (name === "github.push_branch" && (scripted?.ok ?? true)) this.remote.set((args as { branch: string }).branch, "pushed");
+    if (tool === "forge.push_branch" && (scripted?.ok ?? true)) this.remote.set((args as { branch: string }).branch, "pushed");
     if (scripted) return scripted;
-    if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
+    if (tool === "forge.open_change") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
 }

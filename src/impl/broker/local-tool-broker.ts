@@ -1,16 +1,18 @@
+import type { Logger } from "../../core/log.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
+import { brokerToolName } from "./tool-alias.js";
 import { branchAllowed, factoryCommit, holdsLease, scanBranch, trustedRunFolder } from "./trusted-git.js";
 
 /**
- * The local broker's only tool. Named like the GitHub broker's push so the worker calls one name (a neutral
- * rename is its own work item); it pushes to no remote. No `github.open_pr`, `github.preflight` or
- * `github.comment`: a local item has no PR, and its messages are its thread.
+ * The local broker's only tool, named like the GitHub broker's push so the worker calls one name (`github.push_branch`
+ * still runs it, as an alias); it pushes to no remote. No `forge.open_change`, `forge.preflight` or `forge.comment`:
+ * a local item has no PR, and its messages are its thread.
  */
 const TOOLS: readonly ToolDescriptor[] = [
   {
-    name: "github.push_branch",
+    name: "forge.push_branch",
     read_only: false,
     description: "Commit the current HEAD of a run folder to its factory branch in the factory repo itself, as a local branch. Pushes to no remote.",
     input_schema: {
@@ -42,6 +44,8 @@ export class LocalToolBroker implements ToolBroker {
       branchPrefix: string;
       /** The factory repo: its `refs/heads/<base>` is the trusted base; its branches are where runs land. */
       repoPath: string;
+      /** Where a github.* alias's one warning goes; stderr when absent. */
+      log?: Pick<Logger, "warn">;
     },
   ) {}
 
@@ -55,7 +59,7 @@ export class LocalToolBroker implements ToolBroker {
 
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     if (!(await holdsLease(this.deps.store, ctx))) return { ok: false, error_code: "lease_lost", message: "run no longer holds its lease" };
-    if (name === "github.push_branch") return this.commitBranch(args as PushArgs);
+    if (brokerToolName(name, this.deps.log) === "forge.push_branch") return this.commitBranch(args as PushArgs);
     return { ok: false, error_code: "unknown_tool", message: name };
   }
 

@@ -217,7 +217,7 @@ describe("closing the source issue stops its work item", () => {
     const writes = () => remote.filter((r) => !r.startsWith("GET "));
     expect(writes()).toEqual([]);
     // The broker refuses the stopped run's push outright.
-    const push = await broker.call(ctx, "github.push_branch", { workdir: "/wt/2", branch: `factory/${ctx.work_item_id}`, base_ref: "main" });
+    const push = await broker.call(ctx, "forge.push_branch", { workdir: "/wt/2", branch: `factory/${ctx.work_item_id}`, base_ref: "main" });
     expect(push).toMatchObject({ ok: false, error_code: "lease_lost" });
     expect(writes()).toEqual([]);
 

@@ -198,7 +198,7 @@ describe("the broker in a run folder", () => {
     const sbx = new NoOpSandbox(f.worktrees);
     const h = await sbx.create({ repo: f.repo, branch: "factory/wi_b", base_ref: "main" });
     const broker = brokerFor(f.repo, store, clock);
-    const push = () => broker.call(ctx, "github.push_branch", { workdir: h.workdir, branch: "factory/wi_b", base_ref: "main" });
+    const push = () => broker.call(ctx, "forge.push_branch", { workdir: h.workdir, branch: "factory/wi_b", base_ref: "main" });
     const remoteHas = (bare: string) => git(bare, "for-each-ref", "refs/heads/factory/wi_b") !== "";
     return { f, h, push, remoteHas };
   }

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  IMPLEMENT_KINDS, effectiveTier, failureClass, floorTier, retryDelayMs, retryKey, runKey,
+  IMPLEMENT_KINDS, autoApproveRefusal, autoMergeRefusal, effectiveTier, failureClass, floorTier, retryDelayMs, retryKey, runKey,
   sameStep, workItemIdFromBranch,
 } from "../src/core/policy.js";
+import { GATE_PATHS, gatePathTouched } from "../src/core/improver.js";
+import { PROTECTED_PATHS } from "../src/core/standing.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { PROVIDER_SETUP } from "../src/interfaces/agent-runner.js";
 import type { WorkItemId } from "../src/core/types.js";
@@ -114,5 +116,64 @@ describe("policy", () => {
 describe("implement-type runs", () => {
   it("implement-type kinds are implement (also a review fix) and update; triage and review are not", () => {
     expect([...IMPLEMENT_KINDS].sort()).toEqual(["implement", "update"]);
+  });
+});
+
+describe("auto mode rules (design 03-risk)", () => {
+  const free = { default: "yes", owner_only: false };
+
+  it("approves a spec below tier 4 whose decisions all have a default and none is owner-only", () => {
+    expect(autoApproveRefusal({ tier: 3, decisions: [], gate_path: null })).toBeNull();
+    expect(autoApproveRefusal({ tier: 1, decisions: [free, free], gate_path: null })).toBeNull();
+  });
+
+  it("leaves tier 4 and up, the gate list, an owner-only decision and one with no default for /approve", () => {
+    expect(autoApproveRefusal({ tier: 4, decisions: [], gate_path: null })).toContain("tier 4");
+    expect(autoApproveRefusal({ tier: 5, decisions: [], gate_path: null })).toContain("tier 5");
+    expect(autoApproveRefusal({ tier: 2, decisions: [], gate_path: "prompts/" })).toContain("gate list");
+    expect(autoApproveRefusal({ tier: 2, decisions: [free, { default: "yes", owner_only: true }], gate_path: null })).toContain("owner");
+    expect(autoApproveRefusal({ tier: 2, decisions: [{ default: null, owner_only: false }], gate_path: null })).toContain("owner");
+  });
+
+  it("merges only a complete local change below tier 4, off the gate list, at or under the setting's tier", () => {
+    const ok = { tier: 2 as const, max_tier: 3, incomplete: false, gate_path: null, local: true };
+    expect(autoMergeRefusal(ok)).toBeNull();
+    expect(autoMergeRefusal({ ...ok, local: false })).toContain("local");
+    expect(autoMergeRefusal({ ...ok, tier: 4, max_tier: 9 })).toContain("tier 4");
+    expect(autoMergeRefusal({ ...ok, gate_path: "src/core/policy.ts" })).toContain("gate list");
+    expect(autoMergeRefusal({ ...ok, incomplete: true })).toContain("incomplete");
+    expect(autoMergeRefusal({ ...ok, max_tier: 1 })).toContain("auto_merge_max_tier (1)");
+    expect(autoMergeRefusal({ ...ok, max_tier: 0 })).toContain("auto_merge_max_tier (0)");
+  });
+
+  it("the gate list is one list: the merge check's paths, every standing-rule protected path, the grant and tool folders", () => {
+    expect(GATE_PATHS).toEqual(expect.arrayContaining([...Object.values(PROTECTED_PATHS).flat(), "src/impl/grant/", "src/core/tools/"]));
+    expect(new Set(GATE_PATHS).size).toBe(GATE_PATHS.length);
+  });
+
+  it("an allowed path or changed file touches the gate list when it is on it, under it, or a folder holding it", () => {
+    expect(gatePathTouched(["docs/x.md", "src/core/policy.ts"])).toBe("src/core/policy.ts");
+    expect(gatePathTouched(["src/impl/grant/static.ts"])).toBe("src/impl/grant/static.ts");
+    expect(gatePathTouched(["src/core/tools/"])).toBe("src/core/tools/");
+    expect(gatePathTouched(["src/"])).toBe("src/");
+    expect(gatePathTouched(["./prompts/triage.md"])).toBe("./prompts/triage.md");
+    expect(gatePathTouched(["docs/", "src/core/worker.ts", "tests/policy.test.ts"])).toBeNull();
+  });
+
+  it("a triage decision keeps its default and flag; a plain or unflagged one is owner-only, and a stored answer parses the same", () => {
+    const r = parseTriage({
+      ...triageSpec,
+      decisions: [{ text: "Warn?", default: "No", owner_only: false }, { text: "Drop it?", default: "Yes" }, "Rename it?"],
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.decision_items).toEqual([
+      { text: "Warn?", default: "No", owner_only: false },
+      { text: "Drop it?", default: "Yes", owner_only: true },
+      { text: "Rename it?", default: null, owner_only: true },
+    ]);
+    expect(r.value.decisions).toEqual(["Warn? Proposed default: No.", "Drop it? Proposed default: Yes. (owner only)", "Rename it?"]);
+    const again = parseTriage(r.value);
+    expect(again.ok && again.value.decision_items).toEqual(r.value.decision_items);
   });
 });

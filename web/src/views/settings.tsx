@@ -83,7 +83,15 @@ function Editor({ row, label, value, token, project }: { row: SettingRow; label:
   };
 
   let control;
-  if (row.kind === "boolean") {
+  if (row.key === "mode") {
+    // The mode (design 03-risk): on is auto, off is manual. JSON text, as `factory settings set mode` takes it.
+    control = (
+      <span className="flex items-center gap-2 text-sm">
+        <Switch aria-label={label} checked={value === '"auto"'} disabled={busy} onCheckedChange={(next) => void save(JSON.stringify(next ? "auto" : "manual"))} />
+        {value === '"auto"' ? "auto" : "manual"}
+      </span>
+    );
+  } else if (row.kind === "boolean") {
     control = <Switch aria-label={label} checked={value === "true"} disabled={busy} onCheckedChange={(next) => void save(String(next))} />;
   } else if (row.kind === "models") {
     const current = parseObject(value);
@@ -230,6 +238,54 @@ function PageCommands() {
   );
 }
 
+/** The configured project's mode (design 03-risk): its own value when it has one, else the global one. */
+function currentMode(v: SettingsView): { row: SettingRow; value: string; project?: string } | null {
+  const row = v.keys.find((k) => k.key === "mode");
+  if (!row) return null;
+  const own = v.project === null ? undefined : row.projects.find((p) => p.project === v.project);
+  return own ? { row, value: own.value, project: v.repo } : { row, value: row.value };
+}
+
+/**
+ * The mode switch of the top bar and the Settings page (design 09): manual or auto for the configured project, written
+ * through POST /api/v1/settings like any key, so it needs approve_merge and writes one audit row; a refusal shows beside it.
+ */
+export function ModeSwitch() {
+  const settings = useApi<SettingsView>(API.settings);
+  const v = settings.data;
+  const mode = v ? currentMode(v) : null;
+  if (!v || !mode) return <span className="text-sm text-zinc-600 dark:text-zinc-400">Mode …</span>;
+  return (
+    <div data-testid="mode" className="flex items-center gap-2 text-sm">
+      <span>Mode</span>
+      <Editor row={mode.row} label="Auto mode" value={mode.value} token={v.csrf_token} {...(mode.project === undefined ? {} : { project: mode.project })} />
+    </div>
+  );
+}
+
+/** The mode and, next to it, the auto-merge tier (design 09): what decides whether the factory merges on its own. */
+function ModeSection({ view }: { view: SettingsView }) {
+  const tier = view.keys.find((k) => k.key === "auto_merge_max_tier");
+  return (
+    <Section title="Mode">
+      <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+        Auto approves specs below tier 4 with no owner-only decision and merges reviewed local changes up to the auto-merge
+        tier; tier 4 and the gate list always wait for a person. A red main, a failure alarm or a budget checkpoint sets it
+        back to manual. Changing either needs approve_merge.
+      </p>
+      <div className="flex flex-wrap items-start gap-6">
+        <ModeSwitch />
+        {tier && (
+          <div className="flex items-center gap-2 text-sm">
+            <span>Auto-merge tier (0 to 3)</span>
+            <Editor row={tier} label="Auto-merge tier" value={tier.value} token={view.csrf_token} />
+          </div>
+        )}
+      </div>
+    </Section>
+  );
+}
+
 export function SettingsPage() {
   const now = useNow();
   const settings = useApi<SettingsView>(API.settings);
@@ -238,6 +294,7 @@ export function SettingsPage() {
   const v = settings.data;
   return (
     <>
+      <ModeSection view={v} />
       <PageCommands />
       <Section title="Settable keys" count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">

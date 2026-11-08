@@ -14,7 +14,7 @@ import {
   COMMANDS, DEPENDENCY_CLOSED, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel,
   retryPathsReply, unknownCommandReply,
 } from "./commands.js";
-import { RESTART_WINDOW_MS, alarmStep } from "./alarms.js";
+import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS, alarmStep } from "./alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import {
   type DependencyLink,
@@ -25,17 +25,21 @@ import {
   isDependencySource,
   shortRef,
 } from "./coordination.js";
-import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, settingValues } from "./settings.js";
+import { type LearnedSettingsSource, LiveSettings, type ProjectSettings, modeOf, settingValues } from "./settings.js";
 import { Listener } from "./listener.js";
 import { type SyncState, TickLease, syncLeaseName, syncLeaseOps } from "./lease.js";
 import { parseFixReferences, parseRevert } from "./links.js";
 import type { Logger } from "./log.js";
 import {
-  type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriagePhase, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings,
+  type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, type TriagePhase, findingLine, parseNeedsHuman, parseReview, parseTriage,
+  specFindings,
 } from "./outputs.js";
 import {
   AGENT_NEEDS_HUMAN,
+  AUTO_ACTOR,
   AUTO_RESOLVE_LIMIT,
+  autoApproveRefusal,
+  autoMergeRefusal,
   REPEATED_FAILURE,
   type FailureClass,
   blockingRunKind,
@@ -77,7 +81,7 @@ import {
 import { commandEvent, syncedCommand } from "./command-inbox.js";
 import { type BaseSyncSandbox, LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal, canSyncBase } from "./local-merge.js";
 import { isCliCommandKey, localIdentity } from "./local-cli.js";
-import { enqueueImprove, fileReport, utcDay } from "./improver.js";
+import { enqueueImprove, fileReport, gatePathTouched, utcDay } from "./improver.js";
 import { MERGE_CHECK_BATCH, MergeChecker, canMergeCheck } from "./merge-check.js";
 import { lastPrNotes } from "./pr-body.js";
 import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine } from "./resolve.js";
@@ -219,7 +223,23 @@ export interface ControllerDeps {
    * tick's optional reads. Absent: the client's own responses only.
    */
   refresh_forge_budget?: () => Promise<void>;
+  /**
+   * The environment the red-main check runs the install command and the checks in on the base tip after an automatic
+   * merge (design 03-risk), as the worker's checks get it. Absent: an empty environment.
+   */
+  check_env?: Readonly<Record<string, string>>;
 }
+
+/** The actor of auto mode's approvals, merges and stops (design 03-risk). */
+const AUTO: Actor = { kind: "system", id: AUTO_ACTOR };
+/** mergeLocal's `who` for auto mode's merge: no person, actor `system:auto`. */
+const AUTO_MERGE = { auto: true } as const;
+/** Settings audit rows read to find the mode change an automatic action ran under. */
+const MODE_HISTORY = 500;
+/** Items waiting for a merge looked at per auto-merge step. */
+const AUTO_MERGE_BATCH = 20;
+/** Why auto mode went back to manual: the alert's error code (design 03-risk, stop conditions). */
+type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
 
 type Decision = Omit<TransitionInput, "id" | "expected_version"> | null;
 /** A decision whose implement or review run is held at a budget checkpoint instead of queued. */
@@ -786,18 +806,22 @@ export class Controller {
    * clean and left as it was otherwise (the close's detail and the reply say so). A merge closes the item
    * (completed, its merge sha) with the approver as its actor and releases the items waiting on it; with a forge
    * that can push a base, the same transition queues one base push, which the base push step makes later, so the
-   * merge never waits on the remote. Never automatic: only a human's command calls it. Safe to run twice: a branch
-   * the base already contains moves nothing and closes the item with the base's commit; `key` keys the reply and
-   * `detail` goes on the state change. Returns the refusal, or null when the item merged.
+   * merge never waits on the remote. `who` AUTO_MERGE is auto mode's merge (autoMergeStep, design 03-risk): no
+   * person to authorize, actor `system:auto`, and the state change names the mode change it ran under. Safe to run
+   * twice: a branch the base already contains moves nothing and closes the item with the base's commit; `key` keys
+   * the reply and `detail` goes on the state change. Returns the refusal, or null when the item merged.
    */
-  async mergeLocal(id: WorkItemId, who: ExternalIdentity | UserId, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
+  async mergeLocal(id: WorkItemId, who: ExternalIdentity | UserId | typeof AUTO_MERGE, key: string, detail: Record<string, unknown> = {}): Promise<string | null> {
     const item = await this.d.store.getWorkItem(id);
     if (!item) return "the work item was not found";
     const { repo, branch_prefix } = this.cfg;
     const branch = branchFor(item, branch_prefix);
+    const auto = who === AUTO_MERGE;
     const principal = typeof who === "string"
       ? await this.allowed({ user_id: who, attributes: {} }, "approve_merge", item.id, true)
-      : await this.authorize(who, "approve_merge", item.id);
+      : "auto" in who
+        ? { user_id: AUTO_ACTOR }
+        : await this.authorize(who, "approve_merge", item.id);
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
     else if (!awaitingMerge(item) || item.change_ref !== null) {
@@ -811,10 +835,10 @@ export class Controller {
         repo: repo.path, base_ref: repo.base_branch, branch, identity: this.cfg.agent_git_identity,
         // The install command, then the checks, on the merge commit before the base moves: a failure merges nothing.
         checks: [repo.install_command, ...checkCommands(repo)], timeout_ms: this.cfg.run_timeout_ms,
-        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${principal.user_id} with \`factory merge\`.`,
+        message: `Merge ${branch} into ${repo.base_branch}\n\nWork item ${item.id}, merged by ${principal.user_id} ${auto ? "in auto mode" : "with `factory merge`"}.`,
       });
       if (r.merged) {
-        const actor: Actor = { kind: "user", id: principal.user_id };
+        const actor: Actor = auto ? AUTO : { kind: "user", id: principal.user_id as UserId };
         const push = this.basePusher() !== null;
         const stale = r.not_updated.join(", ");
         const lost = await this.decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
@@ -830,12 +854,15 @@ export class Controller {
           : null));
         if (lost === null) {
           this.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: principal.user_id, base_push: push });
+          const how = auto ? " in auto mode" : "";
           const body = [
-            `Merged \`${branch}\` into the local \`${repo.base_branch}\` as \`${r.sha.slice(0, 12)}\` (${push ? "its push to origin is queued" : "no push"}). The item is closed.`,
+            `Merged \`${branch}\` into the local \`${repo.base_branch}\`${how} as \`${r.sha.slice(0, 12)}\` (${push ? "its push to origin is queued" : "no push"}). The item is closed.`,
             ...(stale ? [`\`${repo.base_branch}\` is checked out with uncommitted changes in ${stale}: that checkout was not updated (its HEAD is detached where it was); switch it back to \`${repo.base_branch}\` when ready.`] : []),
           ];
           await this.post(item, item.source, body.join("\n\n"), `<!-- factory:local-merged:${key} -->`);
           await this.guard("dependents", () => this.releaseDependents(item.source.id));
+          // Red main (design 03-risk): the checks run again on the new base tip; a failure stops auto mode.
+          if (auto && !r.already) await this.guard("red main", () => this.redMainCheck(item));
           return null;
         }
         refusal = lost;
@@ -850,7 +877,8 @@ export class Controller {
       } else refusal = r.refused;
     }
     this.d.log.info("command refused", { work_item_id: item.id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });
-    await this.post(item, item.source, `\`factory merge\` was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
+    const what = auto ? "The automatic merge" : "`factory merge`";
+    await this.post(item, item.source, `${what} was not applied: ${refusal}.`, `<!-- factory:refused:${key} -->`);
     return refusal;
   }
 
@@ -916,6 +944,103 @@ export class Controller {
       `The item stays closed. In the factory repo, merge \`origin/${base}\` into \`${base}\`, commit the resolution and push \`${base}\` by hand.`,
     ].join("\n");
     await this.post(item, item.source, body, `<!-- factory:base-push-conflict:${row.seq} -->`);
+  }
+
+  /**
+   * Auto mode's merge (design 03-risk): each local item waiting for a merge, in a project in auto mode, merges
+   * through mergeLocal (actor `system:auto`, the mode change on its state change) when autoMergeRefusal allows it:
+   * the merge check runs on the merge commit first, so a failing check or a conflict moves nothing. One try per item
+   * version: a refusal is posted once under a key of the version, and the item stays in merge_pending for a person.
+   * A sync source's item is never merged here (no forge merge to call); it waits as in manual mode, with no post.
+   */
+  private async autoMergeStep(): Promise<void> {
+    const r = this.live.resolved();
+    if (r.global.mode.value !== "auto" && !Object.values(r.projects).some((p) => p.mode?.value === "auto")) return;
+    const waiting = await this.d.store.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: AUTO_MERGE_BATCH });
+    for (const it of waiting) {
+      if (!awaitingMerge(it) || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) continue;
+      const auto = await this.autoMode(it.project);
+      if (!auto) continue;
+      const key = `auto-merge:${it.id}:v${it.version}`;
+      if ((await this.d.store.listItemMessages(it.id)).some((m) => m.marker.endsWith(`:${key} -->`))) continue;
+      const missing = lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? [];
+      const refusal = autoMergeRefusal({
+        tier: it.tier ?? 5,
+        max_tier: this.live.values().auto_merge_max_tier,
+        incomplete: missing.length > 0,
+        gate_path: gatePathTouched([...it.allowed_paths, ...(it.pr_files ?? [])]),
+        local: true,
+      });
+      if (refusal === null) {
+        await this.guard("auto merge", async () => void (await this.mergeLocal(it.id, AUTO_MERGE, key, { mode_change: auto.seq })));
+        continue;
+      }
+      this.d.log.info("auto merge held", { work_item_id: it.id, reason: refusal });
+      await this.post(it, it.source,
+        `Auto mode does not merge this change: ${refusal}. A person merges it: \`factory merge ${it.id}\` (approver role).`,
+        `<!-- factory:auto-merge-held:${key} -->`);
+    }
+  }
+
+  /** Whether `project` is in auto mode now (design 03-risk), with the mode change it runs under; null in manual mode. */
+  private async autoMode(project: string): Promise<{ seq: number | null } | null> {
+    const m = modeOf(this.live.resolved(), project);
+    return m.mode === "auto" ? { seq: await this.modeChangeSeq(m.level) } : null;
+  }
+
+  /** The audit seq of the newest `mode` change stored at `level` ("" global); null when none is found. */
+  private async modeChangeSeq(level: string | null): Promise<number | null> {
+    if (level === null) return null;
+    return (await this.d.store.listSettingChanges(MODE_HISTORY)).find((c) => c.key === "mode" && c.project === level)?.seq ?? null;
+  }
+
+  /**
+   * Red main (design 03-risk): after an automatic merge, the install command and the checks run again on the new
+   * base tip in a fresh detached checkout. A failure, or a check that could not run, sets the mode back to manual.
+   */
+  private async redMainCheck(it: WorkItem): Promise<void> {
+    const sandbox = this.d.sandbox;
+    if (!sandbox) return;
+    const { repo } = this.cfg;
+    let failed: string | null = null;
+    try {
+      const h = await sandbox.create({ repo: repo.path, branch: null, base_ref: repo.base_branch });
+      try {
+        for (const cmd of [repo.install_command, ...checkCommands(repo)]) {
+          const r = await sandbox.exec(h, cmd, { env: this.d.check_env ?? {}, timeout_ms: this.cfg.run_timeout_ms });
+          if (r.exit_code === 0) continue;
+          failed = `\`${cmd.join(" ")}\` ${r.timed_out ? "timed out" : `exited ${r.exit_code}`} on the new tip of \`${repo.base_branch}\``;
+          break;
+        }
+      } finally {
+        await sandbox.destroy(h);
+      }
+    } catch (err) {
+      failed = `the checks could not run on the new tip of \`${repo.base_branch}\`: ${err instanceof Error ? err.message.slice(0, 200) : "unknown error"}`;
+    }
+    if (failed !== null) await this.stopAuto(it.project, "red_main", failed);
+  }
+
+  /**
+   * A stop condition (design 03-risk): red main, a failure-burst alert or a budget checkpoint sets `project`'s mode
+   * back to manual, at the level its auto mode is stored at. One `auto_stopped` alert, keyed on the mode change it
+   * ends, then one settings row by `system:auto`: the alert's conditional insert makes a second stop (a re-run,
+   * another replica) write nothing. Nothing happens in manual mode.
+   */
+  private async stopAuto(project: string, cause: AutoStop, detail: string): Promise<void> {
+    const m = modeOf(this.live.resolved(), project);
+    if (m.mode !== "auto" || m.level === null) return;
+    const seq = await this.modeChangeSeq(m.level);
+    // G5: the alert reaches the status page, so its detail is scanned as UI text first.
+    const scan = await this.d.scanner.scan("ui", detail);
+    const r = await this.d.store.recordAlert(
+      { pattern: "auto_stopped", pattern_key: `auto_stopped:${m.level || "global"}:${seq ?? 0}`, error_code: cause, count: 1, detail: scan.clean ? detail : null },
+      ALERT_DEDUPE_MS,
+    );
+    if (!r.created) return;
+    await this.d.store.setSettingOverride({ key: "mode", project: m.level, value: JSON.stringify("manual"), actor: AUTO_ACTOR });
+    await this.live.refresh();
+    this.d.log.warn("auto mode stopped; the mode is manual again", { cause, alert_id: r.alert.id, mode_change: seq });
   }
 
   /**
@@ -1013,6 +1138,8 @@ export class Controller {
     for (const run of await this.d.store.listUnacknowledgedRuns(20)) {
       await this.guard(`run:${run.kind}`, () => this.apply(run));
     }
+    // A store read only in auto mode: the items the runs just moved to merge_pending merge in the same tick.
+    await this.guard("auto merge", () => this.autoMergeStep());
   }
 
   /**
@@ -1148,7 +1275,7 @@ export class Controller {
       for (const r of list) await store.recordChildRestart(r);
       return list;
     };
-    await alarmStep(
+    const stored = await alarmStep(
       { store, scanner: this.d.scanner, clock: this.d.clock, log: this.d.log, restarts },
       {
         alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
@@ -1157,6 +1284,9 @@ export class Controller {
         probe_interval_ms: c.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
       },
     );
+    // A failure burst stops auto mode (design 03-risk).
+    const burst = stored.find((a) => a.pattern !== "auto_stopped");
+    if (burst) await this.stopAuto(this.cfg.project.key, "failure_alert", `the ${burst.pattern} alarm (${burst.error_code}, ${burst.count})`);
   }
 
   /** One daily improve step (design §7): the current UTC day's improve run, queued once. */
@@ -3128,9 +3258,27 @@ export class Controller {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
+          // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
+          const auto = spec.phases ? null : await this.autoMode(it.project);
+          const refusal = auto ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) }) : null;
+          if (auto && refusal === null) {
+            const next = { ...it, ...fields };
+            const patch = { ...fields, stage: "RUNNING" as const };
+            const url = await this.comment(it, `spec:${run.id}`,
+              renderSpec(spec, tier, { floor, previous: it.tier, added }, [autoAnswers(spec), "", footerAfter(it, patch)].join("\n")), "spec_comment_url");
+            return {
+              patch: { ...patch, spec_comment_url: url },
+              actor: AUTO,
+              reason: "spec_approved",
+              detail: { approved_by: AUTO_ACTOR, mode_change: auto.seq, decisions: (spec.decision_items ?? []).length },
+              ack_run: run.id,
+              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+            };
+          }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
+          const waits = auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
           const url = await this.comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, footerAfter(it, patch)), "spec_comment_url");
+            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footerAfter(it, patch)}`), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
@@ -3456,8 +3604,8 @@ export class Controller {
       };
     }
     if (checks.state === "failed") return this.checksFailed(it, review, checks.failed, fields, ack);
-    // Auto-merge does not exist yet: auto_merge_max_tier is fixed at 0, so every PR goes to a human. An incomplete
-    // PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
+    // Every change waits here for a merge; in auto mode the auto-merge step merges a local one it may (design 03-risk).
+    // An incomplete PR (its implementer reported missing work, issue #229) is never auto-merged, and the comment says so first.
     const patch = { ...fields, blocked_on: "human" as const, blocked_reason: "merge_pending" };
     const missing = it.origin === "adopted" ? [] : (lastPrNotes(await this.d.store.listRuns(it.id))?.missing ?? []);
     // No PR (a local item, design 05-sources): no checks to wait for, and the merge is `factory merge`, by a human.
@@ -4211,6 +4359,8 @@ export class Controller {
       if (r.ok) {
         this.d.log.info("transition", { work_item_id: id, reason: decision.reason, version: r.item.version });
         if (STATUS_FIELDS.some((k) => k in decision.patch)) await this.showStatus(r.item);
+        // A budget checkpoint stops auto mode (design 03-risk).
+        if (hold) await this.guard("auto stop", () => this.stopAuto(r.item.project, "budget_checkpoint", `${r.item.id} reached its token budget`));
         return null;
       }
       if (r.reason !== "version_conflict") {
@@ -4796,6 +4946,14 @@ function updatingForChecks(it: WorkItem): boolean {
 }
 
 /** A PR that passed review and waits for a human merge, the state an update run usually changes. */
+/** What auto mode answered for each decision of a spec it approved: posted in the thread with the spec (design 03-risk). */
+function autoAnswers(spec: TriageOutput): string {
+  const items = spec.decision_items ?? [];
+  const head = "Approved in auto mode (`system:auto`): below tier 4, no owner-only decision, no path on the gate list.";
+  if (items.length === 0) return head;
+  return [head, "", "Answers taken (each decision's proposed default):", ...items.map((d) => `- ${d.text} → ${d.default}`)].join("\n");
+}
+
 function awaitingMerge(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
 }

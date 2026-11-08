@@ -4,7 +4,7 @@ import type { RunId, WorkItemId } from "../core/types.js";
 // The agent sends a tool name + args and gets a result back, never the credential.
 
 export interface ToolDescriptor {
-  name: string; // e.g. "github.push", "github.open_pr", "github.comment"
+  name: string; // e.g. "forge.push_branch", "forge.open_change", "forge.comment"
   description: string;
   input_schema: Record<string, unknown>; // JSON Schema
   /**
@@ -34,4 +34,20 @@ export interface ToolBroker {
   allTools(): readonly ToolDescriptor[];
   /** Results pass through the EgressScanner before returning to the agent. */
   call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult>;
+}
+
+/**
+ * The tools' old names, each an alias of its forge.* tool (the forge rename, phase 1). A broker runs an
+ * alias as its forge.* tool; `tool_grants` refuses an alias, naming the forge.* tool. Removed in phase 3.
+ */
+export const TOOL_ALIASES: Readonly<Record<string, string>> = {
+  "github.push_branch": "forge.push_branch",
+  "github.open_pr": "forge.open_change",
+  "github.comment": "forge.comment",
+  "github.preflight": "forge.preflight",
+};
+
+/** The forge.* tool `name` stands for: an alias's forge.* name, any other name unchanged. */
+export function forgeToolName(name: string): string {
+  return Object.hasOwn(TOOL_ALIASES, name) ? TOOL_ALIASES[name]! : name;
 }

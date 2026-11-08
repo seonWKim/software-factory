@@ -33,13 +33,22 @@ export function alarmUntil(a: Alert): string {
 export function alarmText(a: Alert): string {
   if (a.pattern === "repeated_error") return `Alarm: ${a.error_code} failed ${a.count} runs on several items`;
   if (a.pattern === "zero_tokens") return `Alarm: ${a.count} agent runs in a row used no tokens`;
+  if (a.pattern === "auto_stopped") return `Alarm: auto mode stopped (${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}); the mode is manual`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
 }
+
+/** Each auto-mode stop's cause (the alert's error code, design 03-risk), as the alarm sentence names it. */
+const AUTO_STOP_TEXT: Readonly<Record<string, string>> = {
+  red_main: "the checks failed on the base branch after a merge",
+  failure_alert: "a failure alarm",
+  budget_checkpoint: "a budget checkpoint",
+};
 
 /** Where the operator looks into the alarm; no command resolves one (it closes once its pattern stops). */
 export function alarmCommand(a: Alert): string {
   if (a.pattern === "repeated_error") return "Failures page (/app/failures)";
   if (a.pattern === "zero_tokens") return "factory llm-check";
+  if (a.pattern === "auto_stopped") return "factory mode auto (after the cause is fixed)";
   return "factory doctor";
 }
 
@@ -55,6 +64,8 @@ export function alarmsFor(open: readonly Alert[], it: WorkItem, runs: readonly R
   const active = runs.some((r) => r.status === "queued" || r.status === "running");
   return open.filter((a) => {
     if (a.pattern === "child_restarts") return active;
+    // A stop of auto mode holds up no item: each waits as in manual mode, and Needs you shows the alarm.
+    if (a.pattern === "auto_stopped") return false;
     if (last === null || Date.parse(last.finished_at!) < Date.parse(a.created_at) - ALERT_DEDUPE_MS) return false;
     if (a.pattern === "repeated_error") return last.outcome?.status === "failed" && last.outcome.error_code === a.error_code;
     return (MODEL_RUN_KINDS as readonly string[]).includes(last.kind) && runTokenCount(last) === 0;

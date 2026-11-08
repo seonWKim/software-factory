@@ -151,7 +151,7 @@ describe("open_pr updates an open PR (issue #229)", () => {
 
   it("an open PR gets the new title and body; labels are added and removed", async () => {
     const b = await brokerWith([{ number: 5 }]);
-    const r = await b.broker.call(b.ctx, "github.open_pr", {
+    const r = await b.broker.call(b.ctx, "forge.open_change", {
       branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": true, "sf: other": false },
     });
     expect(r).toMatchObject({ ok: true, content: { number: 5 } });
@@ -164,7 +164,7 @@ describe("open_pr updates an open PR (issue #229)", () => {
 
   it("removing a label the PR does not have is not an error; no open PR means one is opened", async () => {
     const b = await brokerWith([], true);
-    const r = await b.broker.call(b.ctx, "github.open_pr", { branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": false } });
+    const r = await b.broker.call(b.ctx, "forge.open_change", { branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": false } });
     expect(r).toMatchObject({ ok: true, content: { number: 9 } });
     expect(b.calls[1]).toMatchObject({ method: "POST", path: "/repos/o/r/pulls" });
   });

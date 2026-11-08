@@ -38,7 +38,7 @@ import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-provider.js";
-import type { ToolBroker } from "./interfaces/tool-broker.js";
+import { TOOL_ALIASES, type ToolBroker, forgeToolName } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
@@ -172,7 +172,7 @@ export interface FileConfig {
    */
   projects?: unknown;
   /**
-   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"triage": ["github.preflight"]}.
+   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"triage": ["forge.preflight"]}.
    * Absent: no grants. Checked at startup against the broker's tools (toolGrantsConfig, src/core/config.ts): only
    * read-only tools the broker lists, only run kinds.
    */
@@ -365,7 +365,10 @@ export async function loadConfig(
   const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
   if (file.dials.auto_merge_max_tier !== 0) {
-    throw new Error("auto_merge_max_tier must be 0: auto-merge is not implemented, and loosening is a human decision");
+    throw new Error(
+      "dials.auto_merge_max_tier must be 0: the auto-merge tier is the live auto_merge_max_tier setting (0 to 3, " +
+        "`factory settings set auto_merge_max_tier <n>` or the Settings page, with approve_merge), read only in auto mode",
+    );
   }
   if (!isTier(file.dials.spec_gate_min_tier)) {
     throw new Error("tiers must be integers 1–5");
@@ -614,6 +617,20 @@ function refusing<T>(why: string): T {
 const NO_GITHUB = "no GitHub plugin is selected (design 05-sources, Local startup): nothing calls GitHub";
 
 /**
+ * Startup refuses an old github.* tool name in `tool_grants` (the forge rename, phase 1), one line per name, each
+ * naming the forge.* tool to grant instead. Runs before toolGrantsConfig, which checks the rest.
+ */
+function refuseAliasGrants(raw: unknown): void {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+  const problems = Object.entries(raw as Record<string, unknown>).flatMap(([kind, names]) =>
+    (Array.isArray(names) ? names : [])
+      .filter((n): n is string => typeof n === "string" && Object.hasOwn(TOOL_ALIASES, n))
+      .map((n) => `tool_grants.${kind} grants ${JSON.stringify(n)}, an old tool name; grant ${JSON.stringify(forgeToolName(n))} instead`),
+  );
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+}
+
+/**
  * Shares GitHub's rate limit through the store from now on (design 05-sources, call budget): every process that
  * calls GitHub reads the last response any replica got, at most once per tick, and writes its own. With no GitHub
  * plugin selected there is no client, and no budget row is written.
@@ -781,6 +798,7 @@ export async function build(
   const brokerDeps: BrokerDeps = { github, credentials, secrets, store, scanner, clock };
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, ...brokerDeps });
   // Checked here, not in loadConfig: the broker's tool list comes from its plugin. Read-only tools only.
+  refuseAliasGrants(loaded.file.tool_grants);
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
   // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
   const local = await p.localRoute({ broker, sandbox }, brokerDeps);
@@ -840,6 +858,8 @@ export async function build(
     // With no GitHub plugin selected (Local startup) there is no GitHub client and no budget to record.
     // The shared budget is read before each tick's optional reads, at most once per tick.
     ...(loaded.config.local_only === true ? {} : { github_budget: () => github.status(), refresh_forge_budget: () => github.refreshSharedBudget() }),
+    // The red-main check after an automatic merge (design 03-risk) runs the checks with the worker's base env.
+    check_env: baseEnv(),
   });
 
   const worker = new WorkerPool({
@@ -995,6 +1015,8 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     ...who, token,
     mergeAllowed: async () => who.actor !== null && (await onProject(who.actor, "approve_merge")).allow,
   };
+  // The mode switch and the auto-merge tier need approve_merge on the project (design 08-settings), as the Merge button.
+  settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
@@ -1004,6 +1026,27 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     log: new ConsoleLogger(clock, "ui"),
   };
   return { clock, store, scanner, settings, commands, pauses, close: () => store.close() };
+}
+
+function refusalOf(d: AuthDecision): string | null {
+  return d.allow ? null : d.reason;
+}
+
+/**
+ * The approve_merge check of `factory settings` and `factory mode` for `mode` and `auto_merge_max_tier` (design
+ * 08-settings): `user` on the configured project, through the local auth plugin over the local grants, with no forge
+ * call. Solo: the first local identity is the owner and holds it with no setup. The refusal, or null.
+ */
+export async function approveMergeCheck(loaded: Loaded, store: FactoryStore, user: UserId): Promise<() => Promise<string | null>> {
+  const base = new Plugins(loaded).base;
+  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
+  const auth = await createPlugin(loaded.registry, "auth", selectedLocalAuth(loaded.plugins), { ...base, github: NO_FORGE, store, grants });
+  const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
+  return async () => {
+    const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);
+    if (!project) return "no project key is stored yet; start the factory once first";
+    return refusalOf(await auth.authorize({ user_id: user, attributes: {} }, "approve_merge", { kind: "project", id: project.key }));
+  };
 }
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */

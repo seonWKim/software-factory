@@ -108,6 +108,24 @@ describe("retry after a review loop", () => {
     }
   });
 
+  it("a triage run on attempt 1 uses cheap; the attempt after an agent_failed one uses standard", () => {
+    for (const tier of [...TIERS, null]) {
+      expect(modelClassFor(T, "triage", tier, 0)).toBe("cheap");
+      expect(modelClassFor(T, "triage", tier, 0, true)).toBe("standard");
+    }
+  });
+
+  it("an agent_failed attempt bumps only triage, not implement, review or resolve", () => {
+    expect(modelClassFor(T, "implement", 1, 0, true)).toBe("standard");
+    expect(modelClassFor(T, "resolve", 1, 0, true)).toBe("standard");
+    expect(modelClassFor(T, "review", 1, 0, true)).toBe("standard");
+  });
+
+  it("with retry_up false, a triage run after an agent_failed attempt stays cheap", () => {
+    const table = parseModelBy({ ...DEFAULT_MODEL_BY, retry_up: false });
+    expect(modelClassFor(table, "triage", 1, 0, true)).toBe("cheap");
+  });
+
   it("retry_up false turns the bump off", () => {
     const table = parseModelBy({ ...DEFAULT_MODEL_BY, retry_up: false });
     expect(modelClassFor(table, "implement", 1, 2)).toBe("standard");
@@ -176,6 +194,43 @@ describe("the worker", () => {
     const [run] = await store.listRuns(item.id);
     return { run: run!, runner };
   }
+
+  /** Two triage runs of one item: the first ends as `first` scripts it, the second is a retry run queued after it. */
+  async function triageRetry(first: () => { status: "failed" | "timed_out"; error: string }, table: ModelTable = DEFAULT_MODEL_TABLE) {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } });
+    let calls = 0;
+    const runner = new FakeRunner({ triage: () => (calls++ === 0 ? first() : { output: triageSpec }) });
+    const worker = new Worker({
+      id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
+      clock, config, prompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(), models: { table },
+    });
+    expect(await worker.tick()).toBe(true);
+    await store.enqueueRun({ work_item_id: item.id, kind: "triage", idempotency_key: "t2" });
+    expect(await worker.tick()).toBe(true);
+    const runs = await store.listRuns(item.id);
+    return { runs, classes: runner.specs.map((s) => s.model_class) };
+  }
+
+  it("a triage run on attempt 1 uses cheap; the retry after an agent_failed attempt uses standard", async () => {
+    const { runs, classes } = await triageRetry(() => ({ status: "failed", error: "error_max_structured_output_retries" }));
+    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "agent_failed" });
+    expect(classes).toEqual(["cheap", "standard"]);
+    expect(runs[1]!.outcome).toMatchObject({ status: "succeeded", data: { model_class: "standard" } });
+  });
+
+  it("with retry_up false, the triage retry after an agent_failed attempt stays cheap", async () => {
+    const table = parseModelBy({ ...DEFAULT_MODEL_BY, retry_up: false });
+    const { classes } = await triageRetry(() => ({ status: "failed", error: "boom" }), table);
+    expect(classes).toEqual(["cheap", "cheap"]);
+  });
+
+  it("a triage retry after a failure other than agent_failed (a timeout) stays cheap", async () => {
+    const { runs, classes } = await triageRetry(() => ({ status: "timed_out", error: "too slow" }));
+    expect(runs[0]!.outcome).toMatchObject({ status: "failed", error_code: "agent_timed_out" });
+    expect(classes).toEqual(["cheap", "cheap"]);
+  });
 
   it("records the model class and model name in the run outcome, next to the token usage", async () => {
     const { run, runner } = await triageOnce({ table: DEFAULT_MODEL_TABLE, names: { cheap: "haiku", standard: "sonnet", strong: "opus" } });

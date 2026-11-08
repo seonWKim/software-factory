@@ -192,7 +192,7 @@ describe("the GitHub preflight in the broker", () => {
       clock: { now: () => new Date() } as never, repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
-    return broker.call(ctx, "github.preflight", { branch: `factory/${item.id}`, base_ref: "main" });
+    return broker.call(ctx, "forge.preflight", { branch: `factory/${item.id}`, base_ref: "main" });
   }
 
   it("a DNS or connect error from fetch is network_unavailable with the host only", async () => {
