@@ -29,11 +29,28 @@ export interface TopicDescriptor {
   readonly consumption: Consumption;
   readonly retentionMs: number;
   readonly backoff: Backoff;
+  /**
+   * Competing topics only: what a consumer must be able to do to claim the message (`sandbox=docker`,
+   * `model=strong`). A consumer claims it only when every requirement is among its capabilities. Defaults to none.
+   */
+  readonly requires: (m: Envelope) => readonly string[];
 }
 
 export const DEFAULT_BACKOFF: Backoff = { baseMs: 1_000, maxMs: 300_000, maxAttempts: 8 };
 export const DEFAULT_PARTITIONS = 16;
 export const TOPIC_NAME = /^[a-z]+(?:\.[a-z]+)+$/;
+/** A requirement or capability: `key=value` in lowercase, e.g. `sandbox=docker`. */
+export const CAPABILITY = /^[a-z][a-z0-9_]*=[a-z0-9_.:-]+$/;
+
+const NO_REQUIREMENTS = (): readonly string[] => [];
+
+/** A message's requirements, checked, without repeats and sorted: the form the bus stores and compares. */
+export function requirementsOf(topic: TopicDescriptor, m: Envelope): string[] {
+  const out = [...new Set(topic.requires(m))].sort();
+  const bad = out.filter((r) => !CAPABILITY.test(r));
+  if (bad.length > 0) throw new Error(`${topic.name} ${m.type} ${m.id}: requirement ${bad.join(", ")} is not key=value`);
+  return out;
+}
 
 const DAY_MS = 86_400_000;
 
@@ -46,10 +63,13 @@ export function defineTopic(t: {
   consumption: Consumption;
   retentionDays: number;
   backoff?: Partial<Backoff>;
+  requires?: (m: Envelope) => readonly string[];
 }): TopicDescriptor {
   if (!TOPIC_NAME.test(t.name)) throw new Error(`topic name "${t.name}" must be dotted lowercase, e.g. runs.requests`);
   if (Object.keys(t.messages).length === 0) throw new Error(`topic "${t.name}" declares no message type`);
   if (!(t.retentionDays > 0)) throw new Error(`topic "${t.name}" needs a retention`);
+  // A partition's owner takes every message in order: it cannot skip one it is unable to run.
+  if (t.requires && t.consumption !== "competing") throw new Error(`topic "${t.name}": only a competing topic takes requires`);
   return {
     kind: "topic",
     name: t.name,
@@ -60,6 +80,7 @@ export function defineTopic(t: {
     consumption: t.consumption,
     retentionMs: t.retentionDays * DAY_MS,
     backoff: { ...DEFAULT_BACKOFF, ...t.backoff },
+    requires: t.requires ?? NO_REQUIREMENTS,
   };
 }
 

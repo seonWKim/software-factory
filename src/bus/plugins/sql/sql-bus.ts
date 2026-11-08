@@ -8,13 +8,14 @@
 //   A failed message keeps the cursor on it until it succeeds or is dead-lettered (head-of-line wait).
 //   A delayed message whose time has not come is parked in the retries table and the cursor moves past it,
 //   so a durable timer never holds up the other actors of its partition; it is delivered once due.
-// - Competing topics: any consumer claims any due row; a failed row waits alone.
+// - Competing topics: any consumer claims any due row whose `requires` are among its capabilities; a failed row
+//   waits alone.
 // - Every time comparison is against the scheduler's release horizon (bus_scheduler), never a clock.
 
 import { envelopeProblems, newMessageId, type Envelope } from "../../../shared/envelope.js";
-import { maxRedeliveryMs, partitionOf, type TopicDescriptor } from "../../../shared/topic.js";
+import { CAPABILITY, maxRedeliveryMs, partitionOf, requirementsOf, type TopicDescriptor } from "../../../shared/topic.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
-import type { Dialect, Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
+import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
 import { P, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { MESSAGE_COLUMNS, addMs, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
@@ -53,6 +54,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   private readonly leaseMs: number;
   private readonly relayBatch: number;
   private readonly outboxRetentionMs: number;
+  private readonly capabilities: readonly string[];
   private readonly byName = new Map<string, TopicDescriptor>();
   private readonly byType = new Map<string, TopicDescriptor>();
   /** Groups whose cursor rows exist; only saves a write, the rows themselves are the state. */
@@ -68,6 +70,10 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     this.leaseMs = o.leaseMs ?? DEFAULT_LEASE_MS;
     this.relayBatch = o.relayBatch ?? DEFAULT_RELAY_BATCH;
     this.outboxRetentionMs = o.outboxRetentionMs ?? DEFAULT_OUTBOX_RETENTION_MS;
+    const capabilities = [...new Set(o.capabilities ?? [])];
+    const bad = capabilities.filter((c) => !CAPABILITY.test(c));
+    if (bad.length > 0) throw new Error(`capability ${bad.join(", ")} is not key=value`);
+    this.capabilities = capabilities;
     for (const t of o.topics) {
       this.byName.set(t.name, t);
       for (const type of Object.keys(t.messages)) this.byType.set(type, t);
@@ -86,6 +92,8 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
         problems.push(`idempotency_key_ttl_ms ${m.idempotency_key_ttl_ms} is below ${topic.name}'s maximum redelivery (${floor} ms)`);
       }
       if (problems.length > 0) throw new Error(`cannot publish ${m.type} ${m.id}: ${problems.join("; ")}`);
+      // Checked here, so a bad requirement fails its producer and never the relay.
+      requirementsOf(topic, m);
       await tx.run(`INSERT INTO ${this.outbox} (topic, message_id, envelope, commit_id, created_at) VALUES (?, ?, ?, ?, ?)`, [
         topic.name,
         m.id,
@@ -103,32 +111,39 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
         `SELECT seq, topic, envelope FROM ${this.outbox} WHERE published_at IS NULL ORDER BY seq LIMIT ${this.relayBatch}${this.db.dialect.forUpdate}`,
       );
       for (const r of rows) {
-        const topic = this.topic(String(r.topic));
-        const m = JSON.parse(String(r.envelope)) as Envelope;
-        const key = topic.partitionKey(m);
-        await tx.run(insertOrSkip(this.dialect, `${topicTables(topic.name).messages} (${MESSAGE_COLUMNS}) VALUES (${Array(17).fill("?").join(", ")})`), [
-          m.id,
-          m.type,
-          m.schema_version,
-          m.subject,
-          key,
-          partitionOf(key, topic.partitions),
-          m.project_id,
-          m.idempotency_key,
-          m.idempotency_key_ttl_ms,
-          m.causation_id,
-          m.correlation_id,
-          m.passport_id,
-          m.producer,
-          m.occurred_at,
-          m.not_before,
-          JSON.stringify(m.payload),
-          tick.now,
-        ]);
+        await this.insertMessage(tx, this.topic(String(r.topic)), JSON.parse(String(r.envelope)) as Envelope, tick.now);
         await tx.run(`UPDATE ${this.outbox} SET published_at = ? WHERE seq = ?`, [tick.now, Number(r.seq)]);
       }
       return rows.length;
     });
+  }
+
+  /** Writes one message to its topic's table; a message id already there is skipped. */
+  private async insertMessage(tx: SqlExecutor, topic: TopicDescriptor, m: Envelope, publishedAt: string): Promise<void> {
+    const key = topic.partitionKey(m);
+    const values: SqlValue[] = [
+      m.id,
+      m.type,
+      m.schema_version,
+      m.subject,
+      key,
+      partitionOf(key, topic.partitions),
+      m.project_id,
+      m.idempotency_key,
+      m.idempotency_key_ttl_ms,
+      m.causation_id,
+      m.correlation_id,
+      m.passport_id,
+      m.producer,
+      m.occurred_at,
+      m.not_before,
+      JSON.stringify(m.payload),
+      publishedAt,
+    ];
+    const competing = topic.consumption === "competing";
+    if (competing) values.push(JSON.stringify(requirementsOf(topic, m)));
+    const columns = competing ? `${MESSAGE_COLUMNS}, requires` : MESSAGE_COLUMNS;
+    await tx.run(insertOrSkip(this.dialect, `${topicTables(topic.name).messages} (${columns}) VALUES (${values.map(() => "?").join(", ")})`), values);
   }
 
   /** Inserts `(consumer, idempotency_key)` with the caller's state change; a key seen before is a duplicate. */
@@ -227,11 +242,13 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
 
   private async consumeRows(group: string, topic: TopicDescriptor, max: number, horizon: string): Promise<Claimed[]> {
     const t = topicTables(topic.name);
+    // `requires` met: with every capability's quoted form taken out, no quoted requirement is left in the JSON list.
+    const unmet = this.capabilities.reduce((sql) => `REPLACE(${sql}, ?, '')`, "m.requires");
     const rows = await this.db.all(
       `SELECT m.*, r.attempt AS r_attempt FROM ${t.messages} m LEFT JOIN ${t.retries} r ON r.consumer_group = ? AND r.message_seq = m.seq ` +
         `WHERE m.acked_at IS NULL AND (m.claim_until IS NULL OR m.claim_until <= ?) AND (m.not_before IS NULL OR m.not_before <= ?) ` +
-        `AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= ?) ORDER BY m.seq LIMIT ${Math.max(0, Math.floor(max))}`,
-      [group, horizon, horizon, horizon],
+        `AND (r.next_attempt_at IS NULL OR r.next_attempt_at <= ?) AND ${unmet} NOT LIKE '%"%' ORDER BY m.seq LIMIT ${Math.max(0, Math.floor(max))}`,
+      [group, horizon, horizon, horizon, ...this.capabilities.map((c) => JSON.stringify(c))],
     );
     const out: Claimed[] = [];
     for (const r of rows) {
