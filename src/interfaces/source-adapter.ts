@@ -180,7 +180,7 @@ interface SourceAdapterBase {
    */
   fileSubIssue?(input: SubIssueInput): Promise<SourceRef>;
   /**
-   * Files one standalone item, without the intake label (a person starts it), and returns its ref. Idempotent:
+   * Files one standalone item, taken in for triage (the intake label, or a queued triage run), and returns its ref. Idempotent:
    * the marker is looked up first, so an item already carrying `input.marker` is returned, never filed twice.
    * Throws on a source failure; the caller retries. Agents never call this. Absent on sources that cannot file.
    */

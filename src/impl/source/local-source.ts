@@ -15,7 +15,7 @@ import type { IssueInput, PollResult, PollSource, SourceCloseReason, SubIssueInp
  * that source, is the sub-task, and filing again returns the same ref.
  *
  * `fileIssue` (design §7, filed failure patterns) creates a local work item, keyed on a source id derived from the
- * marker, with no triage run queued: a person starts it. Filing again finds the same item.
+ * marker, with its triage run queued as `factory task create` queues one. Filing again finds the same item and run.
  */
 export class LocalSource implements PollSource {
   readonly intake = "poll";
@@ -49,7 +49,7 @@ export class LocalSource implements PollSource {
   /** The store holds the item's state; there is nothing to close elsewhere. */
   async closeIssue(_source: SourceRef, _reason?: SourceCloseReason): Promise<void> {}
 
-  /** A new local work item for `input`, idempotent on its marker-derived source id; no run is queued. */
+  /** A new local work item for `input` with its triage run queued, idempotent on its marker-derived source id. */
   async fileIssue(input: IssueInput): Promise<SourceRef> {
     const id = `local-filed-${createHash("sha256").update(input.marker).digest("hex").slice(0, 16)}`;
     const source = { type: "local", id, link: `local:${id}` };
@@ -59,6 +59,7 @@ export class LocalSource implements PollSource {
         problem: `${input.title}\n\n${input.body}\n\n${input.marker}`, resources: [source.link],
       },
       { kind: "system", id: input.requester_id },
+      { enqueue: { kind: "triage", idempotency_key: `${source.type}:${source.id}:triage` } },
     );
     return source;
   }

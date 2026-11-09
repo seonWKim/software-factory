@@ -17,11 +17,16 @@ import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { UsersPage } from "./views/users.js";
 
-/** "updated Ns ago", ticking each second. */
-function useAgo(at: number): string {
+/** "updated Ns ago", ticking each second; below sm only "Ns" shows, the rest stays for screen readers. */
+function Ago({ at }: { at: number }) {
   const now = useNow();
-  if (at === 0) return "not updated yet";
-  return `updated ${Math.max(0, Math.floor((now - at) / 1000))}s ago`;
+  if (at === 0) return <>not updated yet</>;
+  return (
+    <>
+      <span className="max-sm:sr-only">updated </span>
+      {Math.max(0, Math.floor((now - at) / 1000))}s<span className="max-sm:sr-only"> ago</span>
+    </>
+  );
 }
 
 const VIEWS: Record<string, () => JSX.Element> = {
@@ -74,7 +79,6 @@ export function App() {
     refetchIntervalInBackground: false,
   });
   const client = useQueryClient();
-  const ago = useAgo(overview.dataUpdatedAt);
   const [theme, setTheme] = useState<Theme>(storedTheme);
   const [path, navigate] = useLocationPath();
   const route = routeFor(path);
@@ -105,7 +109,8 @@ export function App() {
           </div>
         </aside>
         <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex items-center gap-3 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          {/* Wraps instead of widening the page on a narrow screen. */}
+          <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
             <Link
               href={BASE}
               data-testid="needs-you"
@@ -121,12 +126,12 @@ export function App() {
               Settings
             </Link>
             <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-zinc-600 tabular-nums dark:text-zinc-400" aria-live="polite">
-              {overview.isError ? "update failed" : ago}
+              {overview.isError ? "update failed" : <Ago at={overview.dataUpdatedAt} />}
             </span>
-            <Button aria-label="Refresh" onClick={() => void client.invalidateQueries()}>
+            <Button aria-label="Refresh" className="shrink-0" onClick={() => void client.invalidateQueries()}>
               <RefreshCw aria-hidden className="size-4" />
             </Button>
-            <Button aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} onClick={toggle}>
+            <Button aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"} className="shrink-0" onClick={toggle}>
               {theme === "dark" ? <Sun aria-hidden className="size-4" /> : <Moon aria-hidden className="size-4" />}
             </Button>
           </header>

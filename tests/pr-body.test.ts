@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { canAutoMerge } from "../src/core/policy.js";
-import { lastPrNotes, prBody, splitSummary } from "../src/core/pr-body.js";
+import { inShortParagraphs, lastPrNotes, prBody, splitSummary } from "../src/core/pr-body.js";
 import type { Run } from "../src/core/types.js";
 import { openOrUpdatePr } from "../src/impl/github/pull-requests.js";
 import { GitHubError, type GitHubClient } from "../src/impl/github/github-client.js";
@@ -51,6 +51,11 @@ describe("PR body layout (issue #229)", () => {
     expect(body).toContain("## What changed\n\nplain text");
     expect(body).toContain("No pre-push checks ran.");
     expect(body).not.toContain("Closes");
+  });
+
+  it("In short renders AS-IS and TO-BE as two paragraphs", () => {
+    const body = prBody({ summary: SUMMARY, missing: [], deviations: [], checks: [], issue: null, item_id: "wi_3" });
+    expect(body).toContain("## In short (AS-IS → TO-BE)\n\nAS-IS: x.\n\nTO-BE: y.\n");
   });
 
   it("splitSummary keeps In short's subsections with it", () => {
@@ -157,5 +162,22 @@ describe("openPr updates an open PR (issue #229)", () => {
     const r = await b.open_pr({ branch: b.branch, base_ref: "main", title: "T", body: "B", labels: { "sf: incomplete": false } });
     expect(r).toMatchObject({ number: 9 });
     expect(b.calls[1]).toMatchObject({ method: "POST", path: "/repos/o/r/pulls" });
+  });
+});
+
+describe("inShortParagraphs", () => {
+  it("splits one paragraph, plain or bold labels, at the TO-BE label", () => {
+    expect(inShortParagraphs("AS-IS: Eight files differ.   TO-BE: One helper.")).toBe("AS-IS: Eight files differ.\n\nTO-BE: One helper.");
+    expect(inShortParagraphs("**AS-IS:** a. **TO-BE:** b.")).toBe("**AS-IS:** a.\n\n**TO-BE:** b.");
+  });
+
+  it("puts a blank line between labels on adjacent lines and keeps an already split text as it is", () => {
+    expect(inShortParagraphs("  AS-IS: a. \nTO-BE: b.\n")).toBe("AS-IS: a.\n\nTO-BE: b.");
+    expect(inShortParagraphs("AS-IS: a.\n\nTO-BE: b.")).toBe("AS-IS: a.\n\nTO-BE: b.");
+  });
+
+  it("leaves text without both labels as it is", () => {
+    expect(inShortParagraphs("AS-IS: a. Nothing else.")).toBe("AS-IS: a. Nothing else.");
+    expect(inShortParagraphs("## In short (AS-IS → TO-BE)\n\nOne plain line.")).toBe("## In short (AS-IS → TO-BE)\n\nOne plain line.");
   });
 });

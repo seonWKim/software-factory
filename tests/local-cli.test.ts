@@ -3,10 +3,11 @@ import { describe, expect, it } from "vitest";
 import { cliUserConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
-  CLI_COMMANDS, CLI_TOP_WORDS, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, parseLocalCliArgs,
+  CLI_TOP_WORDS, type CliAction, type CliIdentity, type LocalCliDeps, cliCommandListMarkdown, cliIdentity, parseLocalCliArgs,
   runLocalCli,
 } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
+import { COMMAND_TABLE, cliUsageOf } from "../src/core/command-table.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
@@ -69,9 +70,9 @@ describe("parseLocalCliArgs", () => {
     }
   });
 
-  it("the top-level words are the first word of every command, and each has a table entry", () => {
-    expect([...new Set(CLI_COMMANDS.map((c) => c.name.split(" ")[0]))]).toEqual([...CLI_TOP_WORDS]);
-    for (const c of CLI_COMMANDS) expect(c.usage.startsWith(c.name)).toBe(true);
+  it("the top-level words are the first word of every task, item and users command in the command table", () => {
+    const local = COMMAND_TABLE.filter((c) => c.group !== "settings");
+    expect([...new Set(local.map((c) => c.name.split(" ")[0]))]).toEqual([...CLI_TOP_WORDS]);
   });
 });
 
@@ -297,10 +298,10 @@ describe("local users", () => {
 });
 
 describe("SET_UP.md", () => {
-  it("lists every CLI command, exactly as the CLI's command table has them", () => {
+  it("lists every CLI command, exactly as the command table has them", () => {
     const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
     expect(setup).toContain(cliCommandListMarkdown());
     const listed = setup.split("\n").filter((l) => l.startsWith("- `factory ")).map((l) => /^- `factory ([^`]+)`/.exec(l)![1]);
-    expect(listed).toEqual(CLI_COMMANDS.map((c) => c.usage));
+    expect(listed).toEqual(COMMAND_TABLE.map(cliUsageOf));
   });
 });

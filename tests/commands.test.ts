@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, appliesOnPr, commandFooter, commandPhase, commandSpec,
   commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, retryPathsReply,
   unknownCommandReply,
 } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { CLI_COMMANDS, cliHelpLine } from "../src/core/local-cli.js";
+import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { WorkItemPatch } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
@@ -131,7 +131,7 @@ describe("command table", () => {
     expect(r).not.toContain("`/retry` **(now)**");
     const cli = r.split("\n").filter((l) => l.includes("`factory task "));
     expect(cli).toEqual([cliHelpLine()]);
-    for (const c of CLI_COMMANDS) expect(cli[0]).toContain(`\`factory ${c.usage}\``);
+    for (const c of COMMAND_TABLE) expect(cli[0]).toContain(`\`factory ${cliUsageOf(c)}\``);
   });
 
   it("a failed implement run has its own phases: too_large for diff_too_large, failed_implement for any other failure", () => {
@@ -318,14 +318,20 @@ describe("footers match what the controller accepts", () => {
     };
     return { store, source, controller, itemIn };
   }
+  type Harness = Awaited<ReturnType<typeof harness>>;
 
   /** The issue part of a footer: the PR block (if any) comes before it. */
   const issuePart = (footer: string) => footer.slice(footer.indexOf("Commands you can reply with now:"));
 
-  it("for every phase, with and without a PR, a command is refused exactly when the footer leaves it out", async () => {
-    const { source, controller, itemIn } = await harness();
-    let n = 0;
-    for (const phase of COMMAND_PHASES) {
+  // One test per phase on one shared harness: all phases in one test drove 264 controller events and took over 5 s
+  // under full-suite load. Every phase makes its own items on its own issue numbers, so no phase sees another's.
+  describe("for every phase, with and without a PR, a command is refused exactly when the footer leaves it out", () => {
+    let h: Harness;
+    beforeAll(async () => { h = await harness(); });
+
+    COMMAND_PHASES.forEach((phase, i) => it(phase, async () => {
+      const { source, controller, itemIn } = h;
+      let n = 1 + i * 20;
       for (const pr of [null, 42]) {
         const state = { phase, has_pr: pr !== null };
         const footer = commandFooter(state);
@@ -341,7 +347,7 @@ describe("footers match what the controller accepts", () => {
           expect({ phase, pr, name, listed: issuePart(footer).includes(`\`${spec.usage}\``) }).toEqual({ phase, pr, name, listed: !refused });
         }
       }
-    }
+    }));
   });
 
   it("for every phase, a /revise on the item's PR is refused exactly when the footer's PR block leaves it out", async () => {
@@ -396,9 +402,10 @@ describe("footers match what the controller accepts", () => {
     }
   });
 
-  it("no refusal, /help or unknown-command reply in any state names a raw stage; /help names the state by its label", async () => {
-    const { source, controller, itemIn } = await harness();
+  // One test per phase on one shared harness, as above: all phases in one test drove 400 controller events.
+  describe("no refusal, /help or unknown-command reply in any state names a raw stage; /help names the state by its label", () => {
     const RAW = /\b(NEW|READY|RUNNING|REVIEW|CLOSED)\b/;
+    const isReply = (marker: string) => /^<!-- factory:(refused|help|unknown):/.test(marker);
     const extra = (n: number): SourceEvent[] => {
       const base = { source: issueRef(n), comment_id: String(n), requester: alice };
       // /resolve last: at a merge conflict it applies, and the two replies before it describe the state.
@@ -408,25 +415,31 @@ describe("footers match what the controller accepts", () => {
         { kind: "resolve_requested", ...base, notes: "", pr: null },
       ];
     };
-    const stateOf = new Map<string, { phase: CommandPhase; pr: number | null }>();
-    let n = 10_000;
-    for (const phase of COMMAND_PHASES) {
+    let h: Harness;
+    beforeAll(async () => { h = await harness(); });
+
+    COMMAND_PHASES.forEach((phase, i) => it(phase, async () => {
+      const { source, controller, itemIn } = h;
+      const issues = new Set<string>();
+      let n = 10_000 + i * 20;
       for (const pr of [null, 42]) {
         // One item per command, so each sees the state, not what an earlier command made of it.
         for (const make of [...ACTING.map((name) => (k: number) => [event(name, k)]), extra]) {
           n++;
           await itemIn(phase, pr, n);
-          stateOf.set(issueRef(n).id, { phase, pr });
+          issues.add(issueRef(n).id);
           for (const e of make(n)) await controller.handleEvent(e);
         }
         const help = source.comments.find((c) => c.marker === `<!-- factory:help:${n}h -->`)!;
         expect(help.body).toContain(`(${phaseLabel(phase)})`);
       }
-    }
-    const replies = source.comments.filter((c) => /^<!-- factory:(refused|help|unknown):/.test(c.marker));
-    expect(replies.filter((c) => c.marker.includes(":refused:")).length).toBeGreaterThan(50);
-    for (const c of replies) {
-      expect({ ...stateOf.get(c.source.id), body: c.body, raw: RAW.test(c.body) }).toMatchObject({ raw: false });
-    }
+      for (const c of source.comments.filter((c) => isReply(c.marker) && issues.has(c.source.id))) {
+        expect({ phase, body: c.body, raw: RAW.test(c.body) }).toMatchObject({ raw: false });
+      }
+    }));
+
+    it("the phases above were refused often enough to test the refusals", () => {
+      expect(h.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:")).length).toBeGreaterThan(50);
+    });
   });
 });
