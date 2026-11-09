@@ -21,6 +21,12 @@ What it does: the forge is where pull requests live. The `Forge` interface (`src
   branch to the sha the run stored in the factory repo, reconciling first (already there: `already`); `openPr` opens
   the branch's PR or updates the open one. Both throw on a failure, the message starting with its class; outbound
   retries. Absent: no process here delivers a run's push.
+- **Project key** (`projectIdentity()`, optional; new method 2026-11-10): the configured repo as a project, its key
+  from the forge's permanent repository ID and its label from the path the forge reports now. Startup reads the key
+  through it (`src/compose.ts`, startupProject: the stored key first, this read only on a first start or as one
+  background label refresh) and never calls a GitHub client for it. An error marked `permanent` (bad credentials, no
+  such repository) stops a first start; any other is retried. Absent, or no forge selected: the stored key, else the
+  local key (`local:local:<hash of owner/name>`), with no forge call. Solo default: no forge, the local key.
 - **Base push** (`pushBase(input)`, optional; absent: the forge cannot push a base and no row is queued). Moves the remote base branch to `input.sha` only while it is still at `input.expected_sha`, never running a hook; throws on any failure, and the caller retries.
 
 `"none"` (or `null`, `false`, `""`) selects no forge. Next to `github-issues` an off value fails startup with a message naming `plugins.forge` and `github-issues`: that source's PRs would never close their items (one silent path fewer; it may be allowed later if someone needs it). An unknown name fails startup, naming `Forge`, `plugins.forge` and every available name. The forge is never a guard.
@@ -45,11 +51,17 @@ Plugins:
     `github-push` and `github-change` targets are their only callers (RFC 0015 M7; the broker's `github.push_branch`
     and `github.open_pr` are gone).
   - `pushBase`: one `git push --no-verify --force-with-lease=refs/heads/<base>:<expected_sha> origin <sha>:refs/heads/<base>` from the factory repo (`repo.path`), only for the configured base branch. It goes through the factory repo's own git configuration for origin, as the sandbox's fetches do, and makes no API call. Not built: pushing with the App credentials.
+  - `projectIdentity`: one `GET /repos/<owner>/<name>` (`resolveProject`), the key `github:<host>:<node id>`
+    (`githubProjectKey`). Both are defined in the descriptor `src/impl/github/forge.plugin.ts`, so the CLI's
+    `settings --project`, `migrate` and `golden add` resolve the key without loading the forge, and a config with no
+    GitHub plugin loads no GitHub implementation module.
   - Secrets: none of its own (the shared client's `GitHubCredentials`).
 
 Switch back / disable: drop `github-issues` from `plugins.source` and leave `plugins.forge` out, or set it to `"none"` with no `github-issues`.
 
 ## History
+
+- **`projectIdentity`** (new method, 2026-11-10). Before: startup in `src/compose.ts` called the GitHub client's repository lookup itself, through `resolveProject` defined there.
 
 - **`closePr` on a reject** (decision changed 2026-11-09, issue #452). Before: `closePr` was called only when a person closed the item's source issue; a `/reject` left the PR open.
 - **`mergePr`** (new method, 2026-11-08, issue #451). Before: the forge had no merge call; a PR was merged only by a person on GitHub, and the dashboard could not merge a GitHub item.
