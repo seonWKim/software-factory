@@ -76,7 +76,7 @@ export class AlarmsUnit {
   async releaseStep(): Promise<void> {
     const store = this.c.k.d.store;
     for (const it of await store.listWorkItemsWhere({ blocked_on: "upstream", exclude_closed: true, limit: 500 })) {
-      const key = heldKey(it, await this.c.k.reader.listStateChanges(it.id));
+      const key = await heldKey(it, () => this.c.k.reader.listStateChanges(it.id));
       if (key === null) continue;
       const ref = (await store.getFiledPattern(it.project, key))?.filed_ref;
       const fix = ref ? await store.getWorkItemBySource(ref.type, ref.id) : null;

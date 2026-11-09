@@ -125,8 +125,8 @@ export interface AlarmDeps {
  * One alarm step: reads the runs finished inside the window and the restart list, and stores each pattern found
  * unless it alerted within ALERT_DEDUPE_MS. A detail the egress scanner flags is dropped; the code and count stay.
  * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`. Each recurring
- * pattern re-raises first (`reraise`). Returns the alerts this call stored. Safe to run twice and on several replicas at
- * once: the store's conditional insert dedupes.
+ * pattern re-raises first (`reraise`). Returns the alerts this call stored. Safe to run twice and on several
+ * replicas at once: the store's conditional insert dedupes.
  */
 export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number }): Promise<Alert[]> {
   const now = d.clock.now();
@@ -160,9 +160,10 @@ function recentPatterns(runs: readonly Run[], now: Date): FailureGroup[] {
 /**
  * Re-raises each recurring pattern: one that already alerted (its repeated-error alert) or was filed (its filed
  * pattern), and that failed `threshold` more runs within the last hour after its last re-raise (none yet: after it
- * was first known, the earlier of its alert and its filing). The re-raise is an alert (pattern `repeated_error`, key `recurring:<key>`) the store dedupes for
- * RERAISE_WINDOW_MS, so of several replicas or steps exactly one stores it, at most once an hour. That one holds the
- * pattern's items and comments the count since filing on its filed item. Returns the re-raises it stored.
+ * was first known, the earlier of its alert and its filing). The re-raise is an alert (pattern `repeated_error`, key
+ * `recurring:<key>`) the store dedupes for RERAISE_WINDOW_MS, so of several replicas or steps exactly one stores it,
+ * at most once an hour. That one holds the pattern's items and comments the count since filing on its filed item.
+ * Returns the re-raises it stored.
  */
 async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold: number): Promise<Alert[]> {
   const finished = new Map(runs.map((r) => [r.id, Date.parse(r.finished_at ?? "")]));
@@ -245,7 +246,7 @@ export interface HeldPattern {
 }
 
 /** The state change reason of a held item's release (design 05-alarms); its hold's is `recurring_failure`. */
-export const RELEASED = "recurring_failure_released";
+const RELEASED = "recurring_failure_released";
 
 /** The hold of an item a recurring pattern hit, or null: closed, or something else blocks it. */
 export function holdPatch(it: Pick<WorkItem, "stage" | "blocked_on">, pattern_key: string) {
@@ -253,10 +254,12 @@ export function holdPatch(it: Pick<WorkItem, "stage" | "blocked_on">, pattern_ke
   return { patch: { blocked_on: "upstream" as const, blocked_reason: RECURRING_FAILURE }, reason: RECURRING_FAILURE, detail: { pattern_key } };
 }
 
-/** The pattern key a held item waits on (its last hold's), or null when it is not held. */
-export function heldKey(it: Pick<WorkItem, "blocked_reason">, changes: readonly Pick<StateChange, "reason" | "detail">[]): string | null {
+/** The pattern key a held item waits on (its last hold's), or null when it is not held; `changes` read only when held. */
+export async function heldKey(
+  it: Pick<WorkItem, "blocked_reason">, changes: () => Promise<readonly Pick<StateChange, "reason" | "detail">[]>,
+): Promise<string | null> {
   if (it.blocked_reason !== RECURRING_FAILURE) return null;
-  const key = changes.filter((c) => c.reason === RECURRING_FAILURE).at(-1)?.detail?.pattern_key;
+  const key = (await changes()).filter((c) => c.reason === RECURRING_FAILURE).at(-1)?.detail?.pattern_key;
   return typeof key === "string" ? key : null;
 }
 
