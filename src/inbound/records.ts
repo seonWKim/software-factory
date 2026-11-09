@@ -2,7 +2,6 @@
 // here runs in the caller's transaction, beside the outbox rows that announce it.
 
 import type { SourceType } from "../core/types.js";
-import type { CommandPassport, ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { CliCommand, SyncFence } from "../interfaces/factory-store.js";
 import type { ForgeEvent } from "../interfaces/forge.js";
 import type { SourceEvent } from "../interfaces/source-adapter.js";
@@ -11,6 +10,8 @@ import type { Dialect, Row, SqlExecutor } from "../state/index.js";
 
 /** What an adapter read: a source's event or the forge's. */
 export type InboundEvent = SourceEvent | ForgeEvent;
+/** Who sent a command event, as its source names them. */
+type Actor = Extract<SourceEvent, { kind: "spec_approved" }>["approver"];
 
 /** A raw record's id, the claim check its messages carry: `rec_<seq>` (RFC 0015 §12, `inbound_raw_records`). */
 export function recordId(seq: number): string {
@@ -96,13 +97,13 @@ export async function readRecord(
 }
 
 /** Who sent a person's command event (an approve, a retry, ...); null for any other event (a plain comment, an item request). */
-export function commandActor(e: InboundEvent): ExternalIdentity | null {
+export function commandActor(e: InboundEvent): Actor | null {
   if (!("comment_id" in e) || e.kind === "plain_comment") return null;
   return "approver" in e ? e.approver : e.requester;
 }
 
 /** `e` with its command actor carrying `passport`; any other event unchanged. */
-function withPassport(e: InboundEvent, passport: CommandPassport): InboundEvent {
+function withPassport(e: InboundEvent, passport: NonNullable<Actor["passport"]>): InboundEvent {
   if (!("comment_id" in e) || e.kind === "plain_comment") return e;
   return "approver" in e ? { ...e, approver: { ...e.approver, passport } } : { ...e, requester: { ...e.requester, passport } };
 }
