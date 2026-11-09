@@ -122,7 +122,7 @@ describe("slack plugin secrets", () => {
     const log = recordingLog();
     const socket = new FakeSocket();
     const source = new SlackSource({
-      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null } as unknown as SlackSourceDeps["store"], repo: REPO, log,
+      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null, recordItemMessage: async () => { throw new Error("no item: nothing to record"); } } as unknown as SlackSourceDeps["store"], repo: REPO, log,
     });
     socket.push(eventEnvelope(mention("1800000001.000100", "hello")));
     const ac = new AbortController();

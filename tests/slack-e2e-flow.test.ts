@@ -165,9 +165,9 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     expect(thread[1]).not.toContain("&lt;details");
     expect(thread[2]).toBe("*Factory review: pass*\n\nthe gate is right\n\nTier recheck: 2");
     expect(thread[3]).toMatch(/^<https:\/\/github\.com\/o\/r\/pull\/42\|PR #42> passed review \(tier 2\) and its checks passed\. A human merge is required\./);
-    // The item's own conversation in the store holds the same factory messages, once each.
+    // The item's own conversation in the store holds the same factory messages, once each, and the reply between them.
     const stored = (await f.store.listItemMessages((await item(f)).id)).map((m) => m.marker.split(":").slice(0, 2).join(":"));
-    expect(stored).toEqual(["<!-- factory:spec", "<!-- factory:review", "<!-- factory:merge"]);
+    expect(stored).toEqual(["<!-- factory:spec", "slack:1800000001.000200", "<!-- factory:review", "<!-- factory:merge"]);
   });
 
   it("a /verdict typed in the thread is recorded as the linked factory user", async () => {

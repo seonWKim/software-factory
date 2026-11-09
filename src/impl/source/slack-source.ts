@@ -34,10 +34,11 @@ export interface SlackSourceDeps {
   /** G5: every message is scanned before it is posted. */
   scanner: EgressScanner;
   /**
-   * Whether a thread is already a work item, and its PR for the status line; for chat commands (slack-commands.ts),
-   * the account links, the local users, the reads `list` and `show` print, and the command rows they store.
+   * Whether a thread is already a work item, and its PR for the status line; a person's reply in an item's thread,
+   * stored as a thread entry (`recordItemMessage`, issue #480); for chat commands (slack-commands.ts), the account
+   * links, the local users, the reads `list` and `show` print, and the command rows they store.
    */
-  store: ChatStore & Pick<FactoryStore, "getWorkItemBySource">;
+  store: ChatStore & Pick<FactoryStore, "getWorkItemBySource" | "recordItemMessage">;
   /** `settings list` and `settings history` from Slack; absent: they answer that settings are not readable here. */
   settings?: ChatDeps["settings"];
   /** Where PR links point. */
@@ -99,7 +100,8 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * configured channels count, never the bot's own messages, edits, joins or other subtypes. A mention of the bot
  * starts a work item from its thread (`slack:<team>:<channel>:<thread ts>`); a mention followed by a command, a
  * reply in an item's thread and a button press are the same events a GitHub comment gives; a reply in any other
- * thread is not stored. A factory command from the command table (`list`, `show <id>`, `/approve` in an item's
+ * thread is not stored. A person's reply in an item's thread, a command too, is also kept on the item's thread, as
+ * the GitHub source keeps a comment, before its event is returned. A factory command from the command table (`list`, `show <id>`, `/approve` in an item's
  * thread, ...) is run here as the linked factory user (slack-commands.ts): what it stores is stored before any Slack
  * call, then its reply is posted; a failed post leaves the envelope unacked, so Slack sends it again and the keyed row
  * and the reply's marker make the second run change nothing. People are Slack user
@@ -190,6 +192,7 @@ export class SlackSource implements StreamSource {
       // A reply in a thread that is not a work item is other people's conversation: not stored at all.
       const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
       if (!item) return null;
+      await this.keep(item, ts, user, said);
       // Without a mention, a chat command needs its `/`, as an item command does.
       const chat = said.startsWith("/") && parseLink(said) === null ? parseChatCommand(said) : null;
       if (chat) return this.chat(chat, source, user, event_id, item);
@@ -197,18 +200,31 @@ export class SlackSource implements StreamSource {
       return e ? { event: e, key } : null;
     }
     // app_mention: a chat command (the command table's forms, src/core/command-table.ts) runs as the linked user;
-    // `/link` or another command after the mention is that command; else a request from the thread.
+    // `/link` or another command after the mention is that command; else a request from the thread. In an item's
+    // thread the reply is kept first, whatever it is; the mention that starts an item (the thread root) is not.
+    const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
+    if (item && inThread) await this.keep(item, ts, user, said);
     const chat = parseLink(said) === null ? parseChatCommand(said) : null;
-    if (chat) return this.chat(chat, source, user, event_id, await this.d.store.getWorkItemBySource("slack_thread", source.id));
+    if (chat) return this.chat(chat, source, user, event_id, item);
     if (parseLink(said) !== null || parseComment(said) !== null) {
       const e = commentEvent(source, ts, who, said);
       return e ? { event: e, key } : null;
     }
-    if (inThread && (await this.d.store.getWorkItemBySource("slack_thread", source.id))) {
+    if (inThread && item) {
       return { event: { kind: "plain_comment", source, comment_id: ts, author: who, body: said }, key };
     }
     const title = (said.split(/\r?\n/)[0] ?? "").trim().slice(0, TITLE_MAX) || "Slack request";
     return { event: { kind: "item_requested", source, requester: who, title, body: said }, key };
+  }
+
+  /**
+   * A person's reply in an item's thread, kept on the item's thread (issue #480) before its event is returned: marker
+   * `slack:<ts>`, actor the Slack user ID, no delivery (it is already in Slack). A repeat marker stores nothing, so a
+   * redelivery adds no entry; a failed write throws, so the envelope is not acked and Slack sends it again.
+   */
+  private async keep(item: WorkItem, ts: string, user: string, said: string): Promise<void> {
+    if (said === "") return;
+    await this.d.store.recordItemMessage({ work_item_id: item.id, marker: `slack:${ts}`, body: said, actor: `slack:${user}` });
   }
 
   /** A button press on one of the factory's messages: the command it names, as the presser typing it. */
