@@ -50,8 +50,8 @@ describe("ToolBroker run passports", () => {
     const issued = await t.begin();
     expect(issued.passport).toMatchObject({ principal: "service:worker", provider: "service", kind: "run", origin: "run" });
     expect(await t.broker.call(t.ctx(), "git.store_branch", { branch: "factory/wi_1" })).toEqual({ ok: true, content: "git.store_branch" });
-    expect(await t.broker.call(t.ctx(), "github.preflight", { number: 1, body: "x" })).toMatchObject({ ok: true });
-    expect(t.calls).toEqual(["git.store_branch", "github.preflight"]);
+    expect(await t.broker.call(t.ctx(), "forge.preflight", { number: 1, body: "x" })).toMatchObject({ ok: true });
+    expect(t.calls).toEqual(["git.store_branch", "forge.preflight"]);
     expect(await t.audit()).toEqual([
       { principal: "service:worker", action: "use_tool", decision: "allow", reason: "allowed" },
       { principal: "service:worker", action: "use_tool", decision: "allow", reason: "allowed" },
@@ -77,25 +77,25 @@ describe("ToolBroker run passports", () => {
     expect(await t.broker.call(t.ctx("run_2"), "git.store_branch", { branch: "main" })).toMatchObject({ ok: false, message: "git.store_branch: outside_branches" });
     // run_1's token presented for run_2 (a widened passport): the runs caveat refuses it.
     t.setHeld(() => t.runs.passportOf("run_1"));
-    expect(await t.broker.call(t.ctx("run_2"), "github.preflight", {})).toMatchObject({ ok: false, message: "github.preflight: outside_runs" });
+    expect(await t.broker.call(t.ctx("run_2"), "forge.preflight", {})).toMatchObject({ ok: false, message: "forge.preflight: outside_runs" });
     expect(t.calls).toEqual([]);
   });
 
   it("refuses from the next check once the run passport or its worker passport is revoked", async () => {
     const t = await setup();
     const run = await t.begin();
-    expect(await t.broker.call(t.ctx(), "github.preflight", {})).toMatchObject({ ok: true });
+    expect(await t.broker.call(t.ctx(), "forge.preflight", {})).toMatchObject({ ok: true });
     await t.identity.revoke(run.passport.id, "local:owner", "test");
-    expect(await t.broker.call(t.ctx(), "github.preflight", {})).toMatchObject({ ok: false, message: "github.preflight: revoked" });
+    expect(await t.broker.call(t.ctx(), "forge.preflight", {})).toMatchObject({ ok: false, message: "forge.preflight: revoked" });
 
     await t.begin("run_2");
     await t.identity.revoke(run.passport.parent_id!, "local:owner", "worker passport leaked");
-    expect(await t.broker.call(t.ctx("run_2"), "github.preflight", {})).toMatchObject({ ok: false, message: "github.preflight: revoked" });
+    expect(await t.broker.call(t.ctx("run_2"), "forge.preflight", {})).toMatchObject({ ok: false, message: "forge.preflight: revoked" });
     // The next run gets a fresh worker passport.
     const next = await t.begin("run_3");
     expect(next.passport.parent_id).not.toBe(run.passport.parent_id);
-    expect(await t.broker.call(t.ctx("run_3"), "github.preflight", {})).toMatchObject({ ok: true });
-    expect(t.calls).toEqual(["github.preflight", "github.preflight"]);
+    expect(await t.broker.call(t.ctx("run_3"), "forge.preflight", {})).toMatchObject({ ok: true });
+    expect(t.calls).toEqual(["forge.preflight", "forge.preflight"]);
   });
 
   it("reaches another replica's broker on its next revocations tick", async () => {
@@ -105,16 +105,16 @@ describe("ToolBroker run passports", () => {
     await otherTicks.tick(REVOCATIONS_TICK, T0);
     const run = await t.begin();
     await replica.revoke(run.passport.id, "local:owner", "from another replica");
-    expect(await t.broker.call(t.ctx(), "github.preflight", {})).toMatchObject({ ok: true });
+    expect(await t.broker.call(t.ctx(), "forge.preflight", {})).toMatchObject({ ok: true });
     await t.ticks.tick(REVOCATIONS_TICK, T0 + 10_000);
-    expect(await t.broker.call(t.ctx(), "github.preflight", {})).toMatchObject({ ok: false, message: "github.preflight: revoked" });
+    expect(await t.broker.call(t.ctx(), "forge.preflight", {})).toMatchObject({ ok: false, message: "forge.preflight: revoked" });
   });
 
   it("forgets a run's token when the run ends", async () => {
     const t = await setup();
     await t.begin();
     t.runs.end("run_1", 1);
-    expect(await t.broker.call(t.ctx(), "github.preflight", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
+    expect(await t.broker.call(t.ctx(), "forge.preflight", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
   });
 
   it("a slot that lost the run does not end the passport of the claim that took it over", async () => {
@@ -123,9 +123,9 @@ describe("ToolBroker run passports", () => {
     // The run was requeued and claimed again in this process (token 2) before the first slot's finally ran.
     await t.begin("run_1", "implement", 2);
     t.runs.end("run_1", 1);
-    expect(await t.broker.call(t.ctx(), "github.preflight", {})).toMatchObject({ ok: true });
+    expect(await t.broker.call(t.ctx(), "forge.preflight", {})).toMatchObject({ ok: true });
     t.runs.end("run_1", 2);
-    expect(await t.broker.call(t.ctx(), "github.preflight", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
+    expect(await t.broker.call(t.ctx(), "forge.preflight", {})).toMatchObject({ ok: false, error_code: "passport_missing" });
   });
 });
 

@@ -207,7 +207,7 @@ describe("the repeated-failure rule", () => {
 
   async function failing(responses: ReturnType<typeof preflight>[], opts: { repeated?: boolean } = {}) {
     const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => done, review: () => pass }), opts);
-    f.broker.responses["github.preflight"] = [...responses];
+    f.broker.responses["forge.preflight"] = [...responses];
     const it0 = await f.approved(20 + responses.length);
     for (let i = 0; i < 4; i++) {
       f.clock.advance(config.retry_max_ms);

@@ -13,7 +13,7 @@ import { issue, newStore, system } from "./helpers/store.js";
 describe("implement preflight in the worker", () => {
   it("no push permission: the run fails before the agent starts and the runner is never called", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [{ ok: false, error_code: "preflight_access", message: "push_access: no push permission on o/r" }];
+    f.broker.responses["forge.preflight"] = [{ ok: false, error_code: "preflight_access", message: "push_access: no push permission on o/r" }];
     const it0 = await f.submit();
     await f.step();
     const [run] = await f.runs(it0, "implement");
@@ -34,7 +34,7 @@ describe("implement preflight in the worker", () => {
     const it0 = await f.submit();
     await f.step();
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW" });
-    expect(atAgent!.broker).toEqual(["github.preflight"]);
+    expect(atAgent!.broker).toEqual(["forge.preflight"]);
     const pre = f.broker.preflights[0]!;
     expect(f.broker.preflights).toHaveLength(1);
     expect(pre.args).toEqual({ branch: `factory/${it0.id}`, base_ref: "main" });
@@ -43,7 +43,7 @@ describe("implement preflight in the worker", () => {
 
   it("a failed PR API check names the check", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [{ ok: false, error_code: "preflight_access", message: "pr_api: GitHub GET → 500" }];
+    f.broker.responses["forge.preflight"] = [{ ok: false, error_code: "preflight_access", message: "pr_api: GitHub GET → 500" }];
     const it0 = await f.submit();
     await f.step();
     const [run] = await f.runs(it0, "implement");
@@ -93,11 +93,11 @@ async function brokerFor(answer: (method: string, path: string) => unknown) {
     repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
   });
   const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
-  const preflight = () => broker.call(ctx, "github.preflight", { branch: `factory/${item.id}`, base_ref: "main" });
+  const preflight = () => broker.call(ctx, "forge.preflight", { branch: `factory/${item.id}`, base_ref: "main" });
   return { broker, ctx, requests, preflight, item };
 }
 
-describe("github.preflight in the broker", () => {
+describe("forge.preflight in the broker", () => {
   it("is read-only: one GET of the repo and one GET of the PR list, nothing written", async () => {
     const b = await brokerFor((_m, path) => (path.includes("/pulls") ? [] : { permissions: { push: true } }));
     expect(await b.preflight()).toMatchObject({ ok: true });
@@ -109,7 +109,7 @@ describe("github.preflight in the broker", () => {
 
   it("is listed as a tool with a schema", async () => {
     const b = await brokerFor(() => ({}));
-    expect(b.broker.listTools(["github.preflight"]).map((t) => t.name)).toEqual(["github.preflight"]);
+    expect(b.broker.listTools(["forge.preflight"]).map((t) => t.name)).toEqual(["forge.preflight"]);
   });
 
   it("push: false is reported, not a failure: an App installation token says so even when it can push", async () => {
@@ -153,7 +153,7 @@ describe("github.preflight in the broker", () => {
 
   it("only factory branches", async () => {
     const b = await brokerFor(() => []);
-    expect(await b.broker.call(b.ctx, "github.preflight", { branch: "main", base_ref: "main" })).toMatchObject({
+    expect(await b.broker.call(b.ctx, "forge.preflight", { branch: "main", base_ref: "main" })).toMatchObject({
       ok: false, error_code: "branch_not_allowed",
     });
     expect(b.requests).toEqual([]);

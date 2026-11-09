@@ -1,10 +1,12 @@
+import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../interfaces/tool-broker.js";
+import { PREFLIGHT, STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../interfaces/tool-broker.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
+import { brokerToolName } from "../broker/tool-alias.js";
 import { grantedTools, leaseLost } from "../broker/tool-broker-shared.js";
 import { branchAllowed, storeBranch } from "../broker/trusted-git.js";
 
@@ -29,7 +31,7 @@ const TOOLS: readonly ToolDescriptor[] = [
     },
   },
   {
-    name: "github.preflight",
+    name: PREFLIGHT,
     read_only: true,
     description:
       "Read-only check before an implement run's agent starts: the credentials may push to the repository, and the PR API answers for the branch.",
@@ -67,6 +69,8 @@ export class GitHubToolBroker implements ToolBroker {
       branchPrefix: string;
       /** The factory repo: its origin is the trusted push remote, its origin/<base> the trusted base. */
       repoPath?: string;
+      /** Where an old tool name's one warning goes; stderr when absent. */
+      log?: Pick<Logger, "warn">;
     },
   ) {}
 
@@ -82,10 +86,10 @@ export class GitHubToolBroker implements ToolBroker {
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const lost = await leaseLost(this.deps.store, ctx);
     if (lost) return lost;
-    switch (name) {
+    switch (brokerToolName(name, this.deps.log)) {
       case STORE_BRANCH:
         return this.store(args as PushArgs);
-      case "github.preflight":
+      case PREFLIGHT:
         return this.preflight(args as PreflightArgs);
       default:
         return { ok: false, error_code: "unknown_tool", message: name };

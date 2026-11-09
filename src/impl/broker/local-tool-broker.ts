@@ -12,7 +12,7 @@ const SCHEMA = {
 
 /**
  * The local broker's one tool: `git.store_branch` (a run's push, RFC 0015 M7: the implement, update and resolve
- * runs, a wip branch, the session's finish). It pushes to no remote. No `github.preflight`: a local item has no PR.
+ * runs, a wip branch, the session's finish). It pushes to no remote. No `forge.preflight`: a local item has no PR.
  */
 const TOOLS: readonly ToolDescriptor[] = [
   {

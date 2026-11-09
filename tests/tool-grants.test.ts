@@ -88,13 +88,13 @@ describe("tool_grants at startup", () => {
   });
 
   for (const tool of ["git.store_branch"]) {
-    it(`fails on ${tool} with the github broker: not read-only; the valid name is github.preflight`, async () => {
+    it(`fails on ${tool} with the github broker: not read-only; the valid name is forge.preflight`, async () => {
       const err = await startWith({ implement: [tool] }, "github").then(
         () => null,
         (e: unknown) => e as Error,
       );
       expect(err?.message).toContain(`tool_grants.implement grants "${tool}", which is not read-only`);
-      expect(err?.message).toContain("valid read-only tools of the github broker: github.preflight");
+      expect(err?.message).toContain("valid read-only tools of the github broker: forge.preflight");
     });
   }
 
@@ -138,18 +138,18 @@ describe("tool_grants at startup", () => {
 });
 
 describe("the GitHub broker's read_only flags", () => {
-  it("only github.preflight is read-only", () => {
+  it("only forge.preflight is read-only", () => {
     const broker = new GitHubToolBroker({
       client: {} as never, store: {} as never, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/",
     });
     const flags = Object.fromEntries(broker.allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "git.store_branch": false, "github.preflight": true });
+    expect(flags).toEqual({ "git.store_branch": false, "forge.preflight": true });
   });
 
   it("FakeBroker lists the same flags", () => {
     const flags = Object.fromEntries(new FakeBroker().allTools().map((t) => [t.name, t.read_only]));
-    expect(flags).toEqual({ "git.store_branch": false, "github.preflight": true });
-    expect(new FakeBroker().listTools(["github.preflight"]).map((t) => t.name)).toEqual(["github.preflight"]);
+    expect(flags).toEqual({ "git.store_branch": false, "forge.preflight": true });
+    expect(new FakeBroker().listTools(["forge.preflight"]).map((t) => t.name)).toEqual(["forge.preflight"]);
   });
 });
 

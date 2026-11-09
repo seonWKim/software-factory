@@ -16,7 +16,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 describe("forge-auth pause", () => {
   it("a 401/403 in the preflight pauses implement and update claims for all workers, not triage or review", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [AUTH];
+    f.broker.responses["forge.preflight"] = [AUTH];
     const a = await f.submit();
     const start = f.clock.now().getTime();
     await f.step();
@@ -44,7 +44,7 @@ describe("forge-auth pause", () => {
 
   it("no claim is made during the pause, and the first claim after it ends succeeds", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [AUTH];
+    f.broker.responses["forge.preflight"] = [AUTH];
     const a = await f.submit();
     const start = f.clock.now().getTime();
     await f.step();
@@ -63,7 +63,7 @@ describe("forge-auth pause", () => {
 
   it("auth_pause_ms sets the pause length", async () => {
     const f = await pipeline({ config: { auth_pause_ms: 5 * 60_000 } });
-    f.broker.responses["github.preflight"] = [AUTH];
+    f.broker.responses["forge.preflight"] = [AUTH];
     await f.submit();
     const start = f.clock.now().getTime();
     await f.step();
@@ -89,7 +89,7 @@ describe("forge-auth pause", () => {
       }
       return { output: { summary: "s", next_steps: "n" } };
     };
-    f.broker.responses["github.preflight"] = [{ ok: true, content: {} }, AUTH];
+    f.broker.responses["forge.preflight"] = [{ ok: true, content: {} }, AUTH];
     // a's run, already past its preflight, finishes: its push and PR are outbound's (RFC 0015 M7), so no forge
     // refusal reaches the run.
     await f.w1.tick();
@@ -112,9 +112,9 @@ describe("forge-auth pause", () => {
     // A refusal after the pause ended starts a new pause: one more comment, one more line.
     f.clock.advance(f.config.retry_max_ms + 1);
     f.runner.script.implement = () => ({ output: { summary: "s", next_steps: "n" } });
-    f.broker.responses["github.preflight"] = [AUTH];
+    f.broker.responses["forge.preflight"] = [AUTH];
     // a's review is queued too: claim until b's implement retry has run its preflight.
-    while (f.broker.responses["github.preflight"].length > 0 && (await f.w1.tick())) await f.controller.tickRuns();
+    while (f.broker.responses["forge.preflight"].length > 0 && (await f.w1.tick())) await f.controller.tickRuns();
     await f.controller.tickRuns();
     expect(pauseComments()).toHaveLength(2);
     expect(lines()).toHaveLength(2);
@@ -157,7 +157,7 @@ describe("forge-auth pause", () => {
     await f.w1.tick();
     await f.w1.tick();
     await f.controller.tickRuns();
-    f.broker.responses["github.preflight"] = [AUTH, AUTH];
+    f.broker.responses["forge.preflight"] = [AUTH, AUTH];
     await Promise.all([f.w1.tick(), f.w2.tick()]);
     await f.controller.tickRuns();
     expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ error_code: "forge_auth" });

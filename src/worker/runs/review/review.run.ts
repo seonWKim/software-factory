@@ -4,7 +4,7 @@ import { REVIEW_SCHEMA, parseReview, unverifiedOf } from "../../../core/outputs.
 import { branchFor } from "../../../core/policy.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
-import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
+import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { type ResumePlan, RunFailure, ciResults, gitIdentity, hasTool, lastVerdictHead, renderAdoptedPr, renderSessionResume, renderWorkItem, reviewComment, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
@@ -22,7 +22,7 @@ async function review(
 ) {
   // A local item (no forge tool, design 05-sources) is reviewed from its local branch: the sandbox put the run folder
   // on it, and a missing one must not be reviewed as the empty diff of a fresh branch.
-  const local = !hasTool(w.route(item).broker, "github.preflight");
+  const local = !hasTool(w.route(item).broker, PREFLIGHT);
   if (item.change_ref === null && !local) throw new RunFailure("no_pr", "work item has no PR");
   // The sandbox starts a missing branch from base; an adopted PR's review must read the person's branch.
   if (item.head_branch !== null || local) {

@@ -748,7 +748,7 @@ const OBJECT_SCHEMA = { type: "object" } as const;
 /** What FakeBroker lists: the GitHub broker's tool names and read_only flags. */
 export const FAKE_GITHUB_TOOLS: readonly ToolDescriptor[] = [
   { name: STORE_BRANCH, description: "store the branch in the factory repo", input_schema: OBJECT_SCHEMA, read_only: false },
-  { name: "github.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
+  { name: "forge.preflight", description: "read-only preflight", input_schema: OBJECT_SCHEMA, read_only: true },
 ];
 
 /**
@@ -796,7 +796,7 @@ export class FakeBroker implements ToolBroker {
    * of the broker tools they replaced (no `ctx`: outbound holds no run's lease). The preflight is in `preflights`.
    */
   calls: { ctx?: ToolCallContext; name: string; args: unknown }[] = [];
-  /** Every read-only `github.preflight` call, in order. */
+  /** Every read-only `forge.preflight` call, in order. */
   preflights: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
   /** Every `git.store_branch` call (a run's last step, RFC 0015 M7: a factory-repo ref, nothing on the forge), in order. */
   stores: { ctx: ToolCallContext; name: string; args: unknown }[] = [];
@@ -817,7 +817,7 @@ export class FakeBroker implements ToolBroker {
     return this.tools;
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    (name === "github.preflight" ? this.preflights : name === STORE_BRANCH ? this.stores : this.calls).push({ ctx, name, args });
+    (name === "forge.preflight" ? this.preflights : name === STORE_BRANCH ? this.stores : this.calls).push({ ctx, name, args });
     const next = this.responses[name]?.shift();
     const scripted = typeof next === "function" ? next(args) : next;
     // A stored branch must still reach the forge: outbound pushes it. Each store names a new sha.

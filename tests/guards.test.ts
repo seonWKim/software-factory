@@ -349,14 +349,14 @@ describe("Tool broker", () => {
 
   it("rejects calls from a run that lost its lease (fencing)", async () => {
     const { broker, ctx } = await setup();
-    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "github.preflight", preflight);
+    const r = await broker.call({ ...ctx, lease_token: ctx.lease_token + 1 }, "forge.preflight", preflight);
     expect(r).toMatchObject({ ok: false, error_code: "lease_lost" });
   });
 
   it("host sleep: accepts the current token after lease expiry while the run is still running", async () => {
     const { broker, ctx, clock, requests } = await setup();
     clock.advance(60_001 * 5);
-    expect(await broker.call(ctx, "github.preflight", preflight)).toEqual({ ok: true, content: { push: true, open_prs: 0 } });
+    expect(await broker.call(ctx, "forge.preflight", preflight)).toEqual({ ok: true, content: { push: true, open_prs: 0 } });
     expect(requests).toHaveLength(2);
   });
 
@@ -364,12 +364,12 @@ describe("Tool broker", () => {
     const { broker, ctx, clock, store } = await setup();
     clock.advance(60_001);
     expect(await store.expireLeases(3)).toEqual([ctx.run_id]);
-    expect(await broker.call(ctx, "github.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
+    expect(await broker.call(ctx, "forge.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
 
     const again = (await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: 60_000 }))!;
     expect(again.lease!.token).toBe(ctx.lease_token + 1);
-    expect(await broker.call(ctx, "github.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
-    expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "github.preflight", preflight)).toMatchObject({ ok: true });
+    expect(await broker.call(ctx, "forge.preflight", preflight)).toMatchObject({ ok: false, error_code: "lease_lost" });
+    expect(await broker.call({ ...ctx, lease_token: again.lease!.token }, "forge.preflight", preflight)).toMatchObject({ ok: true });
   });
 
   it("stores only factory branches", async () => {

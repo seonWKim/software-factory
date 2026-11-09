@@ -227,7 +227,7 @@ describe("the bridge's MCP side", () => {
 
   it("maps names the way the harness allows them", () => {
     expect(mcpToolName("test.read_note")).toBe("test_read_note");
-    expect(harnessToolName("github.preflight")).toBe(`mcp__${BRIDGE_SERVER}__github_preflight`);
+    expect(harnessToolName("forge.preflight")).toBe(`mcp__${BRIDGE_SERVER}__forge_preflight`);
   });
 
   it.skipIf(!canListen)("round-trips over a real socket; a raw request naming another tool is refused", async () => {
@@ -363,10 +363,10 @@ describe("a runner that cannot expose tools refuses grants", () => {
   it("ClaudeCodeRunner without a broker fails the run with an error naming the granted tools, and never starts claude", async () => {
     const { runner, seen } = recordingRunner();
     expect(runner.exposes_tools).toBe(false);
-    const res = await runner.run(runSpec({ tool_grants: ["test.read_note", "github.preflight"] }));
+    const res = await runner.run(runSpec({ tool_grants: ["test.read_note", "forge.preflight"] }));
     expect(res.status).toBe("failed");
     expect(res.error).toContain("test.read_note");
-    expect(res.error).toContain("github.preflight");
+    expect(res.error).toContain("forge.preflight");
     expect(seen).toEqual([]);
   });
 

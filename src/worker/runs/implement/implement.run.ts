@@ -12,7 +12,7 @@ import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js
 import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
 import type { AgentRunSpec, GateHooks } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
-import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
+import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
@@ -453,7 +453,7 @@ async function restoreWip(w: Worker, run: Run, handle: SandboxHandle, branch: st
 
 /**
  * The implement preflight (design §5 Restarts), before any agent step, in order: push access and the PR API
- * (the broker's read-only `github.preflight`), then the base fetch from the factory repo into the run folder.
+ * (the broker's read-only `forge.preflight`), then the base fetch from the factory repo into the run folder.
  * A failed check fails the run with the broker's code (`github_rate_limited` on a forge rate limit, which pauses
  * claims until its reset; `forge_auth` on another 401/403, else `preflight_access` for
  * push_access and pr_api, both pausing implement claims) or, for the base fetch, `preflight_failed`; its detail
@@ -463,8 +463,8 @@ async function preflight(w: Worker, item: WorkItem, handle: SandboxHandle, ctx: 
   const { repo } = w.cfg;
   const { broker, sandbox } = w.route(item);
   // A broker with no forge (the local one) has no preflight: only the base fetch below is checked.
-  if (hasTool(broker, "github.preflight")) {
-    const forge = await broker.call(ctx, "github.preflight", { branch, base_ref: repo.base_branch });
+  if (hasTool(broker, PREFLIGHT)) {
+    const forge = await broker.call(ctx, PREFLIGHT, { branch, base_ref: repo.base_branch });
     if (!forge.ok) throw new RunFailure(forge.error_code, forge.message.slice(0, 500), forge.error_code === "lease_lost");
   }
   try {

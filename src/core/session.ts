@@ -13,7 +13,7 @@ import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, SessionUpdate, StartSessionResult } from "../interfaces/factory-store.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
-import { STORE_BRANCH, type ToolBroker, type ToolCallContext } from "../interfaces/tool-broker.js";
+import { PREFLIGHT, STORE_BRANCH, type ToolBroker, type ToolCallContext } from "../interfaces/tool-broker.js";
 
 // `factory session` (design §5, 2026-11-01): the owner's own LLM session on an item, as one `interactive` run. `finish`
 // runs the worker's pre-push gates and `repo.test_command`, then stores the branch through the broker and records the
@@ -306,7 +306,7 @@ export class Sessions {
   /** Whether a local item would reach the forge's broker: no local route given and the broker is the forge's. Never allowed. */
   private forgeForLocal(item: WorkItem): boolean {
     const route = routeFor(this.d, item);
-    return route.local && hasTool(route.broker, "github.preflight");
+    return route.local && hasTool(route.broker, PREFLIGHT);
   }
 
   /** The one session meant: `id`, else the only open one on this machine. */

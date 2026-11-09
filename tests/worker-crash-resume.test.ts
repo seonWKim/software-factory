@@ -52,7 +52,7 @@ class Broker implements ToolBroker {
     return [...FAKE_GITHUB_TOOLS];
   }
   async call(_ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
-    if (name === "github.preflight") return { ok: true, content: {} };
+    if (name === "forge.preflight") return { ok: true, content: {} };
     this.calls.push({ worker: this.worker, name });
     const a = args as Record<string, unknown>;
     if (name === STORE_BRANCH) {

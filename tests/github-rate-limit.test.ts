@@ -131,7 +131,7 @@ describe("broker and forge: github_rate_limited", () => {
     const ctx = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
     const branch = `factory/${item.id}`;
     const calls = {
-      preflight: () => broker.call(ctx, "github.preflight", { branch, base_ref: "main" }),
+      preflight: () => broker.call(ctx, "forge.preflight", { branch, base_ref: "main" }),
       // The PR write is the forge's (outbound's github-change, RFC 0015 M7): its error starts with its class.
       open_pr: () => forge.openPr({ branch, base_ref: "main", title: "t", body: "b" }).then(
         (): ToolResult => ({ ok: true, content: {} }),
@@ -212,7 +212,7 @@ describe("worker and controller: the github_rate_limit pause", () => {
   it("a preflight rate limit sets the github_rate_limit pause to the reset, and no other pause", async () => {
     const f = await pipeline();
     const reset = iso(f.clock.now().getTime() + 20 * 60_000);
-    f.broker.responses["github.preflight"] = [LIMITED(reset)];
+    f.broker.responses["forge.preflight"] = [LIMITED(reset)];
     const a = await f.submit();
     await f.step();
     expect(await f.store.getClaimPause(GITHUB_RATE_LIMIT)).toBe(reset);

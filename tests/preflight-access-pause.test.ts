@@ -17,7 +17,7 @@ const pauseLines = (f: Awaited<ReturnType<typeof pipeline>>) => f.log.lines.filt
 describe("preflight-access pause", () => {
   it("a failed push_access check is a task failure that pauses implement and update claims, not triage or review", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [ACCESS];
+    f.broker.responses["forge.preflight"] = [ACCESS];
     const a = await f.submit();
     const start = f.clock.now().getTime();
     await f.step();
@@ -50,7 +50,7 @@ describe("preflight-access pause", () => {
 
   it("a failed pr_api check pauses too; a failed base_fetch is still preflight_failed and pauses nothing", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [{ ok: false, error_code: "preflight_access", message: "pr_api: GitHub answered 500" }];
+    f.broker.responses["forge.preflight"] = [{ ok: false, error_code: "preflight_access", message: "pr_api: GitHub answered 500" }];
     const a = await f.submit();
     await f.step();
     expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ error_code: "preflight_access", detail: expect.stringContaining("pr_api") });
@@ -67,7 +67,7 @@ describe("preflight-access pause", () => {
 
   it("no implement claim during the pause; the first claim after it ends succeeds", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [ACCESS];
+    f.broker.responses["forge.preflight"] = [ACCESS];
     const a = await f.submit();
     await f.step();
     f.clock.advance(f.config.retry_max_ms - 1);
@@ -81,7 +81,7 @@ describe("preflight-access pause", () => {
 
   it("auth_pause_ms sets the pause length", async () => {
     const f = await pipeline({ config: { auth_pause_ms: 5 * 60_000 } });
-    f.broker.responses["github.preflight"] = [ACCESS];
+    f.broker.responses["forge.preflight"] = [ACCESS];
     await f.submit();
     const start = f.clock.now().getTime();
     await f.step();
@@ -95,7 +95,7 @@ describe("preflight-access pause", () => {
     await f.w1.tick();
     await f.w1.tick();
     await f.controller.tickRuns();
-    f.broker.responses["github.preflight"] = [ACCESS, ACCESS];
+    f.broker.responses["forge.preflight"] = [ACCESS, ACCESS];
     await Promise.all([f.w1.tick(), f.w2.tick()]);
     await f.controller.tickRuns();
     expect((await f.runs(a, "implement"))[0]!.outcome).toMatchObject({ error_code: "preflight_access" });
@@ -134,7 +134,7 @@ describe("preflight-access pause", () => {
       }
       return { output: { summary: "s", next_steps: "n" } };
     };
-    f.broker.responses["github.preflight"] = [{ ok: true, content: {} }, ACCESS];
+    f.broker.responses["forge.preflight"] = [{ ok: true, content: {} }, ACCESS];
     await f.w1.tick();
     await f.controller.tickRuns();
     await f.controller.tickRuns();
@@ -152,7 +152,7 @@ describe("preflight-access pause", () => {
 
     // After the pause has ended, a failure starts a new pause: one more comment, one more line.
     f.clock.advance(f.config.retry_max_ms * 2);
-    f.broker.responses["github.preflight"] = [ACCESS];
+    f.broker.responses["forge.preflight"] = [ACCESS];
     await f.step();
     expect((await f.runs(b, "implement"))[1]!.outcome).toMatchObject({ error_code: "preflight_access" });
     expect(pauseComments(f)).toHaveLength(2);
@@ -161,7 +161,7 @@ describe("preflight-access pause", () => {
 
   it("two preflight_access failures in a row never block with repeated_failure", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [ACCESS, ACCESS];
+    f.broker.responses["forge.preflight"] = [ACCESS, ACCESS];
     const a = await f.submit();
     for (let i = 0; i < 3; i++) {
       await f.step();
@@ -172,7 +172,7 @@ describe("preflight-access pause", () => {
 
   it("a 401/403 still uses the forge_auth pause and comment, not this one", async () => {
     const f = await pipeline();
-    f.broker.responses["github.preflight"] = [{ ok: false, error_code: "forge_auth", message: "push_access: GitHub refused the credentials (403)" }];
+    f.broker.responses["forge.preflight"] = [{ ok: false, error_code: "forge_auth", message: "push_access: GitHub refused the credentials (403)" }];
     await f.submit();
     await f.step();
     expect(await f.store.getClaimPause("forge_auth")).not.toBeNull();

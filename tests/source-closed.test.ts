@@ -211,7 +211,7 @@ describe("closing the source issue stops its work item", () => {
     const { broker, remote } = gh[0]!;
     // Nothing the run did after the close reached GitHub: every tool call it made was refused.
     // The read-only preflight ran before the close, so it is not one of them.
-    const afterClose = broker.results.filter((r) => r.name !== "github.preflight");
+    const afterClose = broker.results.filter((r) => r.name !== "forge.preflight");
     expect(afterClose.every((r) => !r.result.ok && r.result.error_code === "lease_lost")).toBe(true);
     // Only the preflight's reads reached GitHub; nothing was written.
     const writes = () => remote.filter((r) => !r.startsWith("GET "));

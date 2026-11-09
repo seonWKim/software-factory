@@ -60,7 +60,7 @@ class GitPushBroker implements ToolBroker {
   }
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const a = args as Record<string, unknown>;
-    if (name === "github.preflight") return { ok: true, content: {} };
+    if (name === "forge.preflight") return { ok: true, content: {} };
     // The run's last step: the bare origin stands in for the forge, so the stored branch lands there at once;
     // outbound's push and PR (RFC 0015 M7) are logged into \`calls\` by the controller's FakeForge.
     if (name === STORE_BRANCH) {
