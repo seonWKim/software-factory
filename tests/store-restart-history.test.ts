@@ -77,7 +77,8 @@ for (const b of BACKENDS) {
       expect(await store.recordChildRestart(r!)).toEqual({ created: true });
       expect(await store.recordChildRestart(r!)).toEqual({ created: false });
       expect(await store.listChildRestartsWithin(RESTART_WINDOW_MS)).toEqual([r]);
-      const db: MigrationDb = { dialect: store.db.dialect.name, all: (s, p) => store.db.all(s, p), run: (s, p) => store.db.run(s, p) };
+      const sql = (store as SqlFactoryStore).db;
+      const db: MigrationDb = { dialect: sql.dialect.name, all: (s, p) => sql.all(s, p), run: (s, p) => sql.run(s, p) };
       expect(await tableColumns(db, "runtime_child_restarts")).toEqual(["restart_key", "at", "reason"]);
     });
 
