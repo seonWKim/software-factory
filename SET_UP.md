@@ -386,7 +386,7 @@ One-time Slack app setup, details in [`docs/slack-setup.md`](docs/slack-setup.md
    "plugins": { "source": ["github-issues", "local", "slack"] }
    ```
 
-5. **Link your Slack account** to your factory user (with `auth: github`, a Slack account has no rights until it is linked): run `factory link-code github:<your GitHub user ID>`, then post `@software-factory /link <code>` in the channel.
+5. **Link your Slack account** to your factory user (a Slack account has no rights until it is linked; then it acts as that user, with that user's stored role): run `factory link-code <your factory user ID>` (solo: the local owner, e.g. `local:you@example.com`; `factory users list` shows it), then post `@software-factory /link <code>` in the channel.
 
 Known gaps (2026-11-09; issues #479–#486): people's Slack replies are not shown on the item page, `/revise` on a PR is refused from Slack, commands get no 👀 reaction, and private channels (`G…`) do not work yet.
 
