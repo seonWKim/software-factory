@@ -10,7 +10,7 @@ import {
   coordinationConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
-import { type ProjectRef, githubProjectKey, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
+import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
@@ -35,9 +35,9 @@ import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
-import type { GitHubAccess, GitHubApi, GitHubCredentials, RepoIdentity } from "./interfaces/github-credentials.js";
+import type { GitHubAccess, GitHubApi, GitHubCredentials } from "./interfaces/github-credentials.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
-import type { Forge } from "./interfaces/forge.js";
+import { DEFAULT_STATUS_LABEL_PREFIX, type Forge } from "./interfaces/forge.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { LLMProvider } from "./interfaces/llm-provider.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
@@ -51,16 +51,16 @@ import { AuditedAuthProvider, PluginIdentityProvider, controllerServiceAuth, out
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
 import { RunPassports } from "./worker/passports/run-passports.js";
-import { GitHubError, type RepoRef, githubBudgetShare, githubMinRemaining } from "./impl/github/github-client.js";
+import type { RepoRef } from "./impl/github/github-client.js";
+// The GitHub forge's descriptor: the one GitHub module a config with no GitHub plugin loads (descriptors only).
+import { type RepoLookup, resolveProject } from "./impl/github/forge.plugin.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
-import { BIND as UI_BIND } from "./ui/server.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
-import { DEFAULT_STATUS_LABEL_PREFIX, githubHistorySince } from "./impl/github/github-issue-source.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
@@ -393,9 +393,6 @@ export async function loadConfig(
   uiPort(file.ui);
   uiUserId(file.ui);
   autoMigrate(file.updater);
-  githubMinRemaining(file.github);
-  githubBudgetShare(file.github);
-  githubHistorySince(file.github);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
   const retry = retryConfig(file);
@@ -413,6 +410,7 @@ export async function loadConfig(
   );
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
+  if (!local) await checkGitHubSettings(file.github);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
 
@@ -525,50 +523,42 @@ export function selectsGitHub(sel: Selection, grants: readonly string[]): boolea
   });
 }
 
+/**
+ * GitHub's settings (`github` in factory.config.json), checked at load only when a GitHub plugin is selected: a
+ * config with none loads no GitHub implementation module.
+ */
+async function checkGitHubSettings(github: FileConfig["github"]): Promise<void> {
+  const [client, issues] = await Promise.all([import("./impl/github/github-client.js"), import("./impl/github/github-issue-source.js")]);
+  client.githubMinRemaining(github);
+  client.githubBudgetShare(github);
+  issues.githubHistorySince(github);
+}
+
 /** The configured repo as a local project: `local:local:<sha-256 of owner/name>`, labelled `local/owner/name`. */
 export function localProject(repo: RepoRef): ProjectRef {
   const digest = createHash("sha256").update(`${repo.owner}/${repo.name}`).digest("hex").slice(0, 32);
   return { key: localProjectKey(digest), label: projectLabel("local", repo.owner, repo.name) };
 }
 
-/** What startup resolution needs from the GitHub client: one read of the repository. */
-export interface RepoLookup {
-  repoIdentity(repo: RepoRef): Promise<RepoIdentity>;
-}
-
-/**
- * The configured repo as a project (design 2026-11-01): its key from GitHub's node ID, its label from the path
- * GitHub reports now (a renamed repo gets its new path). Throws a message naming the configured repo and the
- * reason (the GitHub error as its `cause`) when GitHub cannot resolve it; startupProject decides what a start does then.
- */
-export async function resolveProject(github: RepoLookup, repo: RepoRef): Promise<ProjectRef> {
-  try {
-    const id = await github.repoIdentity(repo);
-    return { key: githubProjectKey(id.host, id.node_id), label: projectLabel(id.host, id.owner, id.name) };
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(
-      `cannot resolve the configured repo ${repo.owner}/${repo.name} (factory.config.json repo.owner / repo.name) to its GitHub repository ID: ${reason}`,
-      { cause: err },
-    );
-  }
-}
+/** The GitHub project key's resolution, for the CLI commands that resolve the key outside startup. */
+export { resolveProject };
 
 /** First wait between startup lookups while the configured repo's key is not known yet; it doubles up to the max. */
 export const PROJECT_RETRY_MS = 30_000;
 const PROJECT_RETRY_MAX_MS = 600_000;
 
-/** A lookup error retrying cannot fix: bad credentials, or no such repository. Startup stops on it. */
+/** A Forge.projectIdentity error retrying cannot fix (bad credentials, no such repository). Startup stops on it. */
 function permanentLookupError(err: unknown): boolean {
-  return err instanceof GitHubError && (err.status === 401 || err.status === 404);
+  return (err as { permanent?: unknown } | null)?.permanent === true;
 }
 
 const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, 300);
 
-/** What startupProject needs: the store holding the key, the forge lookup, and where to log and wait. */
+/** What startupProject needs: the store holding the key, the forge's read of it, and where to log and wait. */
 export interface StartupProjectDeps {
   store: Pick<FactoryStore, "getCursor" | "advanceCursor" | "listSettingOverrides" | "listWorkItems">;
-  lookup: RepoLookup;
+  /** The configured repo's project as the forge reports it now (Forge.projectIdentity). */
+  identify: () => Promise<ProjectRef>;
   repo: RepoRef;
   clock: Clock;
   log: Logger;
@@ -590,7 +580,7 @@ export async function startupProject(d: StartupProjectDeps): Promise<{ project: 
   if (known) {
     // A store written before the key cursor: found by its label, stored now so the next start reads it directly.
     await saveProject(d.store, d.repo, known);
-    const refreshed = resolveProject(d.lookup, d.repo).then(
+    const refreshed = d.identify().then(
       async (now) => {
         if (now.key === known.key) {
           await saveProjectLabel(d.store, now);
@@ -604,11 +594,11 @@ export async function startupProject(d: StartupProjectDeps): Promise<{ project: 
   }
   for (let wait = PROJECT_RETRY_MS; ; wait = Math.min(wait * 2, PROJECT_RETRY_MAX_MS)) {
     try {
-      const project = await resolveProject(d.lookup, d.repo);
+      const project = await d.identify();
       await saveProject(d.store, d.repo, project);
       return { project, refreshed: Promise.resolve() };
     } catch (err) {
-      if (permanentLookupError((err as { cause?: unknown }).cause)) throw err;
+      if (permanentLookupError(err)) throw err;
       d.log.warn("the configured repo's project key is not stored yet and GitHub cannot resolve it; retrying", {
         repo: `${d.repo.owner}/${d.repo.name}`, retry_in_ms: wait, error: errorText(err),
       });
@@ -617,13 +607,26 @@ export async function startupProject(d: StartupProjectDeps): Promise<{ project: 
   }
 }
 
+/** What projectAtStartup reads the key through: the selected forge, or a test's stand-in for its GitHub client. */
+interface ProjectSource {
+  forge: Forge | null;
+  repoLookup?: RepoLookup | undefined;
+}
+
 /**
- * The project at startup: with no GitHub plugin selected, the local project, stored as the configured repo's key
- * (#350's cursor) with no GitHub call; else startupProject.
+ * The configured repo's key at startup (design 08-plugins). No GitHub plugin selected: the local project, stored as
+ * the configured repo's key (#350's cursor) with no forge call. A forge that names its repository
+ * (Forge.projectIdentity): startupProject through it. A GitHub plugin but no such forge: the stored key, else the
+ * local one, with no forge call. Never a GitHub client call here.
  */
-async function projectAtStartup(loaded: Loaded, d: StartupProjectDeps): Promise<{ project: ProjectRef; refreshed: Promise<void> }> {
-  if (loaded.config.local_only !== true) return startupProject(d);
-  const project = localProject(d.repo);
+async function projectAtStartup(
+  loaded: Loaded, src: ProjectSource, d: Omit<StartupProjectDeps, "identify">,
+): Promise<{ project: ProjectRef; refreshed: Promise<void> }> {
+  const { forge, repoLookup } = src;
+  const identify = repoLookup ? () => resolveProject(repoLookup, d.repo) : forge?.projectIdentity ? () => forge.projectIdentity!() : null;
+  const solo = loaded.config.local_only === true;
+  if (!solo && identify !== null) return startupProject({ ...d, identify });
+  const project = (solo ? null : await storeProjectResolver(d.store, d.repo)()) ?? localProject(d.repo);
   await saveProject(d.store, d.repo, project);
   return { project, refreshed: Promise.resolve() };
 }
@@ -840,8 +843,8 @@ export async function build(
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
   // no GitHub plugin: the local project key, and no GitHub call.
-  const { project, refreshed } = await projectAtStartup(loaded, {
-    store, lookup: opts.repoLookup ?? github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
+  const { project, refreshed } = await projectAtStartup(loaded, { forge, repoLookup: opts.repoLookup }, {
+    store, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   await checkEnabledHooks(config.hooks ?? []);
@@ -1094,7 +1097,8 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     return auth.authorize({ user_id, attributes: {} }, action, { kind: "project", id: project.key });
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
-  const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, UI_BIND);
+  // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
+  const who = uiCommandsActor(uiUserId(loaded.file.ui), opts.identity, (await import("./ui/server.js")).BIND);
   // The Merge button's facts from config (design §9): a forge selected, a sandbox that merges locally (built only to ask).
   const actor = who.actor;
   const commands: UiCommands = {
@@ -1160,7 +1164,8 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const brokerDeps: BrokerDeps = { github, credentials, secrets, store, scanner, clock };
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, ...brokerDeps });
   const local = await p.localRoute({ broker, sandbox }, brokerDeps);
-  const { project, refreshed } = await projectAtStartup(loaded, { store, lookup: github, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
+  const forge = await p.forge(github);
+  const { project, refreshed } = await projectAtStartup(loaded, { forge }, { store, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
   const config = resolvedConfig(loaded.config, project);
   shareGitHubBudget(loaded, github, store, config);
   const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });

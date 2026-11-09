@@ -14,6 +14,7 @@ import type {
   IssueInput, PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
+import { DEFAULT_STATUS_LABEL_PREFIX } from "../../interfaces/forge.js";
 import { GitHubError, type RepoRef, issueNumberFromSourceId } from "./github-client.js";
 
 export interface GhUser {
@@ -137,8 +138,6 @@ const STATUS_LABELS: Record<WorkStatus, { suffix: string; color: string; descrip
   done: { suffix: "done", color: "cccccc", description: "Factory: PR merged" },
   rejected: { suffix: "rejected", color: "000000", description: "Factory: closed without a merge" },
 };
-
-export const DEFAULT_STATUS_LABEL_PREFIX = "sf: ";
 
 export interface StatusLabel {
   status: WorkStatus;
