@@ -11,15 +11,13 @@ import { OPENAI_COMPATIBLE_KEYS, OPENAI_COMPATIBLE_MODELS_KEYS, openaiCompatible
 import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
 
 /**
- * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list yet. `auth_pause_ms`
- * (FactoryConfig.auth_pause_ms, design §5 Restarts): until compose.ts passes it through, its value falls back to
- * `retry_max_ms`, which is also its default. The coordination keys (FactoryConfig.coordination, design §5,
+ * Top-level keys the core config reads that FileConfig (src/compose.ts) does not list. The coordination keys (FactoryConfig.coordination, design §5,
  * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297, `hold_policy` and `hotspot_mode`
  * from issue #314) are checked here at load
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
  * local CLI commands act as, read by src/core/config.ts.
  */
-type CoreOnlyKey = "auth_pause_ms" | "cli_user" | (typeof COORDINATION_KEYS)[number];
+type CoreOnlyKey = "cli_user" | (typeof COORDINATION_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",

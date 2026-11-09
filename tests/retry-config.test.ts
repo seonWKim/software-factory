@@ -4,7 +4,7 @@ import { RETRY_DEFAULTS, loadConfig, retryConfig } from "../src/compose.js";
 
 describe("retry config keys", () => {
   it("defaults: max_restart 3, retry_base_ms 60000, retry_max_ms 1800000", () => {
-    expect(retryConfig({})).toEqual({ max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000 });
+    expect(retryConfig({})).toEqual({ max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000, auth_pause_ms: 1_800_000 });
     expect(RETRY_DEFAULTS).toEqual({ max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000 });
   });
 
