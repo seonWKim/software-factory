@@ -99,7 +99,10 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * configured channels count, never the bot's own messages, edits, joins or other subtypes. A mention of the bot
  * starts a work item from its thread (`slack:<team>:<channel>:<thread ts>`); a mention followed by a command, a
  * reply in an item's thread and a button press are the same events a GitHub comment gives; a reply in any other
- * thread is not stored. People are Slack user
+ * thread is not stored. A factory command from the command table (`list`, `show <id>`, `/approve` in an item's
+ * thread, ...) is run here as the linked factory user (slack-commands.ts): what it stores is stored before any Slack
+ * call, then its reply is posted; a failed post leaves the envelope unacked, so Slack sends it again and the keyed row
+ * and the reply's marker make the second run change nothing. People are Slack user
  * IDs (provider `slack`); no display name is read or kept. Dedupe keys: Slack's `event_id`, or for a button press
  * the team, user and `action_ts`. A mention arrives twice (a `message` and an `app_mention` event, two event ids):
  * only the `app_mention` counts, and intake is idempotent on the source id anyway.
