@@ -21,13 +21,6 @@ const KEY = /^([a-z][a-z0-9-]*):([A-Za-z0-9.-]+(?::\d+)?):(.+)$/;
 /** A legacy project value: `owner/name`, as stored before project keys. */
 const OWNER_NAME = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-/** The key of a forge repository: provider, host and the repository's node ID. */
-export function githubProjectKey(host: string, nodeId: string): string {
-  if (!/^[A-Za-z0-9.-]+(?::\d+)?$/.test(host)) throw new Error(`not a host name: ${JSON.stringify(host)}`);
-  if (!/^[A-Za-z0-9_=-]+$/.test(nodeId)) throw new Error(`not a repository node ID: ${JSON.stringify(nodeId)}`);
-  return `github:${host}:${nodeId}`;
-}
-
 /**
  * The key of the configured repo when no forge plugin is selected: `local:local:<digest>`, `digest` a hex hash of
  * its `owner/name` made by the caller (core runs no crypto). No forge ID, so a rename starts a new project.
