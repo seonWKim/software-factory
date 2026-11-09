@@ -404,8 +404,9 @@ for (const mode of MODES) describe(`gate hooks: Stop (${mode})`, () => {
 describe.runIf(canListen)("gate hooks: Stop and the stall clock", () => {
   it("a Stop check that runs longer than stall_ms is not a stall: the run completes", async () => {
     const f = setup();
-    f.spec = { ...f.spec, stall_ms: 100, first_output_ms: 100 };
-    f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 600 };
+    // The hook process itself takes time to start under load: the limit leaves room for it, the check runs well past it.
+    f.spec = { ...f.spec, stall_ms: 1_500, first_output_ms: 1_500 };
+    f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 4_000 };
     const reasons: string[] = [];
     f.sandbox.agent = stopper(reasons);
     const result = await f.runner.run(f.spec);

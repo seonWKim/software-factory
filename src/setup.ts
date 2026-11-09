@@ -28,6 +28,18 @@ const MYSQL_PASSWORD = secretName("MYSQL_PASSWORD");
 /** Secrets setup has its own guided step for. Any other declared secret gets the generic prompt. */
 const GUIDED: ReadonlySet<SecretName> = new Set([CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, GITHUB_TOKEN, MYSQL_PASSWORD]);
 
+/**
+ * The secrets setup asks for and doctor checks: what the selected plugins declare, less the `github_auth` plugin's
+ * when no GitHub plugin is selected (`local_only`). Its credentials are built only for a GitHub plugin, so with
+ * GitHub off GITHUB_TOKEN or GITHUB_APP_ID is never read, though `github_auth` stays selected for turning it back on.
+ */
+export function neededSecrets(loaded: Pick<Loaded, "registry" | "plugins" | "config">): SecretDeclaration[] {
+  const declared = declaredSecrets(loaded.registry, loaded.plugins);
+  if (loaded.config.local_only !== true) return declared;
+  const unread = new Set((loaded.registry.github_auth.secrets[loaded.plugins.github_auth] ?? []).map((d) => d.name));
+  return declared.filter((d) => !unread.has(d.name));
+}
+
 // doctor
 
 /**
@@ -78,8 +90,14 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   const plugins = new Plugins(loaded);
   const secrets = await plugins.secrets();
   // One check per secret the selected plugins declare (or per group of alternatives).
-  checks.push(...(await secretChecks(declaredSecrets(loaded.registry, loaded.plugins), secrets)));
-  add(!process.env.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY is not set in this shell");
+  checks.push(...(await secretChecks(neededSecrets(loaded), secrets)));
+  // Unset is the good state: an API key in the shell would override the subscription token the agents use.
+  add(
+    !process.env.ANTHROPIC_API_KEY,
+    process.env.ANTHROPIC_API_KEY
+      ? "ANTHROPIC_API_KEY is set in this shell: unset it, agents must use CLAUDE_CODE_OAUTH_TOKEN"
+      : "ANTHROPIC_API_KEY is not set in this shell (good: agents use CLAUDE_CODE_OAUTH_TOKEN)",
+  );
 
   const claude = await runProcess(["claude", "--version"], { cwd: loaded.root, env: baseEnv() }).catch(() => null);
   add(claude?.exit_code === 0, `claude CLI: ${claude?.stdout.trim() || "not found"}`);
@@ -324,7 +342,7 @@ export async function setupSecrets(run: SetupRun): Promise<boolean> {
   const { loaded, rotate } = run;
   const file = loaded.secretsFile;
   const repo = loaded.config.repo;
-  const declared = declaredSecrets(loaded.registry, loaded.plugins);
+  const declared = neededSecrets(loaded);
   const isDeclared = (name: SecretName) => declared.some((d) => d.name === name);
   run.step("Secret file");
   await ensureSecretFile(file, join(loaded.root, ".env.example"), declared.map((d) => d.name));
@@ -387,7 +405,7 @@ export async function setupSecrets(run: SetupRun): Promise<boolean> {
 export async function setupFinish(run: SetupRun): Promise<number> {
   const { loaded } = run;
   run.step("Other secrets of the selected plugins");
-  const other = await secretsToPrompt(declaredSecrets(loaded.registry, loaded.plugins), await new Plugins(loaded).secrets(), run.rotate);
+  const other = await secretsToPrompt(neededSecrets(loaded), await new Plugins(loaded).secrets(), run.rotate);
   if (other.length === 0) console.log("   nothing to do");
   for (const d of other) {
     console.log(`   ${d.name}: ${d.purpose}`);

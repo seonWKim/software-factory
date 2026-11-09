@@ -2,8 +2,9 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { parseFixReferences, parseRevert } from "../../../core/links.js";
+import { LOCAL_SOURCE } from "../../../core/local-merge.js";
 import { workItemIdFromBranch } from "../../../core/policy.js";
-import { type Actor, type StateChangeDetail, type VerdictKind, type VerdictSeverity, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type StateChangeDetail, type VerdictKind, type VerdictSeverity, type VerdictTarget, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import { type ParsedVerdict, parseVerdict } from "../../../core/verdict.js";
 import type { Principal } from "../../../interfaces/auth-provider.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
@@ -60,12 +61,7 @@ export class VerdictsUnit {
     const item = await this.verdictItem(e);
     if (!item) return;
     const principal = await this.c.unit("auth").authorize(e.approver, "record_verdict", item.id);
-    let refusal: string | null;
-    if ("refuse" in principal) refusal = principal.refuse;
-    else {
-      const parsed = parseVerdict(e.args);
-      refusal = parsed.ok ? await this.recordVerdict(item.id, e, principal, parsed.value) : parsed.refuse;
-    }
+    const refusal = "refuse" in principal ? principal.refuse : await this.verdictFrom(item.id, { comment_id: e.comment_id, target: e.target.kind }, principal, e.args);
     await this.c.unit("outbox").markSeen(item.source, e.comment_id);
     if (refusal === null) return;
     // A refused comment that was stored before (e.g. a since-revoked permission) is not answered either.
@@ -87,32 +83,42 @@ export class VerdictsUnit {
     return item && (item.change_ref === null || item.change_ref === e.target.change_ref) ? item : null;
   }
 
-  /** Re-read → check → recordVerdict, retrying on version conflicts. Returns the refusal reason, else null. */
+  /** `/verdict <args>` parsed, then stored (recordVerdict); a malformed one is refused with the usage line. */
+  async verdictFrom(id: WorkItemId, key: { comment_id: string; target: VerdictTarget }, principal: Principal, args: string): Promise<string | null> {
+    const parsed = parseVerdict(args);
+    return parsed.ok ? this.recordVerdict(id, key, principal, parsed.value) : parsed.refuse;
+  }
+
+  /**
+   * Re-read → check → recordVerdict, retrying on version conflicts. `key`: the comment id (an app request's
+   * `app-<seq>`) and where the verdict was written. Returns the refusal reason, else null.
+   */
   async recordVerdict(
     id: WorkItemId,
-    e: VerdictEvent,
+    key: { comment_id: string; target: VerdictTarget },
     principal: Principal,
     v: ParsedVerdict,
   ): Promise<string | null> {
     for (let i = 0; i < MAX_CONFLICT_RETRIES; i++) {
       const it = await this.c.k.reader.getWorkItem(id);
       if (!it) return null;
-      if ((await this.c.k.reader.listVerdicts(id)).some((x) => x.comment_id === e.comment_id)) return null;
-      // A merged PR still takes a verdict (design §4); a closed one that was not merged does not.
+      if ((await this.c.k.reader.listVerdicts(id)).some((x) => x.comment_id === key.comment_id)) return null;
+      // A merged item still takes a verdict (design §4); a closed one that was not merged does not.
       if (it.stage === "CLOSED" && it.merge_sha === null) {
         return it.change_ref === null ? "the work item is closed" : "the work item is closed and its PR was not merged";
       }
-      if (it.change_ref === null) return "the work item has no PR yet";
+      // A local item is judged on the item itself (its local merge, or no merge yet); any other needs its PR.
+      if (it.change_ref === null && it.source.type !== LOCAL_SOURCE) return "the work item has no PR yet";
       const r = await this.c.k.commitItem([], { kind: "verdict", input: {
         id,
         expected_version: it.version,
         actor: { kind: "user", id: principal.user_id },
         ...v,
-        comment_id: e.comment_id,
-        target: e.target.kind,
+        comment_id: key.comment_id,
+        target: key.target,
         implicit: false,
-        // Replaces the implicit verdict on the same head, if any.
-        pr_head: it.last_head_sha,
+        // Replaces the implicit verdict on the same head, if any; an item with no PR has no PR head.
+        pr_head: it.change_ref === null ? null : it.last_head_sha,
       } });
       if (r.ok) {
         this.c.k.d.log.info("verdict recorded", { work_item_id: id, verdict: v.verdict, severity: v.severity, version: r.item.version });
