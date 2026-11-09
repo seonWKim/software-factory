@@ -41,9 +41,9 @@ const changedLines = (a: string, b: string) => {
 };
 
 describe("setup: the shared choices in factory.config.json", () => {
-  it("reads each step's default from the file: the checked-in one is MySQL with GitHub; a file listing no sources gets the solo defaults", () => {
+  it("reads each step's default from the file: the checked-in one is MySQL with GitHub and Slack; a file listing no sources gets the solo defaults", () => {
     const raw = JSON.parse(CHECKED_IN);
-    expect(currentChoices(raw, true)).toEqual({ store: "mysql", github: true, slack: false, slack_channels: [] });
+    expect(currentChoices(raw, true)).toEqual({ store: "mysql", github: true, slack: true, slack_channels: ["C0CDEHN4HM5"] });
     expect(currentChoices({ repo: {} }, true)).toEqual({ store: "sqlite", github: false, slack: false, slack_channels: [] });
   });
 

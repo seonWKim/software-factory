@@ -101,13 +101,15 @@ describe("registry: each plugin declares its secrets", () => {
 });
 
 describe("the secret set is the union of the selected plugins' declarations", () => {
-  it("checked-in config: the model credential, GITHUB_APP_ID and MYSQL_PASSWORD", async () => {
+  it("checked-in config: the model credential, GITHUB_APP_ID, MYSQL_PASSWORD and the two Slack tokens", async () => {
     const loaded = await loadConfig(root(REAL, ""), { platform: "linux" });
     expect(sorted(declaredSecretNames(loaded.registry, loaded.plugins))).toEqual([
       "ANTHROPIC_API_KEY",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "GITHUB_APP_ID",
       "MYSQL_PASSWORD",
+      "SLACK_APP_TOKEN",
+      "SLACK_BOT_TOKEN",
     ]);
   });
 

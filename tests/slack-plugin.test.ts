@@ -74,15 +74,14 @@ describe("slack config block", () => {
     expect(() => checkConfigKeys({ ...REAL, slack: { channels: ["general"] } })).toThrow(/slack\.channels\[0\]/);
   });
 
-  it("is required once the plugin is selected, and the checked-in config does not enable Slack", () => {
+  it("is required once the plugin is selected", () => {
     expect(() => slackConfig({})).toThrow(/no "slack" block/);
     expect(slackConfig({ slack: { channels: [CHANNEL] } })).toEqual({ channels: [CHANNEL] });
-    expect(REAL.slack).toBeUndefined();
-    expect(JSON.stringify((REAL.plugins as Record<string, unknown>).source)).not.toContain("slack");
   });
 
   it("a config that selects slack without the block fails when the plugin is built", () => {
-    const ctx = { loaded: { file: { ...REAL } } } as never;
+    const { slack: _, ...withoutBlock } = REAL;
+    const ctx = { loaded: { file: withoutBlock } } as never;
     expect(() => slackPlugin.create(ctx)).toThrow(/no "slack" block/);
   });
 });
