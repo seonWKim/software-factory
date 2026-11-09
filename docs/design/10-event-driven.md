@@ -287,6 +287,14 @@ force.
     `blocked_on: human`, `blocked_reason: delivery_failed`, with the action and the error in the transition's
     detail. An error with no status (an outage, a git push) is never given up: it retries until it goes through.
     Solo and enterprise: the same.
+  - A target's wait time is honored, and two Slack refusals are given up (decision changed 2026-11-09, issue #483;
+    see History). A failed comment or action retries its batch after the later of the backoff and the error's
+    `wait_until` (a forge or Slack rate limit's reset). The Slack client's errors carry an HTTP status and a wait: a
+    429 is status 429 with `wait_until` from `Retry-After` (none without the header: the backoff), and the
+    `ok: false` refusals `channel_not_found` and `not_in_channel` are 404 and 403, so `refusedForGood` gives them up
+    on the third attempt like a forge 4xx. Other codes, token errors (`invalid_auth`, `token_revoked`) included, carry
+    no status and are retried. `Retry-After` is read in one place, `src/shared/retry-after.ts`, by the chat client
+    and the Slack client. Solo and enterprise: the same; no setting.
   - Keyed intents and the PR close (M7 worker half): an action may carry a key (`outbound_actions.intent_key`,
     unique when set; migration `20261109T0415-outbound-action-keys`), and recording it again stores nothing. The
     source close of an item with a PR records one `close_pr` action keyed `close_pr:<item>` (the comment's two
@@ -524,6 +532,9 @@ force.
 
 ## History
 
+- **Wait time and Slack refusals** (decision changed 2026-11-09, issue #483). Before: a failed batch always retried
+  on the backoff, ignoring an error's `wait_until`; a Slack error carried only its method and code (a 429 was
+  `rate_limited` with `Retry-After` unread), so `channel_not_found` and `not_in_channel` were retried forever.
 - **Rule of Two at run start** (decision changed 2026-11-09, owner decision). Before: `ruleOfTwoRefusal` existed but
   no run start called it, so an implement or resolve run started once its item was approved, by a person or by auto
   mode, and in auto mode they ran with all three facts and no person.

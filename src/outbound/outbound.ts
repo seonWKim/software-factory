@@ -2,7 +2,8 @@
 // flush time came is sent by the targets, in intent order. One batch at a time per destination keeps its order.
 // A batch is claimed (one sender), its text is scanned (G5), and its intents are delivered; when all are, the batch
 // is marked sent and DeliveryCompleted is published in one transaction. A failure retries the whole batch with
-// backoff: intents already delivered are skipped on the retry, so nothing is written twice.
+// backoff, or after the error's wait time when that is later: intents already delivered are skipped on the retry,
+// so nothing is written twice.
 
 import { DEAD_LETTERED, type EventBus } from "../bus/index.js";
 import { retryDelayMs } from "../core/policy.js";
@@ -64,6 +65,13 @@ export function refusedForGood(err: unknown): boolean {
   const e = err as { status?: unknown; wait_until?: unknown } | null;
   if (typeof e?.status !== "number" || e.status < 400 || e.status >= 500) return false;
   return !e.wait_until && ![401, 408, 429].includes(e.status);
+}
+
+/** The wait before a failed write's retry: the backoff, or the error's wait time (`wait_until`) when that is later. */
+function retryInMs(err: unknown, now: string, backoff_ms: number): number {
+  const until = (err as { wait_until?: unknown } | null)?.wait_until;
+  const wait_ms = typeof until === "string" ? Date.parse(until) - Date.parse(now) : NaN;
+  return Number.isNaN(wait_ms) ? backoff_ms : Math.max(backoff_ms, wait_ms);
 }
 
 type Loaded = { id: string; delivery: Delivery; seq: number; done: boolean; attempts: number };
@@ -262,7 +270,7 @@ export class Outbound {
           await this.d.store.finishDelivery(i.seq, token, null);
           return;
         }
-        const delay = retryDelayMs(i.attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms);
+        const delay = retryInMs(err, now, retryDelayMs(i.attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms));
         this.d.log.warn("outbox delivery failed; retried later", { outbox_seq: i.seq, target: target.name, attempts: i.attempts + 1, retry_in_ms: delay, error });
         await this.d.store.failDelivery(i.seq, token, error, delay);
         throw new Stop(delay, error);
@@ -282,7 +290,7 @@ export class Outbound {
       // (later batches of it wait), until it is given up; a status label or a 👀 is best effort: a warning, never a hold.
       if (RETRIED_ACTIONS.includes(row.action)) {
         if (!this.givesUp(err, attempts, i, target, error, gaveUp)) {
-          const delay = retryDelayMs(attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms);
+          const delay = retryInMs(err, now, retryDelayMs(attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms));
           this.d.log.warn(`${row.action} failed; retried later`, { target: target.name, source_id: row.target.id, retry_in_ms: delay, error });
           throw new Stop(delay, error);
         }

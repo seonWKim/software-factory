@@ -8,6 +8,7 @@ import { ConfigKeyError, checkConfigKeys } from "../src/config-keys.js";
 import { commandFooter } from "../src/core/commands.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { HttpSlackApi, SlackApiError, type FetchFn } from "../src/impl/source/slack-api.js";
+import { refusedForGood } from "../src/outbound/outbound.js";
 import { slackConfig, slackConfigProblems } from "../src/impl/source/slack-config.js";
 import { footerCommands, renderComment, suggestedCommand, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { SlackSource } from "../src/impl/source/slack-source.js";
@@ -39,8 +40,8 @@ class RecordingSecrets implements SecretStore {
   }
 }
 
-/** A fake slack.com: answers each method, records requests. */
-function fakeFetch(answers: Record<string, unknown> = {}) {
+/** A fake slack.com: answers each method (with an HTTP status and headers from `http`), records requests. */
+function fakeFetch(answers: Record<string, unknown> = {}, http: Record<string, { status: number; headers?: Record<string, string> }> = {}) {
   const requests: { url: string; headers: Record<string, string>; body: string }[] = [];
   const fn: FetchFn = async (url, init) => {
     requests.push({ url, headers: init.headers, body: init.body });
@@ -52,7 +53,8 @@ function fakeFetch(answers: Record<string, unknown> = {}) {
       "chat.update": { ok: true },
       "conversations.replies": { ok: true, messages: [] },
     };
-    return { status: 200, json: async () => answers[method] ?? defaults[method] };
+    const { status, headers = {} } = http[method] ?? { status: 200 };
+    return { status, headers: { get: (name: string) => headers[name.toLowerCase()] ?? null }, json: async () => answers[method] ?? defaults[method] };
   };
   return { fn, requests };
 }
@@ -140,6 +142,46 @@ describe("slack plugin secrets", () => {
   it("a missing token fails the call with the secret's name only", async () => {
     const api = new HttpSlackApi({ get: async () => null }, fakeFetch().fn);
     await expect(api.identity()).rejects.toThrow("slack auth.test failed: missing_secret_slack_bot_token");
+  });
+});
+
+describe("slack api errors", () => {
+  const NOW = Date.parse("2026-11-09T01:00:00Z");
+  const post = { channel: CHANNEL, thread_ts: "1800000000.000001", text: "hi" };
+  const failure = async (fetch: ReturnType<typeof fakeFetch>) =>
+    (await new HttpSlackApi(new RecordingSecrets(), fetch.fn, undefined, () => NOW).postMessage(post).catch((e: unknown) => e)) as SlackApiError;
+
+  it("a 429 with Retry-After carries status 429 and the wait time, and the message names only the method and code", async () => {
+    const err = await failure(fakeFetch({}, { "chat.postMessage": { status: 429, headers: { "retry-after": "7" } } }));
+    expect(err).toBeInstanceOf(SlackApiError);
+    expect(err).toMatchObject({ status: 429, wait_until: new Date(NOW + 7000).toISOString() });
+    expect(err.message).toBe("slack chat.postMessage failed: rate_limited");
+    expect(refusedForGood(err)).toBe(false);
+  });
+
+  it("a 429 with no Retry-After has no wait time and is never refused for good", async () => {
+    const err = await failure(fakeFetch({}, { "chat.postMessage": { status: 429 } }));
+    expect(err.status).toBe(429);
+    expect(err.wait_until).toBeUndefined();
+    expect(refusedForGood(err)).toBe(false);
+  });
+
+  it("channel_not_found is a 404 and not_in_channel a 403, both refused for good", async () => {
+    for (const [code, status] of [["channel_not_found", 404], ["not_in_channel", 403]] as const) {
+      const err = await failure(fakeFetch({ "chat.postMessage": { ok: false, error: code } }));
+      expect(err).toMatchObject({ code, status });
+      expect(err.message).toBe(`slack chat.postMessage failed: ${code}`);
+      expect(refusedForGood(err)).toBe(true);
+    }
+  });
+
+  it("invalid_auth and token_revoked carry no status, so they are retried and never given up", async () => {
+    for (const code of ["invalid_auth", "token_revoked"]) {
+      const err = await failure(fakeFetch({ "chat.postMessage": { ok: false, error: code } }));
+      expect(err.code).toBe(code);
+      expect(err.status).toBeUndefined();
+      expect(refusedForGood(err)).toBe(false);
+    }
   });
 });
 
