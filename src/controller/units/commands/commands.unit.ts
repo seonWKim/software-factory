@@ -187,17 +187,7 @@ export class CommandsUnit {
       if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     }
     await this.c.unit("outbox").markSeen(e.source, e.comment_id);
-    if (e.kind === "spec_rejected" && refusal === null) {
-      // Best effort here; tickSourceCloses retries whatever did not happen.
-      try {
-        await this.c.unit("closes").finishReject(item.id);
-      } catch (err) {
-        this.c.k.d.log.warn("reject comment or close failed; retried on the next tick", {
-          work_item_id: item.id,
-          error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
-        });
-      }
-    }
+    if (e.kind === "spec_rejected" && refusal === null) await this.c.unit("closes").afterReject(item.id);
     if (refusal === null) return;
     this.c.k.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     // A /resolve or /revise sent on the PR is answered on the PR; every other command on the item's own issue.
