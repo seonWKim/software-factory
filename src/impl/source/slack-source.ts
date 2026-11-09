@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import { type ChatCommand, parseChatCommand } from "../../core/command-table.js";
 import { parseComment, parseLink } from "../../core/commands.js";
 import type { Logger } from "../../core/log.js";
 import type { WorkStatus } from "../../core/status-label.js";
-import type { SourceRef } from "../../core/types.js";
+import type { SourceRef, WorkItem } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
@@ -11,8 +12,9 @@ import type { RepoRef } from "../github/github-client.js";
 import type { SlackApi, SlackMessage } from "./slack-api.js";
 import { commentEvent } from "../../core/comment-event.js";
 import {
-  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, escapeSlack, prUrl, renderComment, unescapeSlack, type SlackRendered,
+  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, escapeSlack, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
 } from "./slack-format.js";
+import { type ChatAnswer, type ChatDeps, type ChatStore, runChatCommand } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
 
 /** Metadata event types on the factory's own messages: a comment (by marker hash) and the one status message. */
@@ -31,8 +33,13 @@ export interface SlackSourceDeps {
   channels: readonly string[];
   /** G5: every message is scanned before it is posted. */
   scanner: EgressScanner;
-  /** Read-only: whether a thread is already a work item, and its PR for the status line. */
-  store: Pick<FactoryStore, "getWorkItemBySource">;
+  /**
+   * Whether a thread is already a work item, and its PR for the status line; for chat commands (slack-commands.ts),
+   * the account links, the local users, the reads `list` and `show` print, and the command rows they store.
+   */
+  store: ChatStore & Pick<FactoryStore, "getWorkItemBySource">;
+  /** `settings list` and `settings history` from Slack; absent: they answer that settings are not readable here. */
+  settings?: ChatDeps["settings"];
   /** Where PR links point. */
   repo: RepoRef;
   log: Logger;
@@ -178,11 +185,18 @@ export class SlackSource implements StreamSource {
       // A mention comes again as `app_mention`; a top-level message without one is not for the factory.
       if (mentioned || !inThread) return null;
       // A reply in a thread that is not a work item is other people's conversation: not stored at all.
-      if (!(await this.d.store.getWorkItemBySource("slack_thread", source.id))) return null;
+      const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
+      if (!item) return null;
+      // Without a mention, a chat command needs its `/`, as an item command does.
+      const chat = said.startsWith("/") && parseLink(said) === null ? parseChatCommand(said) : null;
+      if (chat) return this.chat(chat, source, user, event_id, item);
       const e = commentEvent(source, ts, who, said);
       return e ? { event: e, key } : null;
     }
-    // app_mention: a command or `/link` after the mention is that command; else a request from the thread.
+    // app_mention: a chat command (the command table's forms, src/core/command-table.ts) runs as the linked user;
+    // `/link` or another command after the mention is that command; else a request from the thread.
+    const chat = parseLink(said) === null ? parseChatCommand(said) : null;
+    if (chat) return this.chat(chat, source, user, event_id, await this.d.store.getWorkItemBySource("slack_thread", source.id));
     if (parseLink(said) !== null || parseComment(said) !== null) {
       const e = commentEvent(source, ts, who, said);
       return e ? { event: e, key } : null;
@@ -195,7 +209,7 @@ export class SlackSource implements StreamSource {
   }
 
   /** A button press on one of the factory's messages: the command it names, as the presser typing it. */
-  private fromInteraction(p: Record<string, unknown>, me: { team_id: string; user_id: string }): Mapped | null {
+  private async fromInteraction(p: Record<string, unknown>, me: { team_id: string; user_id: string }): Promise<Mapped | null> {
     if (p.type !== "block_actions") return null;
     const user = str(obj(p.user).id);
     const team = str(obj(p.team).id) ?? str(obj(p.user).team_id) ?? me.team_id;
@@ -215,21 +229,45 @@ export class SlackSource implements StreamSource {
     }
     // Cancel, and anything else: nothing runs and nothing is stored.
     if (action_id === ACTION_CANCEL || body === null) return null;
+    const source = threadRef({ team, channel, thread_ts });
+    const chat = parseChatCommand(body);
+    if (chat) return this.chat(chat, source, user, `${team}-${user}-${action_ts}`, await this.d.store.getWorkItemBySource("slack_thread", source.id));
     const parsed = parseComment(body);
     if (parsed === null || parsed.kind !== "command") return null;
-    const source = threadRef({ team, channel, thread_ts });
     const e = commentEvent(source, `action:${action_ts}`, { provider: "slack", subject: user }, body);
     return e ? { event: e, key: `action:${team}:${user}:${action_ts}` } : null;
   }
 
+  /**
+   * A chat command (issue #498): run through slack-commands.ts, which stores what it stores with no Slack call; then
+   * its answer, if any, is posted in the thread under a marker keyed on `id`, so a redelivery posts nothing more.
+   * Nothing goes to the inbox: the stored command row is what the controller applies.
+   */
+  private async chat(cmd: ChatCommand, source: SourceRef, user: string, id: string, item: WorkItem | null): Promise<null> {
+    const answer = await runChatCommand({ store: this.d.store, ...(this.d.settings ? { settings: this.d.settings } : {}) }, cmd, {
+      user, item, id: `slack-${id}`, origin: this.type,
+    });
+    if (answer !== null) await this.post(source, (bot) => this.rendered(answer, bot), `<!-- factory:chat:${id} -->`);
+    return null;
+  }
+
+  private rendered(a: NonNullable<ChatAnswer>, bot: string): SlackRendered {
+    return "markdown" in a ? renderComment(a.markdown, this.d.repo, bot) : renderLines(a.lines, a.whole);
+  }
+
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
+    return this.post(source, (bot) => renderComment(body, this.d.repo, bot), marker);
+  }
+
+  /** Posts one message in the thread under `marker`, once: the thread is read first, and G5 scans it before it goes. */
+  private async post(source: SourceRef, render: (bot: string) => SlackRendered, marker: string): Promise<{ url: string | null }> {
     const t = this.thread(source);
     const me = await this.identity();
     const hash = markerHash(marker);
     const replies = await this.d.api.threadReplies(t.channel, t.thread_ts);
     const prior = replies.find((m) => this.ours(m, me.user_id) && m.metadata?.event_type === META_MESSAGE && m.metadata.event_payload.marker === hash);
     if (prior) return { url: slackLink(t.channel, prior.ts, t.thread_ts) };
-    const msg = await this.scanned(renderComment(body, this.d.repo, me.user_id), source, marker);
+    const msg = await this.scanned(render(me.user_id), source, marker);
     const { ts } = await this.d.api.postMessage({
       channel: t.channel,
       thread_ts: t.thread_ts,

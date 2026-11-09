@@ -1,4 +1,6 @@
+import { settingsBase } from "../../compose.js";
 import { definePlugin } from "../../plugin-api.js";
+import { parseSettingsArgs, runSettings } from "../../settings-cmd.js";
 import { HttpSlackApi, SLACK_APP_TOKEN, SLACK_BOT_TOKEN } from "./slack-api.js";
 import { slackConfig } from "./slack-config.js";
 import { webSocketConnector } from "./slack-socket.js";
@@ -22,5 +24,13 @@ export default definePlugin({
       store: c.store,
       repo: c.repo,
       log: c.log,
+      // `settings list` and `settings history` from Slack: the CLI's own reads over the same store and config file.
+      settings: async (args) => {
+        const a = parseSettingsArgs(args);
+        if ("error" in a) return { ok: false, lines: [a.error] };
+        if (a.action !== "list" && a.action !== "history") return { ok: false, lines: [`settings ${a.action} is not run from Slack`] };
+        const refuse = () => Promise.reject(new Error("settings reads name no project"));
+        return runSettings({ store: c.store, base: settingsBase(c.loaded), repo: c.repo, resolveProject: refuse, actor: "" }, a);
+      },
     }),
 });

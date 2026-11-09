@@ -6,7 +6,7 @@ import {
   unknownCommandReply,
 } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { CLI_COMMANDS, cliHelpLine } from "../src/core/local-cli.js";
+import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { WorkItemPatch } from "../src/core/types.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
@@ -131,7 +131,7 @@ describe("command table", () => {
     expect(r).not.toContain("`/retry` **(now)**");
     const cli = r.split("\n").filter((l) => l.includes("`factory task "));
     expect(cli).toEqual([cliHelpLine()]);
-    for (const c of CLI_COMMANDS) expect(cli[0]).toContain(`\`factory ${c.usage}\``);
+    for (const c of COMMAND_TABLE) expect(cli[0]).toContain(`\`factory ${cliUsageOf(c)}\``);
   });
 
   it("a failed implement run has its own phases: too_large for diff_too_large, failed_implement for any other failure", () => {
