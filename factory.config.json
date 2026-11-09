@@ -32,6 +32,7 @@
   "cli_user": "github:69591622",
   "workers": 5,
   "max_workers": 10,
+  "slack": { "channels": ["C0CDEHN4HM5"] },
   "plugins": {
     "secrets": "env-file",
     "egress": "pattern",
@@ -39,7 +40,7 @@
     "sandbox": "noop",
     "runner": "claude-code",
     "llm": "claude-cli",
-    "source": ["github-issues", "local"],
+    "source": ["github-issues", "local", "slack"],
     "storage": "fs",
     "capability": "bm25",
     "clock": "system",
