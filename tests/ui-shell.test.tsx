@@ -194,6 +194,23 @@ describe("sidebar in the icon-only layout", () => {
   });
 });
 
+describe("top bar on a narrow screen", () => {
+  // jsdom has no layout, so this checks the classes that keep the bar inside a 390px screen (checked by screenshot).
+  it("wraps, keeps the icon buttons at full size, and shows only Ns of the age, which still reads in full", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    const header = document.querySelector("header")!;
+    expect(header.className.split(" ")).toContain("flex-wrap");
+    for (const name of ["Refresh", "Switch to dark theme"]) {
+      expect(within(header).getByRole("button", { name }).className.split(" ")).toContain("shrink-0");
+    }
+    const age = header.querySelector("[aria-live]")!;
+    expect(age.textContent).toMatch(/^updated \d+s ago$/);
+    const hidden = [...age.querySelectorAll("span")].map((s) => [s.textContent, s.className]);
+    expect(hidden).toEqual([["updated ", "max-sm:sr-only"], [" ago", "max-sm:sr-only"]]);
+  });
+});
+
 describe("app pages", () => {
   it("the Floor shows the factory banner, what needs you, what runs and the queue, in that order", async () => {
     mount();

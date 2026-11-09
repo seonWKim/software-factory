@@ -447,6 +447,6 @@ function issueBody(g: FailureGroup): string {
   if (g.draft && "touches_prompts_or_gate" in g.draft && g.draft.touches_prompts_or_gate) {
     lines.push("", "The fix touches the factory's prompts or gates: it needs a human merge.");
   }
-  lines.push("", "Filed for a person to start: the factory does not triage it on its own.");
+  lines.push("", "Filed for triage: the factory triages it like any other work item.");
   return lines.join("\n");
 }
