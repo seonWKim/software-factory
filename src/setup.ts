@@ -21,8 +21,6 @@ import type { Ask } from "./cli/handlers/setup/ask.js";
 
 export const MAX_TOKEN_DAYS = 30;
 
-const CLAUDE_CODE_OAUTH_TOKEN = secretName("CLAUDE_CODE_OAUTH_TOKEN");
-const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
 const MYSQL_PASSWORD = secretName("MYSQL_PASSWORD");
 
 /**

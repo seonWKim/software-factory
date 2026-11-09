@@ -151,7 +151,8 @@ describe("one step frame", () => {
     }
     // The order setup runs them in.
     const at = (n: string) => names.indexOf(n);
-    for (const [a, b] of [["store", "plugins"], ["plugins", "secret-file"], ["secret-file", "secrets"], ["secrets", "database"], ["database", "you"], ["you", "mode"], ["mode", "checks"], ["checks", "canary"]]) {
+    const order = ["store", "plugins", "secret-file", "secrets", "database", "you", "mode", "checks", "canary"];
+    for (const [a, b] of order.slice(1).map((n, i) => [order[i]!, n] as const)) {
       expect(at(a), `${a} before ${b}`).toBeGreaterThanOrEqual(0);
       expect(at(a), `${a} before ${b}`).toBeLessThan(at(b));
     }
@@ -316,7 +317,7 @@ describe("progress record", () => {
 
   it("the record holds step names and the GitHub answer, never a secret value", async () => {
     const s = await state(localOnly("app"));
-    const value = "sk-ant-oat01-planted-secret-value";
+    const value = "planted-value-7f3a9c";
     const stop: SetupStep<GuidedState> = { name: "stop", title: "Stop", why: "w", async run(_s, io) {
       await io.ask.yesNo("   Stop?", true);
       return { ok: false, stop: true, line: "stopped" };
