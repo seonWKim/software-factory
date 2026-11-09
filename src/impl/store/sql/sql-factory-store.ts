@@ -2119,8 +2119,8 @@ export class SqlFactoryStore implements FactoryStore {
 
   async recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }> {
     const key = `${restart.at}:${createHash("sha256").update(restart.reason).digest("hex").slice(0, 16)}`;
-    const created = await this.insertOnce(this.db, "INSERT INTO runtime_child_restarts (restart_key, at, reason, recorded_at) VALUES (?, ?, ?, ?)", [
-      key, restart.at, restart.reason, this.now(),
+    const created = await this.insertOnce(this.db, "INSERT INTO runtime_child_restarts (restart_key, at, reason) VALUES (?, ?, ?)", [
+      key, restart.at, restart.reason,
     ]);
     return { created };
   }
