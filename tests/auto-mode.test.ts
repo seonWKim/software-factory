@@ -7,6 +7,7 @@ import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
+import { IMPROVER } from "../src/core/improver.js";
 import { AUTO_ACTOR } from "../src/core/policy.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
@@ -104,6 +105,13 @@ async function autoFactory(opts: Opts = {}) {
   const cli = (user: UserId, a: CliAction) =>
     runLocalCli({ store, identity: { user, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
   const create = async () => (await cli(ME, { action: "create", title: "A change", bodyFile: "b.md" })).lines[0] as WorkItemId;
+  /** An item the improve run files for a recurring failure (design §7), through the local source as the improver. */
+  const fileAsImprover = async () => {
+    const source = await new LocalSource(store).fileIssue({
+      project: project.key, requester_id: IMPROVER.id as UserId, title: "Recurring failure", body: "the runs", marker: "<!-- factory:improve:k:ir_1 -->",
+    });
+    return (await store.getWorkItemBySource(source.type, source.id))!.id;
+  };
   /** A person's `/approve` of the implement run the Rule of Two held after auto mode's approval, then a step. */
   const approveRun = async (id: WorkItemId) => {
     expect(await store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" });
@@ -126,7 +134,7 @@ async function autoFactory(opts: Opts = {}) {
   const messages = async (id: WorkItemId, prefix: string) => (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
   const changes = async (id: WorkItemId) => store.listStateChanges(id);
   const modeRows = async () => (await store.listSettingChanges(50)).filter((c) => c.key === "mode");
-  return { repo, store, controller, step, cli, create, approveRun, mode, setting, messages, changes, modeRows, project, clock };
+  return { repo, store, controller, step, cli, create, fileAsImprover, approveRun, mode, setting, messages, changes, modeRows, project, clock };
 }
 
 const AUTO = { kind: "system", id: AUTO_ACTOR };
@@ -268,6 +276,24 @@ describe("auto mode: merges", { timeout: 60_000 }, () => {
       expect(await f.messages(id, "<!-- factory:auto-merge-held:")).toHaveLength(1);
     });
   }
+
+  it("an item the improver filed is triaged with no person starting it, and its change touching the gate list waits for a person's merge", async () => {
+    const f = await autoFactory({ spec: { allowed_paths: ["prompts/"], files_to_change: ["prompts/x.md"] } });
+    await f.setting("auto_merge_max_tier", 3);
+    await f.mode("auto");
+    const mainBefore = git(f.repo, "rev-parse", "main");
+    const id = await f.fileAsImprover();
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ requester_id: IMPROVER.id, stage: "READY", blocked_reason: "spec_pending" });
+    expect((await f.messages(id, "<!-- factory:spec:")).join("\n")).toContain("Auto mode is on, but this spec waits for `/approve`");
+    await f.cli(ME, { action: "command", command: "approve", id, text: "" });
+    await f.step();
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
+    expect((await f.changes(id)).some((c) => c.reason === "local_merged")).toBe(false);
+    expect((await f.messages(id, "<!-- factory:auto-merge-held:")).join("")).toContain("it touches the gate list (`prompts/");
+  });
 
   it("a merge whose checks fail on the merge commit moves nothing and leaves the item in merge_pending", async () => {
     const f = await autoFactory({ test_command: FAILS_ON_MERGE });
