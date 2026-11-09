@@ -713,14 +713,14 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
   describe("fileIssue: a standalone issue (design §7, filed failure patterns)", () => {
     const one = { project: "p", requester_id: "system:improver" as UserId, title: "Recurring failure", body: "the runs", marker: "<!-- factory:improve:k:ir_1 -->" };
 
-    it("files the issue without the intake label, its marker in the body, after looking the marker up", async () => {
+    it("files the issue with the intake label, so intake triages it, its marker in the body, after looking the marker up", async () => {
       const { client, source } = make();
       expect(await source.fileIssue(one)).toEqual(issueRef(20));
       expect(client.calls.map((c) => `${c.method} ${c.path}`)).toEqual([
-        "GET /repos/o/r/issues?state=all&sort=created&direction=desc&per_page=100&page=1",
+        "GET /repos/o/r/issues?state=all&labels=factory&sort=created&direction=desc&per_page=100&page=1",
         "POST /repos/o/r/issues",
       ]);
-      expect(writes(client)[0]!.body).toEqual({ title: "Recurring failure", body: "the runs\n\n<!-- factory:improve:k:ir_1 -->" });
+      expect(writes(client)[0]!.body).toEqual({ title: "Recurring failure", body: "the runs\n\n<!-- factory:improve:k:ir_1 -->", labels: ["factory"] });
     });
 
     it("an issue that already carries the marker (a retry after a failure part way) is returned, nothing filed", async () => {

@@ -8,12 +8,15 @@ import { IMPROVER, MAX_FILED_ISSUES, SYSTEM_ITEM, fileReport, issueMarker, patte
 import { Worker } from "../src/worker/index.js";
 import type { ImproveReport, ImproveWindow, RunId, SourceRef, Timestamp, UserId, WorkerId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
+import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
+import { StaticGrant } from "../src/impl/grant/static.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, config, prompts, silent } from "./helpers/fakes.js";
@@ -30,15 +33,22 @@ class RecordingScanner implements EgressScanner {
   }
 }
 
-/** Answers POST /issues with a new issue it then lists; the next POST can be made to fail after filing. */
+/** The factory bot's GitHub account: the author of every issue the improver files. */
+const BOT = { id: 4242, login: "software-factory[bot]", type: "Bot" };
+
+/**
+ * Answers POST /issues with a new open issue by the bot it then lists (by label; none closed); the next POST can be
+ * made to fail after filing.
+ */
 class IssuesClient extends RecordingGitHubClient {
-  issues: { id: number; number: number; body: string }[] = [];
+  issues: { id: number; number: number; title: string; body: string; labels: string[]; user: typeof BOT; updated_at: string }[] = [];
   failAfterFiling = false;
   override async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     if (method === "POST" && path === "/repos/o/r/issues") {
       this.calls.push({ method, path, body });
       const n = 100 + this.issues.length;
-      const issue = { id: 9000 + n, number: n, body: (body as { body: string }).body };
+      const b = body as { title: string; body: string; labels?: string[] };
+      const issue = { id: 9000 + n, number: n, title: b.title, body: b.body, labels: b.labels ?? [], user: BOT, updated_at: "2026-03-05T06:00:00Z" };
       this.issues.unshift(issue);
       if (this.failAfterFiling) {
         this.failAfterFiling = false;
@@ -48,7 +58,9 @@ class IssuesClient extends RecordingGitHubClient {
     }
     if (method === "GET" && path.startsWith("/repos/o/r/issues?")) {
       this.calls.push({ method, path, body });
-      return (path.includes("page=1") ? this.issues : []) as T;
+      const label = /[?&]labels=([^&]+)/.exec(path)?.[1];
+      const listed = this.issues.filter((i) => label === undefined || i.labels.includes(decodeURIComponent(label)));
+      return (path.includes("page=1") && !path.includes("state=closed") ? listed : []) as T;
     }
     return super.request<T>(method, path, body);
   }
@@ -60,13 +72,13 @@ class IssuesClient extends RecordingGitHubClient {
 /** The day the daily window covers: [2026-03-04, 2026-03-05). */
 const DAY: ImproveWindow = { window_start: "2026-03-04T00:00:00.000Z" as Timestamp, window_end: "2026-03-05T00:00:00.000Z" as Timestamp };
 
-async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[]) {
+async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf: (store: FactoryStore) => AuthProvider = () => new FakeAuth()) {
   const clock = new FakeClock("2026-03-04T01:00:00.000Z");
   const { store } = await newStore(clock);
   const storage = new MemoryStorage();
   const scanner = new RecordingScanner();
   const sources = sourcesOf(store);
-  const controller = new ControllerRole({ store, sources, auth: new FakeAuth(), clock, config, log: silent, scanner });
+  const controller = new ControllerRole({ store, sources, auth: authOf(store), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage,
     clock, config, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
@@ -86,8 +98,12 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[]) {
     problem: "", resources: [], hold: { blocked_on: "upstream", blocked_reason: SYSTEM_ITEM },
   }, IMPROVER);
   let k = 0;
-  /** One improve run over `window`, worked and applied (only it: the failed runs stay unacknowledged). */
+  /**
+   * One improve run over `window`, worked and applied (only it: the failed runs stay unacknowledged). The triage
+   * runs queued for filed items are claimed first by another worker and left running, so this worker gets the improve run.
+   */
   const improve = async (window: ImproveWindow = DAY): Promise<ImproveReport> => {
+    while (await store.claimRun({ worker_id: "parked" as WorkerId, kinds: ["triage"], lease_ms: 1e12 }));
     const { run } = await store.enqueueRun({ work_item_id: sys.id, kind: "improve", idempotency_key: `improve-test-${++k}`, input: { improve: window } });
     expect(await worker.tick()).toBe(true);
     await controller.applyRun((await store.getRun(run.id))!);
@@ -98,9 +114,12 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[]) {
 }
 
 const local = () => setup((store) => [new LocalSource(store)]);
+/** The GitHub source, with the real GitHub auth provider: any account may submit work, one owner approves. */
 async function github() {
   const client = new IssuesClient();
-  return { client, ...(await setup((store) => [new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store)])) };
+  const sources = (store: FactoryStore) => [new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store)];
+  const auth = (store: FactoryStore) => new GitHubAuthProvider(store, [new StaticGrant({ roles: { "github:1": { "*": ["approver"] } }, deny: {} })]);
+  return { client, ...(await setup(sources, auth)) };
 }
 
 /** The local work items the improver filed. */
@@ -123,8 +142,11 @@ describe("improve filing: solo, the local source", () => {
     expect(item!.problem).not.toContain(unique);
     expect(item!.problem).toContain(issueMarker(patternKey(report.groups[0]!), report.id));
     expect(item).toMatchObject({ stage: "NEW", blocked_on: "none", project: PROJECT.key, requester_id: "system:improver" });
-    // A person starts it: no triage run is queued.
-    expect(await w.store.listRuns(item!.id)).toEqual([]);
+    // The factory triages it: one triage run is queued, as for a person's `factory task create` item.
+    expect((await w.store.listRuns(item!.id)).map((r) => [r.kind, r.status, r.idempotency_key])).toEqual([
+      ["triage", "queued", `local:${item!.source.id}:triage`],
+    ]);
+    expect(item!.problem).toContain("Filed for triage: the factory triages it like any other work item.");
 
     expect(report.patterns.map((p) => p.run_ids)).toEqual([[unique]]);
     expect(report.patterns[0]!.filing).toBeUndefined();
@@ -231,17 +253,30 @@ describe("improve filing: solo, the local source", () => {
 });
 
 describe("improve filing: enterprise, the GitHub source", () => {
-  it("files one issue through the source adapter, without the intake label, its marker in the body", async () => {
+  it("files one issue through the source adapter, with the intake label, its marker in the body", async () => {
     const { client, ...w } = await github();
     for (let i = 0; i < 3; i++) await w.fail("checks_failed");
     w.clock.set("2026-03-05T06:00:00.000Z");
     const report = await w.improve();
     expect(client.posts()).toBe(1);
     const post = client.calls.find((c) => c.method === "POST")!.body as { labels?: string[]; body: string };
-    expect(post.labels).toBeUndefined();
+    expect(post.labels).toEqual(["factory"]);
     expect(post.body).toContain(issueMarker(patternKey(report.groups[0]!), report.id));
+    expect(post.body).toContain("Filed for triage: the factory triages it like any other work item.");
     const ref: SourceRef = { type: "github_issue", id: "o/r#100", link: "https://github.com/o/r/issues/100" };
     expect(report.groups[0]!.filing).toEqual({ status: "filed", ref });
+  });
+
+  it("the next intake poll takes the bot-filed issue in and queues its triage run, with no person starting it", async () => {
+    const { client, ...w } = await github();
+    for (let i = 0; i < 2; i++) await w.fail("checks_failed");
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    await w.improve();
+    await w.controller.tickIntake();
+    const item = (await w.store.getWorkItemBySource("github_issue", "o/r#100"))!;
+    expect(item).toMatchObject({ stage: "NEW", requester_id: `github:${BOT.id}` });
+    expect((await w.store.listRuns(item.id)).map((r) => [r.kind, r.status])).toEqual([["triage", "queued"]]);
+    expect(client.posts()).toBe(1);
   });
 
   it("a filing that failed part way is retried by the next run: the marker is found and no second issue is filed", async () => {
