@@ -122,6 +122,7 @@ export interface FileConfig {
   retry_base_ms?: number;
   /** Cap on a retry wait, and the rate-limit pause with no reset time. Absent: 1800000. */
   retry_max_ms?: number;
+  auth_pause_ms?: number; // forge-auth and preflight-access pause (design §5 Restarts). Absent: retry_max_ms.
   /** Pre-push size gate (design §4): added plus deleted lines. Absent: 1500. */
   max_diff_lines?: number;
   /** Pre-push size gate (design §4): changed files. Absent: 40. */
@@ -436,9 +437,7 @@ export async function loadConfig(
     settings,
     max_loops: file.max_loops,
     phases_auto_approve: file.phases_auto_approve === undefined ? false : booleanSetting("phases_auto_approve", file.phases_auto_approve),
-    max_restart: retry.max_restart,
-    retry_base_ms: retry.retry_base_ms,
-    retry_max_ms: retry.retry_max_ms,
+    ...retry, // max_restart, retry_base_ms, retry_max_ms, auth_pause_ms
     lease_ms: file.lease_ms,
     heartbeat_ms: file.heartbeat_ms,
     tick_ms: file.tick_ms,
@@ -1311,14 +1310,15 @@ export function argvConfig(key: string, value: unknown, fallback: readonly strin
 
 export const RETRY_DEFAULTS = { max_restart: 3, retry_base_ms: 60_000, retry_max_ms: 1_800_000 } as const;
 
-/** The retry keys (design §5 Restarts) with their defaults. Positive integers, base ≤ max, or startup fails. */
-export function retryConfig(
-  file: Pick<FileConfig, "max_restart" | "retry_base_ms" | "retry_max_ms">,
-): { max_restart: number; retry_base_ms: number; retry_max_ms: number } {
+/** The retry keys (design §5 Restarts) with their defaults (`auth_pause_ms`: `retry_max_ms`). Positive integers,
+ * base ≤ max, or startup fails. */
+export function retryConfig(file: Pick<FileConfig, "max_restart" | "retry_base_ms" | "retry_max_ms" | "auth_pause_ms">) {
+  const retry_max_ms = file.retry_max_ms ?? RETRY_DEFAULTS.retry_max_ms;
   const r = {
     max_restart: file.max_restart ?? RETRY_DEFAULTS.max_restart,
     retry_base_ms: file.retry_base_ms ?? RETRY_DEFAULTS.retry_base_ms,
-    retry_max_ms: file.retry_max_ms ?? RETRY_DEFAULTS.retry_max_ms,
+    retry_max_ms,
+    auth_pause_ms: file.auth_pause_ms === undefined ? retry_max_ms : file.auth_pause_ms, // an explicit null fails below
   };
   for (const [k, v] of Object.entries(r)) {
     if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error(`${k} must be a positive integer`);
