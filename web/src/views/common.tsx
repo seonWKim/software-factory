@@ -19,12 +19,19 @@ export function useNow(): number {
 }
 
 /** An item's title (or its source id) linking to its page, with the source link beside it. */
+/** The item's source id in short form (`#192`, `30331a68`), linked to the source; the full id shows on hover. */
+export function SourceLink({ source, className }: { source: { id: string; link: string }; className?: string }) {
+  return (
+    <a href={source.link} target="_blank" rel="noreferrer" title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", LINK_CLASS, className)}>
+      {shortSource(source.id)}
+    </a>
+  );
+}
+
 export function ItemTitle({ id, title, source }: { id: string; title: string | null; source: { id: string; link: string } }) {
   return (
     <span className="flex min-w-0 items-baseline gap-2">
-      <a href={source.link} target="_blank" rel="noreferrer" className={cn("shrink-0 tabular-nums", LINK_CLASS)}>
-        {shortSource(source.id)}
-      </a>
+      <SourceLink source={source} className="shrink-0" />
       <Link href={itemPath(id)} className={cn("truncate font-medium", LINK_CLASS)}>
         {title ?? source.id}
       </Link>
