@@ -66,6 +66,12 @@ export function refusedForGood(err: unknown): boolean {
   return !e.wait_until && ![401, 408, 429].includes(e.status);
 }
 
+/** A failed write's retry delay: the backoff, or longer when the error says to wait until a later time (a rate limit). */
+function waitedDelay(err: unknown, now: string, backoff_ms: number): number {
+  const until = Date.parse(String((err as { wait_until?: unknown } | null)?.wait_until));
+  return Number.isNaN(until) ? backoff_ms : Math.max(backoff_ms, until - Date.parse(now));
+}
+
 type Loaded = { id: string; delivery: Delivery; seq: number; done: boolean; attempts: number };
 
 /** An intent given up in this send: its kind, for the alarm, and why. */
@@ -262,7 +268,7 @@ export class Outbound {
           await this.d.store.finishDelivery(i.seq, token, null);
           return;
         }
-        const delay = retryDelayMs(i.attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms);
+        const delay = waitedDelay(err, now, retryDelayMs(i.attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms));
         this.d.log.warn("outbox delivery failed; retried later", { outbox_seq: i.seq, target: target.name, attempts: i.attempts + 1, retry_in_ms: delay, error });
         await this.d.store.failDelivery(i.seq, token, error, delay);
         throw new Stop(delay, error);
@@ -282,7 +288,7 @@ export class Outbound {
       // (later batches of it wait), until it is given up; a status label or a 👀 is best effort: a warning, never a hold.
       if (RETRIED_ACTIONS.includes(row.action)) {
         if (!this.givesUp(err, attempts, i, target, error, gaveUp)) {
-          const delay = retryDelayMs(attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms);
+          const delay = waitedDelay(err, now, retryDelayMs(attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms));
           this.d.log.warn(`${row.action} failed; retried later`, { target: target.name, source_id: row.target.id, retry_in_ms: delay, error });
           throw new Stop(delay, error);
         }

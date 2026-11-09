@@ -287,6 +287,15 @@ force.
     `blocked_on: human`, `blocked_reason: delivery_failed`, with the action and the error in the transition's
     detail. An error with no status (an outage, a git push) is never given up: it retries until it goes through.
     Solo and enterprise: the same.
+  - A failed write waits for its error's wait time, and Slack's permanent refusals are given up (decision changed
+    2026-11-10, issue #483; see History). A failed comment or action retries its batch after the later of the
+    backoff and the error's `wait_until` (a forge rate limit's reset, a Slack 429's `Retry-After`), so a retry never
+    goes before the limit ends. The Slack client's errors carry an HTTP status: a 429 is status 429 with
+    `wait_until` from `Retry-After` when present (none: the backoff, never given up); `channel_not_found` is 404
+    and `not_in_channel` is 403, which Slack sends as `ok: false` on an HTTP 200, so they are given up like a forge
+    4xx on `REFUSED_ATTEMPTS`. Other Slack codes, token errors (`invalid_auth`, `token_revoked`) among them, carry
+    no status and retry. The Retry-After parser is one shared helper (`src/shared/retry-after.ts`) for the Slack and
+    chat clients. Solo and enterprise: the same; no setting.
   - Keyed intents and the PR close (M7 worker half): an action may carry a key (`outbound_actions.intent_key`,
     unique when set; migration `20261109T0415-outbound-action-keys`), and recording it again stores nothing. The
     source close of an item with a PR records one `close_pr` action keyed `close_pr:<item>` (the comment's two
@@ -524,6 +533,10 @@ force.
 
 ## History
 
+- **Outbound wait time and Slack refusals** (decision changed 2026-11-10, issue #483). Before: a failed batch always
+  retried on its backoff and ignored the error's `wait_until`; a Slack error had only a method and a code, so a 429
+  was `rate_limited` with its `Retry-After` unread, and `channel_not_found` and `not_in_channel` had no status and
+  were retried forever.
 - **Rule of Two at run start** (decision changed 2026-11-09, owner decision). Before: `ruleOfTwoRefusal` existed but
   no run start called it, so an implement or resolve run started once its item was approved, by a person or by auto
   mode, and in auto mode they ran with all three facts and no person.
