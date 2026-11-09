@@ -9,10 +9,10 @@ import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../com
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, shortRev, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
+import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, SourceLink, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { SystemActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -352,7 +352,7 @@ export function ItemPage({ id }: { id: string }) {
       <p className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>Work items</Link>
         <span className="text-zinc-500"> / </span>
-        <a href={item.source.link} target="_blank" rel="noreferrer" className={cn("tabular-nums", LINK_CLASS)}>{shortSource(item.source.id)}</a>
+        <SourceLink source={item.source} className="inline-block align-bottom" />
       </p>
       <h2 className="text-balance text-base font-semibold">{item.title ?? item.source.id}</h2>
       {item.why && (
