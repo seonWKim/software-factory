@@ -39,8 +39,8 @@ class RecordingSecrets implements SecretStore {
   }
 }
 
-/** A fake slack.com: answers each method, records requests. */
-function fakeFetch(answers: Record<string, unknown> = {}) {
+/** A fake slack.com: answers each method (an HTTP status and headers per method in `http`), records requests. */
+function fakeFetch(answers: Record<string, unknown> = {}, http: Record<string, { status: number; headers?: Record<string, string> }> = {}) {
   const requests: { url: string; headers: Record<string, string>; body: string }[] = [];
   const fn: FetchFn = async (url, init) => {
     requests.push({ url, headers: init.headers, body: init.body });
@@ -52,7 +52,8 @@ function fakeFetch(answers: Record<string, unknown> = {}) {
       "chat.update": { ok: true },
       "conversations.replies": { ok: true, messages: [] },
     };
-    return { status: 200, json: async () => answers[method] ?? defaults[method] };
+    const headers = http[method]?.headers ?? {};
+    return { status: http[method]?.status ?? 200, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, json: async () => answers[method] ?? defaults[method] };
   };
   return { fn, requests };
 }
@@ -135,6 +136,35 @@ describe("slack plugin secrets", () => {
     const outside = JSON.stringify([first.value!.event, first.value!.dedupe_key, log.lines, socket.urls, requests.map((r) => r.body)]);
     for (const v of [VALUES.SLACK_BOT_TOKEN!, VALUES.SLACK_APP_TOKEN!]) expect(outside).not.toContain(v);
     expect(socket.acks).toHaveLength(1);
+  });
+
+  const NOW = Date.parse("2026-11-10T00:00:00Z");
+  const failure = (api: HttpSlackApi): Promise<SlackApiError> =>
+    api.postMessage({ channel: CHANNEL, thread_ts: "1.2", text: "x" }).then(() => { throw new Error("expected a failure"); }, (e: unknown) => e as SlackApiError);
+
+  it("a 429 carries status 429 and waits until its Retry-After, after the injected now; the message names only the method and the code", async () => {
+    const api = new HttpSlackApi(new RecordingSecrets(), fakeFetch({}, { "chat.postMessage": { status: 429, headers: { "retry-after": "7" } } }).fn, undefined, () => NOW);
+    const err = await failure(api);
+    expect(err).toBeInstanceOf(SlackApiError);
+    expect(err).toMatchObject({ status: 429, wait_until: new Date(NOW + 7000).toISOString() });
+    expect(err.message).toBe("slack chat.postMessage failed: rate_limited");
+  });
+
+  it("a 429 with no Retry-After carries status 429 and no wait", async () => {
+    const api = new HttpSlackApi(new RecordingSecrets(), fakeFetch({}, { "chat.postMessage": { status: 429 } }).fn, undefined, () => NOW);
+    const err = await failure(api);
+    expect(err.status).toBe(429);
+    expect(err.wait_until).toBeUndefined();
+  });
+
+  it("channel_not_found is a 404 and not_in_channel a 403; token errors carry no status", async () => {
+    const statusOf = async (error: string) =>
+      (await failure(new HttpSlackApi(new RecordingSecrets(), fakeFetch({ "chat.postMessage": { ok: false, error } }).fn))).status;
+    expect(await statusOf("channel_not_found")).toBe(404);
+    expect(await statusOf("not_in_channel")).toBe(403);
+    expect(await statusOf("invalid_auth")).toBeUndefined();
+    expect(await statusOf("token_revoked")).toBeUndefined();
+    expect(await statusOf("constructor")).toBeUndefined();
   });
 
   it("a missing token fails the call with the secret's name only", async () => {
