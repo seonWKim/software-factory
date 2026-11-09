@@ -25,7 +25,7 @@ async function setup() {
   } as unknown as GitHubClient;
   const log = recordingLog();
   const broker = new GitHubToolBroker({
-    client, credentials: { token: async () => null }, store, scanner: cleanScanner, clock: new FakeClock(),
+    client, store, scanner: cleanScanner, clock: new FakeClock(),
     repo: { owner: "o", name: "r" }, branchPrefix: "factory/", log,
   });
   return { broker, ctx, log, requests };
