@@ -21,7 +21,7 @@ import { failureClass } from "../src/core/policy.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { type Run, type RunUsage, type Timestamp, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { MYSQL_URL, OTHER_PROJECT_KEY, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
+import { MYSQL_URL, OTHER_PROJECT_KEY, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newMysqlDatabase, newStore, system } from "./helpers/store.js";
 import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
 
 const REPO = process.cwd();
@@ -105,6 +105,26 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
     expect(await runMigrate(c, "apply", () => undefined, { dir: steps({}) })).toBe(0);
     expect(await state(c)).toBe(BASELINE_STATE);
   });
+
+  it("the tests' MySQL database (a copy of a migrated template) is what npm run migrate builds: columns, keys, foreign keys, rows", async () => {
+    const migrated = await (await newEmptyMysqlDatabase()).connect();
+    expect(await runMigrate(migrated, "apply", () => undefined)).toBe(0);
+    const copy = await (await newMysqlDatabase()).connect();
+    const shape = async (c: Queryable) => {
+      const s = (await snapshot(c, true)) as { data: Record<string, Row[]> };
+      // When each migration ran differs between two databases; what ran does not.
+      s.data.runtime_schema_migrations = s.data.runtime_schema_migrations!.map(({ started_at: _s, finished_at: _f, ...r }) => r);
+      const fks = await rows(
+        c,
+        `SELECT table_name AS t, constraint_name AS k, column_name AS c, referenced_table_name AS rt, referenced_column_name AS rc
+         FROM information_schema.key_column_usage WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL ORDER BY t, k, c`,
+      );
+      return { ...s, fks };
+    };
+    const expected = (await shape(migrated)) as { fks: unknown[] };
+    expect(expected.fks.length).toBeGreaterThan(0);
+    expect(await shape(copy)).toEqual(expected);
+  }, 60_000);
 
   it("applies two pending steps in number order, recording the state after each", async () => {
     const c = await atBaseline();
