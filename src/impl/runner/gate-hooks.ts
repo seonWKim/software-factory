@@ -111,6 +111,8 @@ export interface RunningGateHooks {
   settings: Record<string, unknown>;
   /** The blocks this call recorded, read from the block record file, in order. */
   blocks(): Promise<GateBlock[]>;
+  /** Whether a Stop check is running: the agent is silent while its Stop hook waits, so the stall clock holds. */
+  checking(): boolean;
   /** Stops the host, aborts a check in progress and removes the hook folder and socket. */
   close(): Promise<void>;
 }
@@ -128,6 +130,8 @@ export interface GateAnswerer {
   sent(a: Answer): Promise<GateBlock>;
   /** The blocks recorded so far, read from the block record file, in order. */
   blocks(): Promise<GateBlock[]>;
+  /** Whether a Stop request is being answered. */
+  checking(): boolean;
 }
 
 /**
@@ -140,6 +144,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
   const workdir = o.spec.sandbox.workdir;
   const workdirs = [workdir, await realpath(workdir).catch(() => workdir)];
   const counts = { pre_tool_use: 0, stop: 0 };
+  let stopsOpen = 0;
   const blocksFile = join(o.dir, HOOK_BLOCKS);
 
   const git = async (args: string[]): Promise<string> => {
@@ -188,7 +193,14 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       const r = (typeof req === "object" && req !== null ? req : {}) as { event?: unknown; tool_name?: unknown; file_path?: unknown };
       try {
         if (r.event === "pre_tool_use") return preToolUse(r.tool_name, r.file_path);
-        if (r.event === "stop") return await stop();
+        if (r.event === "stop") {
+          stopsOpen++;
+          try {
+            return await stop();
+          } finally {
+            stopsOpen--;
+          }
+        }
       } catch {
         // A check the host could not run allows the stop.
       }
@@ -203,6 +215,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       const text = await readFile(blocksFile, "utf8").catch(() => "");
       return text.split("\n").filter(Boolean).map((l) => JSON.parse(l) as GateBlock);
     },
+    checking: () => stopsOpen > 0,
   };
 }
 
@@ -231,6 +244,7 @@ export async function startGateHooks(o: GateHooksOptions): Promise<RunningGateHo
       Stop: [{ hooks: [{ type: "command", command: command("stop"), timeout: Math.max(1, Math.ceil(o.spec.timeout_ms / 1000)) }] }],
     },
     blocks: answers.blocks,
+    checking: answers.checking,
     close: async () => {
       ctl.abort();
       await host.close();

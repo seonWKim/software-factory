@@ -6,7 +6,7 @@
   "core/types.ts": 735,
   "golden.ts": 690,
   "impl/github/github-issue-source.ts": 720,
-  "impl/runner/claude-code-runner.ts": 663,
+  "impl/runner/claude-code-runner.ts": 661,
   "impl/store/sql/sql-factory-store.ts": 3004,
   "impl/store/sqlite/schema.ts": 721,
   "impl/updater/git-worktree.ts": 912,
