@@ -1,6 +1,6 @@
 // A Slack thread from mention to merged PR, end to end on a fake Slack (issue #109 after RFC 0015): Socket Mode
-// envelopes through the real listener and inbox, the real SlackSource, the controller with the real GitHub auth
-// provider over store links and a static grant, a real Worker running triage, implement and review, outbound's
+// envelopes through the real listener and inbox, the real SlackSource, the controller with the real local auth
+// provider over store links and a static grant (Slack accounts) and the GitHub one (forge identities), a real Worker running triage, implement and review, outbound's
 // slack-thread target posting back into the thread, and the forge for the PR. docs/plugins/source-adapter.md, `slack`.
 
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,6 +12,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import { FakeBroker, FakeForge, FakeRunner, FakeSandbox, MemoryStorage, alice, config, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
@@ -43,8 +44,11 @@ async function slackFactory() {
   const scanner = { scan: (kind: Parameters<typeof inner.scan>[0], text: string) => (scanned.push(text), inner.scan(kind, text)) };
   const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, repo: { owner: "o", name: "r" }, log });
   const forge = new FakeForge();
-  const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} })]);
-  const controller = new ControllerRole({ store, sources: [slack], forge, auth, clock, config, log, scanner, repeated_failure_rule: false });
+  const grant = new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} });
+  const auth = new GitHubAuthProvider(store, [grant]);
+  // Slack accounts act as the factory user they are linked to, judged by the local auth plugin (design 08-permissions).
+  const local_auth = new LocalAuthProvider(store, [grant]);
+  const controller = new ControllerRole({ store, sources: [slack], forge, auth, local_auth, clock, config, log, scanner, repeated_failure_rule: false });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
     implement: () => ({ output: { summary: "added the scope gate", next_steps: "none" } }),
