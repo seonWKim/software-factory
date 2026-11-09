@@ -8,10 +8,10 @@ import type { ItemRow } from "../api.js";
 import { Badge } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { WhyText } from "./common.js";
+import { SourceLink, WhyText } from "./common.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
 export const VIEW_KEY = "sf.items.view";
@@ -132,7 +132,7 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
   const run = it.run;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-zinc-600 dark:text-zinc-400")}>
-      <a href={it.source.link} target="_blank" rel="noreferrer" className={cn("shrink-0 tabular-nums", LINK_CLASS)}>{shortSource(it.source.id)}</a>
+      <SourceLink source={it.source} className="shrink-0" />
       <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? it.source.id}</Link>
       <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
       {waits && (
