@@ -32,7 +32,6 @@
   "cli_user": "github:69591622",
   "workers": 5,
   "max_workers": 10,
-  "slack": { "channels": ["C0CDEHN4HM5"] },
   "plugins": {
     "secrets": "env-file",
     "egress": "pattern",
@@ -104,5 +103,6 @@
   },
   "ui": { "port": 4310 },
   "stats": { "weights": { "none": 0, "minor": 1, "major": 3, "critical": 10 }, "min_sample": 10 },
-  "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" }
+  "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" },
+  "slack": { "channels": ["C0CDEHN4HM5"] }
 }

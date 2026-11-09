@@ -9,7 +9,7 @@ Nothing uses these tokens until the `slack` source plugin is selected (SET_UP.md
 - An app called **Software Factory** with a bot user `@software-factory`, defined in [`slack/manifest.json`](../slack/manifest.json):
   - **Socket Mode on:** Slack pushes events over a WebSocket the factory opens. The factory needs no public URL or open port.
   - **Interactivity on**, for the command buttons in threads.
-  - **Bot scopes:** `app_mentions:read` (see @mentions), `channels:history` (read replies in threads it's part of), `chat:write` (reply). Nothing else.
+  - **Bot scopes:** `app_mentions:read` (see @mentions), `channels:history` (read replies in threads it's part of), `chat:write` (reply), `im:write` (open a DM to tell a person something, e.g. the owner), `reactions:write` (acknowledge a command with a reaction, #482). Nothing else.
   - **Events:** `app_mention`, `message.channels`.
 - Two secrets in the factory's secret file (`~/.config/software-factory/.env`, outside the repository; see [`docs/setup.md`](setup.md)):
   - `SLACK_BOT_TOKEN` (`xoxb-…`): posts and reads as the bot.

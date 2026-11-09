@@ -214,19 +214,19 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local intake and the bm25 doc index, leaving awake to the platform", async () => {
+  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local and Slack intake and the bm25 doc index, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
       const { store: _s, auth: _a, github_auth, sources, capability, forge, ...rest } = loaded.plugins;
       expect(github_auth).toBe("app");
-      expect(sources).toEqual(["github-issues", "local"]);
+      expect(sources).toEqual(["github-issues", "local", "slack"]);
       expect(forge).toBe("github");
       expect(capability).toBe("bm25");
       const { github_auth: _g, capability: _c, ...defaults } = defaultPlugins(platform);
       expect(rest).toEqual(defaults);
     }
     const { awake: _w, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local"], capability: "bm25" });
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
