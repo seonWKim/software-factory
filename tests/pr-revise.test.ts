@@ -1,12 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { phaseLabel } from "../src/core/commands.js";
-import type { SourceRef, WorkItem, WorkItemPatch } from "../src/core/types.js";
+import type { FactoryConfig } from "../src/core/config.js";
+import type { SourceRef, WorkerId, WorkItem, WorkItemPatch } from "../src/core/types.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { SlackSource } from "../src/impl/source/slack-source.js";
+import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { ForgeEvent, PrLineComment } from "../src/interfaces/forge.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, mallory, pipeline, silent } from "./helpers/fakes.js";
+import { Worker } from "../src/worker/index.js";
+import {
+  FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSlackPollSource, FakeSource, MemoryStorage,
+  alice, cleanScanner, config, issueRef, mallory, pipeline, prompts, silent, triageSpec,
+} from "./helpers/fakes.js";
+import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
 
 // Feedback on a factory PR (design §4, issue #178): `/revise <feedback>` on the PR, and a GitHub "Request
@@ -338,4 +348,149 @@ describe("feedback on an adopted PR", () => {
     const queued = (await store.listRuns(adopted.id)).filter((x) => x.kind === "implement");
     expect(queued.map((x) => [x.idempotency_key, x.input])).toEqual([[`${adopted.id}:implement:l1:r0`, { notes: "drop the second page read" }]]);
   });
+});
+
+/**
+ * A Slack-sourced item (issue #481): its events are what the real SlackSource makes of a mention in the thread, the
+ * form Slack lets through (it takes a message that starts with `/` as its own slash command). FakeAuth allows user "1".
+ * `gate`: the spec waits at the gate; else it runs on to the human-merge wait on PR 42.
+ */
+async function slackItem(o: { gate?: boolean; scanner?: EgressScanner } = {}) {
+  const cfg: FactoryConfig = o.gate ? config : { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 } };
+  const clock = new FakeClock();
+  const { store } = await newStore(clock);
+  const source = new FakeSlackPollSource();
+  const broker = new FakeBroker();
+  const forge = new FakeForge(source, broker.calls);
+  const scanner = o.scanner ?? cleanScanner;
+  const runner = new FakeRunner({
+    triage: () => ({ output: triageSpec }),
+    implement: () => ({ output: { summary: "s", next_steps: "n" } }),
+    review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "fine" } }),
+  });
+  const controller = new ControllerRole({ store, sources: [source], forge, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner, repeated_failure_rule: false });
+  const worker = new Worker({
+    id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts,
+    log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
+  });
+  const slack = new SlackSource({
+    api: new FakeSlackApi(), connect: new FakeSocket().connect, channels: [CHANNEL], scanner: cleanScanner, store, repo: { owner: "o", name: "r" }, log: silent,
+  });
+  const ROOT = "1800000000.000100";
+  let n = 0;
+  /** What SlackSource makes of `@factory <text>`: at the thread's root, or as a reply in it. */
+  const said = async (text: string, reply = true): Promise<SourceEvent> => {
+    const ts = reply ? `18000000${String(++n).padStart(2, "0")}.000200` : ROOT;
+    const env = eventEnvelope(mention(ts, text, { user: "1", ...(reply ? { thread_ts: ROOT } : {}) }));
+    return (await slack.toEvent(env, { team_id: TEAM, user_id: BOT }))!.event as SourceEvent;
+  };
+  const step = async () => {
+    await controller.tickIntake();
+    while (await worker.tick()) await controller.tickRuns();
+    await controller.tickRuns();
+  };
+  const say = async (text: string) => {
+    const e = await said(text);
+    source.queue.push(e);
+    await step();
+    return e;
+  };
+  source.queue.push(await said("please add a scope gate", false));
+  await step();
+  const it = (await store.listWorkItems(10)).find((x) => x.source.type === "slack_thread")!;
+  const item = async () => (await store.getWorkItem(it.id))!;
+  const implementRuns = async () => (await store.listRuns(it.id)).filter((r) => r.kind === "implement");
+  const refusals = () => source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:"));
+  const put = async (patch: WorkItemPatch) => {
+    const cur = await item();
+    const r = await store.transition({ id: cur.id, expected_version: cur.version, actor: { kind: "system", id: "test" }, reason: "setup", patch });
+    if (!r.ok) throw new Error("setup failed");
+    return r.item;
+  };
+  return { store, source, controller, it, item, implementRuns, refusals, put, say, step };
+}
+
+describe("/revise in a Slack thread (issue #481)", () => {
+  it("in the human-merge wait: the feedback starts one implement run on the PR's branch, as a /revise on the PR does", async () => {
+    const f = await slackItem();
+    expect(await f.item()).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: String(PR), loop_count: 0 });
+    await f.say("/revise rename the flag to --dry-run");
+
+    expect(await f.item()).toMatchObject({ loop_count: 1, change_ref: String(PR) });
+    const runs = await f.implementRuns();
+    expect(runs.map((r) => [r.idempotency_key, r.input])).toContainEqual([`${f.it.id}:implement:l1:r0`, { notes: "rename the flag to --dry-run" }]);
+    const change = (await f.store.listStateChanges(f.it.id)).find((c) => c.reason === "pr_revise_requested")!;
+    expect(change.changes.stage).toEqual({ from: "REVIEW", to: "RUNNING" });
+    expect(change.changes.loop_count).toEqual({ from: 0, to: 1 });
+    expect(change.detail).toMatchObject({ pr_number: PR, feedback: "rename the flag to --dry-run" });
+    expect(f.refusals()).toEqual([]);
+  });
+
+  it("after a failed review run: the same thread /revise starts the implement run", async () => {
+    const f = await slackItem();
+    await f.put({ blocked_on: "human", blocked_reason: "run_failed:review:invalid_output" });
+    expect((await f.say("/revise fix the parse error")).kind).toBe("revise_requested");
+    const runs = await f.implementRuns();
+    expect(runs.map((r) => [r.idempotency_key, r.input])).toContainEqual([`${f.it.id}:implement:l1:r0`, { notes: "fix the parse error" }]);
+    expect(f.refusals()).toEqual([]);
+  });
+
+  it("delivered again (same comment id): no second run", async () => {
+    const f = await slackItem();
+    const e = await f.say("/revise rename the flag");
+    await f.controller.handleEvent(e);
+    await f.step();
+    expect((await f.implementRuns()).map((r) => r.idempotency_key)).toEqual([`${f.it.id}:implement:l0:r0`, `${f.it.id}:implement:l1:r0`]);
+    expect((await f.store.listStateChanges(f.it.id)).filter((c) => c.reason === "pr_revise_requested")).toHaveLength(1);
+    expect(f.refusals()).toEqual([]);
+  });
+
+  it("with no feedback: the usage reply in the thread, and nothing changes", async () => {
+    const f = await slackItem();
+    const before = await f.item();
+    await f.say("/revise");
+    expect(await f.item()).toEqual(before);
+    expect(f.refusals()).toHaveLength(1);
+    expect(f.refusals()[0]!.source).toEqual(f.it.source);
+    expect(f.refusals()[0]!.body).toContain("it needs feedback after the command, e.g. `/revise keep the existing CLI flag`");
+  });
+
+  it("feedback the leak scanner flags is refused in the thread and not stored", async () => {
+    const f = await slackItem({ scanner: new PatternEgressScanner(async () => ["hunter2-secret"]) });
+    const before = await f.item();
+    await f.say("/revise the password is hunter2-secret");
+    expect(await f.item()).toEqual(before);
+    expect(f.refusals()).toHaveLength(1);
+    expect(f.refusals()[0]!.body).toContain("leak scanner");
+    expect(JSON.stringify(await f.store.listStateChanges(f.it.id))).not.toContain("hunter2-secret");
+  });
+
+  it("at the spec gate: still revises the spec (NEW, a triage run, revision_count + 1)", async () => {
+    const f = await slackItem({ gate: true });
+    const before = await f.item();
+    expect(before).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", change_ref: null });
+    await f.say("/revise also cover the CLI");
+    const revised = (await f.store.listStateChanges(f.it.id)).find((c) => c.reason === "spec_revision_requested")!;
+    expect(revised.changes.stage).toEqual({ from: "READY", to: "NEW" });
+    expect((await f.store.listStateChanges(f.it.id)).some((c) => c.reason === "pr_revise_requested")).toBe(false);
+    expect((await f.item()).revision_count).toBe(before.revision_count + 1);
+    expect((await f.store.listRuns(f.it.id)).filter((r) => r.kind === "triage")).toHaveLength(2);
+    expect(f.refusals()).toEqual([]);
+  });
+
+  for (const [phase, patch] of [
+    ["implementing", { stage: "RUNNING", blocked_on: "none", blocked_reason: null }],
+    ["reviewing", { blocked_on: "none", blocked_reason: null }],
+  ] as const) {
+    it(`while ${phaseLabel(phase)}: one reply in the thread naming the phase, no PR hint, and nothing changes`, async () => {
+      const f = await slackItem();
+      const before = await f.put(patch as WorkItemPatch);
+      expect((await f.say("/revise please change it")).kind).toBe("revise_requested");
+      expect(await f.item()).toEqual(before);
+      expect(f.refusals()).toHaveLength(1);
+      expect(f.refusals()[0]!.source).toEqual(f.it.source);
+      expect(f.refusals()[0]!.body).toContain(`the item is ${phaseLabel(phase)}`);
+      expect(f.refusals()[0]!.body).not.toMatch(/on PR|PR #/);
+    });
+  }
 });

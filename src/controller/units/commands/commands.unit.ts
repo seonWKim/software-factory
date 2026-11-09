@@ -127,6 +127,14 @@ function floorCommand(
   };
 }
 
+/** The source whose thread takes a `/revise` as PR feedback: it has no PR conversation of its own. */
+const SLACK_THREAD = "slack_thread";
+
+/** Whether a `/revise` in the item's own thread is feedback on its PR: a Slack item with a PR that takes feedback. */
+function threadRevisesPr(it: WorkItem): boolean {
+  return it.source.type === SLACK_THREAD && it.change_ref !== null && (commandSpec("revise").pr_phases?.includes(commandPhase(it)) ?? false);
+}
+
 /** Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback. */
 export class CommandsUnit {
   constructor(private readonly c: Ctx) {}
@@ -553,6 +561,10 @@ export class CommandsUnit {
     }
     if (e.kind === "revise_requested" && e.pr) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr.change_ref, key: { comment_id: e.comment_id } });
+    }
+    // A Slack thread has no PR conversation: its `/revise` is PR feedback while the item's PR can take it (design §4).
+    if (e.kind === "revise_requested" && threadRevisesPr(it)) {
+      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: it.change_ref!, key: { comment_id: e.comment_id } });
     }
     if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
