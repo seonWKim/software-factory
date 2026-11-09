@@ -428,6 +428,29 @@ describe("github.budget_share (design §5 Sources, GitHub call budget)", () => {
   });
 });
 
+describe("auth_pause_ms (design §5 Restarts, RFC 0010 item 8)", () => {
+  it("a set value loads into the core config", async () => {
+    const { config } = await loadConfig(root({ ...SQLITE, auth_pause_ms: 300_000 }));
+    expect(config.auth_pause_ms).toBe(300_000);
+  });
+
+  it("absent, it equals retry_max_ms (1800000 by default)", async () => {
+    const { auth_pause_ms: _a, retry_max_ms: _m, ...rest } = SQLITE as Record<string, unknown>;
+    const { config } = await loadConfig(root(rest));
+    expect(config.auth_pause_ms).toBe(1_800_000);
+    expect(config.auth_pause_ms).toBe(config.retry_max_ms);
+    const custom = await loadConfig(root({ ...rest, retry_max_ms: 900_000 }));
+    expect(custom.config.auth_pause_ms).toBe(900_000);
+  });
+
+  it("a value that is not a positive integer fails at load, naming the key", async () => {
+    for (const auth_pause_ms of [0, -1, 1.5, "300000", null]) {
+      const err = await loadError({ ...SQLITE, auth_pause_ms });
+      expect(err.message).toContain("auth_pause_ms");
+    }
+  });
+});
+
 describe("agent_stop_checks (design §4 Pre-push gates, issue #302)", () => {
   it("is a top-level key; absent, it is 3", async () => {
     expect(TOP_LEVEL_KEYS).toContain("agent_stop_checks");
