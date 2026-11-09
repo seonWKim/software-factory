@@ -608,10 +608,7 @@ export async function startupProject(d: StartupProjectDeps): Promise<{ project: 
 }
 
 /** What projectAtStartup reads the key through: the selected forge, or a test's stand-in for its GitHub client. */
-interface ProjectSource {
-  forge: Forge | null;
-  repoLookup?: RepoLookup | undefined;
-}
+interface ProjectSource { forge: Forge | null; repoLookup?: RepoLookup | undefined }
 
 /**
  * The configured repo's key at startup (design 08-plugins). No GitHub plugin selected: the local project, stored as
@@ -619,9 +616,7 @@ interface ProjectSource {
  * (Forge.projectIdentity): startupProject through it. A GitHub plugin but no such forge: the stored key, else the
  * local one, with no forge call. Never a GitHub client call here.
  */
-async function projectAtStartup(
-  loaded: Loaded, src: ProjectSource, d: Omit<StartupProjectDeps, "identify">,
-): Promise<{ project: ProjectRef; refreshed: Promise<void> }> {
+async function projectAtStartup(loaded: Loaded, src: ProjectSource, d: Omit<StartupProjectDeps, "identify">): Promise<{ project: ProjectRef; refreshed: Promise<void> }> {
   const { forge, repoLookup } = src;
   const identify = repoLookup ? () => resolveProject(repoLookup, d.repo) : forge?.projectIdentity ? () => forge.projectIdentity!() : null;
   const solo = loaded.config.local_only === true;

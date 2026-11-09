@@ -214,6 +214,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     private readonly label: string,
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
+    /** `status_label_prefix`: the forge-neutral default (src/interfaces/forge.ts) when left out. */
     private readonly statusPrefix: string = DEFAULT_STATUS_LABEL_PREFIX,
     /**
      * Where posted comments and written labels are recorded, shared by every replica (design §5, GitHub call
