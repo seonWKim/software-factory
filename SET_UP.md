@@ -392,7 +392,7 @@ Known gaps (2026-11-09; issues #479–#486): people's Slack replies are not show
 
 In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention (`@software-factory /revise <feedback>`) or use the buttons.
 
-The factory's commands in Slack, from the same command table as the CLI (`@bot` is the mention of the bot). Each runs as the factory user the Slack account is linked to, with that user's stored role; an unlinked account gets one reply saying so, and only `/link` and `help` are answered for it. `list`, `show`, `users list` and `settings` reads reply with what the CLI prints, cut to Slack's limits with a note naming the CLI command that prints the whole text. Item commands and `merge` store the CLI's command row, and the controller answers in the item's thread. `help` lists only the commands you may run where you ask it. A mention with any other words is a request in plain words: outside an item's thread it starts a work item, in an item's thread the factory suggests a command.
+The factory's commands in Slack, from the same command table as the CLI (`@bot` is the mention of the bot). Each runs as the factory user the Slack account is linked to, with that user's stored role; an unlinked account gets one reply saying so, and only `/link` and `help` are answered for it. `list`, `show`, `users list` and `settings` reads reply with what the CLI prints, cut to Slack's limits with a note naming the CLI command that prints the whole text and, for `show <id>`, a link to the item's source. Item commands and `merge` store the CLI's command row, and the controller answers in the item's thread. `help` lists only the commands you may run where you ask it. A mention with any other words is a request in plain words: outside an item's thread it starts a work item, in an item's thread the factory suggests a command.
 
 - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
 - `@bot list`: as `factory task list`. Who: anyone.
@@ -411,6 +411,7 @@ The factory's commands in Slack, from the same command table as the CLI (`@bot` 
 - `@bot settings reset <key> [--project <owner/name>]`: as `factory settings reset <key> [--project <owner/name>]`; refused in chat until #479, so use the CLI. Who: anyone.
 - `@bot settings history [--limit <n>]`: as `factory settings history [--limit <n>]`. Who: anyone.
 - `@bot mode auto|manual [--project <owner/name>]`: as `factory mode auto|manual [--project <owner/name>]`; refused in chat until #479, so use the CLI. Who: the owner and approvers (approve_merge).
- To turn it off, drop `"slack"` from `plugins.source`. Several replicas: only one holds the Socket Mode connection at a time (the listener lease); `scripts/slack-app.sh check` reports one more connection while the factory runs.
+
+To turn it off, drop `"slack"` from `plugins.source`. Several replicas: only one holds the Socket Mode connection at a time (the listener lease); `scripts/slack-app.sh check` reports one more connection while the factory runs.
 
 Why the secret file lives where it does, and how each guard works: [`docs/setup.md`](docs/setup.md), [`docs/architecture.md` §5](docs/architecture.md#5-secret-isolation).

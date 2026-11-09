@@ -134,10 +134,6 @@ const WHO: Record<CommandWho, string> = {
   owner: "the local owner",
 };
 
-export function whoText(w: CommandWho): string {
-  return WHO[w];
-}
-
 /** One line of the CLI list: usage, what it does, who may run it and what it prints. */
 export function commandLine(c: TableCommand): string {
   return `${c.does}. Who: ${WHO[c.who]}. Prints: ${c.prints}`;

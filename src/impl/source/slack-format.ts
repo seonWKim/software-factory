@@ -167,10 +167,11 @@ export function renderComment(body: string, repo: RepoRef, botUserId: string): S
 
 /**
  * The note that ends a chat reply cut to Slack's limits (design 05-sources, "Cut chat replies"): it says the reply
- * was cut and names `whole`, the CLI command that prints the whole text.
+ * was cut, names `whole`, the CLI command that prints the whole text, and links `link` (the item's source) when given.
  */
-export function cutNote(whole: string): string {
-  return `_(reply cut to Slack's limits; the whole text: \`${escapeSlack(whole)}\`)_`;
+export function cutNote(whole: string, link?: string): string {
+  const at = link && /^https?:\/\//.test(link) ? ` or <${link.replace(/[<>|]/g, "")}|the item>` : "";
+  return `_(reply cut to Slack's limits; the whole text: \`${escapeSlack(whole)}\`${at})_`;
 }
 
 const FENCE = "```";
@@ -178,11 +179,11 @@ const FENCE = "```";
 /**
  * A command's printed lines (the CLI's text, unchanged) as Slack code blocks: one section per block, each at most
  * SECTION_MAX characters with its fences, at most MAX_SECTIONS sections. A longer text keeps the sections that fit
- * and ends with `cutNote(whole)`.
+ * and ends with `cutNote(whole, link)`.
  */
-export function renderLines(lines: readonly string[], whole: string): SlackRendered {
+export function renderLines(lines: readonly string[], whole: string, link?: string): SlackRendered {
   let sections = chunks(escapeSlack(lines.join("\n")), SECTION_MAX - 2 * (FENCE.length + 1)).map((t) => `${FENCE}\n${t}\n${FENCE}`);
-  if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS - 1), cutNote(whole)];
+  if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS - 1), cutNote(whole, link)];
   return { text: sections[0] ?? "", blocks: sections.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } })) };
 }
 

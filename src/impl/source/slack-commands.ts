@@ -10,8 +10,11 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 // linked user as actor, and the controller applies it and answers in the thread. No Slack call happens here: the
 // caller posts the answer after this returns, so a command is stored before any Slack call.
 
-/** What a chat command answers in its thread: Markdown, a command's printed lines, or nothing. */
-export type ChatAnswer = { markdown: string } | { lines: string[]; whole: string } | null;
+/**
+ * What a chat command answers in its thread: Markdown, a command's printed lines (with `whole`, the CLI command that
+ * prints them, and `link`, the shown item's source, for the note on a cut reply), or nothing.
+ */
+export type ChatAnswer = { markdown: string } | { lines: string[]; whole: string; link?: string } | null;
 
 export type ChatStore = LocalCliDeps["store"] & Pick<FactoryStore, "resolveLink" | "getLocalUser" | "listLocalUsers">;
 
@@ -91,5 +94,6 @@ export async function runChatCommand(d: ChatDeps, cmd: ChatCommand, ctx: ChatCon
   );
   // A stored item command: the controller applies it and answers in the thread (one reply, refusals included).
   if (c.item && r.code === 0) return null;
-  return { lines: r.lines, whole };
+  const shown = action.action === "show" ? await d.store.getWorkItem(action.id) : null;
+  return { lines: r.lines, whole, ...(shown ? { link: shown.source.link } : {}) };
 }

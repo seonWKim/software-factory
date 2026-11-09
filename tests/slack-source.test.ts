@@ -557,7 +557,7 @@ describe("slack source: factory commands (issue #498)", () => {
     expect(replies[1]!.text).toContain("`list`");
   });
 
-  it("a reply longer than Slack's limits is cut to them, with a note naming the CLI command that prints it all", async () => {
+  it("a reply longer than Slack's limits is cut to them, with a note naming the CLI command and linking the item", async () => {
     const f = await setup();
     const item = await specPending(f, "1800000036.000100");
     const long = Array.from({ length: 3000 }, (_, i) => `line ${i} ${"x".repeat(90)}`).join("\n");
@@ -567,7 +567,9 @@ describe("slack source: factory commands (issue #498)", () => {
     const blocks = reply!.blocks as { text: { text: string } }[];
     expect(blocks).toHaveLength(45);
     for (const b of blocks) expect(b.text.text.length).toBeLessThanOrEqual(3000);
-    expect(blocks.at(-1)!.text.text).toBe(cutNote(`factory task show ${item.id}`));
+    expect(item.source.link).toMatch(/^https:\/\//);
+    expect(blocks.at(-1)!.text.text).toBe(cutNote(`factory task show ${item.id}`, item.source.link));
+    expect(blocks.at(-1)!.text.text).toContain(`<${item.source.link}|`);
   });
 
   it("makes no Slack call before the command is stored, and a failing Slack API does not stop it being applied", async () => {

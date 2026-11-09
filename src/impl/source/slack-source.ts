@@ -255,7 +255,7 @@ export class SlackSource implements StreamSource {
   }
 
   private rendered(a: NonNullable<ChatAnswer>, bot: string): SlackRendered {
-    return "markdown" in a ? renderComment(a.markdown, this.d.repo, bot) : renderLines(a.lines, a.whole);
+    return "markdown" in a ? renderComment(a.markdown, this.d.repo, bot) : renderLines(a.lines, a.whole, a.link);
   }
 
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
