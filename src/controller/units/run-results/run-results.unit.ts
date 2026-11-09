@@ -240,6 +240,26 @@ export class RunResultsUnit {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
+          // The factory's fix for a recurring failure (design §7) runs without a person; its change still waits for a
+          // person's merge when it touches the gate list (auto merge refuses it, and a person merges outside auto mode).
+          const fix = spec.phases ? null : await this.c.unit("improve").fixPattern(it);
+          if (fix) {
+            const next = { ...it, ...fields };
+            const patch = { ...fields, stage: "RUNNING" as const };
+            const gate = gatePathTouched(spec.allowed_paths);
+            const note = ["Approved without a person: this item is the factory's fix for a recurring failure, so it is implemented and reviewed on its own."];
+            if (gate) note.push(`It touches the gate list (\`${gate}\`), so its change waits for a person's merge.`);
+            const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
+              renderSpec(spec, tier, { floor, previous: it.tier, added }, [...note, "", footerAfter(it, patch)].join("\n")), "spec_comment_url");
+            return {
+              patch: { ...patch, spec_comment_url: url },
+              actor: SYSTEM,
+              reason: "fix_spec_approved",
+              detail: { pattern_key: fix.pattern_key },
+              ack_run: run.id,
+              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
+            };
+          }
           // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
           const rule = spec.phases ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
           if (rule) {

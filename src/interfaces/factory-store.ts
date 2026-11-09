@@ -473,6 +473,7 @@ export interface FactoryStore {
    * by queued runs is claimed (the deadlock rule); a run with an approved hold is claimed. Every cost decision
    * is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
    * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
+   * A queued run whose item has `blocked_reason` `recurring_failure` (design 05-alarms) is skipped and stays queued.
    * Sessions (design §5, 2026-11-01): an `interactive` run is never claimed; an implement-type run stays queued while
    * its item has an open session (a running interactive run) or its allowed_paths overlap one's.
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and
@@ -603,6 +604,8 @@ export interface FactoryStore {
   /** Replaces the groups of report `id` (their filing written after the report). Unknown ID: no change. */
   setImproveGroups(id: ImproveReportId, groups: ImproveReport["groups"]): Promise<void>;
   getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null>;
+  /** Every filed pattern of `project`, oldest first. Read-only. */
+  listFiledPatterns(project: string): Promise<FiledPattern[]>;
   /**
    * Claims the filing of (project, pattern key) for `input.report_id`, with no item yet. A row already there is
    * returned unchanged, unless `replace` names its report: then that row is claimed for `input.report_id` with
@@ -839,6 +842,8 @@ export interface FactoryStore {
    * one alert; the one that did gets `created: true`.
    */
   recordAlert(alert: NewAlert, dedupe_ms: number): Promise<{ created: true; alert: Alert } | { created: false }>;
+  /** When `pattern_key` last stored an alert (its dedupe row), or null when it never did. Read-only. */
+  lastAlertAt(pattern_key: string): Promise<Timestamp | null>;
   /** The newest alerts first (created_at, then id, both descending), at most `limit`. Read-only. */
   listAlerts(opts: { limit: number }): Promise<Alert[]>;
 

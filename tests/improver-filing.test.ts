@@ -146,7 +146,7 @@ describe("improve filing: solo, the local source", () => {
     expect((await w.store.listRuns(item!.id)).map((r) => [r.kind, r.status, r.idempotency_key])).toEqual([
       ["triage", "queued", `local:${item!.source.id}:triage`],
     ]);
-    expect(item!.problem).toContain("Filed for triage: the factory triages it like any other work item.");
+    expect(item!.problem).toContain("Filed as a fix: the factory triages, implements and reviews it without a person.");
 
     expect(report.patterns.map((p) => p.run_ids)).toEqual([[unique]]);
     expect(report.patterns[0]!.filing).toBeUndefined();
@@ -262,7 +262,7 @@ describe("improve filing: enterprise, the GitHub source", () => {
     const post = client.calls.find((c) => c.method === "POST")!.body as { labels?: string[]; body: string };
     expect(post.labels).toEqual(["factory"]);
     expect(post.body).toContain(issueMarker(patternKey(report.groups[0]!), report.id));
-    expect(post.body).toContain("Filed for triage: the factory triages it like any other work item.");
+    expect(post.body).toContain("Filed as a fix: the factory triages, implements and reviews it without a person.");
     const ref: SourceRef = { type: "github_issue", id: "o/r#100", link: "https://github.com/o/r/issues/100" };
     expect(report.groups[0]!.filing).toEqual({ status: "filed", ref });
   });

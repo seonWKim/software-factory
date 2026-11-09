@@ -2,7 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { enqueueImprove, fileReport, utcDay } from "../../../core/improver.js";
-import { type Run } from "../../../core/types.js";
+import { type FiledPattern, type Run, type SourceRef, type WorkItem } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -40,14 +40,26 @@ export class ImproveUnit {
       scanner: this.c.k.d.scanner,
       clock: this.c.k.d.clock,
       file: filer?.fileIssue ? (input) => filer.fileIssue!(input) : null,
-      comment: async (ref, body, marker) => {
-        const it = await this.c.k.d.store.getWorkItemBySource(ref.type, ref.id);
-        if (it) await this.c.unit("outbox").post(it, it.source, body, marker);
-        else await this.c.unit("outbox").postWithoutItem(ref, body, marker);
-      },
+      comment: (ref, body, marker) => this.commentFiled(ref, body, marker),
     }, report);
     const count = (status: string) => done.groups.filter((g) => g.filing?.status === status).length;
     this.c.k.d.log.info("improve report filed", { report_id: report.id, filed: count("filed"), commented: count("commented"), skipped: count("skipped") });
+  }
+
+  /** A comment on a filed item: through its thread (and the outbox) when the store holds it, else to its source. */
+  async commentFiled(ref: SourceRef, body: string, marker: string): Promise<void> {
+    const it = await this.c.k.d.store.getWorkItemBySource(ref.type, ref.id);
+    if (it) await this.c.unit("outbox").post(it, it.source, body, marker);
+    else await this.c.unit("outbox").postWithoutItem(ref, body, marker);
+  }
+
+  /**
+   * The filed pattern `it` is the fix of (design §7), or null: the store's filed item, matched on its source ref, so
+   * a body that only copies the marker is no fix item.
+   */
+  async fixPattern(it: WorkItem): Promise<FiledPattern | null> {
+    const filed = await this.c.k.d.store.listFiledPatterns(it.project);
+    return filed.find((p) => p.filed_ref?.type === it.source.type && p.filed_ref.id === it.source.id) ?? null;
   }
 }
 

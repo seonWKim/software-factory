@@ -180,23 +180,25 @@ const DRAFT_MAX_TOKENS = 2_000;
 export const IMPROVE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["cause", "fix", "touches"],
+  required: ["cause", "fix", "touches", "needs_person"],
   properties: {
     cause: { type: "string", minLength: 1, maxLength: 2000 },
     fix: { type: "string", minLength: 1, maxLength: 4000 },
     touches: { type: "array", maxItems: 30, items: { type: "string", minLength: 1, maxLength: 300 } },
+    needs_person: { type: "boolean" },
   },
 };
 
 /** The model's answer, checked against IMPROVE_SCHEMA; null when it does not fit. */
-export function parseDraft(v: unknown): { cause: string; fix: string; touches: string[] } | null {
+export function parseDraft(v: unknown): { cause: string; fix: string; touches: string[]; needs_person: boolean } | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
-  if (Object.keys(o).some((k) => !["cause", "fix", "touches"].includes(k))) return null;
+  if (Object.keys(o).some((k) => !["cause", "fix", "touches", "needs_person"].includes(k))) return null;
+  if (typeof o.needs_person !== "boolean") return null;
   const str = (x: unknown, max: number): x is string => typeof x === "string" && x.trim() !== "" && x.length <= max;
   if (!str(o.cause, 2000) || !str(o.fix, 4000)) return null;
   if (!Array.isArray(o.touches) || o.touches.length > 30 || !o.touches.every((t) => str(t, 300))) return null;
-  return { cause: o.cause, fix: o.fix, touches: o.touches as string[] };
+  return { cause: o.cause, fix: o.fix, touches: o.touches as string[], needs_person: o.needs_person };
 }
 
 /** What the draft step needs; without `llm` or `prompt` no model is asked and groups carry no draft. */
@@ -289,7 +291,7 @@ async function draft(d: ImproveDeps, llm: LLMProvider, system: string, g: Failur
   if (!out) return { status: "failed", reason: "invalid_output" };
   const touches_prompts_or_gate = out.touches.some(isGatePath);
   const scan = await d.scanner.scan("log", JSON.stringify(out));
-  if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))], touches_prompts_or_gate };
+  if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))], touches_prompts_or_gate, needs_person: out.needs_person };
   return { status: "drafted", ...out, touches_prompts_or_gate };
 }
 
@@ -321,7 +323,10 @@ const RECENT_MS = 30 * DAY_MS;
 
 /** What filing needs. `file`: the first source that can file, null when none can. `comment`: once per marker. */
 export interface FilingDeps {
-  store: Pick<FactoryStore, "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource">;
+  store: Pick<
+    FactoryStore,
+    "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource" | "recordAlert"
+  >;
   scanner: EgressScanner;
   clock: Clock;
   file: ((input: IssueInput) => Promise<SourceRef>) | null;
@@ -345,8 +350,9 @@ function commentMarker(key: string, report: string): string {
 /**
  * Files the groups of `report` (design §7) and stores each group's filing on the report. A group whose pattern
  * has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
- * closed in the last 30 days is skipped; any other is filed as a new item, its runs listed and its marker in the
- * body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
+ * closed in the last 30 days is skipped; one whose draft needs a person or touches the gate list is not filed but
+ * goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs
+ * without a person, its runs listed and its marker in the body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
  * Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules.
  * Safe to run twice: a filing is claimed in filed_patterns before the call and its marker looked up by the source,
  * and a comment is posted once per marker.
@@ -370,7 +376,8 @@ export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<
 
 async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, caps: { issues: number; comments: number }): Promise<ImproveFiling> {
   const file = d.file;
-  if (!file) return { status: "skipped", reason: "no_source" };
+  const person = needsPerson(g.draft);
+  if (!file && !person) return { status: "skipped", reason: "no_source" };
   const key = patternKey(g);
   const row = await d.store.getFiledPattern(report.project, key);
   if (row?.filed_ref && row.report_id !== report.id) {
@@ -383,6 +390,8 @@ async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, 
     caps.issues++;
     return { status: "filed", ref: row.filed_ref };
   }
+  if (person) return toPerson(d, g, key);
+  if (!file) return { status: "skipped", reason: "no_source" };
   if (caps.issues >= MAX_FILED_ISSUES) return { status: "skipped", reason: "issue_cap" };
   const title = `Recurring failure: ${g.error_code} in ${g.run_ids.length} runs`;
   const body = issueBody(g);
@@ -397,6 +406,29 @@ async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, 
   const ref = await file({ project: report.project, requester_id: IMPROVER.id as UserId, title, body, marker: issueMarker(key, claim.report_id) });
   await d.store.setFiledPatternRef(claim.id, claim.report_id, ref);
   return { status: "filed", ref };
+}
+
+/** Whether no automatic fix may take the group: its draft says a person must decide, or its fix touches the gate list. */
+function needsPerson(draft: ImproveDraft | undefined): boolean {
+  return draft !== undefined && "touches_prompts_or_gate" in draft && (draft.touches_prompts_or_gate || draft.needs_person === true);
+}
+
+/**
+ * A group no automatic fix may take goes to Needs you: one alert (pattern `repeated_error`, key `needs_person:<key>`)
+ * whose detail names why and the draft's cause, scanned as UI text first (dropped if flagged). No item is filed,
+ * so no fix run is queued. Once a day per pattern: a retry of the same report stores no second alert.
+ */
+async function toPerson(d: FilingDeps, g: FailureGroup, key: string): Promise<ImproveFiling> {
+  const draft = g.draft as Extract<ImproveDraft, { touches_prompts_or_gate: boolean }>;
+  const why = draft.needs_person ? "the draft says a person must decide" : "the fix touches the factory's prompts or gates";
+  const cause = draft.status === "drafted" ? ` Draft cause (model, unverified): ${draft.cause}` : "";
+  const text = `Needs a person: ${why}, so no fix item was filed.${cause}`;
+  const scan = await d.scanner.scan("ui", text);
+  await d.store.recordAlert(
+    { pattern: "repeated_error", pattern_key: `needs_person:${key}`, error_code: g.error_code, count: g.run_ids.length, detail: scan.clean ? text : null },
+    DAY_MS,
+  );
+  return { status: "skipped", reason: "needs_person" };
 }
 
 async function commentGroup(
@@ -444,9 +476,9 @@ function issueBody(g: FailureGroup): string {
     lines.push("", "Draft cause (model, unverified):", "", g.draft.cause, "", "Draft fix:", "", g.draft.fix);
     if (g.draft.touches.length > 0) lines.push("", "Touches:", ...g.draft.touches.map((t) => `- \`${t}\``));
   }
-  if (g.draft && "touches_prompts_or_gate" in g.draft && g.draft.touches_prompts_or_gate) {
-    lines.push("", "The fix touches the factory's prompts or gates: it needs a human merge.");
-  }
-  lines.push("", "Filed for triage: the factory triages it like any other work item.");
+  lines.push(
+    "",
+    "Filed as a fix: the factory triages, implements and reviews it without a person. A change that touches the factory's prompts or gates still waits for a person's merge.",
+  );
   return lines.join("\n");
 }

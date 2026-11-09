@@ -1,13 +1,14 @@
 // The alarm step (design 05-alarms): a look across items on each controller poll. A pure detector finds three
 // patterns in the store's recently finished runs and the supervisor's restart list: one error repeated on several
 // items, agent runs in a row that used no tokens, and a child crash loop. Each pattern is stored as one alert per
-// 6 hours through the store's conditional insert. No forge, LLM or sandbox call; the alert's text is scanned first.
+// 6 hours through the store's conditional insert. A failure pattern that already alerted or was filed re-raises,
+// at most once an hour, when it keeps failing: its items are held and its filed item gets a comment. No forge, LLM
+// or sandbox call; every text is scanned first.
 
-import { cyrb53 } from "./hash.js";
-import { normalizeDetail } from "./improver.js";
+import { groupFailures, normalizeDetail, patternKey } from "./improver.js";
 import type { Logger } from "./log.js";
-import { MODEL_STALL } from "./policy.js";
-import { type Run, type RunKind, type Timestamp, runTokenCount } from "./types.js";
+import { AGENT_STALLED, MODEL_STALL } from "./policy.js";
+import { type FailureGroup, type FiledPattern, type Run, type RunKind, type SourceRef, type Timestamp, type WorkItemId, runTokenCount } from "./types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { Alert, AlertPattern, FactoryStore } from "../interfaces/factory-store.js";
@@ -17,6 +18,8 @@ import type { ChildRestart } from "../interfaces/updater.js";
 export const ALERT_DEDUPE_MS = 6 * 3_600_000;
 /** Child restarts are counted over this long. */
 export const RESTART_WINDOW_MS = 30 * 60_000;
+/** A recurring pattern counts its new failures over this long, and re-raises at most once per this long. */
+export const RERAISE_WINDOW_MS = 3_600_000;
 /** The run kinds whose work is an agent's, so a run with no tokens means the model did nothing. */
 const AGENT_RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve"];
 
@@ -72,7 +75,7 @@ function repeatedErrors(newestFirst: readonly Run[], threshold: number): AlarmFi
   return [...groups.entries()]
     .filter(([, g]) => g.items.size >= threshold)
     .sort(([a], [b]) => cmp(a, b))
-    .map(([key, g]) => ({ pattern: "repeated_error", pattern_key: `repeated_error:${cyrb53(key)}`, error_code: g.code, count: g.runs, detail: g.detail }));
+    .map(([, g]) => ({ pattern: "repeated_error", pattern_key: alertKey(patternKey({ error_code: g.code, detail: g.detail })), error_code: g.code, count: g.runs, detail: g.detail }));
 }
 
 function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFinding[] {
@@ -93,26 +96,39 @@ function childRestarts(restarts: readonly ChildRestart[], now: number, threshold
   return [{ pattern: "child_restarts", pattern_key: "child_restarts", error_code: "child_restarts", count: recent.length, detail: recent.at(-1)!.reason }];
 }
 
+/** The repeated-error alert's key of a failure pattern (the improver's pattern key). */
+const alertKey = (key: string) => `repeated_error:${key}`;
+/** The re-raise's key of a failure pattern: its own dedupe row, one per RERAISE_WINDOW_MS. */
+const reraiseKey = (key: string) => `recurring:${key}`;
+
 export interface AlarmDeps {
-  store: Pick<FactoryStore, "listRunsFinishedWithin" | "recordAlert" | "pauseClaims">;
+  store: Pick<FactoryStore, "listRunsFinishedWithin" | "listRunsFinishedBetween" | "recordAlert" | "lastAlertAt" | "getFiledPattern" | "pauseClaims">;
   scanner: EgressScanner;
   clock: Clock;
   log: Logger;
+  /** The project whose filed patterns a re-raise looks up. */
+  project: string;
   /** The supervisor's restart list on this host (design 05-alarms: host-local). Absent: no restart alarm. */
   restarts?: () => Promise<readonly ChildRestart[]>;
+  /** Holds the items of a re-raised pattern (`recurring_failure`). Absent: none are held. */
+  hold?: (ids: readonly WorkItemId[], pattern_key: string) => Promise<void>;
+  /** Posts on a filed item through its source, once per marker. Absent: no comment. */
+  comment?: (ref: SourceRef, body: string, marker: string) => Promise<void>;
 }
 
 /**
  * One alarm step: reads the runs finished inside the window and the restart list, and stores each pattern found
  * unless it alerted within ALERT_DEDUPE_MS. A detail the egress scanner flags is dropped; the code and count stay.
- * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`. Returns the alerts
- * this call stored. Safe to run twice and on several replicas at once: the store's conditional insert dedupes.
+ * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`. Each recurring
+ * pattern re-raises first (`reraise`). Returns the alerts this call stored. Safe to run twice and on several replicas at
+ * once: the store's conditional insert dedupes.
  */
 export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number }): Promise<Alert[]> {
   const now = d.clock.now();
-  const runs = await d.store.listRunsFinishedWithin(settings.alarm_window_minutes * 60_000);
+  const runs = await d.store.listRunsFinishedWithin(Math.max(settings.alarm_window_minutes * 60_000, RERAISE_WINDOW_MS));
   const restarts = d.restarts ? await d.restarts() : [];
-  const stored: Alert[] = [];
+  // Before this step's own alerts, so a pattern's new 6-hour alert never hides the re-raise it is due.
+  const stored = await reraise(d, runs, now, settings.alarm_repeat_count);
   for (const f of detectAlarms({ runs, restarts, now, settings })) {
     // G5: alerts reach the status page, so the detail is scanned as UI text, never stored unscanned.
     const scan = await d.scanner.scan("ui", f.detail);
@@ -127,6 +143,71 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
     }
   }
   return stored;
+}
+
+/** The failure patterns of the runs finished within RERAISE_WINDOW_MS before `now`, as the improver groups them. */
+function recentPatterns(runs: readonly Run[], now: Date): FailureGroup[] {
+  const since = now.getTime() - RERAISE_WINDOW_MS;
+  const { groups, patterns } = groupFailures(runs.filter((r) => r.finished_at !== null && Date.parse(r.finished_at) >= since));
+  return [...groups, ...patterns];
+}
+
+/**
+ * Re-raises each recurring pattern: one that already alerted (its repeated-error alert) or was filed (its filed
+ * pattern), and that failed `threshold` more runs within the last hour after its last re-raise (none yet: after it
+ * was first known, the earlier of its alert and its filing). The re-raise is an alert (pattern `repeated_error`, key `recurring:<key>`) the store dedupes for
+ * RERAISE_WINDOW_MS, so of several replicas or steps exactly one stores it, at most once an hour. That one holds the
+ * pattern's items and comments the count since filing on its filed item. Returns the re-raises it stored.
+ */
+async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold: number): Promise<Alert[]> {
+  const finished = new Map(runs.map((r) => [r.id, Date.parse(r.finished_at ?? "")]));
+  const stored: Alert[] = [];
+  for (const g of recentPatterns(runs, now)) {
+    if (g.run_ids.length < threshold) continue;
+    const key = patternKey(g);
+    const filed = await d.store.getFiledPattern(d.project, key);
+    const known = [await d.store.lastAlertAt(alertKey(key)), filed?.created_at ?? null].filter((m): m is Timestamp => m !== null).map((m) => Date.parse(m));
+    if (known.length === 0) continue;
+    // Counted from the last re-raise, else from when the pattern was first known (its alert or its filing).
+    const last = await d.store.lastAlertAt(reraiseKey(key));
+    const from = last === null ? Math.min(...known) : Date.parse(last);
+    const fresh = g.run_ids.filter((id) => (finished.get(id) ?? 0) > from).length;
+    if (fresh < threshold) continue;
+    const scan = await d.scanner.scan("ui", g.detail);
+    const r = await d.store.recordAlert(
+      { pattern: "repeated_error", pattern_key: reraiseKey(key), error_code: g.error_code, count: fresh, detail: scan.clean ? g.detail : null },
+      RERAISE_WINDOW_MS,
+    );
+    if (!r.created) continue;
+    stored.push(r.alert);
+    d.log.warn("alarm: recurring failure", { alert_id: r.alert.id, error_code: g.error_code, count: fresh, items: g.work_item_ids.length });
+    if (d.hold) await d.hold(g.work_item_ids, key);
+    if (filed?.filed_ref && d.comment) await commentFiled(d, { ...filed, filed_ref: filed.filed_ref }, now, fresh, r.alert.id);
+  }
+  return stored;
+}
+
+/** One comment on the pattern's filed item: its failed runs since filing and in the last hour; scanned, else none. */
+async function commentFiled(d: AlarmDeps, filed: FiledPattern & { filed_ref: SourceRef }, now: Date, fresh: number, alert_id: string): Promise<void> {
+  const { groups, patterns } = groupFailures(await d.store.listRunsFinishedBetween(filed.created_at, new Date(now.getTime() + 1).toISOString() as Timestamp));
+  const all = [...groups, ...patterns].find((g) => patternKey(g) === filed.pattern_key);
+  const body = [
+    `This failure keeps coming back: ${all?.run_ids.length ?? fresh} failed runs since this item was filed (${filed.created_at}), ${fresh} of them in the last hour.`,
+    "",
+    "The work items it hit are held (`recurring_failure`) until this fix merges; then they are retried.",
+  ].join("\n");
+  const scan = await d.scanner.scan("comment", body);
+  if (!scan.clean) return;
+  await d.comment!(filed.filed_ref, body, `<!-- factory:recurring:${filed.pattern_key}:${alert_id} -->`);
+}
+
+/**
+ * The stall patterns of the last hour that hold their items once the model answers (design 05-restarts): failed
+ * runs with `agent_stalled` sharing a normalized detail, two or more of them (a group, as the improver files them).
+ * The model answered, so the stall is the pattern's, not the model's.
+ */
+export function stallPatterns(runs: readonly Run[], now: Date): FailureGroup[] {
+  return recentPatterns(runs, now).filter((g) => g.error_code === AGENT_STALLED && g.run_ids.length > 1);
 }
 
 function cmp(a: string, b: string): number {

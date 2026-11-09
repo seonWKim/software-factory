@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS, alarmStep, detectAlarms } from "../src/core/alarms.js";
+import { ALERT_DEDUPE_MS, RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "../src/core/config.js";
 import { type ControllerDeps } from "../src/core/controller-deps.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import type { RunKind, RunOutcome, WorkerId } from "../src/core/types.js";
+import { enqueueImprove, manualWindow, patternKey } from "../src/core/improver.js";
+import { AGENT_STALLED } from "../src/core/policy.js";
+import { RECURRING_FAILURE, type RunKind, type RunOutcome, type Timestamp, type WorkerId } from "../src/core/types.js";
+import type { LLMProvider } from "../src/interfaces/llm-provider.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { FakeAuth, cleanScanner, config, silent } from "./helpers/fakes.js";
-import { issue, newStore, system } from "./helpers/store.js";
+import { FakeAuth, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // Design 05-alarms: a look across items on each poll; one alert per pattern per 6 hours.
 
@@ -78,14 +81,16 @@ describe("alarms: repeated error", () => {
       for (let i = 0; i < 3; i++) await finish(store, failedWith("boom"));
       await c.tickAlarms();
     };
+    // The pattern's own alerts; its re-raises (key `recurring:`) are tested below.
+    const own = async () => (await store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith("repeated_error:"));
     await burst();
-    expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
+    expect(await own()).toHaveLength(1);
     clock.advance(ALERT_DEDUPE_MS - MIN);
     await burst();
-    expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
+    expect(await own()).toHaveLength(1);
     clock.advance(MIN);
     await burst();
-    const alerts = await store.listAlerts({ limit: 10 });
+    const alerts = await own();
     expect(alerts).toHaveLength(2);
     expect(alerts[0]!.pattern_key).toBe(alerts[1]!.pattern_key);
   });
@@ -93,7 +98,7 @@ describe("alarms: repeated error", () => {
   it("two alarm steps at once on one store leave one alert row for the pattern", async () => {
     const { store, clock } = await newStore();
     for (let i = 0; i < 3; i++) await finish(store, failedWith("boom"));
-    const deps = { store, scanner: cleanScanner, clock, log: silent };
+    const deps = { store, scanner: cleanScanner, clock, log: silent, project: PROJECT_KEY };
     const settings = { ...ALARM_DEFAULTS, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms };
     const [a, b] = await Promise.all([alarmStep(deps, settings), alarmStep(deps, settings)]);
     expect(a.length + b.length).toBe(1);
@@ -226,5 +231,168 @@ describe("alarms: settings", () => {
     await fresh.store.setSettingOverride({ key: "alarm_window_minutes", project: "", value: "1", actor: "local:test" });
     await c2.tickAlarms();
     expect(await fresh.store.listAlerts({ limit: 10 })).toEqual([]);
+  });
+});
+
+describe("alarms: recurring patterns", () => {
+  const boom = () => failedWith("npm test exited 1: boom");
+  /** Fails `n` runs of the same pattern, each on a new item, one minute apart. */
+  const burst = async (store: FactoryStore, clock: FakeClock, n: number) => {
+    const runs = [];
+    for (let i = 0; i < n; i++) {
+      clock.advance(MIN);
+      runs.push(await finish(store, boom()));
+    }
+    return runs;
+  };
+  const reraises = async (store: FactoryStore) => (await store.listAlerts({ limit: 50 })).filter((a) => a.pattern_key.startsWith("recurring:"));
+  const key = () => patternKey({ error_code: "checks_failed", detail: "npm test exited #: boom" });
+  /** The pattern filed as local item `n` (design §7), not in the store: filed, nobody started it. */
+  const file = async (store: FactoryStore, n: number) => {
+    const { run } = await enqueueImprove({ store, clock: new FakeClock() }, PROJECT_KEY, "manual");
+    const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...manualWindow(new Date()), groups: [], patterns: [] });
+    const row = await store.claimFiledPattern({ project: PROJECT_KEY, pattern_key: key(), error_code: "checks_failed", detail: "npm test exited #: boom", report_id: report.id });
+    await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
+    return row;
+  };
+
+  it("an alerted pattern re-raises once it fails alarm_repeat_count more times within an hour, at most once an hour", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    await burst(store, clock, 3);
+    await c.tickAlarms();
+    expect(await reraises(store)).toEqual([]);
+    await burst(store, clock, 2);
+    await c.tickAlarms();
+    expect(await reraises(store)).toEqual([]);
+    await burst(store, clock, 1);
+    await c.tickAlarms();
+    const [first, ...rest] = await reraises(store);
+    expect(rest).toEqual([]);
+    expect(first).toMatchObject({ pattern: "repeated_error", pattern_key: `recurring:${key()}`, error_code: "checks_failed", count: 3, detail: "npm test exited #: boom" });
+
+    // Three more within the hour: no second re-raise until an hour after the first.
+    await burst(store, clock, 3);
+    await c.tickAlarms();
+    expect(await reraises(store)).toHaveLength(1);
+    // Its fourth run, a minute before the hour is up: still none.
+    clock.set(new Date(Date.parse(first!.created_at) + RERAISE_WINDOW_MS - 2 * MIN).toISOString());
+    await burst(store, clock, 1);
+    await c.tickAlarms();
+    expect(await reraises(store)).toHaveLength(1);
+    await burst(store, clock, 3);
+    await c.tickAlarms();
+    expect(await reraises(store)).toHaveLength(2);
+  });
+
+  it("a pattern with no alert and no filed item never re-raises", async () => {
+    const { store, clock } = await newStore();
+    const deps = { store, scanner: cleanScanner, clock, log: silent, project: PROJECT_KEY };
+    const settings = { ...ALARM_DEFAULTS, alarm_window_minutes: 1, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms };
+    for (let i = 0; i < 3; i++) {
+      await burst(store, clock, 3);
+      await alarmStep(deps, settings);
+    }
+    expect(await store.listAlerts({ limit: 10 })).toEqual([]);
+  });
+
+  it("a re-raise on a filed item adds one comment through the source with the count since filing", async () => {
+    const { store, clock } = await newStore();
+    const source = new FakeSource();
+    const c = controller(store, clock, { source });
+    await burst(store, clock, 2);
+    clock.advance(10 * MIN);
+    const filed = await file(store, 100);
+    await burst(store, clock, 2);
+    await c.tickAlarms();
+    await c.tickOutbox();
+    expect(source.comments).toEqual([]);
+    await burst(store, clock, 1);
+    await c.tickAlarms();
+    await c.tickAlarms();
+    await c.tickOutbox();
+    expect(source.comments).toHaveLength(1);
+    expect(source.comments[0]).toMatchObject({ source: issueRef(100) });
+    expect(source.comments[0]!.body).toContain(`3 failed runs since this item was filed (${filed.created_at}), 3 of them in the last hour`);
+    expect(source.comments[0]!.marker).toContain(`factory:recurring:${key()}:`);
+  });
+
+  it("two alarm steps at once on one store store one re-raise and post one comment", async () => {
+    const { store, clock } = await newStore();
+    await file(store, 100);
+    await burst(store, clock, 3);
+    const posted: string[] = [];
+    const deps = { store, scanner: cleanScanner, clock, log: silent, project: PROJECT_KEY, comment: async (_: unknown, __: string, marker: string) => { posted.push(marker); } };
+    const settings = { ...ALARM_DEFAULTS, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms };
+    const [a, b] = await Promise.all([alarmStep(deps, settings), alarmStep(deps, settings)]);
+    expect([...a, ...b].filter((x) => x.pattern_key.startsWith("recurring:"))).toHaveLength(1);
+    expect(await reraises(store)).toHaveLength(1);
+    expect(posted).toHaveLength(1);
+  });
+
+  it("holds the items a recurring pattern hit: their queued runs are not claimed, other items keep running", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    await file(store, 100);
+    const hit = await burst(store, clock, 3);
+    for (const r of hit) await store.enqueueRun({ work_item_id: r.work_item_id, kind: "implement", idempotency_key: `${r.id}:retry` });
+    const { item: other } = await store.createWorkItem(issue(9_001), system, { enqueue: { kind: "triage", idempotency_key: "other" } });
+    await c.tickAlarms();
+    for (const r of hit) {
+      expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "upstream", blocked_reason: RECURRING_FAILURE });
+      expect((await store.listStateChanges(r.work_item_id)).at(-1)).toMatchObject({ reason: RECURRING_FAILURE, detail: { pattern_key: key() } });
+    }
+    const claimed = await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 });
+    expect(claimed?.work_item_id).toBe(other.id);
+    expect(await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 })).toBeNull();
+  });
+
+  it("when the fix item merges, its held items return to the queue for retry", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock, { source: new FakeSource() });
+    await file(store, 100);
+    const hit = await burst(store, clock, 3);
+    for (const r of hit) await store.enqueueRun({ work_item_id: r.work_item_id, kind: "implement", idempotency_key: `${r.id}:retry` });
+    await c.tickAlarms();
+    const claim = () => store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["implement"], lease_ms: 60_000 });
+    expect(await claim()).toBeNull();
+
+    // The fix item is open: nothing is released.
+    const { item: fix } = await store.createWorkItem({ ...issue(100), source: issueRef(100) }, system);
+    await c.tickAlarms();
+    expect(await claim()).toBeNull();
+    await store.transition({
+      id: fix.id, expected_version: fix.version, actor: system, reason: "merged",
+      patch: { stage: "CLOSED", close_reason: "completed", merge_sha: "abc1234" },
+    });
+    await c.tickAlarms();
+    await c.tickAlarms();
+    for (const r of hit) {
+      expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+      expect((await store.listStateChanges(r.work_item_id)).filter((s) => s.reason === "recurring_failure_released")).toHaveLength(1);
+    }
+    const retried = new Set<string>();
+    for (let r = await claim(); r; r = await claim()) retried.add(r.work_item_id);
+    expect(retried).toEqual(new Set(hit.map((r) => r.work_item_id)));
+  });
+
+  it("a model_stall pattern: once the probe answers, only the pattern's items are held and other items are claimed", async () => {
+    const { store, clock } = await newStore();
+    const llm = { complete: async () => ({ text: "OK", stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } }) } as unknown as LLMProvider;
+    const c = controller(store, clock, { source: new FakeSource(), llm });
+    const stalled: RunOutcome = { status: "failed", error_code: AGENT_STALLED, detail: "no model output for 300000 ms", infra: false };
+    const a = await finish(store, stalled);
+    const b = await finish(store, stalled);
+    for (const r of [a, b]) await store.enqueueRun({ work_item_id: r.work_item_id, kind: "implement", idempotency_key: `${r.id}:retry` });
+    const { item: other } = await store.createWorkItem(issue(9_002), system, { enqueue: { kind: "triage", idempotency_key: "other" } });
+    await store.pauseClaims(clock.now().toISOString() as Timestamp, "model_stall");
+    clock.advance(MIN);
+    expect(await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 })).toBeNull();
+
+    await c.tickModelProbe();
+    for (const r of [a, b]) expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "upstream", blocked_reason: RECURRING_FAILURE });
+    const claimed = await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 });
+    expect(claimed?.work_item_id).toBe(other.id);
+    expect(await store.claimRun({ worker_id: "w3" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 })).toBeNull();
   });
 });
