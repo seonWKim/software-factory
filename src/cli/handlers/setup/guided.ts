@@ -1,7 +1,10 @@
-// The guided `factory setup` (owner decision 2026-11-08). Each step shows its default and Enter takes it; `--yes`
-// takes every default. The shared choices (store, sync plugins) go to factory.config.json after a diff and a
-// question; the mode and the auto-merge tier are runtime settings (`factory settings`), set through that command;
-// then the secret, database, plugin, check and canary steps of src/setup.ts. `--me` only registers the person.
+// The guided `factory setup` (owner decision 2026-11-08; one step frame and a progress record since issue #501).
+// Every step runs through `runStep` (src/setup.ts): a title, one line on why, its questions with their defaults
+// (Enter takes one; `--yes` takes every default without reading the terminal), then a ✓ or ✗ line. The shared
+// choices (store, sync plugins) go to factory.config.json after a diff and a question; the mode and the auto-merge
+// tier are runtime settings, set through `factory settings`. After each finished step its name goes to the
+// progress record, so the next run offers to continue from the step that did not finish. `--me` only registers
+// the person.
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,20 +14,295 @@ import { cliIdentity } from "../../../core/local-cli.js";
 import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../../core/settings.js";
 import { ProfileStore } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
-import { type SetupRun, setupFinish, setupSecrets } from "../../../setup.js";
+import {
+  MAX_TOKEN_DAYS,
+  type SetupIo,
+  type SetupState,
+  type SetupStep,
+  type StepResult,
+  canaryStep,
+  checksStep,
+  mysqlPasswordKept,
+  neededSecrets,
+  openBrowser,
+  pluginSetupStep,
+  provisionDatabase,
+  runStep,
+  secretFileStep,
+  secretsToPrompt,
+  setSecret,
+} from "../../../setup.js";
 import { type CommandContext, loadCommands } from "../../index.js";
 import { cliEnvironment, gitUserName } from "../../support.js";
-import { type Ask, defaultsAsk, terminalAsk } from "./ask.js";
+import { defaultsAsk, readHidden, terminalAsk } from "./ask.js";
 import { applyChoices, configDiffLines, currentChoices, editConfigText, parseSlackChannels } from "./config-edit.js";
 import { registerMe } from "./me.js";
+import { clearProgress, readProgress, writeProgress } from "./progress.js";
 
 export interface GuidedOptions {
-  rotate: SetupRun["rotate"];
+  rotate: SetupState["rotate"];
   /** Take every default without asking. */
   yes: boolean;
   /** Only register the person (ID and display name); shared config and secrets are not touched. */
   me: boolean;
 }
+
+/** The shared state plus the command context, for reloading the config and running `factory settings`. */
+export interface GuidedState extends SetupState {
+  ctx: CommandContext;
+}
+
+export async function guidedSetup(ctx: CommandContext, o: GuidedOptions): Promise<number> {
+  if (!o.yes && !process.stdin.isTTY) {
+    console.error("setup is interactive: run it in a terminal, or pass --yes to take every default");
+    return 1;
+  }
+  const io = terminalIo(o.yes);
+  const loaded = await ctx.load();
+  const s: GuidedState = { loaded, github: loaded.config.local_only !== true, rotate: o.rotate, ctx };
+  if (o.me) return (await runStep(1, youStep, s, io)).ok ? 0 : 1;
+  return runSetup(SETUP_STEPS, s, io);
+}
+
+/** The terminal, or under `--yes` every default: then nothing reads the terminal, not even for a secret. */
+export function terminalIo(yes: boolean): SetupIo {
+  return {
+    ask: yes ? defaultsAsk() : terminalAsk(),
+    secret: yes
+      ? async () => {
+          throw new Error("--yes never reads the terminal");
+        }
+      : readHidden,
+    print: (line) => console.log(line),
+  };
+}
+
+/**
+ * Runs `steps` in order through the one step frame. A progress record from an earlier run that stopped offers
+ * "Continue from step N?" (or start over). After each ✓ step the record gets its name; a step that says `stop`
+ * ends the run there. When every step finished with ✓ the record is deleted. The exit code: 0 only then.
+ */
+export async function runSetup<S extends SetupState>(steps: readonly SetupStep<S>[], s: S, io: SetupIo): Promise<number> {
+  let progress = (await readProgress(s.loaded.stateDir)) ?? { done: [] };
+  const next = steps.findIndex((st) => !progress.done.includes(st.name));
+  let from = 0;
+  if (next > 0) {
+    io.print(`The last setup run stopped before step ${next + 1} (${steps[next]!.title}).`);
+    if ((await io.ask.choose(`Continue from step ${next + 1}?`, ["yes", "start over"] as const, "yes")) === "yes") {
+      from = next;
+      if (progress.github !== undefined) s.github = progress.github;
+    }
+  }
+  if (from === 0) {
+    progress = { done: [] };
+    await clearProgress(s.loaded.stateDir);
+  }
+  const failed: number[] = [];
+  for (let i = from; i < steps.length; i++) {
+    const step = steps[i]!;
+    const r = await runStep(i + 1, step, s, io);
+    if (r.ok) {
+      progress = { done: [...progress.done.filter((d) => d !== step.name), step.name], github: s.github };
+      await writeProgress(s.loaded.stateDir, progress);
+    } else failed.push(i + 1);
+    if (r.stop) return 1;
+  }
+  if (failed.length > 0) {
+    io.print(`\nSetup ended with ✗ at step ${failed.join(", ")}. Fix them, then run \`npm run setup\` again: it continues from step ${failed[0]}.`);
+    return 1;
+  }
+  await clearProgress(s.loaded.stateDir);
+  io.print(`\nReady. Start the factory with \`npm run factory -- dev\`, then label an issue "${s.loaded.config.intake_label}".`);
+  return 0;
+}
+
+/** factory.config.json as text and parsed. */
+async function readConfig(loaded: Loaded) {
+  const text = await readFile(loaded.configFile, "utf8");
+  return { text, raw: JSON.parse(text) as Record<string, never> };
+}
+
+/** Shows the change as a diff and writes it after a yes; a no keeps the file as it is. */
+async function writeChoices(
+  s: GuidedState,
+  io: SetupIo,
+  config: Awaited<ReturnType<typeof readConfig>>,
+  changes: ReturnType<typeof applyChoices>,
+  what: string,
+): Promise<StepResult> {
+  const file = s.loaded.configFile;
+  if (changes.size === 0) return { ok: true, line: `${what} (${file}: no change)` };
+  io.print(`   Changes to ${file}:`);
+  for (const line of configDiffLines(config.raw, changes)) io.print(`     ${line}`);
+  if (!(await io.ask.yesNo("   Write them?", true))) {
+    return { ok: true, line: `${what}; ${file} not written, the steps below use your answers and the file as it is` };
+  }
+  const reloaded = await writeConfig(s.ctx, file, config.text, editConfigText(config.text, changes));
+  if (typeof reloaded === "string") return { ok: false, stop: true, line: `refused by the config check, the file is unchanged: ${reloaded}` };
+  s.loaded = reloaded;
+  return { ok: true, line: `${what} (written to ${file})` };
+}
+
+const currentOf = (s: SetupState, raw: Record<string, never>) => currentChoices(raw, s.loaded.config.local_only !== true);
+
+const storeStep: SetupStep<GuidedState> = {
+  name: "store",
+  title: "Store",
+  why: "sqlite: one machine, no server. mysql: a shared database for a team and several replicas.",
+  async run(s, io) {
+    const config = await readConfig(s.loaded);
+    const current = currentOf(s, config.raw);
+    const store = await io.ask.choose("   Store", ["sqlite", "mysql"] as const, current.store);
+    // Only the store key: the sync plugins are the next step's.
+    const changes = new Map([...applyChoices(config.raw, { ...current, store })].filter(([k]) => k === "store"));
+    return writeChoices(s, io, config, changes, `store: ${store}`);
+  },
+};
+
+const pluginsStep: SetupStep<GuidedState> = {
+  name: "plugins",
+  title: "Plugins",
+  why: "Local intake, specs, branches, review and merge always work. GitHub and Slack are optional sync plugins.",
+  async run(s, io) {
+    const config = await readConfig(s.loaded);
+    const current = currentOf(s, config.raw);
+    const github = await io.ask.yesNo("   Sync with GitHub (issues, labels, pushes and PRs)?", current.github);
+    const slack = await io.ask.yesNo("   Take work from Slack threads?", current.slack);
+    let channels = current.slack_channels;
+    if (slack && (io.ask.interactive || channels.length === 0)) {
+      const answer = await io.ask.text("   Slack channel IDs (C…, comma separated; SET_UP.md, Slack)", channels.join(", "), (a) => {
+        const p = parseSlackChannels(a);
+        return !p.ok ? `not a channel ID: ${p.bad}` : p.channels.length === 0 ? "at least one channel ID" : null;
+      });
+      const parsed = parseSlackChannels(answer);
+      channels = parsed.ok ? parsed.channels : [];
+    }
+    const slackOn = slack && channels.length > 0;
+    if (slack && !slackOn) io.print("   Slack stays off: no channel ID given");
+    // The answer counts even when the diff is declined: GitHub off means no GitHub secret is asked or checked.
+    s.github = github;
+    const changes = applyChoices(config.raw, { store: current.store, github, slack: slackOn, slack_channels: channels });
+    return writeChoices(s, io, config, changes, `GitHub ${github ? "on" : "off"}, Slack ${slackOn ? "on" : "off"}`);
+  },
+};
+
+/** What to do for a secret before its hidden prompt; a secret with no entry gets its purpose. */
+function secretGuide(d: Awaited<ReturnType<typeof secretsToPrompt>>[number], repo: { owner: string; name: string }): string[] {
+  if (d.name === "CLAUDE_CODE_OAUTH_TOKEN") {
+    return [
+      "   In a separate, plain terminal run:  claude setup-token",
+      "   Sign in with your Claude subscription in the browser, then copy the token it prints (shown once).",
+    ];
+  }
+  if (d.name === "GITHUB_TOKEN") {
+    return [
+      `   Open ${GITHUB_TOKEN_URL} and create a fine-grained token with:`,
+      `     Expiration:          your choice locally; ≤ ${MAX_TOKEN_DAYS} days if the factory is shared`,
+      `     Repository access:   Only select repositories → ${repo.owner}/${repo.name}`,
+      "     Contents:            Read and write",
+      "     Issues:              Read and write",
+      "     Pull requests:       Read and write",
+      "     Metadata:            Read-only (added automatically)",
+      "     Everything else:     No access",
+    ];
+  }
+  return [`   ${d.name}: ${d.purpose}`];
+}
+
+const GITHUB_TOKEN_URL = "https://github.com/settings/personal-access-tokens/new";
+
+/**
+ * Every secret the selected plugins declare (less GitHub's with GitHub off) that is missing or rotated, asked in
+ * this run with hidden input. Under `--yes` nothing is read: the missing ones are the ✗ line.
+ */
+export const secretsStep: SetupStep<SetupState> = {
+  name: "secrets",
+  title: "Secrets",
+  why: "The credentials the selected plugins declare; each missing one is asked with hidden input and written only to the secret file.",
+  async run({ loaded, github, rotate }, io) {
+    const declared = neededSecrets(loaded, github);
+    io.print(`   Needed: ${declared.map((d) => d.name).join(", ") || "none"}`);
+    let missing = await secretsToPrompt(declared, await new Plugins(loaded).secrets(), rotate);
+    if (missing.length === 0) {
+      if (!(await io.ask.yesNo("   Every needed secret is set. Replace one?", false))) return { ok: true, line: "every needed secret is set" };
+      // MYSQL_PASSWORD is the Database step's (`--rotate-mysql`).
+      const options = declared.map((d) => d.name).filter((n) => n !== "MYSQL_PASSWORD");
+      if (options.length === 0) return { ok: true, line: "nothing to replace" };
+      const name = await io.ask.choose("   Which one", options, options[0]!);
+      missing = declared.filter((d) => d.name === name).slice(0, 1);
+    } else if (!(await io.ask.yesNo(`   Paste ${missing.map((d) => d.name).join(", ")} now (hidden input)?`, io.ask.interactive))) {
+      // The default is no under `--yes`: nothing is read from the terminal there.
+      const how = io.ask.interactive ? "" : " under --yes";
+      return { ok: false, line: `missing, not asked${how}: ${missing.map((d) => d.name).join(", ")} (run npm run setup in a terminal to paste them)` };
+    }
+    const names = missing.map((d) => d.name).join(", ");
+    const left: string[] = [];
+    for (const d of missing) {
+      for (const line of secretGuide(d, loaded.config.repo)) io.print(line);
+      if (d.name === "GITHUB_TOKEN") await openBrowser(GITHUB_TOKEN_URL);
+      try {
+        await setSecret(loaded.secretsFile, d.name, await io.secret(`   Paste ${d.name} (hidden): `));
+        io.print(`   saved ${d.name}`);
+      } catch (err) {
+        io.print(`   ${err instanceof Error ? err.message : String(err)}`);
+        left.push(d.name);
+      }
+    }
+    return left.length === 0
+      ? { ok: true, line: `saved ${names}` }
+      : { ok: false, line: `still missing: ${left.join(", ")} (run npm run setup again to paste them)` };
+  },
+};
+
+const databaseStep: SetupStep<GuidedState> = {
+  name: "database",
+  title: "Database",
+  why: "Where the factory keeps its work. MySQL gets its own database and user, with a generated password you never see.",
+  async run(s, io) {
+    const db = s.loaded.store;
+    if (db.type === "mysql") {
+      const stored = await mysqlPasswordKept(s);
+      const create = stored
+        ? !(await io.ask.yesNo("   Keep the factory's MySQL user and its stored password?", true))
+        : await io.ask.yesNo(`   Create database ${db.database} and user ${db.user}@localhost now?`, true);
+      if (!stored && !create) return { ok: false, stop: true, line: "no MySQL database: the factory needs one (run npm run setup again)" };
+      if (create && !(await provisionDatabase(s.loaded, io.ask.interactive, io.print))) {
+        return { ok: false, stop: true, line: "could not create the MySQL database and user: fix the MySQL login, then run npm run setup again" };
+      }
+    } else if (!(await io.ask.yesNo(`   Create or update the SQLite store under ${join(s.loaded.stateDir, "db")}?`, true))) {
+      return { ok: false, stop: true, line: "no store: the factory needs one (run npm run setup again)" };
+    }
+    const store = await openStore(s.loaded, io.print);
+    if (!store) return { ok: false, stop: true, line: "the store is not ready: fix the line above (MySQL: npm run migrate), then run npm run setup again" };
+    await store.close();
+    return { ok: true, line: db.type === "mysql" ? `MySQL ${db.user}@${db.host}:${db.port}/${db.database} ready` : "SQLite store ready" };
+  },
+};
+
+/** Registers the person (`registerMe`): the ID, a display name, the owner claim. */
+export const youStep: SetupStep<SetupState> = {
+  name: "you",
+  title: "You",
+  why: "Your display name, stored once against your ID; the first person to register becomes the local owner.",
+  async run({ loaded }, io) {
+    const store = await openStore(loaded, io.print);
+    if (!store) return { ok: false, line: "skipped: the store is not ready (run npm run migrate if the line above says so, then npm run setup -- --me)" };
+    try {
+      const r = await registerMe({
+        store,
+        profiles: new ProfileStore(storeSql(store)),
+        identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)),
+        gitName: await gitUserName(loaded.root),
+        ask: io.ask,
+        now: (await new Plugins(loaded).clock()).now().toISOString(),
+      });
+      for (const line of r.lines.slice(1)) io.print(line);
+      return { ok: r.ok, line: r.lines[0]!.trim() };
+    } finally {
+      await store.close();
+    }
+  },
+};
 
 interface ModeChoice {
   mode: Mode;
@@ -33,77 +311,35 @@ interface ModeChoice {
 
 const BUILT_IN_MODE: ModeChoice = { mode: "manual", auto_merge_max_tier: 0 };
 
-export async function guidedSetup(ctx: CommandContext, o: GuidedOptions): Promise<number> {
-  if (!o.yes && !process.stdin.isTTY) {
-    console.error("setup is interactive: run it in a terminal, or pass --yes to take every default");
-    return 1;
-  }
-  const ask = o.yes ? defaultsAsk() : terminalAsk();
-  let n = 0;
-  const step = (title: string) => console.log(`\n${++n}. ${title}`);
-  let loaded = await ctx.load();
-  if (o.me) {
-    step("You");
-    return (await youStep(loaded, ask)) ? 0 : 1;
-  }
+const modeStep: SetupStep<GuidedState> = {
+  name: "mode",
+  title: "Mode",
+  why: "manual: a person approves every spec and merges every change. auto: the factory approves and merges below tier 4, off the gate list.",
+  async run(s, io) {
+    const now = (await currentMode(s.loaded, io.print)) ?? BUILT_IN_MODE;
+    const mode = await io.ask.choose("   Mode", MODES, now.mode);
+    const tiers = Array.from({ length: AUTO_MERGE_TIER_MAX + 1 }, (_, i) => String(i));
+    const tier = Number(await io.ask.choose("   auto_merge_max_tier: the highest tier auto mode merges by itself (0: none)", tiers, String(now.auto_merge_max_tier)));
+    return applyMode(s.ctx, s.loaded, { mode, auto_merge_max_tier: tier }, io.print);
+  },
+};
 
-  const text = await readFile(loaded.configFile, "utf8");
-  const raw = JSON.parse(text) as Record<string, never>;
-  const current = currentChoices(raw, loaded.config.local_only !== true);
-  step("Store");
-  console.log("   sqlite: one machine, no server. mysql: a shared database for a team and several replicas.");
-  const store = await ask.choose("   Store", ["sqlite", "mysql"] as const, current.store);
+/** Every step of `npm run setup`, in order. A step's number is its place here, so it is the same on every run. */
+export const SETUP_STEPS: readonly SetupStep<GuidedState>[] = [
+  storeStep,
+  pluginsStep,
+  secretFileStep,
+  secretsStep,
+  databaseStep,
+  youStep,
+  modeStep,
+  pluginSetupStep,
+  checksStep,
+  canaryStep,
+];
 
-  step("Plugins");
-  console.log("   Local intake, specs, branches, review and merge always work. GitHub and Slack are optional sync plugins.");
-  const github = await ask.yesNo("   Sync with GitHub (issues, labels, pushes and PRs)?", current.github);
-  const slack = await ask.yesNo("   Take work from Slack threads?", current.slack);
-  let channels = current.slack_channels;
-  if (slack && (ask.interactive || channels.length === 0)) {
-    const answer = await ask.text("   Slack channel IDs (C…, comma separated; SET_UP.md, Slack)", channels.join(", "), (a) => {
-      const p = parseSlackChannels(a);
-      return !p.ok ? `not a channel ID: ${p.bad}` : p.channels.length === 0 ? "at least one channel ID" : null;
-    });
-    const parsed = parseSlackChannels(answer);
-    channels = parsed.ok ? parsed.channels : [];
-  }
-  if (slack && channels.length === 0) {
-    console.log("   Slack stays off: no channel ID given");
-  }
-  const changes = applyChoices(raw, { store, github, slack: slack && channels.length > 0, slack_channels: channels });
-  if (changes.size === 0) {
-    console.log(`   ${loaded.configFile}: no change`);
-  } else {
-    console.log(`   Changes to ${loaded.configFile}:`);
-    for (const line of configDiffLines(raw, changes)) console.log(`     ${line}`);
-    if (await ask.yesNo("   Write them?", true)) {
-      const reloaded = await writeConfig(ctx, loaded.configFile, text, editConfigText(text, changes));
-      if (reloaded === null) return 1;
-      loaded = reloaded;
-    } else {
-      console.log("   not written; the steps below use the file as it is");
-    }
-  }
-
-  step("Mode");
-  console.log("   manual: a person approves every spec and merges every change. auto: the factory approves and merges what it may");
-  console.log("   (below tier 4, off the gate list; docs/design/03-risk.md). A runtime setting, stored in the database, not the file.");
-  const now = (await currentMode(loaded)) ?? BUILT_IN_MODE;
-  const mode = await ask.choose("   Mode", MODES, now.mode);
-  const tiers = Array.from({ length: AUTO_MERGE_TIER_MAX + 1 }, (_, i) => String(i));
-  const tier = Number(await ask.choose("   auto_merge_max_tier: the highest tier auto mode merges by itself (0: none)", tiers, String(now.auto_merge_max_tier)));
-
-  const run: SetupRun = { loaded, rotate: o.rotate, ask, step };
-  if (!(await setupSecrets(run))) return 1;
-
-  step("You and the mode");
-  await youStep(loaded, ask);
-  await applyMode(ctx, loaded, { mode, auto_merge_max_tier: tier });
-  return setupFinish(run);
-}
-
-/** Writes the new text atomically and loads it; on a config the loader refuses, puts the old text back. */
-async function writeConfig(ctx: CommandContext, file: string, before: string, after: string): Promise<Loaded | null> {
+/** Writes the new text atomically and loads it; on a config the loader refuses, puts the old text back and returns why. */
+async function writeConfig(ctx: CommandContext, file: string, before: string, after: string): Promise<Loaded | string> {
   const save = async (t: string) => {
     const tmp = `${file}.tmp-${process.pid}`;
     await writeFile(tmp, t);
@@ -111,18 +347,15 @@ async function writeConfig(ctx: CommandContext, file: string, before: string, af
   };
   await save(after);
   try {
-    const loaded = await ctx.load();
-    console.log("   written");
-    return loaded;
+    return await ctx.load();
   } catch (err) {
     await save(before);
-    console.log(`   refused by the config check, the file is unchanged: ${err instanceof Error ? err.message : String(err)}`);
-    return null;
+    return err instanceof Error ? err.message : String(err);
   }
 }
 
 /** The store, opened and migrated; null (with the reason printed) when it is not ready yet. */
-async function openStore(loaded: Loaded) {
+async function openStore(loaded: Loaded, print: (line: string) => void) {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
   let store: Awaited<ReturnType<typeof buildStatsStore>> | null = null;
   try {
@@ -131,37 +364,14 @@ async function openStore(loaded: Loaded) {
     return store;
   } catch (err) {
     await store?.close();
-    console.log(`   the store is not ready: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`);
+    print(`   the store is not ready: ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`);
     return null;
   }
 }
 
-/** Registers the person (`registerMe`). False when the store is not ready or nothing could be stored. */
-async function youStep(loaded: Loaded, ask: Ask): Promise<boolean> {
-  const store = await openStore(loaded);
-  if (!store) {
-    console.log("   skipped: run `npm run migrate` if the line above says so, then `npm run setup -- --me`");
-    return false;
-  }
-  try {
-    const r = await registerMe({
-      store,
-      profiles: new ProfileStore(storeSql(store)),
-      identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)),
-      gitName: await gitUserName(loaded.root),
-      ask,
-      now: (await new Plugins(loaded).clock()).now().toISOString(),
-    });
-    for (const line of r.lines) console.log(line);
-    return r.ok;
-  } finally {
-    await store.close();
-  }
-}
-
 /** The global mode and auto-merge tier in effect (stored override, else the built-in default); null when the store is not ready. */
-async function currentMode(loaded: Loaded): Promise<ModeChoice | null> {
-  const store = await openStore(loaded);
+async function currentMode(loaded: Loaded, print: (line: string) => void): Promise<ModeChoice | null> {
+  const store = await openStore(loaded, print);
   if (!store) return null;
   try {
     const g = resolveSettings(settingsBase(loaded), await store.listSettingOverrides()).global;
@@ -172,20 +382,18 @@ async function currentMode(loaded: Loaded): Promise<ModeChoice | null> {
 }
 
 /** Sets each key that differs through `factory settings set`: the same approve_merge check and audit row. */
-async function applyMode(ctx: CommandContext, loaded: Loaded, choice: ModeChoice): Promise<void> {
-  const now = await currentMode(loaded);
-  if (now === null) {
-    console.log(`   mode not set; later: npm run factory -- settings set mode ${choice.mode}`);
-    return;
-  }
+async function applyMode(ctx: CommandContext, loaded: Loaded, choice: ModeChoice, print: (line: string) => void): Promise<StepResult> {
+  const now = await currentMode(loaded, print);
+  if (now === null) return { ok: false, line: `mode not set; later: npm run factory -- settings set mode ${choice.mode}` };
   const settings = (await loadCommands()).get("settings")!;
+  const later: string[] = [];
   for (const key of ["mode", "auto_merge_max_tier"] as const) {
-    if (now[key] === choice[key]) {
-      console.log(`   ${key}: ${choice[key]} (unchanged)`);
-      continue;
-    }
+    if (now[key] === choice[key]) continue;
     if ((await settings.run(["set", key, String(choice[key])], { ...ctx, name: "settings" })) !== 0) {
-      console.log(`   ${key} not set; later: npm run factory -- settings set ${key} ${choice[key]}`);
+      later.push(`npm run factory -- settings set ${key} ${choice[key]}`);
     }
   }
+  return later.length === 0
+    ? { ok: true, line: `mode ${choice.mode}, auto_merge_max_tier ${choice.auto_merge_max_tier}` }
+    : { ok: false, line: `not set; later: ${later.join("; ")}` };
 }

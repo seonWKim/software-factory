@@ -17,25 +17,26 @@ import type { SchemaVersion } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
 import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
 import { type SecretDeclaration, declaredSecrets, selectedSetups } from "./plugins.js";
+import type { Ask } from "./cli/handlers/setup/ask.js";
 
-const MAX_TOKEN_DAYS = 30;
+export const MAX_TOKEN_DAYS = 30;
 
 const CLAUDE_CODE_OAUTH_TOKEN = secretName("CLAUDE_CODE_OAUTH_TOKEN");
-const ANTHROPIC_API_KEY = secretName("ANTHROPIC_API_KEY");
 const GITHUB_TOKEN = secretName("GITHUB_TOKEN");
 const MYSQL_PASSWORD = secretName("MYSQL_PASSWORD");
 
-/** Secrets setup has its own guided step for. Any other declared secret gets the generic prompt. */
-const GUIDED: ReadonlySet<SecretName> = new Set([CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, GITHUB_TOKEN, MYSQL_PASSWORD]);
-
 /**
  * The secrets setup asks for and doctor checks: what the selected plugins declare, less the `github_auth` plugin's
- * when no GitHub plugin is selected (`local_only`). Its credentials are built only for a GitHub plugin, so with
- * GitHub off GITHUB_TOKEN or GITHUB_APP_ID is never read, though `github_auth` stays selected for turning it back on.
+ * when GitHub is off: no GitHub plugin selected (`local_only`), or setup's GitHub answer `no` in `github` (a declined
+ * config diff leaves the file selecting it). Its credentials are built only for a GitHub plugin, so with GitHub off
+ * GITHUB_TOKEN or GITHUB_APP_ID is never read, though `github_auth` stays selected for turning it back on.
  */
-export function neededSecrets(loaded: Pick<Loaded, "registry" | "plugins" | "config">): SecretDeclaration[] {
+export function neededSecrets(
+  loaded: Pick<Loaded, "registry" | "plugins" | "config">,
+  github = loaded.config.local_only !== true,
+): SecretDeclaration[] {
   const declared = declaredSecrets(loaded.registry, loaded.plugins);
-  if (loaded.config.local_only !== true) return declared;
+  if (github) return declared;
   const unread = new Set((loaded.registry.github_auth.secrets[loaded.plugins.github_auth] ?? []).map((d) => d.name));
   return declared.filter((d) => !unread.has(d.name));
 }
@@ -44,9 +45,10 @@ export function neededSecrets(loaded: Pick<Loaded, "registry" | "plugins" | "con
 
 /**
  * `warn`: reported, but does not fail doctor. Used for hardening that local use may skip. `token_days`: the
- * GitHub token expiry check only, the whole days left.
+ * GitHub token expiry check only, the whole days left. `fix`: how to fix a FAIL whose `msg` reports outside text
+ * as it came (an error, a version), so the text itself stays as reported; other FAIL lines say it in `msg`.
  */
-export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number };
+export type Check = { ok: boolean; msg: string; warn?: boolean; token_days?: number; fix?: string };
 
 /** A check's result in one word: what doctor prints and the status page shows. */
 export type CheckStatus = "ok" | "warn" | "fail";
@@ -56,10 +58,18 @@ export function checkStatus(c: Check): CheckStatus {
 }
 
 const STATUS_WORD: Record<CheckStatus, string> = { ok: "ok  ", warn: "warn", fail: "FAIL" };
+const STATUS_MARK: Record<CheckStatus, string> = { ok: "✓", warn: "!", fail: "✗" };
+
+const withFix = (c: Check) => (c.fix && !c.ok ? `${c.msg} (fix: ${c.fix})` : c.msg);
 
 /** doctor's line for one check. */
 export function checkLine(c: Check): string {
-  return `${STATUS_WORD[checkStatus(c)]}  ${c.msg}`;
+  return `${STATUS_WORD[checkStatus(c)]}  ${withFix(c)}`;
+}
+
+/** setup's line for one check, marked like its step results: ✓ ok, ! warn, ✗ FAIL. */
+export function markedLine(c: Check): string {
+  return `${STATUS_MARK[checkStatus(c)]} ${withFix(c)}`;
 }
 
 /** Doctor's exit code: 1 only when a check is FAIL (not warn). */
@@ -74,33 +84,32 @@ export function checksExitCode(checks: readonly Check[]): number {
  * from MySQL or GitHub, so a surface that shows them to anyone but the operator's terminal must
  * egress-scan them first (the status page does).
  */
-export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
+export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = {}): Promise<Check[]> {
+  // Setup passes the person's GitHub answer, which a declined config diff leaves unwritten.
+  const github = opts.github ?? loaded.config.local_only !== true;
   const checks: Check[] = [configFileCheck(loaded), ...settingsChecks(loaded), ...(await toolchainChecks(loaded.config))];
   const add = (ok: boolean, msg: string, warn = false) => checks.push({ ok, msg, warn });
 
   try {
     const s = await stat(loaded.secretsFile);
-    add((s.mode & 0o077) === 0, `secret file at ${loaded.secretsFile} is private (mode ${(s.mode & 0o777).toString(8)})`);
+    const mode = (s.mode & 0o777).toString(8);
+    const open = (s.mode & 0o077) !== 0;
+    add(!open, `secret file at ${loaded.secretsFile} is private (mode ${mode}${open ? `; run: chmod 600 ${loaded.secretsFile}` : ""})`);
   } catch {
-    add(false, `secret file exists at ${loaded.secretsFile}`);
+    add(false, `secret file exists at ${loaded.secretsFile} (run: npm run setup)`);
     return checks;
   }
-  add(!loaded.secretsFile.startsWith(loaded.root), "secret file is outside the repository");
+  const inside = loaded.secretsFile.startsWith(loaded.root);
+  add(!inside, `secret file is outside the repository${inside ? " (move it out and set SOFTWARE_FACTORY_SECRETS_FILE to its path)" : ""}`);
 
   const plugins = new Plugins(loaded);
   const secrets = await plugins.secrets();
   // One check per secret the selected plugins declare (or per group of alternatives).
-  checks.push(...(await secretChecks(neededSecrets(loaded), secrets)));
-  // Unset is the good state: an API key in the shell would override the subscription token the agents use.
-  add(
-    !process.env.ANTHROPIC_API_KEY,
-    process.env.ANTHROPIC_API_KEY
-      ? "ANTHROPIC_API_KEY is set in this shell: unset it, agents must use CLAUDE_CODE_OAUTH_TOKEN"
-      : "ANTHROPIC_API_KEY is not set in this shell (good: agents use CLAUDE_CODE_OAUTH_TOKEN)",
-  );
+  checks.push(...(await secretChecks(neededSecrets(loaded, github), secrets)));
+  checks.push(anthropicKeyCheck(process.env.ANTHROPIC_API_KEY));
 
   const claude = await runProcess(["claude", "--version"], { cwd: loaded.root, env: baseEnv() }).catch(() => null);
-  add(claude?.exit_code === 0, `claude CLI: ${claude?.stdout.trim() || "not found"}`);
+  checks.push({ ok: claude?.exit_code === 0, msg: `claude CLI: ${claude?.stdout.trim() || "not found"}`, fix: "install Claude Code and put `claude` on PATH" });
 
   const db = loaded.store;
   // A missing MYSQL_PASSWORD is already a FAIL above.
@@ -120,18 +129,20 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
       else if (v.applied < v.latest) add(false, `${where} reachable, schema at version ${v.applied} of ${v.latest} (run: npm run migrate)`);
       else add(false, `${where} reachable, schema version ${v.applied} is newer than this code knows (${v.latest}): update the factory`, true);
     } catch (err) {
-      add(false, `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+      const msg = `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`;
+      checks.push({ ok: false, msg, fix: "start MySQL and check the MYSQL_* settings in the secret file, or run: npm run setup" });
     }
   }
 
   // No GitHub plugin selected (design 05-sources, Local startup): nothing on GitHub to check, no credential read.
-  if (loaded.config.local_only === true) return checks;
+  if (!github) return checks;
   // A missing GITHUB_TOKEN or GITHUB_APP_ID is already a FAIL above when the selected plugin declares it.
   const { credentials } = await plugins.githubAccess({ secrets, clock: await plugins.clock() });
   try {
     if (!(await credentials.token())) return checks;
   } catch (err) {
-    add(false, `GitHub credentials: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+    const msg = `GitHub credentials: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`;
+    checks.push({ ok: false, msg, fix: "check GITHUB_APP_ID and github-app.pem, or run: npm run setup -- --rotate-github" });
     return checks;
   }
 
@@ -147,11 +158,13 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
       const why = missing.length > 0 ? ` (missing: ${missing.join(", ")}; set them in the App's settings and accept on the installation)` : "";
       add(missing.length === 0, `GitHub App can write contents, issues and pull requests on ${repo.owner}/${repo.name}${why}`);
     } else {
-      add(r.permissions?.push === true, `GitHub token can push to ${repo.owner}/${repo.name}`);
+      const push = r.permissions?.push === true;
+      add(push, `GitHub token can push to ${repo.owner}/${repo.name}${push ? "" : " (give the token Contents: Read and write on it)"}`);
     }
     checks.push(await tokenExpiryCheck(client, repo, new Date(), grant));
   } catch (err) {
-    add(false, `GitHub API: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`);
+    const msg = `GitHub API: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`;
+    checks.push({ ok: false, msg, fix: "check the network and that the credential can read the repository" });
     return checks;
   }
   try {
@@ -163,6 +176,16 @@ export async function doctorChecks(loaded: Loaded): Promise<Check[]> {
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
+}
+
+/**
+ * ANTHROPIC_API_KEY in this shell. Unset is the good state: an API key in the shell would override the subscription
+ * token the agents use. Takes the variable's value only to test it; the message never carries it.
+ */
+export function anthropicKeyCheck(value: string | undefined): Check {
+  return value
+    ? { ok: false, msg: "ANTHROPIC_API_KEY is set in this shell: run `unset ANTHROPIC_API_KEY` (agents must use CLAUDE_CODE_OAUTH_TOKEN)" }
+    : { ok: true, msg: "ANTHROPIC_API_KEY not set (good: agents use CLAUDE_CODE_OAUTH_TOKEN)" };
 }
 
 /**
@@ -273,8 +296,9 @@ export async function secretChecks(declared: readonly SecretDeclaration[], secre
 }
 
 /**
- * The declared secrets setup's generic step prompts for: those without a guided step of their own that are
- * missing from the file, or named in `rotate`.
+ * The declared secrets setup's Secrets step asks for: each one missing from the file or named in `rotate`. A `oneOf`
+ * group is asked once, for its first member (CLAUDE_CODE_OAUTH_TOKEN for the model credential), and only when no
+ * member is set or one is rotated. MYSQL_PASSWORD is never asked: the Database step generates it.
  */
 export async function secretsToPrompt(
   declared: readonly SecretDeclaration[],
@@ -282,11 +306,26 @@ export async function secretsToPrompt(
   rotate: readonly SecretName[],
 ): Promise<SecretDeclaration[]> {
   const out: SecretDeclaration[] = [];
+  const groups = new Set<string>();
   for (const d of declared) {
-    if (GUIDED.has(d.name)) continue;
-    if (rotate.includes(d.name) || (await secrets.get(d.name)) === null) out.push(d);
+    if (d.name === MYSQL_PASSWORD) continue;
+    if (d.oneOf === undefined) {
+      if (rotate.includes(d.name) || (await secrets.get(d.name)) === null) out.push(d);
+      continue;
+    }
+    if (groups.has(d.oneOf)) continue;
+    groups.add(d.oneOf);
+    const members = declared.filter((m) => m.oneOf === d.oneOf);
+    const rotated = members.find((m) => rotate.includes(m.name));
+    if (rotated) out.push(rotated);
+    else if (await isMissing(members, secrets)) out.push(d);
   }
   return out;
+}
+
+async function isMissing(members: readonly SecretDeclaration[], secrets: SecretStore): Promise<boolean> {
+  for (const m of members) if ((await secrets.get(m.name)) !== null) return false;
+  return true;
 }
 
 /**
@@ -322,142 +361,129 @@ export async function doctor(loaded: Loaded, opts: { llm?: boolean } = {}): Prom
 
 // setup
 
+/** How a setup step talks to the person: questions with a default, hidden input for a secret, and output. */
+export interface SetupIo {
+  ask: Ask;
+  /** Hidden input. Never called under `--yes` (`ask.interactive` false): a missing secret is reported instead. */
+  secret(prompt: string): Promise<string>;
+  print(line: string): void;
+}
+
+/** A step's outcome: its ✓ or ✗ line. `stop`: setup cannot go on (the next run continues from this step). */
+export interface StepResult {
+  ok: boolean;
+  line: string;
+  stop?: boolean;
+}
+
 /**
- * One `factory setup` run (owner decision 2026-11-08: a guided flow; src/cli/handlers/setup/ asks the shared
- * questions first). `ask` is the terminal, or every default under `--yes`: then nothing is read from the terminal and
- * a missing secret is reported, never asked. `step` prints the next numbered step.
+ * One `factory setup` step (owner decision 2026-11-08, one frame since issue #501). `name` goes to the progress
+ * record; `why` is one line. `run` asks at least one question with its default, then acts.
  */
-export interface SetupRun {
+export interface SetupStep<S> {
+  readonly name: string;
+  readonly title: string;
+  readonly why: string;
+  run(s: S, io: SetupIo): Promise<StepResult>;
+}
+
+/**
+ * The one step frame: `n. title`, the why line, the step's questions (each with its default), then a ✓ or ✗ line.
+ * A step that succeeds without asking anything is a bug in the step, so it throws.
+ */
+export async function runStep<S>(n: number, step: SetupStep<S>, s: S, io: SetupIo): Promise<StepResult> {
+  io.print(`\n${n}. ${step.title}`);
+  io.print(`   ${step.why}`);
+  let asked = 0;
+  const ask: Ask = {
+    interactive: io.ask.interactive,
+    choose: (q, options, dflt) => (asked++, io.ask.choose(q, options, dflt)),
+    yesNo: (q, dflt) => (asked++, io.ask.yesNo(q, dflt)),
+    text: (q, dflt, check) => (asked++, io.ask.text(q, dflt, check)),
+  };
+  const r = await step.run(s, { ...io, ask });
+  if (r.ok && asked === 0) throw new Error(`setup step "${step.name}" asked no question`);
+  io.print(`   ${r.ok ? "✓" : "✗"} ${r.line}`);
+  return r;
+}
+
+/** What every setup step reads. `github`: the person's GitHub answer, else the config's choice. */
+export interface SetupState {
   loaded: Loaded;
+  github: boolean;
   rotate: readonly SecretName[];
-  ask: { readonly interactive: boolean; yesNo(question: string, dflt: boolean): Promise<boolean> };
-  step(title: string): void;
 }
 
-/** What a step prints under `--yes` instead of asking for a missing secret. */
-const NOT_ASKED = "   missing: not asked under --yes; run `npm run setup` in a terminal to paste it";
-
-/** The secret file, the model credential, the GitHub token and the database. False: stop (the database failed). */
-export async function setupSecrets(run: SetupRun): Promise<boolean> {
-  const { loaded, rotate } = run;
-  const file = loaded.secretsFile;
-  const repo = loaded.config.repo;
-  const declared = neededSecrets(loaded);
-  const isDeclared = (name: SecretName) => declared.some((d) => d.name === name);
-  run.step("Secret file");
-  await ensureSecretFile(file, join(loaded.root, ".env.example"), declared.map((d) => d.name));
-  console.log(`   ${file} (dir 700, file 600, outside the repository)`);
-  console.log("   Secrets the selected plugins declare:");
-  for (const d of declared) console.log(`     ${d.name}${d.oneOf ? ` (${d.oneOf}, one of)` : ""}: ${d.purpose}`);
-
-  run.step("Model credential");
-  if (process.env.ANTHROPIC_API_KEY) {
-    console.log("   ! ANTHROPIC_API_KEY is set in this shell. It overrides the subscription token: unset it.");
-  }
-  // A fresh SecretStore after each write, so it sees the values just saved.
-  const plugins = new Plugins(loaded);
-  let secrets = await plugins.secrets();
-  const hasModel = (await secrets.get(CLAUDE_CODE_OAUTH_TOKEN)) ?? (await secrets.get(ANTHROPIC_API_KEY));
-  if (!isDeclared(CLAUDE_CODE_OAUTH_TOKEN)) {
-    console.log("   not needed by the selected plugins");
-  } else if (hasModel && !rotate.includes(CLAUDE_CODE_OAUTH_TOKEN)) {
-    console.log(`   already set (${hasModel.name})`);
-  } else if (run.ask.interactive) {
-    console.log(
-      [
-        "   In a separate, plain terminal run:  claude setup-token",
-        "   Sign in with your Claude subscription in the browser, then copy the token it prints (shown once).",
-      ].join("\n"),
-    );
-    await setSecret(file, CLAUDE_CODE_OAUTH_TOKEN, await askSecret("   Paste the token (hidden): "));
-  } else console.log(NOT_ASKED);
-
-  run.step("GitHub token");
-  secrets = await plugins.secrets();
-  if (!isDeclared(GITHUB_TOKEN)) {
-    console.log("   not needed by the selected plugins");
-  } else if ((await secrets.get(GITHUB_TOKEN)) && !rotate.includes(GITHUB_TOKEN)) {
-    console.log("   already set");
-  } else if (run.ask.interactive) {
-    const url = "https://github.com/settings/personal-access-tokens/new";
-    console.log(
-      [
-        `   Opening ${url}`,
-        "   Create a fine-grained token with:",
-        `     Expiration:          your choice locally; ≤ ${MAX_TOKEN_DAYS} days if the factory is shared`,
-        `     Repository access:   Only select repositories → ${repo.owner}/${repo.name}`,
-        "     Contents:            Read and write",
-        "     Issues:              Read and write",
-        "     Pull requests:       Read and write",
-        "     Metadata:            Read-only (added automatically)",
-        "     Everything else:     No access",
-      ].join("\n"),
-    );
-    await openBrowser(url);
-    await setSecret(file, GITHUB_TOKEN, await askSecret("   Paste the token (hidden): "));
-  } else console.log(NOT_ASKED);
-
-  run.step("Database");
-  return provisionDatabase(loaded, rotate.includes(MYSQL_PASSWORD), run.ask.interactive);
-}
-
-/** The other declared secrets, the plugins' setup hooks, doctor's checks and the canary. The exit code. */
-export async function setupFinish(run: SetupRun): Promise<number> {
-  const { loaded } = run;
-  run.step("Other secrets of the selected plugins");
-  const other = await secretsToPrompt(neededSecrets(loaded), await new Plugins(loaded).secrets(), run.rotate);
-  if (other.length === 0) console.log("   nothing to do");
-  for (const d of other) {
-    console.log(`   ${d.name}: ${d.purpose}`);
-    if (run.ask.interactive) await setSecret(loaded.secretsFile, d.name, await askSecret(`   Paste ${d.name} (hidden): `));
-    else console.log(NOT_ASKED);
-  }
-
-  run.step("Setup of the selected plugins (github-issues: the intake and status labels)");
-  await runSetupHooks(loaded, new Plugins(loaded));
-
-  run.step("Checks");
-  const code = await doctor(loaded);
-  if (code !== 0) {
-    if (loaded.store.type === "mysql") console.log("\nA new or upgraded MySQL database needs `npm run migrate` once (back it up first).");
-    console.log("\nFix the FAIL lines, then run `npm run setup` again (it skips what is already done).");
-    return code;
-  }
-
-  run.step("Canary (G6)");
-  console.log("   A real agent tries to find a planted fake secret. It must fail. Takes a few minutes, uses your plan.");
-  if (await run.ask.yesNo("   Run it now?", true)) {
-    const report = await runCanary(loaded);
-    console.log(JSON.stringify(report, null, 2).replace(/^/gm, "   "));
-    if (!report.passed) {
-      console.log("\n   Canary FAILED: do not run the factory. Revoke the GitHub token and report the output above.");
-      return 1;
+export const secretFileStep: SetupStep<SetupState> = {
+  name: "secret-file",
+  title: "Secret file",
+  why: "Holds every credential, outside the repository, readable only by you (folder 700, file 600).",
+  async run({ loaded, github }, io) {
+    const file = loaded.secretsFile;
+    if (!(await io.ask.yesNo(`   Create or update ${file}?`, true))) {
+      return { ok: false, stop: true, line: "secret file not written: setup needs it (run npm run setup again)" };
     }
-  }
+    await ensureSecretFile(file, join(loaded.root, ".env.example"), neededSecrets(loaded, github).map((d) => d.name), io.print);
+    return { ok: true, line: `${file} is ready (folder 700, file 600, outside the repository)` };
+  },
+};
 
-  console.log(`\nReady. Start the factory with \`npm run factory -- dev\`, then label an issue "${loaded.config.intake_label}".`);
-  return 0;
-}
+export const pluginSetupStep: SetupStep<SetupState> = {
+  name: "plugin-setup",
+  title: "Setup of the selected plugins",
+  why: "Each selected plugin's own setup: github-issues creates the intake and status labels on the repository.",
+  async run({ loaded, github }, io) {
+    if (!(await io.ask.yesNo("   Run it now?", true))) return { ok: false, line: "not run (run npm run setup again)" };
+    const hooks = github ? selectedSetups(loaded.registry, loaded.plugins) : [];
+    if (hooks.length === 0) return { ok: true, line: "nothing to set up for the selected plugins" };
+    const plugins = new Plugins(loaded);
+    // Hooks call the forge: with no forge credentials set they cannot run.
+    if (!(await (await plugins.githubAccess()).credentials.token())) {
+      return { ok: false, line: "skipped: no GitHub credentials (paste them in the Secrets step)" };
+    }
+    const ctx = { ...plugins.base, github: await plugins.githubApi(), print: io.print };
+    for (const h of hooks) {
+      io.print(`   ${h.kind} ${h.name}:`);
+      await h.setup(ctx);
+    }
+    return { ok: true, line: `ran ${hooks.map((h) => h.name).join(", ")}` };
+  },
+};
 
-/**
- * Runs each selected plugin's setup hook (selectedSetups), with the process's forge client. Hooks call the forge,
- * so with no forge credentials set they are skipped; a fresh Plugins sees the secrets setup just saved.
- */
-async function runSetupHooks(loaded: Loaded, plugins: Plugins): Promise<void> {
-  const hooks = selectedSetups(loaded.registry, loaded.plugins);
-  if (hooks.length === 0) {
-    console.log("   nothing to do");
-    return;
-  }
-  if (!(await (await plugins.githubAccess()).credentials.token())) {
-    console.log("   skipped: no GitHub credentials");
-    return;
-  }
-  const ctx = { ...plugins.base, github: await plugins.githubApi(), print: (line: string) => console.log(line) };
-  for (const h of hooks) {
-    console.log(`   ${h.kind} ${h.name}:`);
-    await h.setup(ctx);
-  }
+export const checksStep: SetupStep<SetupState> = {
+  name: "checks",
+  title: "Checks",
+  why: "The checks of `factory doctor`: each line says what it checks, and each ✗ how to fix it.",
+  async run({ loaded, github }, io) {
+    if (!(await io.ask.yesNo("   Run them now?", true))) {
+      return { ok: false, stop: true, line: "not run: setup ends here (run npm run setup again to continue)" };
+    }
+    const checks = await doctorChecks(loaded, { github });
+    for (const c of checks) io.print(`   ${markedLine(c)}`);
+    const failed = checks.filter((c) => checkStatus(c) === "fail").length;
+    if (failed === 0) return { ok: true, line: "every check passed" };
+    if (loaded.store.type === "mysql") io.print("   A new or upgraded MySQL database needs `npm run migrate` once (back it up first).");
+    return { ok: false, stop: true, line: `${failed} check(s) failed: fix the ✗ lines, then run npm run setup again (it continues from here)` };
+  },
+};
+
+export const canaryStep: SetupStep<SetupState> = {
+  name: "canary",
+  title: "Canary (G6)",
+  why: "A real agent tries to find a planted fake secret; it must fail. Takes a few minutes and uses your plan.",
+  async run({ loaded }, io) {
+    if (!(await io.ask.yesNo("   Run it now?", true))) return { ok: true, line: "not run" };
+    const report = await runCanary(loaded);
+    io.print(JSON.stringify(report, null, 2).replace(/^/gm, "   "));
+    return report.passed
+      ? { ok: true, line: "the agent did not find the planted secret" }
+      : { ok: false, stop: true, line: "Canary FAILED: do not run the factory. Revoke the GitHub token and report the output above." };
+  },
+};
+
+/** MySQL: the factory's own password is in the secret file and not named in `--rotate-mysql`. */
+export async function mysqlPasswordKept({ loaded, rotate }: SetupState): Promise<boolean> {
+  return !rotate.includes(MYSQL_PASSWORD) && (await (await new Plugins(loaded).secrets()).get(MYSQL_PASSWORD)) !== null;
 }
 
 /**
@@ -465,16 +491,9 @@ async function runSetupHooks(loaded: Loaded, plugins: Plugins): Promise<void> {
  * straight to the secret file. The admin login is the mysql client's (~/.my.cnf, else it asks for the
  * root password itself), so the factory never sees an admin credential. SQL goes over stdin, never argv.
  */
-async function provisionDatabase(loaded: Loaded, rotate: boolean, interactive: boolean): Promise<boolean> {
+export async function provisionDatabase(loaded: Loaded, interactive: boolean, print: (line: string) => void): Promise<boolean> {
   const db = loaded.store;
-  if (db.type !== "mysql") {
-    console.log("   SQLite: nothing to do");
-    return true;
-  }
-  if ((await (await new Plugins(loaded).secrets()).get(MYSQL_PASSWORD)) && !rotate) {
-    console.log("   already set");
-    return true;
-  }
+  if (db.type !== "mysql") return true;
   // Upper, lower, digit and symbol: passes MySQL's validate_password MEDIUM policy.
   const password = `Sf-${randomBytes(18).toString("hex")}-Q7`;
   const account = `'${db.user}'@'localhost'`;
@@ -484,18 +503,15 @@ async function provisionDatabase(loaded: Loaded, rotate: boolean, interactive: b
     `ALTER USER ${account} IDENTIFIED BY '${password}';`,
     `GRANT ALL PRIVILEGES ON \`${db.database}\`.* TO ${account};`,
   ].join("\n");
-  console.log(`   Creating database ${db.database} and user ${db.user}@localhost (generated password, never shown).`);
+  print(`   Creating database ${db.database} and user ${db.user}@localhost (generated password, never shown).`);
   const server = ["--host", db.host, "--port", String(db.port)];
   if (!(await mysqlClient(server, sql, true))) {
     if (!interactive) {
-      console.log("   ~/.my.cnf did not log in as an admin; under --yes the root password is not asked. Run `npm run setup` in a terminal.");
+      print("   ~/.my.cnf did not log in as an admin; under --yes the root password is not asked. Run `npm run setup` in a terminal.");
       return false;
     }
-    console.log("   ~/.my.cnf did not log in as an admin. The mysql client asks for the MySQL root password:");
-    if (!(await mysqlClient(["-u", "root", "-p", ...server], sql, false))) {
-      console.log("   could not create it. Fix the MySQL login, then run `npm run setup` again.");
-      return false;
-    }
+    print("   ~/.my.cnf did not log in as an admin. The mysql client asks for the MySQL root password:");
+    if (!(await mysqlClient(["-u", "root", "-p", ...server], sql, false))) return false;
   }
   await setSecret(loaded.secretsFile, MYSQL_PASSWORD, password);
   return true;
@@ -511,12 +527,16 @@ function mysqlClient(args: string[], sql: string, quiet: boolean): Promise<boole
   });
 }
 
-
 /**
  * Creates the secret file from the template, then appends, empty, any template key and any `declared`
  * secret name (the selected plugins') the file lacks.
  */
-export async function ensureSecretFile(file: string, template: string, declared: readonly SecretName[] = []): Promise<void> {
+export async function ensureSecretFile(
+  file: string,
+  template: string,
+  declared: readonly SecretName[] = [],
+  print: (line: string) => void = console.log,
+): Promise<void> {
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await chmod(dirname(file), 0o700);
   const text = await readFile(template, "utf8");
@@ -527,7 +547,7 @@ export async function ensureSecretFile(file: string, template: string, declared:
   }
   await chmod(file, 0o600);
   const added = await addMissingKeys(file, [...new Set([...keysOf(text), ...declared])]);
-  if (added.length > 0) console.log(`   added empty ${added.join(", ")} (fill in as needed)`);
+  if (added.length > 0) print(`   added empty ${added.join(", ")} (fill in as needed)`);
 }
 
 function keysOf(text: string): string[] {
@@ -557,38 +577,9 @@ export async function setSecret(file: string, name: SecretName, value: string): 
   const tmp = `${file}.tmp-${process.pid}`;
   await writeFile(tmp, lines.join("\n"), { mode: 0o600 });
   await rename(tmp, file);
-  console.log(`   saved ${name}`);
 }
 
-/** Reads a line without echoing it. */
-function askSecret(prompt: string): Promise<string> {
-  process.stdout.write(prompt);
-  const stdin = process.stdin;
-  stdin.setRawMode(true);
-  stdin.resume();
-  stdin.setEncoding("utf8");
-  return new Promise((resolve) => {
-    let value = "";
-    const onData = (chunk: string) => {
-      for (const ch of chunk) {
-        if (ch === "\r" || ch === "\n") {
-          stdin.setRawMode(false);
-          stdin.pause();
-          stdin.off("data", onData);
-          process.stdout.write("\n");
-          return resolve(value.trim());
-        }
-        if (ch === "\u0003") process.exit(130);
-        if (ch === "\u007f") value = value.slice(0, -1);
-        else value += ch;
-      }
-    };
-    stdin.on("data", onData);
-  });
-}
-
-
-async function openBrowser(url: string): Promise<void> {
+export async function openBrowser(url: string): Promise<void> {
   const cmd = process.platform === "darwin" ? "open" : "xdg-open";
   await runProcess([cmd, url], { cwd: process.cwd(), env: baseEnv() }).catch(() => undefined);
 }

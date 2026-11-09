@@ -10,11 +10,12 @@ const ROTATE: Readonly<Record<string, string>> = {
 
 export default defineCommand({
   names: ["setup"],
-  usage: `  setup        guided setup; each step shows its default and Enter takes it: store (sqlite), plugins (local
-               only; GitHub and Slack optional; written to factory.config.json after a diff), mode and
-               auto_merge_max_tier, secret file, tokens (hidden prompt), database, you (display name), plugin
-               setup, checks, canary
-               --yes  take every default without asking (scripts); missing secrets are reported, not asked
+  usage: `  setup        guided setup; each step shows a title, why, its question with the default (Enter takes it)
+               and a ✓/✗ line: store (sqlite), plugins (local only; GitHub and Slack optional; written to
+               factory.config.json after a diff), secret file, secrets (hidden input), database, you
+               (display name), mode and auto_merge_max_tier, plugin setup, checks, canary. A run that stopped
+               offers "Continue from step N?" (record: <state_dir>/setup-progress.json, no secret in it)
+               --yes  take every default without reading the terminal; missing secrets are reported, not asked
                --me   only register yourself: your ID and display name, nothing shared (later team members)
                --rotate-github / --rotate-claude / --rotate-mysql to replace a stored credential`,
   async run(args, ctx) {
