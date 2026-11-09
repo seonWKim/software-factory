@@ -141,7 +141,7 @@ describe("GET /api/v1/settings", () => {
   it("lists the PR-only keys as 'changes by PR only'", async () => {
     const { d } = await setup();
     const v = await view(d);
-    expect(v.pr_only).toEqual(PR_ONLY_KEYS.map((key) => ({ key, note: "changes by PR only", description: PR_ONLY_DESCRIPTIONS[key] })));
+    expect(v.pr_only).toEqual(PR_ONLY_KEYS.map((key) => ({ key, description: PR_ONLY_DESCRIPTIONS[key] })));
     for (const k of ["secrets", "egress", "broker"]) expect(v.pr_only.map((p: { key: string }) => p.key)).toContain(k);
     for (const k of PR_ONLY_KEYS) expect(v.keys.map((r: { key: string }) => r.key)).not.toContain(k);
   });
