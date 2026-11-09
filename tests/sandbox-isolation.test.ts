@@ -55,8 +55,11 @@ function factoryRepo() {
 function factoryState(repo: string) {
   return {
     branches: git(repo, "branch", "--list"),
-    // Outbound's staging refs (RFC 0015 M7) are where a run's last step stores its branch for the forge push.
-    refs: git(repo, "for-each-ref", "--format=%(refname) %(objectname)").split("\n").filter((l) => !l.startsWith("refs/factory/outbound/")).join("\n"),
+    // Outbound's staging refs (RFC 0015 M7) are where a run's last step stores its branch for the forge push; the
+    // forge push itself may leave origin's remote-tracking ref for the branch (git versions differ). Both are the
+    // factory's own writes, not the agent's.
+    refs: git(repo, "for-each-ref", "--format=%(refname) %(objectname)").split("\n")
+      .filter((l) => !l.startsWith("refs/factory/outbound/") && !l.startsWith("refs/remotes/origin/factory/")).join("\n"),
     head: git(repo, "symbolic-ref", "HEAD") + git(repo, "rev-parse", "HEAD"),
     config: readFileSync(join(repo, ".git", "config"), "utf8"),
     index: readFileSync(join(repo, ".git", "index")).toString("base64"),

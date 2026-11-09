@@ -337,7 +337,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     const model = this.opts.models[spec.model_class];
     const stallMs = spec.stall_ms ?? DEFAULT_STALL_MS;
     const firstOutputMs = spec.first_output_ms ?? DEFAULT_FIRST_OUTPUT_MS;
-    const watch = new StallWatch(stallMs, firstOutputMs);
+    const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
       const bridgeArgs = bridge ? { mcpConfig: bridgeMcpConfig(bridge.socket), tools: spec.tool_grants } : undefined;
@@ -486,8 +486,8 @@ export const DEFAULT_FIRST_OUTPUT_MS = 180_000;
  * system events (init, API retries) print before the model answers and are not activity (issue #215). Before the first model output the clock is the shorter of
  * `firstOutputMs` and `stallMs`, counted from the start; after it, `stallMs` from the last model output. Tool
  * calls are tracked from the events (`tool_use` blocks open one, `tool_result` blocks close it): while any is
- * open the clock does not run, since a test run in Bash can be silent for minutes; a hung tool is still bounded
- * by the run timeout. When the clock runs out, `signal` aborts and `stalled` names which limit ran out.
+ * open the clock does not run, since a test run in Bash can be silent for minutes; nor while `held` (a gate Stop
+ * check running its commands); the run timeout still bounds both. Out of time: `signal` aborts, `stalled` says why.
  */
 class StallWatch {
   private readonly ctl = new AbortController();
@@ -498,10 +498,7 @@ class StallWatch {
   private seenModel = false;
   stalled: false | "first_output" | "silence" = false;
 
-  constructor(
-    private readonly ms: number,
-    private readonly firstOutputMs: number,
-  ) {
+  constructor(private readonly ms: number, private readonly firstOutputMs: number, private readonly held = () => false) {
     this.arm();
   }
 
@@ -554,6 +551,7 @@ class StallWatch {
     if (this.done || this.open.size > 0) return;
     const first = !this.seenModel && this.firstOutputMs <= this.ms;
     this.timer = setTimeout(() => {
+      if (this.held()) return this.arm();
       this.stalled = first ? "first_output" : "silence";
       this.ctl.abort();
     }, first ? this.firstOutputMs : this.ms);

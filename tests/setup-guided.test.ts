@@ -16,6 +16,8 @@ import {
 } from "../src/cli/handlers/setup/config-edit.js";
 import { registerMe } from "../src/cli/handlers/setup/me.js";
 import { loadConfig } from "../src/compose.js";
+import { secretName } from "../src/interfaces/secret-store.js";
+import { declaredSecretNames } from "../src/plugins.js";
 import { cliIdentity, runLocalCli } from "../src/core/local-cli.js";
 import { ProfileStore } from "../src/identity/index.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
@@ -79,6 +81,16 @@ describe("setup: the shared choices in factory.config.json", () => {
     expect(diff).toContain('- "auth": "github"');
     expect(diff).toContain('+ "auth": "local"');
     expect(diff).toContain('+ "permissions": { "grants": ["static"], "static": { "roles": { "github:69591622": { "*": ["approver"] } } } }');
+  });
+
+  it("SQLite with GitHub and Slack kept: only store changes, written as sqlite, and MYSQL_PASSWORD is no longer declared", async () => {
+    const raw = JSON.parse(CHECKED_IN);
+    const changes = applyChoices(raw, { ...currentChoices(raw, true), store: "sqlite" });
+    expect([...changes.keys()]).toEqual(["store"]);
+    const loaded = await load(editConfigText(CHECKED_IN, changes));
+    expect(loaded.store).toEqual({ type: "sqlite" });
+    expect(loaded.plugins.store).toBe("sqlite");
+    expect(declaredSecretNames(loaded.registry, loaded.plugins).has(secretName("MYSQL_PASSWORD"))).toBe(false);
   });
 
   it("turning GitHub and Slack back on from local only round-trips to a config that loads", async () => {
