@@ -4,9 +4,9 @@
 
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { IMPROVER, MAX_FILED_ISSUES, SYSTEM_ITEM, fileReport, issueMarker, patternKey, systemSource } from "../src/core/improver.js";
+import { IMPROVER, MAX_FILED_ISSUES, SYSTEM_ITEM, enqueueImprove, fileReport, issueMarker, manualWindow, patternKey, systemSource } from "../src/core/improver.js";
 import { Worker } from "../src/worker/index.js";
-import type { ImproveReport, ImproveWindow, RunId, SourceRef, Timestamp, UserId, WorkerId } from "../src/core/types.js";
+import type { FailureGroup, ImproveDraft, ImproveReport, ImproveWindow, RunId, SourceRef, Timestamp, UserId, WorkItem, WorkerId, WorkItemId } from "../src/core/types.js";
 import type { AgentRunner } from "../src/interfaces/agent-runner.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
@@ -19,7 +19,7 @@ import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
-import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, config, prompts, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, alice, config, issueRef, pipeline, prompts, silent, triageSpec } from "./helpers/fakes.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 
 const noRunner = { run: () => { throw new Error("the improve run called the agent runner"); } } as unknown as AgentRunner;
@@ -320,5 +320,109 @@ describe("improve filing: enterprise, the GitHub source", () => {
     expect((comments[0]!.body as { body: string }).body).toContain(c);
     expect(report.groups[0]!.filing).toMatchObject({ status: "commented", run_ids: [c] });
     expect(client.posts()).toBe(1);
+  });
+});
+/** A report of `groups` on a manual improve run, not filed yet: what the worker stores before the controller files it. */
+async function draftedReport(store: FactoryStore, clock: FakeClock, groups: FailureGroup[]): Promise<ImproveReport> {
+  const { run } = await enqueueImprove({ store, clock }, PROJECT.key, "manual");
+  return (await store.recordImproveReport({ run_id: run.id, project: PROJECT.key, ...manualWindow(clock.now()), groups, patterns: [] })).report;
+}
+
+/** The group of `runs` (one error code) with `draft`. */
+async function groupOf(store: FactoryStore, code: string, runs: RunId[], draft: ImproveDraft): Promise<FailureGroup> {
+  const items = await Promise.all(runs.map(async (id) => (await store.getRun(id))!.work_item_id as WorkItemId));
+  return { error_code: code, detail: "same detail", run_ids: runs, work_item_ids: items, draft };
+}
+
+describe("improve filing: fix specs", () => {
+  const drafted = (o: Partial<Extract<ImproveDraft, { status: "drafted" }>>): ImproveDraft => ({
+    status: "drafted", cause: "the cause", fix: "the fix", touches: [], touches_prompts_or_gate: false, needs_person: false, ...o,
+  });
+
+  it("a draft that needs a person, or touches the gate list, goes to Needs you with the cause; no item is filed and no fix run queued", async () => {
+    const w = await local();
+    const person = [await w.fail("provider_setup"), await w.fail("provider_setup")];
+    const gate = [await w.fail("egress_blocked"), await w.fail("egress_blocked")];
+    const report = await draftedReport(w.store, w.clock, [
+      await groupOf(w.store, "provider_setup", person, drafted({ cause: "the API key was revoked", needs_person: true })),
+      await groupOf(w.store, "egress_blocked", gate, drafted({ cause: "a scanner rule is too wide", touches: ["src/impl/egress/rules.ts"], touches_prompts_or_gate: true })),
+    ]);
+    const source = w.sources[0]!;
+    const d = { store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} };
+    const done = await fileReport(d, report);
+    expect(done.groups.map((g) => g.filing)).toEqual([{ status: "skipped", reason: "needs_person" }, { status: "skipped", reason: "needs_person" }]);
+    expect(await filedItems(w.store)).toEqual([]);
+    expect(await w.store.listRunsByKind("triage", ["queued"])).toEqual([]);
+    const alerts = await w.store.listAlerts({ limit: 10 });
+    expect(alerts.map((a) => [a.pattern, a.pattern_key, a.error_code, a.count])).toEqual(expect.arrayContaining([
+      ["repeated_error", `needs_person:${patternKey(report.groups[0]!)}`, "provider_setup", 2],
+      ["repeated_error", `needs_person:${patternKey(report.groups[1]!)}`, "egress_blocked", 2],
+    ]));
+    expect(alerts.find((a) => a.error_code === "provider_setup")!.detail).toContain("a person must decide, so no fix item was filed. Draft cause (model, unverified): the API key was revoked");
+    expect(alerts.find((a) => a.error_code === "egress_blocked")!.detail).toContain("the fix touches the factory's prompts or gates");
+    // A retry of the same report stores no second alert.
+    await fileReport(d, report);
+    expect(await w.store.listAlerts({ limit: 10 })).toHaveLength(2);
+  });
+
+  it("a draft that needs no person and touches no gate path gets one fix item with its triage run queued; two replicas file it once", async () => {
+    const w = await local();
+    const runs = [await w.fail("checks_failed"), await w.fail("checks_failed")];
+    const report = await draftedReport(w.store, w.clock, [await groupOf(w.store, "checks_failed", runs, drafted({ touches: ["tests/x.test.ts"] }))]);
+    const source = w.sources[0]!;
+    const d = { store: w.store, scanner: w.scanner, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} };
+    const [a, b] = await Promise.all([fileReport(d, report), fileReport(d, report)]);
+    expect([a.groups[0]!.filing?.status, b.groups[0]!.filing?.status]).toEqual(["filed", "filed"]);
+    const items = await filedItems(w.store);
+    expect(items).toHaveLength(1);
+    expect((await w.store.listRuns(items[0]!.id)).map((r) => [r.kind, r.status])).toEqual([["triage", "queued"]]);
+  });
+});
+
+/** Files a pattern as GitHub issue `n` (design §7), so the item intake takes in for it is its fix item. */
+async function fileAs(store: FactoryStore, clock: FakeClock, n: number): Promise<void> {
+  const report = await draftedReport(store, clock, []);
+  const row = await store.claimFiledPattern({ project: PROJECT.key, pattern_key: `k${n}`, error_code: "checks_failed", detail: "d", report_id: report.id });
+  await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
+}
+
+describe("improve filing: a fix item runs without a person", () => {
+  /** The pipeline with every spec waiting at the spec gate (spec_gate_min_tier 1), unless it is a fix item's. */
+  async function factory(spec: Partial<typeof triageSpec> = {}) {
+    const p = await pipeline({ config: { dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 } } });
+    p.runner.script.triage = () => ({ output: { ...triageSpec, ...spec } });
+    const take = async (n: number): Promise<WorkItem> => {
+      p.source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "Recurring failure", body: "the runs" });
+      await p.controller.tickIntake();
+      return (await p.store.getWorkItemBySource("github_issue", issueRef(n).id))!;
+    };
+    return { ...p, take };
+  }
+  const reasons = async (store: FactoryStore, it: WorkItem) => (await store.listStateChanges(it.id)).map((c) => c.reason);
+
+  it("its spec is approved without a person, then implemented and reviewed; another item's spec waits for /approve", async () => {
+    const f = await factory();
+    await fileAs(f.store, f.clock, 1);
+    const fix = await f.take(1);
+    const other = await f.take(2);
+    await f.step();
+    expect(await f.item(other)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+    expect(await f.item(fix)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    expect(await reasons(f.store, fix)).toContain("fix_spec_approved");
+    expect((await f.runs(fix)).map((r) => [r.kind, r.status])).toEqual([["triage", "succeeded"], ["implement", "succeeded"], ["review", "succeeded"]]);
+    // After its intake (requested by the account that filed it), no change was a person's.
+    expect((await f.store.listStateChanges(fix.id)).slice(1).filter((c) => c.actor.kind === "user")).toEqual([]);
+  });
+
+  it("a fix spec touching a gate path runs, then waits at a person's merge; it is never merged by the factory", async () => {
+    const f = await factory({ allowed_paths: ["prompts/"], files_to_change: ["prompts/implement.md"] });
+    await fileAs(f.store, f.clock, 1);
+    const fix = await f.take(1);
+    await f.step();
+    await f.step();
+    expect(await f.item(fix)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", merge_sha: null });
+    expect(await reasons(f.store, fix)).toContain("fix_spec_approved");
+    const spec = (await f.store.listItemMessages(fix.id)).find((m) => m.marker.startsWith("<!-- factory:spec:"))!;
+    expect(spec.body).toContain("It touches the gate list (`prompts/`), so its change waits for a person's merge.");
   });
 });
