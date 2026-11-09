@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type ChatRequest, type ChatResult, chatCompletion, chatCompletionsUrl, retryAfterResetAt } from "../src/impl/openai/chat-client.js";
+import { type ChatRequest, type ChatResult, chatCompletion, chatCompletionsUrl } from "../src/impl/openai/chat-client.js";
+import { retryAfterResetAt } from "../src/shared/retry-after.js";
 import { type FakeOpenAIServer, type ScriptedResponse, completion, startFakeOpenAIServer } from "./helpers/fake-openai-server.js";
 
 const KEY = "sk-test-key-123";
@@ -261,9 +262,9 @@ describe("no vendor SDK", () => {
     expect(hits).toEqual([]);
   });
 
-  it("the chat client uses the global fetch and imports nothing", () => {
+  it("the chat client uses the global fetch and imports only the shared Retry-After helper", () => {
     const text = readFileSync(join(ROOT, "src", "impl", "openai", "chat-client.ts"), "utf8");
-    expect(text).not.toMatch(/^\s*import\s/m);
+    expect(text.match(/^\s*import\s.*$/gm)).toEqual(['import { retryAfterResetAt } from "../../shared/retry-after.js";']);
     expect(text).toContain("await fetch(");
   });
 });
