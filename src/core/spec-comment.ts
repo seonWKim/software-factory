@@ -1,5 +1,6 @@
 import type { AddedPath } from "./companions.js";
 import { MAX_DECISIONS, type TriageOutput, type TriagePhase } from "./outputs.js";
+import { inShortParagraphs } from "./pr-body.js";
 import type { Tier } from "./types.js";
 
 /** What else fed the effective tier, so a raise above the agent's tier can be explained, and what triage's paths gained. */
@@ -76,7 +77,7 @@ export function repeatsDone(desired: string, done: readonly string[]): boolean {
  */
 export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER): string {
   // The plain AS-IS → TO-BE statement comes first, so the reader has the idea before any file-level detail.
-  const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", spec.in_short.trim(), ""];
+  const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", inShortParagraphs(spec.in_short), ""];
   out.push("### Problem", spec.problem, "");
   const decisions = [
     ...(tier > spec.tier ? [`Tier raised from ${spec.tier} to ${tier} because ${raiseReason(tier, spec.tier, why)}.`] : []),

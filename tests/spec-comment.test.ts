@@ -47,7 +47,12 @@ describe("renderSpec", () => {
     expect(l[0]).toBe("## Factory spec");
     const rest = l.slice(1).filter((x) => x.trim() !== "");
     expect(rest[0]).toBe("### In short (AS-IS → TO-BE)");
-    expect(body).toContain(`## Factory spec\n\n### In short (AS-IS → TO-BE)\n${IN_SHORT}\n`);
+    expect(body).toContain(`## Factory spec\n\n### In short (AS-IS → TO-BE)\n${IN_SHORT.replace("\nTO-BE:", "\n\nTO-BE:")}\n`);
+  });
+
+  it("renders a one-paragraph in_short as two paragraphs, AS-IS then TO-BE", () => {
+    const body = renderSpec({ ...spec, in_short: "AS-IS: Eight files differ. TO-BE: One helper." }, 2);
+    expect(body).toContain("### In short (AS-IS → TO-BE)\nAS-IS: Eight files differ.\n\nTO-BE: One helper.\n");
   });
 
   it("puts Problem second and Decisions for you third, the sections in order and the footer last", () => {

@@ -12,8 +12,8 @@ type SourceClosedEvent = Extract<SourceEvent, { kind: "source_closed" }>;
 /** Closes an item whose source was closed by someone the factory cannot name (design §4). */
 const INTAKE: Actor = { kind: "system", id: "system:intake" };
 /**
- * An item closed from its source whose open PR still needs its comment and its close: `CLOSED` with
- * `blocked_on: upstream` and this reason until both are done (design §4, source closed).
+ * An item closed from its source, or rejected, whose open PR still needs its comment and its close: `CLOSED` with
+ * `blocked_on: upstream` and this reason until both are done (design §4, source closed and `/reject`).
  */
 const PR_CLOSE_PENDING = "pr_close_pending";
 /** Rejected items finished per intake tick. */
@@ -97,10 +97,11 @@ export class ClosesUnit {
   }
 
   /**
-   * The rest of a source close for an item with a PR (RFC 0015 M7): one `close_pr` intent, keyed on the item, which
-   * outbound delivers as one comment on the PR naming who closed the issue, then the PR closed without a merge (a
-   * PR already merged or closed is left alone). The pending mark is cleared when outbound reports it delivered
-   * (`prClosed`); until then each tick records it again, which stores nothing.
+   * The rest of a source close or a spec reject for an item with a PR (RFC 0015 M7): one `close_pr` intent, keyed on
+   * the item, which outbound delivers as one comment on the PR (naming who closed the issue, or quoting the reject's
+   * reason), then the PR closed without a merge (a PR already merged or closed is left alone, with no comment). The
+   * pending mark is cleared when outbound reports it delivered (`prClosed`); until then each tick records it again,
+   * which stores nothing.
    */
   async finishPrClose(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
@@ -108,6 +109,12 @@ export class ClosesUnit {
     if (!it || !prClosePending(it) || pr === null) return;
     const forge = this.c.k.forge;
     if (!forge) return;
+    const reason = it.close_reason === "rejected" ? (it.spec_feedback?.trim() ?? "") : null;
+    const body = reason === null
+      ? "Closed because the issue was closed."
+      : reason
+        ? ["Closed without a merge because the spec was rejected. The reason given:", "", quote(reason)].join("\n")
+        : "Closed without a merge because the spec was rejected (no reason given).";
     await this.c.k.commit({ writes: [{ kind: "intent", action: {
       action: "close_pr",
       target: forge.prRef(pr),
@@ -117,8 +124,8 @@ export class ClosesUnit {
         pr,
         closed: JSON.stringify(it.source),
         marker: `<!-- factory:pr-closed:${it.id} -->`,
-        body: "Closed because the issue was closed.",
-        body_by: "Closed because the issue was closed by {closer}.",
+        body,
+        body_by: reason === null ? "Closed because the issue was closed by {closer}." : body,
       },
     } }] });
   }
@@ -131,14 +138,20 @@ export class ClosesUnit {
   }
 
   /**
-   * The rest of a reject: one comment quoting the reason, then the source issue closed as not planned,
-   * then the pending mark cleared. Each step is idempotent, so a repeat after a stop does no harm.
+   * The rest of a reject: one comment quoting the reason, then the source issue closed as not planned, then the
+   * pending mark cleared, or, for a spec reject of an item with a PR and a forge, moved to `pr_close_pending` and the
+   * PR closed (finishPrClose). A budget reject leaves the PR as it is. Each step is idempotent, so a repeat after a
+   * stop does no harm. A local item's surface is the store, so it needs no adapter and never waits on a sync plugin.
    */
   async finishReject(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
     if (!it || !closePending(it)) return;
-    // No adapter for the item's source: it stays pending (its state is kept) until one is configured.
-    if (!this.c.k.adapterFor(it.source, "closeIssue")) return;
+    // No adapter for the item's source: it stays pending (its state is kept) until one is configured; adapterFor says
+    // so in the log. A local item needs none (`serves`): its surface is the store.
+    if (!this.c.k.serves(it.source.type)) {
+      this.c.k.adapterFor(it.source, "closeIssue");
+      return;
+    }
     const budget = (await this.c.k.d.store.listStateChanges(id)).filter((c) => c.reason === "spec_rejected" || c.reason === "budget_rejected").at(-1)
       ?.reason === "budget_rejected";
     const reason = budget ? "" : (it.spec_feedback?.trim() ?? "");
@@ -149,11 +162,29 @@ export class ClosesUnit {
         : "Closed because the spec was rejected (no reason given). The factory closed this issue as not planned.";
     await this.c.unit("outbox").comment(it, `rejected:${it.id}`, body);
     await this.c.unit("outbox").close(it);
+    const closesPr = !budget && prNumber(it) !== null && this.c.k.forge !== null;
     await this.c.unit("transitions").decide(id, (cur) =>
       closePending(cur)
-        ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "source_closed" }
+        ? {
+          patch: closesPr ? { blocked_reason: PR_CLOSE_PENDING } : { blocked_on: "none", blocked_reason: null },
+          actor: SYSTEM,
+          reason: "source_closed",
+        }
         : null,
     );
+    if (closesPr) await this.finishPrClose(id);
+  }
+
+  /** finishReject right after a reject is applied, best effort: tickSourceCloses and outbound retry what did not happen. */
+  async afterReject(id: WorkItemId): Promise<void> {
+    try {
+      await this.finishReject(id);
+    } catch (err) {
+      this.c.k.d.log.warn("reject comment or close failed; retried on the next tick", {
+        work_item_id: id,
+        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      });
+    }
   }
 }
 
