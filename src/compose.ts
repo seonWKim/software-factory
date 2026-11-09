@@ -506,7 +506,7 @@ export async function loadConfig(
  * `github_auth` credentials are not on the list: they are read only for a plugin that is.
  */
 const GITHUB_PLUGINS: Readonly<Partial<Record<keyof Selection, readonly string[]>>> = {
-  auth: ["github"], local_auth: ["github"], broker: ["github"], forge: ["github"],
+  auth: ["github"], local_auth: ["github"], slack_auth: ["github"], broker: ["github"], forge: ["github"],
 };
 const GITHUB_SOURCES: readonly string[] = ["github-issues"];
 const GITHUB_GRANTS: readonly string[] = ["github-permission"];
@@ -797,12 +797,13 @@ export async function build(
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const authPlugin = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
-  // Local commands (CLI, local UI) by their own auth plugin, `local` by default (issue #318): never GitHub's.
+  // Local commands (CLI, local UI) by their own plugin, `local` by default (#318), never GitHub's; Slack by `auth.slack_thread` (#486).
   const localAuthPlugin = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
   // Identity (RFC 0015 §8, M9): edge, service and run passports, and the audit of every authorize decision.
   const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
   const auth = new AuditedAuthProvider(authPlugin, identity.passports);
   const local_auth = new AuditedAuthProvider(localAuthPlugin, identity.passports);
+  const slack_auth = sel.slack_auth && new AuditedAuthProvider(await createPlugin(registry, "auth", sel.slack_auth, { ...base, github, store, grants }), identity.passports);
   // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
@@ -862,8 +863,7 @@ export async function build(
     store,
     sources,
     forge,
-    auth,
-    local_auth,
+    auth, local_auth, ...(slack_auth ? { slack_auth } : {}),
     service_auth: controllerServiceAuth(identity.passports),
     outbound_auth: outboundServiceAuth(identity.passports),
     clock,

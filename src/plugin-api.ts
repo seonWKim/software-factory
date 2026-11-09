@@ -209,17 +209,22 @@ export type Selection = { [K in Exclude<PluginKind, OptionalKind>]: string } & {
   llms?: readonly string[];
   /** The auth plugin for local commands (CLI, local UI), when `auth` names one per origin (issue #318). */
   local_auth?: string;
+  /** The auth plugin for Slack thread commands, when `auth.slack_thread` names one (issue #486). Absent: `auth`'s. */
+  slack_auth?: string;
 };
 
-/** The origins `auth` can name a plugin for (issue #318). `slack_thread` waits for a Slack source. */
-const AUTH_ORIGINS = ["github_issue", "local"] as const;
+/**
+ * The origins `auth` can name a plugin for: GitHub comments, local commands (CLI, local UI; issue #318) and Slack
+ * thread commands (issue #486).
+ */
+const AUTH_ORIGINS = ["github_issue", "local", "slack_thread"] as const;
 
 /**
  * `auth` per command origin (issue #318). A string (the form before) selects the plugin for GitHub comments;
  * local commands then use `local`. An object maps origins to plugins: `github_issue` is required, `local`
- * optional (default `local`).
+ * optional (default `local`), `slack_thread` optional (default: the `github_issue` plugin, issue #486).
  */
-export function authByOrigin(raw: unknown): { github_issue: unknown; local?: unknown } {
+export function authByOrigin(raw: unknown): { github_issue: unknown; local?: unknown; slack_thread?: unknown } {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { github_issue: raw };
   const given = raw as Record<string, unknown>;
   const problems: string[] = [];
@@ -230,7 +235,11 @@ export function authByOrigin(raw: unknown): { github_issue: unknown; local?: unk
   }
   if (!Object.hasOwn(given, "github_issue")) problems.push('auth needs "github_issue": the auth plugin for GitHub comments');
   if (problems.length > 0) throw new ConfigKeyError(problems);
-  return Object.hasOwn(given, "local") ? { github_issue: given.github_issue, local: given.local } : { github_issue: given.github_issue };
+  return {
+    github_issue: given.github_issue,
+    ...(Object.hasOwn(given, "local") ? { local: given.local } : {}),
+    ...(Object.hasOwn(given, "slack_thread") ? { slack_thread: given.slack_thread } : {}),
+  };
 }
 
 /**
