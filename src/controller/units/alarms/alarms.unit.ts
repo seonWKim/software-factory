@@ -1,10 +1,8 @@
 // The alarm patterns across items and the restart list.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { RERAISE_WINDOW_MS, RESTART_WINDOW_MS, alarmStep, stallPatterns } from "../../../core/alarms.js";
+import { type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, recurringStalls, releasePatch } from "../../../core/alarms.js";
 import { ALARM_DEFAULTS, STALL_DEFAULTS } from "../../../core/config.js";
-import { patternKey } from "../../../core/improver.js";
-import { RECURRING_FAILURE, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import { SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -31,7 +29,7 @@ export class AlarmsUnit {
     const stored = await alarmStep(
       {
         store, scanner: this.c.k.d.scanner, clock: this.c.k.d.clock, log: this.c.k.d.log, project: this.c.k.project(), restarts,
-        hold: (ids, key) => this.holdItems(ids, key),
+        hold: (p) => this.holdItems(p),
         comment: (ref, body, marker) => this.c.unit("improve").commentFiled(ref, body, marker),
       },
       {
@@ -48,30 +46,27 @@ export class AlarmsUnit {
   }
 
   /**
-   * Holds the items a recurring pattern hit (design 05-alarms): each open item with nothing else blocking it gets
+   * Holds the items a recurring pattern hit (design 05-alarms): each open item nothing else blocks gets
    * `blocked_on: upstream`, `recurring_failure`, the pattern key in the state change, so its queued runs are not
    * claimed and other items keep running. An item filed as a fix is never held. A conditional transition per item,
    * so a second call changes nothing.
    */
-  async holdItems(ids: readonly WorkItemId[], pattern_key: string): Promise<void> {
-    const fixes = new Set<string>();
-    for (const id of ids) {
+  async holdItems(p: HeldPattern): Promise<void> {
+    for (const id of p.work_item_ids) {
       await this.c.unit("transitions").decide(id, async (it) => {
-        if (it.stage === "CLOSED" || it.blocked_on !== "none") return null;
-        if (fixes.size === 0) for (const p of await this.c.k.d.store.listFiledPatterns(it.project)) if (p.filed_ref) fixes.add(sourceKey(p.filed_ref));
-        if (fixes.has(sourceKey(it.source))) return null;
-        return { patch: { blocked_on: "upstream", blocked_reason: RECURRING_FAILURE }, actor: SYSTEM, reason: RECURRING_FAILURE, detail: { pattern_key } };
+        const hold = holdPatch(it, p.pattern_key);
+        return hold && !(await this.c.unit("improve").fixPattern(it)) ? { ...hold, actor: SYSTEM } : null;
       });
     }
   }
 
   /**
-   * Once the model answered its stall probe (design 05-restarts): the stall patterns of the last hour hold their
-   * items, so the next stall of one of them pauses no other item's claims.
+   * Once the model answered its stall probe (design 05-restarts): the recurring stall patterns of the last hour hold
+   * their items, so the next stall of one of them pauses no other item's claims.
    */
   async holdStalled(): Promise<void> {
-    const store = this.c.k.d.store;
-    for (const g of stallPatterns(await store.listRunsFinishedWithin(RERAISE_WINDOW_MS), this.c.k.d.clock.now())) await this.holdItems(g.work_item_ids, patternKey(g));
+    const d = this.c.k.d;
+    for (const p of await recurringStalls({ store: d.store, project: this.c.k.project(), clock: d.clock })) await this.holdItems(p);
   }
 
   /**
@@ -80,28 +75,19 @@ export class AlarmsUnit {
    */
   async releaseStep(): Promise<void> {
     const store = this.c.k.d.store;
-    const held = (await store.listWorkItemsWhere({ blocked_on: "upstream", exclude_closed: true, limit: 500 })).filter((it) => it.blocked_reason === RECURRING_FAILURE);
-    for (const it of held) {
-      const key = (await this.c.k.reader.listStateChanges(it.id)).filter((c) => c.reason === RECURRING_FAILURE).at(-1)?.detail?.pattern_key;
-      if (typeof key !== "string") continue;
-      const fix = await this.fixItem(it, key);
-      if (!fix || fix.stage !== "CLOSED" || !fix.merge_sha) continue;
-      await this.c.unit("transitions").decide(it.id, (cur) =>
-        cur.blocked_reason === RECURRING_FAILURE
-          ? { patch: { blocked_on: "none", blocked_reason: null }, actor: SYSTEM, reason: "recurring_failure_released", detail: { pattern_key: key, fix_work_item_id: fix.id } }
-          : null,
-      );
+    for (const it of await store.listWorkItemsWhere({ blocked_on: "upstream", exclude_closed: true, limit: 500 })) {
+      const key = heldKey(it, await this.c.k.reader.listStateChanges(it.id));
+      if (key === null) continue;
+      const ref = (await store.getFiledPattern(it.project, key))?.filed_ref;
+      const fix = ref ? await store.getWorkItemBySource(ref.type, ref.id) : null;
+      if (!releasePatch(it, key, fix)) continue;
+      await this.c.unit("transitions").decide(it.id, (cur) => {
+        const release = releasePatch(cur, key, fix);
+        return release ? { ...release, actor: SYSTEM } : null;
+      });
     }
   }
-
-  /** The item filed as the fix of `pattern_key` in the item's project, when the store holds it. */
-  private async fixItem(it: WorkItem, pattern_key: string): Promise<WorkItem | null> {
-    const ref = (await this.c.k.d.store.getFiledPattern(it.project, pattern_key))?.filed_ref;
-    return ref ? this.c.k.d.store.getWorkItemBySource(ref.type, ref.id) : null;
-  }
 }
-
-const sourceKey = (ref: { type: string; id: string }) => `${ref.type}\n${ref.id}`;
 
 declare module "../../router/unit.js" {
   interface UnitOperations {

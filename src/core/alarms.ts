@@ -8,7 +8,10 @@
 import { groupFailures, normalizeDetail, patternKey } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, MODEL_STALL } from "./policy.js";
-import { type FailureGroup, type FiledPattern, type Run, type RunKind, type SourceRef, type Timestamp, type WorkItemId, runTokenCount } from "./types.js";
+import {
+  type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunKind, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
+  runTokenCount,
+} from "./types.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { Alert, AlertPattern, FactoryStore } from "../interfaces/factory-store.js";
@@ -20,6 +23,8 @@ export const ALERT_DEDUPE_MS = 6 * 3_600_000;
 export const RESTART_WINDOW_MS = 30 * 60_000;
 /** A recurring pattern counts its new failures over this long, and re-raises at most once per this long. */
 export const RERAISE_WINDOW_MS = 3_600_000;
+/** The newest alerts a re-raise reads for a pattern's last alert and last re-raise: far more than one hour stores. */
+const ALERTS_READ = 100;
 /** The run kinds whose work is an agent's, so a run with no tokens means the model did nothing. */
 const AGENT_RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve"];
 
@@ -102,7 +107,7 @@ const alertKey = (key: string) => `repeated_error:${key}`;
 const reraiseKey = (key: string) => `recurring:${key}`;
 
 export interface AlarmDeps {
-  store: Pick<FactoryStore, "listRunsFinishedWithin" | "listRunsFinishedBetween" | "recordAlert" | "lastAlertAt" | "getFiledPattern" | "pauseClaims">;
+  store: Pick<FactoryStore, "listRunsFinishedWithin" | "listRunsFinishedBetween" | "recordAlert" | "listAlerts" | "getFiledPattern" | "pauseClaims">;
   scanner: EgressScanner;
   clock: Clock;
   log: Logger;
@@ -111,7 +116,7 @@ export interface AlarmDeps {
   /** The supervisor's restart list on this host (design 05-alarms: host-local). Absent: no restart alarm. */
   restarts?: () => Promise<readonly ChildRestart[]>;
   /** Holds the items of a re-raised pattern (`recurring_failure`). Absent: none are held. */
-  hold?: (ids: readonly WorkItemId[], pattern_key: string) => Promise<void>;
+  hold?: (p: HeldPattern) => Promise<void>;
   /** Posts on a filed item through its source, once per marker. Absent: no comment. */
   comment?: (ref: SourceRef, body: string, marker: string) => Promise<void>;
 }
@@ -162,15 +167,17 @@ function recentPatterns(runs: readonly Run[], now: Date): FailureGroup[] {
 async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold: number): Promise<Alert[]> {
   const finished = new Map(runs.map((r) => [r.id, Date.parse(r.finished_at ?? "")]));
   const stored: Alert[] = [];
+  // Each pattern key's newest alert, read once and only when some pattern is a candidate.
+  let newest: Map<string, number> | null = null;
   for (const g of recentPatterns(runs, now)) {
     if (g.run_ids.length < threshold) continue;
+    newest ??= await newestAlerts(d.store);
     const key = patternKey(g);
-    const filed = await d.store.getFiledPattern(d.project, key);
-    const known = [await d.store.lastAlertAt(alertKey(key)), filed?.created_at ?? null].filter((m): m is Timestamp => m !== null).map((m) => Date.parse(m));
-    if (known.length === 0) continue;
+    const known = await knownSince(d, key, newest);
+    if (known === null) continue;
+    const { filed } = known;
     // Counted from the last re-raise, else from when the pattern was first known (its alert or its filing).
-    const last = await d.store.lastAlertAt(reraiseKey(key));
-    const from = last === null ? Math.min(...known) : Date.parse(last);
+    const from = newest.get(reraiseKey(key)) ?? known.at;
     const fresh = g.run_ids.filter((id) => (finished.get(id) ?? 0) > from).length;
     if (fresh < threshold) continue;
     const scan = await d.scanner.scan("ui", g.detail);
@@ -181,7 +188,7 @@ async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold:
     if (!r.created) continue;
     stored.push(r.alert);
     d.log.warn("alarm: recurring failure", { alert_id: r.alert.id, error_code: g.error_code, count: fresh, items: g.work_item_ids.length });
-    if (d.hold) await d.hold(g.work_item_ids, key);
+    if (d.hold) await d.hold({ pattern_key: key, work_item_ids: g.work_item_ids });
     if (filed?.filed_ref && d.comment) await commentFiled(d, { ...filed, filed_ref: filed.filed_ref }, now, fresh, r.alert.id);
   }
   return stored;
@@ -201,13 +208,62 @@ async function commentFiled(d: AlarmDeps, filed: FiledPattern & { filed_ref: Sou
   await d.comment!(filed.filed_ref, body, `<!-- factory:recurring:${filed.pattern_key}:${alert_id} -->`);
 }
 
+/** Each pattern key's newest alert time, from the newest ALERTS_READ alerts. */
+async function newestAlerts(store: Pick<FactoryStore, "listAlerts">): Promise<Map<string, number>> {
+  return new Map((await store.listAlerts({ limit: ALERTS_READ })).reverse().map((a) => [a.pattern_key, Date.parse(a.created_at)]));
+}
+
+/** When a failure pattern was first known (the earlier of its alert and its filing) and its filing; null: neither. */
+async function knownSince(
+  d: Pick<AlarmDeps, "store" | "project">, key: string, newest: ReadonlyMap<string, number>,
+): Promise<{ at: number; filed: FiledPattern | null } | null> {
+  const filed = await d.store.getFiledPattern(d.project, key);
+  const known = [newest.get(alertKey(key)), filed ? Date.parse(filed.created_at) : undefined].filter((m): m is number => m !== undefined);
+  return known.length === 0 ? null : { at: Math.min(...known), filed };
+}
+
 /**
- * The stall patterns of the last hour that hold their items once the model answers (design 05-restarts): failed
- * runs with `agent_stalled` sharing a normalized detail, two or more of them (a group, as the improver files them).
- * The model answered, so the stall is the pattern's, not the model's.
+ * The recurring stall patterns of the last hour, whose items are held once the model answers (design 05-restarts):
+ * failed runs with `agent_stalled` sharing a normalized detail, two or more of them (a group, as the improver files
+ * them), of a pattern already known by its alert or its filing. The model answered, so the stall is the pattern's.
  */
-export function stallPatterns(runs: readonly Run[], now: Date): FailureGroup[] {
-  return recentPatterns(runs, now).filter((g) => g.error_code === AGENT_STALLED && g.run_ids.length > 1);
+export async function recurringStalls(d: Pick<AlarmDeps, "store" | "project" | "clock">): Promise<HeldPattern[]> {
+  const out: HeldPattern[] = [];
+  let newest: Map<string, number> | null = null;
+  for (const g of recentPatterns(await d.store.listRunsFinishedWithin(RERAISE_WINDOW_MS), d.clock.now())) {
+    if (g.error_code !== AGENT_STALLED || g.run_ids.length < 2) continue;
+    newest ??= await newestAlerts(d.store);
+    if (await knownSince(d, patternKey(g), newest)) out.push({ pattern_key: patternKey(g), work_item_ids: g.work_item_ids });
+  }
+  return out;
+}
+
+/** A recurring pattern and the items it hit, which it holds. */
+export interface HeldPattern {
+  pattern_key: string;
+  work_item_ids: readonly WorkItemId[];
+}
+
+/** The state change reason of a held item's release (design 05-alarms); its hold's is `recurring_failure`. */
+export const RELEASED = "recurring_failure_released";
+
+/** The hold of an item a recurring pattern hit, or null: closed, or something else blocks it. */
+export function holdPatch(it: Pick<WorkItem, "stage" | "blocked_on">, pattern_key: string) {
+  if (it.stage === "CLOSED" || it.blocked_on !== "none") return null;
+  return { patch: { blocked_on: "upstream" as const, blocked_reason: RECURRING_FAILURE }, reason: RECURRING_FAILURE, detail: { pattern_key } };
+}
+
+/** The pattern key a held item waits on (its last hold's), or null when it is not held. */
+export function heldKey(it: Pick<WorkItem, "blocked_reason">, changes: readonly Pick<StateChange, "reason" | "detail">[]): string | null {
+  if (it.blocked_reason !== RECURRING_FAILURE) return null;
+  const key = changes.filter((c) => c.reason === RECURRING_FAILURE).at(-1)?.detail?.pattern_key;
+  return typeof key === "string" ? key : null;
+}
+
+/** The release of a held item once `fix` merged (closed with a merge sha), or null: still waiting, or not held. */
+export function releasePatch(it: Pick<WorkItem, "blocked_reason">, pattern_key: string, fix: Pick<WorkItem, "id" | "stage" | "merge_sha"> | null) {
+  if (it.blocked_reason !== RECURRING_FAILURE || !fix || fix.stage !== "CLOSED" || !fix.merge_sha) return null;
+  return { patch: { blocked_on: "none" as const, blocked_reason: null }, reason: RELEASED, detail: { pattern_key, fix_work_item_id: fix.id } };
 }
 
 function cmp(a: string, b: string): number {

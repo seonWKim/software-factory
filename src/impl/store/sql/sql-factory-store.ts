@@ -581,14 +581,12 @@ export class SqlFactoryStore implements FactoryStore {
       };
 
       // Queued runs by kind rank (runs that lead to a human decision first), then created_at, then insertion
-      // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks.
+      // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks; a held item's (05-alarms) waits for its release.
       const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
-      // An item held by a recurring failure pattern (design 05-alarms) keeps its queued runs until its fix merges.
       const queued = await tx.all(
         `SELECT r.id, r.kind, r.work_item_id FROM worker_runs r
          WHERE r.status = 'queued' AND r.kind IN (${placeholders(kinds.length)})
-           AND (r.not_before IS NULL OR r.not_before <= ?)
-           AND NOT EXISTS (SELECT 1 FROM controller_work_items w WHERE w.id = r.work_item_id AND w.blocked_reason = ?)
+           AND (r.not_before IS NULL OR r.not_before <= ?) AND NOT EXISTS (SELECT 1 FROM controller_work_items w WHERE w.id = r.work_item_id AND w.blocked_reason = ?)
          ORDER BY CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`,
         [...kinds, now, RECURRING_FAILURE, ...CLAIM_ORDER],
       );
@@ -1264,11 +1262,6 @@ export class SqlFactoryStore implements FactoryStore {
   async getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
     const [row] = await this.db.all("SELECT * FROM controller_filed_patterns WHERE project_key = ? AND pattern_key = ?", [project, pattern_key]);
     return row ? rowToFiledPattern(row) : null;
-  }
-
-  async listFiledPatterns(project: string): Promise<FiledPattern[]> {
-    const rows = await this.db.all("SELECT * FROM controller_filed_patterns WHERE project_key = ? ORDER BY created_at, id", [project]);
-    return rows.map(rowToFiledPattern);
   }
 
   async claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern> {
@@ -2112,11 +2105,6 @@ export class SqlFactoryStore implements FactoryStore {
       );
       return { created: true as const, alert };
     });
-  }
-
-  async lastAlertAt(pattern_key: string): Promise<Timestamp | null> {
-    const [row] = await this.db.all("SELECT last_alert_at FROM controller_alert_patterns WHERE pattern_key = ?", [pattern_key]);
-    return row ? (row.last_alert_at as Timestamp) : null;
   }
 
   async listAlerts(opts: { limit: number }): Promise<Alert[]> {

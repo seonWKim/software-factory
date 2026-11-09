@@ -2126,19 +2126,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(results.filter((r) => r.created)).toHaveLength(1);
       expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
     });
-    it("lastAlertAt reads when a pattern last stored an alert, null before its first", async () => {
-      const { store, clock } = await make();
-      expect(await store.lastAlertAt("repeated_error:abc")).toBeNull();
-      await store.recordAlert(alert(), HOUR);
-      const at = clock.now().toISOString();
-      clock.advance(HOUR / 2);
-      await store.recordAlert(alert(), HOUR);
-      expect(await store.lastAlertAt("repeated_error:abc")).toBe(at);
-      clock.advance(HOUR / 2);
-      await store.recordAlert(alert(), HOUR);
-      expect(await store.lastAlertAt("repeated_error:abc")).toBe(clock.now().toISOString());
-      expect(await store.lastAlertAt("zero_tokens")).toBeNull();
-    });
   });
 
   describe("recurring failure holds (design 05-alarms)", () => {
@@ -2153,22 +2140,6 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const now = (await store.getWorkItem(held.id))!;
       await store.transition({ id: held.id, expected_version: now.version, actor: system, reason: "released", patch: { blocked_on: "none", blocked_reason: null } });
       expect((await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))?.work_item_id).toBe(held.id);
-    });
-
-    it("listFiledPatterns lists a project's filed patterns oldest first, with their items", async () => {
-      const { store, clock } = await make();
-      const { item: sys } = await store.createWorkItem(issue(9), system, { enqueue: { kind: "improve", idempotency_key: "improve" } });
-      const [run] = await store.listRuns(sys.id);
-      const { report } = await store.recordImproveReport({
-        run_id: run!.id, project: PROJECT_KEY, window_start: clock.now().toISOString() as Timestamp, window_end: clock.now().toISOString() as Timestamp, groups: [], patterns: [],
-      });
-      expect(await store.listFiledPatterns(PROJECT_KEY)).toEqual([]);
-      const a = await store.claimFiledPattern({ project: PROJECT_KEY, pattern_key: "ka", error_code: "x", detail: "d", report_id: report.id });
-      clock.advance(1_000);
-      await store.claimFiledPattern({ project: PROJECT_KEY, pattern_key: "kb", error_code: "y", detail: "d", report_id: report.id });
-      await store.claimFiledPattern({ project: OTHER_PROJECT_KEY, pattern_key: "kc", error_code: "z", detail: "d", report_id: report.id });
-      await store.setFiledPatternRef(a.id, report.id, { type: "local", id: "local-filed-1", link: "local:local-filed-1" });
-      expect((await store.listFiledPatterns(PROJECT_KEY)).map((p) => [p.pattern_key, p.filed_ref?.id ?? null])).toEqual([["ka", "local-filed-1"], ["kb", null]]);
     });
   });
   describe("restart history (design 05-restarts)", () => {

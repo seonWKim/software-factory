@@ -343,6 +343,14 @@ export function issueMarker(key: string, report: string): string {
   return `<!-- factory:improve:${key}:${report} -->`;
 }
 
+/** The pattern key in the first improve marker (`issueMarker`) of `text`, or null. */
+export function markerKey(text: string): string | null {
+  return /<!-- factory:improve:([^:\s]+):[^\s]+ -->/.exec(text)?.[1] ?? null;
+}
+
+/** The state change reason of a fix item's spec, approved without a person (design §7); its detail holds the key. */
+export const FIX_SPEC_APPROVED = "fix_spec_approved";
+
 function commentMarker(key: string, report: string): string {
   return `<!-- factory:improve-comment:${key}:${report} -->`;
 }

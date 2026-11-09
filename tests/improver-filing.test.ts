@@ -379,11 +379,12 @@ describe("improve filing: fix specs", () => {
   });
 });
 
-/** Files a pattern as GitHub issue `n` (design §7), so the item intake takes in for it is its fix item. */
-async function fileAs(store: FactoryStore, clock: FakeClock, n: number): Promise<void> {
+/** Files a pattern as GitHub issue `n` (design §7), so the item intake takes in for it is its fix item. Returns its marker. */
+async function fileAs(store: FactoryStore, clock: FakeClock, n: number): Promise<string> {
   const report = await draftedReport(store, clock, []);
   const row = await store.claimFiledPattern({ project: PROJECT.key, pattern_key: `k${n}`, error_code: "checks_failed", detail: "d", report_id: report.id });
   await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
+  return issueMarker(row.pattern_key, row.report_id);
 }
 
 describe("improve filing: a fix item runs without a person", () => {
@@ -391,8 +392,8 @@ describe("improve filing: a fix item runs without a person", () => {
   async function factory(spec: Partial<typeof triageSpec> = {}) {
     const p = await pipeline({ config: { dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 } } });
     p.runner.script.triage = () => ({ output: { ...triageSpec, ...spec } });
-    const take = async (n: number): Promise<WorkItem> => {
-      p.source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "Recurring failure", body: "the runs" });
+    const take = async (n: number, marker = ""): Promise<WorkItem> => {
+      p.source.queue.push({ kind: "item_requested", source: issueRef(n), requester: alice, title: "Recurring failure", body: `the runs\n\n${marker}` });
       await p.controller.tickIntake();
       return (await p.store.getWorkItemBySource("github_issue", issueRef(n).id))!;
     };
@@ -402,9 +403,9 @@ describe("improve filing: a fix item runs without a person", () => {
 
   it("its spec is approved without a person, then implemented and reviewed; another item's spec waits for /approve", async () => {
     const f = await factory();
-    await fileAs(f.store, f.clock, 1);
-    const fix = await f.take(1);
-    const other = await f.take(2);
+    const fix = await f.take(1, await fileAs(f.store, f.clock, 1));
+    // Another item whose body copies a marker is no fix item: its pattern's filed item is not this one.
+    const other = await f.take(2, issueMarker("k1", "ir_x"));
     await f.step();
     expect(await f.item(other)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
     expect(await f.item(fix)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
@@ -416,8 +417,7 @@ describe("improve filing: a fix item runs without a person", () => {
 
   it("a fix spec touching a gate path runs, then waits at a person's merge; it is never merged by the factory", async () => {
     const f = await factory({ allowed_paths: ["prompts/"], files_to_change: ["prompts/implement.md"] });
-    await fileAs(f.store, f.clock, 1);
-    const fix = await f.take(1);
+    const fix = await f.take(1, await fileAs(f.store, f.clock, 1));
     await f.step();
     await f.step();
     expect(await f.item(fix)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", merge_sha: null });

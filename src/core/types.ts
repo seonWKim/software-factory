@@ -19,13 +19,9 @@ export type Stage = "NEW" | "READY" | "RUNNING" | "REVIEW" | "CLOSED";
  * `dependency` (design 2026-11-03): the item's implement run waits for a linked item (`Depends on: #N`, a
  * sub-issue, a blocked-by link) to merge. Its status label is "implementing", never "needs human".
  * `outbound` (RFC 0015 M7): the item waits for outbound to deliver a write its next step needs (`pr_pending`: the
- * implement run's push and PR); it shows its stage, as `dependency` does.
+ * implement run's push and PR); it shows its stage, as `dependency` does. `upstream` with RECURRING_FAILURE: held (05-alarms).
  */
 export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "dependency" | "outbound";
-/**
- * blocked_reason of an item held by a recurring failure pattern (design 05-alarms), `blocked_on: upstream`: its
- * queued runs are not claimed until the pattern's fix item merges.
- */
 export const RECURRING_FAILURE = "recurring_failure";
 export type CloseReason = "completed" | "duplicate" | "wont_do" | "failed" | "rejected";
 export type Tier = 1 | 2 | 3 | 4 | 5;
@@ -234,12 +230,10 @@ export interface FailureGroup {
 }
 
 /**
- * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: the group matched an open
- * filed item, and one comment named `run_ids`, the runs not linked there before. `linked`: it matched one, and
- * every run was linked already, so nothing was posted. `skipped`: past the issue or comment cap, the matched item
- * closed in the last 30 days, or no source can file. `withheld`: the egress scan flagged the body, so nothing was
- * sent; only the rules are kept. `failed`: the source call threw; the next improve run tries again. `skipped` with
- * `needs_person`: the draft needs a person or touches the gate list, so no fix item was filed (Needs you shows it).
+ * A group's filing (design §7). `filed`: a new item with the group's runs. `commented`: it matched an open filed item, and
+ * one comment named `run_ids`, its runs not linked there before. `linked`: it matched one, every run linked already, nothing
+ * posted. `skipped`: past a cap, the matched item closed in the last 30 days, no source can file, or `needs_person` (not filed).
+ * `withheld`: the egress scan flagged the body: nothing sent, only the rules kept. `failed`: the source call threw; retried later.
  */
 export type ImproveFiling =
   | { status: "filed" | "linked"; ref: SourceRef }
@@ -278,9 +272,8 @@ export type ImproveTail =
 /**
  * A group's draft (design §7). `drafted`: the model's cause, fix and the paths the fix touches, scanned clean.
  * `withheld`: the draft's scan flagged it, so only the rules are kept. `touches_prompts_or_gate`: set by the
- * factory from the gate list, never by the model. `needs_person`: the model's call that no automatic fix applies (a
- * decision, a credential, an outside service); absent on drafts made before it existed. `failed`: invalid output, a refusal, an error or a max-tokens
- * stop. `skipped`: past the per-run call cap, no call made.
+ * factory from the gate list, never by the model; `needs_person` by the model (absent on older drafts).
+ * `failed`: invalid output, a refusal, an error or a max-tokens stop. `skipped`: past the per-run call cap, no call made.
  */
 export type ImproveDraft =
   | { status: "drafted"; cause: string; fix: string; touches: string[]; touches_prompts_or_gate: boolean; needs_person?: boolean }

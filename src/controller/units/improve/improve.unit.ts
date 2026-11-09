@@ -1,7 +1,7 @@
 // The daily improve run and improve runs filed from a failed run.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { enqueueImprove, fileReport, utcDay } from "../../../core/improver.js";
+import { FIX_SPEC_APPROVED, enqueueImprove, fileReport, markerKey, utcDay } from "../../../core/improver.js";
 import { type FiledPattern, type Run, type SourceRef, type WorkItem } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -54,12 +54,15 @@ export class ImproveUnit {
   }
 
   /**
-   * The filed pattern `it` is the fix of (design §7), or null: the store's filed item, matched on its source ref, so
-   * a body that only copies the marker is no fix item.
+   * The filed pattern `it` is the fix of (design §7), or null. The key comes from the marker in its filed body, or,
+   * once triage replaced the body with the spec, from its earlier fix approval; the pattern's stored item must be
+   * this item (its source ref), so a body that only copies a marker is no fix item.
    */
   async fixPattern(it: WorkItem): Promise<FiledPattern | null> {
-    const filed = await this.c.k.d.store.listFiledPatterns(it.project);
-    return filed.find((p) => p.filed_ref?.type === it.source.type && p.filed_ref.id === it.source.id) ?? null;
+    const key = markerKey(it.problem) ?? (await this.c.k.reader.listStateChanges(it.id)).find((c) => c.reason === FIX_SPEC_APPROVED)?.detail?.pattern_key;
+    if (typeof key !== "string") return null;
+    const p = await this.c.k.d.store.getFiledPattern(it.project, key);
+    return p?.filed_ref?.type === it.source.type && p.filed_ref.id === it.source.id ? p : null;
   }
 }
 

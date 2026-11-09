@@ -247,11 +247,11 @@ describe("alarms: recurring patterns", () => {
   };
   const reraises = async (store: FactoryStore) => (await store.listAlerts({ limit: 50 })).filter((a) => a.pattern_key.startsWith("recurring:"));
   const key = () => patternKey({ error_code: "checks_failed", detail: "npm test exited #: boom" });
-  /** The pattern filed as local item `n` (design §7), not in the store: filed, nobody started it. */
-  const file = async (store: FactoryStore, n: number) => {
+  /** The pattern (default: boom's) filed as item `n` (design §7), not in the store: filed, nobody started it. */
+  const file = async (store: FactoryStore, n: number, pattern = { error_code: "checks_failed", detail: "npm test exited #: boom" }) => {
     const { run } = await enqueueImprove({ store, clock: new FakeClock() }, PROJECT_KEY, "manual");
     const { report } = await store.recordImproveReport({ run_id: run.id, project: PROJECT_KEY, ...manualWindow(new Date()), groups: [], patterns: [] });
-    const row = await store.claimFiledPattern({ project: PROJECT_KEY, pattern_key: key(), error_code: "checks_failed", detail: "npm test exited #: boom", report_id: report.id });
+    const row = await store.claimFiledPattern({ project: PROJECT_KEY, pattern_key: patternKey(pattern), ...pattern, report_id: report.id });
     await store.setFiledPatternRef(row.id, row.report_id, issueRef(n));
     return row;
   };
@@ -381,18 +381,30 @@ describe("alarms: recurring patterns", () => {
     const llm = { complete: async () => ({ text: "OK", stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } }) } as unknown as LLMProvider;
     const c = controller(store, clock, { source: new FakeSource(), llm });
     const stalled: RunOutcome = { status: "failed", error_code: AGENT_STALLED, detail: "no model output for 300000 ms", infra: false };
+    // The recurring stall pattern is known (filed); another stall pattern, stalled twice on one item, is not.
+    await file(store, 100, { error_code: AGENT_STALLED, detail: "no model output for # ms" });
     const a = await finish(store, stalled);
     const b = await finish(store, stalled);
-    for (const r of [a, b]) await store.enqueueRun({ work_item_id: r.work_item_id, kind: "implement", idempotency_key: `${r.id}:retry` });
+    const unknown = await finish(store, { ...stalled, detail: "first output never came" });
+    await store.enqueueRun({ work_item_id: unknown.work_item_id, kind: "implement", idempotency_key: `${unknown.id}:again` });
+    const again = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
+    await store.completeRun(again.id, again.lease!.token, { ...stalled, detail: "first output never came" });
     const { item: other } = await store.createWorkItem(issue(9_002), system, { enqueue: { kind: "triage", idempotency_key: "other" } });
+    for (const r of [a, b, unknown]) await store.enqueueRun({ work_item_id: r.work_item_id, kind: "implement", idempotency_key: `${r.id}:retry` });
     await store.pauseClaims(clock.now().toISOString() as Timestamp, "model_stall");
     clock.advance(MIN);
     expect(await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 })).toBeNull();
 
     await c.tickModelProbe();
+    expect(await store.getClaimPause("model_stall")).toBeNull();
     for (const r of [a, b]) expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "upstream", blocked_reason: RECURRING_FAILURE });
-    const claimed = await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 });
-    expect(claimed?.work_item_id).toBe(other.id);
-    expect(await store.claimRun({ worker_id: "w3" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 })).toBeNull();
+    expect(await store.getWorkItem(unknown.work_item_id)).toMatchObject({ blocked_on: "none" });
+    const claimed = new Set<string>();
+    for (let w = 2; ; w++) {
+      const r = await store.claimRun({ worker_id: `w${w}` as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 });
+      if (!r) break;
+      claimed.add(r.work_item_id);
+    }
+    expect(claimed).toEqual(new Set([other.id, unknown.work_item_id]));
   });
 });
