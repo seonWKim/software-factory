@@ -101,8 +101,8 @@ class GateSandbox implements Sandbox {
   /** `git rev-list` output by argument line; default: none. */
   revLists: Record<string, string> = {};
   numstat = "";
-  /** Check commands by argv joined with spaces: exit code and output. Default: pass. */
-  checks: Record<string, { exit: number; out: string }> = {};
+  /** Check commands by argv joined with spaces: exit code, output and how long it takes. Default: pass at once. */
+  checks: Record<string, { exit: number; out: string; ms?: number }> = {};
   /** Every non-claude command, in order. */
   commands: string[] = [];
   gitThrows = false;
@@ -157,6 +157,7 @@ class GateSandbox implements Sandbox {
     }
     if (o.signal?.aborted) return res(1);
     const c = this.checks[line] ?? { exit: 0, out: "" };
+    if (c.ms) await new Promise((r) => setTimeout(r, c.ms));
     return res(c.exit, c.out);
   }
 }
@@ -397,6 +398,20 @@ for (const mode of MODES) describe(`gate hooks: Stop (${mode})`, () => {
     expect(reasons).toEqual([]);
     expect(result.gate_blocks).toBeUndefined();
     expect(f.sandbox.commands.filter((c) => c.startsWith("npm"))).toEqual(["npm run typecheck", "npm test"]);
+  });
+});
+
+describe.runIf(canListen)("gate hooks: Stop and the stall clock", () => {
+  it("a Stop check that runs longer than stall_ms is not a stall: the run completes", async () => {
+    const f = setup();
+    // The hook process itself takes time to start under load: the limit leaves room for it, the check runs well past it.
+    f.spec = { ...f.spec, stall_ms: 1_500, first_output_ms: 1_500 };
+    f.sandbox.checks["npm test"] = { exit: 0, out: "", ms: 4_000 };
+    const reasons: string[] = [];
+    f.sandbox.agent = stopper(reasons);
+    const result = await f.runner.run(f.spec);
+    expect(reasons).toEqual([]);
+    expect(result.status).toBe("completed");
   });
 });
 

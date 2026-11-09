@@ -30,6 +30,17 @@ const TESTS = /^(tests?|testing|checks?)\b/i;
 
 interface Section { level: number; title: string; lines: string[] }
 
+// The first TO-BE label (plain or bold) after an AS-IS label, with the whitespace and line breaks before it.
+const AS_IS_TO_BE = /(\bAS-IS:[\s\S]*?\S)\s*((?:\*\*)?\bTO-BE:)/i;
+
+/**
+ * An In short text with AS-IS and TO-BE as two markdown paragraphs: a blank line before the first TO-BE label that
+ * follows an AS-IS label, whether the agent wrote them in one paragraph or on adjacent lines. Nothing else changes.
+ */
+export function inShortParagraphs(text: string): string {
+  return text.trim().replace(AS_IS_TO_BE, "$1\n\n$2");
+}
+
 /** The summary split at its headings; text before the first heading is a section with level 0. */
 function sections(text: string): Section[] {
   const out: Section[] = [{ level: 0, title: "", lines: [] }];
@@ -80,7 +91,7 @@ export function beforeMerge(i: Pick<PrBodyInput, "missing" | "deviations" | "not
 export function prBody(i: PrBodyInput): string {
   const { in_short, rest } = splitSummary(i.summary);
   return [
-    ...(in_short ? [in_short, ""] : []),
+    ...(in_short ? [inShortParagraphs(in_short), ""] : []),
     "## Before you merge",
     "",
     ...beforeMerge(i),

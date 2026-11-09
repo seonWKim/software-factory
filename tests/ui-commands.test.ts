@@ -12,7 +12,8 @@ import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // App command requests (issues #245, #282): a request row in the store is a new entry point to the comment command
 // path. It lands in the command inbox too; each controller tick reads the inbox and applies `approve` with the same permission check and
-// transition as a `/approve` comment; anything else is refused with one reply, keyed on the request.
+// transition as a `/approve` comment; `reject`, `verdict` and `merge` are in tests/app-reject-verdict.test.ts and tests/app-merge.test.ts;
+// anything else is refused with one reply, keyed on the request.
 
 /** FakeAuth lets github:1 (alice) approve, nobody else. */
 const WRITER = "github:1" as UserId;
@@ -171,10 +172,10 @@ describe("app command requests: refusals", () => {
     expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ handled_at: h.clock.now().toISOString(), refusal: posted[0]!.body });
   });
 
-  it("a command other than approve gets one refusal reply and no state change", async () => {
+  it("a command that is not applied from an app request gets one refusal reply and no state change", async () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
-    const r = await h.request("k1", WRITER, "reject", { work_item_id: it1.id, reason: "no" });
+    const r = await h.request("k1", WRITER, "revise", { work_item_id: it1.id, note: "more" });
     await h.controller.tickCommands();
     await h.controller.tickCommands();
 
@@ -182,7 +183,7 @@ describe("app command requests: refusals", () => {
     expect(await h.store.listRuns(it1.id)).toEqual([]);
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
     expect(posted).toHaveLength(1);
-    expect(posted[0]!.body).toBe("`reject` was not applied: only `approve` and `merge` are applied from an app request; reply `/reject` on the issue instead.");
+    expect(posted[0]!.body).toBe("`revise` was not applied: only `approve`, `merge`, `reject` and `verdict` are applied from an app request; reply `/revise` on the issue instead.");
     expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(posted[0]!.body);
     expect(h.source.comments).toHaveLength(1);
   });
@@ -193,7 +194,7 @@ describe("app command requests: refusals", () => {
     const r = await h.request("k1", WRITER, "@everyone <b>", { work_item_id: it1.id });
     await h.controller.tickCommands();
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
-    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve` and `merge` are applied from an app request."]);
+    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve`, `merge`, `reject` and `verdict` are applied from an app request."]);
   });
 
   it("a request for no known work item is refused on its row only: nothing is posted", async () => {
@@ -307,14 +308,14 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     expect((await post(page(h, READER), it1, { command: "approve" })).status).toBe(202);
-    expect((await post(page(h, WRITER), it1, { command: "reject", note: "no" })).status).toBe(202);
+    expect((await post(page(h, WRITER), it1, { command: "revise", note: "no" })).status).toBe(202);
     await h.controller.tickCommands();
     expect((await h.store.getWorkItem(it1.id))!.blocked_reason).toBe("spec_pending");
     const r = await respond(page(h, WRITER), { method: "GET", url: `/api/v1/items/${encodeURIComponent(it1.id)}`, host: HOST });
     const replies = (JSON.parse(r.body) as { replies: { command: string; refusal: string | null; handled_at: string | null }[] }).replies;
-    expect(replies.map((x) => x.command)).toEqual(["approve", "reject"]);
+    expect(replies.map((x) => x.command)).toEqual(["approve", "revise"]);
     expect(replies[0]!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
-    expect(replies[1]!.refusal).toContain("only `approve` and `merge` are applied from an app request");
+    expect(replies[1]!.refusal).toContain("only `approve`, `merge`, `reject` and `verdict` are applied from an app request");
     for (const x of replies) expect(x.handled_at).not.toBeNull();
   });
 
