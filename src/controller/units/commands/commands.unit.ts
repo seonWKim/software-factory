@@ -3,7 +3,7 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
-import { commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
+import { appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
@@ -125,14 +125,6 @@ function floorCommand(
     detail: { previous_tier: it.tier, tier: next.tier, ...(note ? { note } : {}), ...w.detail },
     enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
   };
-}
-
-/** The source whose thread takes a `/revise` as PR feedback: it has no PR conversation of its own. */
-const SLACK_THREAD = "slack_thread";
-
-/** Whether a `/revise` in the item's own thread is feedback on its PR: a Slack item with a PR that takes feedback. */
-function threadRevisesPr(it: WorkItem): boolean {
-  return it.source.type === SLACK_THREAD && it.change_ref !== null && (commandSpec("revise").pr_phases?.includes(commandPhase(it)) ?? false);
 }
 
 /** Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback. */
@@ -559,12 +551,8 @@ export class CommandsUnit {
     if (e.kind === "resolve_requested") {
       return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
     }
-    if (e.kind === "revise_requested" && e.pr) {
-      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr.change_ref, key: { comment_id: e.comment_id } });
-    }
-    // A Slack thread has no PR conversation: its `/revise` is PR feedback while the item's PR can take it (design §4).
-    if (e.kind === "revise_requested" && threadRevisesPr(it)) {
-      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: it.change_ref!, key: { comment_id: e.comment_id } });
+    if (e.kind === "revise_requested" && (e.pr || (it.source.type === "slack_thread" && appliesOnPr(commandSpec("revise"), commandState(it))))) {
+      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref!, key: { comment_id: e.comment_id } });
     }
     if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
