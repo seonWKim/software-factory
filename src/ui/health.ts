@@ -2,8 +2,10 @@
 // implementation (doctorChecks, src/setup.ts), which the composition root passes in as `run`, plus the GitHub sync
 // line (syncChecks), a store read. It limits how often the checks run, shares one run between concurrent
 // requests, and egress-scans every message before it leaves (design §9). Below it, the latest improve report
-// (design §7): its group counts, drafts and filings, every text through the Withholder.
+// (design §7): its group counts, drafts and filings, every text through the Withholder. For a user who may
+// approve, the panel carries a Run now button that queues an improve run (POST /api/v1/improve/run, improve-api.ts).
 
+import { createHash } from "node:crypto";
 import { syncLeaseName } from "../core/lease.js";
 import { readStoredProject } from "../core/project-labels.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -12,6 +14,7 @@ import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { type Check, type CheckStatus, checkStatus } from "../setup.js";
 import { esc } from "./html.js";
+import { IMPROVE_RUN_PATH } from "./improve-api.js";
 import { Withholder } from "./withhold.js";
 
 export const HEALTH_MIN_INTERVAL_MS = 60_000;
@@ -37,6 +40,33 @@ export async function syncChecks(
   const low = budget !== null && Date.parse(budget.reset_at) > now.getTime() && budget.remaining < budget.limit * LOW_SHARE;
   const msg = `GitHub: ${left}, ${holder ? `synced by replica ${holder}` : "no replica holds the sync lease"}`;
   return [{ ok: holder !== null && !low, ...((holder === null || low) && { warn: true }), msg }];
+}
+
+/**
+ * The Run now button's script: one listener on the document (the page's refresh swaps the section's HTML, and a
+ * swapped-in script never runs), posting `{}` with the CSRF token the button carries, then showing the reply.
+ */
+export const RUN_NOW_SCRIPT = `(function(){
+document.addEventListener("click",function(e){
+var b=e.target&&e.target.closest?e.target.closest("#improve-run-now"):null;if(!b||b.disabled)return;
+var out=document.getElementById("improve-run-now-result");b.disabled=true;
+fetch(${JSON.stringify(IMPROVE_RUN_PATH)},{method:"POST",credentials:"same-origin",headers:{"content-type":"application/json","x-csrf-token":b.getAttribute("data-csrf")||""},body:"{}"})
+.then(function(r){return r.json().then(function(v){return {ok:r.ok,v:v};});})
+.then(function(x){if(out)out.textContent=x.ok?"Improve run queued: "+x.v.run_id:(x.v&&x.v.error)||"Refused.";})
+.catch(function(){if(out)out.textContent="The request failed.";})
+.then(function(){b.disabled=false;});
+});
+})();`;
+/** The CSP source for RUN_NOW_SCRIPT; server.ts adds it to a page that carries the script. */
+export const RUN_NOW_SCRIPT_HASH = `sha256-${createHash("sha256").update(RUN_NOW_SCRIPT, "utf8").digest("base64")}`;
+
+/** The Run now button and its script, for a user who may approve; `csrfToken` is the write routes' token. */
+function runNowHtml(csrfToken: string): string {
+  return (
+    `<p><button type="button" id="improve-run-now" data-csrf="${esc(csrfToken)}">Run now</button> ` +
+    `<span class="muted">queues an improve run of the last 24 hours</span> <span id="improve-run-now-result" role="status"></span></p>` +
+    `<script>${RUN_NOW_SCRIPT}</script>`
+  );
 }
 
 /** One finished run, messages as the checks wrote them. Never leaves this module unfiltered. */
@@ -101,8 +131,11 @@ export class HealthMonitor {
     return { checked_at: r.checked_at.toISOString(), checks };
   }
 
-  /** The Health panel: a `<section id="health">`. `refresh`: the refresh link asked for this load. */
-  async section(scanner: EgressScanner, opts: { refresh: boolean }): Promise<string> {
+  /**
+   * The Health panel: a `<section id="health">`. `refresh`: the refresh link asked for this load. `runNow`: the
+   * page's user may approve, so the panel shows the Run now button with this CSRF token.
+   */
+  async section(scanner: EgressScanner, opts: { refresh: boolean; runNow?: { csrfToken: string } | null }): Promise<string> {
     const r = await this.latest();
     const w = new Withholder(scanner);
     const rows = [];
@@ -119,7 +152,7 @@ export class HealthMonitor {
     return (
       `<section id="health"><h2>Health</h2>` +
       `<p class="muted">Last run ${esc(r.checked_at.toISOString())}. <a href="/classic?health=refresh#health">refresh</a>${limited}</p>` +
-      `${table}</section>`
+      `${table}${opts.runNow ? runNowHtml(opts.runNow.csrfToken) : ""}</section>`
     );
   }
 }

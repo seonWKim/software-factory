@@ -16,6 +16,8 @@ import { between, duration, esc, facts as factsTable, link, page, table } from "
 import type { FactoryStatus } from "./factory-status.js";
 import { githubBudgetSection, readGitHubBudget } from "./github-budget.js";
 import { type HealthMonitor, improveSection } from "./health.js";
+import { runNowButton } from "./improve-api.js";
+import type { PauseDeps } from "./pause-api.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
@@ -131,7 +133,7 @@ class Ctx {
  * `self` is this page's path and query, for the noscript Refresh link. `healthRefresh`: the Health panel's
  * refresh link asked for a fresh run (still at most one a minute).
  */
-export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefresh = false): Promise<string> {
+export async function renderIndex(d: PauseDeps, f: Filters, self = "/", healthRefresh = false): Promise<string> {
   const c = new Ctx(d);
   const waiting = await c.d.store.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true });
   const rows = await listRows({ store: d.store, w: c.w, now: c.now, lease_ms: d.lease_ms }, f);
@@ -146,7 +148,7 @@ export async function renderIndex(d: UiDeps, f: Filters, self = "/", healthRefre
     await pausedSection(c),
     filtersSection(f, facetCounts(rows, f)),
     await itemsSection(c, applyFilters(rows, f), f),
-    await d.health.section(d.scanner, { refresh: healthRefresh }),
+    await d.health.section(d.scanner, { refresh: healthRefresh, runNow: await runNowButton(d) }),
     await improveSection(await d.store.getLatestImproveReport(), d.scanner),
     await totalsSection(c),
     await costSection(c),
