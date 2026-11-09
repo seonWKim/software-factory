@@ -177,4 +177,27 @@ describe("Markdown", () => {
     expect([...container.querySelectorAll("ol > li")].map((l) => l.textContent)).toEqual(["first", "second"]);
     expect(container.querySelector("pre code")!.textContent).toBe("<raw> code");
   });
+
+  it("folds a <details> block into a real fold, its summary and body as markdown, other HTML still text", () => {
+    const { container } = render(<Markdown text={"<details><summary>What the PR contains</summary>\n\n- a **change**\n\n</details>\n\n<b>after</b>"} />);
+    const fold = container.querySelector("details")!;
+    expect(fold.querySelector("summary")!.textContent).toBe("What the PR contains");
+    expect(fold.querySelector("ul > li strong")!.textContent).toBe("change");
+    expect(container.querySelector("b")).toBeNull();
+    expect(container.textContent).toContain("<b>after</b>");
+  });
+
+  it("marks the In short and Decisions for you sections, up to the next heading of their level", () => {
+    const { container } = render(<Markdown text={"### In short (AS-IS → TO-BE)\nAS-IS: old\nTO-BE: new\n\n### Problem\nwhy\n\n### Decisions for you\n- pick one\n\n### Done when\n- done"} />);
+    const callouts = [...container.querySelectorAll("[data-callout]")];
+    expect(callouts.map((c) => c.getAttribute("data-callout"))).toEqual(["summary", "attention"]);
+    expect(callouts[0]!.textContent).not.toContain("why");
+    expect(callouts[1]!.textContent).toContain("pick one");
+    expect(callouts[1]!.textContent).not.toContain("done");
+  });
+
+  it("shows AS-IS and TO-BE on separate lines when they arrive in one paragraph", () => {
+    const { container } = render(<Markdown text={"AS-IS: the old way →\nTO-BE: the new way"} />);
+    expect([...container.querySelectorAll("p")].map((p) => p.textContent)).toEqual(["AS-IS: the old way", "TO-BE: the new way"]);
+  });
 });
