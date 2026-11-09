@@ -9,8 +9,9 @@ Nothing uses these tokens until the `slack` source plugin is selected (SET_UP.md
 - An app called **Software Factory** with a bot user `@software-factory`, defined in [`slack/manifest.json`](../slack/manifest.json):
   - **Socket Mode on:** Slack pushes events over a WebSocket the factory opens. The factory needs no public URL or open port.
   - **Interactivity on**, for the command buttons in threads.
-  - **Bot scopes:** `app_mentions:read` (see @mentions), `channels:history` (read replies in threads it's part of), `chat:write` (reply), `im:write` (open a DM to tell a person something, e.g. the owner), `reactions:write` (acknowledge a command with a reaction, #482). Nothing else.
-  - **Events:** `app_mention`, `message.channels`.
+  - **Bot scopes:** `app_mentions:read` (see @mentions), `channels:history` (read replies in threads it's part of, in public channels), `groups:history` (the same in private channels), `chat:write` (reply), `im:write` (open a DM to tell a person something, e.g. the owner), `reactions:write` (acknowledge a command with a reaction, #482). Nothing else.
+  - **Events:** `app_mention`, `message.channels` (messages in public channels), `message.groups` (messages in private channels).
+  - Public and private channels are both covered by these scopes and events. Without `groups:history` and `message.groups`, Slack sends nothing from a private channel.
 - Two secrets in the factory's secret file (`~/.config/software-factory/.env`, outside the repository; see [`docs/setup.md`](setup.md)):
   - `SLACK_BOT_TOKEN` (`xoxb-…`): posts and reads as the bot.
   - `SLACK_APP_TOKEN` (`xapp-…`, scope `connections:write`): opens the Socket Mode connection.
@@ -72,6 +73,10 @@ socket: hello received (connections: 1)
 ### 7. Invite the bot to a channel (Slack)
 
 In the channel the factory should listen in, type `/invite @software-factory`. Copy the channel ID from the channel details (bottom of the **About** tab, `C…`). The `slack` source plugin reads it from the `slack` block of `factory.config.json`: `"slack": { "channels": ["C…"] }`.
+
+A private channel (ID starting with `G…`) works the same way once the bot is invited to it: list its ID in `channels` like a public one.
+
+**Installed before private channels were supported?** An app installed before `groups:history` and `message.groups` were added to the manifest does not get private-channel events. Update the app from the manifest and reinstall it once (see "Changing the app later"); nothing changes on its own. Messages a private channel sent before the reinstall are not read again.
 
 ## Changing the app later
 
