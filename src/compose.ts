@@ -33,6 +33,7 @@ import type { LocalRoute } from "./worker/index.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys } from "./config-keys.js";
+import { checkStatePaths } from "./state-paths.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials, RepoIdentity } from "./interfaces/github-credentials.js";
@@ -476,6 +477,7 @@ export async function loadConfig(
     // Coordination (design §5): the threshold, hotspots and mechanical paths, checked at load by checkConfigKeys.
     coordination: coordinationConfig(raw),
   };
+  if (externalConfig !== null) checkStatePaths({ state_dir: stateDir, worktrees_dir: worktreesDir }, config.deny_paths);
   // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
   const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
   if (toolchain) config.toolchain = toolchain;
