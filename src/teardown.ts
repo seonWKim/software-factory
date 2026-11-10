@@ -62,7 +62,7 @@ interface Plan {
   secretNames: string[];
 }
 
-/** Runs teardown. Exit code: 0 when done or nothing to delete, 1 when refused, declined or a removal failed. */
+/** Runs teardown. Exit code: 0 when done or nothing to delete, 1 when refused or not confirmed; a failed git step throws. */
 export async function teardown(loaded: Loaded, o: TeardownOptions, deps: Partial<TeardownDeps> = {}): Promise<number> {
   const d: TeardownDeps = { ...(await defaultDeps(loaded)), ...deps };
   const live = await livePids(loaded.stateDir, d.pidAlive);
