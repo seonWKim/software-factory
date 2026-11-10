@@ -67,6 +67,7 @@ export const TOP_LEVEL_KEYS = [
   "budgets",
   "budget_min_sample",
   "inbox_retention_days",
+  "retention",
   "outbound",
   "merge_queue",
   "hooks",
@@ -108,6 +109,7 @@ export const UI_KEYS = ["port", "user_id"] as const satisfies readonly (keyof No
 export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof NonNullable<FileConfig["updater"]>)[];
 export const GITHUB_KEYS = ["min_remaining", "budget_share", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
+export const RETENTION_KEYS = ["outbox_days", "commands_days", "records_days"] as const satisfies readonly (keyof NonNullable<FileConfig["retention"]>)[];
 export const PACKS_KEYS = ["order", "org"] as const satisfies readonly (keyof NonNullable<FileConfig["packs"]>)[];
 
 /** A suggestion is offered only within this edit distance. */
@@ -200,6 +202,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.slack, "slack", "slack", SLACK_KEYS);
   check(raw.toolchain, "toolchain", "toolchain", TOOLCHAIN_KEYS);
   check(raw.packs, "packs", "packs", PACKS_KEYS);
+  check(raw.retention, "retention", "retention", RETENTION_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
