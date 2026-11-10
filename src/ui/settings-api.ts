@@ -149,7 +149,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     });
   }
   const prOnly = [];
-  for (const key of PR_ONLY_KEYS) prOnly.push({ key, note: "changes by PR only", description: await text(catalog.describe(key).description) });
+  for (const key of PR_ONLY_KEYS) prOnly.push({ key, description: await text(catalog.describe(key).description) });
   const ignored = [];
   for (const i of r.ignored) {
     ignored.push({ key: i.key, project: i.project ? await text(label(i.project)) : null, value: await text(i.value), reason: await text(i.reason) });

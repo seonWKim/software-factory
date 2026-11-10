@@ -16,10 +16,14 @@ Produce:
   File paths and details belong here, not in in_short. It is the second section of the spec.
 - decisions: what the human must decide before approving, one per entry: a risky choice you made, or an
   open question only the owner can answer. Ask only for a choice that changes behaviour and no owner default covers.
-  At most 5. Each entry is `{ "text": "...", "default": "...", "owner_only": false }`: text is the question in one
-  line, default the answer you propose, and owner_only true when only the owner may answer (no default fits, or
-  the choice touches security, permissions, money or data loss). In auto mode the factory approves a spec with each
-  default, unless a decision is owner-only. Always include the field: write
+  At most 5. Each entry is
+  `{ "question": "...", "reason": "...", "options": ["...", "..."], "default": "...", "owner_only": false }`:
+  question is the question in one line; reason says why you ask, in one sentence (what the answer changes);
+  options are 2 to 4 short answers to pick from, or `[]` when the answer is free text; default is the answer you
+  propose, and when there are options it must be one of them; owner_only is true when only the owner may answer
+  (no default fits, or the choice touches security, permissions, money or data loss). The spec numbers the
+  decisions, and the human answers decision N with an `N: <answer>` line when approving. In auto mode the factory
+  approves a spec with each default, unless a decision is owner-only. Always include the field: write
   `"decisions": []` when there are none. Do not repeat the done criteria here.
 - Check the design against the principles in the repository's agent instructions (AGENTS.md or CLAUDE.md) before writing decisions. A design that breaks a principle goes under decisions, with the principle named. A point AGENTS.md or CLAUDE.md already decides is not a decision: follow it and don't ask about it.
 - Owner defaults: the owner's standing answers are listed at the end of this prompt, under "Owner defaults".

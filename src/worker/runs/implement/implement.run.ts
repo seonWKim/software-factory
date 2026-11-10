@@ -4,7 +4,7 @@ import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
 import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
 import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
-import { IMPLEMENT_SCHEMA, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
+import { IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
 import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, wipBranchFor } from "../../../core/policy.js";
 import { failingTests } from "../../../core/output-summary.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
@@ -16,7 +16,7 @@ import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker
 import { BUDGET_NEXT_STEPS, type ContinueWip, DIFF_CHECK_MS, type DiffBudget, type FixContext, LOOP_STARTS, MAX_CONFLICT_COMMITS, MAX_FAILING_TESTS, MAX_PR_FILES, NO_COMMITS_DETAIL, NO_HOOKS, PAUSE_NEXT_STEPS, type ResumePlan, RunFailure, RunPaused, STOPPED_CODES, STOPPED_NEXT_STEPS, WIP_TEXT_CHARS, continues, fenced, gitIdentity, hasTool, prTitle, renderBudget, renderContinueNewSession, renderNewSessionResume, renderSessionResume, renderWorkItem, runCommits, scopeReply, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
-import type { NeedsHuman } from "../../../core/outputs.js";
+import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
 /**
@@ -73,7 +73,7 @@ async function implement(
     const agentStep = await step("run-agent", async (): Promise<AgentStep> => {
       ran = true;
       const previous = await previousContext(w, item);
-      const notes = await w.approverNotes(item);
+      const notes = [await w.approverNotes(item), decisionsSection(await w.d.store.listStateChanges(item.id), fenced)].filter(Boolean).join("\n\n");
       const feedback = await prFeedback(w, item, run);
       // The item's project's limits, as the size gate reads them (design §4, issue #217).
       const { max_diff_lines, max_diff_files } = settingValues(item.project, w.cfg.settings, w.d.learned);

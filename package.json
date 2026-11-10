@@ -12,6 +12,7 @@
     "test": "vitest run --configLoader runner",
     "test:mysql": "SF_TEST_MYSQL_URL=$(cat .factory/test-mysql.url) vitest run --configLoader runner",
     "factory": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js",
+    "check:responsive": "npm run --silent build && node --disable-warning=ExperimentalWarning scripts/responsive-check.mjs",
     "migrate": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js migrate",
     "setup": "npm install --silent && npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js setup",
     "schema:snapshot": "SF_SNAPSHOT_UPDATE=1 vitest run --configLoader runner tests/architecture/schema-snapshot.test.ts",

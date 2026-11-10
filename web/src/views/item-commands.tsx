@@ -7,6 +7,7 @@ import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { PAGE_COMMANDS_PATH } from "../pages.js";
+import { ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, approveNote, approvePhase, chosenAnswers, initialChoices } from "./item-decisions.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
 // in its order, and one text box that is the note every send carries when it has text (the reason for reject,
@@ -14,6 +15,9 @@ import { PAGE_COMMANDS_PATH } from "../pages.js";
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
 // next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
 // (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
+// A waiting spec (issue #526) shows its In short above Commands and its decisions as questions above the note box;
+// reject, and approve in an approve phase (the spec gate, the floor block, the Rule of Two), go through a confirm
+// step first; approve sends the answers as `N: <answer>` lines.
 
 /** Commands the server refuses without text. */
 const NEEDS_TEXT = ["reject", "revise"];
@@ -56,21 +60,31 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const client = useQueryClient();
   const session = useApi<Session>(API.session, false);
   const [note, setNote] = useState("");
-  const [confirming, setConfirming] = useState(false);
+  const [confirming, setConfirming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<Record<string, LocalSend>>({});
-  // The page's own item query (same key and options), read here for its `merge`.
-  const detail = useApi<ItemDetail>(API.item(id)).data?.item;
+  const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
+  // The page's own item query (same key and options), read here for its `merge` and its waiting spec.
+  const data = useApi<ItemDetail>(API.item(id)).data;
+  const detail = data?.item;
   const merge = detail?.merge;
   const showMerge = showsMerge(merge);
+  const phase = approvePhase(detail?.blocked_reason);
+  // Only a spec at the gate is answered; the floor block, the Rule of Two and a held run approve no decisions.
+  const decisions = phase === "spec_pending" || phase === "max_revisions" ? (data?.spec?.decisions ?? []) : [];
+  const choices = picked ?? initialChoices(decisions);
+  const answers = chosenAnswers(decisions, choices);
   // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
   if (commands.length === 0 && !showMerge) {
     return (
-      <Section title="Commands">
-        <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-          No command applies now; the factory continues on its own. Commands show here when the item waits for you.
-        </p>
-      </Section>
+      <>
+        <InShort spec={data?.spec} />
+        <Section title="Commands">
+          <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+            No command applies now; the factory continues on its own. Commands show here when the item waits for you.
+          </p>
+        </Section>
+      </>
     );
   }
   const token = session.data?.csrf_token;
@@ -81,12 +95,13 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const send = async (command: string) => {
     if (!token) return;
     setBusy(true);
-    setConfirming(false);
+    setConfirming(null);
     try {
-      const r = await postCommand(token, id, command, note);
+      const r = await postCommand(token, id, command, command === "approve" ? approveNote(answers, note) : note);
       setLocal((m) => ({ ...m, [command]: r.ok ? { seq: r.seq } : { error: r.error } }));
       if (r.ok) {
         setNote("");
+        setPicked(null);
         await client.invalidateQueries({ queryKey: [API.item(id)] });
       }
     } catch (err) {
@@ -97,68 +112,74 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   };
 
   return (
-    <Section title="Commands">
-      {off && (
-        <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-          Commands are off: this server is not on loopback, so it needs ui.user_id.{" "}
-          <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
-            Settings
-          </Link>{" "}
-          says what to set.
-        </p>
-      )}
-      {enabled && session.data?.actor && (
-        <p data-commands-actor className="mb-2 text-xs text-pretty text-zinc-600 dark:text-zinc-400">
-          Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
-        </p>
-      )}
-      <textarea
-        aria-label="Note"
-        rows={3}
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="Reason for reject, feedback for revise, tokens for budget, or a note"
-        className={cn(
-          "mb-2 w-full max-w-xl rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900",
-          "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
+    <>
+      <InShort spec={data?.spec} />
+      <Section title="Commands">
+        {off && (
+          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+            Commands are off: this server is not on loopback, so it needs ui.user_id.{" "}
+            <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
+              Settings
+            </Link>{" "}
+            says what to set.
+          </p>
         )}
-      />
-      <ul className="space-y-1.5">
-        {commands.map((c) => {
-          const disabled = !enabled || busy || (NEEDS_TEXT.includes(c.name) && blank);
-          const outcome = commandOutcome(replies, c.name, local[c.name]);
-          return (
-            <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
-              <Button
-                variant="outline"
-                className={textButton}
-                disabled={disabled || (c.name === "reject" && confirming)}
-                title={`${c.usage}: ${c.description}`}
-                onClick={() => (c.name === "reject" ? setConfirming(true) : void send(c.name))}
-              >
-                {c.name}
-              </Button>
-              {c.name === "reject" && confirming && (
-                <>
-                  <Button variant="outline" className={textButton} disabled={disabled} onClick={() => void send("reject")}>
-                    Confirm reject
-                  </Button>
-                  <Button variant="outline" className={textButton} onClick={() => setConfirming(false)}>
-                    Cancel
-                  </Button>
-                </>
-              )}
-              <OutcomeText outcome={outcome} />
+        {enabled && session.data?.actor && (
+          <p data-commands-actor className="mb-2 text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+            Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
+          </p>
+        )}
+        <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
+        <textarea
+          aria-label="Note"
+          rows={3}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Reason for reject, feedback for revise, tokens for budget, or a note"
+          className={cn(
+            "mb-2 w-full max-w-xl rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900",
+            "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
+          )}
+        />
+        <ul className="space-y-1.5">
+          {commands.map((c) => {
+            const disabled = !enabled || busy || (NEEDS_TEXT.includes(c.name) && blank);
+            const outcome = commandOutcome(replies, c.name, local[c.name]);
+            const confirms = c.name === "reject" || (c.name === "approve" && phase !== null);
+            return (
+              <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="outline"
+                  className={textButton}
+                  disabled={disabled || confirming === c.name}
+                  title={`${c.usage}: ${c.description}`}
+                  onClick={() => (confirms ? setConfirming(c.name) : void send(c.name))}
+                >
+                  {c.name}
+                </Button>
+                {confirming === c.name && (
+                  <>
+                    {c.name === "approve" && phase !== null && <ApproveConfirm phase={phase} answers={answers} note={note} />}
+                    <Button variant="outline" className={textButton} disabled={disabled} onClick={() => void send(c.name)}>
+                      Confirm {c.name}
+                    </Button>
+                    <Button variant="outline" className={textButton} onClick={() => setConfirming(null)}>
+                      Cancel
+                    </Button>
+                  </>
+                )}
+                <OutcomeText outcome={outcome} />
+              </li>
+            );
+          })}
+          {showMerge && (
+            <li data-command="merge" className="flex flex-wrap items-center gap-2">
+              <MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} />
             </li>
-          );
-        })}
-        {showMerge && (
-          <li data-command="merge" className="flex flex-wrap items-center gap-2">
-            <MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} />
-          </li>
-        )}
-      </ul>
-    </Section>
+          )}
+        </ul>
+      </Section>
+    </>
   );
 }
 
