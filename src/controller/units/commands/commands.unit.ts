@@ -8,12 +8,14 @@ import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, fl
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
+import { latestSpec } from "../../../core/outputs.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "../../../core/suggest.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
+import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -109,11 +111,7 @@ function floorCommand(
     return { refuse: `the item is ${phaseLabel("floor_tier")}, not waiting on a spec; reply \`/approve\` to raise its tier or \`/reject <reason>\` to close` };
   }
   if (e.kind === "spec_rejected") {
-    return {
-      patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
-      actor,
-      reason: "floor_rejected",
-    };
+    return { patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null }, actor, reason: "floor_rejected" };
   }
   if (it.stage !== "RUNNING" || need === null) return { refuse: "the floor block has no recorded tier to approve" };
   // A `+paths` under a higher floor raises the tier further (issue #280).
@@ -617,9 +615,11 @@ export class CommandsUnit {
       case "spec_approved": {
         const phases = await this.c.unit("phases").specPhases(it);
         if (phases && paths.length > 0) return { refuse: SPLIT_PATHS };
-        if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, note, e.comment_id, tag);
+        const a = splitAnswers(note, latestSpec(await this.c.k.reader.listRuns(it.id))?.decision_items ?? []);
+        if ("refuse" in a) return a;
+        if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, a.note, e.comment_id, a.answers.length ? { ...tag, ...answersDetail(a.answers) } : tag);
         const w = this.widen(it, paths);
-        const detail = { ...(note ? { note } : {}), ...w.detail };
+        const detail = { ...(a.note ? { note: a.note } : {}), ...answersDetail(a.answers), ...w.detail };
         return {
           patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, ...w.patch },
           actor,
