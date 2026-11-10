@@ -7,7 +7,7 @@ import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
-  coordinationConfig, toolGrantsConfig, toolchainCacheOverlaps,
+  coordinationConfig, retentionConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
@@ -149,6 +149,7 @@ export interface FileConfig {
   run_timeout_ms: number;
   /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
   inbox_retention_days?: number;
+  retention?: { outbox_days?: unknown; commands_days?: unknown; records_days?: unknown }; // design 08-retention; absent: 30, 30, 90
   /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
   outbound?: { batching?: unknown };
   /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
@@ -409,7 +410,7 @@ export async function loadConfig(
   const retry = retryConfig(file);
   // The per-project gate settings in layers (design 2026-11-01): top level / `defaults`, then `projects`.
   const settings = settingsLayers(raw as Record<string, unknown>, `${file.repo.owner}/${file.repo.name}`);
-  const retention = inboxRetentionDays(file);
+  const retention = { inbox_retention_days: inboxRetentionDays(file), retention: retentionConfig(file.retention) };
   const budget = budgetConfig({ budget_min_sample: file.budget_min_sample });
   const stats = statsConfig(file.stats);
   const models = parseModels(file.models);
@@ -434,7 +435,6 @@ export async function loadConfig(
   if (!local) await checkGitHubSettings(file.github);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
-
   const home = process.env.HOME ?? "";
   const { check_commands: rawChecks, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
@@ -462,7 +462,7 @@ export async function loadConfig(
     ...stallConfig(file),
     ...alarmConfig(file),
     agent_stop_checks: agentStopChecks(file),
-    inbox_retention_days: retention,
+    ...retention, // inbox_retention_days and the retention block (design 08-retention)
     outbound_batching: batchingPolicies(file.outbound?.batching),
     merge_queue_depth: mergeQueueDepth(file),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),

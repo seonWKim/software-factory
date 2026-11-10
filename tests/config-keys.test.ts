@@ -485,3 +485,31 @@ describe("agent_stop_checks (design §4 Pre-push gates, issue #302)", () => {
     }
   });
 });
+
+describe("retention (design 08-retention)", () => {
+  it("is a top-level key; absent, it gives 30, 30 and 90 days and startup goes on", async () => {
+    expect(TOP_LEVEL_KEYS).toContain("retention");
+    const { retention: _set, ...rest } = SQLITE as Record<string, unknown>;
+    expect((await loadConfig(root(rest))).config.retention).toEqual({ outbox_days: 30, commands_days: 30, records_days: 90 });
+  });
+
+  it("compose passes the set values into the config; an absent key keeps its default; 0 loads", async () => {
+    const { config } = await loadConfig(root({ ...SQLITE, retention: { outbox_days: 7, records_days: 0 } }));
+    expect(config.retention).toEqual({ outbox_days: 7, commands_days: 30, records_days: 0 });
+  });
+
+  it("an unknown key under retention fails at load with a suggestion", async () => {
+    const err = await loadError({ ...SQLITE, retention: { outbox_day: 7 } });
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toContain('unknown config key "outbox_day" at retention.outbox_day');
+    expect(err.message).toContain('did you mean "outbox_days"?');
+  });
+
+  it("a negative or non-integer value fails at startup, naming the key", async () => {
+    for (const [key, value] of [["outbox_days", -1], ["commands_days", 1.5], ["records_days", "90"], ["records_days", null]] as const) {
+      const err = await loadError({ ...SQLITE, retention: { [key]: value } });
+      expect(err.message).toContain(`retention.${key} must be an integer of 0 or more`);
+    }
+    expect((await loadError({ ...SQLITE, retention: 30 })).message).toContain("retention must be an object");
+  });
+});

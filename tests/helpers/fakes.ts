@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import type { FactoryConfig, Prompts } from "../../src/core/config.js";
+import { type FactoryConfig, type Prompts, RETENTION_DEFAULTS } from "../../src/core/config.js";
 import type { ProjectRef } from "../../src/core/project.js";
 import { type ProjectSettings, type SettingsLayers, settingValues } from "../../src/core/settings.js";
 import type { LogFields, Logger } from "../../src/core/log.js";
@@ -71,6 +71,7 @@ export const config: FactoryConfig = {
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
   inbox_retention_days: 14,
+  retention: RETENTION_DEFAULTS,
   // Tests that are not about batching send each commit at once (`commit`): the `auto` debounce waits on time these
   // tests never advance. Batching has its own tests (tests/outbound/).
   outbound_batching: { "*": { mode: "commit", debounce_ms: 2_000, max_wait_ms: 30_000, max_messages: 10 } },
