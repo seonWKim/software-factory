@@ -3,9 +3,10 @@
 #
 #   make status ID=wi_abc          one item's state_changes trail
 #   make setup ARGS=--rotate-github  pass flags through to the command
+#   make teardown ARGS=--dry-run     list what teardown would remove
 
 .DEFAULT_GOAL := help
-.PHONY: help setup dev controller worker ui status doctor canary
+.PHONY: help setup teardown dev controller worker ui status doctor canary
 
 FACTORY := npm run factory --
 ID ?=
@@ -22,6 +23,9 @@ help: ## List the targets
 
 setup: ## One-time setup (ARGS=--rotate-github or --rotate-claude to replace a token)
 	$(strip npm run setup $(SETUP_ARGS))
+
+teardown: ## Undo setup on this machine (ARGS=--dry-run, --yes, --stop or --secrets)
+	$(call factory,teardown)
 
 dev: ## Controller + worker in one process
 	$(call factory,dev)

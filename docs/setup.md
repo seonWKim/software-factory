@@ -115,6 +115,16 @@ git -C <repo> status --ignored | grep .env  # nothing: no secret file in the rep
 - **Resume.** After each finished step setup writes `<state_dir>/setup-progress.json` (mode 600): the finished step names and your GitHub answer, never a secret value. A later run asks `Continue from step N?` or `start over`. A setup that finishes with every step `✓` deletes the file.
 - **Check lines.** Every check says what it checks, and every FAIL (`✗` in setup) says how to fix it. `✓ ANTHROPIC_API_KEY not set (good: agents use CLAUDE_CODE_OAUTH_TOKEN)` is the good state; when it is set, the line is a FAIL that says to run `unset ANTHROPIC_API_KEY`.
 
+## Starting over
+
+The flow to reset a machine is **pull → teardown → setup**: `git pull`, then `make teardown` (`npm run factory -- teardown`), then `make setup`. Run `make teardown ARGS=--dry-run` first to see the list; nothing changes.
+
+- **What it removes.** The state folder (`<state_dir>`, `.factory/` by default), the factory's clean run folders and version copies (`git worktree remove`, then `git worktree prune`), its `factory/*` branches merged into the base branch, and its `refs/factory/*` refs. Every path setup creates is named in one list, `src/setup-paths.ts`; a test fails when setup writes a path that is not on it.
+- **What it keeps.** Your own folders in `<worktrees_dir>`, anything with uncommitted changes, unmerged branches and branches checked out in a worktree: listed, never forced.
+- **The store.** SQLite: `factory.db` is copied to `backups/teardown-<time>/` next to the secret file (outside the repository, where agents cannot read it) before the state folder goes; the path is printed. MySQL: the database is never dropped or altered; teardown says the shared store was not touched.
+- **Secrets.** The secret file stays. `--secrets` asks again, then removes only the factory's named entries (the template's keys and every name a plugin declares); your other lines stay and the file keeps mode 600. `github-app.pem` stays: delete it by hand.
+- **While running.** Teardown refuses while the factory runs on this machine (it reads `<state_dir>/supervisor.json` and the version copies' pid files). `--stop` drains it like `npm run migrate` does, stops it, then continues.
+
 ## Changing settings
 
 Fifteen keys change while the factory runs, with no PR and no restart (design 2026-11-03, "Settings change at runtime"):
