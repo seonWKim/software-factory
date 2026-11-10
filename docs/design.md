@@ -60,3 +60,6 @@ the `05-*` files.
 
 ## 10. Event-driven factory
 - [10-event-driven.md](design/10-event-driven.md): the RFC 0015 move, prefixed tables, timestamped migrations with backups and verified copies, and architecture tests.
+
+## 11. Packs
+- [11-packs.md](design/11-packs.md): pack layers (base, org, project, learned) for prompts, skills and plugins, the `packs` key, and the guard and shared-store rules for pack plugins.
