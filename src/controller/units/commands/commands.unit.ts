@@ -3,12 +3,11 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
-import { commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
+import { commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
-import { latestSpec } from "../../../core/outputs.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "../../../core/suggest.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
@@ -615,6 +614,7 @@ export class CommandsUnit {
       case "spec_approved": {
         const phases = await this.c.unit("phases").specPhases(it);
         if (phases && paths.length > 0) return { refuse: SPLIT_PATHS };
+        // `N: <answer>` lines answer the spec's decisions (issue #526); a split's answers stay on its approval's tag.
         const a = splitAnswers(note, latestSpec(await this.c.k.reader.listRuns(it.id))?.decision_items ?? []);
         if ("refuse" in a) return a;
         if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, a.note, e.comment_id, a.answers.length ? { ...tag, ...answersDetail(a.answers) } : tag);

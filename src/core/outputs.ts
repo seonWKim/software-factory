@@ -1,6 +1,6 @@
 import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, splitError } from "./split.js";
-import type { Run, Tier } from "./types.js";
+import type { Tier } from "./types.js";
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.
@@ -487,17 +487,6 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
       estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}),
     },
   };
-}
-
-/**
- * The spec of the item's latest triage run that succeeded and was applied, read from the run's stored output; null
- * when there is none or it no longer parses. Store reads only: the caller passes the item's runs.
- */
-export function latestSpec(runs: readonly Run[]): TriageOutput | null {
-  const run = runs.filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null).at(-1);
-  if (run?.outcome?.status !== "succeeded") return null;
-  const parsed = parseTriage(run.outcome.data.spec);
-  return parsed.ok ? parsed.value : null;
 }
 
 /** A short, non-empty plain-text field of needs_human. */
