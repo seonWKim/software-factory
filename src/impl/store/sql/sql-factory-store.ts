@@ -125,6 +125,7 @@ import {
   rowToWorkItem,
   workItemInsert,
 } from "./rows.js";
+import * as filed from "./filed-patterns.js";
 import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords } from "./retention.js";
 import * as signals from "./signals.js";
 
@@ -1239,9 +1240,9 @@ export class SqlFactoryStore implements FactoryStore {
     await this.db.run("UPDATE controller_improve_reports SET failure_groups = ? WHERE id = ?", [JSON.stringify(groups), id]);
   }
 
-  async getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
-    const [row] = await this.db.all("SELECT * FROM controller_filed_patterns WHERE project_key = ? AND pattern_key = ?", [project, pattern_key]);
-    return row ? rowToFiledPattern(row) : null;
+  // Filed patterns (design 07-self-improvement): in ./filed-patterns.ts, but the claim.
+  getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
+    return filed.getFiledPattern(this.db, project, pattern_key);
   }
 
   async claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern> {
@@ -1254,7 +1255,7 @@ export class SqlFactoryStore implements FactoryStore {
     );
     if (replace !== undefined && replace !== input.report_id) {
       await this.db.run(
-        `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?
+        `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?, outcome = NULL, outcome_at = NULL
          WHERE project_key = ? AND pattern_key = ? AND report_id = ?`,
         [input.report_id, input.error_code, input.detail, now, input.project, input.pattern_key, replace],
       );
@@ -1262,8 +1263,14 @@ export class SqlFactoryStore implements FactoryStore {
     return (await this.getFiledPattern(input.project, input.pattern_key))!;
   }
 
-  async setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
-    await this.db.run("UPDATE controller_filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
+  setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
+    return filed.setFiledPatternRef(this.db, id, report_id, ref);
+  }
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> {
+    return filed.listFiledPatternsWithoutOutcome(this.db, project);
+  }
+  setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean> {
+    return filed.setFiledPatternOutcome(this.db, id, outcome, at);
   }
 
   // Standing approvals (design 05-standing-approvals)
@@ -2773,6 +2780,10 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
     where.push("blocked_on = ?");
     params.push(filter.blocked_on);
   }
+  if (filter.blocked_reason !== undefined) {
+    where.push("blocked_reason = ?");
+    params.push(filter.blocked_reason);
+  }
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
 }
 
@@ -2892,19 +2903,6 @@ function rowToImproveReport(row: Row): ImproveReport {
     window_end: row.window_end as Timestamp,
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
     patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
-    created_at: row.created_at as Timestamp,
-  };
-}
-
-function rowToFiledPattern(row: Row): FiledPattern {
-  return {
-    id: row.id as FiledPatternId,
-    project: row.project_key as string,
-    pattern_key: row.pattern_key as string,
-    error_code: row.error_code as string,
-    detail: row.detail as string,
-    report_id: row.report_id as ImproveReportId,
-    filed_ref: row.filed_ref === null || row.filed_ref === undefined ? null : (JSON.parse(row.filed_ref as string) as SourceRef),
     created_at: row.created_at as Timestamp,
   };
 }

@@ -574,3 +574,26 @@ function issueBody(g: FailureGroup): string {
   );
   return lines.join("\n");
 }
+
+export const OUTCOME_WAIT_MS = 7 * DAY_MS; // a filed pattern's fix is judged this long after its item closed (design §7)
+
+type OutcomeStore = Pick<FactoryStore, "listFiledPatternsWithoutOutcome" | "getWorkItemBySource" | "listStateChanges" | "listRunsFinishedBetween" | "setFiledPatternOutcome">;
+
+/**
+ * Sets the outcome of each filed pattern of `project` whose item closed as completed OUTCOME_WAIT_MS ago (design §7): `regressed`
+ * when a failed run of its pattern finished in the OUTCOME_WAIT_MS after the close (the change that set CLOSED, else the item's
+ * last update), else `holds`; an item open, not stored or closed otherwise gets none. Written once (no outcome yet); returns those set.
+ */
+export async function settleOutcomes(d: { store: OutcomeStore; clock: Clock }, project: string): Promise<FiledPattern[]> {
+  const at = d.clock.now().toISOString() as Timestamp, set: FiledPattern[] = [];
+  for (const p of await d.store.listFiledPatternsWithoutOutcome(project)) {
+    const fix = p.filed_ref ? await d.store.getWorkItemBySource(p.filed_ref.type, p.filed_ref.id) : null;
+    if (fix?.stage !== "CLOSED" || fix.close_reason !== "completed") continue;
+    const closed = Date.parse((await d.store.listStateChanges(fix.id)).filter((c) => c.changes.stage?.to === "CLOSED").at(-1)?.at ?? fix.updated_at);
+    if (Date.parse(at) - closed < OUTCOME_WAIT_MS) continue;
+    const runs = await d.store.listRunsFinishedBetween(new Date(closed).toISOString() as Timestamp, new Date(closed + OUTCOME_WAIT_MS).toISOString() as Timestamp);
+    const outcome = Object.values(groupFailures(runs)).flat().some((g) => patternKey(g) === p.pattern_key) ? "regressed" : "holds";
+    if (await d.store.setFiledPatternOutcome(p.id, outcome, at)) set.push({ ...p, outcome, outcome_at: at });
+  }
+  return set;
+}

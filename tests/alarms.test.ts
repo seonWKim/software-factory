@@ -339,7 +339,7 @@ describe("alarms: recurring patterns", () => {
     const { item: other } = await store.createWorkItem(issue(9_001), system, { enqueue: { kind: "triage", idempotency_key: "other" } });
     await c.tickAlarms();
     for (const r of hit) {
-      expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "upstream", blocked_reason: RECURRING_FAILURE });
+      expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
       expect((await store.listStateChanges(r.work_item_id)).at(-1)).toMatchObject({ reason: RECURRING_FAILURE, detail: { pattern_key: key() } });
     }
     const claimed = await store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage", "implement"], lease_ms: 60_000 });
@@ -397,7 +397,7 @@ describe("alarms: recurring patterns", () => {
 
     await c.tickModelProbe();
     expect(await store.getClaimPause("model_stall")).toBeNull();
-    for (const r of [a, b]) expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "upstream", blocked_reason: RECURRING_FAILURE });
+    for (const r of [a, b]) expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
     expect(await store.getWorkItem(unknown.work_item_id)).toMatchObject({ blocked_on: "none" });
     const claimed = new Set<string>();
     for (let w = 2; ; w++) {

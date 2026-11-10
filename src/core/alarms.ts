@@ -1,9 +1,10 @@
 // The alarm step (design 05-alarms): a look across items on each controller poll. A pure detector finds three
 // patterns in the store's recently finished runs and the supervisor's restart list: one error repeated on several
 // items, agent runs in a row that used no tokens, and a child crash loop. Each pattern is stored as one alert per
-// 6 hours through the store's conditional insert. A failure pattern that already alerted or was filed re-raises,
-// at most once an hour, when it keeps failing: its items are held and its filed item gets a comment. No forge, LLM
-// or sandbox call; every text is scanned first.
+// 6 hours through the store's conditional insert. A failed run whose pattern has an open filed item holds its item
+// for a person at once. A failure pattern that already alerted or was filed re-raises, at most once an hour, when it
+// keeps failing: its items are held and its filed item gets a comment. No forge, LLM or sandbox call; every text is
+// scanned first.
 
 import { groupFailures, normalizeDetail, patternKey } from "./improver.js";
 import type { Logger } from "./log.js";
@@ -107,7 +108,10 @@ const alertKey = (key: string) => `repeated_error:${key}`;
 const reraiseKey = (key: string) => `recurring:${key}`;
 
 export interface AlarmDeps {
-  store: Pick<FactoryStore, "listRunsFinishedWithin" | "listRunsFinishedBetween" | "recordAlert" | "listAlerts" | "getFiledPattern" | "pauseClaims">;
+  store: Pick<
+    FactoryStore,
+    "listRunsFinishedWithin" | "listRunsFinishedBetween" | "recordAlert" | "listAlerts" | "getFiledPattern" | "pauseClaims" | "getWorkItemBySource" | "listStateChanges"
+  >;
   scanner: EgressScanner;
   clock: Clock;
   log: Logger;
@@ -115,7 +119,7 @@ export interface AlarmDeps {
   project: string;
   /** The supervisor's restart list on this host (design 05-alarms: host-local). Absent: no restart alarm. */
   restarts?: () => Promise<readonly ChildRestart[]>;
-  /** Holds the items of a re-raised pattern (`recurring_failure`). Absent: none are held. */
+  /** Holds the items of a filed or re-raised pattern (`recurring_failure`). Absent: none are held. */
   hold?: (p: HeldPattern) => Promise<void>;
   /** Posts on a filed item through its source, once per marker. Absent: no comment. */
   comment?: (ref: SourceRef, body: string, marker: string) => Promise<void>;
@@ -125,7 +129,7 @@ export interface AlarmDeps {
  * One alarm step: reads the runs finished inside the window and the restart list, and stores each pattern found
  * unless it alerted within ALERT_DEDUPE_MS. A detail the egress scanner flags is dropped; the code and count stay.
  * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`. Each recurring
- * pattern re-raises first (`reraise`). Returns the alerts this call stored. Safe to run twice and on several
+ * pattern re-raises first (`reraise`), then each failed run of an open filed pattern holds its item (`holdFiled`). Returns the alerts this call stored. Safe to run twice and on several
  * replicas at once: the store's conditional insert dedupes.
  */
 export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number }): Promise<Alert[]> {
@@ -134,6 +138,7 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
   const restarts = d.restarts ? await d.restarts() : [];
   // Before this step's own alerts, so a pattern's new 6-hour alert never hides the re-raise it is due.
   const stored = await reraise(d, runs, now, settings.alarm_repeat_count);
+  await holdFiled(d, runs, now);
   for (const f of detectAlarms({ runs, restarts, now, settings })) {
     // G5: alerts reach the status page, so the detail is scanned as UI text, never stored unscanned.
     const scan = await d.scanner.scan("ui", f.detail);
@@ -195,6 +200,34 @@ async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold:
   return stored;
 }
 
+/**
+ * Holds the item of each failed run of the last RERAISE_WINDOW_MS whose pattern has an open filed item (in the store
+ * and not closed, or not in the store: filed, nobody started it) and that finished after the filing: from its first
+ * matching run, not after `alarm_repeat_count` of them. A run whose item a hold of this pattern already took after
+ * it finished holds nothing again, so a hold a person cleared is not put back by the same run. The hold itself is a
+ * conditional transition of an item nothing else blocks, so a second step writes nothing.
+ */
+async function holdFiled(d: AlarmDeps, runs: readonly Run[], now: Date): Promise<void> {
+  if (!d.hold) return;
+  const byId = new Map(runs.map((r) => [r.id, r]));
+  for (const g of recentPatterns(runs, now)) {
+    const key = patternKey(g);
+    const filed = await d.store.getFiledPattern(d.project, key);
+    if (!filed?.filed_ref) continue;
+    const fix = await d.store.getWorkItemBySource(filed.filed_ref.type, filed.filed_ref.id);
+    if (fix?.stage === "CLOSED") continue;
+    const items = new Set<WorkItemId>();
+    for (const id of g.run_ids) {
+      const r = byId.get(id)!;
+      if (r.finished_at! <= filed.created_at || items.has(r.work_item_id)) continue;
+      const held = (await d.store.listStateChanges(r.work_item_id))
+        .some((c) => c.reason === RECURRING_FAILURE && c.detail?.pattern_key === key && c.at >= r.finished_at!);
+      if (!held) items.add(r.work_item_id);
+    }
+    if (items.size > 0) await d.hold({ pattern_key: key, work_item_ids: [...items] });
+  }
+}
+
 /** One comment on the pattern's filed item: its failed runs since filing and in the last hour; scanned, else none. */
 async function commentFiled(d: AlarmDeps, filed: FiledPattern & { filed_ref: SourceRef }, now: Date, fresh: number, alert_id: string): Promise<void> {
   const { groups, patterns } = groupFailures(await d.store.listRunsFinishedBetween(filed.created_at, new Date(now.getTime() + 1).toISOString() as Timestamp));
@@ -245,13 +278,16 @@ export interface HeldPattern {
   work_item_ids: readonly WorkItemId[];
 }
 
+/** The open held items, by reason: any `blocked_on`, so holds stored as `upstream` (before 2026-11-11) are found too. */
+export const HELD_ITEMS = { blocked_reason: RECURRING_FAILURE, exclude_closed: true } as const;
+
 /** The state change reason of a held item's release (design 05-alarms); its hold's is `recurring_failure`. */
 const RELEASED = "recurring_failure_released";
 
-/** The hold of an item a recurring pattern hit, or null: closed, or something else blocks it. */
+/** The hold of an item a recurring pattern hit, for a person, or null: closed, or something else blocks it. */
 export function holdPatch(it: Pick<WorkItem, "stage" | "blocked_on">, pattern_key: string) {
   if (it.stage === "CLOSED" || it.blocked_on !== "none") return null;
-  return { patch: { blocked_on: "upstream" as const, blocked_reason: RECURRING_FAILURE }, reason: RECURRING_FAILURE, detail: { pattern_key } };
+  return { patch: { blocked_on: "human" as const, blocked_reason: RECURRING_FAILURE }, reason: RECURRING_FAILURE, detail: { pattern_key } };
 }
 
 /** The pattern key a held item waits on (its last hold's), or null when it is not held; `changes` read only when held. */

@@ -419,7 +419,7 @@ CREATE TABLE controller_filed_patterns (
     detail       TEXT NOT NULL,
     report_id    TEXT NOT NULL REFERENCES controller_improve_reports(id),
     filed_ref    TEXT,
-    created_at   TEXT NOT NULL,
+    created_at   TEXT NOT NULL, outcome TEXT, outcome_at TEXT,
     UNIQUE (project_key, pattern_key)
   );
 
