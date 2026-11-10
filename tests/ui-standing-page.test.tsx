@@ -82,6 +82,24 @@ describe("Standing approvals section (stubbed API)", { timeout: TEST_MS }, () =>
     expect(screen.getByRole("region", { name: "Standing approvals" })).toBeTruthy();
   });
 
+  it("renders Pending proposals above Mode, with Accept and Decline only there", async () => {
+    const list = await show();
+    const proposals = screen.getByRole("region", { name: "Pending proposals" });
+    const mode = screen.getByRole("region", { name: "Mode" });
+    expect(proposals.compareDocumentPosition(mode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(list).queryByRole("button", { name: "Accept" })).toBeNull();
+    expect(within(list).queryByRole("button", { name: "Decline" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Accept" })).toHaveLength(1);
+  });
+
+  it("renders no Pending proposals section when none wait, and the rules still show", async () => {
+    view.proposals = [];
+    const list = await show();
+    expect(screen.queryByText("Pending proposals")).toBeNull();
+    expect(screen.queryByRole("list", { name: "Pending proposals" })).toBeNull();
+    expect(within(list).getByRole("switch", { name: "spec-t1" })).toBeTruthy();
+  });
+
   it("the switch posts the rule and its new state with the CSRF token", async () => {
     const list = await show();
     fireEvent.click(within(ruleItem(list, "spec-t1")).getByRole("switch", { name: "spec-t1" }));

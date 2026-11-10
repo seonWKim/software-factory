@@ -1,8 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 
 // Standing approvals on the Settings page (design 05-standing-approvals and §9, issue #300): an on or off switch per
@@ -80,40 +80,32 @@ function ProposalItem({ proposal, token }: { proposal: StandingProposalRow; toke
   );
 }
 
-/** The standing read, or its loading or error state, inside a section; both sections below read it (one fetch). */
-function WithStanding({ title, count, children }: { title: string; count: (v: StandingView) => number; children: (v: StandingView) => ReactNode }) {
+/** The pending proposals, at the top of the Settings page: the one part of it that waits for an answer. Nothing when none wait. */
+export function ProposalsSection() {
   const standing = useApi<StandingView>(API.standing);
   const v = standing.data;
+  if (!v || v.proposals.length === 0) return null;
   return (
-    <Section title={title} count={v ? count(v) : undefined}>
-      {standing.isError ? <ErrorNote error={standing.error} /> : !v ? <Loading rows={2} /> : children(v)}
+    <Section title="Pending proposals" count={v.proposals.length}>
+      <ul aria-label="Pending proposals" className="space-y-2">
+        {v.proposals.map((p) => (
+          <ProposalItem key={p.id} proposal={p} token={v.csrf_token} />
+        ))}
+      </ul>
     </Section>
   );
 }
 
-/** The pending proposals, at the top of the Settings page: the one part of it that waits for an answer. */
-export function ProposalsSection() {
-  return (
-    <WithStanding title="Pending proposals" count={(v) => v.proposals.length}>
-      {(v) =>
-        v.proposals.length === 0 ? (
-          <Empty>No proposal is waiting.</Empty>
-        ) : (
-          <ul aria-label="Pending proposals" className="space-y-2">
-            {v.proposals.map((p) => (
-              <ProposalItem key={p.id} proposal={p} token={v.csrf_token} />
-            ))}
-          </ul>
-        )
-      }
-    </WithStanding>
-  );
-}
-
 export function StandingSection() {
+  const standing = useApi<StandingView>(API.standing);
+  const v = standing.data;
   return (
-    <WithStanding title="Standing approvals" count={(v) => v.rules.length}>
-      {(v) => (
+    <Section title="Standing approvals" count={v?.rules.length}>
+      {standing.isError ? (
+        <ErrorNote error={standing.error} />
+      ) : !v ? (
+        <Loading rows={2} />
+      ) : (
         <>
           <p className={`mb-2 ${muted}`}>
             A rule that is on approves the specs of its tier that wait at its gate without a reply. Changing one needs approve_spec.
@@ -126,6 +118,6 @@ export function StandingSection() {
           </ul>
         </>
       )}
-    </WithStanding>
+    </Section>
   );
 }

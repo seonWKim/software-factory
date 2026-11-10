@@ -85,7 +85,7 @@ async function show() {
   return screen.findByRole("table", { name: "Settable keys" });
 }
 
-const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
+const PR_ONLY = "Set in factory.config.json only";
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 
 describe("Settings page", () => {
@@ -134,8 +134,8 @@ describe("Settings page", () => {
   it("lists the PR-only keys read-only, with no control, under a heading that says where and why they change", async () => {
     await show();
     const section = screen.getByRole("region", { name: PR_ONLY });
-    expect(section.textContent).toContain("a person must review every change");
-    expect(section.textContent).toContain("edit it in factory.config.json in a pull request");
+    expect(section.textContent).toContain("can't be changed here");
+    expect(section.textContent).toContain("only through a reviewed PR to factory.config.json");
     const pr = screen.getByRole("table", { name: PR_ONLY });
     for (const key of ["plugins", "secrets"]) {
       const r = pr.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
@@ -225,28 +225,33 @@ describe("Settings page", () => {
     expect(within(rowOf(table, "max_loops")).queryByRole("alert")).toBeNull();
   });
 
-  it("shows an object value as one line per entry behind a summary, and edits it as pretty-printed JSON", async () => {
+  it("shows a long object value as a one-line summary with a Show toggle, and a short one in full", async () => {
     const table = await show();
     const modelBy = rowOf(table, "model_by");
-    // The file value: a summary of the keys, opening to `path → value` lines with nested objects flattened.
     const file = modelBy.querySelectorAll("td")[3]!;
-    expect(file.querySelector("summary")!.textContent).toBe("4 keys: triage, implement, review, retry_up");
-    const lines = [...file.querySelectorAll("[data-entries] dt")].map((dt) => `${dt.textContent} → ${dt.nextElementSibling!.textContent}`);
-    expect(lines).toEqual(["triage → cheap", "implement.1 → standard", "implement.4 → strong", "review → standard", "retry_up → true"]);
-    expect(file.textContent).not.toContain(MODEL_BY);
-    // The edit field: one entry per line, behind its own summary.
-    const field = within(modelBy).getByLabelText("model_by") as HTMLTextAreaElement;
-    expect(field.value).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
-    expect(field.closest("details")!.querySelector("summary")!.textContent).toContain("4 keys");
-    // A short object is listed in full, with no summary; its default too.
+    expect(file.querySelector("[data-json-summary]")!.textContent).toBe("{triage, implement, review, …}");
+    expect(file.querySelector("[data-json-full]")).toBeNull();
+    fireEvent.click(within(file).getByRole("button", { name: "Show" }));
+    expect(file.querySelector("[data-json-full]")!.textContent).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
+    expect(file.className).not.toContain("break-all");
+    // A short object is listed in full, with no toggle; its default too.
     const hold = rowOf(table, "hold_policy");
-    expect(hold.querySelector("summary")).toBeNull();
+    expect(within(hold).queryByRole("button", { name: "Show" })).toBeNull();
     expect(hold.querySelectorAll("td")[3]!.textContent).toBe("not set; default:modehold");
   });
 
-  it("puts the pending proposals first on the page", async () => {
-    await show();
-    const first = document.querySelector("section");
-    expect(first?.getAttribute("aria-label")).toBe("Pending proposals");
+  it("edits a JSON key as pretty-printed text and saves it compact; invalid text is sent unchanged", async () => {
+    const table = await show();
+    const modelBy = rowOf(table, "model_by");
+    const field = within(modelBy).getByLabelText("model_by") as HTMLTextAreaElement;
+    expect(field.value).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
+    expect(field.rows).toBe(Math.min(field.value.split("\n").length, 16));
+    const edited = JSON.stringify({ triage: "strong" }, null, 4);
+    fireEvent.change(field, { target: { value: edited } });
+    await act(async () => fireEvent.click(within(modelBy).getByRole("button", { name: "Save model_by" })));
+    expect(JSON.parse(posts.at(-1)!.init.body as string).value).toBe(JSON.stringify(JSON.parse(edited)));
+    fireEvent.change(field, { target: { value: "{not json" } });
+    await act(async () => fireEvent.click(within(modelBy).getByRole("button", { name: "Save model_by" })));
+    expect(JSON.parse(posts.at(-1)!.init.body as string).value).toBe("{not json");
   });
 });

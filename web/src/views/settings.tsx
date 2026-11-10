@@ -15,7 +15,7 @@ import { ProposalsSection, StandingSection } from "./standing.js";
 // the same checks as `factory settings`; a refusal is shown next to the field it came from.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
-const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
+const PR_ONLY_TITLE = "Set in factory.config.json only";
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
 
 const input =
@@ -77,6 +77,15 @@ function pretty(text: string): string {
   }
 }
 
+/** `text` as compact JSON; text that is not JSON as it is, so the server's refusal shows beside the field. */
+function compact(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text));
+  } catch {
+    return text;
+  }
+}
+
 /** An object's entries as `path → value`, nested objects flattened to dotted paths ("implement.1 → standard"). */
 function entries(value: unknown, path = ""): [string, string][] {
   if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0) {
@@ -87,33 +96,49 @@ function entries(value: unknown, path = ""): [string, string][] {
 
 /** Up to this many entries an object is listed in full; above it, a summary that opens to the list. */
 const SHORT_OBJECT = 3;
+/** The JSON editor grows with its line count up to this many rows, then scrolls. */
+const MAX_ROWS = 16;
 
 /** An object's one-line summary: its top-level keys. */
 const summaryOf = (obj: Record<string, unknown>) => `${Object.keys(obj).length} keys: ${Object.keys(obj).join(", ")}`;
 
+/** An object's one-line summary for the file value column: its first keys, then an ellipsis ("{triage, implement, review, …}"). */
+const braces = (obj: Record<string, unknown>) => {
+  const keys = Object.keys(obj);
+  return `{${keys.slice(0, SHORT_OBJECT).join(", ")}${keys.length > SHORT_OBJECT ? ", …" : ""}}`;
+};
+
 /**
- * A setting value: a JSON object as one `key → value` line per entry (behind a summary of its keys when it has more
- * than SHORT_OBJECT entries, so a long value never makes its row tall), anything else as its text.
+ * A setting value: a JSON object as one `key → value` line per entry when it has up to SHORT_OBJECT entries; a longer
+ * one as a one-line summary of its keys with a Show toggle that opens the pretty-printed JSON, so a long value never
+ * makes its row tall. Anything else as its text.
  */
 function JsonValue({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
   const obj = asObject(text);
   if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs break-words">{text}</span>;
-  const list = (
-    <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
-      {entries(obj).map(([k, v]) => (
-        <Fragment key={k}>
-          <dt className="text-zinc-600 dark:text-zinc-400">{k}</dt>
-          <dd className="min-w-0 break-words">{v}</dd>
-        </Fragment>
-      ))}
-    </dl>
-  );
-  if (entries(obj).length <= SHORT_OBJECT) return list;
+  if (entries(obj).length <= SHORT_OBJECT) {
+    return (
+      <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
+        {entries(obj).map(([k, v]) => (
+          <Fragment key={k}>
+            <dt className="text-zinc-600 dark:text-zinc-400">{k}</dt>
+            <dd className="min-w-0 break-words">{v}</dd>
+          </Fragment>
+        ))}
+      </dl>
+    );
+  }
   return (
-    <details>
-      <summary className="cursor-pointer text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{summaryOf(obj)}</summary>
-      <div className="mt-1">{list}</div>
-    </details>
+    <div>
+      <p className="flex flex-wrap items-center gap-x-2 font-mono text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">
+        <span data-json-summary>{braces(obj)}</span>
+        <button type="button" aria-expanded={open} className="font-sans underline" onClick={() => setOpen(!open)}>
+          {open ? "Hide" : "Show"}
+        </button>
+      </p>
+      {open && <pre data-json-full className="mt-1 font-mono text-xs break-words whitespace-pre-wrap">{pretty(text)}</pre>}
+    </div>
   );
 }
 
@@ -127,7 +152,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
   const target = project === undefined ? {} : { project };
   const save = async (text: string) => {
-    if (await write({ action: "set", key: row.key, value: text, ...target })) {
+    if (await write({ action: "set", key: row.key, value: row.kind === "json" ? compact(text) : text, ...target })) {
       setDraft(null);
       setTiers(null);
     }
@@ -167,7 +192,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const obj = asObject(value);
     const form = (
       <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className={cn(input, "w-full min-w-64 font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <textarea aria-label={label} rows={Math.min(lines, MAX_ROWS)} spellCheck={false} wrap="off" className={cn(input, "max-h-96 w-full min-w-64 overflow-y-auto font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
         <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
@@ -414,9 +439,7 @@ export function SettingsPage() {
       <StandingSection />
       <Section title={PR_ONLY_TITLE} count={v.pr_only.length}>
         <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-          These keys set the guards, secrets, permissions, plugins and what agents may read, so a person must review every
-          change: this page and <code>factory settings set</code> refuse them. To change one, edit it in{" "}
-          <code>factory.config.json</code> in a pull request and merge it after review.
+          These keys can't be changed here; they change only through a reviewed PR to <code>factory.config.json</code>.
         </p>
         <Table label={PR_ONLY_TITLE} head={["Key"]}>
           {v.pr_only.map((p) => (
