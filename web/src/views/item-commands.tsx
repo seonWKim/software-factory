@@ -16,12 +16,11 @@ import { ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, approveNo
 // next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
 // (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
 // A waiting spec (issue #526) shows its In short above Commands and its decisions as questions above the note box;
-// approve and reject each go through a confirm step first, and approve sends the answers as `N: <answer>` lines.
+// reject, and approve in an approve phase (the spec gate, the floor block, the Rule of Two), go through a confirm
+// step first; approve sends the answers as `N: <answer>` lines.
 
 /** Commands the server refuses without text. */
 const NEEDS_TEXT = ["reject", "revise"];
-/** Commands sent only after a confirm step: approve names what it approves and what happens next. */
-const CONFIRMED = ["approve", "reject"];
 
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
 export type LocalSend = { seq: number } | { error: string };
@@ -146,7 +145,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
           {commands.map((c) => {
             const disabled = !enabled || busy || (NEEDS_TEXT.includes(c.name) && blank);
             const outcome = commandOutcome(replies, c.name, local[c.name]);
-            const confirms = CONFIRMED.includes(c.name);
+            const confirms = c.name === "reject" || (c.name === "approve" && phase !== null);
             return (
               <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
                 <Button
@@ -160,7 +159,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
                 </Button>
                 {confirming === c.name && (
                   <>
-                    {c.name === "approve" && <ApproveConfirm phase={phase} answers={answers} note={note} />}
+                    {c.name === "approve" && phase !== null && <ApproveConfirm phase={phase} answers={answers} note={note} />}
                     <Button variant="outline" className={textButton} disabled={disabled} onClick={() => void send(c.name)}>
                       Confirm {c.name}
                     </Button>

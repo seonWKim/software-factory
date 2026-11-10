@@ -42,13 +42,14 @@ export function approveNote(answers: readonly ChosenAnswer[], note: string): str
   return [...answers.filter((a) => a.answer !== null).map((a) => `${a.n}: ${a.answer}`), note.trim()].filter(Boolean).join("\n");
 }
 
-/** The approve phases the confirm step knows, from the item's block. */
-export type ApprovePhase = "spec_pending" | "max_revisions" | "floor_tier" | "rule_of_two" | "held";
+/** The approve phases that confirm first, from the item's block. */
+export type ApprovePhase = "spec_pending" | "max_revisions" | "floor_tier" | "rule_of_two";
 
-export function approvePhase(blockedReason: string | null | undefined): ApprovePhase {
+/** The item's approve phase; null for any other state (an implement run held by coordination cost sends at once). */
+export function approvePhase(blockedReason: string | null | undefined): ApprovePhase | null {
   return blockedReason === "spec_pending" || blockedReason === "max_revisions" || blockedReason === "floor_tier" || blockedReason === "rule_of_two"
     ? blockedReason
-    : "held";
+    : null;
 }
 
 /** What an approve in `phase` approves, and what happens next. */
@@ -63,7 +64,6 @@ const PHASES: Record<ApprovePhase, { what: string; next: string }> = {
     next: "The item's tier is raised and the implement run starts again.",
   },
   rule_of_two: { what: "the run held for a person by the Rule of Two", next: "The held run starts." },
-  held: { what: "the implement run held by coordination cost", next: "The held run starts on the next claim." },
 };
 
 const field =
