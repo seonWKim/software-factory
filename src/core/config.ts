@@ -247,7 +247,6 @@ export function toolchainCacheOverlaps(
   );
 }
 
-/** The alarm keys when factory.config.json gives none (design 05-alarms). */
 /** Days the controller's daily retention pass keeps each class of operational rows (design 08-retention). */
 export interface RetentionDays {
   readonly outbox_days: number;
@@ -272,6 +271,7 @@ export function retentionConfig(raw: unknown): RetentionDays {
   return out as unknown as RetentionDays;
 }
 
+/** The alarm keys when factory.config.json gives none (design 05-alarms). */
 export const ALARM_DEFAULTS = { alarm_repeat_count: 3, alarm_window_minutes: 60, alarm_restart_count: 5 } as const;
 /** `agent_stop_checks` when factory.config.json gives none (design §4 Pre-push gates). */
 export const AGENT_STOP_CHECKS_DEFAULT = 3;

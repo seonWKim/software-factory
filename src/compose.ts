@@ -435,6 +435,7 @@ export async function loadConfig(
   if (!local) await checkGitHubSettings(file.github);
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
+
   const home = process.env.HOME ?? "";
   const { check_commands: rawChecks, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
