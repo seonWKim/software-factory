@@ -82,13 +82,67 @@ export function mysqlStepsUpTo(state: number): string {
   return dir;
 }
 
+/** One table of the migrated template: its DDL and its rows (schema_state, the applied migrations, seed rows). */
+interface TemplateTable {
+  ddl: string;
+  rows: Record<string, unknown>[];
+}
+
+let template: Promise<TemplateTable[]> | null = null;
+
 /**
- * A fresh MySQL database brought up to date through `npm run migrate`'s path (MysqlMigrations.apply),
- * not through the store: opening a store never applies a step. Every store returned by `open` points at it.
+ * The schema `npm run migrate`'s path (MysqlMigrations.apply) builds on an empty database, captured once per test
+ * file (module scope) from a throwaway database: every table's DDL and rows. Migrating ~60 steps and migrations per test took
+ * ~2.5 s locally and ~4.5 s on CI, so a test that opens several databases came near the 20 s timeout.
+ */
+function migratedTemplate(): Promise<TemplateTable[]> {
+  template ??= (async () => {
+    const database = `sf_test_tpl_${randomBytes(6).toString("hex")}`;
+    const { database: _, ...server } = mysqlOptions(MYSQL_URL!, "");
+    const admin = await mysql.createConnection(server);
+    await admin.query(`CREATE DATABASE ${database}`);
+    try {
+      const c = await mysql.createConnection(mysqlOptions(MYSQL_URL!, database));
+      try {
+        await new MysqlMigrations(c).apply(() => undefined);
+        const [names] = await c.query("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name");
+        const out: TemplateTable[] = [];
+        for (const { name } of names as { name: string }[]) {
+          const [[show]] = (await c.query(`SHOW CREATE TABLE \`${name}\``)) as unknown as [[Record<string, string>]];
+          const [rows] = await c.query(`SELECT * FROM \`${name}\``);
+          out.push({ ddl: show!["Create Table"]!, rows: rows as Record<string, unknown>[] });
+        }
+        return out;
+      } finally {
+        await c.end();
+      }
+    } finally {
+      await admin.query(`DROP DATABASE ${database}`);
+      await admin.end();
+    }
+  })();
+  return template;
+}
+
+/**
+ * A fresh MySQL database holding exactly what `npm run migrate`'s path (MysqlMigrations.apply) builds, not
+ * what the store builds: opening a store never applies a step. It is a copy of the migrated template
+ * (same DDL, keys, foreign keys and rows), so the store check below still refuses if a step were pending.
+ * Every store returned by `open` points at it.
  */
 export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
+  const tables = await migratedTemplate();
   const db = await newEmptyMysqlDatabase();
-  await new MysqlMigrations(await db.connect()).apply(() => undefined);
+  const c = await db.connect();
+  await c.query("SET FOREIGN_KEY_CHECKS = 0");
+  for (const t of tables) {
+    await c.query(t.ddl);
+    if (t.rows.length === 0) continue;
+    const cols = Object.keys(t.rows[0]!);
+    const name = /^CREATE TABLE `(\w+)`/.exec(t.ddl)![1];
+    await c.query(`INSERT INTO \`${name}\` (${cols.map((k) => `\`${k}\``).join(", ")}) VALUES ?`, [t.rows.map((r) => cols.map((k) => r[k]))]);
+  }
+  await c.query("SET FOREIGN_KEY_CHECKS = 1");
   const stores: SqlFactoryStore[] = [];
   const open = () => {
     const s = new SqlFactoryStore(new MysqlDriver(db.options), clock);
@@ -100,7 +154,7 @@ export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
   });
   const store = open();
   await store.migrate(); // a check on MySQL: throws if a step were still pending
-  return { store, open };
+  return { store, open, connect: db.connect };
 }
 
 export interface Backend {

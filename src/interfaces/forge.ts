@@ -1,3 +1,4 @@
+import type { ProjectRef } from "../core/project.js";
 import type { WorkStatus } from "../core/status-label.js";
 import type { PrCheckResult, SourceRef, SourceType } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
@@ -128,6 +129,9 @@ export interface OpenPrInput {
   labels?: Readonly<Record<string, boolean>>;
 }
 
+/** The prefix of the factory's status labels (`status_label_prefix` in factory.config.json) when config sets none. */
+export const DEFAULT_STATUS_LABEL_PREFIX = "sf: ";
+
 /** The PR events, facts and writes the factory reads from and makes on a forge. Agents never call it. */
 export interface Forge {
   /** The source type of the PR refs this forge hands out (`prRef`): PR comments wait in the outbox under it. */
@@ -137,6 +141,13 @@ export interface Forge {
    * `intake:github_issue`), read once while the forge's own cursor is empty. Absent: none.
    */
   readonly handover_cursor?: string;
+  /**
+   * The configured repo as a project (design 08-plugins): its key from the forge's permanent repository ID and its
+   * label from the path the forge reports now. Read once per startup (src/compose.ts, startupProject). Throws when
+   * the forge cannot say; an error whose `permanent` is true (bad credentials, no such repository) is one retrying
+   * cannot fix. Absent: this forge names no repository, and startup uses the local project key.
+   */
+  projectIdentity?(): Promise<ProjectRef>;
   /**
    * The PR events since `cursor` (null: the first poll), read on the poll interval. Never delivers the same review
    * twice across polls that advanced the cursor; other events may repeat, and handling them is idempotent.

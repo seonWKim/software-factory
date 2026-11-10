@@ -2,6 +2,7 @@
 // runtime"). Every check goes through resolveSettings, the same function the running controller and worker pool
 // read settings through, so a value this command accepts is a value they use. A refused command writes nothing.
 
+import { COMMAND_TABLE, cliUsageOf, topWords } from "./core/command-table.js";
 import { type ProjectRef, rekeyProjectSettings } from "./core/project.js";
 import { readProjectLabel } from "./core/project-labels.js";
 import {
@@ -22,16 +23,19 @@ import type { FactoryStore, SettingOverride } from "./interfaces/factory-store.j
 import { loadSettingCatalog } from "./runtime/index.js";
 import { loosens } from "./shared/setting.js";
 
+const SETTINGS_COMMANDS = COMMAND_TABLE.filter((c) => c.name.startsWith("settings "));
+const MODE_COMMAND = COMMAND_TABLE.find((c) => c.name === "mode")!;
+
+/** The words `factory` hands to the settings handler: `settings` and `mode`, from the command table. */
+export const SETTINGS_TOP_WORDS = topWords(["settings"]);
+
 export const SETTINGS_USAGE = `usage: npm run factory -- settings <action>
-  list                                        every settable key: its effective value and source (override, file, default)
-  set <key> <value> [--project <owner/name>]  stores an override; <value> is JSON (2, '{"cheap":"haiku",...}')
-  reset <key> [--project <owner/name>]        removes an override; the file value (else the default) applies again
-  history [--limit <n>]                       audit rows of every set and reset, newest first (default 50)
+${SETTINGS_COMMANDS.map((c) => `  ${cliUsageOf(c).slice("settings ".length).padEnd(42)}  ${c.does}`).join("\n")}
 --project: only for ${PROJECT_SETTABLE_KEYS.join(", ")}, and only with the configured repo's owner/name.
 ${APPROVE_MERGE_KEYS.join(" and ")}, and a set or reset that loosens a tighten-only key: only with approve_merge on the project.`;
 
-export const MODE_USAGE = `usage: npm run factory -- mode auto|manual [--project <owner/name>]
-  the same as settings set mode <auto|manual>: needs approve_merge on the project, and writes one audit row`;
+export const MODE_USAGE = `usage: npm run factory -- ${cliUsageOf(MODE_COMMAND)}
+  ${MODE_COMMAND.does}: needs approve_merge on the project, and writes one audit row`;
 
 /** `factory mode <auto|manual> [--project <owner/name>]`: the `settings set mode` action, or an error to print with the usage. */
 export function parseModeArgs(args: readonly string[]): SettingsAction | { error: string } {

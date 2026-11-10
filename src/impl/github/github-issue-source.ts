@@ -14,6 +14,7 @@ import type {
   IssueInput, PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
+import { DEFAULT_STATUS_LABEL_PREFIX } from "../../interfaces/forge.js";
 import { GitHubError, type RepoRef, issueNumberFromSourceId } from "./github-client.js";
 
 export interface GhUser {
@@ -138,8 +139,6 @@ const STATUS_LABELS: Record<WorkStatus, { suffix: string; color: string; descrip
   rejected: { suffix: "rejected", color: "000000", description: "Factory: closed without a merge" },
 };
 
-export const DEFAULT_STATUS_LABEL_PREFIX = "sf: ";
-
 export interface StatusLabel {
   status: WorkStatus;
   name: string;
@@ -215,6 +214,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     private readonly label: string,
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
+    /** `status_label_prefix`: the forge-neutral default (src/interfaces/forge.ts) when left out. */
     private readonly statusPrefix: string = DEFAULT_STATUS_LABEL_PREFIX,
     /**
      * Where posted comments and written labels are recorded, shared by every replica (design §5, GitHub call

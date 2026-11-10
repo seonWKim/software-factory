@@ -3,13 +3,13 @@ import { join } from "node:path";
 import { Plugins, approveMergeCheck, buildStatsStore, localProject, resolveProject, settingsBase } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
 import { cliIdentity } from "../../../core/local-cli.js";
-import { MODE_USAGE, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "../../../settings-cmd.js";
+import { MODE_USAGE, SETTINGS_TOP_WORDS, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "../../../settings-cmd.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 import { cliEnvironment } from "../../support.js";
 
 export default defineCommand({
-  names: ["settings", "mode"],
+  names: SETTINGS_TOP_WORDS,
   usage: `  settings list | set <key> <value> | reset <key> | history
                change a settable key while the factory runs (design 2026-11-03): max_attempts, max_loops,
                max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,

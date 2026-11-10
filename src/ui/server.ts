@@ -1,14 +1,15 @@
 // `factory ui`: the status page over FactoryStore (design §9, architecture §1).
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
-// except five write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
+// except six write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
 // (design §9, issue #227; commands.ts), POST /api/v1/pauses/resume (design §5 Restarts, issue #291), POST
-// /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts) and POST /api/v1/users (design 08
-// permissions, issue #445; users-api.ts), each guarded in this order: Host, then an Origin equal to the Host's own
-// http origin, then Content-Type application/json, then the per-process CSRF token in x-csrf-token; the resume
-// and standing routes then check the owner (approve_spec), the users route the local owner. A POST to any
+// /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts), POST /api/v1/users (design 08
+// permissions, issue #445; users-api.ts) and POST /api/v1/improve/run (design §7, issue #508; improve-api.ts),
+// each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// application/json, then the per-process CSRF token in x-csrf-token; the resume, standing and improve routes then
+// check the owner (approve_spec), the users route the local owner. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
-// allows only the page's own inline style and script (by hash), same-origin fetches and same-origin GET forms.
+// allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
 // /api/v1 (api.ts; errors as JSON) and the app under /app (app.ts; its own CSP, errors as text).
 
@@ -22,6 +23,8 @@ import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settin
 import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { USERS_PATH, writeUsers } from "./users-api.js";
+import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
+import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
 import { parseFilters } from "./filters.js";
 import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
 import { type UiDeps, renderIndex, renderItem } from "./pages.js";
@@ -34,10 +37,16 @@ export const BIND = "127.0.0.1";
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost"]);
 const ALLOW = "GET, HEAD";
 
+/** The HTML pages' CSP with these script hashes: the page's own script, plus Run now's on a page that shows it. */
+function csp(scripts: readonly string[]): string {
+  return (
+    `default-src 'none'; script-src ${scripts.map((h) => `'${h}'`).join(" ")}; style-src '${STYLE_HASH}'; connect-src 'self'; ` +
+    "form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+  );
+}
+
 const SECURITY_HEADERS: Record<string, string> = {
-  "content-security-policy":
-    `default-src 'none'; script-src '${SCRIPT_HASH}'; style-src '${STYLE_HASH}'; connect-src 'self'; ` +
-    "form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "content-security-policy": csp([SCRIPT_HASH]),
   "x-content-type-options": "nosniff",
   "x-frame-options": "DENY",
   "referrer-policy": "no-referrer",
@@ -48,7 +57,7 @@ export interface UiRequest {
   method: string | undefined;
   url: string | undefined;
   host: string | undefined;
-  /** A write route's headers and body; read only for POST /api/v1/settings, /api/v1/items/:id/commands, /api/v1/pauses/resume, /api/v1/standing and /api/v1/users. */
+  /** A write route's headers and body; read only for POST /api/v1/settings, /api/v1/items/:id/commands, /api/v1/pauses/resume, /api/v1/standing, /api/v1/users and /api/v1/improve/run. */
   origin?: string | undefined;
   contentType?: string | undefined;
   csrfToken?: string | undefined;
@@ -110,12 +119,13 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "users";
+type WriteRoute = "settings" | "resume" | "standing" | "users" | "improve";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
- * /api/v1/pauses/resume or /api/v1/standing when the pause routes (their owner check) are, or to exactly
- * /api/v1/users when the users routes are (a query string is ignored). Null for every other request.
+ * /api/v1/pauses/resume or /api/v1/standing when the pause routes (their owner check) are, to exactly
+ * /api/v1/users when the users routes are, or to exactly /api/v1/improve/run when both the pause routes and
+ * settings (its project) are (a query string is ignored). Null for every other request.
  */
 function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (req.method !== "POST") return null;
@@ -124,6 +134,7 @@ function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (path === RESUME_PATH && d.pauses !== undefined) return "resume";
   if (path === STANDING_PATH && d.pauses !== undefined) return "standing";
   if (path === USERS_PATH && d.users !== undefined) return "users";
+  if (path === IMPROVE_RUN_PATH && improveRunWired(d)) return "improve";
   return null;
 }
 
@@ -134,7 +145,7 @@ function mediaType(value: string | undefined): string {
 
 /**
  * A write route after the Host check: Origin, then Content-Type, then the CSRF token, then the body, then the
- * route itself (the resume, standing and users routes check the owner before they write). Every refusal comes
+ * route itself (the resume, standing, improve and users routes check the owner before they write). Every refusal comes
  * before any store write.
  */
 async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise<UiResponse> {
@@ -158,6 +169,7 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
     route === "settings" ? await writeSettings(d, d.settings!, body)
     : route === "resume" ? await resumePause(d, d.pauses!, body)
     : route === "users" ? await writeUsers(d, d.users!, body)
+    : route === "improve" ? await runImproveNow(d as ImproveRunDeps)
     : await writeStanding(d, d.pauses!, body);
   return json(r.status, r.value);
 }
@@ -167,7 +179,7 @@ function commandsWrite(req: Pick<UiRequest, "method" | "url">): string | null {
   return req.method === "POST" ? commandsPathId(req.url) : null;
 }
 
-/** The whole request handling, without the socket. Writes only through the five write routes. */
+/** The whole request handling, without the socket. Writes only through the six write routes. */
 export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
   const area = areaOf(req.url);
   if (!allowedHost(req.host)) return areaError(area, 403, "Host must be 127.0.0.1 or localhost.");
@@ -179,7 +191,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing and users routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, users and improve run routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -202,7 +214,10 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     const parsed = parseFilters(url.searchParams);
     if (!parsed.ok) return error(400, parsed.error);
     const healthRefresh = url.searchParams.get("health") === "refresh";
-    return html(200, await renderIndex(d, parsed.filters, url.pathname + url.search, healthRefresh));
+    const body = await renderIndex(d, parsed.filters, url.pathname + url.search, healthRefresh);
+    // The Health panel's Run now button brings its own script; only a page that shows it allows it.
+    const runNow = body.includes(`<script>${RUN_NOW_SCRIPT}</script>`);
+    return html(200, body, runNow ? { "content-security-policy": csp([SCRIPT_HASH, RUN_NOW_SCRIPT_HASH]) } : {});
   }
 
   if (url.pathname === "/api/health") return json(200, await d.health.report(d.scanner));
