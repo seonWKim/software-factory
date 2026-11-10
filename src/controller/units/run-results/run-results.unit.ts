@@ -5,13 +5,13 @@ import { prNumber } from "../../../core/change-ref.js";
 import { commandFooter, commandState, retryPathsReply } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
-import { gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
+import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { parseSizeDetail, suggestSplit } from "../../../core/split.js";
-import { type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
+import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
@@ -209,6 +209,13 @@ export class RunResultsUnit {
             tier,
             token_cost: tokens,
           };
+          // Each approval below without a person's reply: the spec comment with its note, RUNNING, the implement run queued.
+          const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }): Promise<Decision> => {
+            const patch = { ...fields, stage: "RUNNING" as const };
+            const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
+              renderSpec(spec, tier, { floor, previous: it.tier, added }, [...note, "", footerAfter(it, patch)].join("\n")), "spec_comment_url");
+            return { patch: { ...patch, spec_comment_url: url }, ...how, ack_run: run.id, enqueue: { kind: "implement", idempotency_key: runKey({ ...it, ...fields }, "implement") } };
+          };
           // A split spec always waits for a human: its /approve files issues on the source.
           const byParent = !spec.phases && (await this.c.unit("phases").approvedByParent(it));
           if (byParent) {
@@ -240,27 +247,27 @@ export class RunResultsUnit {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
+          // The factory's fix for a recurring failure runs without a person (design §7); a gate-path change still waits for a person's merge.
+          const fix = spec.phases ? null : await this.c.unit("improve").fixPattern(it);
+          if (fix) {
+            const gate = gatePathTouched(spec.allowed_paths);
+            return approved([
+              "Approved without a person: this item is the factory's fix for a recurring failure, so it is implemented and reviewed on its own.",
+              ...(gate ? [`It touches the gate list (\`${gate}\`), so its change waits for a person's merge.`] : []),
+            ], { actor: SYSTEM, reason: FIX_SPEC_APPROVED, detail: { pattern_key: fix.pattern_key } });
+          }
           // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
           const rule = spec.phases ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
           if (rule) {
-            const next = { ...it, ...fields };
-            const patch = { ...fields, stage: "RUNNING" as const };
             const id = ruleId(rule.gate, rule.tier);
-            const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-              renderSpec(spec, tier, { floor, previous: it.tier, added }, [
-                `Approved by the standing rule \`${id}\` (turned on by \`${rule.set_by}\`): a tier ${rule.tier} spec that waits at the spec gate is approved without a reply.`,
-                `To turn the rule off, reply \`/standing decline ${id}\`, or \`/revise <feedback>\` or \`/reject <reason>\` on an item it approved.`,
-                "",
-                footerAfter(it, patch),
-              ].join("\n")), "spec_comment_url");
-            return {
-              patch: { ...patch, spec_comment_url: url },
+            return approved([
+              `Approved by the standing rule \`${id}\` (turned on by \`${rule.set_by}\`): a tier ${rule.tier} spec that waits at the spec gate is approved without a reply.`,
+              `To turn the rule off, reply \`/standing decline ${id}\`, or \`/revise <feedback>\` or \`/reject <reason>\` on an item it approved.`,
+            ], {
               actor: standingActor(rule.gate, rule.tier),
               reason: STANDING_APPROVED,
               detail: { standing_rule: id, gate: rule.gate, tier: rule.tier, kind: specKind(it, false), owner_id: rule.set_by },
-              ack_run: run.id,
-              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
-            };
+            });
           }
           // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
           const auto = spec.phases ? null : await this.c.unit("local-merge").autoMode(it.project);
@@ -270,18 +277,11 @@ export class RunResultsUnit {
               ?? (await this.c.unit("auth").automatic("approve_spec", it))
             : null;
           if (auto && refusal === null) {
-            const next = { ...it, ...fields };
-            const patch = { ...fields, stage: "RUNNING" as const };
-            const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-              renderSpec(spec, tier, { floor, previous: it.tier, added }, [autoAnswers(spec), "", footerAfter(it, patch)].join("\n")), "spec_comment_url");
-            return {
-              patch: { ...patch, spec_comment_url: url },
+            return approved([autoAnswers(spec)], {
               actor: AUTO,
               reason: "spec_approved",
               detail: autoApprovalDetail({ approved_by: AUTO_ACTOR, mode_change: auto.seq }, spec.decision_items ?? []),
-              ack_run: run.id,
-              enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
-            };
+            });
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
           const waits = auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";

@@ -10,6 +10,8 @@ import type { Dialect, Row, SqlExecutor } from "../state/index.js";
 
 /** What an adapter read: a source's event or the forge's. */
 export type InboundEvent = SourceEvent | ForgeEvent;
+/** Who sent a command event, as its source names them. */
+type Actor = Extract<SourceEvent, { kind: "spec_approved" }>["approver"];
 
 /** A raw record's id, the claim check its messages carry: `rec_<seq>` (RFC 0015 §12, `inbound_raw_records`). */
 export function recordId(seq: number): string {
@@ -63,19 +65,47 @@ export async function storeRecord(
 }
 
 /** A stream source's records after `seq` (its listener wrote them), oldest first. */
-export async function streamRecordsAfter(q: SqlExecutor, type: SourceType, seq: number, limit: number): Promise<{ seq: number; id: string }[]> {
+export async function streamRecordsAfter(
+  q: SqlExecutor,
+  type: SourceType,
+  seq: number,
+  limit: number,
+): Promise<{ seq: number; id: string; event: InboundEvent; received_at: string }[]> {
   const rows = await q.all(
-    `SELECT seq FROM inbound_raw_records WHERE source_type = ? AND seq > ? AND dedupe_key NOT LIKE '${POLLED}%' ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
+    `SELECT seq, event, received_at FROM inbound_raw_records WHERE source_type = ? AND seq > ? AND dedupe_key NOT LIKE '${POLLED}%' ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
     [type, seq],
   );
-  return rows.map((r) => ({ seq: Number(r.seq), id: recordId(Number(r.seq)) }));
+  return rows.map((r) => ({ seq: Number(r.seq), id: recordId(Number(r.seq)), event: JSON.parse(String(r.event)) as InboundEvent, received_at: String(r.received_at) }));
 }
 
-export async function readRecord(q: SqlExecutor, id: string): Promise<{ source_type: SourceType; event: InboundEvent } | null> {
+/**
+ * A record by id. `passport`: the edge passport inbound minted for it at the relay (RFC 0015 §8); a command event's
+ * actor carries it, its expiry checked at the record's received time, as a command row's is at its recorded time.
+ */
+export async function readRecord(
+  q: SqlExecutor,
+  id: string,
+  passport: string | null = null,
+): Promise<{ source_type: SourceType; event: InboundEvent; received_at: string } | null> {
   const seq = RECORD_ID.exec(id)?.[1];
   if (!seq) return null;
-  const [row] = await q.all("SELECT source_type, event FROM inbound_raw_records WHERE seq = ?", [Number(seq)]);
-  return row ? { source_type: row.source_type as SourceType, event: JSON.parse(String(row.event)) as InboundEvent } : null;
+  const [row] = await q.all("SELECT source_type, event, received_at FROM inbound_raw_records WHERE seq = ?", [Number(seq)]);
+  if (!row) return null;
+  const event = JSON.parse(String(row.event)) as InboundEvent;
+  const received_at = String(row.received_at);
+  return { source_type: row.source_type as SourceType, event: passport ? withPassport(event, { id: passport, at: received_at }) : event, received_at };
+}
+
+/** Who sent a person's command event (an approve, a retry, ...); null for any other event (a plain comment, an item request). */
+export function commandActor(e: InboundEvent): Actor | null {
+  if (!("comment_id" in e) || e.kind === "plain_comment") return null;
+  return "approver" in e ? e.approver : e.requester;
+}
+
+/** `e` with its command actor carrying `passport`; any other event unchanged. */
+function withPassport(e: InboundEvent, passport: NonNullable<Actor["passport"]>): InboundEvent {
+  if (!("comment_id" in e) || e.kind === "plain_comment") return e;
+  return "approver" in e ? { ...e, approver: { ...e.approver, passport } } : { ...e, requester: { ...e.requester, passport } };
 }
 
 /**

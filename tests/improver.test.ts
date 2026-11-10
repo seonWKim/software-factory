@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
-  SYSTEM_ITEM, dailyImproveKey, enqueueImprove, groupFailures, systemSource, utcDay,
+  SYSTEM_ITEM, dailyImproveKey, enqueueImprove, groupFailures, issueMarker, markerKey, systemSource, utcDay,
 } from "../src/core/improver.js";
 import { Worker } from "../src/worker/index.js";
 import type { Run, RunId, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
@@ -170,5 +170,13 @@ describe("improve: the run", () => {
     await c.tickRuns();
     expect((await store.getRun(run!.id))!.acknowledged_at).not.toBeNull();
     expect(await store.getWorkItem(run!.work_item_id)).toMatchObject({ stage: before.stage, blocked_reason: SYSTEM_ITEM });
+  });
+});
+
+describe("improve: the filed marker", () => {
+  it("markerKey reads the pattern key of the first improve marker in a body, null without one", () => {
+    expect(markerKey(`Recurring failure\n\nthe runs\n\n${issueMarker("1afc75760aeaa7", "ir_abc")}`)).toBe("1afc75760aeaa7");
+    expect(markerKey("<!-- factory:improve-comment:1afc:ir_abc -->")).toBeNull();
+    expect(markerKey("no marker")).toBeNull();
   });
 });

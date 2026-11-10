@@ -27,6 +27,8 @@ export class ModelProbeUnit {
     await this.probePause(MODEL_STALL, {
       delayMs: async () => this.c.k.cfg.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
       probe: llm ? async () => ((await this.probe(llm)) ? null : "no answer") : null,
+      // The model answered, so a stall pattern is its items', not the model's: they are held (design 05-restarts).
+      ...(llm ? { onPass: () => this.c.unit("alarms").holdStalled() } : {}),
       passed: llm ? "model answered the probe: runs resume" : "no LLM provider to probe: the stall pause ends",
       failed: (next) => this.c.k.d.log.warn(`model not answering the probe: runs stay paused, next probe at ${next}`, { resume_at: next }),
     });
@@ -52,6 +54,8 @@ export class ModelProbeUnit {
     p: {
       delayMs: (now: number) => Promise<number>;
       probe: (() => Promise<string | null>) | null;
+      /** After a pass, before the pause ends: what the pass changes besides ending it. */
+      onPass?: () => Promise<void>;
       passed: string;
       failed: (next: Timestamp, why: string) => void;
     },
@@ -63,6 +67,7 @@ export class ModelProbeUnit {
     if (!(await this.c.k.d.store.claimProbe(name, due, next))) return;
     const failure = p.probe ? await p.probe() : null;
     if (failure === null) {
+      if (p.onPass) await p.onPass();
       if ((await this.c.k.d.store.endClaimPause(name)).ended) this.c.k.d.log.info(p.passed, {});
       return;
     }
