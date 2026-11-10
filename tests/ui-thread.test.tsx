@@ -120,6 +120,12 @@ describe("item page: command reply in the thread", () => {
     const button = await screen.findByRole("button", { name: "approve" });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button);
+    // The confirm step comes first: it names what is approved and what happens next, and nothing is sent yet.
+    const confirm = await screen.findByRole("group", { name: "Confirm approve" });
+    expect(confirm.textContent).toContain("You approve the spec waiting for approval.");
+    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this spec.");
+    expect(posts).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
     await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_1/commands", body: { command: "approve" } }]));
     await waitFor(() => expect(entries(screen.getByRole("list", { name: "Thread" })).at(-1)!.id).toBe("msg-12"));
     const last = entries(screen.getByRole("list", { name: "Thread" })).at(-1)!;
