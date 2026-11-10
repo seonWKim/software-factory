@@ -86,7 +86,7 @@ describe("PR body layout (issue #229)", () => {
 
 describe("the worker keeps the PR body current (issue #229)", () => {
   const open = (f: Awaited<ReturnType<typeof pipeline>>) =>
-    f.broker.calls.filter((c) => c.name === "github.open_pr").map((c) => c.args as { body: string; labels: Record<string, boolean> });
+    f.broker.calls.filter((c) => c.name === "forge.open_change").map((c) => c.args as { body: string; labels: Record<string, boolean> });
 
   it("missing work labels the PR incomplete and holds it back; the fix round rewrites the body and clears the label", async () => {
     let round = 0;

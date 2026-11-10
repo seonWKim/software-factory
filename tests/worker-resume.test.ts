@@ -20,7 +20,7 @@ async function setup() {
   const pushes: { branch: string; head: string }[] = [];
   const call = f.broker.call.bind(f.broker);
   f.broker.call = async (ctx, name, args) => {
-    if (name === "github.push_branch" || name === STORE_BRANCH) pushes.push({ branch: (args as { branch: string }).branch, head: f.sandbox.head.trim() });
+    if (name === "forge.push_branch" || name === STORE_BRANCH) pushes.push({ branch: (args as { branch: string }).branch, head: f.sandbox.head.trim() });
     return call(ctx, name, args);
   };
   return { f, pushes };
@@ -80,7 +80,7 @@ describe("wip branch on a failed last step", () => {
     expect(f.sandbox.gitCalls[checkout - 1]).toBe(`read-tree ${HEAD}`);
     expect(f.sandbox.gitCalls[checkout + 1]).toBe("-c core.hooksPath=/dev/null clean -ffdq");
     // The PR body is the failed run's agent summary.
-    const pr = f.broker.calls.filter((c) => c.name === "github.open_pr").at(-1)!;
+    const pr = f.broker.calls.filter((c) => c.name === "forge.open_change").at(-1)!;
     expect((pr.args as { body: string }).body).toContain("the summary");
     // No handoff rows for commits already recorded.
     expect((await f.store.listHandoffs(it0.id)).map((h) => h.commit_sha)).toEqual(["c1", "c2"]);
@@ -138,14 +138,14 @@ describe("wip branch on a failed last step", () => {
       return cmd.slice(1).join(" ").startsWith("-c core.hooksPath=/dev/null merge --no-ff") ? { ...r, exit_code: 1 } : r;
     };
     f.clock.advance(f.config.retry_base_ms);
-    const pushesBefore = f.broker.calls.filter((c) => c.name === "github.push_branch").length;
+    const pushesBefore = f.broker.calls.filter((c) => c.name === "forge.push_branch").length;
     const storesBefore = f.broker.stores.length;
     await f.w1.tick();
     const retry = (await f.runs(it0, "implement"))[1]!;
     expect(retry.outcome).toMatchObject({ status: "failed", error_code: "merge_conflict" });
     expect(f.agentCalls("implement")).toBe(1);
     // Nothing pushed by the resumed run: not the PR branch, not a new wip branch.
-    expect(f.broker.calls.filter((c) => c.name === "github.push_branch")).toHaveLength(pushesBefore);
+    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch")).toHaveLength(pushesBefore);
     expect(f.broker.stores).toHaveLength(storesBefore);
     const comment = (await runComments(f.store, it0.id)).filter((c) => c.marker === `<!-- factory:merge-conflict:${retry.id} -->`);
     expect(comment.map((c) => c.body)).toEqual([expect.stringContaining("resumed from its wip branch")]);

@@ -97,8 +97,8 @@ describe("an implement run that returns needs_human", () => {
     expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: null });
     expect(await f.queued(it0)).toEqual([]);
     expect(await f.runs(it0, "implement")).toHaveLength(1);
-    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.push_branch");
-    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.open_pr");
+    expect(f.broker.calls.map((c) => c.name)).not.toContain("forge.push_branch");
+    expect(f.broker.calls.map((c) => c.name)).not.toContain("forge.open_change");
     // The run's tokens count, as for any finished run.
     const total = (await f.runs(it0)).reduce((sum, r) => sum + outcomeTokens(r.outcome), 0);
     expect(total).toBeGreaterThan(0);

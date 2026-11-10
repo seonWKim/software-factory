@@ -247,7 +247,7 @@ export class FakeForge implements Forge {
     private readonly source: Pick<FakeSource, "closers"> | null = null,
     /**
      * A forge-write log to add outbound's pushes and PR opens to, as FakeBroker's `calls` (RFC 0015 M7): named by the
-     * GitHub tool that made them before they moved to outbound, so a flow's writes read in the order they hit the forge.
+     * forge.* tool that made them before they moved to outbound, so a flow's writes read in the order they hit the forge.
      */
     private readonly writes: { name: string; args: unknown }[] | null = null,
   ) {}
@@ -260,7 +260,7 @@ export class FakeForge implements Forge {
   pushErrors: Error[] = [];
   async pushBranch(input: BranchPushInput): Promise<"pushed" | "already"> {
     this.pushes.push(input);
-    this.writes?.push({ name: "github.push_branch", args: input });
+    this.writes?.push({ name: "forge.push_branch", args: input });
     const err = this.pushErrors.shift();
     if (err) throw err;
     if (this.branches.get(input.branch) === input.sha) return "already";
@@ -275,7 +275,7 @@ export class FakeForge implements Forge {
   prNumbers = new Map<string, number>();
   async openPr(input: OpenPrInput): Promise<{ number: number; url: string | null }> {
     this.prOpens.push(input);
-    this.writes?.push({ name: "github.open_pr", args: input });
+    this.writes?.push({ name: "forge.open_change", args: input });
     const err = this.prErrors.shift();
     if (err) throw err;
     const n = this.prNumbers.get(input.branch) ?? 42;

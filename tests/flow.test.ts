@@ -618,7 +618,7 @@ describe("one issue to one merged PR", () => {
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#5"))!;
     const runs = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
     expect(runs[0]!.outcome).not.toMatchObject({ error_code: "no_commits" });
-    expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(true);
+    expect(f.broker.calls.some((c) => c.name === "forge.push_branch")).toBe(true);
   });
 
   it("an implementer that makes no commits fails the run", async () => {
@@ -639,7 +639,7 @@ describe("one issue to one merged PR", () => {
     const runs = (await f.store.listRuns(item.id)).filter((r) => r.kind === "implement");
     expect(runs.map((r) => r.status)).toEqual(["failed"]);
     expect(runs[0]!.outcome).toMatchObject({ error_code: "no_commits", infra: false });
-    expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(false);
+    expect(f.broker.calls.some((c) => c.name === "forge.push_branch")).toBe(false);
   });
 
   it("an implement run that changes a file outside allowed_paths fails with scope_violation before any push", async () => {
@@ -665,8 +665,8 @@ describe("one issue to one merged PR", () => {
     expect(run.outcome.detail).not.toContain(".github/workflows/scope.yml");
 
     const names = f.broker.calls.map((c) => c.name);
-    expect(names).not.toContain("github.push_branch");
-    expect(names).not.toContain("github.open_pr");
+    expect(names).not.toContain("forge.push_branch");
+    expect(names).not.toContain("forge.open_change");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
 
     const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:scope:"));
@@ -727,7 +727,7 @@ describe("one issue to one merged PR", () => {
       expect(scope).toBeGreaterThan(merge);
       expect(r.some((c) => c.startsWith("rebase") || c.includes("--force"))).toBe(false);
     }
-    expect(f.broker.calls.filter((c) => c.name === "github.push_branch")).toHaveLength(2);
+    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch")).toHaveLength(2);
     expect(runner.specs.filter((s) => s.role === "implement")).toHaveLength(2); // a clean merge needs no agent step
   });
 
@@ -789,7 +789,7 @@ describe("one issue to one merged PR", () => {
     expect(runs.map((r) => r.kind)).toEqual(["triage", "implement", "review"]);
     expect(runs.every((r) => r.attempt === 1 && r.status === "succeeded")).toBe(true);
     expect(JSON.stringify(runs)).not.toContain("lease_expired");
-    expect(f.broker.calls.map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr"]);
+    expect(f.broker.calls.map((c) => c.name)).toEqual(["forge.push_branch", "forge.open_change"]);
   });
 
   it("spec rejection closes the item", async () => {
@@ -819,7 +819,7 @@ describe("one issue to one merged PR", () => {
     await f.step();
     f.source.queue.push({ kind: "spec_approved", source: issueRef(15), comment_id: "115", approver: alice });
     await f.step();
-    const pr = f.broker.calls.find((c) => c.name === "github.open_pr")!.args as { title: string };
+    const pr = f.broker.calls.find((c) => c.name === "forge.open_change")!.args as { title: string };
     expect(pr.title).toBe(title);
   });
 
@@ -838,7 +838,7 @@ describe("one issue to one merged PR", () => {
       enqueue: { kind: "implement", idempotency_key: `${item.id}:implement` },
     });
     await f.step();
-    const pr = f.broker.calls.find((c) => c.name === "github.open_pr")!.args as { title: string };
+    const pr = f.broker.calls.find((c) => c.name === "forge.open_change")!.args as { title: string };
     expect(pr.title).toBe(problem.split("\n")[0]!.slice(0, 80));
   });
 });
@@ -1194,7 +1194,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
       f.sandbox.numstat = numstat([...files(39), [1000, 461, ".github/workflows/scope.yml"]]);
     });
     expect(f.item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
-    expect(names(f)).toContain("github.push_branch");
+    expect(names(f)).toContain("forge.push_branch");
   });
 
   it("one line over max_diff_lines fails with diff_too_large, pushes nothing, writes no handoffs, comments and blocks", async () => {
@@ -1210,8 +1210,8 @@ describe("pre-push diff gates: size limit and floor check", () => {
     expect(runs[0]!.outcome.detail).toContain("max_diff_lines = 1500");
     expect(runs[0]!.outcome.detail).toContain("max_diff_files = 40");
 
-    expect(names(f)).not.toContain("github.push_branch");
-    expect(names(f)).not.toContain("github.open_pr");
+    expect(names(f)).not.toContain("forge.push_branch");
+    expect(names(f)).not.toContain("forge.open_change");
     expect(await f.store.listHandoffs(f.item.id)).toEqual([]);
     expect(f.item).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" });
     const note = f.source.comments.find((c) => c.marker === `<!-- factory:run-failed:${runs[0]!.id} -->`)!;
@@ -1235,7 +1235,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     const run = (await f.store.listRuns(f.item.id)).find((r) => r.kind === "implement")!;
     expect(run.outcome).toMatchObject({ error_code: "diff_too_large" });
     if (run.outcome?.status === "failed") expect(run.outcome.detail).toContain("41 files");
-    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("forge.push_branch");
   });
 
   it("the size and floor checks run in the pre-push step, after the scope gate and before any push", async () => {
@@ -1261,8 +1261,8 @@ describe("pre-push diff gates: size limit and floor check", () => {
 
     // Floor block: nothing pushed, item blocked on a human, still RUNNING.
     expect(f.item).toMatchObject({ stage: "RUNNING", tier: 2, blocked_on: "human", blocked_reason: "floor_tier" });
-    expect(names(f)).not.toContain("github.push_branch");
-    expect(names(f)).not.toContain("github.open_pr");
+    expect(names(f)).not.toContain("forge.push_branch");
+    expect(names(f)).not.toContain("forge.open_change");
     expect(await f.store.listHandoffs(f.item.id)).toEqual([]);
     const note = f.source.comments.find((c) => c.marker.startsWith("<!-- factory:floor:"))!;
     expect(note.body).toContain("- `.github/workflows/scope.yml` needs tier 3");
@@ -1288,7 +1288,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     await f.step();
     const item = (await f.store.getWorkItem(f.item.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", tier: 3, restart_count: 1, pr_number: 42 });
-    expect(names(f)).toEqual(["github.push_branch", "github.open_pr"]);
+    expect(names(f)).toEqual(["forge.push_branch", "forge.open_change"]);
 
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
     expect(approval.actor).toEqual({ kind: "user", id: "github:1" });
@@ -1305,7 +1305,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
       f.sandbox.changedFiles = [".github/workflows/scope.yml"];
     }, { tier: 3, workerConfig: raised });
     expect(f.item).toMatchObject({ stage: "REVIEW", tier: 3, pr_number: 42 });
-    expect(names(f)).toContain("github.open_pr");
+    expect(names(f)).toContain("forge.open_change");
     expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:floor:"))).toBe(false);
   });
 
@@ -1633,7 +1633,7 @@ describe("/resolve on a merge conflict", () => {
     // The run stores the merge; outbound pushes it, then refreshes the same PR's body for the branch as it is now
     // (issue #229; RFC 0015 M7), and only then is the review queued.
     expect(f.broker.stores.map((c) => (c.args as { branch: string }).branch)).toEqual([`factory/${f.item.id}`]);
-    expect(names(f)).toEqual(["github.push_branch", "github.open_pr"]);
+    expect(names(f)).toEqual(["forge.push_branch", "forge.open_change"]);
     expect(f.broker.calls.every((c) => c.ctx === undefined)).toBe(true);
     expect(f.broker.calls[0]!.args).toMatchObject({ branch: `factory/${f.item.id}` });
     const refreshed = f.broker.calls[1]!.args as { branch: string; body: string };
@@ -1669,7 +1669,7 @@ describe("/resolve on a merge conflict", () => {
     // Blocked, nothing pushed, nothing queued, one comment with the question and /resolve in its footer.
     let item = (await f.store.getWorkItem(f.item.id))!;
     expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: 42 });
-    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("forge.push_branch");
     expect((await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued")).toEqual([]);
     const asks = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:needs-human:"));
     expect(asks).toHaveLength(1);
@@ -1871,7 +1871,7 @@ describe("/resolve on a merge conflict", () => {
     expect(run.outcome.detail).toContain("src/extra.ts");
     expect(run.outcome.detail).not.toContain("src/gate.ts");
     expect(run.outcome.detail).not.toContain(".github/workflows/new.yml");
-    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("forge.push_branch");
     expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual([]); // gates never ran
     expect(f.sandbox.gitCalls.some((c) => c.startsWith("commit"))).toBe(false);
 
@@ -1901,7 +1901,7 @@ describe("/resolve on a merge conflict", () => {
     await f.step();
     const run = (await f.store.listRuns(f.item.id)).find(byPerson)!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "tests_failed" });
-    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("forge.push_branch");
     expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci", "npm test"]);
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({
       stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending",
@@ -1919,7 +1919,7 @@ describe("/resolve on a merge conflict", () => {
     const run = (await f.store.listRuns(f.item.id)).find(byPerson)!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "tests_failed" });
     expect(f.sandbox.commands.filter((c) => !c.startsWith("cat ") && !c.startsWith("cp "))).toEqual(["npm ci"]);
-    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("forge.push_branch");
   });
 
   it("an agent failure and a refused store also re-block on merge_conflict_pending, not run_failed", async () => {
@@ -1948,7 +1948,7 @@ describe("/resolve on a merge conflict", () => {
     await f.step();
     const run = (await f.store.listRuns(f.item.id)).find(byPerson)!;
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "unresolved_conflicts" });
-    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("forge.push_branch");
   });
 
   it("a /resolve on the PR conversation reaches the PR's work item; its 👀 and refusal go to the PR", async () => {
@@ -1987,7 +1987,7 @@ describe("/resolve on a merge conflict", () => {
     const spec = f.runner.specs.find((s) => s.role === "resolve")!;
     expect(spec.system_prompt).toBe("RESOLVE");
     expect(spec.prompt).toContain("### `src/gate.ts`");
-    expect(f.broker.calls.filter((c) => c.name === "github.push_branch")).toHaveLength(2); // the implement run's, then the resolve's
+    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch")).toHaveLength(2); // the implement run's, then the resolve's
 
     const item = (await f.store.getWorkItem(f.id))!;
     expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
@@ -2533,14 +2533,14 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     // The scope comment gives the exact reply.
     const scope = (await runComments(f.store, (await current(f)).id)).map((c) => c.body).find((b) => b.includes("Factory scope check"))!;
     expect(scope).toContain("```\n/retry +paths src/x.ts\n```");
-    expect(names(f)).not.toContain("github.push_branch");
+    expect(names(f)).not.toContain("forge.push_branch");
 
     f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "9002", requester: alice, note: "+paths src/x.ts\nkeep it small" });
     await f.step();
     const item = await current(f);
     expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, tier: 2 });
     expect(item.allowed_paths).toEqual([".github/workflows/", "src/x.ts"]);
-    expect(names(f)).toContain("github.push_branch");
+    expect(names(f)).toContain("forge.push_branch");
 
     // One state change queued the run, widened the paths and records who and what.
     const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "retry_requested")!;

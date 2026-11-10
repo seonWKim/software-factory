@@ -16,7 +16,7 @@ type Harness = Awaited<ReturnType<typeof pipeline>>;
 const TOKEN = ["sf", "canary", "abcdef123456"].join("-");
 
 /** Nothing reaches the forge: no push at all. */
-const nothingPushed = (f: Harness) => expect(f.broker.calls.some((x) => x.name === "github.push_branch")).toBe(false);
+const nothingPushed = (f: Harness) => expect(f.broker.calls.some((x) => x.name === "forge.push_branch")).toBe(false);
 
 const CASES: {
   code: string;
@@ -44,9 +44,9 @@ const CASES: {
     },
     pushed: (f, run) => {
       const wip = `factory/wip/${run.work_item_id}/${run.id}`;
-      const pushes = f.broker.calls.filter((x) => x.name === "github.push_branch").map((x) => (x.args as { branch: string }).branch);
+      const pushes = f.broker.calls.filter((x) => x.name === "forge.push_branch").map((x) => (x.args as { branch: string }).branch);
       expect(pushes).toEqual([wip]);
-      expect(f.broker.calls.some((x) => x.name === "github.open_pr")).toBe(false);
+      expect(f.broker.calls.some((x) => x.name === "forge.open_change")).toBe(false);
       expect(run.outcome).toMatchObject({ wip: { branch: wip, commits: 1 } });
     },
   },

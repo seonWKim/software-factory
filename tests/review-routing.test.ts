@@ -171,7 +171,7 @@ describe("review routing", () => {
     expect(it2).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42, loop_count: 0, revision_count: 1 });
     const keys = (await f.runs("implement")).map((r) => r.idempotency_key);
     expect(keys).toEqual([`${it2.id}:implement:l0:r0`, `${it2.id}:implement:l0:r1`]);
-    const pushes = f.broker.calls.filter((c) => c.name === "github.push_branch").map((c) => (c.args as { branch: string }).branch);
+    const pushes = f.broker.calls.filter((c) => c.name === "forge.push_branch").map((c) => (c.args as { branch: string }).branch);
     expect(pushes).toEqual([`factory/${it2.id}`, `factory/${it2.id}`]);
   });
 
@@ -243,7 +243,7 @@ describe("implement spec_conflict", () => {
     const it6 = await f.item();
     const implement = (await f.runs("implement"))[0]!;
     expect(implement.outcome).toMatchObject({ status: "failed", error_code: "spec_conflict", detail: "criterion 3 needs migrations/, outside allowed_paths" });
-    expect(f.broker.calls.filter((c) => c.name === "github.push_branch" || c.name === "github.open_pr")).toEqual([]);
+    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch" || c.name === "forge.open_change")).toEqual([]);
     expect(it6).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", revision_count: 1, restart_count: 1, loop_count: 0 });
     expect(it6.spec_feedback).toContain("criterion 3 needs migrations/");
     expect((await f.runs("triage")).map((r) => r.idempotency_key).at(-1)).toBe(`${it6.id}:triage:l0:r0:v1`);
@@ -257,7 +257,7 @@ describe("implement spec_conflict", () => {
     const f = await factory({ implements: [{ summary: "s", next_steps: "n", spec_conflict: "" }] });
     const it7 = await f.start();
     expect(it7).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", revision_count: 0 });
-    expect(f.broker.calls.filter((c) => c.name === "github.push_branch")).toHaveLength(1);
+    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch")).toHaveLength(1);
   });
 
   it("a flagged reason stores nothing, blocks on a human and posts one comment naming the rule", async () => {
@@ -271,7 +271,7 @@ describe("implement spec_conflict", () => {
     const failed = f.source.comments.filter((c) => c.marker.includes("run-failed") || c.marker.includes("leak-blocked"));
     expect(failed).toHaveLength(1);
     expect(failed[0]!.body).toContain("known_secret");
-    expect(f.broker.calls.filter((c) => c.name === "github.push_branch")).toEqual([]);
+    expect(f.broker.calls.filter((c) => c.name === "forge.push_branch")).toEqual([]);
   });
 });
 
