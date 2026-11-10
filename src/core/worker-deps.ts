@@ -113,6 +113,16 @@ export function firstLine(s: string): string {
   return s.split("\n")[0] ?? s;
 }
 
+/** The rules and learnings section (`text`, empty when there are none) and the characters cut at its cap. */
+export interface ProjectGuidance {
+  text: string;
+  dropped: number;
+}
+
+export interface GuidanceSource {
+  read(): Promise<ProjectGuidance>;
+}
+
 export interface WorkerDeps {
   /** G2 run passports (RFC 0015 §8, M9): minted at run start, checked by the broker. Compose always sets it. */
   passports?: RunPassportIssuer;
@@ -153,6 +163,11 @@ export interface WorkerDeps {
    * prompt is exactly as without it. Finding a doc never changes tools, paths or grants.
    */
   capability?: CapabilitySearch;
+  /**
+   * The packs' rules and learnings (design 07-self-improvement.md), put before the doc index in every agent
+   * prompt. Absent, or nothing to read: no section. A failed read is a warning; the run goes on without them.
+   */
+  guidance?: GuidanceSource;
   /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
   learned?: LearnedSettingsSource;
   /**

@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { WRITE_TOOLS, Worker } from "../src/worker/index.js";
 import type { WorkerId } from "../src/core/types.js";
+import type { WorkerDeps } from "../src/core/worker-deps.js";
+import type { Logger } from "../src/core/log.js";
+import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
+import { PackGuidance } from "../src/impl/capability/project-guidance.js";
+import { packSkillDirs, type Pack } from "../src/packs/packs.js";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -29,7 +37,7 @@ class FakeSearch implements CapabilitySearch {
 }
 
 /** Drives one issue through triage → approve → implement → review (pass) and returns every agent spec. */
-async function flow(capability?: CapabilitySearch): Promise<AgentRunSpec[]> {
+async function flow(capability?: CapabilitySearch, extra: Partial<WorkerDeps> = {}): Promise<AgentRunSpec[]> {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
@@ -43,6 +51,7 @@ async function flow(capability?: CapabilitySearch): Promise<AgentRunSpec[]> {
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner, broker: new FakeBroker(), storage: new MemoryStorage(),
     clock, config, prompts, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv: {}, awake: new NoKeepAwake(),
     ...(capability ? { capability } : {}),
+    ...extra,
   });
   const step = async () => {
     await controller.tickIntake();
@@ -136,5 +145,96 @@ describe("worker: capability index in the agent prompt", () => {
     const implement = withIndex.find((s) => s.role === "implement")!;
     expect(implement.tools).toEqual(WRITE_TOOLS);
     for (const s of withIndex) expect(s.deny_paths).toEqual(config.deny_paths);
+  });
+});
+
+/** A throwaway folder holding `files` (relative path → content). */
+function folder(files: Record<string, string>): string {
+  const dir = mkdtempSync(join(tmpdir(), "sf-layer-"));
+  for (const [p, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, p)), { recursive: true });
+    writeFileSync(join(dir, p), content);
+  }
+  return dir;
+}
+
+/** A logger that keeps its warnings. */
+function recording(): Logger & { warnings: string[] } {
+  const warnings: string[] = [];
+  return { warnings, info: () => {}, warn: (msg) => warnings.push(msg), error: () => {} };
+}
+
+/**
+ * The resolve run builds its prompt with the same Worker.withIndex as the other three roles
+ * (src/worker/runs/resolve/resolve.run.ts); this gives that prompt for a fixed body.
+ */
+async function resolvePrompt(deps: Partial<WorkerDeps>): Promise<string> {
+  const clock = new FakeClock();
+  const { store } = await newStore(clock);
+  const worker = new Worker({
+    id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: new FakeRunner({}), broker: new FakeBroker(), storage: new MemoryStorage(),
+    clock, config, prompts, log: silent, scanner: new PatternEgressScanner(async () => []), toolEnv: {}, awake: new NoKeepAwake(), ...deps,
+  });
+  return worker.withIndex("# Work item\n\nresolve the merge", "CI gate changelog");
+}
+
+const SKILL = "---\nname: release-notes\ndescription: Drafts changelog entries for the CI gate.\n---\n\n# Release notes\n\nSteps.\n";
+const LEARNINGS = "# Learnings\n\n## Keep gates green\nstatus: active\nRun the CI gate before pushing.\n\n## Old tip\nstatus: retired\nSkip the gate on Fridays.\n";
+const GUIDANCE = "## Rules and learnings";
+
+/** A base layer and a fake project layer: a rule and learnings in base, a skill and a rule in the project layer. */
+function layers(): { codeRoot: string; packs: Pack[] } {
+  const codeRoot = folder({ "rules/style.md": "# Style\n\nShort sentences.\n", "learnings.md": LEARNINGS, "docs/learnings.md": LEARNINGS });
+  const project = folder({ "skills/release-notes/SKILL.md": SKILL, "rules/team.md": "# Team rule\n\nOne commit per step.\n" });
+  return { codeRoot, packs: [{ layer: "base", dir: codeRoot }, { layer: "project", dir: project }] };
+}
+
+describe("worker: pack rules, learnings and skills in the agent prompt", () => {
+  it("a pack layer's skill, every rule and unretired learnings reach triage, implement, review and resolve; guidance before the index", async () => {
+    const { codeRoot, packs } = layers();
+    const deps = { capability: new Bm25CapabilitySearch(codeRoot, packSkillDirs(packs)), guidance: new PackGuidance(packs) };
+    const specs = await flow(deps.capability, { guidance: deps.guidance });
+    const all = [...specs.map((s) => ({ role: s.role, prompt: s.prompt })), { role: "resolve", prompt: await resolvePrompt(deps) }];
+    expect(all.map((p) => p.role)).toEqual(["triage", "implement", "review", "resolve"]);
+    const skillLine = `- \`${join(packs[1]!.dir, "skills", "release-notes", "SKILL.md")}\`: release-notes. Drafts changelog entries for the CI gate.`;
+    for (const { role, prompt } of all) {
+      expect(prompt, role).toContain(skillLine);
+      expect(prompt, role).toContain("# Style\n\nShort sentences.");
+      expect(prompt, role).toContain("# Team rule\n\nOne commit per step.");
+      expect(prompt, role).toContain("Run the CI gate before pushing.");
+      // A retired learning is in no prompt and no index result (docs/learnings.md is not indexed).
+      expect(prompt, role).not.toContain("Fridays");
+      expect(prompt, role).not.toContain("learnings.md`");
+      expect(prompt.indexOf(GUIDANCE), role).toBeGreaterThan(prompt.indexOf("# Work item"));
+      expect(prompt.indexOf(GUIDANCE), role).toBeLessThan(prompt.indexOf(HEADING));
+    }
+  });
+
+  it("no skills, rules or learnings in any layer: every prompt is byte-identical to one without guidance", async () => {
+    const empty: Pack[] = [{ layer: "base", dir: folder({ "README.md": "x" }) }, { layer: "project", dir: folder({}) }];
+    const today = await flow();
+    const specs = await flow(new Bm25CapabilitySearch(empty[0]!.dir, packSkillDirs(empty)), { guidance: new PackGuidance(empty) });
+    expect(specs.map((s) => s.prompt)).toEqual(today.map((s) => s.prompt));
+    expect(await resolvePrompt({ guidance: new PackGuidance(empty) })).toBe(await resolvePrompt({}));
+  });
+
+  it("a failed read of rules or learnings logs a warning; the prompt is as without them and the run goes on", async () => {
+    const log = recording();
+    const today = await flow(new FakeSearch(RESULTS));
+    const broken = { read: async () => Promise.reject(new Error("EACCES")) };
+    const specs = await flow(new FakeSearch(RESULTS), { guidance: broken, log });
+    expect(specs.map((s) => s.prompt)).toEqual(today.map((s) => s.prompt));
+    expect(log.warnings.filter((w) => w.includes("rules and learnings could not be read"))).toHaveLength(3);
+  });
+
+  it("text past the cap is dropped with a warning", async () => {
+    const log = recording();
+    const dir = folder({ "rules/big.md": "x".repeat(9000) });
+    const specs = await flow(undefined, { guidance: new PackGuidance([{ layer: "base", dir }]), log });
+    for (const s of specs) {
+      expect(s.prompt).toContain("x".repeat(8000));
+      expect(s.prompt).not.toContain("x".repeat(8001));
+    }
+    expect(log.warnings.some((w) => w.includes("over their cap"))).toBe(true);
   });
 });
