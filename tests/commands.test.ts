@@ -9,6 +9,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { runLocalCli } from "../src/core/local-cli.js";
+import { githubCommand } from "../src/core/command-inbox.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { storedAnswers } from "../src/shared/command-notes.js";
@@ -466,10 +467,10 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
     authorize: async () => ({ allow: true }),
   };
 
-  async function harness() {
+  async function harness(judge: AuthProvider = auth) {
     const { store, clock } = await newStore();
     const source = new FakeSource();
-    const controller = new ControllerRole({ store, sources: [source, new FakeSlackPollSource()], auth, clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store, sources: [source, new FakeSlackPollSource()], auth: judge, clock, config, log: silent, scanner: cleanScanner });
     /** A work item on `src` whose triage run wrote a spec with DECISIONS (or `decisions`), waiting for approval. */
     const triaged = async (src: SourceRef, decisions: unknown[] = DECISIONS): Promise<WorkItem> => {
       const { item } = await store.createWorkItem({ source: src, requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, system);
@@ -483,7 +484,15 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
       return it;
     };
     const approval = async (id: WorkItemId) => (await store.listStateChanges(id)).find((c) => c.reason === "spec_approved");
-    return { store, source, controller, triaged, approval };
+    let comments = 0;
+    /** A GitHub comment on `it`'s issue by user `user`, as the issue source stores it: one command inbox row, then a controller tick. */
+    const comment = async (it: WorkItem, body: string, user = 1) => {
+      const parsed = parseComment(body);
+      if (parsed?.kind !== "command") throw new Error(`not a command: ${body}`);
+      await store.appendCliCommand(githubCommand({ comment_id: 900 + ++comments, user_id: user, command: parsed.name, text: parsed.text, source: it.source }));
+      await controller.tickCommands();
+    };
+    return { store, source, controller, triaged, approval, comment };
   }
 
   it("a comment, a chat thread, the dashboard and the CLI go through the same parser and store the same answers", async () => {
@@ -546,6 +555,47 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
     const a = (await h.approval(it.id))!;
     expect(a.detail?.note).toBe("1: not an answer");
     expect(a.detail?.answers).toBeUndefined();
+  });
+
+  it("a GitHub comment /approve with N: lines stores the same answers as the dashboard approve (issue #527)", async () => {
+    const h = await harness();
+    const byComment = await h.triaged(issueRef(40));
+    const byApp = await h.triaged(issueRef(41));
+    await h.comment(byComment, `/approve\n${NOTE}`);
+    await h.store.recordAppCommandRequest({ key: "k41", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: NOTE } });
+    await h.controller.tickCommands();
+    const a = (await h.approval(byComment.id))!;
+    expect(storedAnswers(a.detail)).toEqual(ANSWERS);
+    expect(storedAnswers((await h.approval(byApp.id))!.detail)).toEqual(storedAnswers(a.detail));
+    expect(a.detail?.note).toBe("keep it small");
+    // The author is the stored user ID, never a login or display name.
+    expect(a.actor).toEqual({ kind: "user", id: "github:1" });
+  });
+
+  it("a GitHub comment /revise with ### <Section> lines is stored with its text unchanged, and one with no heading too (issue #527)", async () => {
+    const h = await harness();
+    const structured = "### Problem\nSay why the gate is slow.\n\n### Allowed paths\nAlso `docs/`.";
+    const items = [await h.triaged(issueRef(50)), await h.triaged(issueRef(51))];
+    for (const [n, text] of [[0, structured], [1, "keep the existing CLI flag"]] as const) {
+      const it = items[n]!;
+      await h.comment(it, `/revise ${text}`);
+      expect(await h.store.getWorkItem(it.id), `#${n}`).toMatchObject({ stage: "NEW", spec_feedback: text });
+      const change = (await h.store.listStateChanges(it.id)).find((c) => c.reason === "spec_revision_requested");
+      expect(change?.actor).toEqual({ kind: "user", id: "github:1" });
+    }
+  });
+
+  it("a GitHub /approve with answers or a structured /revise by a user without the role is still refused, and nothing changes (issue #527)", async () => {
+    const h = await harness(new FakeAuth());
+    const it = await h.triaged(issueRef(60));
+    await h.comment(it, `/approve\n${NOTE}`, 666);
+    await h.comment(it, "/revise ### Problem\nnarrower", 666);
+    expect(await h.store.getWorkItem(it.id)).toEqual(it);
+    const replies = (await h.store.listItemMessages(it.id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+    expect(replies).toEqual([
+      "`/approve` was not applied: it needs write permission on this repository (`not_a_collaborator`).",
+      "`/revise` was not applied: it needs write permission on this repository (`not_a_collaborator`).",
+    ]);
   });
 });
 

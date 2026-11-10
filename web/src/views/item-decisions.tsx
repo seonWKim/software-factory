@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { SpecDecision, WaitingSpec } from "../api.js";
+import { Button } from "../components/ui/button.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
@@ -7,7 +9,9 @@ import { cn } from "../lib/cn.js";
 // as questions to answer before `approve`. A decision with options is a radio group with the default selected and
 // a `write my own` choice with a text field; one with none is a text field prefilled with the default. The answers
 // go out with the approve as `N: <answer>` lines (the controller's parser, src/shared/command-notes.ts), and the
-// confirm step names what is approved and what happens next.
+// confirm step names what is approved and what happens next. Reject and revise have their own forms (issue #527):
+// reject asks why (a reason and a free text) and says what closes; revise takes one optional comment per spec
+// section and sends only the commented ones, each under a `### <Section>` heading.
 
 /** One decision's answer on the page: an option picked, or the text written (`own`). */
 export interface DecisionChoice {
@@ -65,6 +69,9 @@ const PHASES: Record<ApprovePhase, { what: string; next: string }> = {
   },
   rule_of_two: { what: "the run held for a person by the Rule of Two", next: "The held run starts." },
 };
+
+/** A text button's size, for the command buttons and the forms' own. */
+export const textButton = "h-8 w-auto px-2";
 
 const field =
   "rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900 " +
@@ -157,6 +164,104 @@ export function ApproveConfirm({ phase, answers, note }: { phase: ApprovePhase; 
       )}
       {note.trim() !== "" && <p className="mt-1 break-words text-zinc-600 dark:text-zinc-400">With your note to the implementer and the reviewer.</p>}
       <p className="mt-1 text-pretty" data-confirm-next>Next: {p.next}</p>
+    </div>
+  );
+}
+
+const form = "w-full max-w-xl rounded-md border border-zinc-300 p-2 text-sm dark:border-zinc-700";
+
+/** Why a spec is rejected: one of these, and any free text. */
+export const REJECT_REASONS = ["not needed", "wrong approach", "duplicate", "too big; split it"] as const;
+
+/** The reject note: the chosen reason, then the free text, one line each. */
+export function rejectNote(reason: string | null, text: string): string {
+  return [reason ?? "", text.trim()].filter(Boolean).join("\n");
+}
+
+/** The reject form: why (a reason and a free text), what closes (the item, and its PR when it has one), confirm or cancel. */
+export function RejectForm({
+  pr, disabled, onSend, onCancel,
+}: { pr: string | null; disabled: boolean; onSend: (note: string) => void; onCancel: () => void }) {
+  const [reason, setReason] = useState<string | null>(null);
+  const [text, setText] = useState("");
+  const note = rejectNote(reason, text);
+  return (
+    <div role="group" aria-label="Why reject?" data-reject-form className={form}>
+      <fieldset className="min-w-0">
+        <legend className="text-sm font-medium">Why?</legend>
+        <div role="radiogroup" aria-label="Reason" className="mt-1 space-y-1">
+          {REJECT_REASONS.map((r) => (
+            <label key={r} className="flex items-center gap-2 text-sm break-words">
+              <input type="radio" name="reject-reason" checked={reason === r} onChange={() => setReason(r)} />
+              {r}
+            </label>
+          ))}
+        </div>
+      </fieldset>
+      <textarea
+        aria-label="Reject details"
+        rows={2}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="Say more (optional when a reason is chosen)"
+        className={cn(field, "mt-2 w-full")}
+      />
+      <p data-reject-closes className="mt-1 text-pretty">
+        Rejecting closes this item{pr === null ? "" : ` and its PR #${pr}, without a merge`}.
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button variant="outline" className={textButton} disabled={disabled || note === ""} onClick={() => onSend(note)}>
+          Confirm reject
+        </Button>
+        <Button variant="outline" className={textButton} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** The spec sections a revise comments on, in the spec comment's order. */
+export const SPEC_SECTIONS = ["In short", "Problem", "Done when", "Scope", "Allowed paths"] as const;
+
+/** The revise text: each commented section under its `### <Section>` heading; an uncommented one is left out. */
+export function reviseNote(comments: readonly string[]): string {
+  return SPEC_SECTIONS.flatMap((s, i) => {
+    const c = comments[i]?.trim();
+    return c ? [`### ${s}\n${c}`] : [];
+  }).join("\n\n");
+}
+
+/** The revise form: one optional comment per spec section, sent as one revise once any section has a comment. */
+export function ReviseForm({ disabled, onSend, onCancel }: { disabled: boolean; onSend: (note: string) => void; onCancel: () => void }) {
+  const [comments, setComments] = useState<string[]>(() => SPEC_SECTIONS.map(() => ""));
+  const note = reviseNote(comments);
+  return (
+    <div role="group" aria-label="Revise the spec" data-revise-form className={form}>
+      <p className="text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+        Comment on the sections to change; triage writes a new spec from your comments. A section left empty is not sent.
+      </p>
+      {SPEC_SECTIONS.map((s, i) => (
+        <div key={s} data-revise-section={s} className="mt-2">
+          <span className="text-sm font-medium">{s}</span>
+          <textarea
+            aria-label={`Comment on ${s}`}
+            rows={2}
+            value={comments[i]}
+            onChange={(e) => setComments(comments.map((x, j) => (j === i ? e.target.value : x)))}
+            placeholder="Optional comment"
+            className={cn(field, "mt-1 w-full")}
+          />
+        </div>
+      ))}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button variant="outline" className={textButton} disabled={disabled || note === ""} onClick={() => onSend(note)}>
+          Send revise
+        </Button>
+        <Button variant="outline" className={textButton} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }

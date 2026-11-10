@@ -264,7 +264,7 @@ describe("ui app: merge check labels", () => {
 
 // The item page's command buttons (design §9, issue #228), rendered to static markup in the node environment.
 describe("ui app: item commands markup", () => {
-  it("the item page has a button per command, in order, and the note box for revise and reject", () => {
+  it("the item page has a button per command, in order; revise and reject open their own forms, the note box is for the rest", () => {
     const AT = "2026-11-07T00:00:00.000Z";
     const names = ["approve", "revise", "reject"];
     const detail: ItemDetail = {
@@ -285,12 +285,19 @@ describe("ui app: item commands markup", () => {
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
     const buttons = [...html.matchAll(/<li data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
     expect(buttons).toEqual(names.map((n) => [n, n]));
+    // The note box is for approve's note; it no longer names reject or revise.
     expect(html).toMatch(/<textarea aria-label="Note"/);
-    // Blank box: revise and reject start disabled, approve does not.
+    expect(html).not.toContain("Reason for reject");
+    // Revise and reject are enabled buttons that open their forms (closed until pressed); approve sends.
     const tag = (n: string) => html.match(new RegExp(`<li data-command="${n}"[^>]*><button[^>]*>`))![0];
-    expect(tag("revise")).toContain(" disabled=\"\"");
-    expect(tag("reject")).toContain(" disabled=\"\"");
+    for (const n of ["revise", "reject"]) {
+      expect(tag(n)).not.toContain(" disabled=\"\"");
+      expect(tag(n)).toContain('aria-expanded="false"');
+    }
     expect(tag("approve")).not.toContain(" disabled=\"\"");
+    expect(tag("approve")).not.toContain("aria-expanded");
+    expect(html).not.toContain("data-reject-form");
+    expect(html).not.toContain("data-revise-form");
   });
 });
 

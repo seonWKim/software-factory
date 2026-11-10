@@ -367,3 +367,31 @@ describe("triage tool-call markup (issue #454)", () => {
     expect(body).not.toContain(`${"antml"}:`);
   });
 });
+
+describe("the answer block after the decisions (issue #527)", () => {
+  const two = { ...listed, decisions: ["Fail the job, or only warn?", "Name the step?"] };
+  const section = (body: string) => body.slice(body.indexOf("### Decisions for you"), body.indexOf("### Done when"));
+
+  it("ends the decisions with how to answer: /approve with one N: <answer> line per decision, an unanswered one taking its default", () => {
+    const s = section(renderSpec(two, 2));
+    expect(s).toContain(
+      "2. Name the step?\n\n" +
+        "To answer, reply `/approve` with one `N: <answer>` line per decision. A decision you do not answer takes its default.\n\n" +
+        "```\n/approve\n1: <answer>\n2: <answer>\n```\n",
+    );
+  });
+
+  it("comes after the folded decisions, numbered for every decision", () => {
+    const decisions = Array.from({ length: 7 }, (_, i) => `Question ${i + 1}?`);
+    const s = section(renderSpec({ ...listed, decisions }, 2));
+    expect(s.indexOf("To answer, reply `/approve`")).toBeGreaterThan(s.indexOf("</details>"));
+    expect(s).toContain("6: <answer>\n7: <answer>\n```");
+  });
+
+  it("is absent when only the tier was raised, with no decision to answer", () => {
+    const body = renderSpec({ ...listed, decisions: [] }, 4, { floor: 4, previous: null });
+    expect(body).toContain("### Decisions for you");
+    expect(body).not.toContain("To answer, reply");
+    expect(renderSpec(spec, 2)).not.toContain("To answer, reply");
+  });
+});
