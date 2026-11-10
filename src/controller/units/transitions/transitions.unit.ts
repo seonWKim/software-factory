@@ -5,7 +5,7 @@
 import { BUDGET_CHECKPOINT, DEFAULT_BUDGET_MIN_SAMPLE, checkpointComment, currentBudget, overBudget, suggestBudget, tierBudget } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
 import {
-  type Actor, type RunInput, type RunKind, type StateChange, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch,
+  RECURRING_FAILURE, type Actor, type RunInput, type RunKind, type StateChange, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch,
 } from "../../../core/types.js";
 import type { NewBudgetCheckpoint, NewRun, TransitionInput } from "../../../interfaces/factory-store.js";
 import { loadRoles } from "../../../runtime/index.js";
@@ -60,7 +60,8 @@ export class TransitionsUnit {
     if (kind === "manual") return false;
     // A dependency hold is lifted by the claim reading the store; the controller may clear the field after it.
     if (kind === "implement" && it.stage === "RUNNING" && it.blocked_on === "dependency") return true;
-    if (it.stage === "CLOSED" || it.blocked_on !== "none") return false;
+    // A held item (design 05-alarms) still takes its runs' results: a failure queues its retry, which waits for the release.
+    if (it.stage === "CLOSED" || (it.blocked_on !== "none" && it.blocked_reason !== RECURRING_FAILURE)) return false;
     if (kind === "triage") return it.stage === "NEW";
     if (kind === "implement" || kind === "resolve" || kind === "interactive") return it.stage === "RUNNING";
     return it.stage === "REVIEW";
