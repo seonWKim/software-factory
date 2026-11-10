@@ -97,6 +97,15 @@ function run(args, cwd) {
   if (r.status !== 0) throw new Error(`build step failed (exit ${r.status ?? r.signal}): ${args.slice(0, 3).join(" ")}`);
 }
 
+/**
+ * The `vite` arguments that build the app of the checkout at `root` into `outDir`. `--configLoader runner`: Vite's
+ * default `bundle` loader writes the bundled config to node_modules/.vite-temp, which fails where node_modules is
+ * shared and read-only, as in a factory run folder (docs/plugins/sandbox.md).
+ */
+export function viteBuildArgs(root, outDir) {
+  return ["build", "--configLoader", "runner", "--config", join(root, "web", "vite.config.ts"), "--logLevel", "warn", "--outDir", outDir, "--emptyOutDir"];
+}
+
 /** Builds the checkout at `root` into staging folders and swaps them in. */
 export function build(root) {
   const require = createRequire(join(root, "package.json"));
@@ -111,7 +120,7 @@ export function build(root) {
   try {
     run([tsc, "-p", join(root, "tsconfig.json"), "--outDir", stagedDist], root);
     run([tsc, "-p", join(root, "tsconfig.migrations.json"), "--outDir", stagedDist], root);
-    run([vite, "build", "--config", join(root, "web", "vite.config.ts"), "--logLevel", "warn", "--outDir", stagedWeb, "--emptyOutDir"], root);
+    run([vite, ...viteBuildArgs(root, stagedWeb)], root);
     withLock(root, () => {
       swapIn(stagedDist, dist);
       swapIn(stagedWeb, webDist);
