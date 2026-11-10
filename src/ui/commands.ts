@@ -12,6 +12,7 @@
 // of `factory merge` for a local item, the PR's merge on the forge for any other.
 
 import { randomUUID } from "node:crypto";
+import { COMMAND_TABLE } from "../core/command-table.js";
 import { COMMANDS, type CommandName, commandPhase, commandState, commandsFor } from "../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
 import { AGENT_NEEDS_HUMAN, blockingRunKind } from "../core/policy.js";
@@ -48,10 +49,14 @@ export const MAX_NOTE = 2000;
 export const REPLIES_LIMIT = 50;
 /** A command the page may send: an item command, or the local merge, which has no comment command. */
 export type AppCommand = CommandName | typeof MERGE_COMMAND;
-/** Commands the page may send: every item command but `/help` and the account command `/link`, then `merge`. */
+const COMMENT_NAMES: readonly string[] = COMMANDS.map((c) => c.name);
+/**
+ * Commands the page may send: every item command but `/help` and the account command `/link`, then the command
+ * table's other item commands (`merge`), so a new item command in the table reaches the page too.
+ */
 export const APP_COMMANDS: readonly AppCommand[] = [
   ...COMMANDS.map((c) => c.name).filter((n) => n !== "help" && n !== "link"),
-  MERGE_COMMAND,
+  ...COMMAND_TABLE.filter((c) => c.item && !COMMENT_NAMES.includes(c.name)).map((c) => c.name as AppCommand),
 ];
 /** Commands that need text: the reason or the feedback. */
 const NEEDS_TEXT: readonly AppCommand[] = ["reject", "revise"];

@@ -20,6 +20,7 @@ const AT = "2026-11-07T00:00:00.000Z";
 const TOKEN = "tok_abc";
 // Descriptions that exist only in this fixture: the page must show the API's text, not its own.
 const DESC = (key: string) => `fixture-only description of ${key}`;
+const MODEL_BY = '{"triage":"cheap","implement":{"1":"standard","4":"strong"},"review":"standard","retry_up":true}';
 const row = (key: string, extra: Partial<SettingRow> = {}): SettingRow => ({
   key, description: DESC(key), kind: "number", value: "3", source: "file", file_value: "3", default_value: "3", applies_at: "the controller's next decision",
   project_settable: false, projects: [], ...extra,
@@ -36,14 +37,15 @@ const view: SettingsView = {
     row("tick_ms", { value: "2000", source: "default", file_value: null, default_value: "2000", applies_at: "the next tick" }),
     row("workers", { value: "5", max: 8, capped_at: null, applies_at: "the worker pool's next tick" }),
     row("models", { kind: "models", value: '{"cheap":"haiku","standard":"sonnet","strong":"opus"}', source: "default", file_value: null, applies_at: "the next run that starts" }),
-    row("model_by", { kind: "json", value: '{"retry_up":true}', applies_at: "the next run that starts" }),
+    row("model_by", { kind: "json", value: MODEL_BY, file_value: MODEL_BY, default_value: MODEL_BY, applies_at: "the next run that starts" }),
+    row("hold_policy", { kind: "json", value: '{"mode":"hold"}', source: "default", file_value: null, default_value: '{"mode":"hold"}', applies_at: "the next claim" }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
     row("retry_max_ms", { value: "1800000", file_value: "1800000", default_value: "1800000", applies_at: "the next retry" }),
     row("run_timeout_ms", { value: "5400000", source: "override", file_value: "3600000", default_value: "3600000", applies_at: "the next run that starts" }),
   ],
   pr_only: [
-    { key: "plugins", note: "changes by PR only", description: DESC("plugins") },
-    { key: "secrets", note: "changes by PR only", description: DESC("secrets") },
+    { key: "plugins", description: DESC("plugins") },
+    { key: "secrets", description: DESC("secrets") },
   ],
   ignored: [],
   history: [
@@ -83,6 +85,7 @@ async function show() {
   return screen.findByRole("table", { name: "Settable keys" });
 }
 
+const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 
 describe("Settings page", () => {
@@ -128,12 +131,14 @@ describe("Settings page", () => {
     expect(within(att).getByRole("button", { name: "Reset max_attempts for o/r" })).not.toBeNull();
   });
 
-  it("lists the PR-only keys read-only, with no control", async () => {
+  it("lists the PR-only keys read-only, with no control, under a heading that says where and why they change", async () => {
     await show();
-    const pr = screen.getByRole("table", { name: "Changes by PR only" });
+    const section = screen.getByRole("region", { name: PR_ONLY });
+    expect(section.textContent).toContain("a person must review every change");
+    expect(section.textContent).toContain("edit it in factory.config.json in a pull request");
+    const pr = screen.getByRole("table", { name: PR_ONLY });
     for (const key of ["plugins", "secrets"]) {
       const r = pr.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
-      expect(r.textContent).toContain("changes by PR only");
       expect(r.querySelectorAll("input, button, textarea, [role=switch]")).toHaveLength(0);
     }
   });
@@ -145,7 +150,7 @@ describe("Settings page", () => {
       expect(cell.textContent).toContain(k.key);
       expect(cell.textContent).toContain(DESC(k.key));
     }
-    const pr = screen.getByRole("table", { name: "Changes by PR only" });
+    const pr = screen.getByRole("table", { name: PR_ONLY });
     for (const key of ["plugins", "secrets"]) {
       const cell = pr.querySelector<HTMLElement>(`tr[data-key="${key}"] td`)!;
       expect(cell.textContent).toContain(DESC(key));
@@ -218,5 +223,30 @@ describe("Settings page", () => {
     await act(async () => fireEvent.click(within(workers).getByRole("button", { name: "Save workers" })));
     expect(within(workers).getByRole("alert").textContent).toBe("refused: workers 9 is above the config file's max_workers (8)");
     expect(within(rowOf(table, "max_loops")).queryByRole("alert")).toBeNull();
+  });
+
+  it("shows an object value as one line per entry behind a summary, and edits it as pretty-printed JSON", async () => {
+    const table = await show();
+    const modelBy = rowOf(table, "model_by");
+    // The file value: a summary of the keys, opening to `path → value` lines with nested objects flattened.
+    const file = modelBy.querySelectorAll("td")[3]!;
+    expect(file.querySelector("summary")!.textContent).toBe("4 keys: triage, implement, review, retry_up");
+    const lines = [...file.querySelectorAll("[data-entries] dt")].map((dt) => `${dt.textContent} → ${dt.nextElementSibling!.textContent}`);
+    expect(lines).toEqual(["triage → cheap", "implement.1 → standard", "implement.4 → strong", "review → standard", "retry_up → true"]);
+    expect(file.textContent).not.toContain(MODEL_BY);
+    // The edit field: one entry per line, behind its own summary.
+    const field = within(modelBy).getByLabelText("model_by") as HTMLTextAreaElement;
+    expect(field.value).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
+    expect(field.closest("details")!.querySelector("summary")!.textContent).toContain("4 keys");
+    // A short object is listed in full, with no summary; its default too.
+    const hold = rowOf(table, "hold_policy");
+    expect(hold.querySelector("summary")).toBeNull();
+    expect(hold.querySelectorAll("td")[3]!.textContent).toBe("not set; default:modehold");
+  });
+
+  it("puts the pending proposals first on the page", async () => {
+    await show();
+    const first = document.querySelector("section");
+    expect(first?.getAttribute("aria-label")).toBe("Pending proposals");
   });
 });
