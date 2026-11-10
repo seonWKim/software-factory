@@ -4,6 +4,8 @@ What it does: the factory's state (work items, runs, state changes, handoffs, le
 
 Worker processes (2026-11-07, issue #209; design §5 Worker slots reported per process): `reportWorkerProcess(report)` writes one process's snapshot (`process_id` `<host>:<pid>`, `pid`, `host`, `slots`, `max_slots`, `busy`, `index_base`, `started_at`) with `reported_at` = the store clock's now; keyed by `process_id`, so a repeat write replaces the row (update, else insert; a concurrent first insert that loses updates). `listWorkerProcesses(max_age_ms)` returns the rows at most `max_age_ms` old, by host, pid, process_id (read-only). `removeWorkerProcess(process_id)` deletes one row on a clean stop. Table `worker_processes`: SQLite migration 19; MySQL step `migrations/mysql/0019-worker-processes.sql`, run by `npm run migrate`. Both backends share the contract tests in `tests/store-contract.test.ts`; on MySQL an upgrade test from state 18 runs the step through `MysqlMigrations`.
 
+Schema changes of 2026-11-09 (issue #461), on both backends through timestamped migrations: index `worker_runs_ack` on `worker_runs (acknowledged_at, updated_at)` (`src/worker/migrations/20261109T1400-worker-runs-ack`, additive), so `listUnacknowledgedRuns` walks the unacknowledged runs instead of scanning every run; and the column `runtime_child_restarts.recorded_at` is dropped (`src/runtime/migrations/20261109T1401-runtime-drop-restart-recorded-at`, breaking: archived and verified first; on MySQL run by `npm run migrate` with the writers drained).
+
 Plugins:
 
 - `mysql`: `SqlFactoryStore` over `MysqlDriver`. Any number of processes on any hosts. Selected by the checked-in config.

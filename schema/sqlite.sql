@@ -1308,9 +1308,7 @@ CREATE TABLE outbound_requests (
 CREATE TABLE runtime_child_restarts (
     restart_key  TEXT PRIMARY KEY,
     at           TEXT NOT NULL,
-    reason       TEXT NOT NULL,
-    recorded_at  TEXT NOT NULL
-  );
+    reason       TEXT NOT NULL);
 
 CREATE TABLE runtime_hook_decisions (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1633,6 +1631,8 @@ CREATE INDEX worker_host_sleeps_run ON worker_host_sleeps (run_id);
 CREATE INDEX worker_host_sleeps_woke ON worker_host_sleeps (woke_at);
 
 CREATE INDEX worker_processes_reported ON worker_processes (reported_at);
+
+CREATE INDEX worker_runs_ack ON worker_runs (acknowledged_at, updated_at);
 
 CREATE INDEX worker_runs_claim ON worker_runs (status, kind, created_at);
 
