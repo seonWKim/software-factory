@@ -95,7 +95,9 @@ describe("slack app manifest", () => {
   const scopes = manifest.oauth_config.scopes.bot;
   const events = manifest.settings.event_subscriptions.bot_events;
   const doc = readFileSync(join(ROOT, "docs", "slack-setup.md"), "utf8");
-  const docList = (label: string) => [...(doc.split("\n").find((l) => l.includes(`**${label}:**`)) ?? "").matchAll(/`([a-z_.:]+)`/g)].map((m) => m[1]);
+  /** The distinct backticked names on the doc's "**label:**" line that match `shape` (a scope has a colon, an event does not need one). */
+  const docList = (label: string, shape: RegExp) =>
+    [...new Set([...(doc.split("\n").find((l) => l.includes(`**${label}:**`)) ?? "").matchAll(/`([a-z_.:]+)`/g)].map((m) => m[1]!))].filter((n) => shape.test(n));
 
   it("asks for the private-channel scope and event, beside the public-channel ones", () => {
     expect(scopes).toEqual(expect.arrayContaining(["app_mentions:read", "channels:history", "groups:history", "chat:write"]));
@@ -103,8 +105,8 @@ describe("slack app manifest", () => {
   });
 
   it("the setup doc lists the same scopes and events", () => {
-    expect([...docList("Bot scopes")].sort()).toEqual([...scopes].sort());
-    expect([...docList("Events")].sort()).toEqual([...events].sort());
+    expect([...docList("Bot scopes", /^[a-z_]+:[a-z_]+$/)].sort()).toEqual([...scopes].sort());
+    expect([...docList("Events", /^[a-z_.]+$/)].sort()).toEqual([...events].sort());
   });
 });
 
