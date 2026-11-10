@@ -52,12 +52,17 @@ function splitSection(spec: TriageOutput, phases: TriagePhase[]): string[] {
 /** Done criteria shown before the rest fold into a `<details>` block (issue #229). */
 export const VISIBLE_DONE = 10;
 
-/** Items past the first `n` go in a collapsed block, so a long list stays short to scan. */
-function bulletsFolded(items: readonly string[], n: number, summary: (rest: number) => string): string[] {
-  const out = items.slice(0, n).map((c) => `- ${c}`);
-  const rest = items.slice(n);
-  if (rest.length > 0) out.push("", `<details><summary>${summary(rest.length)}</summary>`, "", ...rest.map((c) => `- ${c}`), "", "</details>");
+/** List lines past the first `n` go in a collapsed block, so a long list stays short to scan. */
+function folded(lines: readonly string[], n: number, summary: (rest: number) => string): string[] {
+  const out = lines.slice(0, n);
+  const rest = lines.slice(n);
+  if (rest.length > 0) out.push("", `<details><summary>${summary(rest.length)}</summary>`, "", ...rest, "", "</details>");
   return out;
+}
+
+/** `folded` for a bullet list. */
+function bulletsFolded(items: readonly string[], n: number, summary: (rest: number) => string): string[] {
+  return folded(items.map((c) => `- ${c}`), n, summary);
 }
 
 const words = (t: string): string[] => t.toLowerCase().match(/[a-z0-9_]{4,}/g) ?? [];
@@ -79,12 +84,13 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   // The plain AS-IS → TO-BE statement comes first, so the reader has the idea before any file-level detail.
   const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", inShortParagraphs(spec.in_short), ""];
   out.push("### Problem", spec.problem, "");
+  // The decisions are numbered (issue #526): `/approve` answers decision N with an `N: <answer>` line.
   const decisions = [
-    ...(tier > spec.tier ? [`Tier raised from ${spec.tier} to ${tier} because ${raiseReason(tier, spec.tier, why)}.`] : []),
-    ...(spec.decisions ?? []),
+    ...(tier > spec.tier ? [`- Tier raised from ${spec.tier} to ${tier} because ${raiseReason(tier, spec.tier, why)}.`] : []),
+    ...(spec.decisions ?? []).map((d, i) => `${i + 1}. ${d}`),
   ];
   if (decisions.length > 0) {
-    out.push("### Decisions for you", ...bulletsFolded(decisions, MAX_DECISIONS, (n) => `${n} more`), "");
+    out.push("### Decisions for you", ...folded(decisions, MAX_DECISIONS, (n) => `${n} more`), "");
   }
   // Owner defaults triage applied instead of asking (issue #315): shown apart, so they are not mistaken for questions.
   if (spec.applied_defaults?.length) out.push("### Applied defaults", ...spec.applied_defaults.map((d) => `- ${d}`), "");

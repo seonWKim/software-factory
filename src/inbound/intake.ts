@@ -21,7 +21,7 @@ import { envelope, newMessageId, type Envelope } from "../shared/envelope.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
 import type { Dialect, SqlDriver, SqlExecutor } from "../state/index.js";
 import {
-  POLLED, commandsAfter, fenceHolds, moveCursor, pruneRecords, readCursor, storeRecord, streamRecordsAfter, syncLeaseToken, type InboundEvent,
+  POLLED, commandActor, commandsAfter, fenceHolds, moveCursor, pruneRecords, readCursor, storeRecord, streamRecordsAfter, syncLeaseToken, type InboundEvent,
 } from "./records.js";
 import { INBOUND_RECEIVED } from "./topics/inbound-records.topic.js";
 
@@ -65,9 +65,10 @@ export interface InboundDeps {
   /** Runs one stream source's listener (it stores pushed events as records) until `signal` aborts. */
   readonly listen?: (source: StreamSource, signal: AbortSignal) => Promise<void>;
   /**
-   * The edge passport of a command row that has none (a comment command a poll stored): Identity authenticates
-   * its actor through the provider mapping (RFC 0015 §8, M9). Null when no provider resolves the actor; the
-   * controller's authorize still decides. Absent: commands keep the passport their row has.
+   * The edge passport of a command row that has none (a comment command a poll stored) or of a stream source's
+   * command event (a Slack `/approve`): Identity authenticates its actor through the provider mapping (RFC 0015 §8,
+   * M9). Null when no provider resolves the actor; the controller's authorize still decides. Absent: commands keep
+   * the passport their row has, and stream records get none.
    */
   readonly passportFor?: (origin: string, actor: string) => Promise<string | null>;
   readonly log: Logger;
@@ -231,7 +232,14 @@ export class Inbound {
     const cursor = await readCursor(this.d.db, name);
     const rows = await streamRecordsAfter(this.d.db, s.type, streamSeq(cursor), RELAY_BATCH);
     if (rows.length === 0) return;
-    await this.commit(name, cursor, String(rows.at(-1)!.seq), null, async () => rows.map((r) => this.received(r.id, "event", s.type, t)));
+    // A command event's passport is minted before the commit, as a command row's; other events get none.
+    const announced: Envelope[] = [];
+    for (const r of rows) {
+      const actor = commandActor(r.event);
+      const passport = actor ? ((await this.d.passportFor?.(actor.provider, `${actor.provider}:${actor.subject}`)) ?? null) : null;
+      announced.push(this.received(r.id, "event", s.type, t, passport));
+    }
+    await this.commit(name, cursor, String(rows.at(-1)!.seq), null, async () => announced);
   }
 
   /**
@@ -259,7 +267,7 @@ export class Inbound {
     }
   }
 
-  /** `passport`: a command's edge passport; the normalizer's CommandReceived inherits it as its cause's. */
+  /** `passport`: a command's edge passport; the normalizer's CommandReceived or SourceEventReceived inherits it as its cause's. */
   private received(id: string, kind: "event" | "command", stream: string, t: Tick, passport: string | null = null): Envelope {
     return envelope(
       { type: INBOUND_RECEIVED, subject: stream, idempotency_key: id, idempotency_key_ttl_ms: RECORD_TTL_MS, payload: { record_id: id, kind } },

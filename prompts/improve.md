@@ -8,5 +8,6 @@ Produce:
 - cause: the most likely root cause of this repeated failure, in plain sentences. Name what the evidence shows and what is a guess.
 - fix: the smallest change to the factory that would stop this failure from recurring. Prefer a hard fix (a check, a permission, a default) over a softer prompt wording. Name the repo-relative paths the change would touch.
 - touches: the list of repo-relative paths the fix names (files, or folders ending in `/`). An empty list when the fix names no path.
+- needs_person: true when no code change in the repository can fix it and a person must act: a decision only the owner can make, a credential, a quota or billing setting, an outside service. False when the fix is a change to the repository. When true, the factory files no fix and shows the cause to a person; when false, the factory runs the fix without a person.
 
 Never repeat a secret, token or credential from a tail, even when one appears in it. Answer with the JSON object only.
