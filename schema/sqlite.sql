@@ -508,6 +508,18 @@ CREATE TABLE controller_outbox (
   published_at TEXT
 );
 
+CREATE TABLE controller_signals (
+    id            TEXT PRIMARY KEY,
+    source        TEXT NOT NULL,
+    source_ref    TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    work_item_id  TEXT NOT NULL,
+    role          TEXT,
+    rule          TEXT,
+    at            TEXT NOT NULL,
+    UNIQUE (source, source_ref)
+  );
+
 CREATE TABLE controller_standing_proposals (
     id          TEXT PRIMARY KEY,
     gate        TEXT NOT NULL,
@@ -1515,6 +1527,10 @@ CREATE INDEX controller_merge_queue_entries_queue ON controller_merge_queue_entr
 CREATE INDEX controller_merge_queue_entries_run ON controller_merge_queue_entries (run_key);
 
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
+
+CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
+
+CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
 
 CREATE INDEX controller_unreviewed_merges_at ON controller_unreviewed_merges (at);
 

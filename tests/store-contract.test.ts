@@ -747,6 +747,59 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
+  describe("signal ledger (design 11-signal-ledger)", () => {
+    it("recordSignal stores a (source, source_ref) once; latestSignalTimes and listSignalRefs read the stored rows per source", async () => {
+      const { store } = await make();
+      const s = { source: "verdicts", source_ref: "vd_1", kind: "human_verdict", work_item_id: "wi_1" as WorkItemId, role: null, rule: null, at: "2026-11-11T00:00:00.000Z" as Timestamp };
+      expect(await store.recordSignal(s)).toBe(true);
+      expect(await store.recordSignal({ ...s, kind: "implicit_verdict", at: "2026-11-12T00:00:00.000Z" as Timestamp })).toBe(false);
+      expect(await store.recordSignal({ ...s, source_ref: "vd_2", role: "review", rule: "spec-t1", at: "2026-11-11T01:00:00.000Z" as Timestamp })).toBe(true);
+      expect(await store.recordSignal({ ...s, source: "failed_runs", source_ref: "run_1", kind: "run_failed", at: "2026-11-11T00:30:00.000Z" as Timestamp })).toBe(true);
+      const latest = await store.latestSignalTimes();
+      expect(latest.get("verdicts")).toBe("2026-11-11T01:00:00.000Z");
+      expect(latest.get("failed_runs")).toBe("2026-11-11T00:30:00.000Z");
+      expect(latest.has("review_findings")).toBe(false);
+      const refs = await store.listSignalRefs([
+        { source: "verdicts", since: "2026-11-11T00:10:00.000Z" as Timestamp },
+        { source: "failed_runs", since: "2026-11-11T00:00:00.000Z" as Timestamp },
+      ]);
+      expect(refs.map((r) => `${r.source}/${r.source_ref}`).sort()).toEqual(["failed_runs/run_1", "verdicts/vd_2"]);
+      expect(await store.listSignalRefs([])).toEqual([]);
+    });
+
+    it("reads state changes by reason, verdicts and finished runs across items, from a time", async () => {
+      const { store, clock } = await make();
+      const a = (await store.createWorkItem(issue(1), system)).item;
+      const b = (await store.createWorkItem(issue(2), system)).item;
+      clock.advance(1000);
+      const since = clock.now().toISOString() as Timestamp;
+      const ra = await store.transition({ id: a.id, expected_version: 1, patch: {}, actor: human, reason: "spec_approved", enqueue: { kind: "review", idempotency_key: "r:a" } });
+      clock.advance(1000);
+      const rb = await store.transition({ id: b.id, expected_version: 1, patch: {}, actor: human, reason: "reverted" });
+      expect(ra.ok && rb.ok).toBe(true);
+      const reasons = ["spec_approved", "reverted"];
+      expect((await store.listStateChangesSince({ reasons, since: null })).map((c) => c.reason)).toEqual(["spec_approved", "reverted"]);
+      expect((await store.listStateChangesSince({ reasons: ["intake"], since })).length).toBe(0);
+      expect((await store.listStateChangesSince({ reasons: ["intake"], since: null })).map((c) => c.work_item_id).sort()).toEqual([a.id, b.id].sort());
+      expect((await store.listStateChangesSince({ reasons, since: null, work_item_ids: [b.id] })).map((c) => c.reason)).toEqual(["reverted"]);
+      expect(await store.listStateChangesSince({ reasons: [], since: null })).toEqual([]);
+
+      const v = await store.recordVerdict({ id: b.id, expected_version: 2, actor: human, verdict: "accept", severity: "none", reason: null, comment_id: "c1", target: "pr", implicit: false, pr_head: null });
+      expect(v.ok).toBe(true);
+      expect((await store.listVerdictsSince(since)).map((x) => x.comment_id)).toEqual(["c1"]);
+      clock.advance(1000);
+      expect(await store.listVerdictsSince(clock.now().toISOString() as Timestamp)).toEqual([]);
+
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["review"], lease_ms: 60_000 }))!;
+      await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: "x", detail: "", infra: false });
+      expect((await store.listRunsFinishedSince({ status: "failed", since })).map((r) => r.id)).toEqual([run.id]);
+      expect((await store.listRunsFinishedSince({ status: "failed", kinds: ["implement"], since: null }))).toEqual([]);
+      expect((await store.listRunsFinishedSince({ status: "succeeded", since: null }))).toEqual([]);
+      clock.advance(1000);
+      expect(await store.listRunsFinishedSince({ status: "failed", since: clock.now().toISOString() as Timestamp })).toEqual([]);
+    });
+  });
+
   describe("listStatsRecords", () => {
     it("returns every item with its tier, stage, token_cost, the requested reasons, its explicit verdict severities and its implicit count", async () => {
       const { store, clock } = await make();
@@ -1616,6 +1669,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "worker_run_steps", // RFC 0015 M6: src/worker/migrations/20261108T1730-worker-run-journal
       "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
       "controller_merge_queue_entries",
+      "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",

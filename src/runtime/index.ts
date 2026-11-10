@@ -7,3 +7,4 @@ export { DEFAULT_GOLDEN_ROLE, RoleCatalog, goldenCasesByRole, loadRoles, rolesSh
 export { HOOK_PATH, TEXT_MAX, loadHooks, runHooks, type HookAudit, type HookDecision, type HookOutcomeKind, type HookResult } from "./hooks/run-hooks.js";
 export { SqlHookAudit } from "./hooks/sql-hook-audit.js";
 export { ensureDiscoveredTopicTables } from "./registry/topic-tables.js";
+export { loadDescriptors } from "./registry/registry.js";
