@@ -96,8 +96,8 @@ export function Tr({ children, ...attrs }: { children: ReactNode } & { [data: `d
 
 export function Td({ children, className }: { children: ReactNode; className?: string }) {
   const { cards } = useContext(TableMode);
-  // In a card the cell wraps: the table's column widths are dropped.
-  if (cards) return <div className={cn("min-w-0 break-words", className?.split(/\s+/).filter((c) => !/^(min-|max-)?w-/.test(c)).join(" "))}>{children}</div>;
+  // In a card the cell wraps: the table's column widths and no-wrap are dropped.
+  if (cards) return <div className={cn("min-w-0 break-words", className?.split(/\s+/).filter((c) => !/^((min-|max-)?w-|whitespace-nowrap$)/.test(c)).join(" "))}>{children}</div>;
   return <td className={cn("px-3 py-2 align-top", className)}>{children}</td>;
 }
 
