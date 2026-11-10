@@ -5,7 +5,7 @@ import { prNumber } from "../../../core/change-ref.js";
 import { commandFooter, commandState, retryPathsReply } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
-import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js";
+import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
@@ -280,7 +280,7 @@ export class RunResultsUnit {
             return approved([autoAnswers(spec)], {
               actor: AUTO,
               reason: "spec_approved",
-              detail: { approved_by: AUTO_ACTOR, mode_change: auto.seq, decisions: (spec.decision_items ?? []).length },
+              detail: autoApprovalDetail({ approved_by: AUTO_ACTOR, mode_change: auto.seq }, spec.decision_items ?? []),
             });
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
