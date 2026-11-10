@@ -35,6 +35,8 @@ import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.j
 import { SqlBus } from "../src/bus/index.js";
 import { TimeBasedTicks } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { JournalEngines } from "../src/worker/engine/plugins/journal/journal-engine.js";
+import type { AuthProvider } from "../src/interfaces/auth-provider.js";
+import type { UserId } from "../src/core/types.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -548,9 +550,51 @@ describe("plugin registry: existing config keys keep working", () => {
     const [gh2, local2] = await authOf({ github_issue: "github", local: "none" });
     expect(gh2).toBeInstanceOf(GitHubAuthProvider);
     expect(local2).toBeInstanceOf(NoAuthProvider);
-    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack: "local" } }))).rejects.toThrow(/unknown auth origin "slack"/);
+    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack: "local" } }))).rejects.toThrow(/unknown auth origin "slack".*known origins: .*slack_thread/);
     await expect(loadConfig(root({ ...REAL, auth: { local: "local" } }))).rejects.toThrow(/auth needs "github_issue"/);
     await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", local: "nope" } }))).rejects.toThrow(/unknown AuthProvider plugin "nope"/);
+    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack_thread: "nope" } }))).rejects.toThrow(/unknown AuthProvider plugin "nope"/);
+  });
+
+  it("Slack commands get the slack_thread auth plugin when auth names one, else the local-origin one (issues #486, #498)", async () => {
+    const readerAuthOf = async (auth: unknown) => {
+      const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+      try {
+        const { forge, local, slack } = built.controller.kernel.reader.auth;
+        return { forge: (forge as AuditedAuthProvider).inner, local: (local as AuditedAuthProvider).inner, slack: (slack as AuditedAuthProvider).inner };
+      } finally {
+        await built.close();
+      }
+    };
+    const split = await readerAuthOf({ github_issue: "github", slack_thread: "local" });
+    expect(split.forge).toBeInstanceOf(GitHubAuthProvider);
+    expect(split.slack).toBeInstanceOf(LocalAuthProvider);
+    // No slack_thread key: the local-origin plugin, the same instance (chat accounts act as their linked user, #498).
+    const same = await readerAuthOf("github");
+    expect(same.forge).toBeInstanceOf(GitHubAuthProvider);
+    expect(same.slack).toBe(same.local);
+  });
+
+  it("an authorize call asks only the plugin of the identity's origin: slack_thread for Slack, github_issue for GitHub", async () => {
+    const asked: string[] = [];
+    const fake = (name: string) => (): AuthProvider => ({
+      resolve: async (i) => (asked.push(`${name}:resolve:${i.provider}`), { user_id: `${i.provider}:${i.subject}` as UserId, attributes: {} }),
+      authorize: async (p) => (asked.push(`${name}:authorize:${p.user_id}`), { allow: true }),
+    });
+    let reg = withPlugin(REGISTRY, "auth", "fake-gh", fake("gh"));
+    reg = withPlugin(reg, "auth", "fake-slack", fake("slack"));
+    const config = { ...REAL, store: { type: "sqlite" }, auth: { github_issue: "fake-gh", slack_thread: "fake-slack" } };
+    const built = await build(await loadConfig(root(config), { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+    try {
+      const unit = await built.controller.unit("auth");
+      await unit.authorize({ provider: "slack", subject: "U1" }, "submit_work", "wi_1");
+      expect(asked).toEqual(["slack:resolve:slack", "slack:authorize:slack:U1"]);
+      asked.length = 0;
+      await unit.authorize({ provider: "github", subject: "7" }, "submit_work", "wi_1");
+      expect(asked).toEqual(["gh:resolve:github", "gh:authorize:github:7"]);
+    } finally {
+      await built.close();
+    }
   });
 
   it("top-level auth none gives NoAuthProvider", async () => {

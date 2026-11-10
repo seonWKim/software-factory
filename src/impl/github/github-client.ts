@@ -1,6 +1,6 @@
 import type { GitHubBudgetStatus } from "../../core/controller-deps.js";
 import type { Timestamp } from "../../core/types.js";
-import type { Logger } from "../../core/log.js";
+import { errorText, type Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
 import { ConsoleLogger } from "../log/console-logger.js";
 import type { GitHubApi, GitHubCredentials, RepoIdentity, RepoPath, SharedBudget } from "../../interfaces/github-credentials.js";
@@ -208,7 +208,7 @@ export class GitHubClient implements GitHubApi {
         this.rateAt = row.updated_at;
       }
     } catch (err) {
-      this.opts.log?.warn("shared GitHub budget read failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      this.opts.log?.warn("shared GitHub budget read failed", { error: errorText(err) });
     }
   }
 
@@ -222,7 +222,7 @@ export class GitHubClient implements GitHubApi {
         project: sh.project, plugin: FORGE_BUDGET_PLUGIN, ...r, reset_at: r.reset_at as Timestamp, updated_at: this.rateAt as Timestamp,
       });
     } catch (err) {
-      this.opts.log?.warn("shared GitHub budget write failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      this.opts.log?.warn("shared GitHub budget write failed", { error: errorText(err) });
     }
   }
 

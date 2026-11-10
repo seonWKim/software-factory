@@ -383,6 +383,7 @@ export function selectPlugins(
   chosen.auth = auth.github_issue;
   const out = {} as Selection;
   if (auth.local !== undefined) out.local_auth = checkPlugin(registry, "auth", auth.local);
+  if (auth.slack_thread !== undefined) out.slack_auth = checkPlugin(registry, "auth", auth.slack_thread);
   for (const kind of PLUGIN_KINDS) {
     if ((LIST_KINDS as readonly string[]).includes(kind)) continue;
     // An optional kind left out or set to an off value selects nothing: the key stays out of the selection.

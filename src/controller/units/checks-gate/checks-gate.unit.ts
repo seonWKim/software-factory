@@ -2,6 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
+import { errorText } from "../../../core/log.js";
 import { parseReview } from "../../../core/outputs.js";
 import { runKey, branchFor } from "../../../core/policy.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
@@ -171,7 +172,7 @@ export class ChecksGateUnit {
       this.c.k.d.log.warn("reading PR checks failed", {
         work_item_id: it.id,
         pr_number,
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+        error: errorText(err),
       });
       return { state: "pending" };
     }
@@ -192,7 +193,7 @@ export class ChecksGateUnit {
       this.c.k.d.log.warn("reading PR check results failed", {
         ...(work_item_id ? { work_item_id } : {}),
         pr_number,
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+        error: errorText(err),
       });
       return { ci_checks: null };
     }

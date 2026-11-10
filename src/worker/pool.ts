@@ -1,3 +1,4 @@
+import { errorText } from "../core/log.js";
 import { LiveSettings } from "../core/settings.js";
 import type { Timestamp, WorkerId } from "../core/types.js";
 import { loadRunKinds, runKindProblems } from "./run-kind.js";
@@ -171,7 +172,7 @@ export class WorkerPool {
   private reportFailed(err: unknown): void {
     if (this.reportFailing) return;
     this.reportFailing = true;
-    this.d.log.warn("worker process report failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+    this.d.log.warn("worker process report failed", { error: errorText(err) });
   }
 }
 

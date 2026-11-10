@@ -2,7 +2,7 @@ import type { Budgets } from "./budget.js";
 import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
-import type { Logger } from "./log.js";
+import { errorText, type Logger } from "./log.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
 import type { Tier } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
@@ -706,7 +706,7 @@ export class LiveSettings {
       rows = await source.listSettingOverrides();
     } catch (err) {
       this.opts.log?.warn("settings overrides could not be read; keeping the values in use", {
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+        error: errorText(err),
       });
       return;
     }

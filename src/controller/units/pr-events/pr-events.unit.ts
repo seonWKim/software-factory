@@ -2,6 +2,7 @@
 // a person's PR merge from the Merge button (an outbound `merge_pr` action). Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
+import { errorText } from "../../../core/log.js";
 import { SKIP_LABEL, floorTier, workItemIdFromBranch } from "../../../core/policy.js";
 import { type Actor, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
@@ -281,7 +282,7 @@ export class PrEventsUnit {
     try {
       count = this.c.k.forge ? await this.c.k.forge.commitsBetween(from_sha, to_sha) : null;
     } catch (err) {
-      this.c.k.d.log.warn("commit count not read; the verdict says it is unknown", { work_item_id: id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      this.c.k.d.log.warn("commit count not read; the verdict says it is unknown", { work_item_id: id, error: errorText(err) });
     }
     const reason =
       count === null

@@ -9,6 +9,7 @@ import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, w
 import { failingTests } from "../../../core/output-summary.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";
+import { errorText } from "../../../core/log.js";
 import type { Run, RunResume, WipRef, WorkItem } from "../../../core/types.js";
 import type { AgentRunSpec, GateHooks } from "../../../interfaces/agent-runner.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
@@ -271,7 +272,7 @@ async function watchDiff(w: Worker, run: Run, handle: SandboxHandle, baseSha: st
     // The first tick is the agent step's start: the first check comes one DIFF_CHECK_MS later.
     if (!t.due) return;
     const stat = await branchDiff(w, handle, baseSha, dirs).catch((err: unknown) => {
-      w.d.log.warn("mid-run diff check failed; trying again", { run_id: run.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      w.d.log.warn("mid-run diff check failed; trying again", { run_id: run.id, error: errorText(err) });
       return null;
     });
     if (ended.aborted) return;

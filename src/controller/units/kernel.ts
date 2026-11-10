@@ -2,6 +2,7 @@
 
 import { LiveSettings, type ProjectSettings, modeOf, settingValues } from "../../core/settings.js";
 import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
+import { errorText } from "../../core/log.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
@@ -53,7 +54,13 @@ export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<Contro
    * local UI) under its passport, and the controller's automatic steps under its service passport (null: no
    * Identity, allowed). A check: it changes no controller state; Identity audits each decision.
    */
-  readonly auth: { readonly forge: ControllerDeps["auth"]; readonly local: ControllerDeps["auth"] | null; readonly service: ControllerDeps["service_auth"] | null };
+  readonly auth: {
+    readonly forge: ControllerDeps["auth"];
+    readonly local: ControllerDeps["auth"] | null;
+    /** Slack thread commands' plugin: `slack_auth`, else the local one (issue #498), else the forge's (issue #486). */
+    readonly slack: ControllerDeps["auth"];
+    readonly service: ControllerDeps["service_auth"] | null;
+  };
   /** The discovered signal sources (`*.signal.ts`, design 11-signal-ledger), in path order. */
   signals(): Promise<readonly SignalDescriptor[]>;
 };
@@ -192,7 +199,7 @@ export class Kernel {
       scan: (channel, content) => d.scanner.scan(channel, content),
       forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
       llm: d.llm ?? null,
-      auth: { forge: d.auth, local: d.local_auth ?? null, service: d.service_auth ?? null },
+      auth: { forge: d.auth, local: d.local_auth ?? null, slack: d.slack_auth ?? d.local_auth ?? d.auth, service: d.service_auth ?? null },
       signals,
     };
   }
@@ -335,7 +342,7 @@ export class Kernel {
       // poll, and every other step (local work) goes on.
       const until = rateLimitWait(err);
       if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
-      else this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      else this.d.log.error("loop step failed", { step: what, error: errorText(err) });
       return err;
     }
   }
