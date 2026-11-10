@@ -3,15 +3,16 @@ import { copyFileSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import mysql from "mysql2/promise";
-import { onTestFinished } from "vitest";
+import { inject, onTestFinished } from "vitest";
 import type { Actor, UserId, WorkerId } from "../../src/core/types.js";
 import type { Clock } from "../../src/interfaces/clock.js";
 import type { FactoryStore, NewWorkItem } from "../../src/interfaces/factory-store.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, inlineStepName } from "../../src/impl/store/mysql/migrations.js";
-import { MysqlDriver, type MysqlOptions } from "../../src/impl/store/mysql/mysql-driver.js";
+import { INLINE_STEPS, STEPS_DIR, inlineStepName } from "../../src/impl/store/mysql/migrations.js";
+import { MysqlDriver } from "../../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../../src/impl/store/sqlite/sqlite-driver.js";
+import { mysqlOptions } from "./mysql-template-setup.js";
 
 /** The project key test items carry (the configured repo o/r, see PROJECT in fakes.ts). */
 export const PROJECT_KEY = "github:github.com:R_kgDOrepo1";
@@ -29,17 +30,6 @@ export async function newStore(clock = new FakeClock()) {
  * throwaway database, dropped when the test finishes. Unset: MySQL tests are skipped.
  */
 export const MYSQL_URL = process.env.SF_TEST_MYSQL_URL;
-
-function mysqlOptions(url: string, database: string): MysqlOptions {
-  const u = new URL(url);
-  return {
-    host: u.hostname,
-    port: Number(u.port || 3306),
-    user: decodeURIComponent(u.username),
-    password: decodeURIComponent(u.password),
-    database,
-  };
-}
 
 /**
  * An empty throwaway MySQL database, dropped when the test finishes. `connect` opens one connection to it
@@ -91,46 +81,37 @@ interface TemplateTable {
 let template: Promise<TemplateTable[]> | null = null;
 
 /**
- * The schema `npm run migrate`'s path (MysqlMigrations.apply) builds on an empty database, captured once per test
- * file (module scope) from a throwaway database: every table's DDL and rows. Migrating ~60 steps and migrations per test took
- * ~2.5 s locally and ~4.5 s on CI, so a test that opens several databases came near the 20 s timeout.
+ * The schema `npm run migrate`'s path (MysqlMigrations.apply) builds on an empty database: every table's DDL and
+ * rows, read once per test file (module scope) from the run's template database, which the global setup migrates
+ * once (tests/helpers/mysql-template-setup.ts). Migrating ~60 steps took ~2.5 s locally and 8-23 s on a loaded CI
+ * runner, so no test migrates a fresh database unless migrating is what it tests.
  */
 function migratedTemplate(): Promise<TemplateTable[]> {
   template ??= (async () => {
-    const database = `sf_test_tpl_${randomBytes(6).toString("hex")}`;
-    const { database: _, ...server } = mysqlOptions(MYSQL_URL!, "");
-    const admin = await mysql.createConnection(server);
-    await admin.query(`CREATE DATABASE ${database}`);
+    const database = inject("mysqlTemplate");
+    if (!database) throw new Error("no MySQL template database: vitest.config.ts globalSetup did not run with SF_TEST_MYSQL_URL");
+    const c = await mysql.createConnection(mysqlOptions(MYSQL_URL!, database));
     try {
-      const c = await mysql.createConnection(mysqlOptions(MYSQL_URL!, database));
-      try {
-        await new MysqlMigrations(c).apply(() => undefined);
-        const [names] = await c.query("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name");
-        const out: TemplateTable[] = [];
-        for (const { name } of names as { name: string }[]) {
-          const [[show]] = (await c.query(`SHOW CREATE TABLE \`${name}\``)) as unknown as [[Record<string, string>]];
-          const [rows] = await c.query(`SELECT * FROM \`${name}\``);
-          out.push({ ddl: show!["Create Table"]!, rows: rows as Record<string, unknown>[] });
-        }
-        return out;
-      } finally {
-        await c.end();
+      const [names] = await c.query("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name");
+      const out: TemplateTable[] = [];
+      for (const { name } of names as { name: string }[]) {
+        const [[show]] = (await c.query(`SHOW CREATE TABLE \`${name}\``)) as unknown as [[Record<string, string>]];
+        const [rows] = await c.query(`SELECT * FROM \`${name}\``);
+        out.push({ ddl: show!["Create Table"]!, rows: rows as Record<string, unknown>[] });
       }
+      return out;
     } finally {
-      await admin.query(`DROP DATABASE ${database}`);
-      await admin.end();
+      await c.end();
     }
   })();
   return template;
 }
 
 /**
- * A fresh MySQL database holding exactly what `npm run migrate`'s path (MysqlMigrations.apply) builds, not
- * what the store builds: opening a store never applies a step. It is a copy of the migrated template
- * (same DDL, keys, foreign keys and rows), so the store check below still refuses if a step were pending.
- * Every store returned by `open` points at it.
+ * A throwaway MySQL database holding exactly what `npm run migrate`'s path (MysqlMigrations.apply) builds: a copy
+ * of the migrated template (same DDL, keys, foreign keys and rows), dropped when the test finishes.
  */
-export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
+export async function newMigratedMysqlDatabase() {
   const tables = await migratedTemplate();
   const db = await newEmptyMysqlDatabase();
   const c = await db.connect();
@@ -143,6 +124,24 @@ export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
     await c.query(`INSERT INTO \`${name}\` (${cols.map((k) => `\`${k}\``).join(", ")}) VALUES ?`, [t.rows.map((r) => cols.map((k) => r[k]))]);
   }
   await c.query("SET FOREIGN_KEY_CHECKS = 1");
+  return db;
+}
+
+/** A MysqlDriver on a fresh migrated database (newMigratedMysqlDatabase), closed when the test finishes. */
+export async function newMigratedMysqlDriver(): Promise<MysqlDriver> {
+  const db = await newMigratedMysqlDatabase();
+  const driver = new MysqlDriver(db.options);
+  db.onCleanup(() => driver.close());
+  return driver;
+}
+
+/**
+ * A fresh migrated MySQL database (newMigratedMysqlDatabase): what `npm run migrate`'s path builds, not what the
+ * store builds: opening a store never applies a step, so the store check below still refuses if a step were pending.
+ * Every store returned by `open` points at it.
+ */
+export async function newMysqlDatabase(clock: Clock = new FakeClock()) {
+  const db = await newMigratedMysqlDatabase();
   const stores: SqlFactoryStore[] = [];
   const open = () => {
     const s = new SqlFactoryStore(new MysqlDriver(db.options), clock);

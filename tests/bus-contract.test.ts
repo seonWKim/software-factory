@@ -17,10 +17,8 @@ import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-t
 import { defineTopic, type TopicDescriptor } from "../src/shared/topic.js";
 import type { Dialect, MigrationDb, SqlDriver } from "../src/state/index.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
+import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import { pauseFirstTransaction } from "./helpers/paused-driver.js";
 import requiresMigration from "../src/bus/migrations/20261109T0100-bus-competing-requires.migration.js";
@@ -68,13 +66,7 @@ const BACKENDS: Backend[] = [
     ? [
         {
           name: "mysql" as const,
-          async open() {
-            const db = await newEmptyMysqlDatabase();
-            await new MysqlMigrations(await db.connect()).apply(() => undefined);
-            const d = new MysqlDriver(db.options);
-            db.onCleanup(() => d.close());
-            return d;
-          },
+          open: newMigratedMysqlDriver,
         },
       ]
     : []),
