@@ -428,9 +428,13 @@ force.
   enabled hook at that point (`UNCALLED_HOOK_POINTS`, `src/shared/hook.ts`; since 2026-11-09) until outbound calls
   it. No hook ships.
 - **Commands and runs carry passports** (since 2026-11-08, RFC 0015 M9 wiring; details in 08-permissions.md,
-  "Passports in the running factory"). A CLI or UI command row stores its actor's passport id; inbound mints one for
-  a comment command at relay time, before its commit (a passport minted for a commit that loses its cursor race is
-  never used), and puts it on `InboundReceived`, so `CommandReceived` inherits it as its cause's `passport_id`. The
+  "Passports in the running factory"; Slack commands minted at relay too, decision changed 2026-11-09, issue #479,
+  see History). A CLI or UI command row stores its actor's passport id; inbound mints one for a comment command row
+  and for a stream record's command event (a Slack `/approve`; not a plain comment or an item request) at relay
+  time, before its commit (a passport minted for a commit that loses its cursor race is never used), and puts it on
+  `InboundReceived`, so `CommandReceived` or `SourceEventReceived` inherits it as its cause's `passport_id`. The
+  controller's handler puts a record's passport on its command event's actor, checked for expiry at the record's
+  received time (`readRecord`, `src/inbound/records.ts`). The
   RFC puts this in the normalizer; it is at the relay because the normalizer runs inside the consumer's
   transaction, and Identity writes `identity_passports` on its own connection. A run passport is minted at run start
   and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
@@ -537,6 +541,9 @@ force.
   retried on its backoff and ignored the error's `wait_until`; a Slack error had only a method and a code, so a 429
   was `rate_limited` with its `Retry-After` unread, and `channel_not_found` and `not_in_channel` had no status and
   were retried forever.
+- **Slack commands carry passports** (decision changed 2026-11-09, issue #479). Before: inbound minted passports
+  only for command rows; a Slack command's stream record was relayed with none, so the controller decided it with
+  the auth plugin alone.
 - **Rule of Two at run start** (decision changed 2026-11-09, owner decision). Before: `ruleOfTwoRefusal` existed but
   no run start called it, so an implement or resolve run started once its item was approved, by a person or by auto
   mode, and in auto mode they ran with all three facts and no person.

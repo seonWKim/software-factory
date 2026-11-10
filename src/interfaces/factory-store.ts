@@ -472,7 +472,7 @@ export interface FactoryStore {
    * implement-type run running, items with an open PR, other claimable queued implement runs. A run held only
    * by queued runs is claimed (the deadlock rule); a run with an approved hold is claimed. Every cost decision
    * is stored as the run's claim decision, rewritten only when it changes. Reads only the store.
-   * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause).
+   * Also null while `worker_pauses` holds a row for `input.worker_id` or the all-flag `*` (design §5 Pause). A run of an item held with `recurring_failure` (05-alarms) stays queued.
    * Sessions (design §5, 2026-11-01): an `interactive` run is never claimed; an implement-type run stays queued while
    * its item has an open session (a running interactive run) or its allowed_paths overlap one's.
    * A paused run (paused_at set) is claimed like any queued run, but the claim adds nothing to `attempt` and

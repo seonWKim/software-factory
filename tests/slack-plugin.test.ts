@@ -87,6 +87,61 @@ describe("slack config block", () => {
   });
 });
 
+describe("slack app manifest", () => {
+  const ROOT = join(import.meta.dirname, "..");
+  const manifest = JSON.parse(readFileSync(join(ROOT, "slack", "manifest.json"), "utf8")) as {
+    oauth_config: { scopes: { bot: string[] } };
+    settings: { event_subscriptions: { bot_events: string[] } };
+  };
+  const scopes = manifest.oauth_config.scopes.bot;
+  const events = manifest.settings.event_subscriptions.bot_events;
+  const doc = readFileSync(join(ROOT, "docs", "slack-setup.md"), "utf8");
+  /** The distinct backticked names on the doc's "**label:**" line that match `shape` (a scope has a colon, an event does not need one). */
+  const docList = (label: string, shape: RegExp) =>
+    [...new Set([...(doc.split("\n").find((l) => l.includes(`**${label}:**`)) ?? "").matchAll(/`([a-z_.:]+)`/g)].map((m) => m[1]!))].filter((n) => shape.test(n));
+
+  it("asks for the private-channel scope and event, beside the public-channel ones", () => {
+    expect(scopes).toEqual(expect.arrayContaining(["app_mentions:read", "channels:history", "groups:history", "chat:write"]));
+    expect(events).toEqual(expect.arrayContaining(["app_mention", "message.channels", "message.groups"]));
+  });
+
+  it("the setup doc lists the same scopes and events", () => {
+    expect([...docList("Bot scopes", /^[a-z_]+:[a-z_]+$/)].sort()).toEqual([...scopes].sort());
+    expect([...docList("Events", /^[a-z_.]+$/)].sort()).toEqual([...events].sort());
+  });
+});
+
+describe("slack source and private channels", () => {
+  const PRIVATE = "G0PRIVATE1";
+  const me = { team_id: "T0TEAM", user_id: BOT };
+  const thread = "1800000000.000100";
+  const source = (store: { getWorkItemBySource: () => Promise<unknown>; recordItemMessage?: () => Promise<unknown> }) =>
+    new SlackSource({
+      api: {} as never, connect: (() => { throw new Error("not used"); }) as never, channels: [CHANNEL, PRIVATE],
+      scanner: cleanScanner, store: store as never, repo: REPO, log: recordingLog(),
+    });
+  /** The event from a channel, with the channel ID swapped out so two channels' events compare equal. */
+  const from = async (s: SlackSource, channel: string, ev: Record<string, unknown>) =>
+    JSON.parse(JSON.stringify(await s.toEvent(eventEnvelope({ ...ev, channel }, "Ev0SAME", "env-same"), me)).replaceAll(channel, "<channel>"));
+
+  it("a mention in a listed G… channel is taken like one in a listed C… channel", async () => {
+    const s = source({ getWorkItemBySource: async () => null });
+    const ev = mention("1800000000.000200", "please fix the build");
+    const priv = await from(s, PRIVATE, ev);
+    expect(priv).toMatchObject({ event: { kind: "item_requested" } });
+    expect(priv).toEqual(await from(s, CHANNEL, ev));
+    expect(await s.toEvent(eventEnvelope({ ...ev, channel: "G0UNLISTED" }), me)).toBeNull();
+  });
+
+  it("a message reply in a work item's thread in a listed G… channel is taken like one in a C… channel", async () => {
+    const s = source({ getWorkItemBySource: async () => ({ id: "wi_1" }), recordItemMessage: async () => undefined });
+    const ev = { type: "message", user: "U0ALICE", ts: "1800000000.000300", thread_ts: thread, text: "looks good to me" };
+    const priv = await from(s, PRIVATE, ev);
+    expect(priv).toMatchObject({ event: { kind: "plain_comment" } });
+    expect(priv).toEqual(await from(s, CHANNEL, ev));
+  });
+});
+
 describe("slack plugin secrets", () => {
   it("declares exactly SLACK_APP_TOKEN and SLACK_BOT_TOKEN, each with a one-line purpose", () => {
     expect(REGISTRY.source.secrets.slack!.map((d) => d.name).sort()).toEqual(["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]);
@@ -123,7 +178,7 @@ describe("slack plugin secrets", () => {
     const log = recordingLog();
     const socket = new FakeSocket();
     const source = new SlackSource({
-      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null } as unknown as SlackSourceDeps["store"], repo: REPO, log,
+      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null, recordItemMessage: async () => { throw new Error("no item: nothing to record"); } } as unknown as SlackSourceDeps["store"], repo: REPO, log,
     });
     socket.push(eventEnvelope(mention("1800000001.000100", "hello")));
     const ac = new AbortController();

@@ -1,5 +1,5 @@
 // How setup asks: every question shows its default, and Enter takes it. `--yes` takes every default without
-// asking (scripts, tests). Secrets are never asked here: they have no default and use the hidden prompt.
+// asking (scripts, tests). A secret has no default: it is read with `readHidden`, never through `Ask`.
 
 import { createInterface } from "node:readline/promises";
 
@@ -76,4 +76,31 @@ async function readTerminalLine(prompt: string): Promise<string> {
   } finally {
     rl.close();
   }
+}
+
+/** Reads one line from the terminal without echoing it (a secret). Ctrl-C exits. */
+export function readHidden(prompt: string): Promise<string> {
+  process.stdout.write(prompt);
+  const stdin = process.stdin;
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding("utf8");
+  return new Promise((resolve) => {
+    let value = "";
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === "\r" || ch === "\n") {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off("data", onData);
+          process.stdout.write("\n");
+          return resolve(value.trim());
+        }
+        if (ch === "\u0003") process.exit(130);
+        if (ch === "\u007f") value = value.slice(0, -1);
+        else value += ch;
+      }
+    };
+    stdin.on("data", onData);
+  });
 }

@@ -2127,6 +2127,21 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       expect(await store.listAlerts({ limit: 10 })).toHaveLength(1);
     });
   });
+
+  describe("recurring failure holds (design 05-alarms)", () => {
+    it("a queued run of an item held with recurring_failure is not claimed; another item's is; released, it is", async () => {
+      const { store } = await make();
+      const { item: held } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "held" } });
+      const { item: other } = await store.createWorkItem(issue(2), system, { enqueue: { kind: "triage", idempotency_key: "other" } });
+      const hold = await store.transition({ id: held.id, expected_version: held.version, actor: system, reason: "recurring_failure", patch: { blocked_on: "upstream", blocked_reason: "recurring_failure" } });
+      expect(hold.ok).toBe(true);
+      expect((await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))?.work_item_id).toBe(other.id);
+      expect(await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE })).toBeNull();
+      const now = (await store.getWorkItem(held.id))!;
+      await store.transition({ id: held.id, expected_version: now.version, actor: system, reason: "released", patch: { blocked_on: "none", blocked_reason: null } });
+      expect((await store.claimRun({ worker_id: w2, kinds: ["triage"], lease_ms: LEASE }))?.work_item_id).toBe(held.id);
+    });
+  });
   describe("restart history (design 05-restarts)", () => {
     const MIN = 60_000;
     const at = (clock: FakeClock, ago_ms: number) => new Date(clock.now().getTime() - ago_ms).toISOString();

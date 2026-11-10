@@ -20,7 +20,8 @@ export default defineHandler<Envelope, ControllerContext>({
       return;
     }
     // A record pruned before it was handled (past inbox_retention_days) has nothing left to decide on.
-    const r = await readRecord(ctx.db, String(m.payload.record_id));
+    // A stream source's command event (a Slack `/approve`) carries the passport inbound minted at the relay.
+    const r = await readRecord(ctx.db, String(m.payload.record_id), m.passport_id);
     if (r) await ctx.decisions.consumeEvent(r.event);
   },
 });

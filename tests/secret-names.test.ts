@@ -256,12 +256,17 @@ describe("doctor and setup follow the declared secrets", () => {
     expect(JSON.stringify(checks)).not.toMatch(/"k"|"g"/);
   });
 
-  it("setup prompts for a declared secret with no guided step when it is missing or rotated", async () => {
-    expect((await secretsToPrompt(DECLS, new MapSecrets({}), [])).map((d) => d.name)).toEqual(["SLACK_BOT_TOKEN"]);
-    expect(await secretsToPrompt(DECLS, new MapSecrets({ SLACK_BOT_TOKEN: "s" }), [])).toEqual([]);
-    expect((await secretsToPrompt(DECLS, new MapSecrets({ SLACK_BOT_TOKEN: "s" }), [n("SLACK_BOT_TOKEN")])).map((d) => d.name)).toEqual([
+  it("setup asks for each missing or rotated secret, a oneOf group once (its first member) and only when none is set", async () => {
+    const asked = async (values: Record<string, string>, rotate: SecretName[] = []) =>
+      (await secretsToPrompt(DECLS, new MapSecrets(values), rotate)).map((d) => d.name);
+    expect(await asked({})).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN", "SLACK_BOT_TOKEN"]);
+    expect(await asked({ ANTHROPIC_API_KEY: "k", GITHUB_TOKEN: "g", SLACK_BOT_TOKEN: "s" })).toEqual([]);
+    expect(await asked({ ANTHROPIC_API_KEY: "k", GITHUB_TOKEN: "g", SLACK_BOT_TOKEN: "s" }, [n("SLACK_BOT_TOKEN"), n("CLAUDE_CODE_OAUTH_TOKEN")])).toEqual([
+      "CLAUDE_CODE_OAUTH_TOKEN",
       "SLACK_BOT_TOKEN",
     ]);
+    // MYSQL_PASSWORD is never asked: the Database step generates it.
+    expect((await secretsToPrompt([{ name: n("MYSQL_PASSWORD"), purpose: "db" }], new MapSecrets({}), [])).map((d) => d.name)).toEqual([]);
   });
 
   it("setup adds every declared name the secret file lacks, empty, keeping values", async () => {
@@ -309,10 +314,10 @@ describe("doctor: ANTHROPIC_API_KEY in the shell", () => {
     const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }, ""), { platform: "linux" });
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     const unset = (await doctorChecks(loaded)).find((c) => c.msg.startsWith("ANTHROPIC_API_KEY"));
-    expect(unset).toEqual({ ok: true, warn: false, msg: "ANTHROPIC_API_KEY is not set in this shell (good: agents use CLAUDE_CODE_OAUTH_TOKEN)" });
+    expect(unset).toEqual({ ok: true, msg: "ANTHROPIC_API_KEY not set (good: agents use CLAUDE_CODE_OAUTH_TOKEN)" });
     vi.stubEnv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key");
     const set = (await doctorChecks(loaded)).find((c) => c.msg.startsWith("ANTHROPIC_API_KEY"));
-    expect(set).toEqual({ ok: false, warn: false, msg: "ANTHROPIC_API_KEY is set in this shell: unset it, agents must use CLAUDE_CODE_OAUTH_TOKEN" });
+    expect(set).toEqual({ ok: false, msg: "ANTHROPIC_API_KEY is set in this shell: run `unset ANTHROPIC_API_KEY` (agents must use CLAUDE_CODE_OAUTH_TOKEN)" });
     expect(set!.msg).not.toContain("sk-test");
   });
 });
