@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { Bm25CapabilitySearch, SNIPPET_MAX } from "../src/impl/capability/bm25-capability-search.js";
+import bm25Plugin from "../src/impl/capability/bm25.plugin.js";
+import type { Contexts } from "../src/plugin-api.js";
 
 /** A throwaway code root holding `files` (repo-relative path → content). */
 function tree(files: Record<string, string>): string {
@@ -73,6 +75,54 @@ describe("bm25: what is indexed", () => {
     const [e] = s.entries();
     expect(e).toMatchObject({ id: "docs/a.md", name: "A", headings: ["Part one"], firstParagraph: "First para line two." });
     expect(e!.body).toContain("body text");
+  });
+});
+
+describe("bm25: Agent Skills SKILL.md and learnings", () => {
+  const SKILL = [
+    "---",
+    "name: release-notes",
+    'description: "Drafts changelog entries from merged pull requests."',
+    "license: MIT",
+    "---",
+    "",
+    "# Release notes skill",
+    "",
+    "Steps the agent follows.",
+    "",
+  ].join("\n");
+
+  it("a skills/<name>/SKILL.md is found for a query matching its description; name and snippet come from its frontmatter", async () => {
+    const s = new Bm25CapabilitySearch(tree({ "skills/release-notes/SKILL.md": SKILL, "docs/a.md": "# A\n\nunrelated text\n" }));
+    const r = await s.search("write the changelog for merged pull requests", 8);
+    expect(r[0]).toEqual({
+      id: "skills/release-notes/SKILL.md", kind: "skill", name: "release-notes", summary: "Drafts changelog entries from merged pull requests.",
+    });
+    // The frontmatter is not a heading or a paragraph: the first # heading is the next heading, not the name.
+    expect(s.entries().find((e) => e.id === "skills/release-notes/SKILL.md")!.headings).toEqual(["Release notes skill"]);
+  });
+
+  it("a file without frontmatter keeps its # heading and first paragraph", async () => {
+    const s = new Bm25CapabilitySearch(tree({ "skills/plain/SKILL.md": "# Plain\n\nzebra steps.\n" }));
+    expect(await s.search("zebra", 8)).toEqual([{ id: "skills/plain/SKILL.md", kind: "skill", name: "Plain", summary: "zebra steps." }]);
+  });
+
+  it("the bm25 plugin indexes a pack layer's skills/<name>/SKILL.md (design 11-packs.md)", async () => {
+    const codeRoot = tree({ "docs/a.md": "# A\n\nunrelated\n" });
+    const project = tree({ "skills/release-notes/SKILL.md": SKILL });
+    const loaded = { codeRoot, packs: [{ layer: "base", dir: codeRoot }, { layer: "project", dir: project }] };
+    const s = bm25Plugin.create({ loaded } as unknown as Contexts["capability"]) as Bm25CapabilitySearch;
+    const r = await s.search("changelog entries", 8);
+    expect(r.map((c) => [c.id, c.name])).toEqual([[join(project, "skills", "release-notes", "SKILL.md"), "release-notes"]]);
+  });
+
+  it("skips learnings.md under docs/, skills/ and a pack's skills/", async () => {
+    const pack = tree({ "skills/learnings.md": "## zebra\n" });
+    const s = new Bm25CapabilitySearch(
+      tree({ "docs/learnings.md": "# Learnings\n\n## zebra\n", "skills/x/learnings.md": "## zebra\n", "docs/a.md": "# A\n\nzebra\n" }),
+      [join(pack, "skills")],
+    );
+    expect(await ids(s, "zebra")).toEqual(["docs/a.md"]);
   });
 });
 

@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
 import type { Capability, CapabilitySearch } from "../../interfaces/capability-search.js";
+import { LEARNINGS_FILE } from "./project-guidance.js";
 
 /**
  * BM25 over the repo's markdown docs and skills (design §7, progressive disclosure). Agents get a short
@@ -9,7 +10,10 @@ import type { Capability, CapabilitySearch } from "../../interfaces/capability-s
  * What is indexed: `*.md` files under `docs/` and `skills/` below the code root, and under each extra skill
  * folder (a pack's `skills/`, design 11-packs.md; kind `skill`, ID its absolute path). Directories named
  * `prompts` or `node_modules`, dot-directories, dot-files and symlinks are skipped, so nothing outside
- * those roots is ever read.
+ * those roots is ever read. `learnings.md` files are skipped too: learnings reach a prompt only through the
+ * rules and learnings section (project-guidance.ts), which leaves retired entries out.
+ *
+ * A file's YAML frontmatter `name` and `description` (Agent Skills `SKILL.md`) give its name and snippet.
  *
  * The index is a per-process cache rebuilt from files: built at construction, and rebuilt by `search()`
  * whenever an indexed file's mtime or size changes or a file is added or removed. Nothing is shared
@@ -36,11 +40,11 @@ export interface IndexedDoc {
   /** Repo-relative path with `/` separators. */
   id: string;
   kind: "doc" | "skill";
-  /** First `#` heading, else the file name without `.md`. */
+  /** Frontmatter `name`, else the first `#` heading, else the file name without `.md`. */
   name: string;
   /** Every other heading, in order. */
   headings: string[];
-  /** First paragraph after the title, collapsed to one line (uncapped). */
+  /** Frontmatter `description`, else the first paragraph after the title, collapsed to one line (uncapped). */
   firstParagraph: string;
   /** The whole file. */
   body: string;
@@ -157,7 +161,7 @@ function listFiles(codeRoot: string, skillDirs: readonly string[]): FileInfo[] {
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
         if (!SKIP_DIRS.has(name)) walk(path, idOf, kind);
-      } else if (st.isFile() && name.endsWith(".md")) {
+      } else if (st.isFile() && name.endsWith(".md") && name !== LEARNINGS_FILE) {
         out.push({ id: idOf(path), kind, path, mtimeMs: st.mtimeMs, size: st.size });
       }
     }
@@ -186,7 +190,7 @@ export function skillCapability(id: string, text: string): Capability {
 
 /** The entry, plus the text of every non-heading line (the body terms). */
 function parse(id: string, kind: IndexedDoc["kind"], text: string): [IndexedDoc, string] {
-  const lines = text.split(/\r?\n/);
+  const { fields, lines } = frontmatter(text.split(/\r?\n/));
   let name: string | null = null;
   let titleLine = -1;
   const headings: string[] = [];
@@ -225,12 +229,30 @@ function parse(id: string, kind: IndexedDoc["kind"], text: string): [IndexedDoc,
   const doc: IndexedDoc = {
     id,
     kind,
-    name: name ?? basename(id, ".md"),
-    headings,
-    firstParagraph: para.join(" ").replace(/\s+/g, " ").trim(),
+    name: fields.name ?? name ?? basename(id, ".md"),
+    // A frontmatter name leaves the `#` title as one more heading, so its terms stay boosted.
+    headings: fields.name !== undefined && name !== null ? [name, ...headings] : headings,
+    firstParagraph: (fields.description ?? para.join(" ")).replace(/\s+/g, " ").trim(),
     body: text,
   };
-  return [doc, lines.filter((_, i) => !isHeading[i]).join("\n")];
+  // The description's terms count as body terms (the name's are boosted with the headings).
+  return [doc, [fields.description ?? "", ...lines.filter((_, i) => !isHeading[i])].join("\n")];
+}
+
+/**
+ * A leading `---` … `---` block's `name` and `description` (plain or quoted one-line YAML scalars), and the
+ * lines after it. No such block: no fields and every line.
+ */
+function frontmatter(all: string[]): { fields: { name?: string; description?: string }; lines: string[] } {
+  const end = all[0]?.trim() === "---" ? all.findIndex((l, i) => i > 0 && l.trim() === "---") : -1;
+  if (end < 0) return { fields: {}, lines: all };
+  const fields: { name?: string; description?: string } = {};
+  for (const line of all.slice(1, end)) {
+    const m = /^(name|description):\s*(.*?)\s*$/.exec(line);
+    const value = m?.[2]?.replace(/^(["'])(.*)\1$/, "$2").trim();
+    if (m && value) fields[m[1] as "name" | "description"] = value;
+  }
+  return { fields, lines: all.slice(end + 1) };
 }
 
 function score(doc: IndexedDoc, plain: string): Scored {

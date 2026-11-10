@@ -68,6 +68,7 @@ import {
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, findPacks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
+import { PackGuidance } from "./impl/capability/project-guidance.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -914,8 +915,7 @@ export async function build(
     // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
-    awake,
-    capability,
+    awake, capability, guidance: new PackGuidance(loaded.packs), // the packs' rules and learnings (design 07-self-improvement.md)
     testDatabase,
     settings,
     engines,

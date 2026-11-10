@@ -997,15 +997,15 @@ export class Worker {
   }
 
   /**
-   * Appends the top INDEX_SIZE docs for `query` as an index (path, name, snippet); the agent Reads a path for
-   * the full text. No search, no results, or a failed search: `prompt` unchanged. Search is best effort.
+   * Appends the packs' rules and learnings (design 07-self-improvement.md), then the top INDEX_SIZE docs for `query`
+   * as an index (path, name, snippet) the agent Reads in full. No search, no results, or a failed search: no index.
    */
   async withIndex(prompt: string, query: string): Promise<string> {
-    if (!this.d.capability) return prompt;
-    const found = await this.d.capability.search(query, INDEX_SIZE).catch((err: unknown) => {
+    prompt = [prompt, (await this.d.guidance?.read(this.d.log)) ?? ""].filter((part) => part !== "").join("\n\n");
+    const found = (await this.d.capability?.search(query, INDEX_SIZE).catch((err: unknown) => {
       this.d.log.warn("capability search failed; no doc index", { error: errorText(err) });
       return [];
-    });
+    })) ?? [];
     if (found.length === 0) return prompt;
     const index = [
       "## Available docs (index)",
