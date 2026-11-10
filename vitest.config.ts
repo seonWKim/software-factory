@@ -16,6 +16,8 @@ export default defineConfig({
     // .tsx tests are the web app's; each one sets `@vitest-environment jsdom` itself, so every other test keeps
     // the default node environment.
     include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    // With SF_TEST_MYSQL_URL: migrates one template database for the run, which MySQL tests copy (tests/helpers/store.ts).
+    ...(process.env.SF_TEST_MYSQL_URL ? { globalSetup: ["tests/helpers/mysql-template-setup.ts"] } : {}),
     exclude: ["node_modules", "dist", ".worktrees", ".factory", ".vite-cache"],
     // A real MySQL round trip is slower, and a loaded CI runner more so: the default 5 s timed tests out there.
     testTimeout: process.env.SF_TEST_MYSQL_URL ? 20_000 : 5_000,

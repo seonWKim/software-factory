@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { UserId } from "../../src/core/types.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
-import { MysqlMigrations } from "../../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../../src/impl/store/sql/sql-factory-store.js";
 import { commandsAfter } from "../../src/inbound/records.js";
 import { pauseFirstTransaction } from "../helpers/paused-driver.js";
-import { MYSQL_URL, newEmptyMysqlDatabase, newStore } from "../helpers/store.js";
+import { MYSQL_URL, newMigratedMysqlDatabase, newStore } from "../helpers/store.js";
 
 // Inbound relays `inbound_commands` through a seq cursor (`seq > cursor`). MySQL assigns AUTO_INCREMENT at insert,
 // not at commit, so every writer takes the `commands` lock row first and their inserts commit in seq order.
@@ -25,8 +24,7 @@ describe("inbound_commands sequence", () => {
   });
 
   it.runIf(MYSQL_URL)("a cursor never passes a command whose transaction commits after a later one's (MySQL)", async () => {
-    const db = await newEmptyMysqlDatabase();
-    await new MysqlMigrations(await db.connect()).apply(() => undefined);
+    const db = await newMigratedMysqlDatabase();
     const clock = new FakeClock();
     const reader = new MysqlDriver(db.options);
     const slowDriver = new MysqlDriver(db.options);
