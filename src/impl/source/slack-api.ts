@@ -45,6 +45,8 @@ export interface SlackApi {
   updateMessage(m: Omit<SlackPost, "thread_ts"> & { ts: string }): Promise<void>;
   /** conversations.replies with metadata: every message of the thread, the root first. */
   threadReplies(channel: string, thread_ts: string): Promise<SlackMessage[]>;
+  /** reactions.add as the bot (scope `reactions:write`); a reaction already there counts as added. */
+  react(channel: string, ts: string, name: string): Promise<void>;
 }
 
 /**
@@ -129,6 +131,15 @@ export class HttpSlackApi implements SlackApi {
       cursor = next;
     }
     return out;
+  }
+
+  async react(channel: string, ts: string, name: string): Promise<void> {
+    try {
+      await this.call(SLACK_BOT_TOKEN, "reactions.add", { channel, timestamp: ts, name }, "json");
+    } catch (err) {
+      // A redelivered event reacts again: the reaction is there, which is what was asked.
+      if (!(err instanceof SlackApiError && err.code === "already_reacted")) throw err;
+    }
   }
 
   /** One call; throws SlackApiError on an HTTP error, a rate limit or `ok: false`. */

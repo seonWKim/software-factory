@@ -247,6 +247,8 @@ export interface ItemDetail {
   thread?: ThreadEntry[];
   /** The commands that apply in the item's current state, in the order to show them. */
   commands?: ItemCommand[];
+  /** A spec waiting for approval (or at the revision limit): its In short and its decisions; null for any other item. */
+  spec?: WaitingSpec | null;
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
@@ -312,6 +314,21 @@ export interface TranscriptPage {
   /** Steps before `start` exist (a tail page, or a later forward page). */
   earlier: boolean;
   steps: TranscriptStep[];
+}
+
+/** The item API's `spec` (issue #526): what the decision panel and the approve confirm step show. */
+export interface WaitingSpec {
+  in_short: string | null;
+  decisions: SpecDecision[];
+}
+
+/** One decision of a waiting spec: a question with 2 to 4 options (or none), the proposed default and why triage asks. */
+export interface SpecDecision {
+  question: string;
+  options: string[];
+  default: string | null;
+  reason: string | null;
+  owner_only: boolean;
 }
 
 export interface ItemCommand {
@@ -383,7 +400,7 @@ export interface SettingsView {
   project: string | null;
   project_keys: string[];
   keys: SettingRow[];
-  pr_only: { key: string; note: string; description: string }[];
+  pr_only: { key: string; description: string }[];
   ignored: { key: string; project: string | null; value: string; reason: string }[];
   history: { seq: number; at: string; actor: string; key: string; project: string | null; old_value: string | null; new_value: string | null }[];
 }
