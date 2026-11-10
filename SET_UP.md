@@ -162,6 +162,8 @@ Who may act: local commands (the CLI and the local UI) are checked by the local 
 
 A `permissions.static.deny` still refuses a local user. On a shared store the identity comes from each person's environment (git config, OS user), so anyone who can run the CLI against the store can set it: the store's credentials are the trust boundary.
 
+`factory help` prints the same command list as a `/help` reply; `factory help <id>` marks the ones that apply to that item now, exactly as `/help` on its issue does. `factory approve <id>` checks first that approve applies to the item (the spec gate, the floor block, a run held for the Rule of Two or by coordination cost); anywhere else it prints the refusal the controller would give and stores nothing. The status page lists only the commands that apply now and that your role allows; the ones it leaves out are named once, with the reason, and every refusal there shows as plain text.
+
 - `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
 - `factory task list`: List local work items. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason.
 - `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
@@ -420,6 +422,8 @@ Known gaps (2026-11-09; issues #479–#486): people's Slack replies are not show
 In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention (`@software-factory /revise <feedback>`) or use the buttons.
 
 The factory's commands in Slack, from the same command table as the CLI (`@bot` is the mention of the bot). Each runs as the factory user the Slack account is linked to, with that user's stored role; an unlinked account gets one reply saying so, and only `/link` and `help` are answered for it. `list`, `show`, `users list` and `settings` reads reply with what the CLI prints, cut to Slack's limits with a note naming the CLI command that prints the whole text and, for `show <id>`, a link to the item's source. Item commands and `merge` store the CLI's command row, and the controller answers in the item's thread. `help` lists only the commands you may run where you ask it. A mention with any other words is a request in plain words: outside an item's thread it starts a work item, in an item's thread the factory suggests a command.
+
+In Slack a command follows a mention of the bot, so type `@software-factory /approve` (a leading `/` with no mention is taken by Slack itself). In an item's thread, `@software-factory approve` with no slash works too; outside one, the same words start a work item. `@software-factory /help` (or `help`) answers in the mention's thread: outside an item's thread with how to start work and `/link <code>`, in an item's thread with the commands that apply now, in the same words as `/help` on GitHub.
 
 - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
 - `@bot list`: as `factory task list`. Who: anyone.
