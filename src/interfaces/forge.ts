@@ -129,6 +129,22 @@ export interface OpenPrInput {
   labels?: Readonly<Record<string, boolean>>;
 }
 
+/**
+ * What a commit message or an item's text says about other changes (design §6), as this forge names changes. A
+ * forge parses its own change-ref form; the shapes around it (the git revert body, a `Revert` subject, `Fixes` and
+ * `Follow-up to`) are the same for every forge (src/core/links.ts).
+ */
+export interface ChangeLinks {
+  /** Shas from `This reverts commit <sha>` anywhere in the message, lowercased. */
+  reverted_shas: string[];
+  /** Change refs a `Revert` subject names, minus the reverting one: candidate reverted changes. */
+  reverted_refs: string[];
+  /** The change that made this revert commit, when the forge marks it on the subject; else null. */
+  reverting_ref: string | null;
+  /** Change refs named by `Fixes <ref>` or `Follow-up to <ref>`, in order of first mention. */
+  fix_refs: string[];
+}
+
 /** The prefix of the factory's status labels (`status_label_prefix` in factory.config.json) when config sets none. */
 export const DEFAULT_STATUS_LABEL_PREFIX = "sf: ";
 
@@ -153,6 +169,11 @@ export interface Forge {
    * twice across polls that advanced the cursor; other events may repeat, and handling them is idempotent.
    */
   poll(cursor: string | null): Promise<ForgePollResult>;
+  /**
+   * The revert and fix-forward links in `message` (a base-branch commit message, or an item's title and body), its
+   * change refs in the form `change_ref` takes. Pure: no read, no write, no call. Each ref appears once.
+   */
+  parseLinks(message: string): ChangeLinks;
   /** PR `pr` as a comment target. */
   prRef(pr: number): SourceRef;
   /** The PR number `ref` names if it is one of this forge's PR refs (`prRef`), else null. */

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { parseFixReferences, parseRevert } from "../src/core/links.js";
+import { parseFixReferences, parseRevert } from "../src/impl/github/github-forge.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { newStore, issue, system } from "./helpers/store.js";
-import { FakeAuth, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
+import { FakeAuth, FakeForge, FakeSource, alice, config, issueRef, silent, cleanScanner } from "./helpers/fakes.js";
 
 describe("links: revert matching", () => {
   it("finds reverted shas in `This reverts commit <sha>`", () => {
@@ -38,7 +38,8 @@ async function setup() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+  // A GitHub-numbered forge: the `#N` forms below are its links (with no forge, the local forge reads branch names).
+  const controller = new ControllerRole({ store, source, forge: new FakeForge(), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
   /** A factory item whose PR `pr` merged as `sha`. */
   const merged = async (n: number, pr: number, sha: string): Promise<WorkItem> => {
     const { item } = await store.createWorkItem(issue(n), system);

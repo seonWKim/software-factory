@@ -1,4 +1,5 @@
 [
+  "imports-io|controller/units/verdicts/verdicts.unit.ts|../../../impl/forge/local-forge.js",
   "reaches-io|controller/units/alarms/alarms.unit.ts|restarts",
   "reaches-io|controller/units/alarms/alarms.unit.ts|store",
   "reaches-io|controller/units/closes/closes.unit.ts|auth",
@@ -22,5 +23,6 @@
   "reaches-io|controller/units/pr-events/pr-events.unit.ts|forge",
   "reaches-io|controller/units/pr-events/pr-events.unit.ts|store",
   "reaches-io|controller/units/sync/sync.unit.ts|sources",
-  "reaches-io|controller/units/sync/sync.unit.ts|store"
+  "reaches-io|controller/units/sync/sync.unit.ts|store",
+  "reaches-io|controller/units/verdicts/verdicts.unit.ts|forge"
 ]
