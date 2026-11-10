@@ -373,7 +373,7 @@ describe("Running now and Queue", () => {
 });
 
 // ---- Item commands (issue #228): a button per command, the note box, the reject and revise forms (issue #527), the outcome ----
-const cmd = (name: string) => ({ name, usage: `/${name}`, description: `${name} it` });
+const cmd = (name: string) => ({ name, usage: `/${name}`, description: `${name} it`, allowed: true, reason: null as string | null });
 const reply = (seq: number, command: string, handled: boolean, refusal: string | null = null) =>
   ({ seq, command, created_at: AT, handled_at: handled ? AT : null, refusal });
 const SESSION = { as_of: AT, csrf_token: "tok-123", commands_enabled: true, actor: "local:me", actor_source: "environment" as const };
@@ -773,10 +773,87 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
     expect(due).not.toContain("2026-11-06T23:30:00.000Z");
   });
 
-  it("the Why column shows the need's reason and command, not the badges", () => {
-    const need = { reason: "failed: diff_too_large", command: "/retry" };
+  it("the Why column shows the need's reason, not the badges, and no command to type", () => {
+    const need = { reason: "failed: diff_too_large" };
     render(<ItemsTable items={[row(1, "needs_human", "Failed one", { blocked_on: "human", badges: ["failed"], need }) as unknown as ItemRow]} now={NOW} label="Needs you" empty="none" />);
     const cell = document.querySelector("[data-need]")!.closest("td")!;
-    expect(cell.textContent).toBe("failed: diff_too_large · /retry");
+    expect(cell.textContent).toBe("failed: diff_too_large");
+  });
+});
+
+describe("Needs-you command buttons (issue #453)", () => {
+  const NO_ROLE = "local:me has no role that allows it (`no_role`); the local owner can grant one with `factory users add local:me --role approver`";
+  /** Needs you with one row whose commands are `commands`, as the items API lists them. */
+  function mountNeeds(commands: ReturnType<typeof cmd>[], extra: object = {}) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/v1/session"], SESSION);
+    const it = row(1, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", need: { reason: "spec ready", anchor: null }, commands, ...extra });
+    return render(
+      <QueryClientProvider client={client}>
+        <ItemsTable items={[it as unknown as ItemRow]} now={Date.parse(AT)} label="Needs you" empty="none" actions />
+      </QueryClientProvider>,
+    );
+  }
+
+  it("one button per command of the row, in its order; Work items has none", () => {
+    mountNeeds(["approve", "reject", "revise"].map(cmd));
+    expect([...document.querySelectorAll("[data-need-commands] [data-command] > button")].map((b) => b.textContent)).toEqual(["approve", "reject", "revise"]);
+    cleanup();
+    const it = row(1, "needs_approval", "Spec waiting", { need: { reason: "spec ready" }, commands: [cmd("approve")] });
+    render(<ItemsTable items={[it as unknown as ItemRow]} now={Date.parse(AT)} label="Work items" empty="none" />);
+    expect(document.querySelector("[data-need-commands]")).toBeNull();
+  });
+
+  it("approve, retry and resolve send at once, with no note", async () => {
+    for (const name of ["approve", "retry", "resolve"]) {
+      posts = [];
+      mountNeeds([cmd(name)]);
+      fireEvent.click(button(name));
+      await settle();
+      expect(posts.map((p) => [p.url, p.body]), name).toEqual([["/api/v1/items/wi_1/commands", { command: name }]]);
+      expect(posts[0]!.headers["x-csrf-token"]).toBe("tok-123");
+      expect(within(rowOf(name)).getByRole("status").textContent).toBe("sent");
+      cleanup();
+    }
+  });
+
+  it("reject opens the Why? form and asks to confirm, naming the PR it closes; nothing is sent before the confirm", async () => {
+    mountNeeds(["approve", "reject"].map(cmd), { change_ref: "42" });
+    fireEvent.click(button("reject"));
+    const form = screen.getByRole("group", { name: "Why reject?" });
+    expect(form.textContent).toContain("Rejecting closes this item and its PR #42, without a merge.");
+    fireEvent.click(within(form).getByRole("radio", { name: "duplicate" }));
+    await settle();
+    expect(posts).toEqual([]);
+    fireEvent.click(button("Confirm reject"));
+    await settle();
+    expect(posts.map((p) => p.body)).toEqual([{ command: "reject", note: "duplicate" }]);
+  });
+
+  it("revise opens its note fields and sends only once a section has text; Cancel sends nothing", async () => {
+    mountNeeds([cmd("revise")]);
+    fireEvent.click(button("revise"));
+    const form = screen.getByRole("group", { name: "Revise the spec" });
+    expect((within(form).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await settle();
+    expect(posts).toEqual([]);
+    fireEvent.click(button("revise"));
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment on Problem" }), { target: { value: "narrower" } });
+    fireEvent.click(button("Send revise"));
+    await settle();
+    expect(posts.map((p) => p.body)).toEqual([{ command: "revise", note: "### Problem\nnarrower" }]);
+  });
+
+  it("a command the viewer may not send is disabled, with its reason beside it in plain text", async () => {
+    mountNeeds(["approve", "reject"].map((n) => ({ ...cmd(n), allowed: false, reason: NO_ROLE })));
+    for (const name of ["approve", "reject"]) {
+      expect(button(name).disabled, name).toBe(true);
+      expect(rowOf(name).textContent).toContain("local:me has no role that allows it (no_role)");
+      expect(rowOf(name).textContent).not.toContain("`");
+    }
+    fireEvent.click(button("approve"));
+    await settle();
+    expect(posts).toEqual([]);
   });
 });

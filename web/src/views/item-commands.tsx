@@ -12,8 +12,8 @@ import {
 } from "./item-decisions.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
-// in its order: the commands that apply now and the viewer's grants allow (issue #528). Those the grants leave out
-// are named once, with the controller's reason, in plain text; every refusal shows without backticks. Reject and revise open their own forms (issue #527): reject asks why and confirms what closes,
+// in its order: the commands that apply now. One the viewer's grants do not allow (`allowed` false, issue #453) is
+// disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject and revise open their own forms (issue #527): reject asks why and confirms what closes,
 // revise takes a comment per spec section. Every other command carries the note box's text when it has any
 // (tokens for budget, `accept|changes|reject <severity> <reason>` for verdict, the approve note). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
@@ -31,6 +31,11 @@ export type LocalSend = { seq: number } | { error: string };
 
 /** The text next to a command's button, or null for none. */
 export type Outcome = { tone: "error" | "status"; text: string } | null;
+
+/** The text beside a button the viewer's grants do not allow: the controller's reason, in plain words. */
+export function notAllowed(c: ItemCommand): Outcome {
+  return { tone: "status", text: plainRefusal(c.reason ?? "not allowed") };
+}
 
 /**
  * The outcome of the item's latest request for `command`: its refusal, "sent" while not handled, else "Done".
@@ -58,14 +63,40 @@ function OutcomeText({ outcome }: { outcome: Outcome }) {
   );
 }
 
-export function ItemCommands({ id, commands, replies }: { id: string; commands: readonly ItemCommand[]; replies: readonly CommandReply[] }) {
+/**
+ * Sending app commands for item `id`: `send` posts one with the session's token, keeps what this page did with each
+ * command (`local`), and on success re-reads the item and the list, so the controller's reply shows. `on`: commands
+ * are on for this page's session.
+ */
+function useCommandSend(id: string) {
   const client = useQueryClient();
   const session = useApi<Session>(API.session, false);
+  const [busy, setBusy] = useState(false);
+  const [local, setLocal] = useState<Record<string, LocalSend>>({});
+  const token = session.data?.csrf_token;
+  const send = async (command: string, note: string): Promise<boolean> => {
+    if (!token) return false;
+    setBusy(true);
+    try {
+      const r = await postCommand(token, id, command, note);
+      setLocal((m) => ({ ...m, [command]: r.ok ? { seq: r.seq } : { error: r.error } }));
+      if (r.ok) await Promise.all([client.invalidateQueries({ queryKey: [API.item(id)] }), client.invalidateQueries({ queryKey: [API.items] })]);
+      return r.ok;
+    } catch (err) {
+      setLocal((m) => ({ ...m, [command]: { error: err instanceof Error ? err.message : String(err) } }));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { session, on: !!token && session.data?.commands_enabled === true, busy, local, send };
+}
+
+export function ItemCommands({ id, commands, replies }: { id: string; commands: readonly ItemCommand[]; replies: readonly CommandReply[] }) {
+  const { session, on: enabled, busy, local, send: post } = useCommandSend(id);
   const [note, setNote] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [local, setLocal] = useState<Record<string, LocalSend>>({});
   const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
   // The page's own item query (same key and options), read here for its `merge` and its waiting spec.
   const data = useApi<ItemDetail>(API.item(id)).data;
@@ -77,51 +108,29 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const decisions = phase === "spec_pending" || phase === "max_revisions" ? (data?.spec?.decisions ?? []) : [];
   const choices = picked ?? initialChoices(decisions);
   const answers = chosenAnswers(decisions, choices);
-  const withheld = data?.commands_withheld ?? null;
-  const withheldNote = withheld && (
-    <p role="status" data-commands-withheld className="mb-2 text-sm text-pretty break-words text-zinc-600 dark:text-zinc-400">
-      Not shown for you: {withheld.names.join(", ")}. {plainRefusal(withheld.reason)}.
-    </p>
-  );
   // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
   if (commands.length === 0 && !showMerge) {
     return (
       <>
         <InShort spec={data?.spec} />
         <Section title="Commands">
-          {withheldNote ?? (
-            <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-              No command applies now; the factory continues on its own. Commands show here when the item waits for you.
-            </p>
-          )}
+          <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+            No command applies now; the factory continues on its own. Commands show here when the item waits for you.
+          </p>
         </Section>
       </>
     );
   }
-  const token = session.data?.csrf_token;
-  const enabled = !!token && session.data?.commands_enabled === true;
   const off = session.isError || session.data?.commands_enabled === false;
-  const usesNote = commands.some((c) => !FORMS.includes(c.name));
+  const usesNote = commands.some((c) => c.allowed && !FORMS.includes(c.name));
 
   /** Sends `command` with `text` (a form's) or, without it, the note box's. */
   const send = async (command: string, text?: string) => {
-    if (!token) return;
-    setBusy(true);
     setConfirming(null);
-    try {
-      const r = await postCommand(token, id, command, text ?? (command === "approve" ? approveNote(answers, note) : note));
-      setLocal((m) => ({ ...m, [command]: r.ok ? { seq: r.seq } : { error: r.error } }));
-      if (r.ok) {
-        if (text === undefined) setNote("");
-        else setOpen(null);
-        setPicked(null);
-        await client.invalidateQueries({ queryKey: [API.item(id)] });
-      }
-    } catch (err) {
-      setLocal((m) => ({ ...m, [command]: { error: err instanceof Error ? err.message : String(err) } }));
-    } finally {
-      setBusy(false);
-    }
+    if (!(await post(command, text ?? (command === "approve" ? approveNote(answers, note) : note)))) return;
+    if (text === undefined) setNote("");
+    else setOpen(null);
+    setPicked(null);
   };
 
   return (
@@ -142,7 +151,6 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
           </p>
         )}
-        {withheldNote}
         <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
         {usesNote && (
           <textarea
@@ -159,8 +167,8 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
         )}
         <ul className="space-y-1.5">
           {commands.map((c) => {
-            const disabled = !enabled || busy;
-            const outcome = commandOutcome(replies, c.name, local[c.name]);
+            const disabled = !enabled || busy || !c.allowed;
+            const outcome = c.allowed ? commandOutcome(replies, c.name, local[c.name]) : notAllowed(c);
             const hasForm = FORMS.includes(c.name);
             const confirms = c.name === "approve" && phase !== null;
             const close = () => setOpen(null);
@@ -213,26 +221,9 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
  * latest merge reply (a refusal: the head moved, a conflict, a failing check, no approve_merge).
  */
 export function MergeButton({ id, source, merge, replies = [] }: { id: string; source: string | undefined; merge: MergeReadiness; replies?: readonly CommandReply[] }) {
-  const client = useQueryClient();
-  const session = useApi<Session>(API.session, false);
-  const [busy, setBusy] = useState(false);
-  const [local, setLocal] = useState<LocalSend | undefined>(undefined);
-  const token = session.data?.csrf_token;
-  const on = !!token && session.data?.commands_enabled === true;
-  const send = async () => {
-    if (!token) return;
-    setBusy(true);
-    try {
-      const r = await postCommand(token, id, "merge", "");
-      setLocal(r.ok ? { seq: r.seq } : { error: r.error });
-      if (r.ok) await Promise.all([client.invalidateQueries({ queryKey: [API.item(id)] }), client.invalidateQueries({ queryKey: [API.items] })]);
-    } catch (err) {
-      setLocal({ error: err instanceof Error ? err.message : String(err) });
-    } finally {
-      setBusy(false);
-    }
-  };
-  const outcome: Outcome = merge.enabled ? commandOutcome(replies, "merge", local) : { tone: "status", text: merge.reason ?? "" };
+  const { on, busy, local, send: post } = useCommandSend(id);
+  const send = () => post("merge", "");
+  const outcome: Outcome = merge.enabled ? commandOutcome(replies, "merge", local.merge) : { tone: "status", text: merge.reason ?? "" };
   return (
     <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
       <Button
@@ -247,6 +238,46 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
         Merge
       </Button>
       <OutcomeText outcome={outcome} />
+    </span>
+  );
+}
+
+/**
+ * A Needs-you row's command buttons (design §9, issue #453): one per entry of the row's `commands` (the item API's,
+ * each allowed or not for the viewer). Approve, retry and resolve send at once; reject and revise open the item
+ * page's forms first, and reject confirms what it closes. One the viewer may not send is disabled with its reason
+ * beside it. A send re-reads the list, so the row moves on; a failed send shows its error.
+ */
+export function NeedCommands({ id, commands, pr }: { id: string; commands: readonly ItemCommand[]; pr: string | null }) {
+  const { on, busy, local, send: post } = useCommandSend(id);
+  const [open, setOpen] = useState<string | null>(null);
+  const send = async (command: string, note: string) => {
+    if (await post(command, note)) setOpen(null);
+  };
+  const close = () => setOpen(null);
+  return (
+    <span data-need-commands className="inline-flex flex-wrap items-center gap-2">
+      {commands.map((c) => {
+        const disabled = !on || busy || !c.allowed;
+        const hasForm = FORMS.includes(c.name);
+        return (
+          <span key={c.name} data-command={c.name} className="inline-flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              className={textButton}
+              disabled={disabled}
+              title={`${c.usage}: ${c.description}`}
+              {...(hasForm ? { "aria-expanded": open === c.name } : {})}
+              onClick={() => (hasForm ? setOpen(open === c.name ? null : c.name) : void send(c.name, ""))}
+            >
+              {c.name}
+            </Button>
+            <OutcomeText outcome={c.allowed ? commandOutcome([], c.name, local[c.name]) : notAllowed(c)} />
+            {open === c.name && c.name === "reject" && <RejectForm pr={pr} disabled={disabled} onSend={(t) => void send("reject", t)} onCancel={close} />}
+            {open === c.name && c.name === "revise" && <ReviseForm disabled={disabled} onSend={(t) => void send("revise", t)} onCancel={close} />}
+          </span>
+        );
+      })}
     </span>
   );
 }

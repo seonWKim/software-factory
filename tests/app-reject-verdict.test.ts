@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
+import type { AuthAction, AuthProvider, AuthResource, CommandPassport, Principal } from "../src/interfaces/auth-provider.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
@@ -9,7 +10,8 @@ import { PROJECT_KEY, newStore } from "./helpers/store.js";
 // The dashboard's reject and verdict (issue #452): an app `reject` goes through the `/reject` transition and its
 // close, which now also closes an open PR; an app `verdict` is stored through the verdict path, also on a local item
 // with no PR. A dashboard `revise` (issue #527) is the issue's `/revise`, its feedback stored as typed. A refusal is one
-// reply on the item's source and changes nothing.
+// reply on the item's source and changes nothing. A dashboard approve, retry and resolve (issue #453) go through the
+// comment command's handler too.
 
 /** FakeAuth lets github:1 do everything, nobody else. */
 const WRITER = "github:1" as UserId;
@@ -28,12 +30,12 @@ const flagging: EgressScanner = {
   },
 };
 
-async function harness(opts: { scanner?: EgressScanner } = {}) {
+async function harness(opts: { scanner?: EgressScanner; auth?: AuthProvider } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
   const forge = new FakeForge(source);
   const controller = new ControllerRole({
-    store, sources: [source], forge, auth: new FakeAuth(), clock, config, log: silent, scanner: opts.scanner ?? cleanScanner,
+    store, sources: [source], forge, auth: opts.auth ?? new FakeAuth(), clock, config, log: silent, scanner: opts.scanner ?? cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };
   const itemIn = async (ref: SourceRef, patch: WorkItemPatch): Promise<WorkItem> => {
@@ -368,15 +370,129 @@ describe("dashboard revise (issue #527)", () => {
   });
 });
 
-describe("app commands still not applied", () => {
-  it("the refusal names the commands that are: approve, merge, reject, revise and verdict", async () => {
+describe("dashboard approve, retry and resolve (issue #453): the comment command's path", () => {
+  const FAILED_IMPLEMENT: WorkItemPatch = { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" };
+  const CONFLICT: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42" };
+  const CASES: [string, WorkItemPatch, string, WorkItemPatch, string][] = [
+    ["approve", SPEC_PENDING, "spec_approved", { stage: "RUNNING", blocked_on: "none", blocked_reason: null }, "implement"],
+    ["retry", FAILED_IMPLEMENT, "retry_requested", { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: 1 }, "implement"],
+    ["resolve", CONFLICT, "resolve_requested", { stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: 1 }, "resolve"],
+  ];
+
+  it.each(CASES)("%s: the comment's transition, the seq on the change, one run; on a GitHub and on a local item", async (command, from, reason, to, run) => {
+    const h = await harness();
+    for (const [n, ref] of [[1, issueRef(1)], [2, localRef(2)]] as const) {
+      const it1 = await h.itemIn(ref, from);
+      const r = await h.request(it1, command, "keep it small");
+      await h.apply();
+      expect(await h.get(it1), `item ${n}`).toMatchObject(to);
+      const change = (await h.changes(it1)).find((c) => c.reason === reason);
+      expect(change).toMatchObject({ actor: { kind: "user", id: WRITER }, detail: expect.objectContaining({ app_request: r.seq }) });
+      expect((await h.store.listRuns(it1.id)).map((x) => x.kind)).toEqual([run]);
+      expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ refusal: null });
+      expect(await h.refusals(it1, r)).toEqual([]);
+    }
+  });
+
+  it.each(CASES)("%s from the same comment gives the same state as from the dashboard", async (command, from, reason) => {
+    const h = await harness();
+    const byPage = await h.itemIn(issueRef(1), from);
+    const byComment = await h.itemIn(issueRef(2), from);
+    await h.request(byPage, command, null);
+    await h.apply();
+    const at = { source: byComment.source, comment_id: "c1" };
+    const e = command === "approve"
+      ? { kind: "spec_approved" as const, ...at, approver: alice }
+      : command === "retry"
+        ? { kind: "retry_requested" as const, ...at, requester: alice }
+        : { kind: "resolve_requested" as const, ...at, requester: alice, notes: "", pr: null };
+    await h.controller.handleEvent(e);
+    const { id: _a, source: _s, version: _v, created_at: _c, updated_at: _u, ...page } = await h.get(byPage);
+    const { id: _b, source: _t, version: _w, created_at: _d, updated_at: _x, ...comment } = await h.get(byComment);
+    expect(page).toEqual(comment);
+    expect((await h.changes(byPage)).map((c) => c.reason)).toEqual((await h.changes(byComment)).map((c) => c.reason));
+    expect((await h.changes(byPage)).map((c) => c.reason)).toContain(reason);
+  });
+
+  it.each(CASES)("%s by a user without approve_spec: refused with the comment's wording, once, and nothing is written", async (command, from) => {
+    const h = await harness();
+    for (const ref of [issueRef(1), localRef(2)]) {
+      const it1 = await h.itemIn(ref, from);
+      const r = await h.request(it1, command, null, READER);
+      await h.apply();
+      await h.apply();
+      expect(await h.get(it1)).toEqual(it1);
+      expect(await h.changes(it1)).toEqual([]);
+      expect(await h.store.listRuns(it1.id)).toEqual([]);
+      const reply = `\`/${command}\` was not applied: it needs write permission on this repository (\`not_a_collaborator\`).`;
+      expect(await h.refusals(it1, r)).toEqual([reply]);
+      expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(reply);
+    }
+  });
+
+  it.each(CASES)("%s where the state cannot take it: the comment's refusal, posted once and stored on the row", async (command) => {
+    const h = await harness();
+    for (const ref of [issueRef(1), localRef(2)]) {
+      const it1 = await h.itemIn(ref, MERGE_PENDING);
+      const r = await h.request(it1, command, null);
+      await h.apply();
+      await h.apply();
+      expect(await h.get(it1)).toEqual(it1);
+      const [reply, ...more] = await h.refusals(it1, r);
+      expect(more).toEqual([]);
+      expect(reply).toMatch(new RegExp(`^\`/${command}\` was not applied: `));
+      expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(reply);
+    }
+  });
+
+  it.each(CASES)("%s applied a second time (the same row again, before its mark) changes nothing", async (command, from, reason) => {
+    const h = await harness();
+    const it1 = await h.itemIn(issueRef(1), from);
+    const r = await h.request(it1, command, null);
+    await h.apply();
+    await (await h.controller.unit("app-requests")).applyAppRequest(r);
+    expect((await h.changes(it1)).filter((c) => c.reason === reason)).toHaveLength(1);
+    expect(await h.store.listRuns(it1.id)).toHaveLength(1);
+    expect(await h.refusals(it1, r)).toEqual([]);
+  });
+
+  it("the note is the note: a `+paths` line is not read, and the paths stay as they were", async () => {
     const h = await harness();
     const it1 = await h.itemIn(issueRef(1), SPEC_PENDING);
-    const r = await h.request(it1, "retry", "again");
+    await h.request(it1, "approve", "+paths src/other.ts");
+    await h.apply();
+    expect(await h.get(it1)).toMatchObject({ stage: "RUNNING", allowed_paths: it1.allowed_paths });
+    expect((await h.changes(it1)).find((c) => c.reason === "spec_approved")?.detail).toMatchObject({ note: "+paths src/other.ts" });
+  });
+
+  it("the check is approve_spec on the item for the request's user, with the request's edge passport", async () => {
+    const asked: unknown[] = [];
+    const fake = new FakeAuth();
+    const recording: AuthProvider = {
+      resolve: (i) => fake.resolve(i),
+      authorize: async (p: Principal, action: AuthAction, resource: AuthResource, passport?: CommandPassport) => {
+        asked.push({ user_id: p.user_id, action, resource, passport });
+        return fake.authorize(p, action);
+      },
+    };
+    const h = await harness({ auth: recording });
+    const it1 = await h.itemIn(localRef(1), FAILED_IMPLEMENT);
+    // The row as the unit gets it, with its passport (the request's edge passport, recorded by the page).
+    const r = { ...(await h.request(it1, "retry", null)), passport_id: "pp1" };
+    await (await h.controller.unit("app-requests")).applyAppRequest(r);
+    expect(asked).toEqual([{ user_id: WRITER, action: "approve_spec", resource: { kind: "work_item", id: it1.id }, passport: { id: "pp1", at: r.created_at } }]);
+  });
+});
+
+describe("app commands still not applied", () => {
+  it("the refusal names the commands that are: approve, merge, reject, resolve, retry, revise and verdict", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(issueRef(1), SPEC_PENDING);
+    const r = await h.request(it1, "budget", "1000");
     await h.apply();
     expect(await h.get(it1)).toEqual(it1);
     expect(await h.refusals(it1, r)).toEqual([
-      "`retry` was not applied: only `approve`, `merge`, `reject`, `revise` and `verdict` are applied from an app request; reply `/retry` on the issue instead.",
+      "`budget` was not applied: only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise` and `verdict` are applied from an app request; reply `/budget` on the issue instead.",
     ]);
   });
 });

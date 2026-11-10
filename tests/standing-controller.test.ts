@@ -3,7 +3,7 @@ import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { PROTECTED_PATHS, protectedCategory } from "../src/core/standing.js";
-import type { Tier, WorkItem, WorkerId } from "../src/core/types.js";
+import type { Tier, UserId, WorkItem, WorkerId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { newStore } from "./helpers/store.js";
@@ -257,6 +257,20 @@ describe("standing approvals: the owner turns a rule off", () => {
     expect(replies[0]!.body).toContain(`/standing accept ${RULE}`);
     // The next tier 1 spec waits for /approve again.
     expect(await f.get(await f.triaged(1))).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+  });
+
+  it.each([["reject", "/reject"], ["revise", "/revise"]])("a dashboard %s on an item the rule approved turns it off with the comment's reply", async (command, cmd) => {
+    const f = await factory();
+    await ruleOn(f);
+    const it = await approvedByRule(f);
+    const { request } = await f.store.recordAppCommandRequest({ key: `app:${command}`, actor: "github:1" as UserId, command, args: { work_item_id: it.id, note: "smaller" } });
+    await f.controller.tickCommands();
+    await f.controller.tickOutbox();
+    expect(await f.rule()).toMatchObject({ enabled: false, set_by: "github:1" });
+    const replies = f.posts(`standing-off:app-${request.seq}`, it);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.body).toContain(`\`${cmd}\``);
+    expect(replies[0]!.body).toContain(`/standing accept ${RULE}`);
   });
 
   it("a /reject on an item a person approved leaves the rule on", async () => {

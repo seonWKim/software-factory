@@ -334,6 +334,7 @@ function commitFile(repo: string, path: string, content: string, msg: string): v
 }
 
 describe("worker: a run with several agent calls stores the sum", () => {
+  // Real git (clones, pushes, a merge) takes several seconds under host load: its own timeout, like sqlite-multiprocess.
   it("implement + conflict step: usage is summed, cost summed, model from the last call", async () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
@@ -389,7 +390,7 @@ describe("worker: a run with several agent calls stores the sum", () => {
     if (impl.outcome?.status !== "succeeded") return;
     expect(impl.outcome.data.usage).toEqual({ ...sum, cost_usd: expect.closeTo(3.2, 10) });
     expect(impl.outcome.data.tokens).toBe(full(320));
-  });
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------------------------

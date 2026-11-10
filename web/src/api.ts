@@ -132,10 +132,12 @@ export interface ItemRow {
   /** The Merge button: enabled, or disabled with the reason. */
   merge?: MergeReadiness;
   /**
-   * What a Needs-you row says: the reason and the command to type (src/ui/need.ts); absent for other rows.
-   * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
+   * What a Needs-you row says: the reason (src/ui/need.ts); absent for other rows. `anchor`: the item page's anchor
+   * of the newest factory thread entry (`msg-<seq>`), null when it has none.
    */
-  need?: { reason: string; command: string | null; anchor?: string | null };
+  need?: { reason: string; anchor?: string | null };
+  /** A Needs-you row's buttons: the state-changing commands that apply now (not budget), each allowed or not for the viewer. */
+  commands?: ItemCommand[];
   why?: Why;
   /** The split parent (null for any other item) and this item's place among its phases. */
   parent_id?: string | null;
@@ -245,10 +247,8 @@ export interface ItemDetail {
   sleeps?: HostSleepRow[];
   /** The item's thread (src/ui/thread.ts), oldest first; every body already through the Withholder. */
   thread?: ThreadEntry[];
-  /** The commands that apply in the item's current state and the viewer's grants allow, in the order to show them. */
+  /** The commands that apply in the item's current state, each allowed or not for the viewer, in the order to show them. */
   commands?: ItemCommand[];
-  /** The commands that apply now but the viewer's grants leave out, with the reason the controller would refuse them; null when none. */
-  commands_withheld?: { names: string[]; reason: string } | null;
   /** A spec waiting for approval (or at the revision limit): its In short and its decisions; null for any other item. */
   spec?: WaitingSpec | null;
   /** The item's app command requests, oldest first; the note is never returned. */
@@ -337,6 +337,10 @@ export interface ItemCommand {
   name: string;
   usage: string;
   description: string;
+  /** Whether the viewer's grants allow it (approve_spec, as the controller checks it). */
+  allowed: boolean;
+  /** Why not, in the controller's refusal words; null when allowed. */
+  reason: string | null;
 }
 
 /** One app command request: `handled_at` null while the controller has not applied or refused it. */

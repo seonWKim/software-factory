@@ -4,6 +4,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
+import type { PageAction } from "../src/ui/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, respond } from "../src/ui/server.js";
 import { refusalText, roleRefusal } from "../src/core/commands.js";
@@ -177,7 +178,7 @@ describe("app command requests: refusals", () => {
   it("a command that is not applied from an app request gets one refusal reply and no state change", async () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
-    const r = await h.request("k1", WRITER, "retry", { work_item_id: it1.id, note: "more" });
+    const r = await h.request("k1", WRITER, "budget", { work_item_id: it1.id, note: "1000" });
     await h.controller.tickCommands();
     await h.controller.tickCommands();
 
@@ -185,7 +186,7 @@ describe("app command requests: refusals", () => {
     expect(await h.store.listRuns(it1.id)).toEqual([]);
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
     expect(posted).toHaveLength(1);
-    expect(posted[0]!.body).toBe("`retry` was not applied: only `approve`, `merge`, `reject`, `revise` and `verdict` are applied from an app request; reply `/retry` on the issue instead.");
+    expect(posted[0]!.body).toBe("`budget` was not applied: only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise` and `verdict` are applied from an app request; reply `/budget` on the issue instead.");
     expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(posted[0]!.body);
     expect(h.source.comments).toHaveLength(1);
   });
@@ -196,7 +197,7 @@ describe("app command requests: refusals", () => {
     const r = await h.request("k1", WRITER, "@everyone <b>", { work_item_id: it1.id });
     await h.controller.tickCommands();
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
-    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve`, `merge`, `reject`, `revise` and `verdict` are applied from an app request."]);
+    expect(posted.map((c) => c.body)).toEqual(["The command was not applied: only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise` and `verdict` are applied from an app request."]);
   });
 
   it("a request for no known work item is refused on its row only: nothing is posted", async () => {
@@ -306,7 +307,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     expect(approval?.detail).toMatchObject({ note: "keep it small" });
   });
 
-  it("a POST by a user without the permission, or of another command, is refused by the controller and shown in replies", async () => {
+  it("a POST by a user without the permission, or of a command the state cannot take, is refused by the controller and shown in replies", async () => {
     const h = await harness();
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     expect((await post(page(h, READER), it1, { command: "approve" })).status).toBe(202);
@@ -317,7 +318,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     const replies = (JSON.parse(r.body) as { replies: { command: string; refusal: string | null; handled_at: string | null }[] }).replies;
     expect(replies.map((x) => x.command)).toEqual(["approve", "retry"]);
     expect(replies[0]!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
-    expect(replies[1]!.refusal).toContain("only `approve`, `merge`, `reject`, `revise` and `verdict` are applied from an app request");
+    expect(replies[1]!.refusal).toBe("`/retry` was not applied: there is no failed run to retry.");
     for (const x of replies) expect(x.handled_at).not.toBeNull();
   });
 
@@ -380,18 +381,15 @@ describe("the page's commands actor (uiCommandsActor, design 09)", () => {
 describe("the item API's commands: by phase and by the viewer's grants (issue #528)", () => {
   const HOST = "127.0.0.1:4310";
   const TOKEN = newCsrfToken();
-  type Listed = { commands: { name: string }[]; commands_withheld: { names: string[]; reason: string } | null };
+  type Listed = { commands: { name: string; allowed: boolean; reason: string | null }[] };
 
-  /** The page as `actor`, its approve_spec checked as compose.ts checks it: the local auth plugin over the local grants, on the project. */
+  /** The page as `actor`, its grants checked as compose.ts checks them: the local auth plugin over the local grants, on the project. */
   function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): ApiDeps {
     const auth = new LocalAuthProvider(h.store);
+    const allowed = (action: PageAction) => auth.authorize({ user_id: actor, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
-      health: new HealthMonitor(async () => [], h.clock), commands: { actor, source: "environment", token: TOKEN },
-      pauses: {
-        principal: async () => actor, csrfToken: TOKEN, log: silent,
-        authorize: (user) => auth.authorize({ user_id: user, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT_KEY }),
-      },
+      health: new HealthMonitor(async () => [], h.clock), commands: { actor, source: "environment", token: TOKEN, allowed },
     };
   }
   const listed = async (d: ApiDeps, it: WorkItem): Promise<Listed> =>
@@ -410,18 +408,19 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     ["CLOSED without a merge", { stage: "CLOSED", close_reason: "rejected" }, []],
   ];
 
-  it("each stage lists only the commands that apply in it, for a viewer whose grant allows them", async () => {
+  it("each stage lists only the commands that apply in it, each allowed for a viewer whose grant allows them", async () => {
     const h = await harness({ localAuth: true });
     const owner = "local:owner@example.com" as UserId;
     await h.store.claimLocalOwner(owner);
     let n = 0;
     for (const [stage, patch, want] of STAGES) {
       const l = await listed(page(h, owner), await h.itemIn(patch, ++n));
-      expect({ stage, names: names(l), withheld: l.commands_withheld }).toEqual({ stage, names: want, withheld: null });
+      expect({ stage, names: names(l) }).toEqual({ stage, names: want });
+      for (const c of l.commands) expect(c, stage).toMatchObject({ allowed: true, reason: null });
     }
   });
 
-  it("team: a requester sees no approve, reject or revise; the reason is the refusal the controller gives the same command", async () => {
+  it("team: a requester sees approve, reject and revise disallowed; the reason is the refusal the controller gives the same command", async () => {
     const h = await harness({ localAuth: true });
     const owner = "local:owner@example.com" as UserId;
     const helper = "local:helper@example.com" as UserId;
@@ -429,8 +428,9 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     expect(await h.store.setLocalUserRole(helper, "requester", owner)).toMatchObject({ ok: true });
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const l = await listed(page(h, helper), it1);
-    expect(l.commands).toEqual([]);
-    expect(l.commands_withheld).toEqual({ names: ["approve", "reject", "revise"], reason: roleRefusal(helper, "no_role") });
+    expect(l.commands.map((c) => [c.name, c.allowed, c.reason])).toEqual(
+      ["approve", "reject", "revise"].map((n) => [n, false, roleRefusal(helper, "no_role")]),
+    );
     // Sent anyway (another page, the CLI): the controller, with the local auth plugin as compose.ts wires it, refuses it
     // with the same reason.
     const local = new LocalAuthProvider(h.store);
@@ -438,9 +438,9 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     await h.request("app-x", helper, "approve", { work_item_id: it1.id });
     await controller.tickCommands();
     const [row] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
-    expect(row!.refusal).toBe(refusalText("/approve", l.commands_withheld!.reason));
-    // A stage with nothing to send withholds nothing.
-    expect((await listed(page(h, helper), await h.itemIn(IMPLEMENTING, 2))).commands_withheld).toBeNull();
+    expect(row!.refusal).toBe(refusalText("/approve", l.commands[0]!.reason!));
+    // A stage with nothing to send lists nothing.
+    expect((await listed(page(h, helper), await h.itemIn(IMPLEMENTING, 2))).commands).toEqual([]);
   });
 
   it("solo: with no link and no grants, the dashboard and the CLI both offer and take approve", async () => {

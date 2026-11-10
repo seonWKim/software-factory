@@ -36,7 +36,7 @@ let afterPost: (() => void) | null;
 const ROW = {
   id: "wi_1", source: SRC, title: "Thread item", level: "needs_human", badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human",
   blocked_reason: "agent_needs_human", close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 3,
-  dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "the agent asks a question", command: "/retry", anchor: "msg-7" },
+  dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "the agent asks a question", anchor: "msg-7" },
 };
 
 beforeEach(() => {
@@ -105,7 +105,7 @@ describe("item page: thread", () => {
 
 describe("item page: command reply in the thread", () => {
   it("a command from the command box gets 202, and its reply shows in the thread once the item is read again", async () => {
-    detail = { ...detail, commands: [{ name: "approve", usage: "/approve", description: "approve the spec" }] };
+    detail = { ...detail, commands: [{ name: "approve", usage: "/approve", description: "approve the spec", allowed: true, reason: null }] };
     // The controller writes its reply after the request: the next read of the item has it.
     afterPost = () => {
       detail = {

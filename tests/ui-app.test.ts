@@ -276,7 +276,7 @@ describe("ui app: item commands markup", () => {
       },
       timeline: [],
       runs: [],
-      commands: names.map((name) => ({ name, usage: `/${name}`, description: name })),
+      commands: names.map((name) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null })),
       replies: [],
     };
     const client = new QueryClient();
@@ -315,7 +315,7 @@ describe("ui app: the Merge button", () => {
       },
       timeline: [],
       runs: [],
-      commands: [{ name: "retry", usage: "/retry", description: "retry" }],
+      commands: [{ name: "retry", usage: "/retry", description: "retry", allowed: true, reason: null }],
       replies: refusal === null ? [] : [{ seq: 3, command: "merge", created_at: AT, handled_at: AT, refusal }],
     };
     const client = new QueryClient();
@@ -350,10 +350,10 @@ describe("ui app: the Merge button", () => {
       id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, level: "ready_to_merge", badges: [],
       stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, change_ref: id,
       change_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge,
-      need: { reason: "mergeable", command: null, anchor: null },
+      need: { reason: "mergeable", anchor: null },
     });
-    const table = (merge: boolean) => renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemsTable, {
-      items: [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })], now: Date.parse(AT), label: "Needs you", empty: "none", merge,
+    const table = (actions: boolean) => renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemsTable, {
+      items: [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })], now: Date.parse(AT), label: "Needs you", empty: "none", actions,
     })));
     const html = table(true);
     const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</tr>", html.indexOf(`data-key="${id}"`)));

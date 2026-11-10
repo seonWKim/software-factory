@@ -1077,7 +1077,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     resolveProject: storeProjectResolver(store, { owner, name }),
     csrfToken: token,
   };
-  // The owner check for "Resume now" and the Merge button's approve_merge check: the configured auth plugin over the
+  // The owner check for "Resume now" and the page's command checks (approve_spec, approve_merge): the configured auth plugin over the
   // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
   // `factory resume` needs no grant). A remote-only grant therefore shows no Merge button.
   const base = { ...p.base, github: NO_FORGE };
@@ -1098,7 +1098,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const actor = who.actor;
   const commands: UiCommands = {
     ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    mergeAllowed: async () => actor !== null && (await onProject(actor, "approve_merge")).allow,
+    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action)),
     ...(actor !== null ? { passport: () => identity.edge({ provider: "local", subject: actor }, "ui") } : {}),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.

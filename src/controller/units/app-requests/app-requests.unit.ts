@@ -1,5 +1,5 @@
-// Applies the status page's requests (approve, reject, revise, verdict, merge; anything else is refused).
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Applies the status page's requests (the gate commands approve, reject, revise, retry and resolve, verdict, merge;
+// anything else is refused). Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { COMMANDS, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
@@ -11,34 +11,54 @@ import { controllerUnit } from "../context.js";
 
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
-/** The app commands that answer as their comment command in a refusal. */
-const AS_COMMENT: ReadonlyMap<string, string> = new Map([
-  ["approve", COMMAND.spec_approved], ["reject", COMMAND.spec_rejected], ["revise", COMMAND.revise_requested], ["verdict", "/verdict"],
+/** The app's gate commands, as the comment command each one is (design §4, app requests). */
+const GATE: ReadonlyMap<string, Exclude<CommandEvent["kind"], "budget_continue">> = new Map([
+  ["approve", "spec_approved"], ["reject", "spec_rejected"], ["revise", "revise_requested"], ["retry", "retry_requested"], ["resolve", "resolve_requested"],
 ]);
+/** The commands applied from an app request, as a refusal names them. */
+const APPLIED = "only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise` and `verdict` are applied from an app request";
 
 /** The page's edge passport, checked for expiry at the time the request was recorded (absent: none). */
 function appPassport(r: AppCommandRequest) {
   return r.passport_id === undefined ? undefined : { id: r.passport_id, at: r.created_at };
 }
 
-/** Applies the status page's requests (approve, reject, revise, verdict, merge; anything else is refused). */
+/**
+ * The comment command event of an app gate command on `item`, keyed `key`: the note is the approve's or retry's
+ * note, the resolve's notes, the reject's reason or the revise's feedback. Never on a PR: a revise here is the
+ * issue's `/revise`, and no `+paths` is read.
+ */
+function gateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, item: WorkItem, key: string, r: AppCommandRequest, note: string): CommandEvent {
+  const who = { provider: "local" as const, subject: r.actor };
+  const at = { source: item.source, comment_id: key };
+  switch (kind) {
+    case "spec_approved": return { kind, ...at, approver: who, note };
+    case "spec_rejected": return { kind, ...at, approver: who, reason: note };
+    case "revise_requested": return { kind, ...at, requester: who, feedback: note, pr: null };
+    case "retry_requested": return { kind, ...at, requester: who, note };
+    case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
+  }
+}
+
+/** Applies the status page's requests (approve, reject, revise, retry, resolve, verdict, merge; anything else is refused). */
 export class AppRequestsUnit {
   constructor(private readonly c: Ctx) {}
 
   /**
-   * One app command request (design §4, app requests): `approve`, `reject` and `revise` go through the comment command
-   * path and get the `/approve`, `/reject` or `/revise` permission check, note scan and transition (a reject then closes
-   * its issue and its open PR, as `/reject` does; a revise stores its feedback as typed); `verdict` gets the
-   * `/verdict` check, parser and store, keyed `app-<seq>`; `merge` on a local item with no PR goes to mergeLocal, the same local merge as `factory merge`, and on any item
-   * with a PR to the PR merge (design §9, the Merge button). Each puts the request's seq on the state change (a
-   * verdict on its key). Any other command is refused. A refusal is posted once on the item's source, keyed on the
-   * request, then stored on the row by the conditional mark. A failed post leaves the request pending for the next
-   * tick. Safe to run twice: a request whose transition is already stored (an earlier try, another replica) is
-   * marked applied.
+   * One app command request (design §4, app requests): `approve`, `reject`, `revise`, `retry` and `resolve` go through
+   * the comment command path (CommandsUnit.gateCommand) with the request's user and edge passport: the same
+   * `approve_spec` check, note scan, transition, standing-rule follow-up and reject close as the comment. `verdict` gets
+   * the `/verdict` check, parser and store, keyed `app-<seq>`; `merge` on a local item with no PR goes to mergeLocal,
+   * the same local merge as `factory merge`, and on any item with a PR to the PR merge (design §9, the Merge button).
+   * Each puts the request's seq on the state change (a verdict on its key). Any other command is refused. A refusal
+   * is posted once on the item's source, keyed on the request, then stored on the row by the conditional mark. A
+   * failed post leaves the request pending for the next tick. Safe to run twice: a request whose transition is
+   * already stored (an earlier try, another replica) is marked applied.
    */
   async applyAppRequest(r: AppCommandRequest): Promise<void> {
     const known = COMMANDS.some((c) => c.name === r.command);
-    const name = AS_COMMENT.get(r.command) ?? (QUOTABLE_COMMAND.test(r.command) ? r.command : null);
+    const gate = GATE.get(r.command);
+    const name = gate ? COMMAND[gate] : r.command === "verdict" ? "/verdict" : QUOTABLE_COMMAND.test(r.command) ? r.command : null;
     const say = (reason: string) => (name ? refusalText(name, reason) : `The command was not applied: ${reason}.`);
     const raw = r.args.work_item_id;
     const id = typeof raw === "string" && raw !== "" ? (raw as WorkItemId) : null;
@@ -63,10 +83,10 @@ export class AppRequestsUnit {
     } else if (r.command === "verdict") {
       const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "record_verdict", item.id, true, appPassport(r));
       refusal = "refuse" in principal ? principal.refuse : await this.c.unit("verdicts").verdictFrom(item.id, { comment_id: key, target: "issue" }, principal, note ?? "");
-    } else if (r.command === "approve" || r.command === "reject" || r.command === "revise") {
-      refusal = await this.specCommand(r, item, key, note);
+    } else if (gate) {
+      refusal = await this.gateRequest(r, item, gate, key, note);
     } else {
-      refusal = "only `approve`, `merge`, `reject`, `revise` and `verdict` are applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
+      refusal = APPLIED + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     }
     // Refused here, but applied by a concurrent try of the same request: that one stands.
     if (refusal !== null && (await applied())) refusal = null;
@@ -74,30 +94,21 @@ export class AppRequestsUnit {
   }
 
   /**
-   * An app `approve`, `reject` or `revise`, as the comment's: the `approve_spec` check, the note (the reject's reason,
-   * the revise's feedback) through the egress scan, the transition with the request's seq, the standing-rule
-   * follow-up and a reject's close. A revise is the issue's `/revise` (`revise_requested`): its feedback is stored as typed.
+   * An app gate command through the comment's handler, tagged with the request's seq. A reject's reason and a revise's
+   * feedback are new text the factory would publish (the reject's close quotes it), so they pass the egress scan
+   * first, as an approve's, retry's or resolve's note does in the handler; a comment's own text is already on its source.
    */
-  private async specCommand(r: AppCommandRequest, item: WorkItem, key: string, raw: string | undefined): Promise<string | null> {
-    const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true, appPassport(r));
-    if ("refuse" in principal) return principal.refuse;
-    const note = await this.c.unit("commands").approvalNote(item.id, raw, AS_COMMENT.get(r.command));
-    if ("refuse" in note) return note.refuse;
-    const text = note.note ?? "";
-    const who = { provider: "local" as const, subject: r.actor };
-    const at = { source: item.source, comment_id: key };
-    const e: CommandEvent = r.command === "reject"
-      ? { kind: "spec_rejected", ...at, approver: who, reason: text }
-      : r.command === "revise"
-        ? { kind: "revise_requested", ...at, requester: who, feedback: text }
-        : { kind: "spec_approved", ...at, approver: who };
-    // The reject's reason and the revise's feedback are its spec feedback, never an approval note on the state change.
-    const approval = e.kind === "spec_approved" ? note.note : null;
-    const refusal = await this.c.unit("commands").applyCommand(item.id, e, { kind: "user", id: principal.user_id }, approval, { [APP_REQUEST]: r.seq });
-    if (refusal !== null) return refusal;
-    await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
-    if (e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
-    return null;
+  private async gateRequest(
+    r: AppCommandRequest, item: WorkItem, kind: Exclude<CommandEvent["kind"], "budget_continue">, key: string, raw: string | undefined,
+  ): Promise<string | null> {
+    let note = raw ?? "";
+    if (kind === "spec_rejected" || kind === "revise_requested") {
+      const scanned = await this.c.unit("commands").approvalNote(item.id, raw, COMMAND[kind]);
+      if ("refuse" in scanned) return scanned.refuse;
+      note = scanned.note ?? "";
+    }
+    const app = { user_id: r.actor, passport: appPassport(r) };
+    return this.c.unit("commands").gateCommand(item, gateEvent(kind, item, key, r, note), app, { [APP_REQUEST]: r.seq });
   }
 
   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */
