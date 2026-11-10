@@ -5,6 +5,7 @@ import { branchFor } from "../../../core/policy.js";
 import { MYSQL_STEPS_DIR, type Renumbering, mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "../../../core/resolve.js";
 import type { Run, WorkItem } from "../../../core/types.js";
+import { errorText } from "../../../core/log.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
 import { NO_HOOKS, RunFailure, gitIdentity, specQuery, staleStepNote, tail } from "../../support.js";
@@ -196,7 +197,7 @@ async function renumberPendingMerge(w: Worker, run: Run, handle: SandboxHandle, 
     await w.git(handle, [...NO_HOOKS, "clean", "-fdq", "--", MYSQL_STEPS_DIR]);
     w.d.log.warn("migration renumbering failed: the index is restored and the run goes on", {
       run_id: run.id,
-      error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+      error: errorText(err),
     });
     return [];
   }

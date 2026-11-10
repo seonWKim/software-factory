@@ -2,6 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
+import { errorText } from "../../../core/log.js";
 import { type Actor, type CloseReason, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { SYSTEM, SOURCE_CLOSE_PENDING, quote } from "../support.js";
@@ -182,7 +183,7 @@ export class ClosesUnit {
     } catch (err) {
       this.c.k.d.log.warn("reject comment or close failed; retried on the next tick", {
         work_item_id: id,
-        error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+        error: errorText(err),
       });
     }
   }

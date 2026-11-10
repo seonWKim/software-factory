@@ -2,6 +2,7 @@
 
 import { LiveSettings, type ProjectSettings, modeOf, settingValues } from "../../core/settings.js";
 import { LOCAL_SOURCE, threadDelivery } from "../../core/local-merge.js";
+import { errorText } from "../../core/log.js";
 import { type SourceRef, type SourceType, type WorkItem } from "../../core/types.js";
 import type { Forge } from "../../interfaces/forge.js";
 import type { SourceAdapter } from "../../interfaces/source-adapter.js";
@@ -324,7 +325,7 @@ export class Kernel {
       // poll, and every other step (local work) goes on.
       const until = rateLimitWait(err);
       if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
-      else this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      else this.d.log.error("loop step failed", { step: what, error: errorText(err) });
       return err;
     }
   }

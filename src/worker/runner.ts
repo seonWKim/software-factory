@@ -9,7 +9,7 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
-import type { LogFields } from "../core/log.js";
+import { errorText, type LogFields } from "../core/log.js";
 import { type CheckRound, checkCommands, commandText, redact, runChecks } from "../core/checks.js";
 import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
@@ -93,7 +93,7 @@ export class Worker {
       if (t.due) await this.checkWake(Date.parse(t.due), Date.parse(t.now), null);
       while (!signal.aborted) {
         const worked = await this.tick().catch((err: unknown) => {
-          this.d.log.error("worker tick failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+          this.d.log.error("worker tick failed", { error: errorText(err) });
           return false;
         });
         if (!worked) return;
@@ -143,7 +143,7 @@ export class Worker {
    */
   every(name: string, period: Period, stop: AbortSignal, onTick: TickHandler): Promise<void> {
     const g = this.ticks.create((schedule, err) =>
-      this.d.log.error("worker tick failed", { schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }), this.d.clock);
+      this.d.log.error("worker tick failed", { schedule, error: errorText(err) }), this.d.clock);
     g.schedule(name, period, onTick);
     return g.run(stop);
   }
@@ -165,7 +165,7 @@ export class Worker {
     this.lastSleep = { due, woke };
     const sleep = { worker_id: this.d.id, woke_at: new Date(woke).toISOString() as Timestamp, gap_ms: late, run_id: run?.id ?? null };
     await this.d.store.recordHostSleep(sleep).catch((err: unknown) =>
-      this.d.log.warn("host sleep record failed", { worker_id: this.d.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }));
+      this.d.log.warn("host sleep record failed", { worker_id: this.d.id, error: errorText(err) }));
   }
 
   /** Claims and executes at most one run. Returns whether it found one. */
@@ -193,7 +193,7 @@ export class Worker {
 
   /** KeepAwake must not throw, but if one does, the run goes on: staying awake is best effort. */
   awakeFailed(op: string, err: unknown): void {
-    this.d.log.warn(`keep-awake ${op} failed`, { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+    this.d.log.warn(`keep-awake ${op} failed`, { error: errorText(err) });
   }
 
   /**
@@ -459,7 +459,7 @@ export class Worker {
     for (const id of s.sessions) {
       if (id === s.kept?.session) continue;
       await this.d.runner.removeSession(id).catch((err: unknown) =>
-        this.d.log.warn("session removal failed", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }));
+        this.d.log.warn("session removal failed", { error: errorText(err) }));
     }
   }
 
@@ -794,7 +794,7 @@ export class Worker {
     try {
       await this.d.store.recordConflicts({ project: item.project, paths, event_key: `${item.id}:${baseSha}` });
     } catch (err) {
-      this.d.log.warn("recording conflicts failed", { work_item_id: item.id, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      this.d.log.warn("recording conflicts failed", { work_item_id: item.id, error: errorText(err) });
     }
   }
 
@@ -1003,7 +1003,7 @@ export class Worker {
   async withIndex(prompt: string, query: string): Promise<string> {
     if (!this.d.capability) return prompt;
     const found = await this.d.capability.search(query, INDEX_SIZE).catch((err: unknown) => {
-      this.d.log.warn("capability search failed; no doc index", { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      this.d.log.warn("capability search failed; no doc index", { error: errorText(err) });
       return [];
     });
     if (found.length === 0) return prompt;

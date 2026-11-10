@@ -5,6 +5,7 @@
 // the effect runs first and the inbox row follows, so a crash in between runs the effect again, which those
 // handlers are safe to.
 
+import { errorText } from "../core/log.js";
 import { deliver, type EventBus, type Inbox, type NackError } from "../bus/index.js";
 import { causeOf, envelope, type Draft, type Envelope } from "../shared/envelope.js";
 import type { HandlerContext, HandlerDescriptor } from "../shared/handler.js";
@@ -28,7 +29,7 @@ export interface ConsumerOptions<C extends HandlerContext> {
 const DEFAULT_BATCH = 100;
 
 function failed(err: unknown): NackError {
-  return { retryable: true, code: "error", detail: err instanceof Error ? err.message.slice(0, 300) : String(err) };
+  return { retryable: true, code: "error", detail: errorText(err) };
 }
 
 export class ComponentConsumer<C extends HandlerContext> {

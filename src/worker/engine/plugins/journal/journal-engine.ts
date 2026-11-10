@@ -13,6 +13,7 @@
 // - code_version: a run with a stored step result from other code is resumed only if `resumes(version)` says so;
 //   otherwise it is left for a worker on that revision (RFC 0015 §8 version pinning).
 
+import { errorText } from "../../../../core/log.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../../state/index.js";
 import type { Tick } from "../../../../shared/ticks/tick-generator.js";
 import {
@@ -158,7 +159,7 @@ export class JournalEngine implements ExecutionEngine {
       if (!(err instanceof LeaseLostError)) {
         await this.finish(run, stepId, { status: "failed", error_code: errorCode(err) }).catch((journal: unknown) =>
           this.opts.log?.warn("step failure not journaled", {
-            run_id: run.id, step_id: stepId, error_code: errorCode(err), error: journal instanceof Error ? journal.message.slice(0, 300) : "unknown",
+            run_id: run.id, step_id: stepId, error_code: errorCode(err), error: errorText(journal),
           }));
       }
       throw err;

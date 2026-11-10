@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
-import type { Logger } from "../../core/log.js";
+import { errorText, type Logger } from "../../core/log.js";
 import type { KeepAwake } from "../../interfaces/keep-awake.js";
 
 /** The part of a child process this plugin uses. */
@@ -57,12 +57,12 @@ export class CaffeinateKeepAwake implements KeepAwake {
     try {
       child.kill();
     } catch (err) {
-      this.opts.log.warn("keep-awake: caffeinate could not be stopped", { error: message(err) });
+      this.opts.log.warn("keep-awake: caffeinate could not be stopped", { error: errorText(err) });
     }
   }
 
   private warn(err: unknown): void {
-    this.opts.log.warn("keep-awake: caffeinate failed to start", { error: message(err) });
+    this.opts.log.warn("keep-awake: caffeinate failed to start", { error: errorText(err) });
   }
 }
 
@@ -80,8 +80,4 @@ export function requireExecutable(name: string, path: string | undefined): void 
     }
   }
   throw new Error(`no ${name} executable on PATH`);
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message.slice(0, 300) : "unknown";
 }
