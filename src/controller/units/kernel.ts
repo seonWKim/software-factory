@@ -52,7 +52,13 @@ export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<Contro
    * local UI) under its passport, and the controller's automatic steps under its service passport (null: no
    * Identity, allowed). A check: it changes no controller state; Identity audits each decision.
    */
-  readonly auth: { readonly forge: ControllerDeps["auth"]; readonly local: ControllerDeps["auth"] | null; readonly service: ControllerDeps["service_auth"] | null };
+  readonly auth: {
+    readonly forge: ControllerDeps["auth"];
+    readonly local: ControllerDeps["auth"] | null;
+    /** Slack thread commands' plugin: `slack_auth`, else the local one (issue #498), else the forge's (issue #486). */
+    readonly slack: ControllerDeps["auth"];
+    readonly service: ControllerDeps["service_auth"] | null;
+  };
 };
 
 /**
@@ -183,7 +189,7 @@ export class Kernel {
       scan: (channel, content) => d.scanner.scan(channel, content),
       forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
       llm: d.llm ?? null,
-      auth: { forge: d.auth, local: d.local_auth ?? null, service: d.service_auth ?? null },
+      auth: { forge: d.auth, local: d.local_auth ?? null, slack: d.slack_auth ?? d.local_auth ?? d.auth, service: d.service_auth ?? null },
     };
   }
 

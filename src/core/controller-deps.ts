@@ -56,13 +56,15 @@ export interface ControllerDeps {
    * comment or status then goes to the item's own source.
    */
   forge?: Forge | null;
-  /** Authorizes commands from the forge (and every non-local origin). */
+  /** Authorizes commands from the forge (and every origin with no plugin of its own). */
   auth: AuthProvider;
   /**
    * Authorizes commands from the local CLI (identity provider `local`) and the local UI (app requests); issue
    * #318: local commands never depend on the forge's auth plugin. Absent: `auth`.
    */
   local_auth?: AuthProvider;
+  /** Authorizes commands from Slack threads (identity provider `slack`; issue #486). Absent: `local_auth`, else `auth` (issue #498). */
+  slack_auth?: AuthProvider;
   /**
    * The controller's automatic steps (auto mode's spec approvals and merges) authorized under its service passport
    * (RFC 0015 §8, `service:controller`), audited there. Absent (no Identity: tests, a startup check): allowed.
