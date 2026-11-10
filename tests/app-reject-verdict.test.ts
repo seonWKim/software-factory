@@ -8,7 +8,8 @@ import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The dashboard's reject and verdict (issue #452): an app `reject` goes through the `/reject` transition and its
 // close, which now also closes an open PR; an app `verdict` is stored through the verdict path, also on a local item
-// with no PR. A refusal is one reply on the item's source and changes nothing.
+// with no PR. A dashboard `revise` (issue #527) is the issue's `/revise`, its feedback stored as typed. A refusal is one
+// reply on the item's source and changes nothing.
 
 /** FakeAuth lets github:1 do everything, nobody else. */
 const WRITER = "github:1" as UserId;
@@ -302,15 +303,80 @@ describe("dashboard verdict", () => {
   });
 });
 
-describe("app commands still not applied", () => {
-  it("the refusal names the commands that are: approve, merge, reject and verdict", async () => {
+describe("dashboard revise (issue #527)", () => {
+  const FEEDBACK = "### Problem\nSay why the gate is slow.\n\n### Done when\nAdd a timing test.";
+
+  it("on a spec waiting for approval: the /revise transition, the feedback stored as typed, the seq on the change, a new triage run", async () => {
+    const h = await harness();
+    for (const [n, ref] of [[1, issueRef(1)], [2, localRef(2)]] as const) {
+      const it1 = await h.itemIn(ref, SPEC_PENDING);
+      const r = await h.request(it1, "revise", FEEDBACK);
+      await h.apply();
+      expect(await h.get(it1), `item ${n}`).toMatchObject({ stage: "NEW", blocked_on: "none", blocked_reason: null, spec_feedback: FEEDBACK, revision_count: 1 });
+      const revise = (await h.changes(it1)).find((c) => c.reason === "spec_revision_requested");
+      expect(revise).toMatchObject({ actor: { kind: "user", id: WRITER }, detail: expect.objectContaining({ app_request: r.seq }) });
+      expect((await h.store.listRuns(it1.id)).map((x) => x.kind)).toEqual(["triage"]);
+      expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ refusal: null });
+      expect(await h.refusals(it1, r)).toEqual([]);
+    }
+  });
+
+  it("a user without approve_spec is refused with the existing wording, and nothing is stored", async () => {
+    const h = await harness();
+    for (const ref of [issueRef(1), localRef(2)]) {
+      const it1 = await h.itemIn(ref, SPEC_PENDING);
+      const r = await h.request(it1, "revise", FEEDBACK, READER);
+      await h.apply();
+      expect(await h.get(it1)).toEqual(it1);
+      expect(await h.store.listRuns(it1.id)).toEqual([]);
+      expect(await h.refusals(it1, r)).toEqual(["`/revise` was not applied: it needs write permission on this repository (`not_a_collaborator`)."]);
+    }
+  });
+
+  it("where /revise is refused (a floor block): one reply naming the state, and nothing changes", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(issueRef(1), { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" });
+    const r = await h.request(it1, "revise", FEEDBACK);
+    await h.apply();
+    expect(await h.get(it1)).toEqual(it1);
+    const [reply, ...more] = await h.refusals(it1, r);
+    expect(more).toEqual([]);
+    expect(reply).toMatch(/^`\/revise` was not applied: the item is .*not waiting on a spec/);
+  });
+
+  it("feedback the egress scan flags is refused with one reply, and nothing changes", async () => {
+    const h = await harness({ scanner: flagging });
+    const it1 = await h.itemIn(issueRef(1), SPEC_PENDING);
+    const r = await h.request(it1, "revise", "the key is SECRET");
+    await h.apply();
+    expect(await h.get(it1)).toEqual(it1);
+    const [reply] = await h.refusals(it1, r);
+    expect(reply).toMatch(/^`\/revise` was not applied: the note was blocked by the leak scanner \(`test_rule`\)/);
+    expect(reply).not.toContain("SECRET");
+  });
+
+  it("the same request applied again (same seq, same key) revises once", async () => {
     const h = await harness();
     const it1 = await h.itemIn(issueRef(1), SPEC_PENDING);
-    const r = await h.request(it1, "revise", "more");
+    const r = await h.request(it1, "revise", FEEDBACK, WRITER, "same");
+    await h.apply();
+    await h.request(it1, "revise", FEEDBACK, WRITER, "same");
+    await h.apply();
+    expect((await h.changes(it1)).filter((c) => c.reason === "spec_revision_requested")).toHaveLength(1);
+    expect(await h.store.listRuns(it1.id)).toHaveLength(1);
+    expect(await h.refusals(it1, r)).toEqual([]);
+  });
+});
+
+describe("app commands still not applied", () => {
+  it("the refusal names the commands that are: approve, merge, reject, revise and verdict", async () => {
+    const h = await harness();
+    const it1 = await h.itemIn(issueRef(1), SPEC_PENDING);
+    const r = await h.request(it1, "retry", "again");
     await h.apply();
     expect(await h.get(it1)).toEqual(it1);
     expect(await h.refusals(it1, r)).toEqual([
-      "`revise` was not applied: only `approve`, `merge`, `reject` and `verdict` are applied from an app request; reply `/revise` on the issue instead.",
+      "`retry` was not applied: only `approve`, `merge`, `reject`, `revise` and `verdict` are applied from an app request; reply `/retry` on the issue instead.",
     ]);
   });
 });
