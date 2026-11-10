@@ -15,7 +15,7 @@ import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
-import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
+import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
 import { runTokens } from "./pages.js";
@@ -87,6 +87,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     }
     case "/data/tables":
       return data(await dataTables(c.data()));
+    case "/data/autonomy":
+      return data(await dataAutonomy(c.data()));
     case "/pauses":
       return pauses(d);
     case "/standing":

@@ -4,7 +4,8 @@
 
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import type { UserId, WorkerId } from "../src/core/types.js";
+import { collectStats } from "../src/core/stats.js";
+import type { UserId, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -13,7 +14,7 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { HIDDEN_COLUMNS } from "../src/ui/data.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
-import { issue, system } from "./helpers/store.js";
+import { human, issue, system } from "./helpers/store.js";
 
 const LEASE = 60_000;
 // Built here so no secret-shaped literal sits in the repository.
@@ -200,7 +201,7 @@ describe("ui api: data tables", () => {
   it("POST, PUT, PATCH and DELETE to each data route are 405 and make no store call", async () => {
     const { d, calls } = await seeded();
     calls.length = 0;
-    for (const path of ["/api/v1/data/tables", "/api/v1/data/tables/controller_work_items", "/api/v1/data/tables/worker_runs?col=id&val=x"]) {
+    for (const path of ["/api/v1/data/tables", "/api/v1/data/autonomy", "/api/v1/data/tables/controller_work_items", "/api/v1/data/tables/worker_runs?col=id&val=x"]) {
       for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
         const r = await get(d, path, method);
         expect(r.status, `${method} ${path}`).toBe(405);
@@ -208,5 +209,62 @@ describe("ui api: data tables", () => {
       }
     }
     expect(calls).toEqual([]);
+  });
+});
+
+describe("ui api: data autonomy (design §6)", () => {
+  /** Merged factory items, `pushes` of them with a person's push; plus a rejected item with a push and an adopted merge. */
+  async function withMerges(merged: number, pushes: number) {
+    const s = await seeded();
+    const { store } = s;
+    const close = async (id: WorkItemId, version: number, close_reason: "completed" | "rejected") => {
+      const r = await store.transition({ id, expected_version: version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason } });
+      if (!r.ok) throw new Error(r.reason);
+    };
+    const push = async (id: WorkItemId, version: number, head: string) => {
+      const r = await store.recordVerdict({
+        id, expected_version: version, actor: system, verdict: "changes", severity: "critical",
+        reason: "a person pushed", comment_id: `implicit:${head}`, target: "pr", implicit: true, pr_head: head,
+      });
+      if (!r.ok) throw new Error(r.reason);
+    };
+    for (let i = 0; i < merged; i++) {
+      const { item } = await store.createWorkItem(issue(100 + i), system);
+      if (i < pushes) await push(item.id, 1, `h${i}`);
+      await close(item.id, i < pushes ? 2 : 1, "completed");
+    }
+    const rejected = (await store.createWorkItem(issue(200), system)).item;
+    await push(rejected.id, 1, "hr");
+    await close(rejected.id, 2, "rejected");
+    const adopted = (await store.createWorkItem({
+      ...issue(201), adopted: { change_ref: "201", head_branch: "f", head_sha: "h", allowed_paths: ["a"], tier: 1 },
+    }, human)).item;
+    await close(adopted.id, 1, "completed");
+    return s;
+  }
+
+  it("returns { as_of, merged, with_push, autonomy } with the same numbers as factory stats --json", async () => {
+    const { d, store, calls } = await withMerges(4, 1);
+    calls.length = 0;
+    const body = await json(d, "/api/v1/data/autonomy");
+    expect(body).toEqual({ as_of: expect.any(String), merged: 4, with_push: 1, autonomy: 0.75 });
+    const report = JSON.parse(JSON.stringify(await collectStats(store, { weights: { none: 0, minor: 1, major: 3, critical: 10 }, min_sample: 1 })));
+    expect({ merged: body.merged, with_push: body.with_push, autonomy: body.autonomy }).toEqual(report.autonomy);
+    expect(calls).toEqual(["listStatsRecords"]);
+  });
+
+  it("autonomy is null with no merged factory item", async () => {
+    const { d } = await withMerges(0, 0);
+    expect(await json(d, "/api/v1/data/autonomy")).toMatchObject({ merged: 0, with_push: 0, autonomy: null });
+  });
+
+  it("writes nothing: no transition, migrate or write runs, and the tables are unchanged", async () => {
+    const { d, calls } = await withMerges(2, 1);
+    const before = await get(d, "/api/v1/data/tables");
+    calls.length = 0;
+    await json(d, "/api/v1/data/autonomy");
+    expect(calls.every((c) => c.startsWith("list") || c.startsWith("get"))).toBe(true);
+    expect(calls.filter((c) => /transition|migrate|record|create|update|complete|claim/.test(c))).toEqual([]);
+    expect((await get(d, "/api/v1/data/tables")).body).toBe(before.body);
   });
 });

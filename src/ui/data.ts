@@ -4,6 +4,7 @@
 // store. Hidden columns (fencing tokens, the link-code hash; listed once, in HIDDEN_COLUMNS) leave only as
 // "[hidden]" and cannot be filtered on. Every text cell passes the Withholder the rest of the API uses.
 
+import { collectAutonomy } from "../core/stats.js";
 import type { RunId } from "../core/types.js";
 import { type FactoryStore, type StoreTable, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX, type TableCell } from "../interfaces/factory-store.js";
 
@@ -45,6 +46,11 @@ function hiddenOf(t: StoreTable): string[] {
 export async function dataTables(c: DataCtx): Promise<DataResult> {
   const tables = (await c.store.listTables()).map((t) => ({ name: t.name, rows: t.rows, columns: t.columns, hidden: hiddenOf(t) }));
   return { status: 200, value: { as_of: c.now.toISOString(), tables } };
+}
+
+/** GET /api/v1/data/autonomy: Autonomy (design §6), the same numbers as `factory stats --json`. One store read. */
+export async function dataAutonomy(c: DataCtx): Promise<DataResult> {
+  return { status: 200, value: { as_of: c.now.toISOString(), ...(await collectAutonomy(c.store)) } };
 }
 
 const POSITIVE = /^[1-9][0-9]{0,8}$/;
