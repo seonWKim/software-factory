@@ -21,6 +21,8 @@ export class FakeSlackApi implements SlackApi {
   /** Every write call in order, for "nothing else was posted" checks. */
   calls: { method: "postMessage" | "updateMessage"; text: string; blocks?: readonly unknown[] }[] = [];
   identityCalls = 0;
+  /** conversations.replies calls (thread reads). */
+  threadReplyCalls = 0;
   /** Reactions on messages, each at most once, as Slack keeps them; `reactCalls` counts every call. */
   reactions: { channel: string; ts: string; name: string }[] = [];
   reactCalls = 0;
@@ -47,11 +49,12 @@ export class FakeSlackApi implements SlackApi {
   async updateMessage(m: Omit<SlackPost, "thread_ts"> & { ts: string }): Promise<void> {
     this.calls.push({ method: "updateMessage", text: m.text });
     const msg = this.messages.find((x) => x.channel === m.channel && x.ts === m.ts);
-    if (!msg) throw new Error("message_not_found");
+    if (!msg) throw new SlackApiError("chat.update", "message_not_found");
     msg.text = m.text;
     if (m.metadata) msg.metadata = m.metadata;
   }
   async threadReplies(channel: string, thread_ts: string): Promise<SlackMessage[]> {
+    this.threadReplyCalls++;
     return this.messages.filter((m) => m.channel === channel && m.thread_ts === thread_ts);
   }
   /** Like HttpSlackApi: a reaction already there is success, not a second one. */
