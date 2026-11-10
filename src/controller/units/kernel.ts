@@ -8,7 +8,8 @@ import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
 import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { Draft } from "../../shared/envelope.js";
-import type { SqlDriver } from "../../state/index.js";
+import { CODE_ROOT, type SqlDriver } from "../../state/index.js";
+import { type SignalDescriptor, loadSignals } from "../signals/signal.js";
 
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
@@ -36,7 +37,7 @@ const READS = [
   "getWorkItem", "getWorkItemBySource", "getWorkItemByPr", "listWorkItems", "listWorkItemsWhere", "listLabelStates", "listUnmirroredCliCommands",
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
   "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listSettingChanges", "getWorkItemByMergeSha",
-  "listVerdicts", "listStandingRules",
+  "listVerdicts", "listStandingRules", "latestSignalAt", "listStateChangesSince", "listVerdictsSince", "listRunsFinishedSince",
 ] as const;
 
 /**
@@ -53,6 +54,8 @@ export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<Contro
    * Identity, allowed). A check: it changes no controller state; Identity audits each decision.
    */
   readonly auth: { readonly forge: ControllerDeps["auth"]; readonly local: ControllerDeps["auth"] | null; readonly service: ControllerDeps["service_auth"] | null };
+  /** The discovered signal sources (`*.signal.ts`, design 11-signal-ledger), in path order. */
+  signals(): Promise<readonly SignalDescriptor[]>;
 };
 
 /**
@@ -88,7 +91,9 @@ export type ControllerWrite =
   /** A message on the controller's bus (controller.events), delayed until `draft.not_before` when it is set. */
   | { kind: "emit"; draft: Draft }
   /** An intent for outbound (RFC 0015 M7): an action the outbox step announces; a keyed one is stored once. */
-  | { kind: "intent"; action: NewAction };
+  | { kind: "intent"; action: NewAction }
+  /** A signal ledger row, skipped when its (source, source_ref) is stored (design 11-signal-ledger). */
+  | { kind: "signal"; signal: Parameters<Store["recordSignal"]>[0] };
 
 /** What one lease expiry did: each attempt it cut off, and the runs it requeued or failed. */
 export interface ExpiredLeases {
@@ -168,7 +173,8 @@ export class Kernel {
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   readonly live: LiveSettings;
 
-  constructor(readonly d: ControllerDeps, private readonly deliveries: Deliveries, readonly hooks: ControllerHooks) {
+  /** `signal_root`: where the signal sources are discovered (a test's fixture folder); the code root by default. */
+  constructor(readonly d: ControllerDeps, private readonly deliveries: Deliveries, readonly hooks: ControllerHooks, signal_root: string = CODE_ROOT) {
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.forge = d.forge ?? null;
@@ -184,6 +190,7 @@ export class Kernel {
       forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
       llm: d.llm ?? null,
       auth: { forge: d.auth, local: d.local_auth ?? null, service: d.service_auth ?? null },
+      signals: () => loadSignals(signal_root),
     };
   }
 
@@ -201,6 +208,7 @@ export class Kernel {
       else if (w.kind === "standing_proposal") await store.recordStandingProposal(w.proposal);
       else if (w.kind === "emit") await this.deliveries.emit(w.draft, this.d.clock.now().toISOString());
       else if (w.kind === "intent") await this.deliveries.record(w.action, this.d.clock.now().toISOString());
+      else if (w.kind === "signal") await store.recordSignal(w.signal);
       else await this.commit({ writes: w.then(await this.expireLeases(w)) });
     }
   }

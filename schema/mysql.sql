@@ -599,6 +599,21 @@ CREATE TABLE `controller_outbox` (
   KEY `controller_outbox_pending` (`published_at`,`seq`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `controller_signals` (
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `source` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `source_ref` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `kind` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `work_item_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `role` varchar(64) COLLATE utf8mb4_bin DEFAULT NULL,
+  `rule` varchar(64) COLLATE utf8mb4_bin DEFAULT NULL,
+  `at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `controller_signals_ref` (`source`,`source_ref`),
+  KEY `controller_signals_source_at` (`source`,`at`),
+  KEY `controller_signals_item` (`work_item_id`,`at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `controller_standing_proposals` (
   `id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `gate` varchar(32) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,

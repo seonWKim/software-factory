@@ -1,5 +1,5 @@
 // Discovery (RFC 0015 §6.1): the registry finds every `*.handler.ts` and `*.topic.ts` under src/ (`.js` once
-// built) and indexes them; settings, roles and hooks are found the same way (`loadDescriptors`). Nothing
+// built) and indexes them; settings, roles, hooks and signal sources are found the same way (`loadDescriptors`). Nothing
 // registers itself in a central list, and nothing here names a feature.
 
 import { relative } from "node:path";
@@ -18,6 +18,7 @@ export const DESCRIPTOR_PATTERNS = {
   role: /\.role\.(?:ts|js)$/,
   hook: /\.hook\.(?:ts|js)$/,
   unit: /\.unit\.(?:ts|js)$/,
+  signal: /\.signal\.(?:ts|js)$/,
 } as const;
 
 export type DescriptorKind = keyof typeof DESCRIPTOR_PATTERNS;

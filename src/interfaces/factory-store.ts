@@ -2,52 +2,11 @@ import type { TierHistory } from "../core/budget.js";
 import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
-  Actor,
-  BlockedOn,
-  BudgetAnswer,
-  BudgetCheckpoint,
-  BudgetCheckpointId,
-  ClaimDecision,
-  ClaimPauseName,
-  DependencyEdge,
-  DependencyState,
-  Tier,
-  Handoff,
-  FiledPattern,
-  FiledPatternId,
-  HostSleep,
-  ImproveReport,
-  ImproveReportId,
-  ImproveWindow,
-  Run,
-  RunAttempt,
-  RunId,
-  RunInput,
-  RunKind,
-  RunOutcome,
-  RunResume,
-  RunStatus,
-  SessionFinish,
-  SourceRef,
-  SourceType,
-  StandingGate,
-  StandingProposal,
-  StandingRule,
-  StateChange,
-  StateChangeDetail,
-  Stage,
-  Timestamp,
-  UnreviewedMerge,
-  UserId,
-  Verdict,
-  VerdictKind,
-  VerdictSeverity,
-  VerdictTarget,
-  WorkItem,
-  WorkItemId,
-  WorkItemPatch,
-  WorkerId,
-  WorkerPause,
+  Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
+  Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
+  RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
+  StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
+  WorkItemPatch, WorkerId, WorkerPause,
 } from "../core/types.js";
 import type { LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
@@ -231,6 +190,19 @@ export type TransitionResult =
   | { ok: false; reason: "version_conflict"; current: WorkItem }
   /** ack_run was given but that run is not finished, belongs to another item, or is already acknowledged. */
   | { ok: false; reason: "run_not_ackable" };
+
+/** One signal ledger row (design 11-signal-ledger): IDs, enum codes and times only, never text or a display name. */
+export interface NewSignal {
+  source: string;
+  /** The source record's key (a state change, verdict or run ID; `<run>:<finding>`); unique per source. */
+  source_ref: string;
+  kind: string;
+  work_item_id: WorkItemId;
+  role: string | null;
+  /** The standing rule ID when a standing rule approved the item; null otherwise. */
+  rule: string | null;
+  at: Timestamp;
+}
 
 export interface RecordVerdictInput {
   id: WorkItemId;
@@ -436,6 +408,19 @@ export interface FactoryStore {
    * Read-only.
    */
   listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;
+
+  // Signal ledger (design 11-signal-ledger): every read is across items, oldest first, from `since` (null: all).
+
+  /** Stores one signal; false (nothing written) when its (source, source_ref) is already stored. */
+  recordSignal(s: NewSignal): Promise<boolean>;
+  /** The newest `at` of `source`'s signals; null when it has none. Read-only. */
+  latestSignalAt(source: string): Promise<Timestamp | null>;
+  /** State changes with a reason in `reasons` (of `work_item_ids` when given), by at. Read-only. */
+  listStateChangesSince(q: { reasons: readonly string[]; since: Timestamp | null; work_item_ids?: readonly WorkItemId[] }): Promise<StateChange[]>;
+  /** Verdicts, by at. Read-only. */
+  listVerdictsSince(since: Timestamp | null): Promise<Verdict[]>;
+  /** Runs in `status` (of `kinds` when given), by finish time (`updated_at` on rows with none). Read-only. */
+  listRunsFinishedSince(q: { status: RunStatus; kinds?: readonly RunKind[]; since: Timestamp | null }): Promise<Run[]>;
 
   // Budget checkpoints (design §6)
 

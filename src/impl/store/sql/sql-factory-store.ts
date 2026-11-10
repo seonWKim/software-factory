@@ -1,54 +1,11 @@
 import { createHash } from "node:crypto";
 import type { TierHistory } from "../../../core/budget.js";
 import type {
-  Actor,
-  BudgetCheckpoint,
-  BudgetCheckpointId,
-  BudgetOutcome,
-  ClaimDecision,
-  CloseReason,
-  DependencyEdge,
-  DependencyState,
-  FiledPattern,
-  FiledPatternId,
-  Handoff,
-  HostSleep,
-  ImproveReport,
-  ImproveReportId,
-  Run,
-  RunAttempt,
-  RunAttemptStatus,
-  RunId,
-  RunKind,
-  RunOutcome,
-  RunStatus,
-  SourceRef,
-  SourceType,
-  Stage,
-  StandingGate,
-  StandingProposal,
-  StandingProposalId,
-  StandingRule,
-  StateChange,
-  StateChangeDetail,
-  StateChangeId,
-  Tier,
-  Timestamp,
-  UnreviewedMerge,
-  UnreviewedMergeId,
-  UserId,
-  Verdict,
-  VerdictId,
-  VerdictSeverity,
-  WorkItem,
-  WorkItemId,
-  WorkItemPatch,
-  ClaimPauseName,
-  RunInput,
-  RunResume,
-  SessionRecord,
-  WorkerId,
-  WorkerPause,
+  Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyEdge, DependencyState, FiledPattern,
+  FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
+  RunStatus, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
+  StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
+  WorkItem, WorkItemId, WorkItemPatch, ClaimPauseName, RunInput, RunResume, SessionRecord, WorkerId, WorkerPause,
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
@@ -109,6 +66,7 @@ import type {
   NewInboxEvent,
   NewItemMessage,
   NewRun,
+  NewSignal,
   NewStandingProposal,
   NewStandingRule,
   NewUnreviewedMerge,
@@ -167,6 +125,7 @@ import {
   rowToWorkItem,
   workItemInsert,
 } from "./rows.js";
+import * as signals from "./signals.js";
 
 /**
  * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -427,6 +386,28 @@ export class SqlFactoryStore implements FactoryStore {
   async listVerdicts(id: WorkItemId): Promise<Verdict[]> {
     const rows = await this.db.all(`SELECT * FROM controller_verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToVerdict);
+  }
+
+  // Signal ledger (design 11-signal-ledger): in ./signals.ts.
+
+  recordSignal(s: NewSignal): Promise<boolean> {
+    return signals.recordSignal(this.db, s);
+  }
+
+  latestSignalAt(source: string): Promise<Timestamp | null> {
+    return signals.latestSignalAt(this.db, source);
+  }
+
+  listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> {
+    return signals.listStateChangesSince(this.db, q);
+  }
+
+  listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> {
+    return signals.listVerdictsSince(this.db, since);
+  }
+
+  listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> {
+    return signals.listRunsFinishedSince(this.db, q);
   }
 
   // Budget checkpoints
