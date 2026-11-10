@@ -4,7 +4,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { commandState, commandsFor } from "../src/core/commands.js";
-import { APP_COMMANDS } from "../src/ui/commands.js";
+import { APP_COMMANDS, type PageAction } from "../src/ui/commands.js";
+import type { AuthDecision } from "../src/interfaces/auth-provider.js";
 import type { Timestamp, UserId, WorkItem, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -886,14 +887,14 @@ describe("ui api: item commands POST (issue #227)", () => {
 });
 
 describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227)", () => {
-  type Detail = { commands: { name: string; usage: string; description: string }[]; replies: Record<string, unknown>[] };
+  type Detail = { commands: { name: string; usage: string; description: string; allowed: boolean; reason: string | null }[]; replies: Record<string, unknown>[] };
 
   it("commands are the footer table's commands for the item's state the page can send: never /help or /link", async () => {
     const { d, store, items } = await seeded();
     for (const it of Object.values(items)) {
       const cur = (await store.getWorkItem(it.id))!;
       const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
-      const want = commandsFor(commandState(cur)).filter((c) => c.name !== "help").map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+      const want = commandsFor(commandState(cur)).filter((c) => c.name !== "help").map((c) => ({ name: c.name, usage: c.usage, description: c.description, allowed: true, reason: null }));
       expect(body.commands, it.id).toEqual(want);
       // Every listed command is one the commands route accepts, so no button can only be refused.
       for (const c of body.commands) expect(APP_COMMANDS, `${it.id} ${c.name}`).toContain(c.name);
@@ -1000,23 +1001,25 @@ describe("ui api: the merge field on /api/v1/items and /api/v1/items/:id (the Me
 
   it("enabled for a GitHub PR or a local item waiting for its merge, for a user allowed approve_merge", async () => {
     const { d, store, items } = await seeded();
-    const asked = vi.fn(async () => true);
-    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: asked };
+    const asked = vi.fn(async (_action: PageAction): Promise<AuthDecision> => ({ allow: true }));
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN, allowed: asked };
     await store.recordMergeCheck({ work_item_id: items.merge.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
     const local = await patch(store, await localItem(store, 40), MERGE_PENDING);
 
     expect(await mergeOf(d, items.merge.id)).toEqual(enabled);
     expect(await mergeOf(d, local.id)).toEqual(enabled);
-    // A list asks the grants once, however many rows it has.
+    // A list asks each grant at most once, however many rows it has.
     asked.mockClear();
     await json(d, "/api/v1/items?closed=1");
-    expect(asked).toHaveBeenCalledTimes(1);
+    const actions = asked.mock.calls.map(([a]) => a);
+    expect(actions).toContain("approve_merge");
+    expect(new Set(actions).size).toBe(actions.length);
   });
 
   it("disabled with a reason: not waiting, merge check running, conflicts, no forge, no sandbox, commands off, not allowed", async () => {
     const { d, store, items } = await seeded();
     let allowed = true;
-    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: async () => allowed };
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN, allowed: async () => (allowed ? { allow: true } : { allow: false, reason: "no_role" }) };
     const local = await patch(store, await localItem(store, 40), MERGE_PENDING);
 
     for (const it of [items.approve, items.done, items.running]) expect(await mergeOf(d, it.id), it.id).toEqual(off("not waiting for a merge"));
@@ -1036,7 +1039,7 @@ describe("ui api: the merge field on /api/v1/items and /api/v1/items/:id (the Me
     expect(await mergeOf(d, local.id)).toEqual(off("not allowed to merge (approve_merge)"));
     d.commands = { actor: ACTOR, source: "config", token: TOKEN };
     expect(await mergeOf(d, local.id)).toEqual(off("not allowed to merge (approve_merge)"));
-    d.commands = { actor: null, source: null, token: TOKEN, mergeAllowed: async () => true };
+    d.commands = { actor: null, source: null, token: TOKEN, allowed: async () => ({ allow: true }) };
     expect(await mergeOf(d, local.id)).toEqual(off("commands are off"));
     const { commands: _, ...unwired } = d;
     expect(await mergeOf(unwired, local.id)).toEqual(off("commands are off"));
@@ -1044,7 +1047,7 @@ describe("ui api: the merge field on /api/v1/items and /api/v1/items/:id (the Me
 
   it("a local item that already has a PR merges through its PR: it needs a forge, not a sandbox that can merge", async () => {
     const { d, store } = await seeded();
-    d.commands = { actor: ACTOR, source: "config", token: TOKEN, mergeAllowed: async () => true, forge: true, localMerge: false };
+    d.commands = { actor: ACTOR, source: "config", token: TOKEN, allowed: async () => ({ allow: true }), forge: true, localMerge: false };
     const withPr = await patch(store, await localItem(store, 41), { ...MERGE_PENDING, change_ref: "77" });
     await store.recordMergeCheck({ work_item_id: withPr.id, mergeable: true, conflicts: [], head_sha: "a".repeat(40), base_sha: "b".repeat(40) });
 
@@ -1306,7 +1309,7 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect(due[0]!.ends_at < clock.now().toISOString()).toBe(true);
   });
 
-  type NeedRow = { id: string; level: string; need?: { reason: string; command: string | null } };
+  type NeedRow = { id: string; level: string; need?: { reason: string }; commands?: { name: string; allowed: boolean; reason: string | null }[] };
   const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_human: "Needs a human" };
 
   it("each Needs-you reason is its own words, never the State label, and names what to do", async () => {
@@ -1319,7 +1322,8 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
     const need = (id: string) => rows.find((r) => r.id === id)!.need!;
     expect(need(more["run_failed:implement:diff_too_large"]!.id).reason).toBe("failed: diff_too_large");
-    expect(need(items.approve.id).command).toBe("/approve or /reject <reason>");
+    const commands = (id: string) => rows.find((r) => r.id === id)!.commands!.map((c) => c.name);
+    expect(commands(items.approve.id)).toEqual(["approve", "reject", "revise"]);
     expect(need(items.merge.id).reason).toBe("merge check running");
     for (const r of rows) {
       expect(r.need, r.id).toBeDefined();
@@ -1337,10 +1341,40 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect((await row()).reason).toBe("2 conflicting files");
   });
 
-  it("a row that does not wait for you has no need", async () => {
+  it("a row that does not wait for you has no need and no commands", async () => {
     const { d, items } = await seeded();
     const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items")).items;
     expect(rows.find((r) => r.id === items.running.id)!.need).toBeUndefined();
+    expect(rows.find((r) => r.id === items.running.id)!.commands).toBeUndefined();
+  });
+
+  it("a row's commands are the state-changing ones that apply, never budget or verdict, each with the viewer's allowed and reason (issue #453)", async () => {
+    const { d, store, items } = await seeded();
+    const failed = await make(store, 20, "Failed");
+    await patch(store, failed, { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" });
+    const checkpoint = await make(store, 21, "At a checkpoint");
+    await patch(store, checkpoint, { stage: "RUNNING", blocked_on: "human", blocked_reason: "budget_checkpoint" });
+    const ACTOR = "local:me" as UserId;
+    let grant: AuthDecision = { allow: true };
+    const asked = vi.fn(async (_action: PageAction) => grant);
+    d.commands = { actor: ACTOR, source: "config", token: newCsrfToken(), allowed: asked };
+    const rows = async () => (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
+    const of = (all: NeedRow[], id: string) => all.find((r) => r.id === id)!.commands!;
+
+    let all = await rows();
+    expect(of(all, items.approve.id)).toEqual(["approve", "reject", "revise"].map((name) => ({ name, usage: expect.any(String), description: expect.any(String), allowed: true, reason: null })));
+    expect(of(all, failed.id).map((c) => c.name)).toEqual(["reject", "revise", "retry"]);
+    expect(of(all, checkpoint.id).map((c) => c.name)).toEqual(["reject"]);
+    expect(of(all, items.merge.id)).toEqual([]);
+    // approve_spec asked once for the whole list, approve_merge at most once.
+    expect(asked.mock.calls.filter(([a]) => a === "approve_spec")).toHaveLength(1);
+    expect(asked.mock.calls.filter(([a]) => a === "approve_merge").length).toBeLessThanOrEqual(1);
+
+    grant = { allow: false, reason: "no_role" };
+    all = await rows();
+    for (const c of of(all, items.approve.id)) {
+      expect(c).toMatchObject({ allowed: false, reason: `${ACTOR} has no role that allows it (\`no_role\`); the local owner can grant one with \`factory users add ${ACTOR} --role approver\`` });
+    }
   });
 
   it("the overview, items and pauses reads make no forge or other remote call: store reads only", async () => {

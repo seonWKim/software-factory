@@ -11,10 +11,11 @@
 // server.ts's write guards; GET /api/v1/settings, /session, /pauses, /standing and /users are here.
 
 import { readProjectLabel } from "../core/project-labels.js";
+import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
-import { itemCommands, itemReplies, mergeAllowedOnce, mergeReadiness, readSession, specGrant, waitingSpec, withheldText } from "./commands.js";
+import { type ActorGrant, actorGrant, itemCommands, itemReplies, mergeReadiness, needsYouCommand, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
@@ -193,8 +194,8 @@ class ApiCtx {
   }
 
   /**
-   * What a Needs-you row says (need.ts): the reason through the Withholder, the command to type, and `anchor`, the
-   * item page's anchor of the newest factory thread entry (null when the item has none).
+   * What a Needs-you row says (need.ts): the reason through the Withholder and `anchor`, the item page's anchor of the
+   * newest factory thread entry (null when the item has none). Its buttons are the row's `commands`, not need.ts's text.
    */
   async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
     const n = await needOf(
@@ -202,7 +203,18 @@ class ApiCtx {
       it,
       check && { state: check.state, conflicts: check.conflicts.length },
     );
-    return { reason: n.reason, command: n.command, anchor: await latestWhyAnchor(this.d.store, it.id) };
+    return { reason: n.reason, anchor: await latestWhyAnchor(this.d.store, it.id) };
+  }
+
+  /**
+   * A Needs-you row's `commands` (design §9): the item API's entries for the commands a row has a button for
+   * (needsYouCommand), with the viewer's `allowed` and `reason` from `grant`, asked once per request. The item's runs
+   * are read only at agent_needs_human, where the run that asked decides which commands apply.
+   */
+  async needCommands(it: WorkItem, grant: () => Promise<ActorGrant>) {
+    const runs = it.blocked_reason === AGENT_NEEDS_HUMAN ? await this.d.store.listRuns(it.id) : [];
+    const all = await itemCommands(it, runs, await grant(), (v) => this.text(v));
+    return all.filter((c) => needsYouCommand(c.name));
   }
 
   /** Why one item waits, from the same reads and rules as the list (list.ts whyOf). */
@@ -326,7 +338,9 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];
-  const allowed = mergeAllowedOnce(c.d);
+  // Each grant asked at most once for the whole list (design §9).
+  const allowed = actorGrant(c.d, "approve_merge");
+  const commandGrant = actorGrant(c.d, "approve_spec");
   for (const r of shown) {
     const it = r.item;
     const decision = r.decision; // the current run's only: an earlier run's hold is stale
@@ -354,6 +368,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, allowed),
       need: NEEDS_YOU.includes(r.level) ? await c.need(it, merge_check) : undefined,
+      commands: NEEDS_YOU.includes(r.level) ? await c.needCommands(it, commandGrant) : undefined,
       why: await c.why(r.why, it),
       parent_id: it.parent_id,
       phase: it.phase,
@@ -447,7 +462,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
       updated_at: it.updated_at,
       conflicts: conflictCounts(runs, changes),
       merge_check,
-      merge: await mergeReadiness(c.d, it, merge_check, mergeAllowedOnce(c.d)),
+      merge: await mergeReadiness(c.d, it, merge_check, actorGrant(c.d, "approve_merge")),
       why: await c.whyOfItem(it),
     },
     timeline,
@@ -461,7 +476,9 @@ async function item(c: ApiCtx, id: WorkItemId) {
     })),
     /** The item's thread, oldest first (thread.ts): every body through the Withholder. */
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
-    ...(await withheldText(itemCommands(it, runs, await specGrant(c.d)), (v) => c.text(v))), spec: await waitingSpec(it, runs, (v) => c.text(v)), // commands by grant (#528); the waiting spec
+    // Each with the viewer's approve_spec grant, asked once (design §9); the waiting spec.
+    commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v)),
+    spec: await waitingSpec(it, runs, (v) => c.text(v)),
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };
 }

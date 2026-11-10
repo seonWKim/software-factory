@@ -963,14 +963,13 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     const auth = new LocalAuthProvider(f.store);
     const d: ApiDeps = {
       store: f.store, scanner: f.scanner, clock: f.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], f.clock),
-      commands: { actor: actor as UserId, source: "config", token: "t" },
-      pauses: {
-        principal: async () => actor as UserId, csrfToken: "t", log: silent,
-        authorize: (user) => auth.authorize({ user_id: user, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT_KEY }),
+      commands: {
+        actor: actor as UserId, source: "config", token: "t",
+        allowed: (action) => auth.authorize({ user_id: actor as UserId, attributes: {} }, action, { kind: "project", id: PROJECT_KEY }),
       },
     };
     const r = await respond(d, { method: "GET", url: `/api/v1/items/${encodeURIComponent(id)}`, host: "127.0.0.1:4310" });
-    return JSON.parse(r.body) as { commands: { name: string }[]; commands_withheld: { names: string[]; reason: string } | null; replies: { refusal: string | null }[] };
+    return JSON.parse(r.body) as { commands: { name: string; allowed: boolean; reason: string | null }[]; replies: { refusal: string | null }[] };
   }
 
   it("/help outside an item's thread answers in the mention's thread: how to start work and how to link an account", async () => {
@@ -1056,16 +1055,17 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     expect((await f.store.listCliCommandsAfter(0, 10)).filter((c) => c.key.startsWith("cli:"))).toEqual([]);
   });
 
-  it("team: a linked requester sees no approve on the dashboard, and Slack refuses the approve with that same text", async () => {
+  it("team: a linked requester sees approve disallowed on the dashboard, and Slack refuses the approve with that same text", async () => {
     const f = await setup();
     const ts = "1800000064.000100";
     const item = await specPending(f, ts);
     const page = await dashboard(f, "github:2", item.id);
-    expect(page.commands).toEqual([]);
-    expect(page.commands_withheld).toEqual({ names: ["approve", "reject", "revise"], reason: roleRefusal("github:2", "no_role") });
+    expect(page.commands.map((c) => [c.name, c.allowed, c.reason])).toEqual(
+      ["approve", "reject", "revise"].map((n) => [n, false, roleRefusal("github:2", "no_role")]),
+    );
     expect((await dashboard(f, "github:1", item.id)).commands.map((c) => c.name)).toEqual(["approve", "reject", "revise"]);
     await deliver(f, eventEnvelope(mention("1800000064.000200", "approve", { thread_ts: ts, user: "U0BOB" })));
     const [refused] = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
-    expect(refused!.text).toContain(refusalText("/approve", page.commands_withheld!.reason));
+    expect(refused!.text).toContain(refusalText("/approve", page.commands[0]!.reason!));
   });
 });

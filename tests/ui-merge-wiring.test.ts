@@ -48,7 +48,7 @@ async function readiness(l: Loaded) {
       });
       if (!r.ok) throw new Error(r.reason);
       // Only the commands reach the readiness: the rest of UiDeps is not read.
-      return mergeReadiness({ commands: parts.commands } as UiDeps, r.item, null, async () => true);
+      return mergeReadiness({ commands: parts.commands } as UiDeps, r.item, null, async () => ({ allow: true }));
     };
     return {
       github: await at({ type: "github_issue", id: "o/r#1", link: "https://github.com/o/r/issues/1" }, "42"),
