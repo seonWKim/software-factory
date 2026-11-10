@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { ProjectRef } from "../src/core/project.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import {
   PROJECT_TABLES, type ProjectKeyDb, type ResolveRepo, applyProjectKeys, countLegacyProjectRows, planProjectKeys, runProjectKeyStep,
@@ -10,7 +9,7 @@ import {
 import type { SqlDriver } from "../src/state/index.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import { MYSQL_URL, issue, newEmptyMysqlDatabase, system } from "./helpers/store.js";
+import { issue, MYSQL_URL, newMigratedMysqlDatabase, system } from "./helpers/store.js";
 
 // The project-key data step of `npm run migrate` (design 2026-11-01): owner/name → github:<host>:<node id> in
 // every table with a project column. Runs on SQLite always, and on MySQL when SF_TEST_MYSQL_URL is set.
@@ -58,8 +57,7 @@ const sqlite: Backend = {
 const mysqlBackend: Backend = {
   name: "mysql",
   async open() {
-    const db = await newEmptyMysqlDatabase();
-    await new MysqlMigrations(await db.connect()).apply(() => undefined);
+    const db = await newMigratedMysqlDatabase();
     const driver = new MysqlDriver(db.options);
     db.onCleanup(() => driver.close());
     return {

@@ -9,12 +9,10 @@ import {
   checkDisplayName,
   secretKeyring,
 } from "../src/identity/index.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
-import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import type { SqlExecutor } from "../src/state/index.js";
-import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
+import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 
 // Display names live once, in identity_profiles, keyed by the user id (owner decision 2026-11-08). SQLite always;
 // MySQL when SF_TEST_MYSQL_URL is set.
@@ -28,17 +26,10 @@ async function sqlite(): Promise<SqlExecutor> {
   return d;
 }
 
-async function mysqlDb(): Promise<SqlExecutor> {
-  const db = await newEmptyMysqlDatabase();
-  await new MysqlMigrations(await db.connect()).apply(() => undefined);
-  const driver = new MysqlDriver(db.options);
-  db.onCleanup(() => driver.close());
-  return driver;
-}
 
 const BACKENDS: [string, boolean, () => Promise<SqlExecutor>][] = [
   ["sqlite", true, sqlite],
-  ["mysql", Boolean(MYSQL_URL), mysqlDb],
+  ["mysql", Boolean(MYSQL_URL), newMigratedMysqlDriver],
 ];
 
 for (const [name, enabled, open] of BACKENDS) {

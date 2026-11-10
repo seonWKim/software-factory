@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -15,7 +14,7 @@ import {
   type RunTimeouts,
 } from "../src/worker/engine/index.js";
 import { JournalEngine, type JournalEngineOptions } from "../src/worker/engine/plugins/journal/journal-engine.js";
-import { MYSQL_URL, issue, newEmptyMysqlDatabase, system } from "./helpers/store.js";
+import { issue, MYSQL_URL, newMigratedMysqlDatabase, system } from "./helpers/store.js";
 
 // RFC 0015 §9 `execution-engine` contract: an engine never recomputes a stored step, resumes after a crash at
 // any step, and never misses a timeout. A run the controller's reaper requeued (the one takeover path) and a second
@@ -54,8 +53,7 @@ const BACKENDS: Backend[] = [
         {
           name: "mysql",
           async open() {
-            const mysql = await newEmptyMysqlDatabase();
-            await new MysqlMigrations(await mysql.connect()).apply(() => undefined);
+            const mysql = await newMigratedMysqlDatabase();
             const a = new MysqlDriver(mysql.options);
             const b = new MysqlDriver(mysql.options);
             mysql.onCleanup(async () => {
