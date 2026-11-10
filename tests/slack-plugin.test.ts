@@ -132,9 +132,9 @@ describe("slack source and private channels", () => {
 
   it("a message reply in a work item's thread in a listed G… channel is taken like one in a C… channel", async () => {
     const s = source({ getWorkItemBySource: async () => ({ id: "wi_1" }) });
-    const ev = { type: "message", user: "U0ALICE", ts: "1800000000.000300", thread_ts: thread, text: "/approve" };
+    const ev = { type: "message", user: "U0ALICE", ts: "1800000000.000300", thread_ts: thread, text: "looks good to me" };
     const priv = await from(s, PRIVATE, ev);
-    expect(priv).not.toBeNull();
+    expect(priv).toMatchObject({ event: { kind: "plain_comment" } });
     expect(priv).toEqual(await from(s, CHANNEL, ev));
   });
 });
