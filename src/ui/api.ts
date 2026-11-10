@@ -87,7 +87,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     }
     case "/data/tables":
       return data(await dataTables(c.data()));
-    case "/data/autonomy":
+    case "/data/autonomy": // the same collectAutonomy as `factory stats` (design §6)
       return data(await dataAutonomy(c.data()));
     case "/pauses":
       return pauses(d);
@@ -134,9 +134,7 @@ async function pauses(d: ApiDeps): Promise<ApiResult> {
   return { status: r.status, value: { ...body, pauses: body.pauses.map((p) => (p.name === "model_stall" ? { ...p, since } : p)) } };
 }
 
-function data(r: DataResult): ApiResult {
-  return "error" in r ? apiError(r.status, r.error) : { status: r.status, value: r.value };
-}
+const data = (r: DataResult): ApiResult => ("error" in r ? apiError(r.status, r.error) : { status: r.status, value: r.value });
 
 class ApiCtx {
   readonly w: Withholder;

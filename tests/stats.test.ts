@@ -256,8 +256,8 @@ describe("factory stats: Autonomy (design §6)", () => {
   });
 
   it("aggregateAutonomy counts only CLOSED, merged, factory records", () => {
-    const rec = (i: number, over: Partial<StatsRecord>): StatsRecord => ({
-      id: `wi_${i}` as WorkItemId, tier: 1, stage: "CLOSED", token_cost: 0, reasons: [], severities: [], merged: true, ...over,
+    const rec = (i: number, over: Partial<StatsRecord>, merged = true): StatsRecord => ({
+      id: `wi_${i}` as WorkItemId, tier: 1, stage: "CLOSED", token_cost: 0, reasons: [], severities: [], ...(merged ? { merged } : {}), ...over,
     });
     expect(aggregateAutonomy([
       rec(1, { pushed: true }),
@@ -265,7 +265,7 @@ describe("factory stats: Autonomy (design §6)", () => {
       rec(3, { origin: "adopted" }),
       rec(4, { merged: false, pushed: true }),
       rec(5, { stage: "READY", pushed: true }),
-      rec(6, { merged: undefined }),
+      rec(6, {}, false),
     ])).toEqual({ merged: 2, with_push: 1, autonomy: 0.5 });
   });
 });

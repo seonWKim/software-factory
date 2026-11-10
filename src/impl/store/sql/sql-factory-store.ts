@@ -485,11 +485,9 @@ export class SqlFactoryStore implements FactoryStore {
         tier: r.tier === null ? null : (Number(r.tier) as Tier),
         stage: r.stage as Stage,
         token_cost: Number(r.token_cost),
-        reasons: [],
-        severities: [],
-        implicit: 0,
+        reasons: [], severities: [],
+        implicit: 0, pushed: false, // a person's push sets `pushed`: an implicit `changes` verdict (design §6 Autonomy)
         origin: (r.origin as WorkItem["origin"] | null) ?? "factory",
-        pushed: false,
         merged: r.stage === "CLOSED" && r.close_reason === "completed",
       });
     }
@@ -505,11 +503,8 @@ export class SqlFactoryStore implements FactoryStore {
     for (const v of verdicts) {
       const record = records.get(v.work_item_id as string);
       if (!record) continue;
-      if (Number(v.implicit) === 1) {
-        record.implicit = (record.implicit ?? 0) + 1;
-        // A person's push is stored as an implicit `changes` verdict (design §6 Autonomy).
-        if (v.verdict === "changes") record.pushed = true;
-      } else record.severities.push(v.severity as VerdictSeverity);
+      if (Number(v.implicit) !== 1) record.severities.push(v.severity as VerdictSeverity);
+      else Object.assign(record, { implicit: (record.implicit ?? 0) + 1, pushed: record.pushed === true || v.verdict === "changes" });
     }
     return [...records.values()];
   }
