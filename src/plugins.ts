@@ -3,7 +3,8 @@
 // implementation, anywhere under src/ (legacy src/impl/ or a component's plugins/ folder; `export default
 // definePlugin({...})`, src/plugin-api.ts). At startup the
 // loader below finds those files (`*.plugin.js` once built), sorts them by path, imports each and fills
-// REGISTRY. This file names no plugin and imports no implementation: only a new interface edits it.
+// REGISTRY. Each config load adds the packs' plugins to a copy of it (withPackPlugins, design 11-packs.md).
+// This file names no plugin and imports no implementation: only a new interface edits it.
 // src/compose.ts, src/canary.ts and src/setup.ts resolve plugins through it; docs/plugins.md describes
 // each one and `tests/plugins.test.ts` keeps the two in step.
 //
@@ -222,6 +223,33 @@ function registryOf(found: readonly Found[]): Registry {
 
 /** The built-in registry: every descriptor under PLUGIN_ROOT, loaded once at startup. */
 export const REGISTRY: Registry = await loadRegistry([PLUGIN_ROOT]);
+
+/**
+ * A copy of `registry` with the pack plugins in `files` (design 11-packs.md), built for each config load; `registry`
+ * itself never changes. A pack plugin is selected only by name: a guard (SecretStore, EgressScanner, ToolBroker),
+ * a `default`, or a name its kind already has fails startup, naming the file. No files: `registry` itself.
+ */
+export async function withPackPlugins(registry: Registry, files: readonly string[]): Promise<Registry> {
+  if (files.length === 0) return registry;
+  const out = { ...registry } as Record<PluginKind, InterfaceEntry<PluginKind>>;
+  for (const file of files) {
+    const d = checkDescriptor(file, ((await import(pathToFileURL(file).href)) as { default?: unknown }).default);
+    const entry = out[d.kind];
+    const bad = (why: string) => new Error(`pack plugin ${file}: ${why} (docs/design/11-packs.md)`);
+    if (entry.guard) {
+      throw bad(`declares a ${entry.interface} (${d.kind}) plugin "${d.name}"; ${entry.interface} is a guard, and guards come only from the engine, never from a pack`);
+    }
+    if (d.default !== undefined) throw bad(`a pack plugin takes no default; select "${d.name}" at ${entry.configKey}`);
+    if (Object.hasOwn(entry.plugins, d.name)) throw bad(`${entry.interface} (${d.kind}) already has a plugin named "${d.name}"`);
+    out[d.kind] = {
+      ...entry,
+      plugins: { ...entry.plugins, [d.name]: d.create as PluginFactory<PluginKind> },
+      secrets: { ...entry.secrets, [d.name]: d.secrets ?? [] },
+      setups: d.setup ? { ...entry.setups, [d.name]: d.setup } : entry.setups,
+    };
+  }
+  return out as unknown as Registry;
+}
 
 /** Grant plugins by name (design 2026-11-01): one `*.grant.ts` descriptor each, apart from REGISTRY. */
 export type GrantRegistry = Readonly<Record<string, GrantDescriptor>>;

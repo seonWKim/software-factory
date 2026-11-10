@@ -6,9 +6,10 @@ import type { Capability, CapabilitySearch } from "../../interfaces/capability-s
  * BM25 over the repo's markdown docs and skills (design §7, progressive disclosure). Agents get a short
  * index (path, name, snippet) and Read the full text themselves. Finding a doc grants no permission.
  *
- * What is indexed: `*.md` files under `docs/` and `skills/` below the code root. Directories named
+ * What is indexed: `*.md` files under `docs/` and `skills/` below the code root, and under each extra skill
+ * folder (a pack's `skills/`, design 11-packs.md; kind `skill`, ID its absolute path). Directories named
  * `prompts` or `node_modules`, dot-directories, dot-files and symlinks are skipped, so nothing outside
- * those two roots is ever read.
+ * those roots is ever read.
  *
  * The index is a per-process cache rebuilt from files: built at construction, and rebuilt by `search()`
  * whenever an indexed file's mtime or size changes or a file is added or removed. Nothing is shared
@@ -58,7 +59,10 @@ export class Bm25CapabilitySearch implements CapabilitySearch {
   private df = new Map<string, number>();
   private avgLength = 0;
 
-  constructor(private readonly codeRoot: string) {
+  constructor(
+    private readonly codeRoot: string,
+    private readonly skillDirs: readonly string[] = [],
+  ) {
     this.refresh();
   }
 
@@ -91,7 +95,7 @@ export class Bm25CapabilitySearch implements CapabilitySearch {
 
   /** Rebuilds when the set of files, or any file's mtime or size, differs from the last build. */
   private refresh(): void {
-    const files = listFiles(this.codeRoot);
+    const files = listFiles(this.codeRoot, this.skillDirs);
     const signature = files.map((f) => `${f.id}\0${f.mtimeMs}\0${f.size}`).join("\n");
     if (signature === this.signature) return;
     const docs: Scored[] = [];
@@ -102,7 +106,7 @@ export class Bm25CapabilitySearch implements CapabilitySearch {
       } catch {
         continue; // removed between listing and reading; the next search sees the new state
       }
-      docs.push(score(...parse(f.id, text)));
+      docs.push(score(...parse(f.id, f.kind, text)));
     }
     const df = new Map<string, number>();
     for (const d of docs) for (const t of d.tf.keys()) df.set(t, (df.get(t) ?? 0) + 1);
@@ -126,14 +130,15 @@ export function snippet(text: string): string {
 
 interface FileInfo {
   id: string;
+  kind: IndexedDoc["kind"];
   path: string;
   mtimeMs: number;
   size: number;
 }
 
-function listFiles(codeRoot: string): FileInfo[] {
+function listFiles(codeRoot: string, skillDirs: readonly string[]): FileInfo[] {
   const out: FileInfo[] = [];
-  const walk = (dir: string) => {
+  const walk = (dir: string, idOf: (path: string) => string, kind: IndexedDoc["kind"]) => {
     let names: string[];
     try {
       names = readdirSync(dir).sort();
@@ -151,17 +156,21 @@ function listFiles(codeRoot: string): FileInfo[] {
       }
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
-        if (!SKIP_DIRS.has(name)) walk(path);
+        if (!SKIP_DIRS.has(name)) walk(path, idOf, kind);
       } else if (st.isFile() && name.endsWith(".md")) {
-        out.push({ id: relative(codeRoot, path).split(sep).join("/"), path, mtimeMs: st.mtimeMs, size: st.size });
+        out.push({ id: idOf(path), kind, path, mtimeMs: st.mtimeMs, size: st.size });
       }
     }
   };
-  for (const root of INDEX_ROOTS) {
-    const path = join(codeRoot, root);
+  const fromCodeRoot = (path: string) => relative(codeRoot, path).split(sep).join("/");
+  const roots = [
+    ...INDEX_ROOTS.map((root) => ({ path: join(codeRoot, root), idOf: fromCodeRoot, kind: root === "skills" ? "skill" as const : "doc" as const })),
+    ...skillDirs.map((path) => ({ path, idOf: (p: string) => p, kind: "skill" as const })),
+  ];
+  for (const root of roots) {
     try {
-      const st = lstatSync(path);
-      if (st.isDirectory() && !st.isSymbolicLink()) walk(path);
+      const st = lstatSync(root.path);
+      if (st.isDirectory() && !st.isSymbolicLink()) walk(root.path, root.idOf, root.kind);
     } catch {
       // root absent: nothing to index there
     }
@@ -169,8 +178,14 @@ function listFiles(codeRoot: string): FileInfo[] {
   return out;
 }
 
+/** A skill file as a capability: its name and snippet as the search lists them (design 11-packs.md, list-all). */
+export function skillCapability(id: string, text: string): Capability {
+  const [doc] = parse(id, "skill", text);
+  return { id, kind: "skill", name: doc.name, summary: snippet(doc.firstParagraph) };
+}
+
 /** The entry, plus the text of every non-heading line (the body terms). */
-function parse(id: string, text: string): [IndexedDoc, string] {
+function parse(id: string, kind: IndexedDoc["kind"], text: string): [IndexedDoc, string] {
   const lines = text.split(/\r?\n/);
   let name: string | null = null;
   let titleLine = -1;
@@ -209,7 +224,7 @@ function parse(id: string, text: string): [IndexedDoc, string] {
 
   const doc: IndexedDoc = {
     id,
-    kind: id.startsWith("skills/") ? "skill" : "doc",
+    kind,
     name: name ?? basename(id, ".md"),
     headings,
     firstParagraph: para.join(" ").replace(/\s+/g, " ").trim(),
