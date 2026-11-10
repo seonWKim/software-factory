@@ -8,7 +8,20 @@ npm run setup
 
 It is safe to run again: every question shows its default (your current choice) and Enter takes it, and it skips what is already done. Two steps need you in a browser; the command stops and tells you when.
 
-- `npm run setup -- --yes` takes every default without asking (for scripts). A missing secret is reported, not asked: paste it later with a plain `npm run setup` in a terminal.
+Every step looks the same: its number and title, one line on why, its question with the default, then a `✓` (done) or `✗` (not done, with what to do) line:
+
+```
+4. Secrets
+   The credentials the selected plugins declare; each missing one is asked with hidden input and written only to the secret file.
+   Needed: CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY
+   Paste CLAUDE_CODE_OAUTH_TOKEN now (hidden input)? [Y/n]
+   ...
+   ✓ saved CLAUDE_CODE_OAUTH_TOKEN
+```
+
+If a run stops (you press Ctrl-C, a check fails, the database is not ready), the next `npm run setup` says where it stopped and asks `Continue from step N? [yes] / start over`. Enter continues from that step; `start over` runs from step 1. Setup keeps this in `<state_dir>/setup-progress.json` (`.factory/setup-progress.json` by default): the names of the finished steps and your GitHub answer, never a secret. A setup that finishes with every step `✓` deletes the file.
+
+- `npm run setup -- --yes` takes every default without reading the terminal (for scripts). A missing secret is reported on the Secrets step's `✗` line, not asked: paste it later with a plain `npm run setup` in a terminal.
 - `npm run setup -- --me` only registers you (your ID and display name). For a second person on a shared store: it changes neither `factory.config.json` nor the secret file.
 - `npm run setup -- --rotate-github` (or `--rotate-claude`, `--rotate-mysql`) replaces a stored credential.
 
@@ -25,18 +38,16 @@ It is safe to run again: every question shows its default (your current choice) 
 
 | Step | Automated | You do |
 |---|---|---|
-| 1. Store | Asks `sqlite` (one machine, no server) or `mysql` (a shared database for a team) | Press Enter for the default (`sqlite` on a new file) |
-| 2. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`store`, `plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin | Answer, then confirm the diff |
-| 3. Mode | Asks `manual` or `auto` and `auto_merge_max_tier` (0 to 3; 0 merges nothing). Runtime settings, not file keys: set later in the "You and the mode" step through `factory settings set` | Press Enter to keep the current ones |
-| 4. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository | — |
-| 5. Model credential | Prompts for the token with hidden input and writes it to the secret file | Run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once), paste it at the prompt |
-| 6. GitHub token | Opens the token page, shows the exact settings, prompts with hidden input, writes it to the secret file | Create the token (settings below), paste it at the prompt |
-| 7. Database | Creates the `software_factory` database and the factory's own MySQL user with a generated password, written to the secret file | Type the MySQL root password if the `mysql` client asks |
-| 8. You and the mode | Asks your display name (prefilled from git `user.name`) and stores it once against your ID; makes you the local owner if there is none yet; sets the mode and tier you chose if they changed | Type your name or press Enter. Your ID stays `cli_user`, else `local:<git user.email>`, else `local:<OS user>` |
-| 9. Other secrets | Prompts for any other secret the selected plugins declare | Paste each |
-| 10. Labels | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create | — |
-| 11. Checks | Runs `doctor`: file permissions, credentials present, claude CLI, database connection, push access, intake label; warns on a token that never expires and on each missing status label | Fix any `FAIL` line and rerun. On a new MySQL database, run `npm run migrate` once first (the schema-steps FAIL says so) |
-| 12. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
+| 1. Store | Asks `sqlite` (one machine, no server) or `mysql` (a shared database for a team). Shows a change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes | Press Enter for the default (`sqlite` on a new file) |
+| 2. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`store`, `plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
+| 3. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository, with an empty line for each secret the selected plugins need | Press Enter |
+| 4. Secrets | Lists the secrets the selected plugins need, then asks for each missing one with hidden input and writes it to the secret file. The model credential is `CLAUDE_CODE_OAUTH_TOKEN`; with GitHub on, `GITHUB_APP_ID` (App) or `GITHUB_TOKEN` (token, with the settings below); with Slack on, its two tokens. `MYSQL_PASSWORD` is the Database step's. With nothing missing it asks whether to replace one | For the model credential, run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once). Paste each at its prompt |
+| 5. Database | SQLite: creates or updates the store under the state folder. MySQL: creates the `software_factory` database and the factory's own MySQL user with a generated password, written to the secret file | Type the MySQL root password if the `mysql` client asks. On a new MySQL database, run `npm run migrate` when the step says so, then `npm run setup` again (it continues here) |
+| 6. You | Asks your display name (prefilled from git `user.name`) and stores it once against your ID; makes you the local owner if there is none yet | Type your name or press Enter. Your ID stays `cli_user`, else `local:<git user.email>`, else `local:<OS user>` |
+| 7. Mode | Asks `manual` or `auto` and `auto_merge_max_tier` (0 to 3; 0 merges nothing) and sets a changed one through `factory settings set`. Runtime settings, not file keys | Press Enter to keep the current ones |
+| 8. Setup of the selected plugins | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create. Nothing to do with GitHub off | Press Enter |
+| 9. Checks | Runs the `doctor` checks and marks each `✓`, `!` (warning) or `✗`: file permissions, credentials present, `ANTHROPIC_API_KEY` not set, claude CLI, database connection, push access, intake label; warns on a token that never expires and on each missing status label. Each `✗` line says how to fix it | Fix any `✗` line and rerun: setup continues from this step |
+| 10. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
 
