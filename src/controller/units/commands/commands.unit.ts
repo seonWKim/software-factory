@@ -3,7 +3,7 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
-import { commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
+import { appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
@@ -538,8 +538,8 @@ export class CommandsUnit {
     if (e.kind === "resolve_requested") {
       return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
     }
-    if (e.kind === "revise_requested" && e.pr) {
-      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr.change_ref, key: { comment_id: e.comment_id } });
+    if (e.kind === "revise_requested" && (e.pr || (it.source.type === "slack_thread" && appliesOnPr(commandSpec("revise"), commandState(it))))) {
+      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref!, key: { comment_id: e.comment_id } });
     }
     if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
