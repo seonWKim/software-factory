@@ -6,7 +6,7 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { MergeButton } from "./item-commands.js";
+import { MergeButton, NeedCommands } from "./item-commands.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {
@@ -68,14 +68,13 @@ export function WhyText({ why }: { why: Why }) {
 }
 
 /**
- * A Needs-you row's reason and the command to type (the same words as the classic page). The reason links to the
- * item page at the factory's newest thread entry, when the item has one.
+ * A Needs-you row's reason (the same words as the classic page). It links to the item page at the factory's newest
+ * thread entry, when the item has one. The row's command buttons (NeedCommands) come after it.
  */
 function NeedText({ id, need }: { id: string; need: NonNullable<ItemRow["need"]> }) {
   return (
     <span data-need>
       {need.anchor ? <Link href={`${itemPath(id)}#${need.anchor}`} className={LINK_CLASS}>{need.reason}</Link> : need.reason}
-      {need.command && <> · <code className="font-mono text-xs">{need.command}</code></>}
     </span>
   );
 }
@@ -91,10 +90,10 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
 
 /**
  * Needs you and Work items. The title links to the item's page; the Item cell has no link out. The Issue column
- * exists only when the GitHub plugin is in use (`plugins` from the overview); the PR column always shows. `merge`
- * (Needs you): an item waiting for its merge gets the Merge button beside its reason.
+ * exists only when the GitHub plugin is in use (`plugins` from the overview); the PR column always shows. `actions`
+ * (Needs you): each row gets its command buttons and, waiting for its merge, the Merge button beside its reason.
  */
-export function ItemsTable({ items, now, label, empty, plugins, merge = false }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"]; merge?: boolean }) {
+export function ItemsTable({ items, now, label, empty, plugins, actions = false }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"]; actions?: boolean }) {
   if (items.length === 0) return <Empty>{empty}</Empty>;
   const showIssue = plugins?.issues === "github";
   const head = ["Item", "State", "Why", "Since", ...(showIssue ? ["Issue"] : []), "PR"];
@@ -113,7 +112,12 @@ export function ItemsTable({ items, now, label, empty, plugins, merge = false }:
           </Td>
           <Td className="text-zinc-600 dark:text-zinc-400">
             {it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
-            {merge && showsMerge(it.merge) && (
+            {actions && (it.commands?.length ?? 0) > 0 && (
+              <span className="ml-2">
+                <NeedCommands id={it.id} commands={it.commands!} pr={it.change_ref} />
+              </span>
+            )}
+            {actions && showsMerge(it.merge) && (
               <span className="ml-2">
                 <MergeButton id={it.id} source={it.source.type} merge={it.merge} />
               </span>

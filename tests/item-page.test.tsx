@@ -158,7 +158,7 @@ describe("item page: links and runs", () => {
 });
 
 describe("item page: In short, decisions and the approve confirm (issue #526)", () => {
-  const APPROVE = { name: "approve", usage: "/approve [notes]", description: "approve" };
+  const APPROVE = { name: "approve", usage: "/approve [notes]", description: "approve", allowed: true, reason: null };
   const SPEC = {
     in_short: "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.",
     decisions: [
@@ -275,7 +275,7 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
 });
 
 describe("item page: the Reject and Revise forms (issue #527)", () => {
-  const cmd = (name: string) => ({ name, usage: `/${name}`, description: name });
+  const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
   let posts: { url: string; body: unknown }[];
 
   /** Serves wi_r at the spec gate with approve, revise and reject; `extra` sets the item's fields (a PR). */
@@ -399,13 +399,10 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
   });
 });
 
-describe("item page: refusals and the viewer's grants (issue #528)", () => {
-  const cmd = (name: string) => ({ name, usage: `/${name}`, description: name });
+describe("item page: refusals and the viewer's grants (issues #528, #453)", () => {
+  const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
   const STORED = "`/approve` was not applied: the spec is not waiting for approval (the item is triaging).";
-  const WITHHELD = {
-    names: ["approve", "reject", "revise"],
-    reason: "local:helper has no role that allows it (`no_role`); the local owner can grant one with `factory users add local:helper --role approver`",
-  };
+  const NO_ROLE = "local:helper has no role that allows it (`no_role`); the local owner can grant one with `factory users add local:helper --role approver`";
 
   /** The element at `selector`, once the page shows it. */
   const found = (selector: string) =>
@@ -415,7 +412,7 @@ describe("item page: refusals and the viewer's grants (issue #528)", () => {
       return el;
     });
 
-  /** Serves wi_g with `detail`'s commands, replies and withheld commands. */
+  /** Serves wi_g with `detail`'s commands and replies. */
   function serve(detail: object) {
     const body = { as_of: AT, item: base("wi_g", 50, "Grants"), timeline: [], runs: [], commands: [], replies: [], spec: null, ...detail };
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
@@ -441,14 +438,19 @@ describe("item page: refusals and the viewer's grants (issue #528)", () => {
     expect(replies[0]!.refusal).toBe(STORED);
   });
 
-  it("commands the viewer's grants leave out get no control, only one plain line naming them and the controller's reason", async () => {
-    serve({ commands: [], commands_withheld: WITHHELD });
+  it("a command the viewer's grants do not allow is a disabled button with the controller's reason beside it, in plain text", async () => {
+    serve({ commands: ["approve", "reject", "revise"].map((n) => ({ ...cmd(n), allowed: false, reason: NO_ROLE })) });
     mount("/app/items/wi_g");
-    const note = await found("[data-commands-withheld]");
-    expect(note.textContent).toBe(
-      "Not shown for you: approve, reject, revise. local:helper has no role that allows it (no_role); the local owner can grant one with factory users add local:helper --role approver.",
-    );
-    for (const name of ["approve", "reject", "revise"]) expect(screen.queryByRole("button", { name })).toBeNull();
+    const row = await found('[data-command="approve"]');
+    for (const name of ["approve", "reject", "revise"]) {
+      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(true);
+      expect(document.querySelector(`[data-command="${name}"]`)!.textContent).toContain(
+        "local:helper has no role that allows it (no_role); the local owner can grant one with factory users add local:helper --role approver",
+      );
+    }
+    expect(row.textContent).not.toContain("`");
+    // No note box for commands that cannot be sent.
+    expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
     expect(document.querySelector("[data-commands-none]")).toBeNull();
   });
 });
