@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
@@ -7,14 +7,15 @@ import { Switch } from "../components/ui/switch.js";
 import { cn } from "../lib/cn.js";
 import { ago, duration } from "../lib/format.js";
 import { useNow } from "./common.js";
-import { StandingSection } from "./standing.js";
+import { ProposalsSection, StandingSection } from "./standing.js";
 
 // The Settings page (design §8 and §9, issue #236): every settable key with its value, source and when a change
 // applies, an edit control per key and a reset when an override exists, the PR-only keys read-only, and the
-// audit history, and the standing approvals (standing.tsx). Every key write is POST /api/v1/settings, which runs
+// audit history, and the standing approvals (standing.tsx), whose pending proposals come first. Every key write is POST /api/v1/settings, which runs
 // the same checks as `factory settings`; a refusal is shown next to the field it came from.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
+const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
 
 const input =
@@ -57,13 +58,63 @@ function Outcome({ error, done }: { error: string | null; done: string | null })
   return null;
 }
 
-function parseObject(text: string): Record<string, unknown> {
+/** The JSON object in `text`, or null when it holds anything else. */
+function asObject(text: string): Record<string, unknown> | null {
   try {
     const v: unknown = JSON.parse(text);
-    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+    return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
   } catch {
-    return {};
+    return null;
   }
+}
+
+/** `text` pretty-printed, two spaces per level; text that is not JSON as it is. */
+function pretty(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+/** An object's entries as `path → value`, nested objects flattened to dotted paths ("implement.1 → standard"). */
+function entries(value: unknown, path = ""): [string, string][] {
+  if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0) {
+    return Object.entries(value).flatMap(([k, v]) => entries(v, path ? `${path}.${k}` : k));
+  }
+  return [[path, typeof value === "string" ? value : JSON.stringify(value)]];
+}
+
+/** Up to this many entries an object is listed in full; above it, a summary that opens to the list. */
+const SHORT_OBJECT = 3;
+
+/** An object's one-line summary: its top-level keys. */
+const summaryOf = (obj: Record<string, unknown>) => `${Object.keys(obj).length} keys: ${Object.keys(obj).join(", ")}`;
+
+/**
+ * A setting value: a JSON object as one `key → value` line per entry (behind a summary of its keys when it has more
+ * than SHORT_OBJECT entries, so a long value never makes its row tall), anything else as its text.
+ */
+function JsonValue({ text }: { text: string }) {
+  const obj = asObject(text);
+  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs break-words">{text}</span>;
+  const list = (
+    <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
+      {entries(obj).map(([k, v]) => (
+        <Fragment key={k}>
+          <dt className="text-zinc-600 dark:text-zinc-400">{k}</dt>
+          <dd className="min-w-0 break-words">{v}</dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+  if (entries(obj).length <= SHORT_OBJECT) return list;
+  return (
+    <details>
+      <summary className="cursor-pointer text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{summaryOf(obj)}</summary>
+      <div className="mt-1">{list}</div>
+    </details>
+  );
 }
 
 /**
@@ -94,7 +145,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   } else if (row.kind === "boolean") {
     control = <Switch aria-label={label} checked={value === "true"} disabled={busy} onCheckedChange={(next) => void save(String(next))} />;
   } else if (row.kind === "models") {
-    const current = parseObject(value);
+    const current = asObject(value) ?? {};
     const shown = tiers ?? Object.fromEntries(TIERS.map((t) => [t, typeof current[t] === "string" ? (current[t] as string) : ""]));
     control = (
       <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
@@ -110,15 +161,27 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
       </form>
     );
   } else if (row.kind === "json") {
-    const shown = draft ?? value;
-    control = (
+    // Pretty-printed, one entry per line; a long value sits behind a summary of its keys so its row stays short.
+    const shown = draft ?? pretty(value);
+    const lines = shown.split("\n").length;
+    const obj = asObject(value);
+    const form = (
       <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <textarea aria-label={label} rows={4} spellCheck={false} className={cn(input, "w-full min-w-72 font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className={cn(input, "w-full min-w-64 font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
         <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
     );
+    control =
+      obj !== null && entries(obj).length > SHORT_OBJECT ? (
+        <details>
+          <summary className="cursor-pointer text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{summaryOf(obj)} · edit</summary>
+          <div className="mt-2">{form}</div>
+        </details>
+      ) : (
+        form
+      );
   } else {
     const shown = draft ?? value;
     control = (
@@ -182,7 +245,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
         <Description text={row.description} />
       </Td>
-      <Td className="min-w-48">
+      <Td className="min-w-56">
         <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
         <Duration settingKey={row.key} value={row.value} />
         {row.key === "workers" && row.max !== undefined && (
@@ -207,8 +270,19 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
       <Td>
         <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge>
       </Td>
-      <Td className="font-mono text-xs break-all">{row.file_value ?? <span className="text-zinc-500">not set (default {row.default_value})</span>}</Td>
-      <Td className="text-zinc-600 dark:text-zinc-400">{row.applies_at}</Td>
+      <Td className="min-w-40">
+        {row.file_value !== null ? (
+          <JsonValue text={row.file_value} />
+        ) : asObject(row.default_value) === null ? (
+          <span className="font-mono text-xs break-words text-zinc-500">not set (default {row.default_value})</span>
+        ) : (
+          <>
+            <span className="text-xs text-zinc-500">not set; default:</span>
+            <JsonValue text={row.default_value} />
+          </>
+        )}
+      </Td>
+      <Td className="min-w-32 text-zinc-600 dark:text-zinc-400">{row.applies_at}</Td>
       <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
     </Tr>
   );
@@ -312,6 +386,7 @@ export function SettingsPage() {
   const v = settings.data;
   return (
     <>
+      <ProposalsSection />
       <ModeSection view={v} />
       <PageCommands />
       <Section title="Settable keys" count={v.keys.length}>
@@ -337,15 +412,19 @@ export function SettingsPage() {
         </Section>
       )}
       <StandingSection />
-      <Section title="Changes by PR only" count={v.pr_only.length}>
-        <Table label="Changes by PR only" head={["Key", ""]}>
+      <Section title={PR_ONLY_TITLE} count={v.pr_only.length}>
+        <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          These keys set the guards, secrets, permissions, plugins and what agents may read, so a person must review every
+          change: this page and <code>factory settings set</code> refuse them. To change one, edit it in{" "}
+          <code>factory.config.json</code> in a pull request and merge it after review.
+        </p>
+        <Table label={PR_ONLY_TITLE} head={["Key"]}>
           {v.pr_only.map((p) => (
             <Tr key={p.key} data-key={p.key}>
               <Td>
                 <span className="font-mono text-xs">{p.key}</span>
                 <Description text={p.description} />
               </Td>
-              <Td className="text-zinc-600 dark:text-zinc-400">{p.note}</Td>
             </Tr>
           ))}
         </Table>

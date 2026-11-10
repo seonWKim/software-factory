@@ -23,7 +23,7 @@ export function SystemActions({ actions }: { actions: readonly SystemAction[] })
     <ul aria-label="System actions" className="mb-3 space-y-1">
       {actions.map((a, i) => (
         <li key={`${a.code}:${a.work_item_id ?? i}`} data-action={a.code} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md bg-red-50 px-3 py-2 text-sm text-red-900 dark:bg-red-950 dark:text-red-100">
-          <span className="min-w-0 text-pretty">
+          <span className="min-w-0 text-pretty break-words">
             {a.work_item_id ? <Link href={itemPath(a.work_item_id)} className={LINK_CLASS}>{a.text}</Link> : a.text}
           </span>
           <code className="font-mono text-xs break-all">{a.command}</code>

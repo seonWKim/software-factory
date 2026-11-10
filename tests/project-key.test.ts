@@ -2,10 +2,11 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PROJECT_RETRY_MS, build, loadConfig, resolveProject, resolvedConfig, startupProject } from "../src/compose.js";
+import { PROJECT_RETRY_MS, build, loadConfig, resolvedConfig, startupProject } from "../src/compose.js";
+import { githubProjectKey, resolveProject } from "../src/impl/github/forge.plugin.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
-  UNKNOWN_PROJECT_LABEL, assertProjectKey, githubProjectKey, isLegacyProject, isProjectKey, projectKeyCursor, projectLabel, projectLabelCursor,
+  UNKNOWN_PROJECT_LABEL, assertProjectKey, isLegacyProject, isProjectKey, projectKeyCursor, projectLabel, projectLabelCursor,
 } from "../src/core/project.js";
 import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
 import { type FactoryConfig, cliUserConfig } from "../src/core/config.js";
@@ -21,7 +22,9 @@ import { projectKeyChecks } from "../src/ui/factory-status.js";
 import { NO_FILTERS } from "../src/ui/filters.js";
 import { type UiDeps, renderIndex, renderItem } from "../src/ui/pages.js";
 import type { Secret } from "../src/interfaces/secret-store.js";
-import { FakeAuth, FakeForge, FakeSource, PROJECT, alice, cleanScanner, config, issueRef, recordingLog, triageSpec } from "./helpers/fakes.js";
+import { REGISTRY, withPlugin } from "../src/plugins.js";
+import { GitHubForge } from "../src/impl/github/github-forge.js";
+import { FakeAuth, FakeForge, FakeSource, PROJECT, alice, cleanScanner, config, fakeGitHubAccess, issueRef, recordingLog, triageSpec } from "./helpers/fakes.js";
 import { issue, system, w1 } from "./helpers/store.js";
 
 // Projects are keyed by GitHub's repository node ID (design 2026-11-01): `github:github.com:<node id>`, with
@@ -188,13 +191,59 @@ describe("startup resolution", () => {
     expect(await starting).toMatchObject({ message: "stopped" });
   });
 
+  it("the GitHub forge's projectIdentity is the key and label resolveProject gives", async () => {
+    const lookup = { repoIdentity: async () => ({ node_id: NODE_ID, owner: "renamed", name: "repo", host: "github.com" }) };
+    const forge = new GitHubForge(lookup as never, { owner: "o", name: "r" }, "factory/", "main", { postComment: async () => ({ url: null }), setStatus: async () => {} } as never);
+    expect(await forge.projectIdentity()).toEqual({ key: KEY, label: "github.com/renamed/repo" });
+    const failing = new GitHubForge({ repoIdentity: async () => Promise.reject(new GitHubError(404, "404 Not Found")) } as never, { owner: "o", name: "r" }, "factory/", "main", {} as never);
+    expect(await failing.projectIdentity().catch((e: unknown) => e)).toMatchObject({ permanent: true, message: expect.stringContaining("o/r") });
+  });
+
+  it("build() reads the key through the selected forge's projectIdentity, never through the GitHub client", async () => {
+    const asked: string[] = [];
+    const forge = Object.assign(new FakeForge(new FakeSource()), {
+      projectIdentity: async () => (asked.push("forge"), { key: KEY, label: "github.com/o/r" }),
+    });
+    const access = fakeGitHubAccess({ token: async () => null });
+    access.api.repoIdentity = async () => expect.fail("startup called the GitHub client's repository lookup");
+    let registry = withPlugin(REGISTRY, "forge", "github", () => forge);
+    registry = withPlugin(registry, "github_auth", "app", () => access);
+    const loaded = await loadConfig(root(), { registry });
+    expect(loaded.plugins.forge).toBe("github");
+    const built = await build(loaded, { clock: new FakeClock() });
+    try {
+      expect(built.project).toEqual({ key: KEY, label: "github.com/o/r" });
+      expect(asked).toEqual(["forge"]);
+    } finally {
+      await built.close();
+    }
+  });
+
+  it("build() with a GitHub plugin but no forge keeps the stored key, else takes the local key, with no GitHub call", async () => {
+    const dir = root();
+    const file = JSON.parse(readFileSync(join(dir, "factory.config.json"), "utf8")) as { plugins: Record<string, unknown> };
+    writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...file, plugins: { ...file.plugins, source: "local" } }));
+    const access = fakeGitHubAccess({ token: async () => null });
+    access.api.repoIdentity = async () => expect.fail("startup called the GitHub client's repository lookup");
+    const loaded = await loadConfig(dir, { registry: withPlugin(REGISTRY, "github_auth", "app", () => access) });
+    expect(loaded.plugins.forge).toBeUndefined();
+    const first = await build(loaded, { clock: new FakeClock() });
+    expect(first.project.key).toMatch(/^local:local:/);
+    await saveProject(first.store, loaded.config.repo, { key: KEY, label: "github.com/o/r" });
+    await first.close();
+    const again = await build(loaded, { clock: new FakeClock() });
+    expect(again.project.key).toBe(KEY);
+    await again.close();
+  });
+
   it("a store from before the key cursor finds the key by its label, with no GitHub answer, and stores the key", async () => {
     const f = await rawStore();
     await saveProjectLabel(f.store, { key: KEY, label: "github.com/o/r" });
     await f.store.createWorkItem({ ...issue(1), project: KEY }, system);
     const log = recordingLog();
     const { project, refreshed } = await startupProject({
-      store: f.store, lookup: { repoIdentity: async () => Promise.reject(rateLimited()) }, repo: { owner: "o", name: "r" }, clock: f.clock, log,
+      store: f.store, identify: () => resolveProject({ repoIdentity: async () => Promise.reject(rateLimited()) }, { owner: "o", name: "r" }),
+      repo: { owner: "o", name: "r" }, clock: f.clock, log,
     });
     await refreshed;
     expect(project).toEqual({ key: KEY, label: "github.com/o/r" });
