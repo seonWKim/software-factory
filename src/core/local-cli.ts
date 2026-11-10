@@ -3,12 +3,14 @@ import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
+import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject` and `resolve` append one row to the CLI command log (`command_inbox`) and change no item
- * state, for an item of any source. The controller reads that log and applies each command with the same
+ * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
+ * with its text before any write (issue #528). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
  * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
  * answers (design 05-sources, CLI intake). Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
@@ -63,6 +65,9 @@ const USER_ID = /^[a-z]+:\S+$/;
 /** The top-level words `factory` hands to this module: the table's task, item and users commands. */
 export const CLI_TOP_WORDS = topWords(["task", "item", "users"]);
 
+/** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
+export const HELP_WORD = "help";
+
 const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve"] as const;
 
 /** `merge` is the local merge (src/core/local-merge.ts); the others are the comment commands of the same name. */
@@ -73,6 +78,7 @@ export type CliAction =
   | { action: "list" }
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
+  | { action: "help"; id: WorkItemId | null }
   | { action: "users_list" }
   | { action: "users_add"; user: UserId; role: Exclude<LocalRole, "owner"> }
   | { action: "users_remove"; user: UserId };
@@ -86,7 +92,8 @@ export function cliUsage(): string {
 
 /** The usage lines of `factory --help`: each command with what it does. */
 export function cliUsageLines(): string {
-  return LOCAL_COMMANDS.map((c) => `  ${cliUsageOf(c).padEnd(40)} ${c.does}`).join("\n");
+  const help = `  ${`${HELP_WORD} [<id>]`.padEnd(40)} List every command, as \`/help\` does; with an item, the ones that apply to it now marked`;
+  return [...LOCAL_COMMANDS.map((c) => `  ${cliUsageOf(c).padEnd(40)} ${c.does}`), help].join("\n");
 }
 
 /** The SET_UP.md list, one bullet per command of the table. tests/local-cli.test.ts fails when SET_UP.md differs. */
@@ -121,6 +128,10 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (!id) return bad(`${word} needs a work item ID`);
     const text = rest.join(" ").trim();
     return { action: "command", command: word as ItemCommand, id: id as WorkItemId, text };
+  }
+  if (word === HELP_WORD) {
+    if (args.length > 1) return bad("help takes at most one work item ID");
+    return { action: "help", id: (args[0] as WorkItemId | undefined) ?? null };
   }
   if (word === MERGE_COMMAND) {
     const [id, ...rest] = args;
@@ -212,6 +223,9 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!item) return fail(`no work item ${a.id}`);
       const name = a.command === MERGE_COMMAND ? "factory merge" : `/${a.command}`;
       if (a.command === MERGE_COMMAND && item.source.type !== "local") return fail(`${a.id} is not a local work item: merge its change on the forge instead`);
+      // The controller's phase check, before any write: the same refusal it would post (issue #528).
+      const refused = a.command === "approve" ? approveRefusal(item) : null;
+      if (refused !== null) return fail(refusalText(name, refused));
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface, and
@@ -225,6 +239,12 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
         code: 0,
         lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
       };
+    }
+    case "help": {
+      if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
+      const item = await d.store.getWorkItem(a.id);
+      if (!item) return fail(`no work item ${a.id}`);
+      return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
     }
     case "users_list": {
       const users = await d.store.listLocalUsers();

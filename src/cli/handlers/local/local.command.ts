@@ -5,17 +5,18 @@ import { buildStatsStore } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
 import { ProfileStore, startIdentity, type IdentityRuntime } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
-import { CLI_TOP_WORDS, cliIdentity, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
+import { CLI_TOP_WORDS, HELP_WORD, cliIdentity, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 import { cliEnvironment } from "../../support.js";
 
 /**
- * `factory task …`, `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200) and `factory merge <id>`: the store only, no
- * GitHub call. Item commands are appended to the CLI command log; the controller applies them.
+ * `factory task …`, `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200), `factory merge <id>` and
+ * `factory help [<id>]` (issue #528): the store only, no GitHub call. Item commands are appended to the CLI command log;
+ * the controller applies them.
  */
 export default defineCommand({
-  names: CLI_TOP_WORDS,
+  names: [...CLI_TOP_WORDS, HELP_WORD],
   usage: `${cliUsageLines()}
                local work items, read by the controller from the store whatever plugins.source lists, acting
                as the CLI identity (cli_user, else local:<git user.email>, else local:<OS user>, else

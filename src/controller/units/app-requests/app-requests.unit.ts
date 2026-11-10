@@ -1,7 +1,7 @@
 // Applies the status page's requests (approve, reject, revise, verdict, merge; anything else is refused).
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { COMMANDS } from "../../../core/commands.js";
+import { COMMANDS, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest } from "../../../interfaces/factory-store.js";
@@ -39,7 +39,7 @@ export class AppRequestsUnit {
   async applyAppRequest(r: AppCommandRequest): Promise<void> {
     const known = COMMANDS.some((c) => c.name === r.command);
     const name = AS_COMMENT.get(r.command) ?? (QUOTABLE_COMMAND.test(r.command) ? r.command : null);
-    const say = (reason: string) => (name ? `\`${name}\` was not applied: ${reason}.` : `The command was not applied: ${reason}.`);
+    const say = (reason: string) => (name ? refusalText(name, reason) : `The command was not applied: ${reason}.`);
     const raw = r.args.work_item_id;
     const id = typeof raw === "string" && raw !== "" ? (raw as WorkItemId) : null;
     const item = id ? await this.c.k.reader.getWorkItem(id) : null;

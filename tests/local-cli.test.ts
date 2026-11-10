@@ -8,6 +8,7 @@ import {
 } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, cliUsageOf } from "../src/core/command-table.js";
+import { helpReply, itemCommandState, refusalText, specNotWaiting } from "../src/core/commands.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
@@ -33,6 +34,13 @@ async function setup(user: UserId = USER, from: CliIdentity["from"] = "cli_user"
   return { store, d, run, reads, as };
 }
 
+/** Puts `id` at `patch` (the spec gate unless given), as the controller would have. */
+async function at(store: FactoryStore, id: WorkItemId, patch: Parameters<FactoryStore["transition"]>[0]["patch"] = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" }) {
+  const it = (await store.getWorkItem(id))!;
+  const r = await store.transition({ id, expected_version: it.version, actor: system, reason: "test_setup", patch });
+  if (!r.ok) throw new Error("setup");
+}
+
 /** Every row a CLI command could touch. */
 async function snapshot(store: FactoryStore) {
   const items = await store.listWorkItems(100);
@@ -56,6 +64,9 @@ describe("parseLocalCliArgs", () => {
     expect(parseLocalCliArgs("users", ["list"])).toEqual({ action: "users_list" });
     expect(parseLocalCliArgs("users", ["add", "local:a@b.c", "--role", "approver"])).toEqual({ action: "users_add", user: "local:a@b.c", role: "approver" });
     expect(parseLocalCliArgs("users", ["remove", "local:a@b.c"])).toEqual({ action: "users_remove", user: "local:a@b.c" });
+    expect(parseLocalCliArgs("help", [])).toEqual({ action: "help", id: null });
+    expect(parseLocalCliArgs("help", ["wi_1"])).toEqual({ action: "help", id: "wi_1" });
+    expect(parseLocalCliArgs("help", ["wi_1", "wi_2"])).toMatchObject({ error: expect.stringContaining("usage:") });
   });
 
   it("anything incomplete or unknown is an error with the usage", () => {
@@ -156,6 +167,7 @@ describe("approve, retry, revise, reject, resolve", () => {
   it("each stores one command in the command log and changes no item state", async () => {
     const { store, run } = await setup();
     const id = (await run({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
+    await at(store, id);
     const before = await snapshot(store);
     for (const command of ["approve", "retry", "revise", "reject", "resolve"] as const) {
       const r = await run({ action: "command", command, id, text: command === "retry" ? "" : `${command} text` });
@@ -183,12 +195,59 @@ describe("approve, retry, revise, reject, resolve", () => {
   it("a GitHub item's command is stored like a local one's, marked to be mirrored on its issue; a local one's is not", async () => {
     const { store, run } = await setup();
     const gh = (await store.createWorkItem(issue(3), system)).item;
+    await at(store, gh.id);
     const r = await run({ action: "command", command: "approve", id: gh.id, text: "ship it" });
     expect(r).toEqual({ code: 0, lines: [expect.stringContaining(`stored \`/approve\` for ${gh.id} as ${USER}`)] });
     expect(await store.listCliCommandsAfter(0, 100)).toEqual([
       expect.objectContaining({ actor: USER, command: "approve", args: { item: gh.id, text: "ship it" }, mirror: true }),
     ]);
     expect((await store.listUnmirroredCliCommands(100)).map((c) => c.args.item)).toEqual([gh.id]);
+  });
+});
+
+describe("approve's own check (issue #528)", () => {
+  it("where approve does not apply, it is refused with the controller's text before any write: no row, no owner", async () => {
+    const { store, run } = await setup();
+    const gh = (await store.createWorkItem(issue(3), system)).item;
+    const done = (await store.createWorkItem(issue(4), system)).item;
+    await at(store, done.id, { stage: "CLOSED", close_reason: "completed" });
+    const before = await snapshot(store);
+    expect(await run({ action: "command", command: "approve", id: gh.id, text: "ship it" })).toEqual({
+      code: 1, lines: [refusalText("/approve", specNotWaiting("triaging"))],
+    });
+    expect(await run({ action: "command", command: "approve", id: done.id, text: "" })).toEqual({ code: 1, lines: ["`/approve` was not applied: the work item is closed."] });
+    expect(await snapshot(store)).toEqual(before);
+    expect(await store.listLocalUsers()).toEqual([]);
+  });
+
+  it("an implement run held by coordination cost is still approved: the hold is in no field, so the controller decides", async () => {
+    const { store, run } = await setup();
+    const gh = (await store.createWorkItem(issue(3), system)).item;
+    await at(store, gh.id, { stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    expect((await run({ action: "command", command: "approve", id: gh.id, text: "" })).code).toBe(0);
+    expect((await store.listCliCommandsAfter(0, 10)).map((c) => c.command)).toEqual(["approve"]);
+  });
+
+  it("the other item commands are stored in any state; the controller answers them", async () => {
+    const { store, run } = await setup();
+    const gh = (await store.createWorkItem(issue(3), system)).item;
+    expect((await run({ action: "command", command: "reject", id: gh.id, text: "no" })).code).toBe(0);
+    expect((await store.listCliCommandsAfter(0, 10)).map((c) => c.command)).toEqual(["reject"]);
+  });
+});
+
+describe("factory help", () => {
+  it("prints the /help reply: every command with no item, the ones that apply now marked with one", async () => {
+    const { store, run } = await setup();
+    expect(await run({ action: "help", id: null })).toEqual({ code: 0, lines: helpReply(null).split("\n") });
+    const gh = (await store.createWorkItem(issue(3), system)).item;
+    await at(store, gh.id);
+    const it = (await store.getWorkItem(gh.id))!;
+    const r = await run({ action: "help", id: gh.id });
+    expect(r).toEqual({ code: 0, lines: helpReply(itemCommandState(it, [])).split("\n") });
+    expect(r.lines.join("\n")).toContain("`/approve [notes]` **(now)**");
+    expect((await run({ action: "help", id: "wi_missing" as WorkItemId })).code).toBe(1);
+    expect(await store.listCliCommandsAfter(0, 10)).toEqual([]);
   });
 });
 

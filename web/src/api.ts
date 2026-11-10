@@ -245,8 +245,10 @@ export interface ItemDetail {
   sleeps?: HostSleepRow[];
   /** The item's thread (src/ui/thread.ts), oldest first; every body already through the Withholder. */
   thread?: ThreadEntry[];
-  /** The commands that apply in the item's current state, in the order to show them. */
+  /** The commands that apply in the item's current state and the viewer's grants allow, in the order to show them. */
   commands?: ItemCommand[];
+  /** The commands that apply now but the viewer's grants leave out, with the reason the controller would refuse them; null when none. */
+  commands_withheld?: { names: string[]; reason: string } | null;
   /** A spec waiting for approval (or at the revision limit): its In short and its decisions; null for any other item. */
   spec?: WaitingSpec | null;
   /** The item's app command requests, oldest first; the note is never returned. */
@@ -344,6 +346,14 @@ export interface CommandReply {
   created_at: string;
   handled_at: string | null;
   refusal: string | null;
+}
+
+/**
+ * A refusal as the page shows it (issue #528): plain text, the controller's backticks dropped. The stored text keeps
+ * them, as GitHub, Slack and the CLI show it.
+ */
+export function plainRefusal(text: string): string {
+  return text.replace(/`/g, "");
 }
 
 /** `/api/v1/session`: the token item commands send, whether commands are on, and who they act as. */

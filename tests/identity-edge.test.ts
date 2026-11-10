@@ -43,6 +43,12 @@ describe("edge passports", () => {
         { source: { type: "local", id: "l1", link: "local:l1" }, requester_id: "local:ada" as UserId, project: PROJECT_KEY, problem: "p", resources: [] },
         { kind: "system", id: "system:test" },
       );
+      // `factory approve` refuses where approve does not apply (issue #528): the item waits at the spec gate first.
+      const t = await store.transition({
+        id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "test_setup",
+        patch: { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" },
+      });
+      expect(t.ok).toBe(true);
       const r = await runLocalCli(
         {
           store,

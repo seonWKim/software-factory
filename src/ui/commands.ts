@@ -7,17 +7,17 @@
 // http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403), a
 // an actor (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
 // a known item (404). Success is 202 with the request's ID. GET /api/v1/session hands out the token behind the
-// same Host guard. The item API's `commands`, `replies`, `spec` and `merge` fields are built here too.
+// same Host guard. The item API's `commands`, `commands_withheld`, `replies`, `spec` and `merge` fields are built here too.
 // `merge` (design §9, the Merge button) is an app command beside the item commands, with no note: the local merge
 // of `factory merge` for a local item, the PR's merge on the forge for any other.
 
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
-import { COMMANDS, type CommandName, commandPhase, commandState, commandsFor, latestSpec } from "../core/commands.js";
+import { COMMANDS, type CommandName, commandPhase, commandsFor, itemCommandState, latestSpec, roleRefusal } from "../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
-import { AGENT_NEEDS_HUMAN, blockingRunKind } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { UiDeps } from "./pages.js";
+import type { PauseDeps } from "./pause-api.js";
 import { csrfMatches } from "./settings-api.js";
 
 /** What the commands route needs beside the store. Built once per UI process (compose.ts buildUiParts). */
@@ -152,15 +152,41 @@ export function readSession(d: UiDeps, now: Date): Record<string, unknown> | nul
   return { as_of: now.toISOString(), csrf_token: d.commands.token, commands_enabled: d.commands.actor !== null, actor: d.commands.actor, actor_source: d.commands.source };
 }
 
+/** The page actor's approve_spec grant: allowed, or refused with the controller's reason (roleRefusal). */
+export type SpecGrant = { allow: true } | { allow: false; reason: string };
+
 /**
- * The item API's `commands`: what the page may send in the item's state, from the comment footer's table. Not `/help`:
- * it answers a comment and the page cannot send it (APP_COMMANDS), so a button for it could only be refused.
+ * Whether the page's actor holds approve_spec, as the controller checks it for an app command (design §9, issue #528):
+ * the configured auth plugin over the local grants, on the project (UiPauses.authorize, no forge call). In solo use the
+ * first identity becomes the local owner there, so no grant is needed. Allowed when it cannot be asked here (commands
+ * off, or no auth wired): the controller still checks every command it applies.
  */
-export function itemCommands(it: WorkItem, runs: readonly Run[]) {
-  const askedBy = it.blocked_reason === AGENT_NEEDS_HUMAN ? blockingRunKind(it.blocked_reason, runs) : undefined;
-  return commandsFor(commandState(it, askedBy))
+export async function specGrant(d: PauseDeps): Promise<SpecGrant> {
+  const actor = d.commands?.actor;
+  if (actor == null || !d.pauses) return { allow: true };
+  const decision = await d.pauses.authorize(actor);
+  return decision.allow ? { allow: true } : { allow: false, reason: roleRefusal(actor, decision.reason) };
+}
+
+/**
+ * The item API's `commands`: what the page may send in the item's state, from the comment footer's table, and only
+ * when the viewer's grant allows it; `commands_withheld` names the ones the grant leaves out with the reason the
+ * controller would refuse them with, else null. Every command but `merge` (its own button) needs approve_spec, as the
+ * controller checks it; `/verdict`'s record_verdict comes with the same role. Not `/help`: it answers a comment and the
+ * page cannot send it (APP_COMMANDS), so a button for it could only be refused.
+ */
+export function itemCommands(it: WorkItem, runs: readonly Run[], grant: SpecGrant = { allow: true }) {
+  const all = commandsFor(itemCommandState(it, runs))
     .filter((c) => APP_COMMANDS.includes(c.name))
     .map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+  if (grant.allow) return { commands: all, commands_withheld: null };
+  return { commands: [], commands_withheld: all.length > 0 ? { names: all.map((c) => c.name), reason: grant.reason } : null };
+}
+
+/** `itemCommands` with the withheld reason passed through `text` (the Withholder): it names a user ID. */
+export async function withheldText(r: ReturnType<typeof itemCommands>, text: (v: string) => Promise<string | null>) {
+  const w = r.commands_withheld;
+  return { commands: r.commands, commands_withheld: w && { names: w.names, reason: (await text(w.reason))! } };
 }
 
 /**
