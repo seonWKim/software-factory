@@ -76,6 +76,21 @@ export function repeatsDone(desired: string, done: readonly string[]): boolean {
 }
 
 /**
+ * How to answer the numbered decisions (issue #527): the reply the command parser reads on an `/approve` from any
+ * source, one `N: <answer>` line per decision (src/shared/command-notes.ts), and what an unanswered one takes.
+ */
+function answerBlock(n: number): string[] {
+  return [
+    "To answer, reply `/approve` with one `N: <answer>` line per decision. A decision you do not answer takes its default.",
+    "",
+    "```",
+    "/approve",
+    ...Array.from({ length: n }, (_, i) => `${i + 1}: <answer>`),
+    "```",
+  ];
+}
+
+/**
  * The triage spec comment a human reads before typing /approve, /reject or /revise (layout issue #229): In
  * short, Problem, Decisions for you, Applied defaults, Done when, scope, Files, Risk. `footer` replaces the default last line;
  * the controller passes the command footer for the spec gate (`commandFooter`).
@@ -91,6 +106,7 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   ];
   if (decisions.length > 0) {
     out.push("### Decisions for you", ...folded(decisions, MAX_DECISIONS, (n) => `${n} more`), "");
+    if (spec.decisions?.length) out.push(...answerBlock(spec.decisions.length), "");
   }
   // Owner defaults triage applied instead of asking (issue #315): shown apart, so they are not mistaken for questions.
   if (spec.applied_defaults?.length) out.push("### Applied defaults", ...spec.applied_defaults.map((d) => `- ${d}`), "");

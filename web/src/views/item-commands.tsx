@@ -7,20 +7,23 @@ import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { PAGE_COMMANDS_PATH } from "../pages.js";
-import { ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, approveNote, approvePhase, chosenAnswers, initialChoices } from "./item-decisions.js";
+import {
+  ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectForm, ReviseForm, approveNote, approvePhase, chosenAnswers, initialChoices, textButton,
+} from "./item-decisions.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
-// in its order, and one text box that is the note every send carries when it has text (the reason for reject,
-// the feedback for revise, tokens for budget, `accept|changes|reject <severity> <reason>` for verdict). A send
+// in its order. Reject and revise open their own forms (issue #527): reject asks why and confirms what closes,
+// revise takes a comment per spec section. Every other command carries the note box's text when it has any
+// (tokens for budget, `accept|changes|reject <severity> <reason>` for verdict, the approve note). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
 // next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
 // (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
 // A waiting spec (issue #526) shows its In short above Commands and its decisions as questions above the note box;
-// reject, and approve in an approve phase (the spec gate, the floor block, the Rule of Two), go through a confirm
-// step first; approve sends the answers as `N: <answer>` lines.
+// approve in an approve phase (the spec gate, the floor block, the Rule of Two) goes through a confirm step first;
+// approve sends the answers as `N: <answer>` lines.
 
-/** Commands the server refuses without text. */
-const NEEDS_TEXT = ["reject", "revise"];
+/** Commands sent from their own form, not with the note box. */
+const FORMS = ["reject", "revise"];
 
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
 export type LocalSend = { seq: number } | { error: string };
@@ -54,13 +57,12 @@ function OutcomeText({ outcome }: { outcome: Outcome }) {
   );
 }
 
-const textButton = "h-8 w-auto px-2";
-
 export function ItemCommands({ id, commands, replies }: { id: string; commands: readonly ItemCommand[]; replies: readonly CommandReply[] }) {
   const client = useQueryClient();
   const session = useApi<Session>(API.session, false);
   const [note, setNote] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
+  const [open, setOpen] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<Record<string, LocalSend>>({});
   const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
@@ -90,17 +92,19 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const token = session.data?.csrf_token;
   const enabled = !!token && session.data?.commands_enabled === true;
   const off = session.isError || session.data?.commands_enabled === false;
-  const blank = note.trim() === "";
+  const usesNote = commands.some((c) => !FORMS.includes(c.name));
 
-  const send = async (command: string) => {
+  /** Sends `command` with `text` (a form's) or, without it, the note box's. */
+  const send = async (command: string, text?: string) => {
     if (!token) return;
     setBusy(true);
     setConfirming(null);
     try {
-      const r = await postCommand(token, id, command, command === "approve" ? approveNote(answers, note) : note);
+      const r = await postCommand(token, id, command, text ?? (command === "approve" ? approveNote(answers, note) : note));
       setLocal((m) => ({ ...m, [command]: r.ok ? { seq: r.seq } : { error: r.error } }));
       if (r.ok) {
-        setNote("");
+        if (text === undefined) setNote("");
+        else setOpen(null);
         setPicked(null);
         await client.invalidateQueries({ queryKey: [API.item(id)] });
       }
@@ -130,22 +134,26 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
           </p>
         )}
         <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
-        <textarea
-          aria-label="Note"
-          rows={3}
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="Reason for reject, feedback for revise, tokens for budget, or a note"
-          className={cn(
-            "mb-2 w-full max-w-xl rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900",
-            "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
-          )}
-        />
+        {usesNote && (
+          <textarea
+            aria-label="Note"
+            rows={3}
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="Tokens for budget, a verdict, or a note"
+            className={cn(
+              "mb-2 w-full max-w-xl rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900",
+              "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
+            )}
+          />
+        )}
         <ul className="space-y-1.5">
           {commands.map((c) => {
-            const disabled = !enabled || busy || (NEEDS_TEXT.includes(c.name) && blank);
+            const disabled = !enabled || busy;
             const outcome = commandOutcome(replies, c.name, local[c.name]);
-            const confirms = c.name === "reject" || (c.name === "approve" && phase !== null);
+            const hasForm = FORMS.includes(c.name);
+            const confirms = c.name === "approve" && phase !== null;
+            const close = () => setOpen(null);
             return (
               <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
                 <Button
@@ -153,13 +161,14 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
                   className={textButton}
                   disabled={disabled || confirming === c.name}
                   title={`${c.usage}: ${c.description}`}
-                  onClick={() => (confirms ? setConfirming(c.name) : void send(c.name))}
+                  {...(hasForm ? { "aria-expanded": open === c.name } : {})}
+                  onClick={() => (hasForm ? setOpen(open === c.name ? null : c.name) : confirms ? setConfirming(c.name) : void send(c.name))}
                 >
                   {c.name}
                 </Button>
-                {confirming === c.name && (
+                {confirming === c.name && phase !== null && (
                   <>
-                    {c.name === "approve" && phase !== null && <ApproveConfirm phase={phase} answers={answers} note={note} />}
+                    <ApproveConfirm phase={phase} answers={answers} note={note} />
                     <Button variant="outline" className={textButton} disabled={disabled} onClick={() => void send(c.name)}>
                       Confirm {c.name}
                     </Button>
@@ -169,6 +178,10 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
                   </>
                 )}
                 <OutcomeText outcome={outcome} />
+                {open === c.name && c.name === "reject" && (
+                  <RejectForm pr={detail?.change_ref ?? null} disabled={disabled} onSend={(t) => void send("reject", t)} onCancel={close} />
+                )}
+                {open === c.name && c.name === "revise" && <ReviseForm disabled={disabled} onSend={(t) => void send("revise", t)} onCancel={close} />}
               </li>
             );
           })}

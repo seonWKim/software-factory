@@ -50,6 +50,7 @@ the `05-*` files.
 - [08-settings.md](design/08-settings.md): per-project settings resolved in layers that may only tighten a gate, and changing settings at runtime (`factory settings`) with no PR.
 - [08-permissions.md](design/08-permissions.md): factory users, linked accounts, grants and roles, and the checked-in size limits.
 - [08-enterprise.md](design/08-enterprise.md): interfaces with local and cloud backends, environments, tools, auth classes, audit and identity.
+- [08-teardown.md](design/08-teardown.md): `factory teardown`, the shared list of what setup leaves, what it removes, keeps and never touches.
 
 ## 9. Status page
 - [09-status-page.md](design/09-status-page.md): the read-only status page, its guards, the "Needs you" list, the dashboard order and refresh.

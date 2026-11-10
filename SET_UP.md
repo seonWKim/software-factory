@@ -25,6 +25,21 @@ If a run stops (you press Ctrl-C, a check fails, the database is not ready), the
 - `npm run setup -- --me` only registers you (your ID and display name). For a second person on a shared store: it changes neither `factory.config.json` nor the secret file.
 - `npm run setup -- --rotate-github` (or `--rotate-claude`, `--rotate-mysql`) replaces a stored credential.
 
+## Start over: pull → teardown → setup
+
+To reset this machine and set the factory up again from a clean state (after pulling a new version, or when a setup went wrong):
+
+```bash
+git pull
+make teardown ARGS=--dry-run   # lists what it would remove, changes nothing
+make teardown                  # asks you to type "teardown", then removes it
+make setup
+```
+
+`make teardown` runs `npm run factory -- teardown`. It refuses while the factory runs on this machine; `ARGS=--stop` drains it first (in-flight runs finish), then continues. It removes the state folder (`.factory/`; a SQLite store is copied first to `~/.config/software-factory/backups/teardown-<time>/`, and the path is printed), the factory's run folders and version copies in `.worktrees/` and `.factory/versions/`, its `factory/*` branches already merged into the base branch, and its `refs/factory/*` refs. It keeps and lists everything else: your own folders in `.worktrees/`, a run folder or worktree with uncommitted changes, unmerged branches, branches checked out somewhere. Nothing is forced. A second run says there is nothing to delete.
+
+It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`, which asks again and removes only the factory's own entries), GitHub issues or pull requests, the GitHub App, the Slack app or a MySQL database; it prints where to remove each by hand. On a shared MySQL store it resets only this machine (its worktrees, agent configs, host id, passport key): the shared store and other replicas keep working. Decisions: [`docs/design/08-teardown.md`](docs/design/08-teardown.md).
+
 ## Before you start
 
 - Node.js 22.13 or newer, and git
@@ -344,6 +359,7 @@ With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve fro
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
 | File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
+| Reset this machine and set up again | `make teardown`, then `make setup` (see [Start over](#start-over-pull--teardown--setup)) |
 | Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 
 ### Status page
