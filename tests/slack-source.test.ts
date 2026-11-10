@@ -14,14 +14,19 @@ import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
-import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack } from "../src/impl/source/slack-format.js";
+import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
+import { commentEvent } from "../src/core/comment-event.js";
+import { commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { type ApiDeps, respond } from "../src/ui/server.js";
+import { plainRefusal } from "../web/src/api.js";
 import { storedAnswers } from "../src/shared/command-notes.js";
 import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { META_STATUS, SlackSource, parseSlackSourceId, slackLink, slackSourceId } from "../src/impl/source/slack-source.js";
-import { FakeForge, FakeSource, config, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
+import { FakeForge, FakeSource, config, issueRef, recordingLog, silent, triageSpec, waitFor } from "./helpers/fakes.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL, TEAM, eventEnvelope, mention, message, press } from "./helpers/slack.js";
-import { newStore, w1 } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 /** Not shaped like any token the scanner's patterns know: it is caught only as a known secret value. */
 const FAKE_GITHUB_TOKEN = "fake-github-token-for-the-leak-test-0001";
@@ -439,6 +444,9 @@ describe("slack source: replies, buttons and commands", () => {
     const text = JSON.stringify(spec.blocks);
     expect(text).not.toContain("<!--");
     expect(text).toContain(`<@${BOT}> /revise`);
+    expect(text).toContain(`<@${BOT}> /approve`);
+    expect(text).toContain("approve with no slash works too");
+    expect(text).toContain(`<@${BOT}> /help`);
     expect(f.api.thread(ts).find((m) => m.text?.startsWith("Status:"))!.text).toBe("Status: *needs approval*");
   });
 
@@ -942,5 +950,122 @@ describe("slack source: factory commands (issue #498)", () => {
     const f = await setup();
     await deliver(f, eventEnvelope(mention("1800000038.000100", "list the open bugs in the parser")));
     expect((await itemOf(f, "1800000038.000100"))?.title).toBe("list the open bugs in the parser");
+  });
+});
+
+describe("slack source: one help and refusal text (issue #528)", () => {
+  const repo = { owner: "o", name: "r" };
+  /** The thread's replies that start with `prefix`. */
+  const replies = (f: F, ts: string, prefix: string) => f.api.thread(ts).filter((m) => m.text?.startsWith(prefix)).map((m) => m.text!);
+
+  /** The item API as the page of `actor` reads it, its approve_spec checked by the local auth plugin on the project, as compose.ts wires it. */
+  async function dashboard(f: F, actor: string, id: string) {
+    const auth = new LocalAuthProvider(f.store);
+    const d: ApiDeps = {
+      store: f.store, scanner: f.scanner, clock: f.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], f.clock),
+      commands: { actor: actor as UserId, source: "config", token: "t" },
+      pauses: {
+        principal: async () => actor as UserId, csrfToken: "t", log: silent,
+        authorize: (user) => auth.authorize({ user_id: user, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT_KEY }),
+      },
+    };
+    const r = await respond(d, { method: "GET", url: `/api/v1/items/${encodeURIComponent(id)}`, host: "127.0.0.1:4310" });
+    return JSON.parse(r.body) as { commands: { name: string }[]; commands_withheld: { names: string[]; reason: string } | null; replies: { refusal: string | null }[] };
+  }
+
+  it("/help outside an item's thread answers in the mention's thread: how to start work and how to link an account", async () => {
+    const f = await setup();
+    await deliver(f, eventEnvelope(mention("1800000060.000100", "/help")));
+    await deliver(f, eventEnvelope(mention("1800000060.000300", "help", { thread_ts: "1800000060.000200" })));
+    for (const ts of ["1800000060.000100", "1800000060.000200"]) {
+      const [help, ...more] = f.api.thread(ts);
+      expect(more, ts).toEqual([]);
+      expect(help!.text).toMatch(/^Commands you can run here/);
+      expect(help!.text).toContain("`&lt;request in plain words&gt;`");
+      expect(help!.text).toContain("`/link &lt;code&gt;`");
+      expect(help!.text).not.toContain("/approve");
+    }
+    expect(await f.store.listWorkItems(10)).toEqual([]);
+  });
+
+  it("/help in an item's thread lists the commands that apply now in the same text as the issue /help reply for that state", async () => {
+    const f = await setup();
+    const ts = "1800000061.000100";
+    const item = await specPending(f, ts);
+    await deliver(f, eventEnvelope(mention("1800000061.000200", "/help", { thread_ts: ts })));
+    const [help] = replies(f, ts, "Commands you can run in this item");
+    const state = commandState(item);
+    const now = commandsFor(state).filter((c) => c.name !== "help");
+    expect(now.map((c) => c.name)).toEqual(["approve", "reject", "revise"]);
+    for (const c of now) {
+      expect(helpReply(state)).toContain(`- \`${c.usage}\` **(now)**: ${c.description}.`);
+      expect(help).toContain(toMrkdwn(`- \`${c.usage}\`: ${c.description}.`, repo));
+    }
+    // The slash form after a mention, and the bare approve.
+    expect(help).toContain("`@software-factory /help`");
+    expect(help).toContain("`approve` with no slash works too: `@software-factory approve` is `@software-factory /approve`.");
+  });
+
+  it("in an item's thread, `@bot /approve` and `@bot approve` both approve; outside one, a bare `approve` is a request", async () => {
+    const f = await setup();
+    const slashed = await specPending(f, "1800000062.000100");
+    const bare = await specPending(f, "1800000062.000200");
+    await deliver(f, eventEnvelope(mention("1800000062.000300", "/approve ship it", { thread_ts: "1800000062.000100" })));
+    await deliver(f, eventEnvelope(mention("1800000062.000400", "approve ship it", { thread_ts: "1800000062.000200" })));
+    await f.controller.tickIntake();
+    const a = (await f.store.getWorkItem(slashed.id))!;
+    const b = (await f.store.getWorkItem(bare.id))!;
+    expect(fields(b)).toEqual(fields(a));
+    expect(b.stage).toBe("RUNNING");
+    expect((await f.store.listCliCommandsAfter(0, 10)).map((c) => [c.command, c.args])).toEqual([
+      ["approve", { item: slashed.id, text: "ship it" }],
+      ["approve", { item: bare.id, text: "ship it" }],
+    ]);
+    await deliver(f, eventEnvelope(mention("1800000062.000500", "approve")));
+    expect((await itemOf(f, "1800000062.000500"))?.title).toBe("approve");
+  });
+
+  it("the same command refused for the same reason reads the same on GitHub, the CLI, Slack and the dashboard", async () => {
+    const f = await setup();
+    const want = refusalText("/approve", specNotWaiting("triaging"));
+    // One triaging item per surface: an issue for GitHub, the CLI and the dashboard; a thread for Slack.
+    const gh = (await f.store.createWorkItem(issue(71), system)).item;
+    const cli = (await f.store.createWorkItem(issue(72), system)).item;
+    const app = (await f.store.createWorkItem(issue(73), system)).item;
+    await deliver(f, eventEnvelope(mention("1800000063.000100", "please add a scope gate")));
+    f.gh.queue.push(commentEvent(issueRef(71), "101", { provider: "github", subject: "1" }, "/approve")!);
+    await f.store.recordAppCommandRequest({ key: "app-528", actor: "github:1" as UserId, command: "approve", args: { work_item_id: app.id } });
+    await deliver(f, eventEnvelope(mention("1800000063.000200", "/approve", { thread_ts: "1800000063.000100" })));
+    await f.controller.tickIntake();
+    await f.controller.tickCommands();
+    const typed = await runLocalCli({ store: f.store, identity: { user: "github:1" as UserId, from: "cli_user" }, project: async () => null, read: async () => "", newId: () => "x" }, {
+      action: "command", command: "approve", id: cli.id, text: "",
+    });
+    const stored = (await dashboard(f, "github:1", app.id)).replies[0]!.refusal!;
+    const table: [string, string][] = [
+      ["github", f.gh.comments.find((c) => c.source.id === gh.source.id && c.marker.startsWith("<!-- factory:refused:"))!.body],
+      ["cli", typed.lines.join("\n")],
+      ["slack", f.api.thread("1800000063.000100").find((m) => m.text?.startsWith("```"))!.text!],
+      ["dashboard (stored)", stored],
+    ];
+    for (const [surface, text] of table) expect({ surface, text }).toEqual({ surface, text: expect.stringContaining(want) });
+    expect(stored).toBe(want);
+    // The dashboard shows it as plain text; the stored row keeps the backticks.
+    expect(plainRefusal(stored)).toBe("/approve was not applied: the spec is not waiting for approval (the item is triaging).");
+    // The CLI and Slack refused before any write: no `cli:` row (Slack's go through the CLI's), only the others' rows.
+    expect((await f.store.listCliCommandsAfter(0, 10)).filter((c) => c.key.startsWith("cli:"))).toEqual([]);
+  });
+
+  it("team: a linked requester sees no approve on the dashboard, and Slack refuses the approve with that same text", async () => {
+    const f = await setup();
+    const ts = "1800000064.000100";
+    const item = await specPending(f, ts);
+    const page = await dashboard(f, "github:2", item.id);
+    expect(page.commands).toEqual([]);
+    expect(page.commands_withheld).toEqual({ names: ["approve", "reject", "revise"], reason: roleRefusal("github:2", "no_role") });
+    expect((await dashboard(f, "github:1", item.id)).commands.map((c) => c.name)).toEqual(["approve", "reject", "revise"]);
+    await deliver(f, eventEnvelope(mention("1800000064.000200", "approve", { thread_ts: ts, user: "U0BOB" })));
+    const [refused] = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
+    expect(refused!.text).toContain(refusalText("/approve", page.commands_withheld!.reason));
   });
 });
