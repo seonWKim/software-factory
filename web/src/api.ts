@@ -383,7 +383,7 @@ export interface SettingsView {
   project: string | null;
   project_keys: string[];
   keys: SettingRow[];
-  pr_only: { key: string; note: string; description: string }[];
+  pr_only: { key: string; description: string }[];
   ignored: { key: string; project: string | null; value: string; reason: string }[];
   history: { seq: number; at: string; actor: string; key: string; project: string | null; old_value: string | null; new_value: string | null }[];
 }

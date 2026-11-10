@@ -5,7 +5,7 @@ import { buildStatsStore } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
 import { ProfileStore, startIdentity, type IdentityRuntime } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
-import { CLI_COMMANDS, CLI_TOP_WORDS, cliIdentity, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
+import { CLI_TOP_WORDS, cliIdentity, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 import { cliEnvironment } from "../../support.js";
@@ -16,12 +16,12 @@ import { cliEnvironment } from "../../support.js";
  */
 export default defineCommand({
   names: CLI_TOP_WORDS,
-  usage: `${CLI_COMMANDS.map((c) => `  ${c.usage.padEnd(40)} ${c.description}`).join("\n")}
+  usage: `${cliUsageLines()}
                local work items, read by the controller from the store whatever plugins.source lists, acting
                as the CLI identity (cli_user, else local:<git user.email>, else local:<OS user>, else
                local:anonymous), authorized by the local auth plugin (auth.local, default "local"); no GitHub call`,
   async run(args, ctx) {
-    const action = parseLocalCliArgs(ctx.name as (typeof CLI_TOP_WORDS)[number], [...args]);
+    const action = parseLocalCliArgs(ctx.name, [...args]);
     if ("error" in action) {
       console.error(action.error);
       return 1;

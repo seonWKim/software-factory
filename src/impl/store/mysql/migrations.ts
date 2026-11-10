@@ -20,7 +20,12 @@ export const STEPS_DIR = join(CODE_ROOT, "migrations", "mysql");
 
 const STEP_FILE = /^(\d{4})-([a-z0-9]+(?:-[a-z0-9]+)*)\.(sql|ts)$/;
 const IGNORED = new Set(["README.md"]);
-const LOCK = "software_factory_migrate";
+/**
+ * The migration lock's name for the connection's database: a GET_LOCK name is server-wide, so one fixed name
+ * made migrations of unrelated databases on one server wait for each other (CI's MySQL tests, 2026-11-10).
+ * A hash keeps it under GET_LOCK's 64 characters for any database name (SHA2: MySQL 9 has no MD5 or SHA1).
+ */
+export const MIGRATE_LOCK = "CONCAT('software_factory_migrate_', LEFT(SHA2(DATABASE(), 256), 32))";
 
 export type Row = Record<string, unknown>;
 export type Value = string | number | null;
@@ -383,7 +388,7 @@ export class MysqlMigrations {
    * `db` must be one connection (not a pool) so the lock and transactions hold.
    */
   async apply(print: (line: string) => void): Promise<MigrationStatus> {
-    const [got] = await this.all("SELECT GET_LOCK(?, 60) AS ok", [LOCK]);
+    const [got] = await this.all(`SELECT GET_LOCK(${MIGRATE_LOCK}, 60) AS ok`);
     if (Number(got?.ok) !== 1) throw new Error("another `npm run migrate` holds the migration lock; try again when it is done");
     try {
       const s = await this.status();
@@ -416,7 +421,7 @@ export class MysqlMigrations {
       }
       return s;
     } finally {
-      await this.all("SELECT RELEASE_LOCK(?)", [LOCK]).catch(() => undefined);
+      await this.all(`SELECT RELEASE_LOCK(${MIGRATE_LOCK})`).catch(() => undefined);
     }
   }
 

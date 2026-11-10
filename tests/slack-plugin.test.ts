@@ -10,7 +10,7 @@ import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-s
 import { HttpSlackApi, SlackApiError, type FetchFn } from "../src/impl/source/slack-api.js";
 import { slackConfig, slackConfigProblems } from "../src/impl/source/slack-config.js";
 import { footerCommands, renderComment, suggestedCommand, toMrkdwn } from "../src/impl/source/slack-format.js";
-import { SlackSource } from "../src/impl/source/slack-source.js";
+import { SlackSource, type SlackSourceDeps } from "../src/impl/source/slack-source.js";
 import slackPlugin from "../src/impl/source/slack.plugin.js";
 import { REGISTRY } from "../src/plugins.js";
 import { cleanScanner, recordingLog } from "./helpers/fakes.js";
@@ -122,7 +122,7 @@ describe("slack plugin secrets", () => {
     const log = recordingLog();
     const socket = new FakeSocket();
     const source = new SlackSource({
-      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null }, repo: REPO, log,
+      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null } as unknown as SlackSourceDeps["store"], repo: REPO, log,
     });
     socket.push(eventEnvelope(mention("1800000001.000100", "hello")));
     const ac = new AbortController();

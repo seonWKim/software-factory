@@ -53,8 +53,7 @@ const ALLOWED: readonly Allowed[] = [
   { token: /["`]github\.\w+["`]/g, files: ["interfaces/tool-broker.ts"], reason: "the old tool name `github.preflight`, an alias of `forge.preflight`" },
   { token: /["`]github["`]/g, files: ["core/project.ts", "core/command-inbox.ts", "interfaces/auth-provider.ts"], reason: "stored provider name of identities and project keys" },
   { token: /\(github\|slack\|oidc\)/g, files: ["core/authorize.ts"], reason: "the stored provider names a user ID may carry" },
-  { token: /\bgithub:/g, files: ["core/project.ts", "core/command-inbox.ts", "core/authorize.ts"], reason: "prefix of stored values: project keys, comment inbox keys and actors, user IDs, the `github:budget` cursor" },
-  { token: /\bgithubProjectKey\b/g, files: ["core/project.ts"], reason: "exported function name" },
+  { token: /\bgithub:/g, files: ["core/command-inbox.ts", "core/authorize.ts"], reason: "prefix of stored values: project keys, comment inbox keys and actors, user IDs, the `github:budget` cursor" },
   { token: /\b(?:githubCommentKey|githubCommand|GITHUB_KEY|GITHUB_ACTOR)\b/g, files: ["core/command-inbox.ts"], reason: "exported function names and the code names of their key patterns" },
   { token: /\bGitHubBudgetStatus\b/g, files: ["core/controller-deps.ts"], reason: "exported type name of the GitHub call budget" },
   { token: /\b(?:GitHubCredentials|GitHubApi|GitHubAccess)\b/g, files: ["interfaces/github-credentials.ts"], reason: "exported interface names: the credentials, the forge client every plugin shares, and the credential plugin's build of both" },
@@ -109,5 +108,75 @@ describe("forge-neutral wording", () => {
     );
     expect(unused).toEqual([]);
     expect(ALLOWED.filter((a) => a.reason.trim() === "")).toEqual([]);
+  });
+});
+
+// GitHub code lives in src/impl/github/ (design 08-plugins). Checked scope: every file under src/ outside it. None
+// may import from it or name GitHub's API host, but the files exempted below, each with its reason; core/ and
+// interfaces/ have no exemption. Moving each exempt file's GitHub part into src/impl/github/ is a follow-up.
+
+const GITHUB_DIR = "impl/github/";
+
+interface Exempt {
+  readonly file: string;
+  readonly reason: string;
+}
+
+const GITHUB_EXEMPT: readonly Exempt[] = [
+  { file: "compose.ts", reason: "composition root: the forge descriptor's resolveProject for the CLI, the RepoRef type, and GitHub's settings checked only when a GitHub plugin is selected" },
+  { file: "setup.ts", reason: "`npm run setup` and doctor check GitHub's status labels and errors (follow-up: move into src/impl/github/)" },
+  { file: "cli/handlers/ui/ui.command.ts", reason: "the status page names the forge budget's plugin (follow-up: move into src/impl/github/)" },
+  { file: "impl/source/slack-source.ts", reason: "the RepoRef type of the configured repo (follow-up: a forge-neutral repo type)" },
+  { file: "impl/source/slack-format.ts", reason: "the RepoRef type of the configured repo (follow-up: a forge-neutral repo type)" },
+  { file: "impl/network-probe/http-network-probe.ts", reason: "the network probe's GitHub endpoint (follow-up: the forge plugin names it)" },
+];
+
+/** Every import of `text` (static, re-export, dynamic, type-only), as written. */
+function allImports(text: string): string[] {
+  return [...text.matchAll(/(?:\bfrom\s+|\bimport\s*\(\s*|^\s*import\s+)["']([^"']+)["']/gm)].map((m) => m[1]!);
+}
+
+/** Each file of `sources` (paths relative to src/) that imports from src/impl/github/ or names api.github.com. */
+function githubCodeViolations(sources: readonly { path: string; text: string }[]): string[] {
+  const out: string[] = [];
+  for (const { path, text } of sources) {
+    if (path.startsWith(GITHUB_DIR) || GITHUB_EXEMPT.some((e) => e.file === path)) continue;
+    for (const spec of allImports(text)) {
+      if (spec.startsWith(".") && relative(SRC, join(SRC, path, "..", spec)).startsWith(GITHUB_DIR)) out.push(`${path} → ${spec}`);
+    }
+    if (text.includes("api.github.com")) out.push(`${path}: api.github.com`);
+  }
+  return out;
+}
+
+function srcSources(): { path: string; text: string }[] {
+  return files(SRC).map((f) => ({ path: relative(SRC, f), text: readFileSync(f, "utf8") }));
+}
+
+describe("GitHub code stays in src/impl/github/", () => {
+  it("no file outside it imports from it or names api.github.com, but the exempt ones", () => {
+    expect(githubCodeViolations(srcSources())).toEqual([]);
+  });
+
+  it("fails on a fixture file that imports from src/impl/github/, statically or lazily, or names api.github.com", () => {
+    const fixture = [
+      'import { GitHubClient } from "../impl/github/github-client.js";',
+      'const m = await import("../impl/github/github-forge.js");',
+      'const url = "https://api.github.com/repos";',
+      'import { x } from "../impl/source/local-source.js";',
+    ].join("\n");
+    expect(githubCodeViolations([{ path: "core/fixture.ts", text: fixture }])).toEqual([
+      "core/fixture.ts → ../impl/github/github-client.js",
+      "core/fixture.ts → ../impl/github/github-forge.js",
+      "core/fixture.ts: api.github.com",
+    ]);
+    expect(githubCodeViolations([{ path: "impl/github/fixture.ts", text: fixture }])).toEqual([]);
+  });
+
+  it("every exemption has a reason, is outside core/ and interfaces/, and is still needed", () => {
+    const sources = new Map(srcSources().map((s) => [s.path, s.text]));
+    const unneeded = GITHUB_EXEMPT.filter((e) => githubCodeViolations([{ path: `${e.file}.check`, text: sources.get(e.file) ?? "" }]).length === 0);
+    expect(unneeded.map((e) => e.file)).toEqual([]);
+    expect(GITHUB_EXEMPT.filter((e) => e.reason.trim() === "" || /^(core|interfaces)\//.test(e.file))).toEqual([]);
   });
 });

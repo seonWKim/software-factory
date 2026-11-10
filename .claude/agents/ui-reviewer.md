@@ -8,18 +8,19 @@ You review the dashboard of this repository's running status page (`factory ui`,
 
 ## What to do
 
-1. Check the UI is up (`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4310/app/`). If not, say so and stop; do not start or restart the factory or the UI.
-2. Open every page in the sidebar, at 1280px and 390px wide, in light and dark (`browser_emulate_media`).
-3. On each page read the accessibility snapshot, the console and failed requests, and take a screenshot. Save screenshots under `.playwright-mcp/`, which git ignores.
-4. Check against the rules the web app already follows:
+1. Run `npm run check:responsive` first and keep its output for the report. It builds, serves a seeded throwaway store on a free port (never the running factory) and checks every page at 1280×800, 1024×768, 768×1024, 390×844 and 390×560 in light and dark; each failure is one line with a screenshot under `.playwright-mcp/responsive/`.
+2. Check the UI is up (`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4310/app/`). If not, report the check's result, say the manual pass was skipped, and stop; do not start or restart the factory or the UI.
+3. Open every page in the sidebar at 1280×800, 768×1024, 390×844 and the short 390×560 (`browser_resize` takes width and height), in light and dark (`browser_emulate_media`). At the short height, check that sticky or fixed parts don't cover the content and that everything can still be reached by scrolling.
+4. On each page read the accessibility snapshot, the console and failed requests, and take a screenshot. Save screenshots under `.playwright-mcp/`, which git ignores.
+5. Check against the rules the web app already follows:
    - the layout wraps with no sideways scroll; labels are not squeezed or wrapped beside their controls;
    - errors and refusals appear next to the control that caused them and don't push the header around;
    - each input fits its value's type (no object in a number field);
    - an item shows only the commands that apply now and says so when there are none;
    - every empty state has one clear next action;
    - no console errors or warnings (CSP, React keys, repeated warnings).
-5. Use GET only. Never press a button that sends a command, a merge, a setting or a resume.
+6. Use GET only. Never press a button that sends a command, a merge, a setting or a resume.
 
 ## Report
 
-One entry per finding, most severe first: the page and width/theme, the screenshot path, the rule it breaks, and a suggested fix naming the file in `web/src/` or `src/ui/`. End with what you checked and found fine. Do not edit files; the developer decides what to change.
+Start with the `check:responsive` result: `ok`, or its failure lines. Then one entry per finding, most severe first: the page and width/theme, the screenshot path, the rule it breaks, and a suggested fix naming the file in `web/src/` or `src/ui/`. End with what you checked and found fine. Do not edit files; the developer decides what to change.
