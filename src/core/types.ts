@@ -19,7 +19,7 @@ export type Stage = "NEW" | "READY" | "RUNNING" | "REVIEW" | "CLOSED";
  * `dependency` (design 2026-11-03): the item's implement run waits for a linked item (`Depends on: #N`, a
  * sub-issue, a blocked-by link) to merge. Its status label is "implementing", never "needs human".
  * `outbound` (RFC 0015 M7): the item waits for outbound to deliver a write its next step needs (`pr_pending`: the
- * implement run's push and PR); it shows its stage, as `dependency` does. `upstream` with RECURRING_FAILURE: held (05-alarms).
+ * implement run's push and PR); it shows its stage, as `dependency` does. `human` with RECURRING_FAILURE: held (05-alarms).
  */
 export type BlockedOn = "none" | "human" | "upstream" | "ci" | "budget" | "dependency" | "outbound";
 export const RECURRING_FAILURE = "recurring_failure";
@@ -247,7 +247,8 @@ export type FiledPatternId = Brand<string, "FiledPatternId">;
 /**
  * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the
  * report that claimed it, whose ID is in the item's marker. `filed_ref`: the item, null while the filing is
- * claimed but not yet done (a retry looks the marker up first).
+ * claimed but not yet done (a retry looks the marker up first). `outcome`: whether the fix held, set once seven
+ * days after its item closed as completed (`outcome_at`: when it was set); null until then and on older rows.
  */
 export interface FiledPattern {
   id: FiledPatternId;
@@ -258,7 +259,12 @@ export interface FiledPattern {
   report_id: ImproveReportId;
   filed_ref: SourceRef | null;
   created_at: Timestamp;
+  outcome: FiledOutcome | null;
+  outcome_at: Timestamp | null;
 }
+
+/** Whether a filed pattern's fix held (design §7): no matching failed run in the seven days after it closed, or one. */
+export type FiledOutcome = "holds" | "regressed";
 
 /**
  * One run's transcript tail for an improve draft. `included`: in the prompt. `withheld`: the egress scan flagged

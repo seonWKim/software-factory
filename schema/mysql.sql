@@ -482,6 +482,8 @@ CREATE TABLE `controller_filed_patterns` (
   `report_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `filed_ref` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL,
   `created_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+  `outcome` varchar(16) COLLATE utf8mb4_bin DEFAULT NULL,
+  `outcome_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `filed_patterns_key` (`project_key`,`pattern_key`),
   KEY `report_id` (`report_id`),

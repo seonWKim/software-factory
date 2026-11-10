@@ -1,7 +1,7 @@
 // The daily improve run, the improve run a burst or an old failure triggers, and filing an improve run's report.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { FIX_SPEC_APPROVED, enqueueImprove, fileReport, markerKey, triggerImprove, utcDay } from "../../../core/improver.js";
+import { FIX_SPEC_APPROVED, enqueueImprove, fileReport, markerKey, settleOutcomes, triggerImprove, utcDay } from "../../../core/improver.js";
 import { type FiledPattern, type Run, type SourceRef, type WorkItem } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -13,10 +13,21 @@ export class ImproveUnit {
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
   improveDay: string | null = null;
 
-  /** Each tick: the day's improve run, then the trigger check. */
+  /** Each tick: the day's improve run, the trigger check, then the outcomes of filed patterns due one. */
   async improveStep(): Promise<void> {
     await this.dailyStep();
     await this.triggerStep();
+    await this.outcomeStep();
+  }
+
+  /**
+   * Sets whether each filed pattern's fix held, seven days after its item closed as completed (design §7). Store
+   * reads and conditional writes only: replicas that tick together write each outcome once.
+   */
+  private async outcomeStep(): Promise<void> {
+    for (const p of await settleOutcomes(this.c.k.d, this.c.k.project())) {
+      this.c.k.d.log.info("filed pattern outcome", { pattern_key: p.pattern_key, outcome: p.outcome });
+    }
   }
 
   /**

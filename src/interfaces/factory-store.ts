@@ -3,7 +3,7 @@ import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
-  Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
+  Handoff, FiledOutcome, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
   RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
   StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
   WorkItemPatch, WorkerId, WorkerPause,
@@ -125,7 +125,7 @@ export interface NewImproveReport extends ImproveWindow {
 }
 
 /** A filed pattern as claimed; the store adds `id` and `created_at`, and `filed_ref` starts null. */
-export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref">;
+export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_ref" | "outcome" | "outcome_at">;
 
 /** A standing-approval rule as written; the store adds the timestamps. */
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
@@ -262,6 +262,7 @@ export type BudgetCheckpointResult =
 export interface WorkItemFilter {
   stage?: Stage | undefined;
   blocked_on?: BlockedOn | undefined;
+  blocked_reason?: string | undefined;
   /** Leave out CLOSED items. Ignored when `stage` is given. */
   exclude_closed?: boolean | undefined;
   limit: number;
@@ -588,11 +589,15 @@ export interface FactoryStore {
   /**
    * Claims the filing of (project, pattern key) for `input.report_id`, with no item yet. A row already there is
    * returned unchanged, unless `replace` names its report: then that row is claimed for `input.report_id` with
-   * no item (a refiled pattern), a conditional update, so of two claims one wins. Returns the row as stored.
+   * no item and no outcome (a refiled pattern), a conditional update, so of two claims one wins. Returns the row as stored.
    */
   claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern>;
   /** Sets the item of the row `id` while `report_id` still holds it; a row another report claimed is left alone. */
   setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void>;
+  /** The filed patterns of `project` that have an item and no outcome yet, oldest first. Read-only. */
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>;
+  /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
+  setFiledPatternOutcome(id: FiledPatternId, outcome: FiledOutcome, at: Timestamp): Promise<boolean>;
 
   // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
 

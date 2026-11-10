@@ -3,6 +3,7 @@
 
 import { type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, recurringStalls, releasePatch } from "../../../core/alarms.js";
 import { ALARM_DEFAULTS, STALL_DEFAULTS } from "../../../core/config.js";
+import { RECURRING_FAILURE } from "../../../core/types.js";
 import { SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -46,8 +47,8 @@ export class AlarmsUnit {
   }
 
   /**
-   * Holds the items a recurring pattern hit (design 05-alarms): each open item nothing else blocks gets
-   * `blocked_on: upstream`, `recurring_failure`, the pattern key in the state change, so its queued runs are not
+   * Holds the items a filed or recurring pattern hit (design 05-alarms): each open item nothing else blocks gets
+   * `blocked_on: human`, `recurring_failure`, the pattern key in the state change, so its queued runs are not
    * claimed and other items keep running. An item filed as a fix is never held. A conditional transition per item,
    * so a second call changes nothing.
    */
@@ -71,11 +72,12 @@ export class AlarmsUnit {
 
   /**
    * Releases held items whose pattern's fix item merged (closed with a merge sha): `blocked_on: none`, so their
-   * queued runs are claimed again for a retry. Reads the held items and their hold's pattern key; safe to run twice.
+   * queued runs are claimed again for a retry. Reads the held items (by their reason, so a hold from before holds were for a person, `upstream`,
+   * is released too) and their hold's pattern key; safe to run twice.
    */
   async releaseStep(): Promise<void> {
     const store = this.c.k.d.store;
-    for (const it of await store.listWorkItemsWhere({ blocked_on: "upstream", exclude_closed: true, limit: 500 })) {
+    for (const it of await store.listWorkItemsWhere({ blocked_reason: RECURRING_FAILURE, exclude_closed: true, limit: 500 })) {
       const key = await heldKey(it, () => this.c.k.reader.listStateChanges(it.id));
       if (key === null) continue;
       const ref = (await store.getFiledPattern(it.project, key))?.filed_ref;

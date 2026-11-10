@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { TierHistory } from "../../../core/budget.js";
 import type {
-  Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyEdge, DependencyState, FiledPattern,
+  Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyEdge, DependencyState, FiledOutcome, FiledPattern,
   FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
   RunStatus, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
   StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
@@ -1253,7 +1253,7 @@ export class SqlFactoryStore implements FactoryStore {
     );
     if (replace !== undefined && replace !== input.report_id) {
       await this.db.run(
-        `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?
+        `UPDATE controller_filed_patterns SET report_id = ?, filed_ref = NULL, error_code = ?, detail = ?, created_at = ?, outcome = NULL, outcome_at = NULL
          WHERE project_key = ? AND pattern_key = ? AND report_id = ?`,
         [input.report_id, input.error_code, input.detail, now, input.project, input.pattern_key, replace],
       );
@@ -1263,6 +1263,18 @@ export class SqlFactoryStore implements FactoryStore {
 
   async setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
     await this.db.run("UPDATE controller_filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
+  }
+
+  async listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> {
+    const rows = await this.db.all(
+      "SELECT * FROM controller_filed_patterns WHERE project_key = ? AND filed_ref IS NOT NULL AND outcome IS NULL ORDER BY created_at, id",
+      [project],
+    );
+    return rows.map(rowToFiledPattern);
+  }
+
+  async setFiledPatternOutcome(id: FiledPatternId, outcome: FiledOutcome, at: Timestamp): Promise<boolean> {
+    return (await this.db.run("UPDATE controller_filed_patterns SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL", [outcome, at, id])) === 1;
   }
 
   // Standing approvals (design 05-standing-approvals)
@@ -2769,6 +2781,10 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
     where.push("blocked_on = ?");
     params.push(filter.blocked_on);
   }
+  if (filter.blocked_reason !== undefined) {
+    where.push("blocked_reason = ?");
+    params.push(filter.blocked_reason);
+  }
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
 }
 
@@ -2906,6 +2922,8 @@ function rowToFiledPattern(row: Row): FiledPattern {
     report_id: row.report_id as ImproveReportId,
     filed_ref: row.filed_ref === null || row.filed_ref === undefined ? null : (JSON.parse(row.filed_ref as string) as SourceRef),
     created_at: row.created_at as Timestamp,
+    outcome: (row.outcome ?? null) as FiledOutcome | null,
+    outcome_at: (row.outcome_at ?? null) as Timestamp | null,
   };
 }
 
