@@ -30,9 +30,19 @@ export async function recordSignal(db: SqlDriver, s: NewSignal): Promise<boolean
   }
 }
 
-export async function latestSignalAt(db: SqlDriver, source: string): Promise<Timestamp | null> {
-  const [row] = await db.all("SELECT MAX(at) AS at FROM controller_signals WHERE source = ?", [source]);
-  return (row?.at as Timestamp | null | undefined) ?? null;
+export async function latestSignalTimes(db: SqlDriver): Promise<Map<string, Timestamp>> {
+  const rows = await db.all("SELECT source, MAX(at) AS at FROM controller_signals GROUP BY source");
+  return new Map(rows.map((r) => [String(r.source), r.at as Timestamp]));
+}
+
+/** One read for every window, each a range on the (source, at) index. */
+export async function listSignalRefs(
+  db: SqlDriver, windows: readonly { source: string; since: Timestamp }[],
+): Promise<{ source: string; source_ref: string }[]> {
+  if (windows.length === 0) return [];
+  const where = windows.map(() => "(source = ? AND at >= ?)").join(" OR ");
+  const rows = await db.all(`SELECT source, source_ref FROM controller_signals WHERE ${where}`, windows.flatMap((w) => [w.source, w.since]));
+  return rows.map((r) => ({ source: String(r.source), source_ref: String(r.source_ref) }));
 }
 
 export async function listStateChangesSince(

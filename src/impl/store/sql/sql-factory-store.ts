@@ -389,23 +389,21 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   // Signal ledger (design 11-signal-ledger): in ./signals.ts.
-
   recordSignal(s: NewSignal): Promise<boolean> {
     return signals.recordSignal(this.db, s);
   }
-
-  latestSignalAt(source: string): Promise<Timestamp | null> {
-    return signals.latestSignalAt(this.db, source);
+  latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> {
+    return signals.latestSignalTimes(this.db);
   }
-
+  listSignalRefs(windows: Parameters<FactoryStore["listSignalRefs"]>[0]): Promise<{ source: string; source_ref: string }[]> {
+    return signals.listSignalRefs(this.db, windows);
+  }
   listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> {
     return signals.listStateChangesSince(this.db, q);
   }
-
   listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> {
     return signals.listVerdictsSince(this.db, since);
   }
-
   listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> {
     return signals.listRunsFinishedSince(this.db, q);
   }

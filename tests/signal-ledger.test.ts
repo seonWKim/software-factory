@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import type { ControllerDeps } from "../src/core/controller-deps.js";
 import type { RunId, RunKind, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -138,6 +138,15 @@ describe("signal ledger (design 11-signal-ledger)", () => {
     expect(await rows(store)).toEqual(first);
   });
 
+  it("a tick with nothing new attempts no insert: a stored signal in the overlap is left out before the write", async () => {
+    const { store, clock } = await newStore();
+    await seed(store, clock);
+    await writer(store, clock).step();
+    const recordSignal = vi.spyOn(store, "recordSignal");
+    await writer(store, clock).step();
+    expect(recordSignal).not.toHaveBeenCalled();
+  });
+
   it("a signal stored after the first tick is written on the next one", async () => {
     const { store, clock } = await newStore();
     let it = (await store.createWorkItem(issue(1), system)).item;
@@ -187,7 +196,7 @@ describe("signal ledger (design 11-signal-ledger)", () => {
     it = await change(store, clock, it, "spec_approved");
     await writer(store, clock).step();
     // A record stored late with a time inside the overlap is still read; one older than the overlap is not.
-    const latest = (await store.latestSignalAt("state_changes"))!;
+    const latest = (await store.latestSignalTimes()).get("state_changes")!;
     const late = new Date(Date.parse(latest) - OVERLAP_MS / 2).toISOString();
     const old = new Date(Date.parse(latest) - OVERLAP_MS * 2).toISOString();
     it = await change(store, clock, it, "retry_requested");
@@ -242,8 +251,7 @@ describe("store reads of the signal ledger", () => {
     const s = { source: "x", source_ref: "r1", kind: "k", work_item_id: "wi_1" as WorkItemId, role: null, rule: null, at: "2026-11-11T00:00:00.000Z" as never };
     expect(await store.recordSignal(s)).toBe(true);
     expect(await store.recordSignal({ ...s, kind: "other" })).toBe(false);
-    expect(await store.latestSignalAt("x")).toBe("2026-11-11T00:00:00.000Z");
-    expect(await store.latestSignalAt("y")).toBeNull();
+    expect((await store.latestSignalTimes()).get("x")).toBe("2026-11-11T00:00:00.000Z");
   });
 
   it("the unit is pure: load reads, decide returns the writes", () => {

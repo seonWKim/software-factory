@@ -748,14 +748,23 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
   });
 
   describe("signal ledger (design 11-signal-ledger)", () => {
-    it("recordSignal stores a (source, source_ref) once, and latestSignalAt reads the newest at per source", async () => {
+    it("recordSignal stores a (source, source_ref) once; latestSignalTimes and listSignalRefs read the stored rows per source", async () => {
       const { store } = await make();
       const s = { source: "verdicts", source_ref: "vd_1", kind: "human_verdict", work_item_id: "wi_1" as WorkItemId, role: null, rule: null, at: "2026-11-11T00:00:00.000Z" as Timestamp };
       expect(await store.recordSignal(s)).toBe(true);
       expect(await store.recordSignal({ ...s, kind: "implicit_verdict", at: "2026-11-12T00:00:00.000Z" as Timestamp })).toBe(false);
       expect(await store.recordSignal({ ...s, source_ref: "vd_2", role: "review", rule: "spec-t1", at: "2026-11-11T01:00:00.000Z" as Timestamp })).toBe(true);
-      expect(await store.latestSignalAt("verdicts")).toBe("2026-11-11T01:00:00.000Z");
-      expect(await store.latestSignalAt("failed_runs")).toBeNull();
+      expect(await store.recordSignal({ ...s, source: "failed_runs", source_ref: "run_1", kind: "run_failed", at: "2026-11-11T00:30:00.000Z" as Timestamp })).toBe(true);
+      const latest = await store.latestSignalTimes();
+      expect(latest.get("verdicts")).toBe("2026-11-11T01:00:00.000Z");
+      expect(latest.get("failed_runs")).toBe("2026-11-11T00:30:00.000Z");
+      expect(latest.has("review_findings")).toBe(false);
+      const refs = await store.listSignalRefs([
+        { source: "verdicts", since: "2026-11-11T00:10:00.000Z" as Timestamp },
+        { source: "failed_runs", since: "2026-11-11T00:00:00.000Z" as Timestamp },
+      ]);
+      expect(refs.map((r) => `${r.source}/${r.source_ref}`).sort()).toEqual(["failed_runs/run_1", "verdicts/vd_2"]);
+      expect(await store.listSignalRefs([])).toEqual([]);
     });
 
     it("reads state changes by reason, verdicts and finished runs across items, from a time", async () => {

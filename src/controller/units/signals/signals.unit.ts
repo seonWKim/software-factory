@@ -1,7 +1,8 @@
 // The signal ledger writer (design 11-signal-ledger, issue #491). A pure step: `load` asks each discovered signal
-// source (`*.signal.ts`) for its records since the newest stored signal of that source, less a 10-minute overlap, and
-// reads the standing rule that approved each record's item; `decide` turns the records into ledger rows the router
-// commits, each an insert that skips a stored (source, source_ref). It names no source, holds nothing in memory, and
+// source (`*.signal.ts`) for its records since the newest stored signal of that source, less a 10-minute overlap, drops
+// the ones the overlap re-read that are stored already, and reads the standing rule that approved each new record's
+// item; `decide` turns the records into ledger rows the router commits, each an insert that skips a stored (source,
+// source_ref) in case another replica wrote it first. It names no source, holds nothing in memory, and
 // writes nothing else: no state change, verdict, run, intent or item field.
 
 import { ROLES, STANDING_APPROVED, type SignalDescriptor, type SignalRecord, type SignalTime } from "../../signals/signal.js";
@@ -32,11 +33,20 @@ export function readFrom(latest: SignalTime | null): SignalTime | null {
 /** Writes the signal ledger. */
 export class SignalsUnit {
   async load(r: ControllerReader): Promise<Loaded> {
+    const sources = await r.signals();
+    const latest = await r.latestSignalTimes();
+    // The first read of a source (no stored signal) is the backfill: every record it has.
+    const since = new Map(sources.map((s) => [s.name, readFrom(latest.get(s.name) ?? null)]));
+    // What the overlap re-reads is stored already: left out here, so a quiet tick attempts no insert.
+    const windows = sources.flatMap((s) => {
+      const from = since.get(s.name) ?? null;
+      return from === null ? [] : [{ source: s.name, since: from }];
+    });
+    const stored = new Set((await r.listSignalRefs(windows)).map((x) => `${x.source}\n${x.source_ref}`));
     const batches: Batch[] = [];
-    for (const source of await r.signals()) {
-      // The first read of a source (no stored signal) is the backfill: every record it has.
-      const since = readFrom(await r.latestSignalAt(source.name));
-      batches.push({ source, records: await source.read(r, since) });
+    for (const source of sources) {
+      const records = await source.read(r, since.get(source.name) ?? null);
+      batches.push({ source, records: records.filter((x) => !stored.has(`${source.name}\n${x.source_ref}`)) });
     }
     const ids = [...new Set(batches.flatMap((b) => b.records.map((x) => x.work_item_id)))];
     const approvals = ids.length === 0 ? [] : await r.listStateChangesSince({ reasons: [STANDING_APPROVED], since: null, work_item_ids: ids });
