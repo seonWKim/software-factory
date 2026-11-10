@@ -129,6 +129,59 @@ describe("external config: where state lands", () => {
   });
 });
 
+describe("external config: state inside a denied folder (issue #471)", () => {
+  /** An external config whose folder is also the secrets folder, as `~/.config/software-factory/`. */
+  function nextToSecrets(config: Record<string, unknown>): { dir: string; file: string } {
+    const dir = temp("sf-secrets-");
+    vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, ".env"));
+    return { dir, file: external(config, dir) };
+  }
+
+  it("a relative state_dir that lands in the secrets folder stops startup, naming the setting, the denied path and the fix", async () => {
+    const main = checkout(SOLO);
+    const { dir, file } = nextToSecrets({ ...SOLO, worktrees_dir: join(temp("sf-wt-"), "wt") });
+    const err = await loadConfig(main, { configFile: file }).then(() => null, (e: unknown) => e as Error);
+    expect(err?.message.split("\n")).toEqual([expect.stringMatching(/^state_dir /)]);
+    expect(err?.message).toContain(join(dir, REAL.state_dir as string));
+    expect(err?.message).toContain(`denied path ${dir}`);
+    expect(err?.message).toContain("an absolute path outside that folder in factory.config.json");
+  });
+
+  it("a relative worktrees_dir that lands in the secrets folder stops startup the same way", async () => {
+    const main = checkout(SOLO);
+    const { dir, file } = nextToSecrets({ ...SOLO, state_dir: join(temp("sf-state-"), "state") });
+    const err = await loadConfig(main, { configFile: file }).then(() => null, (e: unknown) => e as Error);
+    expect(err?.message.split("\n")).toEqual([expect.stringMatching(/^worktrees_dir /)]);
+    expect(err?.message).toContain(`denied path ${dir}`);
+    expect(err?.message).toContain("an absolute path outside that folder in factory.config.json");
+  });
+
+  it("both refused: one line per setting; doctor prints a FAIL line for each and exits 1, with no stack", async () => {
+    const main = checkout(SOLO);
+    const { file } = nextToSecrets(SOLO);
+    await expect(loadConfig(main, { configFile: file })).rejects.toThrow(/^state_dir .*\nworktrees_dir /);
+
+    const { default: command } = await import("../src/cli/handlers/doctor/doctor.command.js");
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    const ctx = { load: () => loadConfig(main, { configFile: file }) } as unknown as Parameters<typeof command.run>[1];
+    expect(await command.run([], ctx)).toBe(1);
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.startsWith("FAIL  state_dir "))).toHaveLength(1);
+    expect(lines.filter((l) => l.startsWith("FAIL  worktrees_dir "))).toHaveLength(1);
+    expect(lines.join("\n")).not.toMatch(/\n\s+at /);
+  });
+
+  it("absolute state_dir and worktrees_dir outside the secrets folder load", async () => {
+    const main = checkout(SOLO);
+    const state = join(temp("sf-state-"), "state");
+    const wt = join(temp("sf-wt-"), "wt");
+    const { file } = nextToSecrets({ ...SOLO, state_dir: state, worktrees_dir: wt });
+    const loaded = await loadConfig(main, { configFile: file });
+    expect(loaded.stateDir).toBe(state);
+    expect(loaded.worktreesDir).toBe(wt);
+  });
+});
+
 describe("external config: reviewed keys", () => {
   const loosened = {
     dials: { spec_gate_min_tier: 5, auto_merge_max_tier: 0 },

@@ -1675,7 +1675,6 @@ CREATE TABLE `runtime_child_restarts` (
   `restart_key` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
-  `recorded_at` char(24) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   PRIMARY KEY (`restart_key`),
   KEY `child_restarts_at` (`at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
@@ -1843,5 +1842,6 @@ CREATE TABLE `worker_runs` (
   KEY `runs_work_item` (`work_item_id`),
   KEY `runs_finished` (`finished_at`),
   KEY `worker_runs_lease` (`status`,`lease_expires_at`),
+  KEY `worker_runs_ack` (`acknowledged_at`,`updated_at`),
   CONSTRAINT `worker_runs_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

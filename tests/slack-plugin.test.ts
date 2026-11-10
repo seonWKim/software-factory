@@ -117,7 +117,7 @@ describe("slack source and private channels", () => {
   const source = (store: { getWorkItemBySource: () => Promise<unknown>; recordItemMessage?: (m: unknown) => Promise<unknown> }) =>
     new SlackSource({
       api: {} as never, connect: (() => { throw new Error("not used"); }) as never, channels: [CHANNEL, PRIVATE],
-      scanner: cleanScanner, store: store as never, repo: REPO, log: recordingLog(),
+      scanner: cleanScanner, store: { recordItemMessage: async () => {}, ...store } as never, repo: REPO, log: recordingLog(),
     });
   /** The event from a channel, with the channel ID swapped out so two channels' events compare equal. */
   const from = async (s: SlackSource, channel: string, ev: Record<string, unknown>) =>
@@ -181,7 +181,12 @@ describe("slack plugin secrets", () => {
     const log = recordingLog();
     const socket = new FakeSocket();
     const source = new SlackSource({
-      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null, recordItemMessage: async () => { throw new Error("no item: nothing to record"); } } as unknown as SlackSourceDeps["store"], repo: REPO, log,
+      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: {
+        getWorkItemBySource: async () => null,
+        recordItemMessage: async () => { throw new Error("no item: nothing to record"); },
+        getPostedComment: async () => null,
+        recordPostedComment: async () => {},
+      } as unknown as SlackSourceDeps["store"], repo: REPO, log,
     });
     socket.push(eventEnvelope(mention("1800000001.000100", "hello")));
     const ac = new AbortController();

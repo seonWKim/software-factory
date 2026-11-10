@@ -12,8 +12,10 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
+import dropRecordedAt from "../src/runtime/migrations/20261109T1401-runtime-drop-restart-recorded-at.migration.js";
+import { tableColumns, type MigrationDb } from "../src/state/index.js";
 import { cleanScanner, config, FakeAuth, silent } from "./helpers/fakes.js";
-import { BACKENDS, issue, system } from "./helpers/store.js";
+import { BACKENDS, issue, newStore, system } from "./helpers/store.js";
 
 // Restart history (design 05-restarts): one store row per child restart, written by one conditional insert, so
 // the restart alarm's count and window survive a restart of the factory. Never pin a step as the newest.
@@ -69,6 +71,17 @@ for (const b of BACKENDS) {
       expect(await store.listChildRestartsWithin(RESTART_WINDOW_MS)).toEqual(list);
     });
 
+    it("stores only restart_key, at and reason; the same restart written twice is one row", async () => {
+      const { store, clock } = await b.make();
+      const [r] = restarts(clock, 1);
+      expect(await store.recordChildRestart(r!)).toEqual({ created: true });
+      expect(await store.recordChildRestart(r!)).toEqual({ created: false });
+      expect(await store.listChildRestartsWithin(RESTART_WINDOW_MS)).toEqual([r]);
+      const sql = (store as SqlFactoryStore).db;
+      const db: MigrationDb = { dialect: sql.dialect.name, all: (s, p) => sql.all(s, p), run: (s, p) => sql.run(s, p) };
+      expect(await tableColumns(db, "runtime_child_restarts")).toEqual(["restart_key", "at", "reason"]);
+    });
+
     it("a process with no restart list of its own alarms on the stored restarts", async () => {
       const { store, clock } = await b.make();
       for (const r of restarts(clock, 5)) await store.recordChildRestart(r);
@@ -78,6 +91,47 @@ for (const b of BACKENDS) {
     });
   });
 }
+
+describe("migration: runtime_child_restarts drops recorded_at", () => {
+  /** A database whose runtime_child_restarts still has recorded_at, with two restarts in it. */
+  async function before(): Promise<MigrationDb> {
+    const { store } = await newStore();
+    const db: MigrationDb = { dialect: "sqlite", all: (s, p) => store.db.all(s, p), run: (s, p) => store.db.run(s, p) };
+    await db.run("ALTER TABLE runtime_child_restarts ADD COLUMN recorded_at TEXT NOT NULL DEFAULT ''");
+    await db.run("INSERT INTO runtime_child_restarts (restart_key, at, reason, recorded_at) VALUES ('k1', '2026-11-09T10:00:00.000Z', 'r1', 'x'), ('k2', '2026-11-09T10:05:00.000Z', 'r2', 'y')");
+    return db;
+  }
+
+  it("is a breaking migration of runtime_child_restarts", () => {
+    expect(dropRecordedAt).toMatchObject({ change: "breaking", tables: ["runtime_child_restarts"] });
+  });
+
+  it("drops the column, keeps every row's at and reason, and a rerun changes nothing", async () => {
+    const db = await before();
+    await dropRecordedAt.up(db);
+    expect(await tableColumns(db, "runtime_child_restarts")).toEqual(["restart_key", "at", "reason"]);
+    expect(await dropRecordedAt.verify!(db)).toEqual([]);
+    expect(await db.all("SELECT restart_key, at, reason FROM runtime_child_restarts ORDER BY restart_key")).toEqual([
+      { restart_key: "k1", at: "2026-11-09T10:00:00.000Z", reason: "r1" },
+      { restart_key: "k2", at: "2026-11-09T10:05:00.000Z", reason: "r2" },
+    ]);
+    await dropRecordedAt.up(db);
+    expect(await dropRecordedAt.verify!(db)).toEqual([]);
+  });
+
+  it("verify returns a problem when a row's at or reason changed", async () => {
+    for (const change of ["UPDATE runtime_child_restarts SET reason = 'other' WHERE restart_key = 'k1'", "UPDATE runtime_child_restarts SET at = '2026-11-09T11:00:00.000Z' WHERE restart_key = 'k2'"]) {
+      const db = await before();
+      await dropRecordedAt.up(db);
+      await db.run(change);
+      expect(await dropRecordedAt.verify!(db)).toEqual([expect.stringContaining("differs over restart_key, at, reason")]);
+    }
+  });
+
+  it("verify returns a problem while the column is still there", async () => {
+    expect(await dropRecordedAt.verify!(await before())).toEqual([expect.stringContaining("recorded_at is still there")]);
+  });
+});
 
 describe("MySQL step: restart history (child-restarts)", () => {
   it("has the SQLite migration's number and creates the same table and index", () => {
