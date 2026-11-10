@@ -22,6 +22,8 @@ export const META_MESSAGE = "factory_message";
 export const META_STATUS = "factory_status";
 
 const TITLE_MAX = 120;
+/** A Slack message timestamp, the comment id of a typed command. */
+const MESSAGE_TS = /^\d+\.\d+$/;
 
 /** One envelope's event and its dedupe key. */
 type Mapped = { event: SourceEvent; key: string };
@@ -281,8 +283,15 @@ export class SlackSource implements StreamSource {
     return { url: slackLink(t.channel, ts, t.thread_ts) };
   }
 
-  /** Slack threads have no reaction scope here: the status message and the replies are the acknowledgement. */
-  async markSeen(_source: SourceRef, _commentId: string | null): Promise<void> {}
+  /**
+   * 👀 (`eyes`) on the command's message, once: Slack's `already_reacted` is success, so a redelivery adds none.
+   * No message timestamp (an item request, a button press's `action:` key): nothing to react to. A failure
+   * throws; outbound treats a 👀 as best effort and only warns.
+   */
+  async markSeen(source: SourceRef, commentId: string | null): Promise<void> {
+    if (commentId === null || !MESSAGE_TS.test(commentId)) return;
+    await this.d.api.react(this.thread(source).channel, commentId, "eyes");
+  }
 
   /**
    * One status message per thread, edited in place; it links the PR once the item has one, built from its

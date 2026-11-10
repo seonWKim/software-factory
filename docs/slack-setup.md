@@ -9,7 +9,7 @@ Nothing uses these tokens until the `slack` source plugin is selected (SET_UP.md
 - An app called **Software Factory** with a bot user `@software-factory`, defined in [`slack/manifest.json`](../slack/manifest.json):
   - **Socket Mode on:** Slack pushes events over a WebSocket the factory opens. The factory needs no public URL or open port.
   - **Interactivity on**, for the command buttons in threads.
-  - **Bot scopes:** `app_mentions:read` (see @mentions), `channels:history` (read replies in threads it's part of), `chat:write` (reply), `im:write` (open a DM to tell a person something, e.g. the owner), `reactions:write` (acknowledge a command with a reaction, #482). Nothing else.
+  - **Bot scopes:** `app_mentions:read` (see @mentions), `channels:history` (read replies in threads it's part of), `chat:write` (reply), `im:write` (open a DM to tell a person something, e.g. the owner), `reactions:write` (a 👀 on each typed command's message, so a command with no reply is still acknowledged). Nothing else. An app installed before `reactions:write` was added does not have it: update the manifest and reinstall the app (see [Changing the app later](#changing-the-app-later)) to grant it. Until then the 👀 fails with `missing_scope`, which the factory logs as a warning; commands still run.
   - **Events:** `app_mention`, `message.channels`.
 - Two secrets in the factory's secret file (`~/.config/software-factory/.env`, outside the repository; see [`docs/setup.md`](setup.md)):
   - `SLACK_BOT_TOKEN` (`xoxb-…`): posts and reads as the bot.
@@ -67,6 +67,7 @@ socket: hello received (connections: 1)
 | `bot: false` or `app: false` | Run step 5 again. |
 | `invalid_auth` or `not_authed` on `auth.test` | The bot token is wrong or was revoked. Reinstall (step 3), then replace it in the secret file. |
 | `invalid_auth` on `apps.connections.open` | The app token is wrong or lacks `connections:write`. Redo step 4. |
+| `mark seen failed` with `missing_scope` in the factory log | The install predates `reactions:write`. Update the manifest and reinstall (see [Changing the app later](#changing-the-app-later)). |
 | `no hello within 10s` | A network or proxy is blocking WebSockets to `wss-primary.slack.com`. |
 
 ### 7. Invite the bot to a channel (Slack)
