@@ -6,6 +6,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
+import type { Prompts } from "../core/config.js";
 import type { Capability } from "../interfaces/capability-search.js";
 import { skillCapability } from "../impl/capability/bm25-capability-search.js";
 import { findDescriptorFiles } from "../state/index.js";
@@ -165,6 +166,32 @@ export async function packPrompt(packs: readonly Pack[], name: string): Promise<
     if (own !== undefined) text = text === undefined ? own : mergeSections(text, own);
   }
   return text;
+}
+
+/**
+ * Every prompt through the layers (packPrompt), each passed through `fill` (the placeholders). Triage, implement
+ * and review are required: no layer having one fails startup. `resolve` and `improve` are optional (resolve:
+ * `prompt_missing`; improve: no drafts). `owner-defaults`, the owner's standing answers (design 04-triage.md, issue
+ * #315), is appended to triage so triage applies them instead of asking.
+ */
+export async function packPrompts(packs: readonly Pack[], fill: (text: string) => string): Promise<Prompts> {
+  const optional = async (name: string) => {
+    const text = await packPrompt(packs, name);
+    return text === undefined ? undefined : fill(text);
+  };
+  const required = async (name: string) => {
+    const text = await optional(name);
+    if (text === undefined) throw new Error(`no pack has the prompt prompts/${name}.md (layers: ${packs.map((p) => p.dir).join(", ")})`);
+    return text;
+  };
+  const prompts: Prompts = { triage: await required("triage"), implement: await required("implement"), review: await required("review") };
+  for (const name of ["resolve", "improve"] as const) {
+    const text = await optional(name);
+    if (text !== undefined) prompts[name] = text;
+  }
+  const ownerDefaults = await optional("owner-defaults");
+  if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
+  return prompts;
 }
 
 /** The `skills/` folder of every layer but base (the code root's skills/ is indexed from the code root). */

@@ -67,7 +67,7 @@ import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
-import { type Pack, findPacks, packPluginFiles, packPrompt, packSkills } from "./packs/packs.js";
+import { type Pack, findPacks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -418,9 +418,13 @@ export async function loadConfig(
   const stateDir = resolve(stateBase, file.state_dir);
   const worktreesDir = resolve(stateBase, file.worktrees_dir);
   const repoPath = resolve(root, file.repo.path);
-  // The pack layers (design 11-packs.md); their plugins join a copy of the registry for this load only.
+  // The pack layers (design 11-packs.md): base (the code root), org (`packs.org`), project (`.factory/` in the
+  // repo's main checkout) and learned (under the state dir). A missing layer is off.
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
-  const registry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore: baseStore.type === "mysql" }));
+  // Their plugins join a copy of the registry for this load only; REGISTRY never changes. A guard from any pack
+  // fails, and so does a project pack's plugin on a shared store (mysql), naming the file.
+  const sharedStore = baseStore.type === "mysql";
+  const registry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
   const plugins = withForgeDefault(
     registry, selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
   );
@@ -491,29 +495,9 @@ export async function loadConfig(
   // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
   const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
   if (toolchain) config.toolchain = toolchain;
-  // Each prompt through the pack layers: base text, each later layer's `## ` sections merged in (design 11-packs.md).
-  const optional = async (name: string): Promise<string | undefined> => {
-    const text = await packPrompt(packs, name);
-    return text === undefined ? undefined : fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain);
-  };
-  const readPrompt = async (name: string): Promise<string> => {
-    const text = await optional(name);
-    if (text === undefined) throw new Error(`cannot read the prompt ${join(codeRoot, "prompts", `${name}.md`)}: no pack has prompts/${name}.md`);
-    return text;
-  };
-  const prompts: Prompts = {
-    triage: await readPrompt("triage"),
-    implement: await readPrompt("implement"),
-    review: await readPrompt("review"),
-  };
-  // Optional prompt files: a missing one is not an error (resolve: `prompt_missing`; improve: no drafts).
-  for (const name of ["resolve", "improve"] as const) {
-    const text = await optional(name);
-    if (text !== undefined) prompts[name] = text;
-  }
-  // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
-  const ownerDefaults = await optional("owner-defaults");
-  if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
+  // Each prompt through the pack layers, placeholders filled after the merge (design 11-packs.md). A required
+  // prompt no layer has fails startup; owner-defaults is appended to triage.
+  const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain));
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, grants, stats, models, model_by };
 }
 
