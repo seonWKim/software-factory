@@ -18,7 +18,7 @@ import { itemCommands, itemReplies, mergeAllowedOnce, mergeReadiness, readSessio
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
-import { type UiDeps, runTokens } from "./pages.js";
+import { runTokens } from "./pages.js";
 import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
