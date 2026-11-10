@@ -13,7 +13,8 @@ import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "../../../core/suggest.js";
-import { type Actor, type RunKind, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import type { CommandPassport, ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
@@ -22,6 +23,11 @@ import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEv
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
+/**
+ * Who sent a gate command: a source account, resolved by the auth plugin of its origin (a comment), or the factory
+ * user an app request names, checked by the local auth plugin under the request's edge passport.
+ */
+export type CommandSender = { identity: ExternalIdentity } | { user_id: UserId; passport?: CommandPassport | undefined };
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
 type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
@@ -173,21 +179,9 @@ export class CommandsUnit {
     if (!item) return;
     // A `/revise` on the PR of a closed item is ordinary conversation now: no reaction, no reply (design §4).
     if (e.kind === "revise_requested" && onPr && item.stage === "CLOSED") return;
-    // /resolve uses the same write-permission check as /approve and /retry; no new AuthAction.
     const who = e.kind === "retry_requested" || e.kind === "revise_requested" || e.kind === "resolve_requested" ? e.requester : e.approver;
-    const principal = await this.c.unit("auth").authorize(who, "approve_spec", item.id);
-    let refusal: string | null;
-    if ("refuse" in principal) refusal = principal.refuse;
-    else {
-      // The note is untrusted text bound for the store and agent prompts: G5 before either.
-      const input = await this.commandInput(item.id, e);
-      refusal = "refuse" in input
-        ? input.refuse
-        : await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, null, input.paths);
-      if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
-    }
+    const refusal = await this.gateCommand(item, e, { identity: who });
     await this.c.unit("outbox").markSeen(e.source, e.comment_id);
-    if (e.kind === "spec_rejected" && refusal === null) await this.c.unit("closes").afterReject(item.id);
     if (refusal === null) return;
     this.c.k.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     // A /resolve or /revise sent on the PR is answered on the PR; every other command on the item's own issue.
@@ -197,6 +191,28 @@ export class CommandsUnit {
       refusalText(COMMAND[e.kind], refusal),
       `<!-- factory:refused:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * One gate command on `item`, from a comment or from an app request (design §4): the `approve_spec` check for the
+   * sender, the note (and, from a comment, `+paths`) through the egress scan, the transition (with `tag` on its state
+   * change), the standing-rule follow-up and a reject's close. Returns the refusal reason, else null; the caller
+   * posts the refusal under its own marker. `/resolve` uses the same write-permission check; no new AuthAction.
+   */
+  async gateCommand(item: WorkItem, e: CommandEvent, from: CommandSender, tag: StateChangeDetail | null = null): Promise<string | null> {
+    const auth = this.c.unit("auth");
+    const principal = "identity" in from
+      ? await auth.authorize(from.identity, "approve_spec", item.id)
+      : await auth.allowed({ user_id: from.user_id, attributes: {} }, "approve_spec", item.id, true, from.passport);
+    if ("refuse" in principal) return principal.refuse;
+    // The note is untrusted text bound for the store and agent prompts: G5 before either.
+    const input = await this.commandInput(item.id, e, "identity" in from);
+    if ("refuse" in input) return input.refuse;
+    const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
+    if (refusal !== null) return refusal;
+    await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
+    if (e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
+    return null;
   }
 
   /**
@@ -412,13 +428,15 @@ export class CommandsUnit {
   /**
    * The note and the `+paths` of an `/approve`, `/retry` or `/resolve` (design §4, issue #280); none for other
    * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
-   * split off and checked; the note is what is left, capped. A finding or a bad path refuses the command.
+   * split off and checked; the note is what is left, capped. A finding or a bad path refuses the command. `paths`
+   * false (an app request): no `+paths` is read, the whole text is the note.
    */
-  async commandInput(id: WorkItemId, e: CommandEvent): Promise<{ note: string | null; paths: string[] } | Refusal> {
+  async commandInput(id: WorkItemId, e: CommandEvent, paths = true): Promise<{ note: string | null; paths: string[] } | Refusal> {
     if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
     const text = e.kind === "resolve_requested" ? e.notes : e.note;
     const scanned = await this.approvalNote(id, text, COMMAND[e.kind]);
     if ("refuse" in scanned) return scanned;
+    if (!paths) return { note: scanned.note, paths: [] };
     const split = parseCommandPaths(text ?? "");
     if ("refuse" in split) return split;
     const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
