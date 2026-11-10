@@ -17,7 +17,7 @@ import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/
 import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
-import { SlackSource, parseSlackSourceId, slackSourceId } from "../src/impl/source/slack-source.js";
+import { META_STATUS, SlackSource, parseSlackSourceId, slackLink, slackSourceId } from "../src/impl/source/slack-source.js";
 import { FakeForge, FakeSource, config, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL, TEAM, eventEnvelope, mention, message, press } from "./helpers/slack.js";
 import { newStore, w1 } from "./helpers/store.js";
@@ -557,7 +557,7 @@ describe("slack source: replies, buttons and commands", () => {
     expect(f.api.thread(ts).filter((m) => m.text?.startsWith("Status:")).map((m) => m.text)).toEqual([status[0]!.text]);
   });
 
-  it("posts a marker at most once, looking in the thread first", async () => {
+  it("posts a marker at most once", async () => {
     const f = await setup();
     const source = { type: "slack_thread" as const, id: sourceId("1800000016.000100"), link: "" };
     const a = await f.slack.postComment(source, "hello", "<!-- m1 -->");
@@ -596,6 +596,102 @@ describe("slack source: egress", () => {
     // outcome would have stopped it; the Slack source adds nothing: no inbox row, no log line carries it.
     void item;
     expect(f.api.thread(ts).some((m) => m.text?.includes("withheld by the leak scanner"))).toBe(true);
+  });
+});
+
+describe("slack source: store records before thread reads (issue #484)", () => {
+  const statusOf = (f: F, ts: string) => f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));
+  const STATUS_MARKER = "slack:status";
+
+  it("a second status edits the first in place with no thread read; only the first status reads the thread", async () => {
+    const f = await setup();
+    const ts = "1800000040.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    await f.slack.setStatus(source, "triaging", null);
+    const reads = f.api.threadReplyCalls;
+    await f.slack.setStatus(source, "implementing", null);
+    expect(f.api.threadReplyCalls).toBe(reads);
+    expect(reads).toBe(1);
+    expect(f.api.calls.map((c) => c.method)).toEqual(["postMessage", "updateMessage"]);
+    const status = statusOf(f, ts);
+    expect(status.map((m) => m.text)).toEqual(["Status: *implementing*"]);
+    expect(await f.store.getPostedComment(source.id, STATUS_MARKER, "")).toMatchObject({
+      comment_id: status[0]!.ts, url: slackLink(CHANNEL, status[0]!.ts, ts),
+    });
+  });
+
+  it("a deleted status message (message_not_found) is replaced by a new one, recorded, and later edits go to it", async () => {
+    const f = await setup();
+    const ts = "1800000041.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    await f.slack.setStatus(source, "triaging", null);
+    const first = statusOf(f, ts)[0]!.ts;
+    f.api.messages = f.api.messages.filter((m) => m.ts !== first);
+    await f.slack.setStatus(source, "implementing", null);
+    const after = statusOf(f, ts);
+    expect(after.map((m) => m.text)).toEqual(["Status: *implementing*"]);
+    expect(after[0]!.ts).not.toBe(first);
+    expect(await f.store.getPostedComment(source.id, `slack:status:after:${first}`, "")).toMatchObject({ comment_id: after[0]!.ts });
+    const calls = f.api.calls.length;
+    await f.slack.setStatus(source, "in_review", null);
+    expect(f.api.calls.slice(calls).map((c) => c.method)).toEqual(["updateMessage"]);
+    expect(statusOf(f, ts).map((m) => [m.ts, m.text])).toEqual([[after[0]!.ts, "Status: *in review*"]]);
+    expect(f.api.threadReplyCalls).toBe(1);
+  });
+
+  it("a status posted before the records is found by one thread read, recorded, and later updates read nothing", async () => {
+    const f = await setup();
+    const ts = "1800000042.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    const { ts: old } = await f.api.postMessage({
+      channel: CHANNEL, thread_ts: ts, text: "Status: *triaging*", metadata: { event_type: META_STATUS, event_payload: { status: "triaging" } },
+    });
+    await f.slack.setStatus(source, "implementing", null);
+    await f.slack.setStatus(source, "in_review", null);
+    expect(f.api.threadReplyCalls).toBe(1);
+    expect(statusOf(f, ts).map((m) => [m.ts, m.text])).toEqual([[old, "Status: *in review*"]]);
+    expect((await f.store.getPostedComment(source.id, STATUS_MARKER, ""))?.comment_id).toBe(old);
+  });
+
+  it("a recorded comment marker returns its stored link with no thread read and no post", async () => {
+    const f = await setup();
+    const source = { type: "slack_thread" as const, id: sourceId("1800000043.000100"), link: "" };
+    await f.store.recordPostedComment({ source_id: source.id, marker: "<!-- m2 -->", comment_id: "1800000043.000200", url: "https://slack.com/archives/x", body: "hi" });
+    expect(await f.slack.postComment(source, "hi", "<!-- m2 -->")).toEqual({ url: "https://slack.com/archives/x" });
+    expect(f.api.threadReplyCalls).toBe(0);
+    expect(f.api.calls).toEqual([]);
+  });
+
+  it("a posted comment is recorded with its ts and link; a second post of the marker makes no call", async () => {
+    const f = await setup();
+    const thread = "1800000044.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(thread), link: "" };
+    const a = await f.slack.postComment(source, "hello", "<!-- m3 -->");
+    const posted = f.api.thread(thread)[0]!;
+    expect(a.url).toBe(slackLink(CHANNEL, posted.ts, thread));
+    expect(await f.store.getPostedComment(source.id, "<!-- m3 -->", "hello")).toMatchObject({ comment_id: posted.ts, url: a.url, same_body: true });
+    const reads = f.api.threadReplyCalls;
+    expect(await f.slack.postComment(source, "hello", "<!-- m3 -->")).toEqual(a);
+    expect(f.api.threadReplyCalls).toBe(reads);
+    expect(f.api.calls).toHaveLength(1);
+  });
+
+  it("a blocked comment or status is not posted or edited and leaves no record", async () => {
+    const f = await setup();
+    const ts = "1800000045.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    await f.slack.postComment(source, `leak ${FAKE_GITHUB_TOKEN}`, "<!-- leak2 -->");
+    expect(f.api.calls.map((c) => c.text)).not.toContain(expect.stringContaining(FAKE_GITHUB_TOKEN));
+    expect(await f.store.getPostedComment(source.id, "<!-- leak2 -->", "")).toBeNull();
+    await f.slack.postComment(source, `leak ${FAKE_GITHUB_TOKEN}`, "<!-- leak2 -->");
+    expect(f.api.calls).toHaveLength(1);
+    expect(await f.store.getPostedComment(source.id, "<!-- leak2 -->", "")).toBeNull();
+
+    f.scanner.scan = async () => ({ clean: false, findings: [{ rule: "known_secret", channel: "comment" }] });
+    const calls = f.api.calls.length;
+    await f.slack.setStatus(source, "triaging", null);
+    expect(f.api.calls.length).toBe(calls);
+    expect(await f.store.getPostedComment(source.id, STATUS_MARKER, "")).toBeNull();
   });
 });
 
