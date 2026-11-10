@@ -118,21 +118,21 @@ export function prUrl(repo: RepoRef, n: number | string): string {
   return `https://github.com/${repo.owner}/${repo.name}/pull/${n}`;
 }
 
-/** Splits mrkdwn into chunks of at most SECTION_MAX characters, at line breaks where it can. */
-function chunks(text: string): string[] {
+/** Splits mrkdwn into chunks of at most `max` characters, at line breaks where it can. */
+function chunks(text: string, max = SECTION_MAX): string[] {
   const out: string[] = [];
   let cur = "";
   for (const line of text.split("\n")) {
     const add = cur === "" ? line : `${cur}\n${line}`;
-    if (add.length <= SECTION_MAX) {
+    if (add.length <= max) {
       cur = add;
       continue;
     }
     if (cur !== "") out.push(cur);
     cur = line;
-    while (cur.length > SECTION_MAX) {
-      out.push(cur.slice(0, SECTION_MAX));
-      cur = cur.slice(SECTION_MAX);
+    while (cur.length > max) {
+      out.push(cur.slice(0, max));
+      cur = cur.slice(max);
     }
   }
   if (cur !== "") out.push(cur);
@@ -163,6 +163,28 @@ export function renderComment(body: string, repo: RepoRef, botUserId: string): S
   }
   if (buttons.length > 0) blocks.push({ type: "actions", elements: buttons });
   return { text: sections[0] ?? "", blocks };
+}
+
+/**
+ * The note that ends a chat reply cut to Slack's limits (design 05-sources, "Cut chat replies"): it says the reply
+ * was cut, names `whole`, the CLI command that prints the whole text, and links `link` (the item's source) when given.
+ */
+export function cutNote(whole: string, link?: string): string {
+  const at = link && /^https?:\/\//.test(link) ? ` or <${link.replace(/[<>|]/g, "")}|the item>` : "";
+  return `_(reply cut to Slack's limits; the whole text: \`${escapeSlack(whole)}\`${at})_`;
+}
+
+const FENCE = "```";
+
+/**
+ * A command's printed lines (the CLI's text, unchanged) as Slack code blocks: one section per block, each at most
+ * SECTION_MAX characters with its fences, at most MAX_SECTIONS sections. A longer text keeps the sections that fit
+ * and ends with `cutNote(whole, link)`.
+ */
+export function renderLines(lines: readonly string[], whole: string, link?: string): SlackRendered {
+  let sections = chunks(escapeSlack(lines.join("\n")), SECTION_MAX - 2 * (FENCE.length + 1)).map((t) => `${FENCE}\n${t}\n${FENCE}`);
+  if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS - 1), cutNote(whole, link)];
+  return { text: sections[0] ?? "", blocks: sections.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } })) };
 }
 
 function button(label: string, action_id: string, value: string, style?: "primary"): unknown {

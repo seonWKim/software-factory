@@ -7,6 +7,8 @@ import type { GitHubApi, GitHubCredentials } from "../../interfaces/github-crede
 import { factoryGit, factoryRemoteUrl } from "../broker/trusted-git.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
 import { forgeAuthRefused, openOrUpdatePr } from "./pull-requests.js";
+import { resolveProject } from "./forge.plugin.js";
+import type { ProjectRef } from "../../core/project.js";
 import { type GhUser, type GitHubIssueSource, type PollContext, githubTime, identity, max } from "./github-issue-source.js";
 
 interface GhPull {
@@ -129,6 +131,11 @@ export class GitHubForge implements Forge {
 
   private get base(): string {
     return `/repos/${this.repo.owner}/${this.repo.name}`;
+  }
+
+  /** The configured repo's key from its node ID and its label from its current path: one repository read. */
+  projectIdentity(): Promise<ProjectRef> {
+    return resolveProject(this.client, this.repo);
   }
 
   /**
