@@ -28,8 +28,8 @@ export class AppRequestsUnit {
   /**
    * One app command request (design §4, app requests): `approve`, `reject` and `revise` go through the comment command
    * path and get the `/approve`, `/reject` or `/revise` permission check, note scan and transition (a reject then closes
-   * its issue and its open PR, as `/reject` does; a revise stores its feedback as typed); `verdict` gets the `/verdict` check, parser and store, keyed `app-<seq>`;
-   * `merge` on a local item with no PR goes to mergeLocal, the same local merge as `factory merge`, and on any item
+   * its issue and its open PR, as `/reject` does; a revise stores its feedback as typed); `verdict` gets the
+   * `/verdict` check, parser and store, keyed `app-<seq>`; `merge` on a local item with no PR goes to mergeLocal, the same local merge as `factory merge`, and on any item
    * with a PR to the PR merge (design §9, the Merge button). Each puts the request's seq on the state change (a
    * verdict on its key). Any other command is refused. A refusal is posted once on the item's source, keyed on the
    * request, then stored on the row by the conditional mark. A failed post leaves the request pending for the next
