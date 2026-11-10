@@ -64,9 +64,10 @@ import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources,
+  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
+import { type Pack, findPacks, packPluginFiles, packPrompt, packSkills } from "./packs/packs.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
 export type StoreConfig =
@@ -216,6 +217,11 @@ export interface FileConfig {
    * the network; absent: `repo.install_command`). Absent: none of it. A PR-only key. Checked by toolchainConfig.
    */
   toolchain?: unknown;
+  /**
+   * Packs (design 11-packs.md): `order`, the layers in order (absent: base, org, project, learned; base first,
+   * learned last) and `org`, the org pack's folder (absent: no org layer). Checked by packsProblems. A reviewed key.
+   */
+  packs?: { order?: unknown; org?: unknown };
 }
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -249,11 +255,12 @@ export function cliConfig(
 
 /**
  * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, `toolchain`: what agents may read and
- * the env they get, and `hooks`: the owner's checks, such as a `before_merge` veto). On a shared store (MySQL: the
+ * the env they get, `hooks`: the owner's checks, such as a `before_merge` veto, and `packs`: where the org
+ * pack's prompts and plugins come from). On a shared store (MySQL: the
  * enterprise case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use
  * may set any key.
  */
-const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain", "hooks"] as const;
+const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain", "hooks", "packs"] as const;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -305,8 +312,10 @@ export interface Loaded {
   store: StoreConfig;
   /** Checked plugin name per interface. */
   plugins: Selection;
-  /** Where plugin names resolve. The built-in REGISTRY unless a test passes another. */
+  /** Where plugin names resolve: the built-in REGISTRY (unless a test passes another) plus the packs' plugins. */
   registry: Registry;
+  /** The pack layers that are on, in order (design 11-packs.md): where prompts, skills and pack plugins came from. */
+  packs: readonly Pack[];
   /** The checked `permissions.grants`: grant plugin names, in config order. */
   grants: readonly string[];
   /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
@@ -404,8 +413,14 @@ export async function loadConfig(
   const stats = statsConfig(file.stats);
   const models = parseModels(file.models);
   const model_by = parseModelBy(file.model_by);
-  const registry = opts.registry ?? REGISTRY;
   const baseStore = file.store ?? { type: "sqlite" };
+  const stateBase = externalConfig === null ? root : dirname(externalConfig);
+  const stateDir = resolve(stateBase, file.state_dir);
+  const worktreesDir = resolve(stateBase, file.worktrees_dir);
+  const repoPath = resolve(root, file.repo.path);
+  // The pack layers (design 11-packs.md); their plugins join a copy of the registry for this load only.
+  const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
+  const registry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore: baseStore.type === "mysql" }));
   const plugins = withForgeDefault(
     registry, selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
   );
@@ -415,15 +430,12 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
   const store = await storeConfig(baseStore, secretsFile);
 
-  const stateBase = externalConfig === null ? root : dirname(externalConfig);
-  const stateDir = resolve(stateBase, file.state_dir);
-  const worktreesDir = resolve(stateBase, file.worktrees_dir);
   const home = process.env.HOME ?? "";
   const { check_commands: rawChecks, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
     repo: {
       ...fileRepo,
-      path: resolve(root, file.repo.path),
+      path: repoPath,
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command: testCommand(file.repo.test_command),
       ...checkCommandsConfig(rawChecks),
@@ -479,18 +491,22 @@ export async function loadConfig(
   // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
   const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
   if (toolchain) config.toolchain = toolchain;
-  const readPrompt = async (name: string): Promise<string> => fillPrompt(await readFile(join(codeRoot, "prompts", `${name}.md`), "utf8"), config.repo, plugins.forge ?? "local", config.toolchain);
+  // Each prompt through the pack layers: base text, each later layer's `## ` sections merged in (design 11-packs.md).
+  const optional = async (name: string): Promise<string | undefined> => {
+    const text = await packPrompt(packs, name);
+    return text === undefined ? undefined : fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain);
+  };
+  const readPrompt = async (name: string): Promise<string> => {
+    const text = await optional(name);
+    if (text === undefined) throw new Error(`cannot read the prompt ${join(codeRoot, "prompts", `${name}.md`)}: no pack has prompts/${name}.md`);
+    return text;
+  };
   const prompts: Prompts = {
     triage: await readPrompt("triage"),
     implement: await readPrompt("implement"),
     review: await readPrompt("review"),
   };
   // Optional prompt files: a missing one is not an error (resolve: `prompt_missing`; improve: no drafts).
-  const optional = (name: string) =>
-    readPrompt(name).catch((err: NodeJS.ErrnoException) => {
-      if (err.code === "ENOENT") return undefined;
-      throw err;
-    });
   for (const name of ["resolve", "improve"] as const) {
     const text = await optional(name);
     if (text !== undefined) prompts[name] = text;
@@ -498,7 +514,7 @@ export async function loadConfig(
   // The owner's standing answers (design 04-triage.md, issue #315), appended so triage applies them instead of asking.
   const ownerDefaults = await optional("owner-defaults");
   if (ownerDefaults !== undefined) prompts.triage = `${prompts.triage.trimEnd()}\n\n${ownerDefaults}`;
-  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, grants, stats, models, model_by };
+  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, grants, stats, models, model_by };
 }
 
 /**
@@ -826,8 +842,8 @@ export async function build(
   const awake = await createPlugin(registry, "awake", sel.awake, { ...base, clock });
   // The pre-push checks' database (design §4): its URL reaches only the check commands, never an agent.
   const testDatabase = await p.testDatabase(secrets);
-  // list-all has no source for its capabilities yet, so it finds nothing and the prompt gets no index.
-  const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: [] });
+  // list-all lists the packs' skills (design 11-packs.md); with none it finds nothing and the prompt gets no index.
+  const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: packSkills(loaded.packs) });
   // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
   const network_probe = await createPlugin(registry, "network_probe", sel.network_probe, base);
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).

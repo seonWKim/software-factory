@@ -5,6 +5,7 @@
 import type { FileConfig } from "./compose.js";
 import { COORDINATION_KEYS, TOOLCHAIN_KEYS, coordinationProblems } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
+import { packsProblems } from "./packs/packs.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import { OPENAI_COMPATIBLE_KEYS, OPENAI_COMPATIBLE_MODELS_KEYS, openaiCompatibleProblems } from "./impl/openai/config.js";
@@ -84,6 +85,7 @@ export const TOP_LEVEL_KEYS = [
   "path_companions",
   "cli_user",
   "toolchain",
+  "packs",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -106,6 +108,7 @@ export const UI_KEYS = ["port", "user_id"] as const satisfies readonly (keyof No
 export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof NonNullable<FileConfig["updater"]>)[];
 export const GITHUB_KEYS = ["min_remaining", "budget_share", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
+export const PACKS_KEYS = ["order", "org"] as const satisfies readonly (keyof NonNullable<FileConfig["packs"]>)[];
 
 /** A suggestion is offered only within this edit distance. */
 export const SUGGEST_MAX_DISTANCE = 2;
@@ -196,6 +199,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   }
   check(raw.slack, "slack", "slack", SLACK_KEYS);
   check(raw.toolchain, "toolchain", "toolchain", TOOLCHAIN_KEYS);
+  check(raw.packs, "packs", "packs", PACKS_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
@@ -216,12 +220,14 @@ export function checkConfigKeys(raw: unknown): void {
   // The coordination values too (design §5, 2026-11-03): a zero or non-numeric threshold fails at load.
   // The openai_compatible block's values too: base_url and the three model names.
   // The path_companions entries too (design 04-triage.md): each bad entry names its index.
+  // The packs order and org path too (design 11-packs.md).
   const problems = [
     ...unknownConfigKeys(raw),
     ...coordinationProblems(raw),
     ...openaiCompatibleProblems(raw),
     ...slackConfigProblems(raw),
     ...pathCompanionProblems(raw),
+    ...packsProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }

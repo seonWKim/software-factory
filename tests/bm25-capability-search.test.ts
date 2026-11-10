@@ -48,6 +48,13 @@ describe("bm25: what is indexed", () => {
     expect(r.find((c) => c.id === "skills/b.md")?.kind).toBe("skill");
   });
 
+  it("indexes a pack's skill folder as kind skill, by absolute path, skipping its dot-directories (design 11-packs.md)", async () => {
+    const pack = tree({ "skills/deploy.md": "# Deploy\n\nzebra deploy\n", "skills/.hidden/h.md": "# H\n\nzebra hidden\n" });
+    const s = new Bm25CapabilitySearch(tree({ "docs/a.md": "# A\n\nzebra\n" }), [join(pack, "skills"), join(pack, "absent")]);
+    const r = await s.search("zebra", 10);
+    expect(r.map((c) => [c.id, c.kind]).sort()).toEqual([[join(pack, "skills", "deploy.md"), "skill"], ["docs/a.md", "doc"]]);
+  });
+
   it("finds nothing when neither root exists", async () => {
     expect(await new Bm25CapabilitySearch(tree({ "README.md": "zebra" })).search("zebra", 8)).toEqual([]);
   });
