@@ -14,7 +14,7 @@ import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
-import { itemCommands, itemReplies, mergeAllowedOnce, mergeReadiness, readSession } from "./commands.js";
+import { itemCommands, itemReplies, mergeAllowedOnce, mergeReadiness, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
@@ -461,7 +461,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
     })),
     /** The item's thread, oldest first (thread.ts): every body through the Withholder. */
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
-    commands: itemCommands(it, runs),
+    commands: itemCommands(it, runs), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the waiting spec's In short and decisions
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
   };
 }
