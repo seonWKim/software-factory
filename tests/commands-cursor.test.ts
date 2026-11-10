@@ -44,7 +44,7 @@ function scriptedDb(table: "inbound_cursors" | "cursors", cursors: Record<string
   const state = new Map(Object.entries(cursors));
   const guarded = (sql: string, p: readonly Value[] | undefined, from: number) => {
     expect(sql).toContain(`FROM ${table} o WHERE o.name = ? AND NOT EXISTS (SELECT 1 FROM ${table} c WHERE c.name = ?)`);
-    const [legacy, commands] = [p![from], p![from + 1]] as string[];
+    const [legacy, commands] = [String(p![from]), String(p![from + 1])];
     return state.has(commands) || !state.has(legacy) ? [] : [{ value: state.get(legacy)! }];
   };
   return {
