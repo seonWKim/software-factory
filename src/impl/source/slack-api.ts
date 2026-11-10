@@ -1,4 +1,5 @@
 import { secretName, type SecretName, type SecretStore } from "../../interfaces/secret-store.js";
+import { retryAfterResetAt } from "../../shared/retry-after.js";
 
 // The Slack Web API calls the `slack` source makes (issue #109), behind a small interface so tests use a fake.
 // The two tokens are read from the SecretStore here, at the point of use, and go nowhere but the Authorization
@@ -48,11 +49,17 @@ export interface SlackApi {
   react(channel: string, ts: string, name: string): Promise<void>;
 }
 
-/** A failed Slack call. The message names the method and Slack's error code only. */
+/**
+ * A failed Slack call. The message names the method and Slack's error code only. `status`: the HTTP status, or the
+ * one a permanent refusal Slack sends as `ok: false` stands for (PERMANENT); `wait_until`: when a rate limit's
+ * Retry-After ends. Outbound reads both (refusedForGood, the retry delay).
+ */
 export class SlackApiError extends Error {
   constructor(
     readonly method: string,
     readonly code: string,
+    readonly status?: number,
+    readonly wait_until?: string,
   ) {
     super(`slack ${method} failed: ${code}`);
     this.name = "SlackApiError";
@@ -64,11 +71,19 @@ function safeCode(v: unknown): string {
   return typeof v === "string" && /^[a-z0-9_]{1,64}$/.test(v) ? v : "unknown_error";
 }
 
+/**
+ * The `ok: false` codes that are a permanent refusal, as the HTTP status a forge would send: the channel is gone or
+ * the bot is not in it. Every other code (a token error among them) has no status and is retried.
+ */
+const PERMANENT: ReadonlyMap<string, number> = new Map([["channel_not_found", 404], ["not_in_channel", 403]]);
+
 /** At most this many pages of thread replies are read (200 each). */
 const MAX_REPLY_PAGES = 20;
 
 export type FetchFn = (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{
   status: number;
+  /** Optional so fakes without headers still type-check; a missing header means no Retry-After. */
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }>;
 
@@ -78,6 +93,8 @@ export class HttpSlackApi implements SlackApi {
     private readonly secrets: Pick<SecretStore, "get">,
     private readonly fetchFn: FetchFn = (url, init) => fetch(url, init),
     private readonly baseUrl = "https://slack.com/api",
+    /** Milliseconds since the epoch, for Retry-After in seconds. */
+    private readonly now: () => number = Date.now,
   ) {}
 
   async identity(): Promise<{ team_id: string; user_id: string }> {
@@ -141,10 +158,13 @@ export class HttpSlackApi implements SlackApi {
       },
       body,
     });
-    if (res.status === 429) throw new SlackApiError(method, "rate_limited");
+    if (res.status === 429) throw new SlackApiError(method, "rate_limited", 429, retryAfterResetAt(res.headers?.get("retry-after") ?? null, this.now()));
     if (res.status >= 400) throw new SlackApiError(method, `http_${res.status}`);
     const r = (await res.json()) as Record<string, unknown>;
-    if (r?.ok !== true) throw new SlackApiError(method, safeCode(r?.error));
+    if (r?.ok !== true) {
+      const code = safeCode(r?.error);
+      throw new SlackApiError(method, code, PERMANENT.get(code));
+    }
     return r;
   }
 }
