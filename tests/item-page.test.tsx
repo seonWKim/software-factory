@@ -1,14 +1,15 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 import { Markdown } from "../web/src/components/ui/markdown.js";
 
 // The item page (design §9, issue #313): a split parent lists its phases and a phase links back to its parent;
 // the spec triage wrote sits behind "spec written (show)" and renders as markdown, never as escaped JSON; the
-// spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and ID.
+// spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and ID. A waiting spec
+// (issue #526) shows In short above Commands, its decisions as questions, and a confirm step before approve.
 
 const AT = "2026-11-07T00:00:00.000Z";
 const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
@@ -152,6 +153,123 @@ describe("item page: links and runs", () => {
     expect(cells[0]).toContain("run_triage_1");
     expect(cells[1]).toContain("2");
     expect(cells[2]).toBe("succeeded");
+  });
+});
+
+describe("item page: In short, decisions and the approve confirm (issue #526)", () => {
+  const APPROVE = { name: "approve", usage: "/approve [notes]", description: "approve" };
+  const SPEC = {
+    in_short: "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.",
+    decisions: [
+      { question: "Fail the job, or only warn?", options: ["Fail the job", "Only warn"], default: "Fail the job", reason: "A failing job blocks merges.", owner_only: false },
+      { question: "Name the step?", options: [], default: "scope", reason: "It shows in CI.", owner_only: false },
+      { question: "Who owns the gate?", options: [], default: null, reason: null, owner_only: true },
+    ],
+  };
+  let posts: { url: string; body: unknown }[];
+
+  /** Serves wi_d with `blocked_reason` and the waiting spec (none at a block that is not the spec gate). */
+  function serve(blocked_reason: string, stage = "READY") {
+    const spec = blocked_reason === "spec_pending" || blocked_reason === "max_revisions" ? SPEC : null;
+    const detail = { as_of: AT, item: base("wi_d", 30, "Decisions", { blocked_reason, stage }), timeline: [], runs: [], commands: [APPROVE], replies: [], spec };
+    posts = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0]!;
+      if (init?.method === "POST") {
+        posts.push({ url: path, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ request_id: "app:x", seq: 3, command: "approve", work_item_id: "wi_d" }), { status: 202, headers: { "content-type": "application/json" } });
+      }
+      const bodies: Record<string, unknown> = {
+        "/api/v1/items/wi_d": detail,
+        "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+        "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
+      };
+      const body = bodies[path];
+      if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+  }
+
+  /** Clicks approve once it is enabled; returns the confirm step, before anything is sent. */
+  async function approve() {
+    const button = await screen.findByRole("button", { name: "approve" });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    const confirm = await screen.findByRole("group", { name: "Confirm approve" });
+    expect(posts).toEqual([]);
+    return confirm;
+  }
+
+  const send = async (body: unknown) => {
+    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_d/commands", body }]));
+  };
+
+  it("shows In short above Commands, and each decision as a question: radios with the default selected and write my own, or a prefilled field", async () => {
+    serve("spec_pending");
+    mount("/app/items/wi_d");
+    const commands = await screen.findByRole("region", { name: "Commands" });
+    const inShort = screen.getByRole("region", { name: "In short" });
+    expect(inShort.compareDocumentPosition(commands) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(inShort.textContent).toContain("TO-BE: CI checks the scope.");
+    const first = within(commands).getByRole("radiogroup", { name: "1. Fail the job, or only warn?" });
+    const radios = within(first).getAllByRole("radio") as HTMLInputElement[];
+    expect(radios.map((r) => r.parentElement!.textContent)).toEqual(["Fail the job(default)", "Only warn", "write my own"]);
+    expect(radios.map((r) => r.checked)).toEqual([true, false, false]);
+    expect(commands.textContent).toContain("A failing job blocks merges.");
+    expect((within(commands).getByRole("textbox", { name: "Answer 2" }) as HTMLInputElement).value).toBe("scope");
+    expect((within(commands).getByRole("textbox", { name: "Answer 3" }) as HTMLInputElement).value).toBe("");
+    // write my own opens a field for the answer.
+    fireEvent.click(radios[2]!);
+    fireEvent.change(within(first).getByRole("textbox", { name: "Answer 1" }), { target: { value: "Warn on docs only" } });
+    expect(radios[2]!.checked).toBe(true);
+  });
+
+  it("spec waiting for approval: the confirm names the answers and the defaults taken, then sends N: lines and the note", async () => {
+    serve("spec_pending");
+    mount("/app/items/wi_d");
+    fireEvent.click(await screen.findByRole("radio", { name: "Only warn" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Answer 3" }), { target: { value: "the platform team" } });
+    fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: "keep it small" } });
+    const confirm = await approve();
+    expect(confirm.textContent).toContain("You approve the spec waiting for approval.");
+    expect([...confirm.querySelectorAll("li")].map((l) => l.textContent)).toEqual([
+      "1. Fail the job, or only warn? → Only warn (your answer)",
+      "2. Name the step? → scope (default taken)",
+      "3. Who owns the gate? → the platform team (your answer)",
+    ]);
+    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this spec.");
+    await send({ command: "approve", note: "1: Only warn\n2: scope\n3: the platform team\nkeep it small" });
+  });
+
+  it("spec at the revision limit: the confirm says it is approved as it is, and an unanswered decision with no default is named", async () => {
+    serve("max_revisions");
+    mount("/app/items/wi_d");
+    const confirm = await approve();
+    expect(confirm.textContent).toContain("You approve the spec at the revision limit, as it is (no new revision).");
+    expect(confirm.textContent).toContain("3. Who owns the gate? → no answer (no default)");
+    expect(confirm.textContent).toContain("Next: The factory starts the implement run on this spec.");
+    await send({ command: "approve", note: "1: Fail the job\n2: scope" });
+  });
+
+  it("floor block: the confirm names the tier raise and what happens next, with no decisions", async () => {
+    serve("floor_tier", "RUNNING");
+    mount("/app/items/wi_d");
+    const confirm = await approve();
+    expect(screen.queryByRole("region", { name: "In short" })).toBeNull();
+    expect(confirm.querySelector("[data-confirm-answers]")).toBeNull();
+    expect(confirm.textContent).toContain("You approve a tier raise to the tier the floor check needs.");
+    expect(confirm.textContent).toContain("Next: The item's tier is raised and the implement run starts again.");
+    await send({ command: "approve" });
+  });
+
+  it("Rule of Two hold: the confirm names the held run and that it starts", async () => {
+    serve("rule_of_two", "RUNNING");
+    mount("/app/items/wi_d");
+    const confirm = await approve();
+    expect(confirm.textContent).toContain("You approve the run held for a person by the Rule of Two.");
+    expect(confirm.textContent).toContain("Next: The held run starts.");
+    await send({ command: "approve" });
   });
 });
 
