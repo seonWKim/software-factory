@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
-import type { AuthResource, CommandPassport, Principal } from "../src/interfaces/auth-provider.js";
+import type { AuthAction, AuthProvider, AuthResource, CommandPassport, Principal } from "../src/interfaces/auth-provider.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
@@ -30,7 +30,7 @@ const flagging: EgressScanner = {
   },
 };
 
-async function harness(opts: { scanner?: EgressScanner; auth?: FakeAuth } = {}) {
+async function harness(opts: { scanner?: EgressScanner; auth?: AuthProvider } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
   const forge = new FakeForge(source);
@@ -467,13 +467,15 @@ describe("dashboard approve, retry and resolve (issue #453): the comment command
 
   it("the check is approve_spec on the item for the request's user, with the request's edge passport", async () => {
     const asked: unknown[] = [];
-    class Recording extends FakeAuth {
-      override async authorize(p: Principal, action: string, resource: AuthResource, passport?: CommandPassport) {
+    const fake = new FakeAuth();
+    const recording: AuthProvider = {
+      resolve: (i) => fake.resolve(i),
+      authorize: async (p: Principal, action: AuthAction, resource: AuthResource, passport?: CommandPassport) => {
         asked.push({ user_id: p.user_id, action, resource, passport });
-        return super.authorize(p, action);
-      }
-    }
-    const h = await harness({ auth: new Recording() });
+        return fake.authorize(p, action);
+      },
+    };
+    const h = await harness({ auth: recording });
     const it1 = await h.itemIn(localRef(1), FAILED_IMPLEMENT);
     // The row as the unit gets it, with its passport (the request's edge passport, recorded by the page).
     const r = { ...(await h.request(it1, "retry", null)), passport_id: "pp1" };
