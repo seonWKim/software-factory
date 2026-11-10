@@ -1,10 +1,8 @@
 // Signal sources as an extension point (design 11-signal-ledger, issue #491): each source is one
 // `src/controller/signals/<name>.signal.ts`, found by discovery, naming the kinds it writes and reading its records
 // through the controller's read-only store accessors. The `signals` unit writes one ledger row per record; a new
-// source needs no change to the unit. Pure apart from `loadSignals`, which imports the discovered files.
+// source needs no change to the unit. Pure: the kernel discovers the files through the runtime registry.
 
-import { pathToFileURL } from "node:url";
-import { CODE_ROOT, findDescriptorFiles, forgetOnFailure } from "../../state/index.js";
 import type { ControllerReader } from "../units/kernel.js";
 
 /** The store reads a source may use: each one across items, oldest first, from `since` (null: every record). */
@@ -48,7 +46,6 @@ export function roleOfRun(kind: string): Role | null {
 /** The state change reason of a standing rule's approval (core/standing STANDING_APPROVED); its detail names the rule. */
 export const STANDING_APPROVED = "standing_approved";
 
-export const SIGNAL_FILE = /\.signal\.(?:ts|js)$/;
 const CODE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 
 /** Why the source breaks its shape, or []. */
@@ -67,24 +64,12 @@ export function defineSignal(s: Omit<SignalDescriptor, "kind">): SignalDescripto
   return { kind: "signal", ...s };
 }
 
-let cached: Promise<SignalDescriptor[]> | null = null;
-
-/**
- * Every `*.signal.ts` under `root` (`.js` once built), in path order; a file whose default export is not
- * `defineSignal(...)`, or two sources of one name, fail. The code root's list is loaded once per process.
- */
-export function loadSignals(root: string = CODE_ROOT): Promise<SignalDescriptor[]> {
-  if (root === CODE_ROOT && cached) return cached;
-  const load = (async () => {
-    const out: SignalDescriptor[] = [];
-    for (const file of findDescriptorFiles(root, SIGNAL_FILE)) {
-      const d = ((await import(pathToFileURL(file).href)) as { default?: { kind?: unknown } }).default;
-      if (d?.kind !== "signal") throw new Error(`${file}: default export must be defineSignal(...)`);
-      const s = d as SignalDescriptor;
-      if (out.some((o) => o.name === s.name)) throw new Error(`signal source "${s.name}" is defined twice (${file})`);
-      out.push(s);
-    }
-    return out;
-  })();
-  return root === CODE_ROOT ? (cached = forgetOnFailure(load, () => (cached = null))) : load;
+/** The discovered sources, in path order; two sources of one name fail (the ledger's `source` column keys them). */
+export function uniqueSignals(found: readonly SignalDescriptor[]): SignalDescriptor[] {
+  const seen = new Set<string>();
+  for (const s of found) {
+    if (seen.has(s.name)) throw new Error(`signal source "${s.name}" is defined twice`);
+    seen.add(s.name);
+  }
+  return [...found];
 }

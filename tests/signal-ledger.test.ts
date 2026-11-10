@@ -7,7 +7,8 @@ import type { ControllerDeps } from "../src/core/controller-deps.js";
 import type { RunId, RunKind, WorkItem, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { loadSignals, roleOfRun } from "../src/controller/signals/signal.js";
+import { type SignalDescriptor, roleOfRun, uniqueSignals } from "../src/controller/signals/signal.js";
+import stateChanges from "../src/controller/signals/state-changes.signal.js";
 import { Kernel } from "../src/controller/units/kernel.js";
 import signalsUnit, { OVERLAP_MS, readFrom } from "../src/controller/units/signals/signals.unit.js";
 import { Router, type ControllerUnits } from "../src/controller/index.js";
@@ -33,7 +34,7 @@ function writer(store: FactoryStore, clock: FakeClock, root?: string) {
   const r = new Router([signalsUnit] as unknown as ControllerUnits, k, {
     kinds: [], messages: [], guard: async (_w, fn) => fn(), reader: k.reader, commit: (d) => k.commit(d), now: () => tickAt("event", 1, clock.now().getTime()),
   });
-  return { step: () => r.step(STEP, tickAt("poll", 1, clock.now().getTime())) };
+  return { kernel: k, step: () => r.step(STEP, tickAt("poll", 1, clock.now().getTime())) };
 }
 
 async function rows(store: Store) {
@@ -92,7 +93,7 @@ async function seed(store: Store, clock: FakeClock) {
 
 /** The ledger rows the seeded records should give, each from its source record. */
 async function expected(store: Store, s: Awaited<ReturnType<typeof seed>>) {
-  const reasons = (await loadSignals()).find((x) => x.name === "state_changes")!.kinds;
+  const reasons = stateChanges.kinds;
   const changes = [...(await store.listStateChanges(s.a)), ...(await store.listStateChanges(s.b))].filter((c) => reasons.includes(c.reason));
   const verdicts = [...(await store.listVerdicts(s.a)), ...(await store.listVerdicts(s.b))];
   const runs = [...(await store.listRuns(s.a)), ...(await store.listRuns(s.b))];
@@ -198,9 +199,11 @@ describe("signal ledger (design 11-signal-ledger)", () => {
   });
 
   it("the shipped sources are found by the runtime registry's discovery, and their roles come from the run kind", async () => {
-    const byRegistry = (await loadDescriptors<{ kind: "signal"; name: string }>(CODE_ROOT, "signal")).map((d) => d.descriptor.name);
-    expect((await loadSignals()).map((s) => s.name)).toEqual(byRegistry);
-    expect(byRegistry).toEqual(expect.arrayContaining(["state_changes", "verdicts", "failed_runs", "review_findings"]));
+    const byRegistry = (await loadDescriptors<SignalDescriptor>(CODE_ROOT, "signal")).map((d) => d.descriptor);
+    const { store, clock } = await newStore();
+    expect((await writer(store, clock).kernel.reader.signals()).map((s) => s.name)).toEqual(byRegistry.map((s) => s.name));
+    expect(() => uniqueSignals([byRegistry[0]!, byRegistry[0]!])).toThrow(/defined twice/);
+    expect(byRegistry.map((s) => s.name)).toEqual(expect.arrayContaining(["state_changes", "verdicts", "failed_runs", "review_findings"]));
     expect(roleOfRun("review")).toBe("review");
     expect(roleOfRun("update")).toBeNull();
   });

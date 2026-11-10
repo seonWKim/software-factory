@@ -9,8 +9,9 @@ import type { SourceAdapter } from "../../interfaces/source-adapter.js";
 import { type ControllerDeps, rateLimitWait } from "../../core/controller-deps.js";
 import type { ActionRow, NewAction } from "../../outbound/index.js";
 import type { Draft } from "../../shared/envelope.js";
-import { CODE_ROOT, type SqlDriver } from "../../state/index.js";
-import { type SignalDescriptor, loadSignals } from "../signals/signal.js";
+import { CODE_ROOT, type SqlDriver, forgetOnFailure } from "../../state/index.js";
+import { loadDescriptors } from "../../runtime/index.js";
+import { type SignalDescriptor, uniqueSignals } from "../signals/signal.js";
 
 /**
  * The sources a controller runs (design 2026-11-01): any number, no two of one type. PRs come from the forge,
@@ -191,8 +192,11 @@ export class Kernel {
     // Looked up at call time: a startup check may build the kernel over a store stub that has none of them.
     const reads = Object.fromEntries(READS.map((m) => [m, (...a: unknown[]) => (store[m] as (...a: unknown[]) => unknown).apply(store, a)]));
     const forge = this.forge;
-    // Discovered now, so a tick awaits a settled list instead of the imports (the code root's list is cached).
-    const signals = () => loadSignals(signal_root);
+    // Discovered by the runtime registry now, so a tick awaits a settled list instead of the imports; a failed
+    // discovery is retried on the next call.
+    let found: Promise<SignalDescriptor[]> | null = null;
+    const discover = () => loadDescriptors<SignalDescriptor>(signal_root, "signal").then((l) => uniqueSignals(l.map((d) => d.descriptor)));
+    const signals = () => (found ??= forgetOnFailure(discover(), () => (found = null)));
     signals().catch(() => undefined);
     this.reader = {
       ...(reads as Pick<Store, (typeof READS)[number]>),
