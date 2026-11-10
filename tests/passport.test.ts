@@ -13,12 +13,10 @@ import {
   type SecretProvider,
 } from "../src/identity/index.js";
 import { makeLink, type Link } from "../src/identity/passport/token.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
-import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import type { SqlExecutor } from "../src/state/index.js";
-import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
+import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 
 // RFC 0015 §8, §9 `passport`: issue and verify, tamper detection, narrowing never widens, revocation, expiry on
 // Identity's tick (no clock), and an audit row for every decision. SQLite always; MySQL when SF_TEST_MYSQL_URL is set.
@@ -38,19 +36,12 @@ async function sqlite(): Promise<SqlExecutor> {
   return d;
 }
 
-async function mysqlDb(): Promise<SqlExecutor> {
-  const db = await newEmptyMysqlDatabase();
-  await new MysqlMigrations(await db.connect()).apply(() => undefined);
-  const driver = new MysqlDriver(db.options);
-  db.onCleanup(() => driver.close());
-  return driver;
-}
 
 let ids = 0;
 
 const BACKENDS: [string, boolean, () => Promise<SqlExecutor>][] = [
   ["sqlite", true, sqlite],
-  ["mysql", Boolean(MYSQL_URL), mysqlDb],
+  ["mysql", Boolean(MYSQL_URL), newMigratedMysqlDriver],
 ];
 
 for (const [name, enabled, open] of BACKENDS) {
