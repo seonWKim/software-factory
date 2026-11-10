@@ -924,6 +924,61 @@ describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227
   });
 });
 
+describe("ui api: the waiting spec's In short and decisions on GET /api/v1/items/:id (issue #526)", () => {
+  type Detail = { spec: { in_short: string; decisions: Record<string, unknown>[] } | null };
+  const IN_SHORT = "AS-IS: nothing checks the scope.\nTO-BE: CI checks the scope.";
+  const SPEC = {
+    in_short: IN_SHORT, problem: "p", done_criteria: ["d"], desired_output: "o", in_scope: [], out_of_scope: [], allowed_paths: ["src/"],
+    files_to_change: [], tier: 2, tier_reason: "r", estimated_lines: 10, estimated_files: 1,
+    decisions: [
+      { question: "Fail the job, or only warn?", reason: `It blocks merges ${SECRET}`, options: ["Fail the job", "Only warn"], default: "Only warn", owner_only: false },
+      { question: "Name the step?", reason: "It shows in CI.", options: [], default: "scope", owner_only: true },
+    ],
+  };
+
+  /** An item whose triage run wrote `spec`, applied (acknowledged) with `patch`. */
+  async function triaged(store: FactoryStore, n: number, spec: object, p: Parameters<FactoryStore["transition"]>[0]["patch"]) {
+    const it = await make(store, n, `Item ${n}`);
+    await enqueue(store, it, "triage", `t:${n}`);
+    // The seeded store has other triage runs queued: claim until this item's.
+    let run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+    while (run.work_item_id !== it.id) run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: LEASE }))!;
+    await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec } });
+    const cur = (await store.getWorkItem(it.id))!;
+    const r = await store.transition({ id: it.id, expected_version: cur.version, patch: p, actor: system, reason: "triaged", ack_run: run.id });
+    if (!r.ok) throw new Error(r.reason);
+    return it;
+  }
+
+  it("returns in_short and each decision's question, options, default, reason and owner_only, every text through the Withholder", async () => {
+    const { d, store } = await seeded();
+    const it = await triaged(store, 50, SPEC, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    const r = await get(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    expect(r.body).not.toContain(SECRET);
+    expect((JSON.parse(r.body) as Detail).spec).toEqual({
+      in_short: IN_SHORT,
+      decisions: [
+        { question: "Fail the job, or only warn?", options: ["Fail the job", "Only warn"], default: "Only warn", reason: "[withheld: github_token]", owner_only: false },
+        { question: "Name the step?", options: [], default: "scope", reason: "It shows in CI.", owner_only: true },
+      ],
+    });
+  });
+
+  it("a stored plain-text decision from an older triage is a question with no options, default or reason", async () => {
+    const { d, store } = await seeded();
+    const it = await triaged(store, 51, { ...SPEC, decisions: ["Ship behind a flag?"] }, { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" });
+    const body = await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    expect(body.spec!.decisions).toEqual([{ question: "Ship behind a flag?", options: [], default: null, reason: null, owner_only: true }]);
+  });
+
+  it("is null for an item whose spec is not waiting for approval, or with no applied triage run", async () => {
+    const { d, store, items } = await seeded();
+    const it = await triaged(store, 52, SPEC, { stage: "RUNNING" });
+    expect((await json<Detail>(d, `/api/v1/items/${encodeURIComponent(it.id)}`)).spec).toBeNull();
+    expect((await json<Detail>(d, `/api/v1/items/${encodeURIComponent(items.approve.id)}`)).spec).toBeNull();
+  });
+});
+
 describe("ui api: the merge field on /api/v1/items and /api/v1/items/:id (the Merge button)", () => {
   const TOKEN = newCsrfToken();
   const ACTOR = "local:me" as UserId;
