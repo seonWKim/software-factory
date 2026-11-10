@@ -46,6 +46,29 @@ jobs:
         if: always() && github.event_name == 'push'
         run: node scripts/slowest-files.mjs ${{ runner.temp }}/test-report.json
 
+  # The dashboard at five window sizes, light and dark (docs/design/09-dashboard-app.md, Responsive check): a local
+  # development check, so it is not in repo.check_commands (the factory's sandbox has no browser) and its step is
+  # written as name + run, which tests/check-commands.test.ts does not count. ubuntu-latest has google-chrome.
+  responsive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: npm run check:responsive
+        run: npm run check:responsive
+      - name: Screenshots of the failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: responsive-screenshots
+          path: .playwright-mcp/responsive/
+          if-no-files-found: ignore
+
   test-mysql:
     runs-on: ubuntu-latest
     timeout-minutes: 20
