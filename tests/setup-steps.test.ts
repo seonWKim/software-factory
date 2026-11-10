@@ -21,6 +21,7 @@ import {
   runStep,
   secretFileStep,
   secretsToPrompt,
+  storeErrorCheck,
 } from "../src/setup.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 
@@ -345,6 +346,14 @@ describe("check lines say what they check, and a FAIL how to fix it", () => {
     expect(checkLine(c)).toBe("FAIL  claude CLI: not found (fix: install Claude Code and put `claude` on PATH)");
     expect(markedLine(c)).toBe("✗ claude CLI: not found (fix: install Claude Code and put `claude` on PATH)");
     expect(markedLine({ ...c, ok: true, msg: "claude CLI: 2.1.0" })).toBe("✓ claude CLI: 2.1.0");
+  });
+
+  it("a MySQL schema pending FAIL keeps ending in `npm run migrate`; other MySQL errors get the connection fix", () => {
+    const where = "MySQL factory@127.0.0.1:3306/factory";
+    const pending = storeErrorCheck(where, new Error("3 schema steps pending (state none, latest 12): run `npm run migrate`"));
+    expect(checkLine(pending)).toMatch(/^FAIL {2}MySQL .*: \d+ schema steps? pending \(state none, latest \d+\): run `npm run migrate`$/m);
+    const down = storeErrorCheck(where, new Error("connect ECONNREFUSED 127.0.0.1:3306"));
+    expect(checkLine(down)).toBe(`FAIL  ${where}: connect ECONNREFUSED 127.0.0.1:3306 (fix: start MySQL and check the MYSQL_* settings in the secret file, or run: npm run setup)`);
   });
 
   it("every doctor FAIL on a fresh solo setup says how to fix it", async () => {

@@ -127,8 +127,7 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = 
       else if (v.applied < v.latest) add(false, `${where} reachable, schema at version ${v.applied} of ${v.latest} (run: npm run migrate)`);
       else add(false, `${where} reachable, schema version ${v.applied} is newer than this code knows (${v.latest}): update the factory`, true);
     } catch (err) {
-      const msg = `${where}: ${err instanceof Error ? err.message.slice(0, 120) : "error"}`;
-      checks.push({ ok: false, msg, fix: "start MySQL and check the MYSQL_* settings in the secret file, or run: npm run setup" });
+      checks.push(storeErrorCheck(where, err));
     }
   }
 
@@ -174,6 +173,17 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = 
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
+}
+
+/**
+ * The FAIL for a MySQL store doctor could not read. A pending schema error already ends in its fix (run `npm run
+ * migrate`), and doctor's line for it is pinned to end there, so only other errors get the connection fix.
+ */
+export function storeErrorCheck(where: string, err: unknown): Check {
+  const text = err instanceof Error ? err.message.slice(0, 120) : "error";
+  const msg = `${where}: ${text}`;
+  if (text.includes("npm run migrate")) return { ok: false, msg };
+  return { ok: false, msg, fix: "start MySQL and check the MYSQL_* settings in the secret file, or run: npm run setup" };
 }
 
 /**
