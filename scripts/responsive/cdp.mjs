@@ -26,8 +26,29 @@ export function findChrome() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Starts headless Chrome and returns a Page on a fresh tab, plus close(). */
+// A cold Chrome on a fresh CI runner can take well over 10s to open its DevTools port, and now and then one
+// never does; a slow start waits, a stuck one is killed and Chrome is started again with a fresh profile.
+const PORT_TIMEOUT_MS = process.env.CI ? 30_000 : 15_000;
+const LAUNCH_ATTEMPTS = 3;
+const STDERR_TAIL_LINES = 20;
+
+/** Starts headless Chrome and returns a Page on a fresh tab, plus close(). Tries up to LAUNCH_ATTEMPTS times. */
 export async function launch(binary) {
+  const failures = [];
+  for (let attempt = 1; attempt <= LAUNCH_ATTEMPTS; attempt++) {
+    try {
+      return await launchOnce(binary);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      failures.push(`attempt ${attempt}: ${reason}`);
+      if (attempt < LAUNCH_ATTEMPTS) console.warn(`check:responsive: warning: Chrome launch attempt ${attempt} failed, retrying with a fresh profile: ${reason.split("\n")[0]}`);
+    }
+  }
+  throw new Error(`Chrome did not start after ${LAUNCH_ATTEMPTS} attempts (${binary}):\n${failures.join("\n")}`);
+}
+
+/** One launch with its own profile; on any failure Chrome's process group and profile are removed before it throws. */
+async function launchOnce(binary) {
   const profile = await mkdtemp(join(tmpdir(), "sf-responsive-chrome-"));
   const proc = spawn(
     binary,
@@ -43,42 +64,78 @@ export async function launch(binary) {
     { stdio: ["ignore", "ignore", "pipe"], detached: true },
   );
   let stderr = "";
-  proc.stderr.on("data", (d) => (stderr = (stderr + d).slice(-4000)));
-  // Chrome writes the port it picked to DevToolsActivePort in the profile.
-  let port = null;
-  for (let i = 0; i < 100 && port === null; i++) {
-    if (proc.exitCode !== null) throw new Error(`Chrome exited (${proc.exitCode}): ${stderr}`);
-    try {
-      port = Number((await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
-    } catch {
-      await sleep(100);
-    }
-  }
-  if (!port) throw new Error(`Chrome did not open its DevTools port: ${stderr}`);
-  const { webSocketDebuggerUrl: browserUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
-  const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-  const tab = targets.find((t) => t.type === "page");
-  const page = await Page.connect(tab.webSocketDebuggerUrl);
-  const exited = new Promise((r) => (proc.exitCode !== null || proc.signalCode !== null ? r() : proc.once("exit", r)));
-  return {
-    page,
-    /** Closes Chrome and waits for it to exit before removing its profile; a cleanup failure only warns. */
-    async close() {
-      page.close();
-      // Browser.close lets Chrome stop its helper processes and flush the profile; killing only the main
-      // process leaves them writing into Default/ while it is removed (ENOTEMPTY on CI).
-      await closeBrowser(browserUrl).catch(() => {});
-      if (!(await within(exited, 5_000))) {
-        killGroup(proc, "SIGKILL");
-        await within(exited, 5_000);
-      }
-      try {
-        await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-      } catch (e) {
-        console.warn(`check:responsive: warning: could not remove Chrome's profile ${profile}: ${e instanceof Error ? e.message : e}`);
-      }
-    },
+  let spawnError = null;
+  proc.on("error", (e) => (spawnError = e)); // e.g. ENOENT: without a listener it would crash the check
+  proc.stderr.on("data", (d) => (stderr = (stderr + d).slice(-16_000)));
+  const exited = new Promise((r) => (proc.exitCode !== null || proc.signalCode !== null ? r() : proc.once("close", r)));
+  const status = () => spawnError ? `could not start: ${spawnError.message}`
+    : proc.exitCode !== null ? `exited with code ${proc.exitCode}`
+    : proc.signalCode !== null ? `exited on signal ${proc.signalCode}`
+    : "was still running (killed)";
+  const why = (headline, status) => {
+    const lines = stderr.trimEnd().split("\n").slice(-STDERR_TAIL_LINES);
+    const tail = lines.join("") === "" ? "(no stderr output)" : lines.map((l) => `    ${l}`).join("\n");
+    return `${headline}; Chrome ${status}; last ${STDERR_TAIL_LINES} lines of its stderr:\n${tail}`;
   };
+  try {
+    const started = Date.now();
+    const port = await devtoolsPort(proc, profile, () => stderr, () => spawnError);
+    if (port === null) throw new Error(`Chrome did not open its DevTools port (waited ${((Date.now() - started) / 1000).toFixed(1)}s of ${PORT_TIMEOUT_MS / 1000}s)`);
+    const { webSocketDebuggerUrl: browserUrl } = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json();
+    const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
+    const tab = targets.find((t) => t.type === "page");
+    if (!tab) throw new Error(`Chrome opened port ${port} but has no page target`);
+    const page = await Page.connect(tab.webSocketDebuggerUrl);
+    return {
+      page,
+      /** Closes Chrome and waits for it to exit before removing its profile; a cleanup failure only warns. */
+      async close() {
+        page.close();
+        // Browser.close lets Chrome stop its helper processes and flush the profile; killing only the main
+        // process leaves them writing into Default/ while it is removed (ENOTEMPTY on CI).
+        await closeBrowser(browserUrl).catch(() => {});
+        await stop(proc, exited, profile, 5_000);
+      },
+    };
+  } catch (e) {
+    const state = status(); // before stop() kills it: a hung Chrome and a crashed one need different fixes
+    await stop(proc, exited, profile, 0);
+    throw new Error(why(e instanceof Error ? e.message : String(e), state));
+  }
+}
+
+/**
+ * The DevTools port, from whichever comes first: the "DevTools listening on ws://127.0.0.1:<port>/..." line on
+ * stderr or the DevToolsActivePort file in the profile. Null when Chrome exits or PORT_TIMEOUT_MS passes first.
+ */
+async function devtoolsPort(proc, profile, stderr, spawnError) {
+  const deadline = Date.now() + PORT_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const m = /DevTools listening on ws:\/\/[^:\s]+:(\d+)\//.exec(stderr());
+    if (m) return Number(m[1]);
+    try {
+      const port = Number((await readFile(join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0]);
+      if (port > 0) return port;
+    } catch {
+      // not written yet
+    }
+    if (spawnError() || proc.exitCode !== null || proc.signalCode !== null) return null;
+    await sleep(100);
+  }
+  return null;
+}
+
+/** Waits up to `grace_ms` for Chrome to exit, then kills its process group, then removes its profile. */
+async function stop(proc, exited, profile, grace_ms) {
+  if (proc.pid !== undefined && !(await within(exited, grace_ms))) {
+    killGroup(proc, "SIGKILL");
+    await within(exited, 5_000);
+  }
+  try {
+    await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch (e) {
+    console.warn(`check:responsive: warning: could not remove Chrome's profile ${profile}: ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 /** Sends Browser.close on the browser target and waits for its reply (or the socket closing), at most 5s. */
