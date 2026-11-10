@@ -7,10 +7,10 @@ import { newStore } from "../../../helpers/store.js";
 
 const NOW = "2026-11-08T00:00:00.000Z";
 
-function message(type: string, payload: Record<string, string>) {
+function message(type: string, payload: Record<string, string>, passport_id: string | null = null) {
   return envelope(
     { type, subject: "local", idempotency_key: Object.values(payload)[0]!, idempotency_key_ttl_ms: null, payload },
-    { id: null, correlation_id: "c", project_id: "p", passport_id: null, occurred_at: NOW },
+    { id: null, correlation_id: "c", project_id: "p", passport_id, occurred_at: NOW },
     "normalize-source",
   );
 }
@@ -44,6 +44,30 @@ describe("legacy-controller", () => {
     );
     await h.run(message(SOURCE_EVENT_RECEIVED, { record_id: id, kind: "base_commit" }));
     expect(h.calls).toEqual([["event", event]]);
+  });
+
+  it("a stream command event's actor carries the passport inbound minted, checked at the record's received time", async () => {
+    const h = await harness();
+    const source = { type: "slack_thread", id: "C1/1", link: "https://slack.example/archives/C1/p1" };
+    const who = { provider: "slack", subject: "7" };
+    const received_at = "2026-11-01T00:00:00.000Z";
+    const events = [
+      { kind: "spec_approved", source, comment_id: "c1", approver: who, note: "" },
+      { kind: "retry_requested", source, comment_id: "c2", requester: who },
+      { kind: "plain_comment", source, comment_id: "c3", author: who, body: "hi" },
+    ];
+    for (const [i, event] of events.entries()) {
+      const id = await h.store.db.transaction((tx) =>
+        storeRecord(tx, "sqlite", { source_type: "slack_thread", dedupe_key: `ev${i}`, event: event as never, received_at }),
+      );
+      await h.run(message(SOURCE_EVENT_RECEIVED, { record_id: id, kind: event.kind }, "pp_1"));
+    }
+    const passport = { id: "pp_1", at: received_at };
+    expect(h.calls).toEqual([
+      ["event", { ...events[0], approver: { ...who, passport } }],
+      ["event", { ...events[1], requester: { ...who, passport } }],
+      ["event", events[2]],
+    ]);
   });
 
   it("a record or command that is gone decides nothing", async () => {

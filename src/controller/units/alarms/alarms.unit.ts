@@ -1,8 +1,9 @@
 // The alarm patterns across items and the restart list.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { RESTART_WINDOW_MS, alarmStep } from "../../../core/alarms.js";
+import { type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, recurringStalls, releasePatch } from "../../../core/alarms.js";
 import { ALARM_DEFAULTS, STALL_DEFAULTS } from "../../../core/config.js";
+import { SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -26,7 +27,11 @@ export class AlarmsUnit {
       return list;
     };
     const stored = await alarmStep(
-      { store, scanner: this.c.k.d.scanner, clock: this.c.k.d.clock, log: this.c.k.d.log, restarts },
+      {
+        store, scanner: this.c.k.d.scanner, clock: this.c.k.d.clock, log: this.c.k.d.log, project: this.c.k.project(), restarts,
+        hold: (p) => this.holdItems(p),
+        comment: (ref, body, marker) => this.c.unit("improve").commentFiled(ref, body, marker),
+      },
       {
         alarm_repeat_count: c.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
         alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
@@ -37,6 +42,50 @@ export class AlarmsUnit {
     // A failure burst stops auto mode (design 03-risk).
     const burst = stored.find((a) => a.pattern !== "auto_stopped");
     if (burst) await this.c.unit("local-merge").stopAuto(this.c.k.cfg.project.key, "failure_alert", `the ${burst.pattern} alarm (${burst.error_code}, ${burst.count})`);
+    await this.releaseStep();
+  }
+
+  /**
+   * Holds the items a recurring pattern hit (design 05-alarms): each open item nothing else blocks gets
+   * `blocked_on: upstream`, `recurring_failure`, the pattern key in the state change, so its queued runs are not
+   * claimed and other items keep running. An item filed as a fix is never held. A conditional transition per item,
+   * so a second call changes nothing.
+   */
+  async holdItems(p: HeldPattern): Promise<void> {
+    for (const id of p.work_item_ids) {
+      await this.c.unit("transitions").decide(id, async (it) => {
+        const hold = holdPatch(it, p.pattern_key);
+        return hold && !(await this.c.unit("improve").fixPattern(it)) ? { ...hold, actor: SYSTEM } : null;
+      });
+    }
+  }
+
+  /**
+   * Once the model answered its stall probe (design 05-restarts): the recurring stall patterns of the last hour hold
+   * their items, so the next stall of one of them pauses no other item's claims.
+   */
+  async holdStalled(): Promise<void> {
+    const d = this.c.k.d;
+    for (const p of await recurringStalls({ store: d.store, project: this.c.k.project(), clock: d.clock })) await this.holdItems(p);
+  }
+
+  /**
+   * Releases held items whose pattern's fix item merged (closed with a merge sha): `blocked_on: none`, so their
+   * queued runs are claimed again for a retry. Reads the held items and their hold's pattern key; safe to run twice.
+   */
+  async releaseStep(): Promise<void> {
+    const store = this.c.k.d.store;
+    for (const it of await store.listWorkItemsWhere({ blocked_on: "upstream", exclude_closed: true, limit: 500 })) {
+      const key = await heldKey(it, () => this.c.k.reader.listStateChanges(it.id));
+      if (key === null) continue;
+      const ref = (await store.getFiledPattern(it.project, key))?.filed_ref;
+      const fix = ref ? await store.getWorkItemBySource(ref.type, ref.id) : null;
+      if (!releasePatch(it, key, fix)) continue;
+      await this.c.unit("transitions").decide(it.id, (cur) => {
+        const release = releasePatch(cur, key, fix);
+        return release ? { ...release, actor: SYSTEM } : null;
+      });
+    }
   }
 }
 
