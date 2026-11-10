@@ -1,12 +1,13 @@
-import { COMMAND_TABLE, type CommandWho, type TableCommand, cliHelpLine } from "./command-table.js";
+import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
-import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE } from "./policy.js";
+import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
 import type { Run, RunKind, WorkItem } from "./types.js";
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
- * each applies in, plus a pure parser for comment bodies. Footers, `/help` replies, unknown-command replies
- * and the SET_UP.md command table are all built from this table, so they cannot drift from each other.
+ * each applies in, plus a pure parser for comment bodies. Footers, `/help` replies (issue comments, Slack, `factory help`),
+ * unknown-command replies, refusals and the SET_UP.md command table are all built here, so they cannot drift from
+ * each other.
  */
 
 /** Where an item is, as far as human commands are concerned. Derived from the item by `commandPhase`. */
@@ -249,6 +250,11 @@ export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
   return { phase, has_pr: it.change_ref !== null, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
 }
 
+/** The command state of `it` read with its runs (the kind of run that asked at agent_needs_human), as the controller reads it. */
+export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandState {
+  return commandState(it, it.blocked_reason === AGENT_NEEDS_HUMAN ? blockingRunKind(it.blocked_reason, runs) : undefined);
+}
+
 export function applies(c: CommandSpec, s: CommandState): boolean {
   if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr)) return false;
   return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
@@ -282,6 +288,7 @@ export function commandsFor(s: CommandState): CommandSpec[] {
   return COMMANDS.filter((c) => shown(c) && applies(c, s)).concat(commandSpec("help"));
 }
 
+/** One command as every list shows it: the issue footer and `/help`, Slack's help in an item's thread. */
 const line = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.description}.`;
 
 const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description ?? c.description}.`;
@@ -305,15 +312,20 @@ export function unknownCommandReply(word: string, s: CommandState): string {
   return [`Unknown command "/${word}".`, "", commandFooter(s)].join("\n");
 }
 
-/** The `/help` reply: every command, the ones that apply now marked. */
-export function helpReply(s: CommandState): string {
+/**
+ * The `/help` reply: every command, the ones that apply now marked. `factory help <id>` prints the same text; with no
+ * item (`s` null, `factory help`) nothing is marked and the reply says how to see what applies to one item.
+ */
+export function helpReply(s: CommandState | null): string {
   return [
     "## Factory commands",
     "",
-    `Commands marked **(now)** apply to this item in its current state (${phaseLabel(s.phase)}).`,
+    s === null
+      ? "Reply `/help` on a work item, or run `factory help <id>`, to see which commands apply to it now."
+      : `Commands marked **(now)** apply to this item in its current state (${phaseLabel(s.phase)}).`,
     "",
     ...COMMANDS.map((c) => {
-      const now = applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
+      const now = s === null ? "" : applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
       return `- \`${c.usage}\`${now}: ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""}.`;
     }),
     "",
@@ -457,35 +469,102 @@ export function parseLink(body: string): string | null {
   return m ? m[1]! : null;
 }
 
-/** The command table's names (src/core/command-table.ts): chat `help` adds the item's other comment commands after them. */
-const TABLE_NAMES = new Set(COMMAND_TABLE.map((c) => c.name));
+/** The bot as chat help names it (the Slack app's name, scripts/slack-app.sh). */
+export const CHAT_BOT = "@software-factory";
 
 /**
  * The chat `help` reply: only the commands the sender may run in that place. `may` says whether the sender's role
  * allows an action; `state` is the item's when asked in its thread, else null. Outside an item's thread: the
- * reads and the request. In an item's thread: the reads, and the item commands that apply in its state.
- * Writes refused in chat (`edge`) are never listed.
+ * reads, the request that starts work, and `/link`. In an item's thread: the reads, `merge` when it applies, and
+ * the item's commands that apply now, each line the same text as the issue footer and `/help` give for that state
+ * (issue #528). Writes refused in chat (`edge`) are never listed. When `/approve` is listed, a last line says that
+ * `approve` with no slash works too after the mention (BARE_COMMANDS).
  */
 export function chatHelpReply(may: (w: CommandWho) => boolean, state: CommandState | null): string {
   const lines: string[] = [];
   for (const c of COMMAND_TABLE) {
     if (c.edge || !may(c.who)) continue;
     if (c.chat_args === "request" && state !== null) continue;
-    if (c.item && (state === null || !itemApplies(c, state))) continue;
+    if (c.item && (c.name !== "merge" || state?.phase !== "merge_pending")) continue;
     lines.push(`- \`${c.chat}\`: ${c.does}.`);
   }
-  if (state !== null && may("approve_spec")) {
-    for (const s of commandsFor(state)) if (!TABLE_NAMES.has(s.name) && s.name !== "help") lines.push(`- \`${s.usage}\`: ${s.description}.`);
-  }
+  const now = state !== null && may("approve_spec") ? commandsFor(state).filter((c) => c.name !== "help") : [];
+  lines.push(...now.map(line));
+  if (state === null) lines.push(line(commandSpec("link")));
   lines.push(`- \`help\`: ${commandSpec("help").description}.`);
   const where = state === null ? "here" : "in this item's thread";
-  return [`Commands you can run ${where} (mention the bot first):`, ...lines].join("\n");
+  const out = [`Commands you can run ${where} (mention the bot first, e.g. \`${CHAT_BOT} /help\`):`, ...lines];
+  if (now.some((c) => c.name === "approve")) {
+    out.push("", `After the mention, \`approve\` with no slash works too: \`${CHAT_BOT} approve\` is \`${CHAT_BOT} /approve\`.`);
+  }
+  return out.join("\n");
 }
 
-function itemApplies(c: TableCommand, s: CommandState): boolean {
-  if (c.name === "merge") return s.phase === "merge_pending";
-  const spec = COMMANDS.find((x) => x.name === c.name);
-  return spec !== undefined && applies(spec, s);
+/**
+ * Item commands a chat source reads without their `/` after a mention, in an item's thread only (issue #528):
+ * outside one, the same words are a request in plain words.
+ */
+export const BARE_COMMANDS: readonly CommandName[] = ["approve"];
+
+/** `text` with its `/` added when it starts with a bare command word (BARE_COMMANDS), else null. */
+export function withSlash(text: string): string | null {
+  const t = text.trim();
+  const m = /^([A-Za-z]+)(?=$|[\s.,:;!?])/.exec(t);
+  return m && BARE_COMMANDS.includes(m[1]!.toLowerCase() as CommandName) ? `/${t}` : null;
+}
+
+/*
+ * Refusals (issue #528): one text per reason, said the same way on every surface. The controller's reply on an issue
+ * and in a Slack thread, the dashboard's stored reply and `factory approve`'s own check all build them here; the
+ * dashboard shows them without backticks (web/src/api.ts plainRefusal), the stored text keeps them.
+ */
+
+/** A refused command as every surface says it: `` `/approve` was not applied: <reason>. `` */
+export function refusalText(command: string, reason: string): string {
+  return `\`${command}\` was not applied: ${reason}.`;
+}
+
+/** The reason for any command on a closed item. */
+export const CLOSED_REFUSAL = "the work item is closed";
+
+/** The reason for a spec command (or `/retry`) at a budget checkpoint. */
+export const CHECKPOINT_REFUSAL = "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`";
+
+/** The reason for `/approve` on an item held for a dependency: `held` is its blocked_reason. */
+export function dependencyHoldRefusal(held: string | null): string {
+  return `the item is ${phaseLabel("dependency_hold")} (${held ?? "a dependency"}), and \`/approve\` does not lift a ` +
+    "dependency hold: the implement run starts on its own once the dependency merges";
+}
+
+/** The reason for a spec command on an item whose spec is not waiting for approval. */
+export function specNotWaiting(phase: CommandPhase): string {
+  return `the spec is not waiting for approval (the item is ${phaseLabel(phase)})`;
+}
+
+/**
+ * The reason a user's role does not allow a command (`reason`: the auth decision's, e.g. `no_role`), as the controller
+ * says it for a local, app or chat command judged by the local auth plugin. The dashboard shows it for the commands it
+ * leaves out for the viewer.
+ */
+export function roleRefusal(user: string, reason: string): string {
+  return `${user} has no role that allows it (\`${reason}\`); the local owner can grant one with \`factory users add ${user} --role approver\``;
+}
+
+/**
+ * Why `/approve` cannot apply to `it` whatever its runs say, in the controller's words; null when the controller may
+ * apply it. Read from the item's fields only, so `factory approve` checks it before any store write (issue #528). An
+ * implement run held by coordination cost (RUNNING, not blocked: the hold is in no field) and a split parent's states
+ * are the controller's to decide, so they are null here.
+ */
+export function approveRefusal(it: ItemState): string | null {
+  if (it.stage === "CLOSED") return CLOSED_REFUSAL;
+  if (it.stage === "RUNNING" && it.blocked_on === "none") return null;
+  if (it.blocked_reason === "budget_checkpoint") return CHECKPOINT_REFUSAL;
+  const s = commandState(it);
+  if (applies(commandSpec("approve"), s)) return null;
+  if (it.stage === "READY" && (it.blocked_on === "upstream" || it.blocked_reason === "delivery_failed")) return null;
+  if (it.blocked_on === "dependency") return dependencyHoldRefusal(it.blocked_reason);
+  return specNotWaiting(s.phase);
 }
 
 /**

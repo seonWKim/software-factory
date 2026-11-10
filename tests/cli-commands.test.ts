@@ -9,7 +9,7 @@ import { loadCommands } from "../src/cli/index.js";
 describe("CLI command discovery", () => {
   it("finds every command, each with its help block", async () => {
     const commands = await loadCommands();
-    for (const name of ["setup", "dev", "controller", "worker", "status", "stats", "workers", "resume", "link-code", "settings", "mode", "ui", "migrate", "doctor", "llm-check", "canary", "improve", "session", "task", "approve", "retry", "revise", "reject", "resolve", "merge", "users", "issue", "golden"]) {
+    for (const name of ["setup", "dev", "controller", "worker", "status", "stats", "workers", "resume", "link-code", "settings", "mode", "ui", "migrate", "doctor", "llm-check", "canary", "improve", "session", "task", "approve", "retry", "revise", "reject", "resolve", "merge", "users", "help", "issue", "golden"]) {
       expect(commands.get(name), name).toBeDefined();
     }
     for (const c of new Set(commands.values())) {

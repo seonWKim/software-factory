@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, postCommand, showsMerge, useApi } from "../api.js";
+import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Section } from "../components/ui/parts.js";
@@ -12,7 +12,8 @@ import {
 } from "./item-decisions.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
-// in its order. Reject and revise open their own forms (issue #527): reject asks why and confirms what closes,
+// in its order: the commands that apply now and the viewer's grants allow (issue #528). Those the grants leave out
+// are named once, with the controller's reason, in plain text; every refusal shows without backticks. Reject and revise open their own forms (issue #527): reject asks why and confirms what closes,
 // revise takes a comment per spec section. Every other command carries the note box's text when it has any
 // (tokens for budget, `accept|changes|reject <severity> <reason>` for verdict, the approve note). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
@@ -40,7 +41,7 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
   const latest = replies.filter((r) => r.command === command).reduce<CommandReply | null>((a, r) => (a && a.seq > r.seq ? a : r), null);
   if (local && (!latest || latest.seq < local.seq)) return { tone: "status", text: "sent" };
   if (!latest) return null;
-  if (latest.refusal) return { tone: "error", text: latest.refusal };
+  if (latest.refusal) return { tone: "error", text: plainRefusal(latest.refusal) };
   return { tone: "status", text: latest.handled_at === null ? "sent" : "Done" };
 }
 
@@ -76,15 +77,23 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const decisions = phase === "spec_pending" || phase === "max_revisions" ? (data?.spec?.decisions ?? []) : [];
   const choices = picked ?? initialChoices(decisions);
   const answers = chosenAnswers(decisions, choices);
+  const withheld = data?.commands_withheld ?? null;
+  const withheldNote = withheld && (
+    <p role="status" data-commands-withheld className="mb-2 text-sm text-pretty break-words text-zinc-600 dark:text-zinc-400">
+      Not shown for you: {withheld.names.join(", ")}. {plainRefusal(withheld.reason)}.
+    </p>
+  );
   // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
   if (commands.length === 0 && !showMerge) {
     return (
       <>
         <InShort spec={data?.spec} />
         <Section title="Commands">
-          <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-            No command applies now; the factory continues on its own. Commands show here when the item waits for you.
-          </p>
+          {withheldNote ?? (
+            <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+              No command applies now; the factory continues on its own. Commands show here when the item waits for you.
+            </p>
+          )}
         </Section>
       </>
     );
@@ -133,6 +142,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
           </p>
         )}
+        {withheldNote}
         <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
         {usesNote && (
           <textarea

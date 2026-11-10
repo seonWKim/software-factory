@@ -3,7 +3,10 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
-import { appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
+import {
+  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
+  latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
+} from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
@@ -191,7 +194,7 @@ export class CommandsUnit {
     await this.c.unit("outbox").post(
       item,
       onPr ? e.source : item.source,
-      `\`${COMMAND[e.kind]}\` was not applied: ${refusal}.`,
+      refusalText(COMMAND[e.kind], refusal),
       `<!-- factory:refused:${e.comment_id} -->`,
     );
   }
@@ -306,7 +309,7 @@ export class CommandsUnit {
         return r;
       }
       if (e.kind === "budget_continue") {
-        return it.stage === "CLOSED" ? "the work item is closed" : "the work item is not at a budget checkpoint";
+        return it.stage === "CLOSED" ? CLOSED_REFUSAL : "the work item is not at a budget checkpoint";
       }
       // `/approve` while implementing: lifts a coordination-cost hold on the queued implement run (design §5).
       if (e.kind === "spec_approved" && it.stage === "RUNNING" && it.blocked_on === "none") {
@@ -541,8 +544,8 @@ export class CommandsUnit {
     if (e.kind === "revise_requested" && (e.pr || (it.source.type === "slack_thread" && appliesOnPr(commandSpec("revise"), commandState(it))))) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref!, key: { comment_id: e.comment_id } });
     }
-    if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
-    if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
+    if (it.stage === "CLOSED") return { refuse: CLOSED_REFUSAL };
+    if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note, this.widen(it, paths));
     if (it.blocked_reason === RULE_OF_TWO) return this.c.unit("transitions").ruleOfTwoCommand(e, it, actor, note, paths);
     if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
@@ -554,10 +557,7 @@ export class CommandsUnit {
       if (splitFiling(it)) return { refuse: "an earlier `/approve` queued this split's phases for filing; this issue lists them once all are filed" };
     }
     if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
-      return {
-        refuse: `the item is ${phaseLabel("dependency_hold")} (${it.blocked_reason ?? "a dependency"}), and \`/approve\` does not lift a ` +
-          "dependency hold: the implement run starts on its own once the dependency merges",
-      };
+      return { refuse: dependencyHoldRefusal(it.blocked_reason) };
     }
     const phase = commandPhase(it);
     // At the review loop limit too: a human chose to go back through triage or to close (design §4).
@@ -568,7 +568,7 @@ export class CommandsUnit {
       const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
         ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}`
         : "";
-      return { refuse: `the spec is not waiting for approval (the item is ${phaseLabel(phase)})${onPr}` };
+      return { refuse: `${specNotWaiting(phase)}${onPr}` };
     }
     switch (e.kind) {
       case "spec_rejected":

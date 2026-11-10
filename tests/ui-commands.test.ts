@@ -5,7 +5,9 @@ import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiDeps, respond } from "../src/ui/server.js";
+import { type ApiDeps, type UiDeps, respond } from "../src/ui/server.js";
+import { refusalText, roleRefusal } from "../src/core/commands.js";
+import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
@@ -372,5 +374,86 @@ describe("the page's commands actor (uiCommandsActor, design 09)", () => {
     expect(r.status).toBe(503);
     expect(JSON.parse(r.body).error).toBe("Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.");
     expect(await h.store.listAppCommandRequestsForItem(it1.id, 10)).toEqual([]);
+  });
+});
+
+describe("the item API's commands: by phase and by the viewer's grants (issue #528)", () => {
+  const HOST = "127.0.0.1:4310";
+  const TOKEN = newCsrfToken();
+  type Listed = { commands: { name: string }[]; commands_withheld: { names: string[]; reason: string } | null };
+
+  /** The page as `actor`, its approve_spec checked as compose.ts checks it: the local auth plugin over the local grants, on the project. */
+  function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): ApiDeps {
+    const auth = new LocalAuthProvider(h.store);
+    return {
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
+      health: new HealthMonitor(async () => [], h.clock), commands: { actor, source: "environment", token: TOKEN },
+      pauses: {
+        principal: async () => actor, csrfToken: TOKEN, log: silent,
+        authorize: (user) => auth.authorize({ user_id: user, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT_KEY }),
+      },
+    };
+  }
+  const listed = async (d: ApiDeps, it: WorkItem): Promise<Listed> =>
+    JSON.parse((await respond(d, { method: "GET", url: `/api/v1/items/${encodeURIComponent(it.id)}`, host: HOST })).body) as Listed;
+  const names = (l: Listed) => l.commands.map((c) => c.name);
+
+  const STAGES: [string, WorkItemPatch, string[]][] = [
+    ["NEW (triaging)", {}, []],
+    ["READY at the spec gate", SPEC_PENDING, ["approve", "reject", "revise"]],
+    ["READY at the revision limit", { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" }, ["approve", "reject"]],
+    ["RUNNING (implementing)", IMPLEMENTING, []],
+    ["RUNNING after a failed implement run", { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" }, ["reject", "revise", "retry"]],
+    ["REVIEW (reviewing)", { stage: "REVIEW", change_ref: "42" }, ["verdict"]],
+    ["REVIEW waiting for a merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" }, ["verdict"]],
+    ["CLOSED, merged", { stage: "CLOSED", close_reason: "completed", change_ref: "42", merge_sha: "abc" }, ["verdict"]],
+    ["CLOSED without a merge", { stage: "CLOSED", close_reason: "rejected" }, []],
+  ];
+
+  it("each stage lists only the commands that apply in it, for a viewer whose grant allows them", async () => {
+    const h = await harness({ localAuth: true });
+    const owner = "local:owner@example.com" as UserId;
+    await h.store.claimLocalOwner(owner);
+    let n = 0;
+    for (const [stage, patch, want] of STAGES) {
+      const l = await listed(page(h, owner), await h.itemIn(patch, ++n));
+      expect({ stage, names: names(l), withheld: l.commands_withheld }).toEqual({ stage, names: want, withheld: null });
+    }
+  });
+
+  it("team: a requester sees no approve, reject or revise; the reason is the refusal the controller gives the same command", async () => {
+    const h = await harness({ localAuth: true });
+    const owner = "local:owner@example.com" as UserId;
+    const helper = "local:helper@example.com" as UserId;
+    await h.store.claimLocalOwner(owner);
+    expect(await h.store.setLocalUserRole(helper, "requester", owner)).toMatchObject({ ok: true });
+    const it1 = await h.itemIn(SPEC_PENDING, 1);
+    const l = await listed(page(h, helper), it1);
+    expect(l.commands).toEqual([]);
+    expect(l.commands_withheld).toEqual({ names: ["approve", "reject", "revise"], reason: roleRefusal(helper, "no_role") });
+    // Sent anyway (another page, the CLI): the controller, with the local auth plugin as compose.ts wires it, refuses it
+    // with the same reason.
+    const local = new LocalAuthProvider(h.store);
+    const controller = new ControllerRole({ store: h.store, source: h.source, auth: local, local_auth: local, clock: h.clock, config, log: silent, scanner: cleanScanner });
+    await h.request("app-x", helper, "approve", { work_item_id: it1.id });
+    await controller.tickCommands();
+    const [row] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
+    expect(row!.refusal).toBe(refusalText("/approve", l.commands_withheld!.reason));
+    // A stage with nothing to send withholds nothing.
+    expect((await listed(page(h, helper), await h.itemIn(IMPLEMENTING, 2))).commands_withheld).toBeNull();
+  });
+
+  it("solo: with no link and no grants, the dashboard and the CLI both offer and take approve", async () => {
+    const h = await harness({ localAuth: true });
+    const me = "local:me@example.com" as UserId;
+    expect(await h.store.listLocalUsers()).toEqual([]);
+    const byPage = await h.itemIn(SPEC_PENDING, 1);
+    const byCli = await h.itemIn(SPEC_PENDING, 2);
+    expect(names(await listed(page(h, me), byPage))).toEqual(["approve", "reject", "revise"]);
+    await h.request("app-solo", me, "approve", { work_item_id: byPage.id });
+    const cli = { store: h.store, identity: { user: me, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "solo" };
+    expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: "" })).code).toBe(0);
+    await h.controller.tickCommands();
+    for (const it of [byPage, byCli]) expect((await h.store.getWorkItem(it.id))!.stage).toBe("RUNNING");
   });
 });

@@ -399,6 +399,60 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
   });
 });
 
+describe("item page: refusals and the viewer's grants (issue #528)", () => {
+  const cmd = (name: string) => ({ name, usage: `/${name}`, description: name });
+  const STORED = "`/approve` was not applied: the spec is not waiting for approval (the item is triaging).";
+  const WITHHELD = {
+    names: ["approve", "reject", "revise"],
+    reason: "local:helper has no role that allows it (`no_role`); the local owner can grant one with `factory users add local:helper --role approver`",
+  };
+
+  /** The element at `selector`, once the page shows it. */
+  const found = (selector: string) =>
+    waitFor(() => {
+      const el = document.querySelector<HTMLElement>(selector);
+      if (!el) throw new Error(`no ${selector} yet`);
+      return el;
+    });
+
+  /** Serves wi_g with `detail`'s commands, replies and withheld commands. */
+  function serve(detail: object) {
+    const body = { as_of: AT, item: base("wi_g", 50, "Grants"), timeline: [], runs: [], commands: [], replies: [], spec: null, ...detail };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const path = url.split("?")[0]!;
+      const bodies: Record<string, unknown> = {
+        "/api/v1/items/wi_g": body,
+        "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:helper", actor_source: "environment" },
+        "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
+      };
+      const out = bodies[path];
+      if (out === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(out), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+  }
+
+  it("a refusal shows as plain text beside its control, with no backticks; the stored text keeps them", async () => {
+    const replies = [{ seq: 3, command: "approve", created_at: AT, handled_at: AT, refusal: STORED }];
+    serve({ commands: [cmd("approve")], replies });
+    mount("/app/items/wi_g");
+    const row = await found('[data-command="approve"]');
+    const shown = await waitFor(() => within(row).getByRole("alert"));
+    expect(shown.textContent).toBe("/approve was not applied: the spec is not waiting for approval (the item is triaging).");
+    expect(replies[0]!.refusal).toBe(STORED);
+  });
+
+  it("commands the viewer's grants leave out get no control, only one plain line naming them and the controller's reason", async () => {
+    serve({ commands: [], commands_withheld: WITHHELD });
+    mount("/app/items/wi_g");
+    const note = await found("[data-commands-withheld]");
+    expect(note.textContent).toBe(
+      "Not shown for you: approve, reject, revise. local:helper has no role that allows it (no_role); the local owner can grant one with factory users add local:helper --role approver.",
+    );
+    for (const name of ["approve", "reject", "revise"]) expect(screen.queryByRole("button", { name })).toBeNull();
+    expect(document.querySelector("[data-commands-none]")).toBeNull();
+  });
+});
+
 describe("Markdown", () => {
   it("escapes raw HTML and links only http(s) URLs; a javascript: link is plain text", () => {
     const { container } = render(

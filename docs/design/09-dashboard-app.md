@@ -42,6 +42,7 @@
 
 ## History
 
+- **Item commands whatever the viewer may do** (decision changed 2026-11-11, issue #528). Before: the item API listed every command that applied in the item's state without checking the viewer's grants, so a requester saw approve, reject and revise buttons that the controller then refused, and the page showed each refusal with the controller's backticks.
 - **Reject and revise in the one note box** (decision changed 2026-11-11, issue #527). Before: the reason for reject and the feedback for revise were typed in the note box shared with every command, revise and reject stayed disabled while it was blank, reject's confirm was a bare "Confirm reject" / "Cancel" that did not say what closes, and revise took one free text for the whole spec.
 - **Dashboard revise refused** (decision changed 2026-11-11, issue #527). Before: the page could post `revise`, but the controller refused it (`only \`approve\`, \`merge\`, \`reject\` and \`verdict\` are applied from an app request; reply \`/revise\` on the issue instead`).
 - **One note box, approve at once** (decision changed 2026-11-10, issue #526). Before: the item page had one note box for every command, so an approver scrolled up to the spec and typed answers into it, and approve was sent on the first click with no confirm step.
