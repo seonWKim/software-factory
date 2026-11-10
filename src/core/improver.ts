@@ -12,7 +12,7 @@ import type { LLMProvider, LLMRequest, LLMResponse } from "../interfaces/llm-pro
 import type { IssueInput } from "../interfaces/source-adapter.js";
 import { type SharedStorage, readRange } from "../interfaces/shared-storage.js";
 import type {
-  Actor, FailureGroup, FiledOutcome, FiledPattern, ImproveDraft, ImproveFiling, ImproveReport, ImproveTail, ImproveWindow, Run, RunId, SourceRef,
+  Actor, FailureGroup, FiledPattern, ImproveDraft, ImproveFiling, ImproveReport, ImproveTail, ImproveWindow, Run, RunId, SourceRef,
   Timestamp, UserId, WorkItem, WorkItemId,
 } from "./types.js";
 
@@ -575,34 +575,24 @@ function issueBody(g: FailureGroup): string {
   return lines.join("\n");
 }
 
-/** A filed pattern's fix is judged this long after its item closed as completed (design §7). */
-export const OUTCOME_WAIT_MS = 7 * DAY_MS;
+export const OUTCOME_WAIT_MS = 7 * DAY_MS; // a filed pattern's fix is judged this long after its item closed (design §7)
 
-/** What the outcome step reads and writes. */
-export interface OutcomeDeps {
-  store: Pick<FactoryStore, "listFiledPatternsWithoutOutcome" | "getWorkItemBySource" | "listStateChanges" | "listRunsFinishedBetween" | "setFiledPatternOutcome">;
-  clock: Clock;
-}
+type OutcomeStore = Pick<FactoryStore, "listFiledPatternsWithoutOutcome" | "getWorkItemBySource" | "listStateChanges" | "listRunsFinishedBetween" | "setFiledPatternOutcome">;
 
 /**
- * Sets the outcome of each filed pattern of `project` whose fix item closed as completed at least OUTCOME_WAIT_MS
- * ago (design §7): `regressed` when a failed run of its pattern finished in the OUTCOME_WAIT_MS after the close,
- * else `holds`. A pattern whose item is open, not in the store, or closed any other way gets none. The write is
- * conditional on no outcome yet, so a second step or replica writes nothing. Returns the patterns this call set.
+ * Sets the outcome of each filed pattern of `project` whose item closed as completed OUTCOME_WAIT_MS ago (design §7): `regressed`
+ * when a failed run of its pattern finished in the OUTCOME_WAIT_MS after the close (the change that set CLOSED, else the item's
+ * last update), else `holds`; an item open, not stored or closed otherwise gets none. Written once (no outcome yet); returns those set.
  */
-export async function settleOutcomes(d: OutcomeDeps, project: string): Promise<FiledPattern[]> {
-  const now = d.clock.now();
-  const set: FiledPattern[] = [];
+export async function settleOutcomes(d: { store: OutcomeStore; clock: Clock }, project: string): Promise<FiledPattern[]> {
+  const at = d.clock.now().toISOString() as Timestamp, set: FiledPattern[] = [];
   for (const p of await d.store.listFiledPatternsWithoutOutcome(project)) {
     const fix = p.filed_ref ? await d.store.getWorkItemBySource(p.filed_ref.type, p.filed_ref.id) : null;
     if (fix?.stage !== "CLOSED" || fix.close_reason !== "completed") continue;
-    // The close's state change, else (a row from before state changes named the stage) the item's last update.
     const closed = Date.parse((await d.store.listStateChanges(fix.id)).filter((c) => c.changes.stage?.to === "CLOSED").at(-1)?.at ?? fix.updated_at);
-    if (now.getTime() - closed < OUTCOME_WAIT_MS) continue;
+    if (Date.parse(at) - closed < OUTCOME_WAIT_MS) continue;
     const runs = await d.store.listRunsFinishedBetween(new Date(closed).toISOString() as Timestamp, new Date(closed + OUTCOME_WAIT_MS).toISOString() as Timestamp);
-    const { groups, patterns } = groupFailures(runs);
-    const outcome: FiledOutcome = [...groups, ...patterns].some((g) => patternKey(g) === p.pattern_key) ? "regressed" : "holds";
-    const at = now.toISOString() as Timestamp;
+    const outcome = Object.values(groupFailures(runs)).flat().some((g) => patternKey(g) === p.pattern_key) ? "regressed" : "holds";
     if (await d.store.setFiledPatternOutcome(p.id, outcome, at)) set.push({ ...p, outcome, outcome_at: at });
   }
   return set;

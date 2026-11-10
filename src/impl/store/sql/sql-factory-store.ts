@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { TierHistory } from "../../../core/budget.js";
 import type {
-  Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyEdge, DependencyState, FiledOutcome, FiledPattern,
+  Actor, BudgetCheckpoint, BudgetCheckpointId, BudgetOutcome, ClaimDecision, CloseReason, DependencyEdge, DependencyState, FiledPattern,
   FiledPatternId, Handoff, HostSleep, ImproveReport, ImproveReportId, Run, RunAttempt, RunAttemptStatus, RunId, RunKind, RunOutcome,
   RunStatus, SourceRef, SourceType, Stage, StandingGate, StandingProposal, StandingProposalId, StandingRule, StateChange,
   StateChangeDetail, StateChangeId, Tier, Timestamp, UnreviewedMerge, UnreviewedMergeId, UserId, Verdict, VerdictId, VerdictSeverity,
@@ -125,6 +125,7 @@ import {
   rowToWorkItem,
   workItemInsert,
 } from "./rows.js";
+import * as filed from "./filed-patterns.js";
 import * as signals from "./signals.js";
 
 /**
@@ -1238,9 +1239,9 @@ export class SqlFactoryStore implements FactoryStore {
     await this.db.run("UPDATE controller_improve_reports SET failure_groups = ? WHERE id = ?", [JSON.stringify(groups), id]);
   }
 
-  async getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
-    const [row] = await this.db.all("SELECT * FROM controller_filed_patterns WHERE project_key = ? AND pattern_key = ?", [project, pattern_key]);
-    return row ? rowToFiledPattern(row) : null;
+  // Filed patterns (design 07-self-improvement): in ./filed-patterns.ts, but the claim.
+  getFiledPattern(project: string, pattern_key: string): Promise<FiledPattern | null> {
+    return filed.getFiledPattern(this.db, project, pattern_key);
   }
 
   async claimFiledPattern(input: NewFiledPattern, replace?: ImproveReportId): Promise<FiledPattern> {
@@ -1261,20 +1262,14 @@ export class SqlFactoryStore implements FactoryStore {
     return (await this.getFiledPattern(input.project, input.pattern_key))!;
   }
 
-  async setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
-    await this.db.run("UPDATE controller_filed_patterns SET filed_ref = ? WHERE id = ? AND report_id = ?", [JSON.stringify(ref), id, report_id]);
+  setFiledPatternRef(id: FiledPatternId, report_id: ImproveReportId, ref: SourceRef): Promise<void> {
+    return filed.setFiledPatternRef(this.db, id, report_id, ref);
   }
-
-  async listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> {
-    const rows = await this.db.all(
-      "SELECT * FROM controller_filed_patterns WHERE project_key = ? AND filed_ref IS NOT NULL AND outcome IS NULL ORDER BY created_at, id",
-      [project],
-    );
-    return rows.map(rowToFiledPattern);
+  listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]> {
+    return filed.listFiledPatternsWithoutOutcome(this.db, project);
   }
-
-  async setFiledPatternOutcome(id: FiledPatternId, outcome: FiledOutcome, at: Timestamp): Promise<boolean> {
-    return (await this.db.run("UPDATE controller_filed_patterns SET outcome = ?, outcome_at = ? WHERE id = ? AND outcome IS NULL", [outcome, at, id])) === 1;
+  setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean> {
+    return filed.setFiledPatternOutcome(this.db, id, outcome, at);
   }
 
   // Standing approvals (design 05-standing-approvals)
@@ -2909,21 +2904,6 @@ function rowToImproveReport(row: Row): ImproveReport {
     groups: JSON.parse(row.failure_groups as string) as ImproveReport["groups"],
     patterns: JSON.parse(row.patterns as string) as ImproveReport["patterns"],
     created_at: row.created_at as Timestamp,
-  };
-}
-
-function rowToFiledPattern(row: Row): FiledPattern {
-  return {
-    id: row.id as FiledPatternId,
-    project: row.project_key as string,
-    pattern_key: row.pattern_key as string,
-    error_code: row.error_code as string,
-    detail: row.detail as string,
-    report_id: row.report_id as ImproveReportId,
-    filed_ref: row.filed_ref === null || row.filed_ref === undefined ? null : (JSON.parse(row.filed_ref as string) as SourceRef),
-    created_at: row.created_at as Timestamp,
-    outcome: (row.outcome ?? null) as FiledOutcome | null,
-    outcome_at: (row.outcome_at ?? null) as Timestamp | null,
   };
 }
 

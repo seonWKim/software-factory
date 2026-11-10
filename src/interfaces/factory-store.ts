@@ -3,7 +3,7 @@ import type { ChildRestart } from "./updater.js";
 import type { CoordinationSettings, DependencyLink } from "../core/coordination.js";
 import type {
   Actor, BlockedOn, BudgetAnswer, BudgetCheckpoint, BudgetCheckpointId, ClaimDecision, ClaimPauseName, DependencyEdge, DependencyState, Tier,
-  Handoff, FiledOutcome, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
+  Handoff, FiledPattern, FiledPatternId, HostSleep, ImproveReport, ImproveReportId, ImproveWindow, Run, RunAttempt, RunId, RunInput, RunKind,
   RunOutcome, RunResume, RunStatus, SessionFinish, SourceRef, SourceType, StandingGate, StandingProposal, StandingRule, StateChange,
   StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
   WorkItemPatch, WorkerId, WorkerPause,
@@ -597,7 +597,7 @@ export interface FactoryStore {
   /** The filed patterns of `project` that have an item and no outcome yet, oldest first. Read-only. */
   listFiledPatternsWithoutOutcome(project: string): Promise<FiledPattern[]>;
   /** Sets the outcome of row `id` only while it has none: true when this call wrote it, false when one was there. */
-  setFiledPatternOutcome(id: FiledPatternId, outcome: FiledOutcome, at: Timestamp): Promise<boolean>;
+  setFiledPatternOutcome(id: FiledPatternId, outcome: NonNullable<FiledPattern["outcome"]>, at: Timestamp): Promise<boolean>;
 
   // Standing approvals (design 05-standing-approvals). Stored only: nothing acts on a rule or a proposal yet.
 

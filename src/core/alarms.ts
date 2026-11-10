@@ -278,6 +278,9 @@ export interface HeldPattern {
   work_item_ids: readonly WorkItemId[];
 }
 
+/** The open held items, by reason: any `blocked_on`, so holds stored as `upstream` (before 2026-11-11) are found too. */
+export const HELD_ITEMS = { blocked_reason: RECURRING_FAILURE, exclude_closed: true } as const;
+
 /** The state change reason of a held item's release (design 05-alarms); its hold's is `recurring_failure`. */
 const RELEASED = "recurring_failure_released";
 

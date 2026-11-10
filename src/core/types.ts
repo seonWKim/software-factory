@@ -245,10 +245,9 @@ export type ImproveFiling =
 export type FiledPatternId = Brand<string, "FiledPatternId">;
 
 /**
- * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the
- * report that claimed it, whose ID is in the item's marker. `filed_ref`: the item, null while the filing is
- * claimed but not yet done (a retry looks the marker up first). `outcome`: whether the fix held, set once seven
- * days after its item closed as completed (`outcome_at`: when it was set); null until then and on older rows.
+ * One pattern filed from an improve report (design §7), unique per (project, pattern_key). `report_id`: the report that claimed
+ * it, whose ID is in the item's marker. `filed_ref`: the item, null while the filing is claimed but not yet done (a retry looks
+ * the marker up first). `outcome`: whether its fix held, set (`outcome_at`) 7 days after the item closed as completed; else null.
  */
 export interface FiledPattern {
   id: FiledPatternId;
@@ -259,12 +258,9 @@ export interface FiledPattern {
   report_id: ImproveReportId;
   filed_ref: SourceRef | null;
   created_at: Timestamp;
-  outcome: FiledOutcome | null;
+  outcome: "holds" | "regressed" | null;
   outcome_at: Timestamp | null;
 }
-
-/** Whether a filed pattern's fix held (design §7): no matching failed run in the seven days after it closed, or one. */
-export type FiledOutcome = "holds" | "regressed";
 
 /**
  * One run's transcript tail for an improve draft. `included`: in the prompt. `withheld`: the egress scan flagged
