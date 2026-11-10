@@ -68,21 +68,16 @@ class GitPushBroker implements ToolBroker {
       return { ok: true, content: { sha: git(String(a.workdir), "rev-parse", "HEAD").trim(), forge: true } };
     }
     this.calls.push({ ctx, name, args: a });
-    if (name === "github.push_branch") {
-      git(String(a.workdir), "push", "--quiet", "origin", `HEAD:refs/heads/${String(a.branch)}`);
-      return { ok: true, content: {} };
-    }
-    if (name === "github.open_pr") return { ok: true, content: { number: 42 } };
     return { ok: true, content: {} };
   }
   names() {
     return this.calls.map((c) => c.name);
   }
   pushes() {
-    return this.calls.filter((c) => c.name === "github.push_branch").map((c) => String(c.args.branch));
+    return this.calls.filter((c) => c.name === "forge.push_branch").map((c) => String(c.args.branch));
   }
   prBody() {
-    return String(this.calls.find((c) => c.name === "github.open_pr")?.args.body ?? "");
+    return String(this.calls.find((c) => c.name === "forge.open_change")?.args.body ?? "");
   }
 }
 
@@ -304,7 +299,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_failed", infra: false });
     expect(f.fixSteps).toHaveLength(1);
     expect(f.remoteHas(`refs/heads/factory/${item.id}`)).toBe(false);
-    expect(f.broker.names()).not.toContain("github.open_pr");
+    expect(f.broker.names()).not.toContain("forge.open_change");
     expect(await f.store.listHandoffs(item.id)).toEqual([]);
     expect(f.broker.names()).not.toContain("github.comment");
     const comments = (await runComments(f.store, item.id)).filter((c) => c.marker.includes("factory:checks:"));
@@ -429,7 +424,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
     expect(run!.outcome).toMatchObject({ status: "failed", error_code: "toolchain_missing", infra: true, wip: { branch: `factory/wip/${item.id}/${run!.id}` } });
     expect(run!.outcome?.status === "failed" && run!.outcome.detail).toContain('Cannot find module "/w/node_modules/typescript/bin/tsc"');
     expect(f.fixSteps).toHaveLength(0);
-    expect(f.broker.names()).not.toContain("github.open_pr");
+    expect(f.broker.names()).not.toContain("forge.open_change");
   });
 
   it("checks_failed counts as a task failure toward max_attempts; the PR-check reason checks_failed is not used", async () => {

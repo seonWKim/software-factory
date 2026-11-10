@@ -43,7 +43,7 @@ async function harness(stop: Partial<AgentRunResult>, work = true) {
 
 const RATE_LIMITED: Partial<AgentRunResult> = { status: "rate_limited", error: "rate_limited", reset_at: "2026-01-02T00:00:00.000Z" };
 const implementSpecs = (f: Harness) => f.runner.specs.filter((s) => s.role === "implement");
-const pushedBranches = (f: Harness) => f.broker.calls.filter((c) => c.name === "github.push_branch").map((c) => (c.args as { branch: string }).branch);
+const pushedBranches = (f: Harness) => f.broker.calls.filter((c) => c.name === "forge.push_branch").map((c) => (c.args as { branch: string }).branch);
 
 /** Runs the item through its first implement run; returns the failed run and its wip ref. */
 async function firstRun(f: Harness) {
@@ -68,7 +68,7 @@ describe("a run stopped mid-work keeps its commits", () => {
     expect(wip).toMatchObject({ branch: `factory/wip/${it0.id}/${failed.id}`, head: WIP_HEAD, commits: 1, continue: true });
     // Only the wip branch: no PR branch push, no PR.
     expect(pushedBranches(f)).toEqual([wip.branch]);
-    expect(f.broker.calls.some((c) => c.name === "github.open_pr")).toBe(false);
+    expect(f.broker.calls.some((c) => c.name === "forge.open_change")).toBe(false);
     const queued = (await f.runs(it0, "implement"))[1]!;
     expect(queued.input?.wip).toEqual(wip);
   });
