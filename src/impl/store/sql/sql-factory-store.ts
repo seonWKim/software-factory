@@ -477,7 +477,7 @@ export class SqlFactoryStore implements FactoryStore {
   async listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]> {
     const { seq } = this.db.dialect;
     // Three plain reads, no transaction: a read-only command takes no write lock (SQLite) and no row lock.
-    const items = await this.db.all(`SELECT id, tier, stage, token_cost, origin FROM controller_work_items ORDER BY created_at, ${seq}`);
+    const items = await this.db.all(`SELECT id, tier, stage, close_reason, token_cost, origin FROM controller_work_items ORDER BY created_at, ${seq}`);
     const records = new Map<string, StatsRecord>();
     for (const r of items) {
       records.set(r.id as string, {
@@ -489,6 +489,8 @@ export class SqlFactoryStore implements FactoryStore {
         severities: [],
         implicit: 0,
         origin: (r.origin as WorkItem["origin"] | null) ?? "factory",
+        pushed: false,
+        merged: r.stage === "CLOSED" && r.close_reason === "completed",
       });
     }
     if (reasons.length > 0) {
@@ -499,12 +501,15 @@ export class SqlFactoryStore implements FactoryStore {
       );
       for (const c of changes) records.get(c.work_item_id as string)?.reasons.push(c.reason as string);
     }
-    const verdicts = await this.db.all(`SELECT work_item_id, severity, implicit FROM controller_verdicts ORDER BY at, ${seq}`);
+    const verdicts = await this.db.all(`SELECT work_item_id, verdict, severity, implicit FROM controller_verdicts ORDER BY at, ${seq}`);
     for (const v of verdicts) {
       const record = records.get(v.work_item_id as string);
       if (!record) continue;
-      if (Number(v.implicit) === 1) record.implicit = (record.implicit ?? 0) + 1;
-      else record.severities.push(v.severity as VerdictSeverity);
+      if (Number(v.implicit) === 1) {
+        record.implicit = (record.implicit ?? 0) + 1;
+        // A person's push is stored as an implicit `changes` verdict (design §6 Autonomy).
+        if (v.verdict === "changes") record.pushed = true;
+      } else record.severities.push(v.severity as VerdictSeverity);
     }
     return [...records.values()];
   }

@@ -830,10 +830,50 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       });
 
       expect(await store.listStatsRecords(["spec_rejected", "retry_requested"])).toEqual([
-        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], implicit: 1, origin: "factory" },
-        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], implicit: 0, origin: "factory" },
+        { id: a.id, tier: 2, stage: "READY", token_cost: 40, reasons: ["retry_requested", "retry_requested"], severities: ["major", "none"], implicit: 1, origin: "factory", pushed: false, merged: false },
+        { id: b.id, tier: null, stage: "CLOSED", token_cost: 0, reasons: ["spec_rejected"], severities: [], implicit: 0, origin: "factory", pushed: false, merged: false },
       ]);
       expect((await store.listStatsRecords([])).map((r) => r.reasons)).toEqual([[], []]);
+    });
+
+    it("sets pushed for an implicit changes verdict and merged for CLOSED completed only", async () => {
+      const { store, clock } = await make();
+      const close = async (id: WorkItemId, version: number, close_reason: "completed" | "rejected") => {
+        const r = await store.transition({ id, expected_version: version, actor: system, reason: "x", patch: { stage: "CLOSED", close_reason } });
+        if (!r.ok) throw new Error(r.reason);
+      };
+      const implicit = (id: WorkItemId, version: number, verdict: "changes" | "accept", head: string) =>
+        store.recordVerdict({
+          id, expected_version: version, actor: system, verdict, severity: verdict === "changes" ? "critical" : "none",
+          reason: "x", comment_id: `implicit:${head}`, target: "pr", implicit: true, pr_head: head,
+        });
+      const pushedMerged = (await store.createWorkItem(issue(1), system)).item;
+      clock.advance(1_000);
+      const acceptMerged = (await store.createWorkItem(issue(2), system)).item;
+      clock.advance(1_000);
+      const pushedRejected = (await store.createWorkItem(issue(3), system)).item;
+      clock.advance(1_000);
+      const explicitChanges = (await store.createWorkItem(issue(4), system)).item;
+      await implicit(pushedMerged.id, 1, "changes", "h1");
+      await implicit(pushedMerged.id, 2, "accept", "h2");
+      await close(pushedMerged.id, 3, "completed");
+      await implicit(acceptMerged.id, 1, "accept", "h3");
+      await close(acceptMerged.id, 2, "completed");
+      await implicit(pushedRejected.id, 1, "changes", "h4");
+      await close(pushedRejected.id, 2, "rejected");
+      await store.recordVerdict({
+        id: explicitChanges.id, expected_version: 1, actor: { kind: "user", id: "github:1" as UserId }, verdict: "changes",
+        severity: "major", reason: "r", comment_id: "c1", target: "pr", implicit: false, pr_head: null,
+      });
+      await close(explicitChanges.id, 2, "completed");
+
+      const flags = (await store.listStatsRecords([])).map((r) => ({ id: r.id, pushed: r.pushed, merged: r.merged }));
+      expect(flags).toEqual([
+        { id: pushedMerged.id, pushed: true, merged: true },
+        { id: acceptMerged.id, pushed: false, merged: true },
+        { id: pushedRejected.id, pushed: true, merged: false },
+        { id: explicitChanges.id, pushed: false, merged: true },
+      ]);
     });
 
     it("writes nothing", async () => {

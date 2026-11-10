@@ -22,6 +22,20 @@ export interface StatsRecord {
   implicit?: number;
   /** Absent means `factory`. Adopted items count only in the `adopted` row, never in a tier row. */
   origin?: WorkItemOrigin;
+  /** An implicit `changes` verdict (a person's push to the PR) is stored for the item. Absent means false. */
+  pushed?: boolean;
+  /** The item is CLOSED with close_reason completed. Absent means false. */
+  merged?: boolean;
+}
+
+/** Autonomy (design §6): the share of merged factory items that merged with no person's push. */
+export interface AutonomyReport {
+  /** Merged factory items: CLOSED with close_reason completed, not adopted. */
+  merged: number;
+  /** Of those, the items with a stored push verdict. */
+  with_push: number;
+  /** (merged − with_push) ÷ merged; null when merged is 0. */
+  autonomy: number | null;
 }
 
 export interface StatsRow {
@@ -55,6 +69,8 @@ export interface StatsReport {
    * null. Absent in reports built before it existed.
    */
   adopted?: StatsRow;
+  /** Merged factory items with no person's push. Absent in reports built before it existed. */
+  autonomy?: AutonomyReport;
   /** Finished `interactive` runs (design §5, 2026-11-01), any item, and their reported tokens. Counts only, no ids. */
   interactive?: { runs: number; tokens: number };
 }
@@ -91,12 +107,31 @@ function row(tier: Tier | null, records: readonly StatsRecord[], config: StatsCo
   };
 }
 
-/** Reads through the one read-only store method; the narrow type keeps every write method out of reach. */
+/** Pure: Autonomy over merged factory items (adopted items and every other close are left out). */
+export function aggregateAutonomy(records: readonly StatsRecord[]): AutonomyReport {
+  const merged = records.filter((r) => (r.origin ?? "factory") === "factory" && r.stage === "CLOSED" && r.merged === true);
+  const with_push = merged.filter((r) => r.pushed === true).length;
+  return { merged: merged.length, with_push, autonomy: merged.length === 0 ? null : (merged.length - with_push) / merged.length };
+}
+
+/** Autonomy from one read-only store read; `factory stats` and the dashboard route both call it. */
+export async function collectAutonomy(store: Pick<FactoryStore, "listStatsRecords">): Promise<AutonomyReport> {
+  return aggregateAutonomy(await store.listStatsRecords([]));
+}
+
+/** Reads through read-only store methods; the narrow type keeps every write method out of reach. */
 export async function collectStats(store: Pick<FactoryStore, "listStatsRecords" | "listRunsByKind">, config: StatsConfig): Promise<StatsReport> {
   const records = await store.listStatsRecords([STATS_REASONS.reject, STATS_REASONS.retry]);
   const sessions = await store.listRunsByKind("interactive", ["succeeded", "failed"]);
   const interactive = { runs: sessions.length, tokens: sum(sessions.map((r) => r.session_tokens ?? 0)) };
-  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config), interactive };
+  const autonomy = await collectAutonomy(store);
+  return { config, tiers: aggregateStats(records, config), adopted: aggregateAdopted(records, config), autonomy, interactive };
+}
+
+/** The one Autonomy line of `factory stats`. */
+function formatAutonomy(a: AutonomyReport): string {
+  if (a.autonomy === null) return "autonomy: not enough data (no merged factory items)";
+  return `autonomy: ${a.autonomy.toFixed(2)} (${a.merged - a.with_push} of ${a.merged} merged factory items with no person's push)`;
 }
 
 export function tierLabel(tier: Tier | null): string {
@@ -127,6 +162,7 @@ export function formatStatsText(report: StatsReport): string {
   return [
     line(header),
     ...rows.map(line),
+    ...(report.autonomy ? ["", formatAutonomy(report.autonomy)] : []),
     "",
     `items: CLOSED work items per tier. rate: feedback ÷ items, shown from min_sample ${report.config.min_sample} items.`,
     ...(report.adopted ? ["adopted: CLOSED changes a person opened and the factory adopted, any tier; not in the tier rows."] : []),
