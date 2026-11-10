@@ -1,12 +1,10 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
-import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { HOOK_PATH, SqlHookAudit, type HookDecision, loadHooks, runHooks } from "../src/runtime/index.js";
 import { type HookDescriptor, type HookInput, type Timer, defineHook } from "../src/shared/hook.js";
 import type { SqlExecutor } from "../src/state/index.js";
-import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
+import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 
 // RFC 0015 §8 hooks: discovered, time-budgeted, veto or annotate only, never past a guard's refusal, off until
 // enabled, every decision audited (runtime_hook_decisions). SQLite always; MySQL when SF_TEST_MYSQL_URL is set.
@@ -90,17 +88,10 @@ async function sqlite(): Promise<SqlExecutor> {
   return d;
 }
 
-async function mysqlDb(): Promise<SqlExecutor> {
-  const db = await newEmptyMysqlDatabase();
-  await new MysqlMigrations(await db.connect()).apply(() => undefined);
-  const driver = new MysqlDriver(db.options);
-  db.onCleanup(() => driver.close());
-  return driver;
-}
 
 const BACKENDS: [string, boolean, () => Promise<SqlExecutor>][] = [
   ["sqlite", true, sqlite],
-  ["mysql", Boolean(MYSQL_URL), mysqlDb],
+  ["mysql", Boolean(MYSQL_URL), newMigratedMysqlDriver],
 ];
 
 for (const [name, enabled, open] of BACKENDS) {
