@@ -115,7 +115,7 @@ describe("slack source and private channels", () => {
   const PRIVATE = "G0PRIVATE1";
   const me = { team_id: "T0TEAM", user_id: BOT };
   const thread = "1800000000.000100";
-  const source = (store: { getWorkItemBySource: () => Promise<unknown>; recordItemMessage?: () => Promise<unknown> }) =>
+  const source = (store: { getWorkItemBySource: () => Promise<unknown>; recordItemMessage?: (m: unknown) => Promise<unknown> }) =>
     new SlackSource({
       api: {} as never, connect: (() => { throw new Error("not used"); }) as never, channels: [CHANNEL, PRIVATE],
       scanner: cleanScanner, store: store as never, repo: REPO, log: recordingLog(),
@@ -134,11 +134,15 @@ describe("slack source and private channels", () => {
   });
 
   it("a message reply in a work item's thread in a listed G… channel is taken like one in a C… channel", async () => {
-    const s = source({ getWorkItemBySource: async () => ({ id: "wi_1" }), recordItemMessage: async () => undefined });
+    // Since #480 a reply in an item's thread is kept on the item's thread first; both channels keep the same entry.
+    const kept: unknown[] = [];
+    const s = source({ getWorkItemBySource: async () => ({ id: "wi_1" }), recordItemMessage: async (m: unknown) => { kept.push(m); } });
     const ev = { type: "message", user: "U0ALICE", ts: "1800000000.000300", thread_ts: thread, text: "looks good to me" };
     const priv = await from(s, PRIVATE, ev);
     expect(priv).toMatchObject({ event: { kind: "plain_comment" } });
     expect(priv).toEqual(await from(s, CHANNEL, ev));
+    const entry = { work_item_id: "wi_1", marker: "slack:1800000000.000300", body: "looks good to me", actor: "slack:U0ALICE" };
+    expect(kept).toEqual([entry, entry]);
   });
 });
 
