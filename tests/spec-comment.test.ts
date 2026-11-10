@@ -47,7 +47,12 @@ describe("renderSpec", () => {
     expect(l[0]).toBe("## Factory spec");
     const rest = l.slice(1).filter((x) => x.trim() !== "");
     expect(rest[0]).toBe("### In short (AS-IS → TO-BE)");
-    expect(body).toContain(`## Factory spec\n\n### In short (AS-IS → TO-BE)\n${IN_SHORT}\n`);
+    expect(body).toContain(`## Factory spec\n\n### In short (AS-IS → TO-BE)\n${IN_SHORT.replace("\nTO-BE:", "\n\nTO-BE:")}\n`);
+  });
+
+  it("renders a one-paragraph in_short as two paragraphs, AS-IS then TO-BE", () => {
+    const body = renderSpec({ ...spec, in_short: "AS-IS: Eight files differ. TO-BE: One helper." }, 2);
+    expect(body).toContain("### In short (AS-IS → TO-BE)\nAS-IS: Eight files differ.\n\nTO-BE: One helper.\n");
   });
 
   it("puts Problem second and Decisions for you third, the sections in order and the footer last", () => {
@@ -60,7 +65,7 @@ describe("renderSpec", () => {
   it("fills each section from the spec", () => {
     const body = renderSpec(listed, 2);
     expect(body).toContain(`### Problem\n${spec.problem}`);
-    expect(body).toContain("### Decisions for you\n- Fail the job, or only warn, on a docs-only change?");
+    expect(body).toContain("### Decisions for you\n1. Fail the job, or only warn, on a docs-only change?");
     expect(body).toContain(
       "### Done when\n- A CI job fails when a file is outside the allowed paths.\n- The job runs on every pull request.",
     );
@@ -93,8 +98,9 @@ describe("renderSpec", () => {
     const decisions = Array.from({ length: 6 }, (_, i) => `Question ${i + 1}?`);
     const body = renderSpec({ ...listed, decisions }, 4, { floor: 4, previous: null });
     const section = body.slice(body.indexOf("### Decisions for you"), body.indexOf("### Done when"));
-    expect(section).toContain("### Decisions for you\n- Tier raised from 2 to 4 because a path is under a floor.\n- Question 1?");
-    expect(section.slice(0, section.indexOf("<details>")).match(/^- /gm)).toHaveLength(5);
+    expect(section).toContain("### Decisions for you\n- Tier raised from 2 to 4 because a path is under a floor.\n1. Question 1?");
+    expect(section.slice(0, section.indexOf("<details>")).match(/^(- |\d+\. )/gm)).toHaveLength(5);
+    expect(section).toContain("6. Question 6?");
     expect(section).toContain("<details><summary>2 more</summary>");
   });
 
@@ -178,6 +184,76 @@ describe("triage scope lists and decisions", () => {
     expect(parseTriage(half).ok).toBe(false);
     expect(parseTriage({ ...current, decisions: "x" }).ok).toBe(false);
     expect(parseTriage({ ...current, decisions: ["Ship behind a flag?"] })).toMatchObject({ ok: true, value: { decisions: ["Ship behind a flag?"] } });
+  });
+});
+
+describe("triage decisions as questions (issue #526)", () => {
+  const { scope: _s, ...noScope } = spec;
+  const current = { ...noScope, in_scope: ["The CI check."], out_of_scope: ["The review agent."] };
+  const ask = {
+    question: "Fail the job, or only warn?", reason: "A failing job blocks merges.", options: ["Fail the job", "Only warn"], default: "Only warn",
+    owner_only: false,
+  };
+  const free = { question: "Name the step?", reason: "It shows in CI.", options: [], default: "scope", owner_only: false };
+
+  it("the schema asks each decision for its question, reason, options and default", () => {
+    const item = TRIAGE_SCHEMA.properties.decisions.items;
+    expect(item.required).toEqual(expect.arrayContaining(["question", "reason", "options", "default", "owner_only"]));
+    expect(item.properties.options).toMatchObject({ type: "array", items: { type: "string" } });
+  });
+
+  it("keeps the reason and options on the parsed decision, the question as its text", () => {
+    const r = parseTriage({ ...current, decisions: [ask, free] });
+    expect(r.ok && r.value.decision_items).toEqual([
+      { text: ask.question, default: "Only warn", owner_only: false, reason: ask.reason, options: ask.options },
+      { text: free.question, default: "scope", owner_only: false, reason: free.reason },
+    ]);
+    // A stored, parsed answer parses the same.
+    const again = r.ok ? parseTriage(r.value) : r;
+    expect(again.ok && again.value.decision_items).toEqual(r.ok && r.value.decision_items);
+  });
+
+  it("refuses any other shape and names the field", () => {
+    const error = (d: object) => {
+      const r = parseTriage({ ...current, decisions: [free, d] });
+      return r.ok ? null : r.error;
+    };
+    expect(error({ ...ask, question: "" })).toBe("decisions[1].question: must be a non-empty string");
+    expect(error({ ...ask, reason: undefined })).toBe("decisions[1].reason: must be a non-empty string");
+    expect(error({ ...ask, options: ["only one"] })).toContain("decisions[1].options:");
+    expect(error({ ...ask, options: ["a", "b", "c", "d", "e"] })).toContain("decisions[1].options:");
+    expect(error({ ...ask, options: ["a", ""] })).toContain("decisions[1].options:");
+    expect(error({ ...ask, default: "Something else" })).toBe("decisions[1].default: must be one of the options");
+    expect(error({ ...ask, default: 3 })).toBe("decisions[1].default: must be a string");
+    expect(error({ ...ask, owner_only: "no" })).toBe("decisions[1].owner_only: must be true or false");
+    expect(error({ nothing: true })).toBe("decisions[1].question: must be a non-empty string");
+    expect(error({ ...ask, reason: "<invoke name=\"x\">" })).toBe("decisions: tool-call markup outside code");
+  });
+
+  it("the comment keeps the wording, numbered 1, 2, ...; options and reasons stay off it", () => {
+    const r = parseTriage({ ...current, decisions: [ask, { ...free, owner_only: true }] });
+    if (!r.ok) throw new Error(r.error);
+    const body = renderSpec(r.value, 2);
+    expect(body).toContain(
+      "### Decisions for you\n1. Fail the job, or only warn? Proposed default: Only warn.\n2. Name the step? Proposed default: scope. (owner only)\n",
+    );
+    expect(body).not.toContain(ask.reason);
+    expect(body).not.toContain("Fail the job\", ");
+    expect(body).not.toContain(free.reason);
+  });
+
+  it("the triage prompt asks for each decision's question, reason, options and default; implement and review name the section", () => {
+    const read = (name: string) => readFileSync(new URL(`../prompts/${name}.md`, import.meta.url), "utf8");
+    const triage = read("triage");
+    for (const field of ['"question"', '"reason"', '"options"', '"default"', "2 to 4", "`N: <answer>`"]) expect(triage).toContain(field);
+    for (const name of ["implement", "review"]) expect(read(name)).toContain('"Decisions for the spec"');
+  });
+
+  it("a stored plain-text decision from an older triage still parses and renders", () => {
+    const r = parseTriage({ ...current, decision_items: ["Ship behind a flag?"] });
+    if (!r.ok) throw new Error(r.error);
+    expect(r.value.decision_items).toEqual([{ text: "Ship behind a flag?", default: null, owner_only: true }]);
+    expect(renderSpec(r.value, 2)).toContain("### Decisions for you\n1. Ship behind a flag?\n");
   });
 });
 
@@ -282,11 +358,11 @@ describe("triage tool-call markup (issue #454)", () => {
     refused({ ...current, problem: `${fenced}and then ${PARAM}` }, "problem");
   });
 
-  it("renders a valid decisions list as a plain bullet list with no markup", () => {
+  it("renders a valid decisions list as a plain numbered list with no markup", () => {
     const r = parseTriage({ ...current, decisions: ["Fail the job, or only warn?", "Ship behind a flag?"] });
     if (!r.ok) throw new Error(r.error);
     const body = renderSpec(r.value, r.value.tier);
-    expect(body).toContain("### Decisions for you\n- Fail the job, or only warn?\n- Ship behind a flag?\n");
+    expect(body).toContain("### Decisions for you\n1. Fail the job, or only warn?\n2. Ship behind a flag?\n");
     expect(body).not.toMatch(/<\/?(parameter|invoke|function_calls)\b/);
     expect(body).not.toContain(`${"antml"}:`);
   });

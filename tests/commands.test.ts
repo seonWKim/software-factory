@@ -1,16 +1,19 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, appliesOnPr, commandFooter, commandPhase, commandSpec,
   commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, retryPathsReply,
   unknownCommandReply,
 } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { CLI_COMMANDS, cliHelpLine } from "../src/core/local-cli.js";
-import type { WorkItemPatch } from "../src/core/types.js";
+import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
+import type { SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
+import { runLocalCli } from "../src/core/local-cli.js";
+import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
-import { newStore, PROJECT_KEY } from "./helpers/store.js";
+import { storedAnswers } from "../src/shared/command-notes.js";
+import { FakeAuth, FakeSlackPollSource, FakeSource, alice, cleanScanner, config, issueRef, pipeline, silent, slackRef, triageSpec } from "./helpers/fakes.js";
+import { newStore, PROJECT_KEY, system, w1 } from "./helpers/store.js";
 
 describe("parseComment", () => {
   const cmd = (name: CommandName, text = "") => ({ kind: "command", name, text });
@@ -131,7 +134,7 @@ describe("command table", () => {
     expect(r).not.toContain("`/retry` **(now)**");
     const cli = r.split("\n").filter((l) => l.includes("`factory task "));
     expect(cli).toEqual([cliHelpLine()]);
-    for (const c of CLI_COMMANDS) expect(cli[0]).toContain(`\`factory ${c.usage}\``);
+    for (const c of COMMAND_TABLE) expect(cli[0]).toContain(`\`factory ${cliUsageOf(c)}\``);
   });
 
   it("a failed implement run has its own phases: too_large for diff_too_large, failed_implement for any other failure", () => {
@@ -318,14 +321,20 @@ describe("footers match what the controller accepts", () => {
     };
     return { store, source, controller, itemIn };
   }
+  type Harness = Awaited<ReturnType<typeof harness>>;
 
   /** The issue part of a footer: the PR block (if any) comes before it. */
   const issuePart = (footer: string) => footer.slice(footer.indexOf("Commands you can reply with now:"));
 
-  it("for every phase, with and without a PR, a command is refused exactly when the footer leaves it out", async () => {
-    const { source, controller, itemIn } = await harness();
-    let n = 0;
-    for (const phase of COMMAND_PHASES) {
+  // One test per phase on one shared harness: all phases in one test drove 264 controller events and took over 5 s
+  // under full-suite load. Every phase makes its own items on its own issue numbers, so no phase sees another's.
+  describe("for every phase, with and without a PR, a command is refused exactly when the footer leaves it out", () => {
+    let h: Harness;
+    beforeAll(async () => { h = await harness(); });
+
+    COMMAND_PHASES.forEach((phase, i) => it(phase, async () => {
+      const { source, controller, itemIn } = h;
+      let n = 1 + i * 20;
       for (const pr of [null, 42]) {
         const state = { phase, has_pr: pr !== null };
         const footer = commandFooter(state);
@@ -341,7 +350,7 @@ describe("footers match what the controller accepts", () => {
           expect({ phase, pr, name, listed: issuePart(footer).includes(`\`${spec.usage}\``) }).toEqual({ phase, pr, name, listed: !refused });
         }
       }
-    }
+    }));
   });
 
   it("for every phase, a /revise on the item's PR is refused exactly when the footer's PR block leaves it out", async () => {
@@ -396,9 +405,10 @@ describe("footers match what the controller accepts", () => {
     }
   });
 
-  it("no refusal, /help or unknown-command reply in any state names a raw stage; /help names the state by its label", async () => {
-    const { source, controller, itemIn } = await harness();
+  // One test per phase on one shared harness, as above: all phases in one test drove 400 controller events.
+  describe("no refusal, /help or unknown-command reply in any state names a raw stage; /help names the state by its label", () => {
     const RAW = /\b(NEW|READY|RUNNING|REVIEW|CLOSED)\b/;
+    const isReply = (marker: string) => /^<!-- factory:(refused|help|unknown):/.test(marker);
     const extra = (n: number): SourceEvent[] => {
       const base = { source: issueRef(n), comment_id: String(n), requester: alice };
       // /resolve last: at a merge conflict it applies, and the two replies before it describe the state.
@@ -408,25 +418,168 @@ describe("footers match what the controller accepts", () => {
         { kind: "resolve_requested", ...base, notes: "", pr: null },
       ];
     };
-    const stateOf = new Map<string, { phase: CommandPhase; pr: number | null }>();
-    let n = 10_000;
-    for (const phase of COMMAND_PHASES) {
+    let h: Harness;
+    beforeAll(async () => { h = await harness(); });
+
+    COMMAND_PHASES.forEach((phase, i) => it(phase, async () => {
+      const { source, controller, itemIn } = h;
+      const issues = new Set<string>();
+      let n = 10_000 + i * 20;
       for (const pr of [null, 42]) {
         // One item per command, so each sees the state, not what an earlier command made of it.
         for (const make of [...ACTING.map((name) => (k: number) => [event(name, k)]), extra]) {
           n++;
           await itemIn(phase, pr, n);
-          stateOf.set(issueRef(n).id, { phase, pr });
+          issues.add(issueRef(n).id);
           for (const e of make(n)) await controller.handleEvent(e);
         }
         const help = source.comments.find((c) => c.marker === `<!-- factory:help:${n}h -->`)!;
         expect(help.body).toContain(`(${phaseLabel(phase)})`);
       }
+      for (const c of source.comments.filter((c) => isReply(c.marker) && issues.has(c.source.id))) {
+        expect({ phase, body: c.body, raw: RAW.test(c.body) }).toMatchObject({ raw: false });
+      }
+    }));
+
+    it("the phases above were refused often enough to test the refusals", () => {
+      expect(h.source.comments.filter((c) => c.marker.startsWith("<!-- factory:refused:")).length).toBeGreaterThan(50);
+    });
+  });
+});
+
+describe("answers to the spec's decisions on /approve (issue #526)", () => {
+  const DECISIONS = [
+    { question: "Fail the job, or only warn?", reason: "A failing job blocks merges.", options: ["Fail the job", "Only warn"], default: "Fail the job", owner_only: false },
+    { question: "Name the step?", reason: "It shows in CI.", options: [], default: "scope", owner_only: false },
+    { question: "Who owns the gate?", reason: "Someone answers its alerts.", options: [], default: "", owner_only: true },
+  ];
+  const NOTE = "1: Only warn\nkeep it small";
+  const ANSWERS = [
+    { question: "Fail the job, or only warn?", answer: "Only warn", accepted_default: false },
+    { question: "Name the step?", answer: "scope", accepted_default: true },
+    { question: "Who owns the gate?", answer: null, accepted_default: false },
+  ];
+  const ME = "local:me" as UserId;
+  /** Lets everyone approve; the user ID is `provider:subject`, so a local identity is `local:<name>` as in solo. */
+  const auth: AuthProvider = {
+    resolve: async (i) => ({ user_id: `${i.provider}:${i.subject}` as UserId, attributes: {} }),
+    authorize: async () => ({ allow: true }),
+  };
+
+  async function harness() {
+    const { store, clock } = await newStore();
+    const source = new FakeSource();
+    const controller = new ControllerRole({ store, sources: [source, new FakeSlackPollSource()], auth, clock, config, log: silent, scanner: cleanScanner });
+    /** A work item on `src` whose triage run wrote a spec with DECISIONS (or `decisions`), waiting for approval. */
+    const triaged = async (src: SourceRef, decisions: unknown[] = DECISIONS): Promise<WorkItem> => {
+      const { item } = await store.createWorkItem({ source: src, requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, system);
+      await store.enqueueRun({ work_item_id: item.id, kind: "triage", idempotency_key: `triage:${item.id}` });
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;
+      await store.completeRun(run.id, run.lease!.token, { status: "succeeded", summary: "s", data: { spec: { ...triageSpec, decisions } } });
+      clock.advance(1000);
+      await controller.tickRuns();
+      const it = (await store.getWorkItem(item.id))!;
+      expect(it).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+      return it;
+    };
+    const approval = async (id: WorkItemId) => (await store.listStateChanges(id)).find((c) => c.reason === "spec_approved");
+    return { store, source, controller, triaged, approval };
+  }
+
+  it("a comment, a chat thread, the dashboard and the CLI go through the same parser and store the same answers", async () => {
+    const h = await harness();
+    const byComment = await h.triaged(issueRef(1));
+    const bySlack = await h.triaged(slackRef(2));
+    const byApp = await h.triaged(issueRef(3));
+    const byCli = await h.triaged(issueRef(4));
+
+    await h.controller.handleEvent({ kind: "spec_approved", source: byComment.source, comment_id: "c1", approver: alice, note: NOTE });
+    await h.controller.handleEvent({ kind: "spec_approved", source: bySlack.source, comment_id: "s2", approver: { provider: "slack", subject: "U2", login: "u" }, note: NOTE });
+    await h.store.recordAppCommandRequest({ key: "k3", actor: ME, command: "approve", args: { work_item_id: byApp.id, note: NOTE } });
+    const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "x" };
+    expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: NOTE })).code).toBe(0);
+    await h.controller.tickCommands();
+
+    const actors: Record<string, string> = {};
+    for (const [name, it] of [["comment", byComment], ["slack", bySlack], ["app", byApp], ["cli", byCli]] as const) {
+      const a = await h.approval(it.id);
+      expect(a, name).toBeDefined();
+      expect(storedAnswers(a!.detail), name).toEqual(ANSWERS);
+      expect(a!.detail?.note, name).toBe("keep it small");
+      actors[name] = a!.actor.id;
     }
-    const replies = source.comments.filter((c) => /^<!-- factory:(refused|help|unknown):/.test(c.marker));
-    expect(replies.filter((c) => c.marker.includes(":refused:")).length).toBeGreaterThan(50);
-    for (const c of replies) {
-      expect({ ...stateOf.get(c.source.id), body: c.body, raw: RAW.test(c.body) }).toMatchObject({ raw: false });
+    // The answer's actor is the approver's user ID: the local identity in solo, never a display name.
+    expect(actors).toEqual({ comment: "github:1", slack: "slack:U2", app: ME, cli: ME });
+  });
+
+  it("a line naming no decision, a repeated N or an empty answer refuses the approval with one reply and stores nothing", async () => {
+    const h = await harness();
+    const cases = ["4: x", "1: a\n1: b", "2:  "];
+    for (const [i, note] of cases.entries()) {
+      const it = await h.triaged(issueRef(10 + i));
+      await h.controller.handleEvent({ kind: "spec_approved", source: it.source, comment_id: `r${i}`, approver: alice, note });
+      await h.controller.handleEvent({ kind: "spec_approved", source: it.source, comment_id: `r${i}`, approver: alice, note });
+      expect(await h.approval(it.id)).toBeUndefined();
+      expect(await h.store.getWorkItem(it.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+      const replies = (await h.store.listItemMessages(it.id)).filter((m) => m.marker === `<!-- factory:refused:r${i} -->`);
+      expect(replies).toHaveLength(1);
+      expect(replies[0]!.body).toContain("`/approve` was not applied");
     }
+  });
+
+  it("with no N: line every default is taken as accepted; a decision with no default stays unanswered and the approval goes ahead", async () => {
+    const h = await harness();
+    const it = await h.triaged(issueRef(20));
+    await h.controller.handleEvent({ kind: "spec_approved", source: it.source, comment_id: "d1", approver: alice, note: "" });
+    expect(await h.store.getWorkItem(it.id)).toMatchObject({ stage: "RUNNING" });
+    expect(storedAnswers((await h.approval(it.id))!.detail)).toEqual([
+      { question: "Fail the job, or only warn?", answer: "Fail the job", accepted_default: true },
+      { question: "Name the step?", answer: "scope", accepted_default: true },
+      { question: "Who owns the gate?", answer: null, accepted_default: false },
+    ]);
+  });
+
+  it("a spec with no decisions keeps N: lines in the note and stores no answers", async () => {
+    const h = await harness();
+    const it = await h.triaged(issueRef(30), []);
+    await h.controller.handleEvent({ kind: "spec_approved", source: it.source, comment_id: "n1", approver: alice, note: "1: not an answer" });
+    const a = (await h.approval(it.id))!;
+    expect(a.detail?.note).toBe("1: not an answer");
+    expect(a.detail?.answers).toBeUndefined();
+  });
+});
+
+describe("decisions for the spec in the implement and review prompts (issue #526)", () => {
+  const decisions = [
+    { question: "Fail the job, or only warn?", reason: "A failing job blocks merges.", options: ["Fail the job", "Only warn"], default: "Fail the job", owner_only: true },
+  ];
+
+  async function approved(spec: object, note: string) {
+    const f = await pipeline({ config: { dials: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 } } });
+    f.runner.script.triage = () => ({ output: spec });
+    const it = await f.submit();
+    await f.step();
+    expect(await f.item(it)).toMatchObject({ blocked_reason: "spec_pending" });
+    await f.controller.handleEvent({ kind: "spec_approved", source: it.source, comment_id: "a1", approver: alice, note });
+    await f.step();
+    const prompt = (role: string) => f.runner.specs.find((s) => s.role === role)?.prompt ?? "";
+    return { implement: prompt("implement"), review: prompt("review") };
+  }
+
+  it("both prompts carry the section, labelled untrusted and fenced, with each question, its answer and whether the default was taken", async () => {
+    const p = await approved({ ...triageSpec, decisions }, "1: Only warn");
+    for (const prompt of [p.implement, p.review]) {
+      const at = prompt.indexOf("## Decisions for the spec");
+      expect(at).toBeGreaterThan(-1);
+      const section = prompt.slice(at);
+      expect(section).toContain("Untrusted text");
+      expect(section).toMatch(/```+text\n1\. Fail the job, or only warn\?\n {3}Answer: Only warn \(not the default\)\n```+/);
+    }
+  });
+
+  it("the section is absent when the spec has no decisions", async () => {
+    const p = await approved({ ...triageSpec, decisions: [] }, "1: a note");
+    expect(p.implement).toContain("Notes from the approver");
+    for (const prompt of [p.implement, p.review]) expect(prompt).not.toContain("Decisions for the spec");
   });
 });

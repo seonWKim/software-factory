@@ -556,12 +556,12 @@ describe("plugin registry: existing config keys keep working", () => {
     await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack_thread: "nope" } }))).rejects.toThrow(/unknown AuthProvider plugin "nope"/);
   });
 
-  it("Slack commands get the slack_thread auth plugin when auth names one, else the GitHub-origin one (issue #486)", async () => {
+  it("Slack commands get the slack_thread auth plugin when auth names one, else the local-origin one (issues #486, #498)", async () => {
     const readerAuthOf = async (auth: unknown) => {
       const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
       try {
-        const { forge, slack } = built.controller.kernel.reader.auth;
-        return { forge: (forge as AuditedAuthProvider).inner, slack: (slack as AuditedAuthProvider).inner };
+        const { forge, local, slack } = built.controller.kernel.reader.auth;
+        return { forge: (forge as AuditedAuthProvider).inner, local: (local as AuditedAuthProvider).inner, slack: (slack as AuditedAuthProvider).inner };
       } finally {
         await built.close();
       }
@@ -569,10 +569,10 @@ describe("plugin registry: existing config keys keep working", () => {
     const split = await readerAuthOf({ github_issue: "github", slack_thread: "local" });
     expect(split.forge).toBeInstanceOf(GitHubAuthProvider);
     expect(split.slack).toBeInstanceOf(LocalAuthProvider);
-    // No slack_thread key: the GitHub-origin plugin, the same instance, as before.
+    // No slack_thread key: the local-origin plugin, the same instance (chat accounts act as their linked user, #498).
     const same = await readerAuthOf("github");
     expect(same.forge).toBeInstanceOf(GitHubAuthProvider);
-    expect(same.slack).toBe(same.forge);
+    expect(same.slack).toBe(same.local);
   });
 
   it("an authorize call asks only the plugin of the identity's origin: slack_thread for Slack, github_issue for GitHub", async () => {

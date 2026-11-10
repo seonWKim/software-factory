@@ -61,13 +61,28 @@ export function manualWindow(at: Date): ImproveWindow {
 }
 
 /**
+ * A trigger run's key (design §7): one per last improve run of the project (`none` before the first), so every
+ * replica that sees the same failures in the same state writes the same key and the store keeps one run.
+ */
+export function triggerImproveKey(project: string, after: RunId | null): string {
+  return `improve:${project}:trigger:${after ?? "none"}`;
+}
+
+/** A trigger run: queued after the improve run `after` (null: none yet), reporting from `since` to now. */
+export interface ImproveTriggerInput {
+  after: RunId | null;
+  since: Timestamp;
+}
+
+/**
  * Queues one improve run on the project's system work item (made on first use). `daily`: the current UTC day's
- * slot, a no-op when it is already queued. `manual`: a run of its own. The window goes into the run's input.
+ * slot, a no-op when it is already queued. `manual`: a run of its own. A trigger (`ImproveTriggerInput`): the
+ * slot after the last improve run, reporting the failures since it. The window goes into the run's input.
  */
 export async function enqueueImprove(
   d: { store: ImproveStore; clock: Clock },
   project: string,
-  trigger: "daily" | "manual",
+  trigger: "daily" | "manual" | ImproveTriggerInput,
 ): Promise<{ run: Run; created: boolean }> {
   const now = d.clock.now();
   const { item } = await d.store.createWorkItem(
@@ -82,13 +97,82 @@ export async function enqueueImprove(
     },
     IMPROVER,
   );
-  const daily = trigger === "daily";
-  return d.store.enqueueRun({
-    work_item_id: item.id,
-    kind: "improve",
-    idempotency_key: daily ? dailyImproveKey(project, utcDay(now)) : manualImproveKey(project, now),
-    input: { improve: daily ? dailyWindow(utcDay(now)) : manualWindow(now) },
-  });
+  const [idempotency_key, improve] =
+    trigger === "daily" ? [dailyImproveKey(project, utcDay(now)), dailyWindow(utcDay(now))]
+    : trigger === "manual" ? [manualImproveKey(project, now), manualWindow(now)]
+    : [triggerImproveKey(project, trigger.after), { window_start: trigger.since, window_end: now.toISOString() as Timestamp }];
+  return d.store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key, input: { improve } });
+}
+
+/** Unreviewed failures of one run kind that queue an improve run (design §7): a burst worth a report now. */
+export const TRIGGER_FAILURES = 10;
+/** An unreviewed failure this old queues an improve run (design §7): a lone failure is not left unseen for long. */
+export const TRIGGER_AGE_MS = 3 * DAY_MS;
+
+/** Why the trigger fires: a run kind with TRIGGER_FAILURES failures, or a failure older than TRIGGER_AGE_MS. */
+export type TriggerReason = { reason: "count"; kind: Run["kind"]; failures: number } | { reason: "age"; oldest: Timestamp };
+
+/** A failed run an improve report counts: the same runs groupFailures groups. */
+function reviewable(r: Run): boolean {
+  return r.kind !== "improve" && r.status === "failed" && r.outcome?.status === "failed";
+}
+
+/**
+ * The trigger rule (design §7), pure: given the project's unreviewed runs (finished since its last improve run
+ * was queued), whether an improve run is due. Counts the failed runs per run kind (the role) against
+ * TRIGGER_FAILURES, then the oldest failure's age against TRIGGER_AGE_MS. Null: nothing is due.
+ */
+export function improveTriggerDue(runs: readonly Run[], now: Date): TriggerReason | null {
+  const failed = runs.filter(reviewable);
+  const perKind = new Map<Run["kind"], number>();
+  for (const r of failed) perKind.set(r.kind, (perKind.get(r.kind) ?? 0) + 1);
+  const burst = [...perKind].filter(([, n]) => n >= TRIGGER_FAILURES).sort((a, b) => b[1] - a[1] || cmp(a[0], b[0]))[0];
+  if (burst) return { reason: "count", kind: burst[0], failures: burst[1] };
+  const oldest = failed.map((r) => r.finished_at).filter((t): t is Timestamp => t !== null).sort()[0];
+  return oldest !== undefined && now.getTime() - Date.parse(oldest) > TRIGGER_AGE_MS ? { reason: "age", oldest } : null;
+}
+
+type TriggerStore = ImproveStore & Pick<FactoryStore, "getWorkItemBySource" | "listRuns" | "listRunsFinishedBetween" | "getWorkItem">;
+
+/** The improve runs of `project` (its system work item's), oldest first. */
+export async function listImproveRuns(store: Pick<FactoryStore, "getWorkItemBySource" | "listRuns">, project: string): Promise<Run[]> {
+  const src = systemSource(project);
+  const item = await store.getWorkItemBySource(src.type, src.id);
+  return item ? (await store.listRuns(item.id)).filter((r) => r.kind === "improve") : [];
+}
+
+const isPending = (r: Run) => r.status === "queued" || r.status === "running";
+
+/** An improve run of `project` that is queued or running, or null: while one is, no other is started. */
+export async function pendingImprove(store: Pick<FactoryStore, "getWorkItemBySource" | "listRuns">, project: string): Promise<Run | null> {
+  return (await listImproveRuns(store, project)).find(isPending) ?? null;
+}
+
+/**
+ * The trigger step (design §7): reads the project's failed runs that finished since its last improve run was
+ * queued (all of them before the first), applies improveTriggerDue, and queues one improve run with
+ * triggerImproveKey when it is due. Nothing while an improve run is queued or running. Store state only: two
+ * replicas on one store read the same last run and write the same key, so the store keeps one run.
+ */
+export async function triggerImprove(
+  d: { store: TriggerStore; clock: Clock },
+  project: string,
+): Promise<{ run: Run; created: boolean; why: TriggerReason } | null> {
+  const improves = await listImproveRuns(d.store, project);
+  if (improves.some(isPending)) return null;
+  const last = improves.at(-1) ?? null;
+  const now = d.clock.now();
+  const finished = await d.store.listRunsFinishedBetween(last?.created_at ?? (new Date(0).toISOString() as Timestamp), now.toISOString() as Timestamp);
+  const projects = new Map<WorkItemId, string | null>();
+  const mine: Run[] = [];
+  for (const r of finished.filter(reviewable)) {
+    if (!projects.has(r.work_item_id)) projects.set(r.work_item_id, (await d.store.getWorkItem(r.work_item_id))?.project ?? null);
+    if (projects.get(r.work_item_id) === project) mine.push(r);
+  }
+  const why = improveTriggerDue(mine, now);
+  if (!why) return null;
+  const since = last?.created_at ?? mine.map((r) => r.finished_at!).sort()[0]!;
+  return { ...(await enqueueImprove(d, project, { after: last?.id ?? null, since })), why };
 }
 
 /**
@@ -112,7 +196,7 @@ export function normalizeDetail(detail: string): string {
  */
 export function groupFailures(runs: readonly Run[]): { groups: FailureGroup[]; patterns: FailureGroup[] } {
   const failed = runs
-    .filter((r) => r.kind !== "improve" && r.status === "failed" && r.outcome?.status === "failed")
+    .filter(reviewable)
     .sort((a, b) => cmp(a.finished_at ?? "", b.finished_at ?? "") || cmp(a.id, b.id));
   const byKey = new Map<string, FailureGroup>();
   for (const r of failed) {
@@ -180,23 +264,25 @@ const DRAFT_MAX_TOKENS = 2_000;
 export const IMPROVE_SCHEMA: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
-  required: ["cause", "fix", "touches"],
+  required: ["cause", "fix", "touches", "needs_person"],
   properties: {
     cause: { type: "string", minLength: 1, maxLength: 2000 },
     fix: { type: "string", minLength: 1, maxLength: 4000 },
     touches: { type: "array", maxItems: 30, items: { type: "string", minLength: 1, maxLength: 300 } },
+    needs_person: { type: "boolean" },
   },
 };
 
 /** The model's answer, checked against IMPROVE_SCHEMA; null when it does not fit. */
-export function parseDraft(v: unknown): { cause: string; fix: string; touches: string[] } | null {
+export function parseDraft(v: unknown): { cause: string; fix: string; touches: string[]; needs_person: boolean } | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
-  if (Object.keys(o).some((k) => !["cause", "fix", "touches"].includes(k))) return null;
+  if (Object.keys(o).some((k) => !["cause", "fix", "touches", "needs_person"].includes(k))) return null;
+  if (typeof o.needs_person !== "boolean") return null;
   const str = (x: unknown, max: number): x is string => typeof x === "string" && x.trim() !== "" && x.length <= max;
   if (!str(o.cause, 2000) || !str(o.fix, 4000)) return null;
   if (!Array.isArray(o.touches) || o.touches.length > 30 || !o.touches.every((t) => str(t, 300))) return null;
-  return { cause: o.cause, fix: o.fix, touches: o.touches as string[] };
+  return { cause: o.cause, fix: o.fix, touches: o.touches as string[], needs_person: o.needs_person };
 }
 
 /** What the draft step needs; without `llm` or `prompt` no model is asked and groups carry no draft. */
@@ -289,7 +375,7 @@ async function draft(d: ImproveDeps, llm: LLMProvider, system: string, g: Failur
   if (!out) return { status: "failed", reason: "invalid_output" };
   const touches_prompts_or_gate = out.touches.some(isGatePath);
   const scan = await d.scanner.scan("log", JSON.stringify(out));
-  if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))], touches_prompts_or_gate };
+  if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))], touches_prompts_or_gate, needs_person: out.needs_person };
   return { status: "drafted", ...out, touches_prompts_or_gate };
 }
 
@@ -321,7 +407,10 @@ const RECENT_MS = 30 * DAY_MS;
 
 /** What filing needs. `file`: the first source that can file, null when none can. `comment`: once per marker. */
 export interface FilingDeps {
-  store: Pick<FactoryStore, "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource">;
+  store: Pick<
+    FactoryStore,
+    "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource" | "recordAlert"
+  >;
   scanner: EgressScanner;
   clock: Clock;
   file: ((input: IssueInput) => Promise<SourceRef>) | null;
@@ -338,6 +427,14 @@ export function issueMarker(key: string, report: string): string {
   return `<!-- factory:improve:${key}:${report} -->`;
 }
 
+/** The pattern key in the first improve marker (`issueMarker`) of `text`, or null. */
+export function markerKey(text: string): string | null {
+  return /<!-- factory:improve:([^:\s]+):[^\s]+ -->/.exec(text)?.[1] ?? null;
+}
+
+/** The state change reason of a fix item's spec, approved without a person (design §7); its detail holds the key. */
+export const FIX_SPEC_APPROVED = "fix_spec_approved";
+
 function commentMarker(key: string, report: string): string {
   return `<!-- factory:improve-comment:${key}:${report} -->`;
 }
@@ -345,8 +442,9 @@ function commentMarker(key: string, report: string): string {
 /**
  * Files the groups of `report` (design §7) and stores each group's filing on the report. A group whose pattern
  * has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
- * closed in the last 30 days is skipped; any other is filed as a new item, its runs listed and its marker in the
- * body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
+ * closed in the last 30 days is skipped; one whose draft needs a person or touches the gate list is not filed but
+ * goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs
+ * without a person, its runs listed and its marker in the body. At most MAX_FILED_ISSUES new items and as many comments; the rest are skipped with the cap as reason.
  * Every body passes the egress scan first: a flagged one is not sent and is recorded `withheld` with its rules.
  * Safe to run twice: a filing is claimed in filed_patterns before the call and its marker looked up by the source,
  * and a comment is posted once per marker.
@@ -370,7 +468,8 @@ export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<
 
 async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, caps: { issues: number; comments: number }): Promise<ImproveFiling> {
   const file = d.file;
-  if (!file) return { status: "skipped", reason: "no_source" };
+  const person = needsPerson(g.draft);
+  if (!file && !person) return { status: "skipped", reason: "no_source" };
   const key = patternKey(g);
   const row = await d.store.getFiledPattern(report.project, key);
   if (row?.filed_ref && row.report_id !== report.id) {
@@ -383,6 +482,8 @@ async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, 
     caps.issues++;
     return { status: "filed", ref: row.filed_ref };
   }
+  if (person) return toPerson(d, g, key);
+  if (!file) return { status: "skipped", reason: "no_source" };
   if (caps.issues >= MAX_FILED_ISSUES) return { status: "skipped", reason: "issue_cap" };
   const title = `Recurring failure: ${g.error_code} in ${g.run_ids.length} runs`;
   const body = issueBody(g);
@@ -397,6 +498,29 @@ async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, 
   const ref = await file({ project: report.project, requester_id: IMPROVER.id as UserId, title, body, marker: issueMarker(key, claim.report_id) });
   await d.store.setFiledPatternRef(claim.id, claim.report_id, ref);
   return { status: "filed", ref };
+}
+
+/** Whether no automatic fix may take the group: its draft says a person must decide, or its fix touches the gate list. */
+function needsPerson(draft: ImproveDraft | undefined): boolean {
+  return draft !== undefined && "touches_prompts_or_gate" in draft && (draft.touches_prompts_or_gate || draft.needs_person === true);
+}
+
+/**
+ * A group no automatic fix may take goes to Needs you: one alert (pattern `repeated_error`, key `needs_person:<key>`)
+ * whose detail names why and the draft's cause, scanned as UI text first (dropped if flagged). No item is filed,
+ * so no fix run is queued. Once a day per pattern: a retry of the same report stores no second alert.
+ */
+async function toPerson(d: FilingDeps, g: FailureGroup, key: string): Promise<ImproveFiling> {
+  const draft = g.draft as Extract<ImproveDraft, { touches_prompts_or_gate: boolean }>;
+  const why = draft.needs_person ? "the draft says a person must decide" : "the fix touches the factory's prompts or gates";
+  const cause = draft.status === "drafted" ? ` Draft cause (model, unverified): ${draft.cause}` : "";
+  const text = `Needs a person: ${why}, so no fix item was filed.${cause}`;
+  const scan = await d.scanner.scan("ui", text);
+  await d.store.recordAlert(
+    { pattern: "repeated_error", pattern_key: `needs_person:${key}`, error_code: g.error_code, count: g.run_ids.length, detail: scan.clean ? text : null },
+    DAY_MS,
+  );
+  return { status: "skipped", reason: "needs_person" };
 }
 
 async function commentGroup(
@@ -444,9 +568,9 @@ function issueBody(g: FailureGroup): string {
     lines.push("", "Draft cause (model, unverified):", "", g.draft.cause, "", "Draft fix:", "", g.draft.fix);
     if (g.draft.touches.length > 0) lines.push("", "Touches:", ...g.draft.touches.map((t) => `- \`${t}\``));
   }
-  if (g.draft && "touches_prompts_or_gate" in g.draft && g.draft.touches_prompts_or_gate) {
-    lines.push("", "The fix touches the factory's prompts or gates: it needs a human merge.");
-  }
-  lines.push("", "Filed for a person to start: the factory does not triage it on its own.");
+  lines.push(
+    "",
+    "Filed as a fix: the factory triages, implements and reviews it without a person. A change that touches the factory's prompts or gates still waits for a person's merge.",
+  );
   return lines.join("\n");
 }

@@ -3,7 +3,7 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
-import { commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
+import { appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, unknownCommandReply } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
@@ -14,6 +14,7 @@ import { type Actor, type RunKind, type StateChangeDetail, type Tier, type WorkI
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
+import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -109,11 +110,7 @@ function floorCommand(
     return { refuse: `the item is ${phaseLabel("floor_tier")}, not waiting on a spec; reply \`/approve\` to raise its tier or \`/reject <reason>\` to close` };
   }
   if (e.kind === "spec_rejected") {
-    return {
-      patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null },
-      actor,
-      reason: "floor_rejected",
-    };
+    return { patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null }, actor, reason: "floor_rejected" };
   }
   if (it.stage !== "RUNNING" || need === null) return { refuse: "the floor block has no recorded tier to approve" };
   // A `+paths` under a higher floor raises the tier further (issue #280).
@@ -187,17 +184,7 @@ export class CommandsUnit {
       if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     }
     await this.c.unit("outbox").markSeen(e.source, e.comment_id);
-    if (e.kind === "spec_rejected" && refusal === null) {
-      // Best effort here; tickSourceCloses retries whatever did not happen.
-      try {
-        await this.c.unit("closes").finishReject(item.id);
-      } catch (err) {
-        this.c.k.d.log.warn("reject comment or close failed; retried on the next tick", {
-          work_item_id: item.id,
-          error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
-        });
-      }
-    }
+    if (e.kind === "spec_rejected" && refusal === null) await this.c.unit("closes").afterReject(item.id);
     if (refusal === null) return;
     this.c.k.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
     // A /resolve or /revise sent on the PR is answered on the PR; every other command on the item's own issue.
@@ -551,8 +538,8 @@ export class CommandsUnit {
     if (e.kind === "resolve_requested") {
       return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
     }
-    if (e.kind === "revise_requested" && e.pr) {
-      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr.change_ref, key: { comment_id: e.comment_id } });
+    if (e.kind === "revise_requested" && (e.pr || (it.source.type === "slack_thread" && appliesOnPr(commandSpec("revise"), commandState(it))))) {
+      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref!, key: { comment_id: e.comment_id } });
     }
     if (it.stage === "CLOSED") return { refuse: "the work item is closed" };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: "the item is at a budget checkpoint; reply `/budget`, `/budget <tokens>` or `/reject <reason>`" };
@@ -627,9 +614,12 @@ export class CommandsUnit {
       case "spec_approved": {
         const phases = await this.c.unit("phases").specPhases(it);
         if (phases && paths.length > 0) return { refuse: SPLIT_PATHS };
-        if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, note, e.comment_id, tag);
+        // `N: <answer>` lines answer the spec's decisions (issue #526); a split's answers stay on its approval's tag.
+        const a = splitAnswers(note, latestSpec(await this.c.k.reader.listRuns(it.id))?.decision_items ?? []);
+        if ("refuse" in a) return a;
+        if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, a.note, e.comment_id, a.answers.length ? { ...tag, ...answersDetail(a.answers) } : tag);
         const w = this.widen(it, paths);
-        const detail = { ...(note ? { note } : {}), ...w.detail };
+        const detail = { ...(a.note ? { note: a.note } : {}), ...answersDetail(a.answers), ...w.detail };
         return {
           patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, ...w.patch },
           actor,

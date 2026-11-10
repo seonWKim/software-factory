@@ -1,6 +1,7 @@
-import { cliHelpLine } from "./local-cli.js";
+import { COMMAND_TABLE, type CommandWho, type TableCommand, cliHelpLine } from "./command-table.js";
+import { type TriageOutput, parseTriage } from "./outputs.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE } from "./policy.js";
-import type { RunKind, WorkItem } from "./types.js";
+import type { Run, RunKind, WorkItem } from "./types.js";
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -454,4 +455,47 @@ export function parseLink(body: string): string | null {
   const first = body.trim().split(/\r?\n/)[0]!.trim();
   const m = /^\/link(?=$|[\s.,:;!?])[.,:;!?]?\s*(\S*)/i.exec(first);
   return m ? m[1]! : null;
+}
+
+/** The command table's names (src/core/command-table.ts): chat `help` adds the item's other comment commands after them. */
+const TABLE_NAMES = new Set(COMMAND_TABLE.map((c) => c.name));
+
+/**
+ * The chat `help` reply: only the commands the sender may run in that place. `may` says whether the sender's role
+ * allows an action; `state` is the item's when asked in its thread, else null. Outside an item's thread: the
+ * reads and the request. In an item's thread: the reads, and the item commands that apply in its state.
+ * Writes refused in chat (`edge`) are never listed.
+ */
+export function chatHelpReply(may: (w: CommandWho) => boolean, state: CommandState | null): string {
+  const lines: string[] = [];
+  for (const c of COMMAND_TABLE) {
+    if (c.edge || !may(c.who)) continue;
+    if (c.chat_args === "request" && state !== null) continue;
+    if (c.item && (state === null || !itemApplies(c, state))) continue;
+    lines.push(`- \`${c.chat}\`: ${c.does}.`);
+  }
+  if (state !== null && may("approve_spec")) {
+    for (const s of commandsFor(state)) if (!TABLE_NAMES.has(s.name) && s.name !== "help") lines.push(`- \`${s.usage}\`: ${s.description}.`);
+  }
+  lines.push(`- \`help\`: ${commandSpec("help").description}.`);
+  const where = state === null ? "here" : "in this item's thread";
+  return [`Commands you can run ${where} (mention the bot first):`, ...lines].join("\n");
+}
+
+function itemApplies(c: TableCommand, s: CommandState): boolean {
+  if (c.name === "merge") return s.phase === "merge_pending";
+  const spec = COMMANDS.find((x) => x.name === c.name);
+  return spec !== undefined && applies(spec, s);
+}
+
+/**
+ * The spec an `/approve` answers (issue #526): the one the item's latest applied, successful triage run wrote, read
+ * from the run's stored output; null when there is none or it no longer parses. Store reads only: the caller passes
+ * the item's runs.
+ */
+export function latestSpec(runs: readonly Run[]): TriageOutput | null {
+  const run = runs.filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null).at(-1);
+  if (run?.outcome?.status !== "succeeded") return null;
+  const parsed = parseTriage(run.outcome.data.spec);
+  return parsed.ok ? parsed.value : null;
 }

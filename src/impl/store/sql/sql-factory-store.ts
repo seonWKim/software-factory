@@ -50,7 +50,7 @@ import type {
   WorkerId,
   WorkerPause,
 } from "../../../core/types.js";
-import { outcomeTokens } from "../../../core/types.js";
+import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
   type CoordinationSettings,
   type DependencyLink,
@@ -581,14 +581,14 @@ export class SqlFactoryStore implements FactoryStore {
       };
 
       // Queued runs by kind rank (runs that lead to a human decision first), then created_at, then insertion
-      // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks.
+      // order (design §5 Parallel workers). not_before: a retry waits out its backoff, whichever worker looks; a held item's (05-alarms) waits for its release.
       const rank = CLAIM_ORDER.map((_, i) => `WHEN ? THEN ${i}`).join(" ");
       const queued = await tx.all(
         `SELECT r.id, r.kind, r.work_item_id FROM worker_runs r
          WHERE r.status = 'queued' AND r.kind IN (${placeholders(kinds.length)})
-           AND (r.not_before IS NULL OR r.not_before <= ?)
+           AND (r.not_before IS NULL OR r.not_before <= ?) AND NOT EXISTS (SELECT 1 FROM controller_work_items w WHERE w.id = r.work_item_id AND w.blocked_reason = ?)
          ORDER BY CASE r.kind ${rank} ELSE ${CLAIM_ORDER.length} END, r.created_at, r.${seq}`,
-        [...kinds, now, ...CLAIM_ORDER],
+        [...kinds, now, RECURRING_FAILURE, ...CLAIM_ORDER],
       );
       // Coordination (design §5, 2026-11-03): read once, only when an implement run is a candidate.
       const coord = queued.some((q) => q.kind === "implement")
@@ -2119,8 +2119,8 @@ export class SqlFactoryStore implements FactoryStore {
 
   async recordChildRestart(restart: ChildRestart): Promise<{ created: boolean }> {
     const key = `${restart.at}:${createHash("sha256").update(restart.reason).digest("hex").slice(0, 16)}`;
-    const created = await this.insertOnce(this.db, "INSERT INTO runtime_child_restarts (restart_key, at, reason, recorded_at) VALUES (?, ?, ?, ?)", [
-      key, restart.at, restart.reason, this.now(),
+    const created = await this.insertOnce(this.db, "INSERT INTO runtime_child_restarts (restart_key, at, reason) VALUES (?, ?, ?)", [
+      key, restart.at, restart.reason,
     ]);
     return { created };
   }

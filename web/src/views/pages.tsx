@@ -9,10 +9,10 @@ import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../com
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, shortRev, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, WhyText, useNow } from "./common.js";
+import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, SourceLink, WhyText, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { SystemActions } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -126,7 +126,7 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className="font-mono text-xs">{pause.name}</span>
       <span className="min-w-0 text-pretty text-zinc-700 dark:text-zinc-300">{PAUSE_LABELS[pause.name] ?? pause.name}</span>
-      <span className="tabular-nums whitespace-nowrap text-zinc-600 dark:text-zinc-400" title={pause.ends_at}>
+      <span className="min-w-0 tabular-nums break-words text-zinc-600 dark:text-zinc-400" title={pause.ends_at}>
         {label} at {pause.ends_at}{ends > now ? ` (in ${ago(new Date(now).toISOString(), ends)})` : ""}
       </span>
       {token !== null && (
@@ -352,9 +352,9 @@ export function ItemPage({ id }: { id: string }) {
       <p className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>Work items</Link>
         <span className="text-zinc-500"> / </span>
-        <a href={item.source.link} target="_blank" rel="noreferrer" className={cn("tabular-nums", LINK_CLASS)}>{shortSource(item.source.id)}</a>
+        <SourceLink source={item.source} className="inline-block align-bottom" />
       </p>
-      <h2 className="text-balance text-base font-semibold">{item.title ?? item.source.id}</h2>
+      <h2 className="text-balance text-base font-semibold break-words">{item.title ?? item.source.id}</h2>
       {item.why && (
         <p data-testid="why" className="mt-2 text-sm text-pretty break-words">
           <WhyText why={item.why} />
@@ -407,7 +407,7 @@ export function ItemPage({ id }: { id: string }) {
           <Table label="Runs" head={["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]}>
             {[...runs].reverse().map((r) => (
               <Tr key={r.id} data-run={r.id}>
-                <Td>
+                <Td className="min-w-40">
                   {r.kind} <code className="font-mono text-xs break-all text-zinc-600 dark:text-zinc-400">{r.id}</code>
                 </Td>
                 <Td className="tabular-nums">attempt {r.attempt}</Td>

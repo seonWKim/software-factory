@@ -219,7 +219,7 @@ graph TB
 | `EgressScanner` (G5) | Scans every text before it leaves (stored branches, tool results, outbound texts, alerts, UI fields) | none (pure) |
 | `SecretStore` (G1) | Holds credentials; only plugin implementations read it | `~/.config/software-factory/.env` |
 | `GitHubCredentials` | Mints the GitHub token for the GitHub client (App installation token or PAT). A required kind, even with no GitHub plugin (RFC 0011) | GitHub App API |
-| `AuthProvider` | The role half of a command decision, per origin (`auth` for forge comments, `local_auth` for CLI and UI, `slack_auth` for Slack threads, default `auth`); Identity checks the passport half | GitHub permissions through grants; local users and roles in the store |
+| `AuthProvider` | The role half of a command decision, per origin (`auth` for forge comments, `local_auth` for CLI and UI, `slack_auth` for Slack threads, default `local_auth`); Identity checks the passport half | GitHub permissions through grants; local users and roles in the store |
 | `GrantSource` | Roles a subject holds (`permissions.grants`) | GitHub collaborator permission; `static` from config |
 | `CapabilitySearch` | Finds docs and skills for an agent (finding is not permission) | none (local index) |
 | `TestDatabase` | A throwaway database for pre-push checks | local MySQL |

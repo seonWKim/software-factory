@@ -534,7 +534,7 @@ describe("CLI commands on a GitHub item (design 05-sources, CLI intake)", () => 
       expect(mirrors(f)).toEqual([]);
 
       f.hub.down = null;
-      f.clock.advance(3_600_000);
+      f.clock.advance(3 * 3_600_000);
       await f.controller.tickCommands();
       await f.controller.tickCommands();
       expect(mirrors(f)).toHaveLength(1);

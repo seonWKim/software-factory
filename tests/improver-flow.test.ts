@@ -27,7 +27,7 @@ class CountingLLM implements LLMProvider {
   }
 }
 
-function ok(parsed: unknown = { cause: "the flaky test", fix: "pin the port in tests/x.test.ts", touches: ["tests/x.test.ts"] }): LLMResponse {
+function ok(parsed: unknown = { cause: "the flaky test", fix: "pin the port in tests/x.test.ts", touches: ["tests/x.test.ts"], needs_person: false }): LLMResponse {
   return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage: { input_tokens: 100, output_tokens: 20, cost_usd: null } };
 }
 
@@ -93,7 +93,7 @@ describe("improve: drafts", () => {
     expect(run.status).toBe("succeeded");
     expect(r.groups.map((g) => g.draft?.status)).toEqual(["drafted", "drafted"]);
     expect(r.groups[0]!.draft).toEqual({
-      status: "drafted", cause: "the flaky test", fix: "pin the port in tests/x.test.ts", touches: ["tests/x.test.ts"], touches_prompts_or_gate: false,
+      status: "drafted", cause: "the flaky test", fix: "pin the port in tests/x.test.ts", touches: ["tests/x.test.ts"], touches_prompts_or_gate: false, needs_person: false,
     });
     expect(r.patterns.map((p) => p.run_ids)).toEqual([[w.pattern]]);
     expect(r.patterns[0]!.draft).toBeUndefined();
@@ -108,7 +108,7 @@ describe("improve: drafts", () => {
     const [req] = llm.requests;
     expect(Object.keys(req!).sort()).toEqual(["data_env", "max_tokens", "messages", "model_class", "output_schema", "signal", "system"]);
     expect(req).toMatchObject({ model_class: "standard", data_env: "test", system: IMPROVE_PROMPT });
-    expect(req!.output_schema).toMatchObject({ required: ["cause", "fix", "touches"] });
+    expect(req!.output_schema).toMatchObject({ required: ["cause", "fix", "touches", "needs_person"] });
     expect(req!.signal).toBeInstanceOf(AbortSignal);
     expect(req!.messages.map((m) => m.role)).toEqual(["user"]);
     expect(broker.calls).toEqual([]);
@@ -133,6 +133,7 @@ describe("improve: drafts", () => {
 
   it.each([
     ["invalid_output", () => ok({ cause: "x" })],
+    ["invalid_output", () => ok({ cause: "c", fix: "f", touches: [] })],
     ["invalid_output", () => ({ ...ok(), parsed: undefined, text: "not json" })],
     ["refused", () => ({ ...ok(), stop_reason: "refused" as const })],
     ["max_tokens", () => ({ ...ok(), stop_reason: "max_tokens" as const })],
@@ -149,22 +150,24 @@ describe("improve: drafts", () => {
 
   it("a flagged draft is stored withheld with its rule, never its text", async () => {
     const w = await world([2]);
-    const llm = new CountingLLM(() => ok({ cause: `leaked ${TOKEN}`, fix: "edit prompts/implement.md", touches: ["prompts/implement.md"] }));
+    const llm = new CountingLLM(() => ok({ cause: `leaked ${TOKEN}`, fix: "edit prompts/implement.md", touches: ["prompts/implement.md"], needs_person: false }));
     await worker(w, llm).tick();
     const { report: r } = await report(w);
-    expect(r.groups[0]!.draft).toEqual({ status: "withheld", rules: ["github_token"], touches_prompts_or_gate: true });
+    expect(r.groups[0]!.draft).toEqual({ status: "withheld", rules: ["github_token"], touches_prompts_or_gate: true, needs_person: false });
     expect(JSON.stringify(r)).not.toContain(TOKEN);
   });
 
   it("touches_prompts_or_gate is set by the factory from the paths the fix names", async () => {
     const w = await world([2, 2]);
     const answers = [
-      ok({ cause: "c", fix: "tighten the scan", touches: ["./src/impl/egress/pattern-egress-scanner.ts", "src/core/worker.ts"] }),
-      ok({ cause: "c", fix: "retry", touches: ["src/core/worker.ts"] }),
+      ok({ cause: "c", fix: "tighten the scan", touches: ["./src/impl/egress/pattern-egress-scanner.ts", "src/core/worker.ts"], needs_person: false }),
+      ok({ cause: "c", fix: "retry", touches: ["src/core/worker.ts"], needs_person: true }),
     ];
     await worker(w, new CountingLLM((_req, n) => answers[n - 1]!)).tick();
     const { report: r } = await report(w);
     expect(r.groups.map((g) => g.draft?.status === "drafted" && g.draft.touches_prompts_or_gate)).toEqual([true, false]);
+    // needs_person is the model's answer, kept as it gave it.
+    expect(r.groups.map((g) => g.draft?.status === "drafted" && g.draft.needs_person)).toEqual([false, true]);
   });
 
   it("caps the calls per run, largest groups first; the report lists the groups it skipped", async () => {

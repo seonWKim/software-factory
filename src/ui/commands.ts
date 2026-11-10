@@ -7,12 +7,13 @@
 // http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403), a
 // an actor (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
 // a known item (404). Success is 202 with the request's ID. GET /api/v1/session hands out the token behind the
-// same Host guard. The item API's `commands`, `replies` and `merge` fields are built here too.
+// same Host guard. The item API's `commands`, `replies`, `spec` and `merge` fields are built here too.
 // `merge` (design §9, the Merge button) is an app command beside the item commands, with no note: the local merge
 // of `factory merge` for a local item, the PR's merge on the forge for any other.
 
 import { randomUUID } from "node:crypto";
-import { COMMANDS, type CommandName, commandPhase, commandState, commandsFor } from "../core/commands.js";
+import { COMMAND_TABLE } from "../core/command-table.js";
+import { COMMANDS, type CommandName, commandPhase, commandState, commandsFor, latestSpec } from "../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
 import { AGENT_NEEDS_HUMAN, blockingRunKind } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
@@ -48,10 +49,14 @@ export const MAX_NOTE = 2000;
 export const REPLIES_LIMIT = 50;
 /** A command the page may send: an item command, or the local merge, which has no comment command. */
 export type AppCommand = CommandName | typeof MERGE_COMMAND;
-/** Commands the page may send: every item command but `/help` and the account command `/link`, then `merge`. */
+const COMMENT_NAMES: readonly string[] = COMMANDS.map((c) => c.name);
+/**
+ * Commands the page may send: every item command but `/help` and the account command `/link`, then the command
+ * table's other item commands (`merge`), so a new item command in the table reaches the page too.
+ */
 export const APP_COMMANDS: readonly AppCommand[] = [
   ...COMMANDS.map((c) => c.name).filter((n) => n !== "help" && n !== "link"),
-  MERGE_COMMAND,
+  ...COMMAND_TABLE.filter((c) => c.item && !COMMENT_NAMES.includes(c.name)).map((c) => c.name as AppCommand),
 ];
 /** Commands that need text: the reason or the feedback. */
 const NEEDS_TEXT: readonly AppCommand[] = ["reject", "revise"];
@@ -156,6 +161,26 @@ export function itemCommands(it: WorkItem, runs: readonly Run[]) {
   return commandsFor(commandState(it, askedBy))
     .filter((c) => APP_COMMANDS.includes(c.name))
     .map((c) => ({ name: c.name, usage: c.usage, description: c.description }));
+}
+
+/**
+ * The item API's `spec` (issue #526): the In short and the decisions of a spec waiting for approval (or at the
+ * revision limit), from the latest applied triage run's stored output; null for any other item. Every text passes
+ * `text` (the Withholder). Store reads only: the caller passes the item's runs.
+ */
+export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: string | null) => Promise<string | null>) {
+  if (it.stage !== "READY" || (it.blocked_reason !== "spec_pending" && it.blocked_reason !== "max_revisions")) return null;
+  const spec = latestSpec(runs);
+  if (!spec) return null;
+  const decisions = [];
+  for (const d of spec.decision_items ?? []) {
+    const options = [];
+    for (const o of d.options ?? []) options.push((await text(o))!);
+    decisions.push({
+      question: (await text(d.text))!, options, default: await text(d.default), reason: await text(d.reason ?? null), owner_only: d.owner_only,
+    });
+  }
+  return { in_short: await text(spec.in_short), decisions };
 }
 
 /** The item API's `replies`: the item's app requests; the refusal and command pass `text`, the note never leaves. */

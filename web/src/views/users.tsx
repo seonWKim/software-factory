@@ -136,7 +136,7 @@ export function UsersPage() {
           <Table label="Users" head={head}>
             {v.users.map((u) => (
               <Tr key={`${u.source}:${u.user_id}`} data-user={u.user_id} data-source={u.source}>
-                <Td className="font-mono break-all">{u.user_id}</Td>
+                <Td className="min-w-40 font-mono break-all">{u.user_id}</Td>
                 <Td>
                   <Badge>{u.role}</Badge>
                 </Td>

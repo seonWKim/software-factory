@@ -14,6 +14,7 @@ import type {
   IssueInput, PollResult, PollSource, SourceCloseReason, SourceEvent, SubIssueInput, VerdictEventTarget,
 } from "../../interfaces/source-adapter.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
+import { DEFAULT_STATUS_LABEL_PREFIX } from "../../interfaces/forge.js";
 import { GitHubError, type RepoRef, issueNumberFromSourceId } from "./github-client.js";
 
 export interface GhUser {
@@ -138,8 +139,6 @@ const STATUS_LABELS: Record<WorkStatus, { suffix: string; color: string; descrip
   rejected: { suffix: "rejected", color: "000000", description: "Factory: closed without a merge" },
 };
 
-export const DEFAULT_STATUS_LABEL_PREFIX = "sf: ";
-
 export interface StatusLabel {
   status: WorkStatus;
   name: string;
@@ -215,6 +214,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     private readonly label: string,
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
+    /** `status_label_prefix`: the forge-neutral default (src/interfaces/forge.ts) when left out. */
     private readonly statusPrefix: string = DEFAULT_STATUS_LABEL_PREFIX,
     /**
      * Where posted comments and written labels are recorded, shared by every replica (design §5, GitHub call
@@ -484,7 +484,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     const subs = `${base}/issues/${parent}/sub_issues`;
     const linked = (await this.client.list<GhIssueRef>(subs, 1)).find(carries(input.marker));
     if (linked) return this.ref(linked.number);
-    const issue = await this.findOrFile(input, [this.label]);
+    const issue = await this.findOrFile(input);
     try {
       await this.client.request("POST", subs, { sub_issue_id: issue.id });
     } catch (err) {
@@ -495,22 +495,22 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   }
 
   /**
-   * One standalone issue without the intake label, so a person starts it (design §7). The marker is looked up
-   * first among the newest 300 issues (open or closed), so a retry after a failure part way files no second one.
+   * One standalone issue with the intake label, so intake triages it (design §7). The marker is looked up first
+   * (`findOrFile`), so a retry after a failure part way files no second one.
    */
   async fileIssue(input: IssueInput): Promise<SourceRef> {
-    return this.ref((await this.findOrFile(input, [])).number);
+    return this.ref((await this.findOrFile(input)).number);
   }
 
-  /** The newest 300 issues with `labels` (open or closed) carrying the marker, else a new issue with them. */
-  private async findOrFile(input: Pick<IssueInput, "title" | "body" | "marker">, labels: string[]): Promise<GhIssueRef> {
+  /** The newest 300 factory-labelled issues (open or closed) carrying the marker, else a new issue with the label. */
+  private async findOrFile(input: Pick<IssueInput, "title" | "body" | "marker">): Promise<GhIssueRef> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
-    const filter = labels.length === 0 ? "" : `&labels=${encodeURIComponent(labels.join(","))}`;
+    const filter = `&labels=${encodeURIComponent(this.label)}`;
     const filed = (await this.client.list<GhIssueRef>(`${base}/issues?state=all${filter}&sort=created&direction=desc`, 3)).find(carries(input.marker));
     return filed ?? await this.client.request<GhIssueRef>("POST", `${base}/issues`, {
       title: input.title,
       body: `${input.body}\n\n${input.marker}`,
-      ...(labels.length === 0 ? {} : { labels }),
+      labels: [this.label],
     });
   }
 

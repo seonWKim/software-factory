@@ -209,7 +209,7 @@ export type Selection = { [K in Exclude<PluginKind, OptionalKind>]: string } & {
   llms?: readonly string[];
   /** The auth plugin for local commands (CLI, local UI), when `auth` names one per origin (issue #318). */
   local_auth?: string;
-  /** The auth plugin for Slack thread commands, when `auth.slack_thread` names one (issue #486). Absent: `auth`'s. */
+  /** The auth plugin for Slack thread commands, when `auth.slack_thread` names one (issue #486). Absent: the `local` origin's (issue #498). */
   slack_auth?: string;
 };
 
@@ -222,7 +222,7 @@ const AUTH_ORIGINS = ["github_issue", "local", "slack_thread"] as const;
 /**
  * `auth` per command origin (issue #318). A string (the form before) selects the plugin for GitHub comments;
  * local commands then use `local`. An object maps origins to plugins: `github_issue` is required, `local`
- * optional (default `local`), `slack_thread` optional (default: the `github_issue` plugin, issue #486).
+ * optional (default `local`), `slack_thread` optional (default: the `local` origin's plugin, issues #486 and #498).
  */
 export function authByOrigin(raw: unknown): { github_issue: unknown; local?: unknown; slack_thread?: unknown } {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { github_issue: raw };

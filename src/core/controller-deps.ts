@@ -63,7 +63,7 @@ export interface ControllerDeps {
    * #318: local commands never depend on the forge's auth plugin. Absent: `auth`.
    */
   local_auth?: AuthProvider;
-  /** Authorizes commands from Slack threads (identity provider `slack`; issue #486). Absent: `auth`. */
+  /** Authorizes commands from Slack threads (identity provider `slack`; issue #486). Absent: `local_auth`, else `auth` (issue #498). */
   slack_auth?: AuthProvider;
   /**
    * The controller's automatic steps (auto mode's spec approvals and merges) authorized under its service passport

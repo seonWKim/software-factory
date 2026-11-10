@@ -1,3 +1,5 @@
+import { retryAfterResetAt } from "../../shared/retry-after.js";
+
 // A shared client for an OpenAI-style chat completions endpoint (`POST <base_url>/chat/completions`).
 // It uses the platform's global fetch, no vendor SDK. The API key is an argument: this client never reads
 // secrets. One request per call: no retries, no streaming, no tool execution. Every failure is returned,
@@ -84,16 +86,6 @@ export interface ChatCallOptions {
 /** `<base_url>/chat/completions`, with no double slash whatever the base_url ends with. */
 export function chatCompletionsUrl(baseUrl: string): string {
   return `${baseUrl.replace(/\/+$/, "")}/chat/completions`;
-}
-
-/** reset_at from a Retry-After header: seconds from `nowMs`, or an HTTP date. Undefined when absent or unparsable. */
-export function retryAfterResetAt(header: string | null, nowMs: number): string | undefined {
-  if (header === null) return undefined;
-  const value = header.trim();
-  if (value === "") return undefined;
-  if (/^\d+$/.test(value)) return new Date(nowMs + Number(value) * 1000).toISOString();
-  const date = Date.parse(value);
-  return Number.isNaN(date) ? undefined : new Date(date).toISOString();
 }
 
 const MAX_DETAIL = 300;

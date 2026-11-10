@@ -19,7 +19,7 @@ import {
   selectPlugins,
   withPlugin,
 } from "../src/plugins.js";
-import { doctorChecks, ensureSecretFile, secretChecks, secretsToPrompt } from "../src/setup.js";
+import { doctorChecks, ensureSecretFile, neededSecrets, secretChecks, secretsToPrompt } from "../src/setup.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
@@ -256,12 +256,17 @@ describe("doctor and setup follow the declared secrets", () => {
     expect(JSON.stringify(checks)).not.toMatch(/"k"|"g"/);
   });
 
-  it("setup prompts for a declared secret with no guided step when it is missing or rotated", async () => {
-    expect((await secretsToPrompt(DECLS, new MapSecrets({}), [])).map((d) => d.name)).toEqual(["SLACK_BOT_TOKEN"]);
-    expect(await secretsToPrompt(DECLS, new MapSecrets({ SLACK_BOT_TOKEN: "s" }), [])).toEqual([]);
-    expect((await secretsToPrompt(DECLS, new MapSecrets({ SLACK_BOT_TOKEN: "s" }), [n("SLACK_BOT_TOKEN")])).map((d) => d.name)).toEqual([
+  it("setup asks for each missing or rotated secret, a oneOf group once (its first member) and only when none is set", async () => {
+    const asked = async (values: Record<string, string>, rotate: SecretName[] = []) =>
+      (await secretsToPrompt(DECLS, new MapSecrets(values), rotate)).map((d) => d.name);
+    expect(await asked({})).toEqual(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_TOKEN", "SLACK_BOT_TOKEN"]);
+    expect(await asked({ ANTHROPIC_API_KEY: "k", GITHUB_TOKEN: "g", SLACK_BOT_TOKEN: "s" })).toEqual([]);
+    expect(await asked({ ANTHROPIC_API_KEY: "k", GITHUB_TOKEN: "g", SLACK_BOT_TOKEN: "s" }, [n("SLACK_BOT_TOKEN"), n("CLAUDE_CODE_OAUTH_TOKEN")])).toEqual([
+      "CLAUDE_CODE_OAUTH_TOKEN",
       "SLACK_BOT_TOKEN",
     ]);
+    // MYSQL_PASSWORD is never asked: the Database step generates it.
+    expect((await secretsToPrompt([{ name: n("MYSQL_PASSWORD"), purpose: "db" }], new MapSecrets({}), [])).map((d) => d.name)).toEqual([]);
   });
 
   it("setup adds every declared name the secret file lacks, empty, keeping values", async () => {
@@ -271,6 +276,49 @@ describe("doctor and setup follow the declared secrets", () => {
     const file = join(dir, "cfg", ".env");
     await ensureSecretFile(file, join(dir, "template"), [n("GITHUB_TOKEN"), n("SLACK_BOT_TOKEN")]);
     expect(readFileSync(file, "utf8")).toBe("GITHUB_TOKEN=\nSLACK_BOT_TOKEN=\n");
+  });
+});
+
+describe("GitHub off: no GitHub credential is asked for or checked", () => {
+  /** The checked-in config with every GitHub plugin off (what setup's "Sync with GitHub? no" writes), `github_auth` kept. */
+  const localOnly = (githubAuth: string) => ({
+    ...REAL,
+    store: { type: "sqlite" },
+    auth: "local",
+    permissions: { grants: ["static"] },
+    plugins: { ...(REAL.plugins as object), source: ["local"], broker: "local", github_auth: githubAuth },
+  });
+  const GITHUB = ["GITHUB_APP_ID", "GITHUB_TOKEN"];
+
+  for (const githubAuth of ["app", "token"]) {
+    it(`github_auth "${githubAuth}": setup does not ask for and doctor does not FAIL on GITHUB_APP_ID or GITHUB_TOKEN`, async () => {
+      const loaded = await loadConfig(root(localOnly(githubAuth), "# nothing here yet\n"), { platform: "linux" });
+      expect(loaded.config.local_only).toBe(true);
+      const needed = neededSecrets(loaded).map((d) => d.name);
+      for (const name of GITHUB) expect(needed, name).not.toContain(name);
+      const asked = (await secretsToPrompt(neededSecrets(loaded), new MapSecrets({}), [])).map((d) => d.name);
+      for (const name of GITHUB) expect(asked, name).not.toContain(name);
+      const checks = await doctorChecks(loaded);
+      expect(checks.filter((c) => /GITHUB_APP_ID|GITHUB_TOKEN/.test(c.msg))).toEqual([]);
+    });
+  }
+
+  it("with GitHub on, the selected github_auth plugin's secret is still needed", async () => {
+    const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }, ""), { platform: "linux" });
+    expect(neededSecrets(loaded).map((d) => d.name)).toContain("GITHUB_APP_ID");
+  });
+});
+
+describe("doctor: ANTHROPIC_API_KEY in the shell", () => {
+  it("unset is ok and says why that is good; set is a FAIL that says to unset it", async () => {
+    const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }, ""), { platform: "linux" });
+    vi.stubEnv("ANTHROPIC_API_KEY", "");
+    const unset = (await doctorChecks(loaded)).find((c) => c.msg.startsWith("ANTHROPIC_API_KEY"));
+    expect(unset).toEqual({ ok: true, msg: "ANTHROPIC_API_KEY not set (good: agents use CLAUDE_CODE_OAUTH_TOKEN)" });
+    vi.stubEnv("ANTHROPIC_API_KEY", "sk-test-not-a-real-key");
+    const set = (await doctorChecks(loaded)).find((c) => c.msg.startsWith("ANTHROPIC_API_KEY"));
+    expect(set).toEqual({ ok: false, msg: "ANTHROPIC_API_KEY is set in this shell: run `unset ANTHROPIC_API_KEY` (agents must use CLAUDE_CODE_OAUTH_TOKEN)" });
+    expect(set!.msg).not.toContain("sk-test");
   });
 });
 

@@ -10,7 +10,7 @@ import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-s
 import { HttpSlackApi, SlackApiError, type FetchFn } from "../src/impl/source/slack-api.js";
 import { slackConfig, slackConfigProblems } from "../src/impl/source/slack-config.js";
 import { footerCommands, renderComment, suggestedCommand, toMrkdwn } from "../src/impl/source/slack-format.js";
-import { SlackSource } from "../src/impl/source/slack-source.js";
+import { SlackSource, type SlackSourceDeps } from "../src/impl/source/slack-source.js";
 import slackPlugin from "../src/impl/source/slack.plugin.js";
 import { REGISTRY } from "../src/plugins.js";
 import { cleanScanner, recordingLog } from "./helpers/fakes.js";
@@ -39,8 +39,8 @@ class RecordingSecrets implements SecretStore {
   }
 }
 
-/** A fake slack.com: answers each method, records requests. */
-function fakeFetch(answers: Record<string, unknown> = {}) {
+/** A fake slack.com: answers each method (an HTTP status and headers per method in `http`), records requests. */
+function fakeFetch(answers: Record<string, unknown> = {}, http: Record<string, { status: number; headers?: Record<string, string> }> = {}) {
   const requests: { url: string; headers: Record<string, string>; body: string }[] = [];
   const fn: FetchFn = async (url, init) => {
     requests.push({ url, headers: init.headers, body: init.body });
@@ -52,7 +52,8 @@ function fakeFetch(answers: Record<string, unknown> = {}) {
       "chat.update": { ok: true },
       "conversations.replies": { ok: true, messages: [] },
     };
-    return { status: 200, json: async () => answers[method] ?? defaults[method] };
+    const headers = http[method]?.headers ?? {};
+    return { status: http[method]?.status ?? 200, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, json: async () => answers[method] ?? defaults[method] };
   };
   return { fn, requests };
 }
@@ -83,6 +84,65 @@ describe("slack config block", () => {
     const { slack: _, ...withoutBlock } = REAL;
     const ctx = { loaded: { file: withoutBlock } } as never;
     expect(() => slackPlugin.create(ctx)).toThrow(/no "slack" block/);
+  });
+});
+
+describe("slack app manifest", () => {
+  const ROOT = join(import.meta.dirname, "..");
+  const manifest = JSON.parse(readFileSync(join(ROOT, "slack", "manifest.json"), "utf8")) as {
+    oauth_config: { scopes: { bot: string[] } };
+    settings: { event_subscriptions: { bot_events: string[] } };
+  };
+  const scopes = manifest.oauth_config.scopes.bot;
+  const events = manifest.settings.event_subscriptions.bot_events;
+  const doc = readFileSync(join(ROOT, "docs", "slack-setup.md"), "utf8");
+  /** The distinct backticked names on the doc's "**label:**" line that match `shape` (a scope has a colon, an event does not need one). */
+  const docList = (label: string, shape: RegExp) =>
+    [...new Set([...(doc.split("\n").find((l) => l.includes(`**${label}:**`)) ?? "").matchAll(/`([a-z_.:]+)`/g)].map((m) => m[1]!))].filter((n) => shape.test(n));
+
+  it("asks for the private-channel scope and event, beside the public-channel ones", () => {
+    expect(scopes).toEqual(expect.arrayContaining(["app_mentions:read", "channels:history", "groups:history", "chat:write"]));
+    expect(events).toEqual(expect.arrayContaining(["app_mention", "message.channels", "message.groups"]));
+  });
+
+  it("the setup doc lists the same scopes and events", () => {
+    expect([...docList("Bot scopes", /^[a-z_]+:[a-z_]+$/)].sort()).toEqual([...scopes].sort());
+    expect([...docList("Events", /^[a-z_.]+$/)].sort()).toEqual([...events].sort());
+  });
+});
+
+describe("slack source and private channels", () => {
+  const PRIVATE = "G0PRIVATE1";
+  const me = { team_id: "T0TEAM", user_id: BOT };
+  const thread = "1800000000.000100";
+  const source = (store: { getWorkItemBySource: () => Promise<unknown>; recordItemMessage?: (m: unknown) => Promise<unknown> }) =>
+    new SlackSource({
+      api: {} as never, connect: (() => { throw new Error("not used"); }) as never, channels: [CHANNEL, PRIVATE],
+      scanner: cleanScanner, store: { recordItemMessage: async () => {}, ...store } as never, repo: REPO, log: recordingLog(),
+    });
+  /** The event from a channel, with the channel ID swapped out so two channels' events compare equal. */
+  const from = async (s: SlackSource, channel: string, ev: Record<string, unknown>) =>
+    JSON.parse(JSON.stringify(await s.toEvent(eventEnvelope({ ...ev, channel }, "Ev0SAME", "env-same"), me)).replaceAll(channel, "<channel>"));
+
+  it("a mention in a listed G… channel is taken like one in a listed C… channel", async () => {
+    const s = source({ getWorkItemBySource: async () => null });
+    const ev = mention("1800000000.000200", "please fix the build");
+    const priv = await from(s, PRIVATE, ev);
+    expect(priv).toMatchObject({ event: { kind: "item_requested" } });
+    expect(priv).toEqual(await from(s, CHANNEL, ev));
+    expect(await s.toEvent(eventEnvelope({ ...ev, channel: "G0UNLISTED" }), me)).toBeNull();
+  });
+
+  it("a message reply in a work item's thread in a listed G… channel is taken like one in a C… channel", async () => {
+    // Since #480 a reply in an item's thread is kept on the item's thread first; both channels keep the same entry.
+    const kept: unknown[] = [];
+    const s = source({ getWorkItemBySource: async () => ({ id: "wi_1" }), recordItemMessage: async (m: unknown) => { kept.push(m); } });
+    const ev = { type: "message", user: "U0ALICE", ts: "1800000000.000300", thread_ts: thread, text: "looks good to me" };
+    const priv = await from(s, PRIVATE, ev);
+    expect(priv).toMatchObject({ event: { kind: "plain_comment" } });
+    expect(priv).toEqual(await from(s, CHANNEL, ev));
+    const entry = { work_item_id: "wi_1", marker: "slack:1800000000.000300", body: "looks good to me", actor: "slack:U0ALICE" };
+    expect(kept).toEqual([entry, entry]);
   });
 });
 
@@ -122,7 +182,12 @@ describe("slack plugin secrets", () => {
     const log = recordingLog();
     const socket = new FakeSocket();
     const source = new SlackSource({
-      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: { getWorkItemBySource: async () => null }, repo: REPO, log,
+      api, connect: socket.connect, channels: [CHANNEL], scanner: cleanScanner, store: {
+        getWorkItemBySource: async () => null,
+        recordItemMessage: async () => { throw new Error("no item: nothing to record"); },
+        getPostedComment: async () => null,
+        recordPostedComment: async () => {},
+      } as unknown as SlackSourceDeps["store"], repo: REPO, log,
     });
     socket.push(eventEnvelope(mention("1800000001.000100", "hello")));
     const ac = new AbortController();
@@ -135,6 +200,35 @@ describe("slack plugin secrets", () => {
     const outside = JSON.stringify([first.value!.event, first.value!.dedupe_key, log.lines, socket.urls, requests.map((r) => r.body)]);
     for (const v of [VALUES.SLACK_BOT_TOKEN!, VALUES.SLACK_APP_TOKEN!]) expect(outside).not.toContain(v);
     expect(socket.acks).toHaveLength(1);
+  });
+
+  const NOW = Date.parse("2026-11-10T00:00:00Z");
+  const failure = (api: HttpSlackApi): Promise<SlackApiError> =>
+    api.postMessage({ channel: CHANNEL, thread_ts: "1.2", text: "x" }).then(() => { throw new Error("expected a failure"); }, (e: unknown) => e as SlackApiError);
+
+  it("a 429 carries status 429 and waits until its Retry-After, after the injected now; the message names only the method and the code", async () => {
+    const api = new HttpSlackApi(new RecordingSecrets(), fakeFetch({}, { "chat.postMessage": { status: 429, headers: { "retry-after": "7" } } }).fn, undefined, () => NOW);
+    const err = await failure(api);
+    expect(err).toBeInstanceOf(SlackApiError);
+    expect(err).toMatchObject({ status: 429, wait_until: new Date(NOW + 7000).toISOString() });
+    expect(err.message).toBe("slack chat.postMessage failed: rate_limited");
+  });
+
+  it("a 429 with no Retry-After carries status 429 and no wait", async () => {
+    const api = new HttpSlackApi(new RecordingSecrets(), fakeFetch({}, { "chat.postMessage": { status: 429 } }).fn, undefined, () => NOW);
+    const err = await failure(api);
+    expect(err.status).toBe(429);
+    expect(err.wait_until).toBeUndefined();
+  });
+
+  it("channel_not_found is a 404 and not_in_channel a 403; token errors carry no status", async () => {
+    const statusOf = async (error: string) =>
+      (await failure(new HttpSlackApi(new RecordingSecrets(), fakeFetch({ "chat.postMessage": { ok: false, error } }).fn))).status;
+    expect(await statusOf("channel_not_found")).toBe(404);
+    expect(await statusOf("not_in_channel")).toBe(403);
+    expect(await statusOf("invalid_auth")).toBeUndefined();
+    expect(await statusOf("token_revoked")).toBeUndefined();
+    expect(await statusOf("constructor")).toBeUndefined();
   });
 
   it("a missing token fails the call with the secret's name only", async () => {

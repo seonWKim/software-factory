@@ -1,7 +1,7 @@
 // A fake Slack for the `slack` source tests (issue #109): the Web API calls the source makes, and a Socket Mode
 // connection a test pushes envelopes into. Every value here is an obvious fake: no token-shaped strings.
 
-import type { SlackApi, SlackMessage, SlackPost } from "../../src/impl/source/slack-api.js";
+import { SlackApiError, type SlackApi, type SlackMessage, type SlackPost } from "../../src/impl/source/slack-api.js";
 import type { SocketConnection, SocketConnector } from "../../src/impl/source/slack-socket.js";
 
 export const TEAM = "T0TEAM";
@@ -21,6 +21,13 @@ export class FakeSlackApi implements SlackApi {
   /** Every write call in order, for "nothing else was posted" checks. */
   calls: { method: "postMessage" | "updateMessage"; text: string; blocks?: readonly unknown[] }[] = [];
   identityCalls = 0;
+  /** conversations.replies calls (thread reads). */
+  threadReplyCalls = 0;
+  /** Reactions on messages, each at most once, as Slack keeps them; `reactCalls` counts every call. */
+  reactions: { channel: string; ts: string; name: string }[] = [];
+  reactCalls = 0;
+  /** A Slack error code every react call fails with, e.g. `missing_scope`; null: reacting works. */
+  failReact: string | null = null;
   private next = 5000;
 
   async identity(): Promise<{ team_id: string; user_id: string }> {
@@ -42,12 +49,19 @@ export class FakeSlackApi implements SlackApi {
   async updateMessage(m: Omit<SlackPost, "thread_ts"> & { ts: string }): Promise<void> {
     this.calls.push({ method: "updateMessage", text: m.text });
     const msg = this.messages.find((x) => x.channel === m.channel && x.ts === m.ts);
-    if (!msg) throw new Error("message_not_found");
+    if (!msg) throw new SlackApiError("chat.update", "message_not_found");
     msg.text = m.text;
     if (m.metadata) msg.metadata = m.metadata;
   }
   async threadReplies(channel: string, thread_ts: string): Promise<SlackMessage[]> {
+    this.threadReplyCalls++;
     return this.messages.filter((m) => m.channel === channel && m.thread_ts === thread_ts);
+  }
+  /** Like HttpSlackApi: a reaction already there is success, not a second one. */
+  async react(channel: string, ts: string, name: string): Promise<void> {
+    this.reactCalls++;
+    if (this.failReact !== null) throw new SlackApiError("reactions.add", this.failReact);
+    if (!this.reactions.some((r) => r.channel === channel && r.ts === ts && r.name === name)) this.reactions.push({ channel, ts, name });
   }
 
   /** The factory's messages in one thread. */

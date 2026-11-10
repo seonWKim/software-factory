@@ -9,10 +9,15 @@ import type { UserId, WorkItem } from "../src/core/types.js";
 import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMResponse } from "../src/interfaces/llm-provider.js";
+import type { Secret, SecretName } from "../src/interfaces/secret-store.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { ACTION_CANCEL, ACTION_CONFIRM } from "../src/impl/source/slack-format.js";
-import { SlackSource, parseSlackSourceId, slackSourceId } from "../src/impl/source/slack-source.js";
+import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
+import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack } from "../src/impl/source/slack-format.js";
+import { runLocalCli } from "../src/core/local-cli.js";
+import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
+import { META_STATUS, SlackSource, parseSlackSourceId, slackLink, slackSourceId } from "../src/impl/source/slack-source.js";
 import { FakeForge, FakeSource, config, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL, TEAM, eventEnvelope, mention, message, press } from "./helpers/slack.js";
 import { newStore, w1 } from "./helpers/store.js";
@@ -21,8 +26,8 @@ import { newStore, w1 } from "./helpers/store.js";
 const FAKE_GITHUB_TOKEN = "fake-github-token-for-the-leak-test-0001";
 
 /**
- * Slack users: U0ALICE is linked to github:1 (may approve), U0BOB to github:2 (known, never allowed to
- * approve), anyone else is not linked. Every authorize call is recorded.
+ * The forge's auth plugin, for GitHub identities only: Slack accounts are judged by the local auth plugin over the
+ * store's links and local users (setup links U0ALICE to github:1, the owner, and U0BOB to github:2, a requester).
  */
 class SlackAuth implements AuthProvider {
   calls: { user_id: string; action: AuthAction }[] = [];
@@ -64,14 +69,26 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   const socket = new FakeSocket();
   const log = recordingLog();
   const scanner = new PatternEgressScanner(async () => [FAKE_GITHUB_TOKEN]);
-  const slack = new SlackSource({
-    api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store: real, repo: { owner: "o", name: "r" }, log,
-  });
+  const repo = { owner: "o", name: "r" };
+  // `settings list|history` from Slack: the CLI's own reads (slack.plugin.ts builds the same over the config file).
+  const settings = async (args: readonly string[]) => {
+    const a = parseSettingsArgs(args);
+    if ("error" in a) return { ok: false, lines: [a.error] };
+    return runSettings({ store: real, base: { file: {}, layers: config.settings }, repo, resolveProject: () => Promise.reject(new Error("no")), actor: "" }, a);
+  };
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();
+  // Slack users: U0ALICE is linked to github:1 (the local owner: may approve), U0BOB to github:2 (no role: never
+  // allowed to approve), anyone else is not linked.
+  for (const [user, account] of [["github:1", "U0ALICE"], ["github:2", "U0BOB"]] as const) {
+    await real.createLinkCode(user as UserId, `code-${account}`);
+    await real.redeemLinkCode(`code-${account}`, { provider: "slack", subject: account });
+  }
+  await real.claimLocalOwner("github:1" as UserId);
   const controller = new ControllerRole({
-    store: real, sources: [gh, slack], forge, auth, clock, config, log, scanner, llm: new ApproveLLM(),
+    store: real, sources: [gh, slack], forge, auth, local_auth: new LocalAuthProvider(real), clock, config, log, scanner, llm: new ApproveLLM(),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log: silentLike(log), owner: "replica-a" });
@@ -260,11 +277,11 @@ describe("slack source: ack after store, replay", () => {
     const item = await specPending(f, ts);
     const changes = (await f.store.listStateChanges(item.id)).length;
 
-    // The approve press is stored, but its ack is lost with the connection: Slack sends it again.
+    // The approve press is stored as a command row, but its ack is lost with the connection: Slack sends it again.
     const approve = press(ts, "sf_cmd:approve", "/approve");
     f.socket.loseAcks = true;
     f.socket.push(approve);
-    await waitFor(async () => (await f.store.listInboxAfter("slack_thread", 0, 50)).some((r) => r.dedupe_key.startsWith("action:")), "stored");
+    await waitFor(async () => (await f.store.listCliCommandsAfter(0, 50)).length === 1, "stored");
     f.socket.loseAcks = false;
     f.socket.drop();
     await untilAdvancing(f, () => f.socket.acks.includes(String(approve.envelope_id)), "redelivered and acked");
@@ -274,11 +291,138 @@ describe("slack source: ack after store, replay", () => {
     await f.controller.tickIntake();
 
     expect(await f.store.listWorkItems(10)).toHaveLength(1);
-    expect((await f.store.listInboxAfter("slack_thread", 0, 50)).map((r) => r.dedupe_key.split(":")[0])).toEqual(["event", "action"]);
+    expect((await f.store.listInboxAfter("slack_thread", 0, 50)).map((r) => r.dedupe_key.split(":")[0])).toEqual(["event"]);
+    expect((await f.store.listCliCommandsAfter(0, 50)).map((c) => [c.command, c.actor])).toEqual([["approve", "github:1"]]);
     const after = await f.store.listStateChanges(item.id);
     expect(after.length).toBe(changes + 1);
     expect(after.at(-1)!.reason).not.toBe("intake");
     expect(f.socket.connections).toBeGreaterThanOrEqual(2);
+  });
+});
+
+/** The item's thread entries that came from Slack people: marker, actor, body. */
+const slackEntries = async (f: F, item: WorkItem) =>
+  (await f.store.listItemMessages(item.id)).filter((m) => m.marker.startsWith("slack:")).map((m) => [m.marker, m.actor, m.body]);
+
+describe("slack source: people's replies in the item thread (issue #480)", () => {
+  it("stores a reply in an item's thread once, keyed by its ts, with the Slack user ID as actor and no outbox row", async () => {
+    const f = await setup();
+    const ts = "1800000040.000100";
+    const item = await specPending(f, ts);
+    await deliver(f, eventEnvelope(message("1800000040.000200", "looks good to me", { thread_ts: ts })));
+    expect(await slackEntries(f, item)).toEqual([["slack:1800000040.000200", "slack:U0ALICE", "looks good to me"]]);
+    expect((await f.store.listDeliveries(item.id)).map((d) => d.marker).filter((m) => m.startsWith("slack:"))).toEqual([]);
+    // The request text of the mention that created the item is not an entry.
+    expect((await f.store.listItemMessages(item.id)).map((m) => m.body)).not.toContain("please add a scope gate");
+  });
+
+  it("the reply sits between the factory messages it followed, in the order Slack sent them", async () => {
+    const f = await setup();
+    const ts = "1800000041.000100";
+    const item = await specPending(f, ts);
+    await deliver(f, eventEnvelope(message("1800000041.000200", "one question first", { thread_ts: ts })));
+    await f.store.recordItemMessage({ work_item_id: item.id, marker: "<!-- factory:later -->", body: "a later factory message" });
+    const markers = (await f.store.listItemMessages(item.id)).map((m) => m.marker);
+    const spec = markers.findIndex((m) => m.startsWith("<!-- factory:spec"));
+    const reply = markers.indexOf("slack:1800000041.000200");
+    const later = markers.indexOf("<!-- factory:later -->");
+    expect(spec).toBeGreaterThanOrEqual(0);
+    expect(spec < reply && reply < later).toBe(true);
+  });
+
+  it("a redelivered envelope or a restarted listener stores no second entry", async () => {
+    const f = await setup();
+    const ts = "1800000042.000100";
+    const item = await specPending(f, ts);
+    const reply = eventEnvelope(message("1800000042.000200", "one more thing", { thread_ts: ts }));
+    await deliver(f, reply);
+    // Slack sends the same event again in a new envelope, before and after the listener restarts.
+    await deliver(f, { ...reply, envelope_id: "env-480-again" });
+    f.socket.drop();
+    await untilAdvancing(f, () => f.socket.connections >= 2, "reconnected");
+    await deliver(f, { ...reply, envelope_id: "env-480-restart" });
+    expect(await slackEntries(f, item)).toEqual([["slack:1800000042.000200", "slack:U0ALICE", "one more thing"]]);
+  });
+
+  it("a command typed in the thread, plain or after a mention, is stored the same way and runs once", async () => {
+    const f = await setup();
+    const ts = "1800000043.000100";
+    const item = await specPending(f, ts);
+    const typed = eventEnvelope(mention("1800000043.000200", "/approve", { thread_ts: ts }));
+    await deliver(f, typed);
+    await deliver(f, { ...typed, envelope_id: "env-480-typed-again" });
+    await deliver(f, eventEnvelope(message("1800000043.000300", " /retry", { thread_ts: ts })));
+    expect(await slackEntries(f, item)).toEqual([
+      ["slack:1800000043.000200", "slack:U0ALICE", "/approve"],
+      ["slack:1800000043.000300", "slack:U0ALICE", "/retry"],
+    ]);
+    expect((await f.store.listCliCommandsAfter(0, 50)).filter((c) => c.command === "approve")).toHaveLength(1);
+    expect((await f.store.listStateChanges(item.id)).filter((c) => c.reason === "spec_approved")).toHaveLength(1);
+  });
+
+  it("a mention in an item's thread that is a plain request is stored too", async () => {
+    const f = await setup();
+    const ts = "1800000044.000100";
+    const item = await specPending(f, ts);
+    await deliver(f, eventEnvelope(mention("1800000044.000200", "can you also cover tags?", { thread_ts: ts })));
+    expect(await slackEntries(f, item)).toEqual([["slack:1800000044.000200", "slack:U0ALICE", "can you also cover tags?"]]);
+  });
+
+  it("a reply or a mention in a thread that is not a work item stores no entry anywhere", async () => {
+    const f = await setup();
+    const other = await specPending(f, "1800000045.000100");
+    await deliver(f, eventEnvelope(message("1800000045.000300", "unrelated", { thread_ts: "1800000045.000200" })));
+    await deliver(f, eventEnvelope(mention("1800000045.000400", "/approve", { thread_ts: "1800000045.000200" })));
+    expect(await slackEntries(f, other)).toEqual([]);
+    for (const it of await f.store.listWorkItems(10)) expect(await slackEntries(f, it)).toEqual([]);
+  });
+
+  it("stored entries carry no Slack display or real name", async () => {
+    const f = await setup();
+    const ts = "1800000046.000100";
+    const item = await specPending(f, ts);
+    const profile = { user_profile: { real_name: "Alice Example-Realname", display_name: "alice-display", name: "alice-handle" } };
+    await deliver(f, eventEnvelope(message("1800000046.000200", "fine by me", { thread_ts: ts, ...profile })));
+    await deliver(f, eventEnvelope(mention("1800000046.000300", "/approve", { thread_ts: ts, ...profile })));
+    const entries = await f.store.listItemMessages(item.id);
+    expect(entries.filter((m) => m.marker.startsWith("slack:"))).toHaveLength(2);
+    const stored = JSON.stringify(entries);
+    for (const name of ["Alice Example-Realname", "alice-display", "alice-handle"]) expect(stored).not.toContain(name);
+    expect(stored).toContain("slack:U0ALICE");
+  });
+
+  it("a failed thread write leaves the envelope unacked and yields no event; Slack's resend stores it once", async () => {
+    let fail = false;
+    const f = await setup({
+      store: (s) =>
+        new Proxy(s, {
+          get(target, prop, receiver) {
+            if (prop === "recordItemMessage") {
+              return async (...args: Parameters<FactoryStore["recordItemMessage"]>) => {
+                if (fail && args[0].marker.startsWith("slack:")) throw new Error("store down");
+                return target.recordItemMessage(...args);
+              };
+            }
+            const v = Reflect.get(target, prop, receiver);
+            return typeof v === "function" ? v.bind(target) : v;
+          },
+        }),
+    });
+    const ts = "1800000047.000100";
+    const item = await specPending(f, ts);
+    const inbox = (await f.store.listInboxAfter("slack_thread", 0, 100)).length;
+    fail = true;
+    const reply = eventEnvelope(message("1800000047.000200", "hold on", { thread_ts: ts }));
+    f.socket.push(reply);
+    await waitFor(() => f.log.lines.some((l) => l.msg.startsWith("stream disconnected")), "failed write");
+    expect(f.socket.acks).not.toContain(String(reply.envelope_id));
+    expect(await f.store.listInboxAfter("slack_thread", 0, 100)).toHaveLength(inbox);
+    expect(await slackEntries(f, item)).toEqual([]);
+
+    // The listener reconnects after its backoff and Slack sends the envelope again.
+    fail = false;
+    await untilAdvancing(f, () => f.socket.acks.includes(String(reply.envelope_id)), "ack after the retry");
+    expect(await slackEntries(f, item)).toEqual([["slack:1800000047.000200", "slack:U0ALICE", "hold on"]]);
   });
 });
 
@@ -326,9 +470,9 @@ describe("slack source: replies, buttons and commands", () => {
     await deliver(f, press(ts, "sf_cmd:approve", "/approve", "U0STRANGER"));
     await deliver(f, eventEnvelope(mention("1800000011.000200", "/approve", { thread_ts: ts, user: "U0STRANGER" })));
     expect(await f.store.getWorkItem(item.id)).toEqual(before);
-    const refusals = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
+    const refusals = f.api.thread(ts).filter((m) => m.text?.includes("not linked to a factory user"));
     expect(refusals).toHaveLength(2);
-    expect(refusals[0]!.text).toContain("not linked to a factory user");
+    expect(await f.store.listCliCommandsAfter(0, 50)).toEqual([]);
   });
 
   it("an unlinked person's mention gets one reply and no item", async () => {
@@ -342,22 +486,23 @@ describe("slack source: replies, buttons and commands", () => {
     expect(replies[0]!.text).toContain("not taken in as a work item");
   });
 
-  it("every press and typed command asks AuthProvider.authorize first; a deny changes nothing", async () => {
+  it("a linked user whose stored role does not allow it gets the CLI's refusal once per command; nothing changes", async () => {
     const f = await setup();
     const ts = "1800000013.000100";
     const item = await specPending(f, ts);
     const before = await f.store.getWorkItem(item.id);
-    f.auth.calls = [];
-    f.auth.denyAll = true;
-    await deliver(f, press(ts, "sf_cmd:approve", "/approve"));
-    await deliver(f, eventEnvelope(mention("1800000013.000200", "/approve", { thread_ts: ts })));
     await deliver(f, press(ts, "sf_cmd:approve", "/approve", "U0BOB"));
-    expect(f.auth.calls).toEqual([
-      { user_id: "github:1", action: "approve_spec" },
-      { user_id: "github:1", action: "approve_spec" },
-      { user_id: "github:2", action: "approve_spec" },
-    ]);
+    await deliver(f, eventEnvelope(mention("1800000013.000200", "/approve", { thread_ts: ts, user: "U0BOB" })));
     expect(await f.store.getWorkItem(item.id)).toEqual(before);
+    // The same command row the CLI stores, with the linked factory user as actor.
+    expect((await f.store.listCliCommandsAfter(0, 50)).map((c) => [c.command, c.actor, c.args])).toEqual([
+      ["approve", "github:2", { item: item.id }],
+      ["approve", "github:2", { item: item.id }],
+    ]);
+    const refusal = "github:2 has no role that allows it (`no_role`); the local owner can grant one with `factory users add github:2 --role approver`";
+    const replies = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
+    expect(replies).toHaveLength(2);
+    for (const r of replies) expect(r.text).toContain(refusal);
   });
 
   it("a plain reply gets a suggestion with Confirm and Cancel; Cancel changes nothing, nothing runs before Confirm", async () => {
@@ -412,7 +557,7 @@ describe("slack source: replies, buttons and commands", () => {
     expect(f.api.thread(ts).filter((m) => m.text?.startsWith("Status:")).map((m) => m.text)).toEqual([status[0]!.text]);
   });
 
-  it("posts a marker at most once, looking in the thread first", async () => {
+  it("posts a marker at most once", async () => {
     const f = await setup();
     const source = { type: "slack_thread" as const, id: sourceId("1800000016.000100"), link: "" };
     const a = await f.slack.postComment(source, "hello", "<!-- m1 -->");
@@ -451,5 +596,296 @@ describe("slack source: egress", () => {
     // outcome would have stopped it; the Slack source adds nothing: no inbox row, no log line carries it.
     void item;
     expect(f.api.thread(ts).some((m) => m.text?.includes("withheld by the leak scanner"))).toBe(true);
+  });
+});
+
+describe("slack source: store records before thread reads (issue #484)", () => {
+  const statusOf = (f: F, ts: string) => f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));
+  const STATUS_MARKER = "slack:status";
+
+  it("a second status edits the first in place with no thread read; only the first status reads the thread", async () => {
+    const f = await setup();
+    const ts = "1800000040.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    await f.slack.setStatus(source, "triaging", null);
+    const reads = f.api.threadReplyCalls;
+    await f.slack.setStatus(source, "implementing", null);
+    expect(f.api.threadReplyCalls).toBe(reads);
+    expect(reads).toBe(1);
+    expect(f.api.calls.map((c) => c.method)).toEqual(["postMessage", "updateMessage"]);
+    const status = statusOf(f, ts);
+    expect(status.map((m) => m.text)).toEqual(["Status: *implementing*"]);
+    expect(await f.store.getPostedComment(source.id, STATUS_MARKER, "")).toMatchObject({
+      comment_id: status[0]!.ts, url: slackLink(CHANNEL, status[0]!.ts, ts),
+    });
+  });
+
+  it("a deleted status message (message_not_found) is replaced by a new one, recorded, and later edits go to it", async () => {
+    const f = await setup();
+    const ts = "1800000041.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    await f.slack.setStatus(source, "triaging", null);
+    const first = statusOf(f, ts)[0]!.ts;
+    f.api.messages = f.api.messages.filter((m) => m.ts !== first);
+    await f.slack.setStatus(source, "implementing", null);
+    const after = statusOf(f, ts);
+    expect(after.map((m) => m.text)).toEqual(["Status: *implementing*"]);
+    expect(after[0]!.ts).not.toBe(first);
+    expect(await f.store.getPostedComment(source.id, `slack:status:after:${first}`, "")).toMatchObject({ comment_id: after[0]!.ts });
+    const calls = f.api.calls.length;
+    await f.slack.setStatus(source, "in_review", null);
+    expect(f.api.calls.slice(calls).map((c) => c.method)).toEqual(["updateMessage"]);
+    expect(statusOf(f, ts).map((m) => [m.ts, m.text])).toEqual([[after[0]!.ts, "Status: *in review*"]]);
+    expect(f.api.threadReplyCalls).toBe(1);
+  });
+
+  it("a status posted before the records is found by one thread read, recorded, and later updates read nothing", async () => {
+    const f = await setup();
+    const ts = "1800000042.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    const { ts: old } = await f.api.postMessage({
+      channel: CHANNEL, thread_ts: ts, text: "Status: *triaging*", metadata: { event_type: META_STATUS, event_payload: { status: "triaging" } },
+    });
+    await f.slack.setStatus(source, "implementing", null);
+    await f.slack.setStatus(source, "in_review", null);
+    expect(f.api.threadReplyCalls).toBe(1);
+    expect(statusOf(f, ts).map((m) => [m.ts, m.text])).toEqual([[old, "Status: *in review*"]]);
+    expect((await f.store.getPostedComment(source.id, STATUS_MARKER, ""))?.comment_id).toBe(old);
+  });
+
+  it("a recorded comment marker returns its stored link with no thread read and no post", async () => {
+    const f = await setup();
+    const source = { type: "slack_thread" as const, id: sourceId("1800000043.000100"), link: "" };
+    await f.store.recordPostedComment({ source_id: source.id, marker: "<!-- m2 -->", comment_id: "1800000043.000200", url: "https://slack.com/archives/x", body: "hi" });
+    expect(await f.slack.postComment(source, "hi", "<!-- m2 -->")).toEqual({ url: "https://slack.com/archives/x" });
+    expect(f.api.threadReplyCalls).toBe(0);
+    expect(f.api.calls).toEqual([]);
+  });
+
+  it("a posted comment is recorded with its ts and link; a second post of the marker makes no call", async () => {
+    const f = await setup();
+    const thread = "1800000044.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(thread), link: "" };
+    const a = await f.slack.postComment(source, "hello", "<!-- m3 -->");
+    const posted = f.api.thread(thread)[0]!;
+    expect(a.url).toBe(slackLink(CHANNEL, posted.ts, thread));
+    expect(await f.store.getPostedComment(source.id, "<!-- m3 -->", "hello")).toMatchObject({ comment_id: posted.ts, url: a.url, same_body: true });
+    const reads = f.api.threadReplyCalls;
+    expect(await f.slack.postComment(source, "hello", "<!-- m3 -->")).toEqual(a);
+    expect(f.api.threadReplyCalls).toBe(reads);
+    expect(f.api.calls).toHaveLength(1);
+  });
+
+  it("a blocked comment or status is not posted or edited and leaves no record", async () => {
+    const f = await setup();
+    const ts = "1800000045.000100";
+    const source = { type: "slack_thread" as const, id: sourceId(ts), link: "" };
+    await f.slack.postComment(source, `leak ${FAKE_GITHUB_TOKEN}`, "<!-- leak2 -->");
+    expect(f.api.calls.map((c) => c.text)).not.toContain(expect.stringContaining(FAKE_GITHUB_TOKEN));
+    expect(await f.store.getPostedComment(source.id, "<!-- leak2 -->", "")).toBeNull();
+    await f.slack.postComment(source, `leak ${FAKE_GITHUB_TOKEN}`, "<!-- leak2 -->");
+    expect(f.api.calls).toHaveLength(1);
+    expect(await f.store.getPostedComment(source.id, "<!-- leak2 -->", "")).toBeNull();
+
+    f.scanner.scan = async () => ({ clean: false, findings: [{ rule: "known_secret", channel: "comment" }] });
+    const calls = f.api.calls.length;
+    await f.slack.setStatus(source, "triaging", null);
+    expect(f.api.calls.length).toBe(calls);
+    expect(await f.store.getPostedComment(source.id, STATUS_MARKER, "")).toBeNull();
+  });
+});
+
+describe("slack source: 👀 on a command", () => {
+  /** An item in review with PR 42, from a thread at `ts`. */
+  async function inReview(f: F, ts: string): Promise<WorkItem> {
+    const item = await specPending(f, ts);
+    await deliver(f, press(ts, "sf_cmd:approve", "/approve"));
+    await finishAll(f, "implement", { pr_number: 42 });
+    return (await f.store.getWorkItem(item.id))!;
+  }
+
+  it("/verdict accept in a thread gets exactly one eyes reaction on its message; a redelivered markSeen adds none", async () => {
+    const f = await setup();
+    const ts = "1800000020.000100";
+    const item = await inReview(f, ts);
+    const before = f.api.reactions.length;
+    await deliver(f, eventEnvelope(mention("1800000020.000200", "/verdict accept none looks right", { thread_ts: ts })));
+    expect((await f.store.listVerdicts(item.id)).map((v) => v.comment_id)).toContain("1800000020.000200");
+    const mine = () => f.api.reactions.filter((r) => r.ts === "1800000020.000200");
+    expect(mine()).toEqual([{ channel: CHANNEL, ts: "1800000020.000200", name: "eyes" }]);
+
+    await f.slack.markSeen(item.source, "1800000020.000200");
+    expect(mine()).toHaveLength(1);
+    // No other message got one from the verdict.
+    expect(f.api.reactions.length - before).toBe(1);
+  });
+
+  it("does nothing for no comment id or a button press's action key", async () => {
+    const f = await setup();
+    const source = { type: "slack_thread" as const, id: sourceId("1800000021.000100"), link: "" };
+    await f.slack.markSeen(source, null);
+    await f.slack.markSeen(source, "action:1800000121.000001");
+    expect(f.api.reactCalls).toBe(0);
+  });
+
+  it("a failed reaction (missing_scope) is a warning and the command still runs", async () => {
+    const f = await setup();
+    const ts = "1800000022.000100";
+    const item = await inReview(f, ts);
+    f.api.failReact = "missing_scope";
+    await deliver(f, eventEnvelope(mention("1800000022.000200", "/verdict accept none fine", { thread_ts: ts })));
+    expect((await f.store.listVerdicts(item.id)).map((v) => v.comment_id)).toContain("1800000022.000200");
+    expect(f.api.reactCalls).toBeGreaterThan(0);
+    expect(f.log.lines.some((l) => l.level === "warn" && l.msg === "mark seen failed" && String(l.fields?.error).includes("missing_scope"))).toBe(true);
+  });
+
+  it("HttpSlackApi.react calls reactions.add with the bot token and takes already_reacted as success", async () => {
+    const requests: { url: string; auth: string; body: string }[] = [];
+    let error: string | null = "already_reacted";
+    const fn: FetchFn = async (url, init) => {
+      requests.push({ url, auth: init.headers.authorization ?? "", body: init.body });
+      return { status: 200, json: async () => (error === null ? { ok: true } : { ok: false, error }) };
+    };
+    const api = new HttpSlackApi({ get: async (name) => (name === SLACK_BOT_TOKEN ? fakeSecret(name, "test-bot-value") : null) }, fn);
+    await api.react(CHANNEL, "1800000023.000200", "eyes");
+    expect(requests).toEqual([{ url: "https://slack.com/api/reactions.add", auth: "Bearer test-bot-value", body: JSON.stringify({ channel: CHANNEL, timestamp: "1800000023.000200", name: "eyes" }) }]);
+    error = "missing_scope";
+    await expect(api.react(CHANNEL, "1800000023.000200", "eyes")).rejects.toThrow("slack reactions.add failed: missing_scope");
+    error = null;
+    await api.react(CHANNEL, "1800000023.000200", "eyes");
+  });
+});
+
+function fakeSecret(name: SecretName, v: string): Secret {
+  return { name, reveal: () => v, toString: () => "[secret]", toJSON: () => "[secret]" };
+}
+
+describe("slack source: factory commands (issue #498)", () => {
+  /** The code block a reply of printed lines starts with. */
+  const block = (lines: readonly string[]) => `\`\`\`\n${escapeSlack(lines.join("\n"))}\n\`\`\``;
+  /** What the CLI prints for `a` on the same store, as `who`. */
+  const cli = (f: F, a: Parameters<typeof runLocalCli>[1], who = "github:1") =>
+    runLocalCli({ store: f.store, identity: { user: who as UserId, from: "cli_user" }, project: async () => null, read: async () => "", newId: () => "x" }, a);
+
+  it("`list` in a channel and `show <id>` in a thread reply with the text `task list` and `task show` print", async () => {
+    const f = await setup();
+    const item = await specPending(f, "1800000030.000100");
+    const sid = "local-chat-test";
+    await f.store.createWorkItem(
+      { source: { type: "local", id: sid, link: `local:${sid}` }, title: "a local task", requester_id: "github:1" as UserId, project: item.project, problem: "p", resources: [] },
+      { kind: "user", id: "github:1" as UserId },
+    );
+    await deliver(f, eventEnvelope(mention("1800000030.000200", "list")));
+    await deliver(f, eventEnvelope(mention("1800000030.000300", `show ${item.id}`, { thread_ts: "1800000030.000100" })));
+    const list = (await cli(f, { action: "list" })).lines;
+    expect(list.join("\n")).toContain("a local task");
+    expect(f.api.thread("1800000030.000200").map((m) => m.text)).toEqual([block(list)]);
+    const show = (await cli(f, { action: "show", id: item.id })).lines;
+    expect(f.api.thread("1800000030.000100").find((m) => m.text?.startsWith("```"))?.text).toBe(block(show));
+    // A read stores nothing, and a redelivery posts nothing more.
+    expect(await f.store.listCliCommandsAfter(0, 10)).toEqual([]);
+  });
+
+  it("an unlinked account gets one reply saying so; only `/link` and `help` are answered for it", async () => {
+    const f = await setup();
+    await deliver(f, eventEnvelope(mention("1800000031.000100", "list", { user: "U0STRANGER" })));
+    await deliver(f, eventEnvelope(mention("1800000031.000200", "help", { user: "U0STRANGER" })));
+    const [refusal] = f.api.thread("1800000031.000100");
+    expect(f.api.thread("1800000031.000100")).toHaveLength(1);
+    expect(refusal!.text).toContain("This Slack account is not linked to a factory user, so the command was not run");
+    const help = f.api.thread("1800000031.000200")[0]!.text!;
+    expect(help).toContain("/link &lt;code&gt;");
+    expect(help).not.toContain("`list`");
+  });
+
+  it("`users`, `mode` and `settings` writes get one refusal until #479 and write nothing; reads work", async () => {
+    const f = await setup();
+    const users = await f.store.listLocalUsers();
+    for (const [ts, text] of [["1800000032.000100", "users add local:dev@example.com --role approver"], ["1800000032.000200", "mode auto"], ["1800000032.000300", "settings set max_loops 9"]]) {
+      await deliver(f, eventEnvelope(mention(ts!, text!)));
+      const replies = f.api.thread(ts!);
+      expect(replies, text).toHaveLength(1);
+      expect(replies[0]!.text).toContain("signed command passports (issue #479)");
+    }
+    expect(await f.store.listLocalUsers()).toEqual(users);
+    expect(await f.store.listSettingChanges(10)).toEqual([]);
+    await deliver(f, eventEnvelope(mention("1800000032.000400", "users list")));
+    expect(f.api.thread("1800000032.000400")[0]!.text).toContain("you are github:1 (from linked chat account)");
+    await deliver(f, eventEnvelope(mention("1800000032.000500", "settings history")));
+    expect(f.api.thread("1800000032.000500")[0]!.text).toContain("no settings changes yet");
+  });
+
+  it("`merge` and item commands outside an item's thread get one reply naming where they work", async () => {
+    const f = await setup();
+    await deliver(f, eventEnvelope(mention("1800000033.000100", "merge")));
+    expect(f.api.thread("1800000033.000100").map((m) => m.text)).toEqual(["`merge` works only in a work item's thread: post it there, after a mention of the bot."]);
+  });
+
+  it("`merge` in the thread of an item with no local branch gets the CLI's refusal", async () => {
+    const f = await setup();
+    const item = await specPending(f, "1800000034.000100");
+    await deliver(f, eventEnvelope(mention("1800000034.000200", "merge", { thread_ts: "1800000034.000100" })));
+    const reply = f.api.thread("1800000034.000100").find((m) => m.text?.startsWith("```"))!;
+    expect(reply.text).toContain(`${item.id} is not a local work item: merge its change on the forge instead`);
+    expect(await f.store.listCliCommandsAfter(0, 10)).toEqual([]);
+  });
+
+  it("`help` lists only what the sender may run there: no item command in a channel, and none for a user without the role", async () => {
+    const f = await setup();
+    await specPending(f, "1800000035.000100");
+    await deliver(f, eventEnvelope(mention("1800000035.000200", "help")));
+    await deliver(f, eventEnvelope(mention("1800000035.000300", "help", { thread_ts: "1800000035.000100" })));
+    await deliver(f, eventEnvelope(mention("1800000035.000400", "help", { thread_ts: "1800000035.000100", user: "U0BOB" })));
+    const channel = f.api.thread("1800000035.000200")[0]!.text!;
+    expect(channel).toContain("`list`");
+    expect(channel).not.toContain("/approve");
+    const replies = f.api.thread("1800000035.000100").filter((m) => m.text?.startsWith("Commands you can run in this item"));
+    expect(replies).toHaveLength(2);
+    expect(replies[0]!.text).toContain("/approve");
+    expect(replies[1]!.text).not.toContain("/approve");
+    expect(replies[1]!.text).toContain("`list`");
+  });
+
+  it("a reply longer than Slack's limits is cut to them, with a note naming the CLI command and linking the item", async () => {
+    const f = await setup();
+    const item = await specPending(f, "1800000036.000100");
+    const long = Array.from({ length: 3000 }, (_, i) => `line ${i} ${"x".repeat(90)}`).join("\n");
+    await f.store.recordItemMessage({ work_item_id: item.id, marker: "<!-- long -->", body: long, actor: "github:1" });
+    await deliver(f, eventEnvelope(mention("1800000036.000200", `show ${item.id}`)));
+    const [reply] = f.api.thread("1800000036.000200");
+    const blocks = reply!.blocks as { text: { text: string } }[];
+    expect(blocks).toHaveLength(45);
+    for (const b of blocks) expect(b.text.text.length).toBeLessThanOrEqual(3000);
+    expect(item.source.link).toMatch(/^https:\/\//);
+    expect(blocks.at(-1)!.text.text).toBe(cutNote(`factory task show ${item.id}`, item.source.link));
+    expect(blocks.at(-1)!.text.text).toContain(`<${item.source.link}|`);
+  });
+
+  it("makes no Slack call before the command is stored, and a failing Slack API does not stop it being applied", async () => {
+    const f = await setup();
+    const ts = "1800000037.000100";
+    const item = await specPending(f, ts);
+    const down = async () => {
+      throw new Error("slack is down");
+    };
+    f.api.postMessage = down;
+    f.api.updateMessage = down;
+    f.api.threadReplies = down;
+    const calls = f.api.calls.length;
+    await deliver(f, eventEnvelope(mention("1800000037.000200", "/approve ship it", { thread_ts: ts })));
+    expect(f.api.calls.length).toBe(calls);
+    expect((await f.store.listCliCommandsAfter(0, 10)).map((c) => [c.key.startsWith("cli:slack-"), c.actor, c.command, c.args])).toEqual([
+      [true, "github:1", "approve", { item: item.id, text: "ship it" }],
+    ]);
+    await f.controller.tickIntake();
+    const after = (await f.store.getWorkItem(item.id))!;
+    expect(after.stage).toBe("RUNNING");
+    expect((await f.store.listStateChanges(item.id)).at(-1)).toMatchObject({ reason: "spec_approved", actor: { kind: "user", id: "github:1" } });
+  });
+
+  it("a mention in plain words outside an item's thread is a request: it starts a work item, as `task create` does", async () => {
+    const f = await setup();
+    await deliver(f, eventEnvelope(mention("1800000038.000100", "list the open bugs in the parser")));
+    expect((await itemOf(f, "1800000038.000100"))?.title).toBe("list the open bugs in the parser");
   });
 });

@@ -108,7 +108,12 @@ git -C <repo> status --ignored | grep .env  # nothing: no secret file in the rep
 
 ## 6. Automated
 
-`npm run setup` does steps 2–5 for you (hidden prompts for the tokens, MySQL database and user, label, checks, canary). See [`SET_UP.md`](../SET_UP.md).
+`npm run setup` does steps 2–5 for you (secret file, hidden prompts for the tokens, MySQL database and user, labels, checks, canary). See [`SET_UP.md`](../SET_UP.md) for the steps.
+
+- **Only what the selected plugins declare.** The Secrets step lists the secrets the selected plugins need and asks for each missing one, in the same run, with hidden input: the value goes straight to the secret file and never appears on screen, in shell history or in an argument. With GitHub off it asks for neither `GITHUB_APP_ID` nor `GITHUB_TOKEN`, and the checks report neither as a FAIL, also when you answered no to GitHub but declined to write the config change. `MYSQL_PASSWORD` is never asked: setup generates it.
+- **`--yes` reads nothing.** Under `npm run setup -- --yes` setup never reads the terminal: each question takes its default, and a missing secret is reported on a `✗` line instead of asked. Paste it later with a plain `npm run setup` in a terminal.
+- **Resume.** After each finished step setup writes `<state_dir>/setup-progress.json` (mode 600): the finished step names and your GitHub answer, never a secret value. A later run asks `Continue from step N?` or `start over`. A setup that finishes with every step `✓` deletes the file.
+- **Check lines.** Every check says what it checks, and every FAIL (`✗` in setup) says how to fix it. `✓ ANTHROPIC_API_KEY not set (good: agents use CLAUDE_CODE_OAUTH_TOKEN)` is the good state; when it is set, the line is a FAIL that says to run `unset ANTHROPIC_API_KEY`.
 
 ## Changing settings
 

@@ -4,7 +4,7 @@ What it does: the forge is where pull requests live. The `Forge` interface (`src
 
 - **PR events.** `poll(cursor)` returns the PR events (`change_merged`, `change_closed`, `change_open`, `change_unmergeable`, `pr_changes_requested`) and the next cursor. Each names its PR as `change_ref`, the PR number as text (the type the store keeps, design 02); the controller converts it with `prNumber` (`src/core/change-ref.ts`) only for a forge call. The methods below take the PR number as `pr` (a number), and `closePr`'s input names it `pr`. The controller polls it on `poll_interval_ms`, under its own guard (a forge that fails does not stop the sources' intake in the same tick, and its cursor does not move), through the cursor `forge:<ref type>` (`forge:github_issue`). The poll sources are read first and the forge after them, and the forge's events are handled first, so a merge that closed its issue is applied before the issue's close. While that cursor is empty the forge's `handover_cursor` is its first cursor (below).
 - **PR facts.** `prChecks` (the checks on a PR's head commit), `prFiles` (the paths a PR changes), `labelAddedBy` (who put a label on a PR), `commitAuthor` (the forge account behind a commit), `commitsBetween(from_sha, to_sha)` (how many commits a push from `from_sha` to `to_sha` added, or null when the forge cannot say; read once per person's push to a factory PR, for the reason of its implicit `changes` verdict, design 04-gate-commands). All read-only.
-- **PR writes.** `postPrComment` (one comment per marker on a PR), `setPrStatus` (the item's status on its PR), `closePr` (close a factory PR after one comment; called only by outbound's `github-change` target for a keyed `close_pr` action, RFC 0015 M7), `mergePr(pr, head_sha, method)` (merge a PR only while its head is still `head_sha`, the head the review passed; a PR already merged answers its merge sha as `already`; called only by outbound's `github-change` target for a keyed `merge_pr` action, which only a person's Merge button stores, design 09-dashboard-app, never automatically). A PR comment is an item thread entry whose outbox row targets the forge's PR ref (`prRef`, rows of type `ref_type`); the outbox step posts it through the forge, recognising the ref with `prNumberOf`, whatever source the item came from. So a Slack or local item's PR gets its comments and labels on the PR.
+- **PR writes.** `postPrComment` (one comment per marker on a PR), `setPrStatus` (the item's status on its PR), `closePr` (close a factory PR after one comment; called only by outbound's `github-change` target for a keyed `close_pr` action, RFC 0015 M7, which the controller stores when a person closes the item's issue and, since 2026-11-09 (issue #452), when a `/reject` or a dashboard reject closes an item with an open PR, the comment then quoting the reason), `mergePr(pr, head_sha, method)` (merge a PR only while its head is still `head_sha`, the head the review passed; a PR already merged answers its merge sha as `already`; called only by outbound's `github-change` target for a keyed `merge_pr` action, which only a person's Merge button stores, design 09-dashboard-app, never automatically). A PR comment is an item thread entry whose outbox row targets the forge's PR ref (`prRef`, rows of type `ref_type`); the outbox step posts it through the forge, recognising the ref with `prNumberOf`, whatever source the item came from. So a Slack or local item's PR gets its comments and labels on the PR.
 
 **Which forge.** No forge plugin is a default. `plugins.forge` left out follows the sources (derived in `src/compose.ts`, `withForgeDefault`; not a setting): `github` when `plugins.source` lists `github-issues`, none otherwise. One rule for both use cases:
 
@@ -21,6 +21,12 @@ What it does: the forge is where pull requests live. The `Forge` interface (`src
   branch to the sha the run stored in the factory repo, reconciling first (already there: `already`); `openPr` opens
   the branch's PR or updates the open one. Both throw on a failure, the message starting with its class; outbound
   retries. Absent: no process here delivers a run's push.
+- **Project key** (`projectIdentity()`, optional; new method 2026-11-10): the configured repo as a project, its key
+  from the forge's permanent repository ID and its label from the path the forge reports now. Startup reads the key
+  through it (`src/compose.ts`, startupProject: the stored key first, this read only on a first start or as one
+  background label refresh) and never calls a GitHub client for it. An error marked `permanent` (bad credentials, no
+  such repository) stops a first start; any other is retried. Absent, or no forge selected: the stored key, else the
+  local key (`local:local:<hash of owner/name>`), with no forge call. Solo default: no forge, the local key.
 - **Base push** (`pushBase(input)`, optional; absent: the forge cannot push a base and no row is queued). Moves the remote base branch to `input.sha` only while it is still at `input.expected_sha`, never running a hook; throws on any failure, and the caller retries.
 
 `"none"` (or `null`, `false`, `""`) selects no forge. Next to `github-issues` an off value fails startup with a message naming `plugins.forge` and `github-issues`: that source's PRs would never close their items (one silent path fewer; it may be allowed later if someone needs it). An unknown name fails startup, naming `Forge`, `plugins.forge` and every available name. The forge is never a guard.
@@ -45,12 +51,19 @@ Plugins:
     `github-push` and `github-change` targets are their only callers (RFC 0015 M7; the broker's `github.push_branch`
     and `github.open_pr` are gone).
   - `pushBase`: one `git push --no-verify --force-with-lease=refs/heads/<base>:<expected_sha> origin <sha>:refs/heads/<base>` from the factory repo (`repo.path`), only for the configured base branch. It goes through the factory repo's own git configuration for origin, as the sandbox's fetches do, and makes no API call. Not built: pushing with the App credentials.
+  - `projectIdentity`: one `GET /repos/<owner>/<name>` (`resolveProject`), the key `github:<host>:<node id>`
+    (`githubProjectKey`). Both are defined in the descriptor `src/impl/github/forge.plugin.ts`, so the CLI's
+    `settings --project`, `migrate` and `golden add` resolve the key without loading the forge, and a config with no
+    GitHub plugin loads no GitHub implementation module.
   - Secrets: none of its own (the shared client's `GitHubCredentials`).
 
 Switch back / disable: drop `github-issues` from `plugins.source` and leave `plugins.forge` out, or set it to `"none"` with no `github-issues`.
 
 ## History
 
+- **`projectIdentity`** (new method, 2026-11-10). Before: startup in `src/compose.ts` called the GitHub client's repository lookup itself, through `resolveProject` defined there.
+
+- **`closePr` on a reject** (decision changed 2026-11-09, issue #452). Before: `closePr` was called only when a person closed the item's source issue; a `/reject` left the PR open.
 - **`mergePr`** (new method, 2026-11-08, issue #451). Before: the forge had no merge call; a PR was merged only by a person on GitHub, and the dashboard could not merge a GitHub item.
 - **Local items reach the forge only through the base push** (decision changed 2026-11-08, issue #433). Before: local items never reached the forge: a local merge moved only the local base, nothing pushed it to origin, and a local item that already had a PR took the local route too.
 - **Local items never reach the forge** (decision changed 2026-11-08, issue #333). Before: with the GitHub broker selected, a local item pushed to origin and opened a PR like a GitHub item.

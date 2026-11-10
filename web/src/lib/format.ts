@@ -17,10 +17,18 @@ export function until(at: string | null | undefined, now: number): string {
   return ms <= 0 ? "now" : `in ${ago(new Date(now - ms).toISOString(), now)}`;
 }
 
-/** "#192" for "owner/repo#192"; the id as is otherwise. */
+/** A local item id: `local-` (or `local-filed-`), its hex id, then its phase suffixes (`-phase-N`, nested). */
+const LOCAL_ID = /^local-(?:filed-)?([0-9a-f]{8})[0-9a-f-]*?((?:-phase-\d+)*)$/;
+
+/**
+ * "#192" for "owner/repo#192"; "30331a68" for "local-30331a68-…" and "30331a68-p3-p2" for its phases (the first
+ * 8 characters after `local-`, so a narrow screen fits the row); the id as is otherwise.
+ */
 export function shortSource(id: string): string {
   const i = id.lastIndexOf("#");
-  return i >= 0 ? id.slice(i) : id;
+  if (i >= 0) return id.slice(i);
+  const m = LOCAL_ID.exec(id);
+  return m ? m[1]! + m[2]!.replaceAll("-phase-", "-p") : id;
 }
 
 /** 38521431 → "38.5M"; 29285 → "29.3k". */
