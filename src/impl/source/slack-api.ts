@@ -82,7 +82,8 @@ const MAX_REPLY_PAGES = 20;
 
 export type FetchFn = (url: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{
   status: number;
-  headers: { get(name: string): string | null };
+  /** Optional so fakes without headers still type-check; a missing header means no Retry-After. */
+  headers?: { get(name: string): string | null };
   json(): Promise<unknown>;
 }>;
 
@@ -157,7 +158,7 @@ export class HttpSlackApi implements SlackApi {
       },
       body,
     });
-    if (res.status === 429) throw new SlackApiError(method, "rate_limited", 429, retryAfterResetAt(res.headers.get("retry-after"), this.now()));
+    if (res.status === 429) throw new SlackApiError(method, "rate_limited", 429, retryAfterResetAt(res.headers?.get("retry-after") ?? null, this.now()));
     if (res.status >= 400) throw new SlackApiError(method, `http_${res.status}`);
     const r = (await res.json()) as Record<string, unknown>;
     if (r?.ok !== true) {
