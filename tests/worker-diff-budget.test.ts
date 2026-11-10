@@ -67,9 +67,9 @@ describe("implement diff budget", () => {
     // The commits on the wip branch, recorded on the outcome; nothing to the PR branch, no PR.
     const wipBranch = `factory/wip/${it0.id}/${runs[0]!.id}`;
     expect(outcome.wip).toMatchObject({ branch: wipBranch, commits: 1 });
-    const pushes = f.broker.calls.filter((c) => c.name === "github.push_branch").map((c) => (c.args as { branch: string }).branch);
+    const pushes = f.broker.calls.filter((c) => c.name === "forge.push_branch").map((c) => (c.args as { branch: string }).branch);
     expect(pushes).toEqual([wipBranch]);
-    expect(f.broker.calls.some((c) => c.name === "github.open_pr")).toBe(false);
+    expect(f.broker.calls.some((c) => c.name === "forge.open_change")).toBe(false);
     // No sync and no check ran after the stop: the run failed before the base merge and the pre-push checks.
     expect(f.sandbox.commands).not.toContain("npm test");
 
@@ -100,7 +100,7 @@ describe("implement diff budget", () => {
     expect(f.runner.aborted).toHaveLength(0);
     const [run] = await f.runs(it0, "implement");
     expect(run!.outcome).toMatchObject({ status: "succeeded" });
-    expect(f.broker.calls.some((c) => c.name === "github.open_pr")).toBe(true);
+    expect(f.broker.calls.some((c) => c.name === "forge.open_change")).toBe(true);
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW" });
   });
 

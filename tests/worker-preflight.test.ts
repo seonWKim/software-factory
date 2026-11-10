@@ -20,7 +20,7 @@ describe("implement preflight in the worker", () => {
     expect(run!.outcome).toMatchObject({ status: "failed", error_code: "preflight_access", infra: false });
     expect(run!.outcome!.status === "failed" && run!.outcome!.detail).toContain("push_access");
     expect(f.agentCalls("implement")).toBe(0);
-    expect(f.broker.calls.some((c) => c.name === "github.push_branch" || c.name === "github.open_pr")).toBe(false);
+    expect(f.broker.calls.some((c) => c.name === "forge.push_branch" || c.name === "forge.open_change")).toBe(false);
     expect(f.sandbox.destroyed).toBe(f.sandbox.created.length);
   });
 

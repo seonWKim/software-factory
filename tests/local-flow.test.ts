@@ -271,8 +271,8 @@ describe("local task flow, over git", { timeout: 60_000 }, () => {
     await f.step();
     await f.step();
     const names = f.ghBroker.calls.map((c) => c.name);
-    expect(names.indexOf("github.push_branch")).toBeGreaterThanOrEqual(0);
-    expect(names.indexOf("github.open_pr")).toBeGreaterThan(names.indexOf("github.push_branch"));
+    expect(names.indexOf("forge.push_branch")).toBeGreaterThanOrEqual(0);
+    expect(names.indexOf("forge.open_change")).toBeGreaterThan(names.indexOf("forge.push_branch"));
     expect(f.ghBroker.preflights.length).toBeGreaterThan(0);
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     // Nothing was committed to a local factory branch for it.

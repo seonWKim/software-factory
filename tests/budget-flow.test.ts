@@ -145,7 +145,7 @@ describe("the checkpoint", () => {
       const after = await f.store.listRuns(it0.id);
       expect(after.map(({ acknowledged_at: _a, updated_at: _u, ...r }) => r)).toEqual(before.map(({ acknowledged_at: _a, updated_at: _u, ...r }) => r));
       // Only the run's own push and PR, which outbound delivers before the review the checkpoint holds.
-      expect(f.broker.calls.slice(brokerCalls).map((c) => c.name)).toEqual(["github.push_branch", "github.open_pr"]);
+      expect(f.broker.calls.slice(brokerCalls).map((c) => c.name)).toEqual(["forge.push_branch", "forge.open_change"]);
       expect((await f.item(it0)).pr_number).toBe(42);
       checked = true;
     }

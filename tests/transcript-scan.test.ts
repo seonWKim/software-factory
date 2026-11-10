@@ -17,7 +17,7 @@ describe("transcript scan", () => {
 
     const [impl] = await f.runs(item, "implement");
     expect(impl!.status).toBe("succeeded");
-    expect(f.broker.calls.some((c) => c.name === "github.push_branch")).toBe(true);
+    expect(f.broker.calls.some((c) => c.name === "forge.push_branch")).toBe(true);
     const warned = f.log.lines.find((l) => l.msg === "transcript not stored: the egress scan flagged it");
     expect(warned?.fields).toMatchObject({ run_id: impl!.id, rules: "github_token" });
     expect(JSON.stringify(f.log.lines)).not.toContain(TOKEN);
