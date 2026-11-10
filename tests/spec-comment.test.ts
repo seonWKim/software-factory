@@ -242,6 +242,13 @@ describe("triage decisions as questions (issue #526)", () => {
     expect(body).not.toContain(free.reason);
   });
 
+  it("the triage prompt asks for each decision's question, reason, options and default; implement and review name the section", () => {
+    const read = (name: string) => readFileSync(new URL(`../prompts/${name}.md`, import.meta.url), "utf8");
+    const triage = read("triage");
+    for (const field of ['"question"', '"reason"', '"options"', '"default"', "2 to 4", "`N: <answer>`"]) expect(triage).toContain(field);
+    for (const name of ["implement", "review"]) expect(read(name)).toContain('"Decisions for the spec"');
+  });
+
   it("a stored plain-text decision from an older triage still parses and renders", () => {
     const r = parseTriage({ ...current, decision_items: ["Ship behind a flag?"] });
     if (!r.ok) throw new Error(r.error);
