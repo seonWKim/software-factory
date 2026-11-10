@@ -17,6 +17,7 @@ import type { ControllerDeps, GitHubBudgetStatus } from "../../core/controller-d
 import type { FactoryConfig } from "../../core/config.js";
 import { TickLease, syncLeaseName, syncLeaseOps } from "../../core/lease.js";
 import { Listener } from "../../core/listener.js";
+import { errorText } from "../../core/log.js";
 import { GITHUB_RATE_LIMIT } from "../../core/policy.js";
 import { LiveSettings } from "../../core/settings.js";
 import type { Run, SourceType, WorkItemId } from "../../core/types.js";
@@ -193,7 +194,7 @@ export class ControllerRole implements Decisions {
     const w = await this.wire();
     const r = await this.router();
     const onError = (schedule: string, err: unknown) =>
-      this.role.log.error("loop step failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      this.role.log.error("loop step failed", { step: schedule, error: errorText(err) });
     const ticks = this.role.ticks ?? new TimeBasedTicks();
     const inbound = ticks.create(onError);
     inbound.schedule("intake", () => this.role.settings.config().tick_ms, (t) => w.inbound.tick(t));
@@ -370,7 +371,7 @@ export class ControllerRole implements Decisions {
     try {
       await (await this.router()).unit("commands").handleInboxCommand(c);
     } catch (err) {
-      this.role.log.error("command failed; retried next tick", { command_seq: c.seq, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      this.role.log.error("command failed; retried next tick", { command_seq: c.seq, error: errorText(err) });
       throw err;
     }
   }

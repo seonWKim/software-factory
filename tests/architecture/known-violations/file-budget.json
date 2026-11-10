@@ -1,5 +1,5 @@
 {
-  "compose.ts": 1408,
+  "compose.ts": 1406,
   "controller/units/commands/commands.unit.ts": 739,
   "controller/units/run-results/run-results.unit.ts": 1175,
   "core/settings.ts": 777,
@@ -13,5 +13,5 @@
   "interfaces/factory-store.ts": 1361,
   "ui/api.ts": 638,
   "worker/runner.ts": 1130,
-  "worker/runs/implement/implement.run.ts": 1122
+  "worker/runs/implement/implement.run.ts": 1123
 }

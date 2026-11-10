@@ -6,7 +6,7 @@
 
 import { type ChildProcess, fork } from "node:child_process";
 import { type Loaded, Plugins } from "./compose.js";
-import type { Logger } from "./core/log.js";
+import { errorText, type Logger } from "./core/log.js";
 import type { Clock } from "./interfaces/clock.js";
 import {
   type ChildHandle,
@@ -62,7 +62,7 @@ export async function supervise(d: SuperviseDeps): Promise<number> {
     { once: true },
   );
   const step = (name: string, fn: () => Promise<void>) =>
-    fn().catch((err: unknown) => d.log.error(`updater ${name} failed`, { error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }));
+    fn().catch((err: unknown) => d.log.error(`updater ${name} failed`, { error: errorText(err) }));
 
   await step("start", () => d.updater.start());
   while (!stop.signal.aborted) {

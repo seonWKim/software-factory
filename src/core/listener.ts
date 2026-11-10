@@ -1,6 +1,6 @@
 import type { FactoryConfig } from "./config.js";
-import { StoreLease, errorMessage as message, listenerLeaseOps } from "./lease.js";
-import type { LogFields, Logger } from "./log.js";
+import { StoreLease, listenerLeaseOps } from "./lease.js";
+import { errorText, type LogFields, type Logger } from "./log.js";
 import { retryDelayMs } from "./policy.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -68,7 +68,7 @@ export class Listener {
       }
       this.enter("waiting", "info", "listener waiting: another replica holds the lease", { holder: r.holder });
     } catch (err) {
-      this.enter("store_failed", "warn", "listener lease check failed", { error: message(err) });
+      this.enter("store_failed", "warn", "listener lease check failed", { error: errorText(err) });
     }
     return null;
   }
@@ -99,7 +99,7 @@ export class Listener {
         // A connection that stored something was healthy: the backoff starts over.
         failures = ended.events > 0 ? 1 : failures + 1;
         this.enter("disconnected", "warn", "stream disconnected; reconnecting with backoff", {
-          error: ended.error === undefined ? null : message(ended.error),
+          error: ended.error === undefined ? null : errorText(ended.error),
         });
         await this.sleep(retryDelayMs(failures, base_ms, max_ms), held.signal);
       }

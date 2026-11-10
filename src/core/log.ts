@@ -6,3 +6,8 @@ export interface Logger {
   warn(msg: string, fields?: LogFields): void;
   error(msg: string, fields?: LogFields): void;
 }
+
+/** The text to log for a caught error: an Error gives its message cut to 300 characters; any other value gives "unknown". */
+export function errorText(err: unknown): string {
+  return err instanceof Error ? err.message.slice(0, 300) : "unknown";
+}

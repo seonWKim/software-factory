@@ -12,7 +12,7 @@
 import type { SourceType } from "../core/types.js";
 import { type GitHubBudgetStatus, rateLimitWait } from "../core/controller-deps.js";
 import type { TickLease } from "../core/lease.js";
-import type { Logger } from "../core/log.js";
+import { errorText, type Logger } from "../core/log.js";
 import type { SyncFence } from "../interfaces/factory-store.js";
 import type { Forge } from "../interfaces/forge.js";
 import type { PollSource, SourceAdapter, StreamSource } from "../interfaces/source-adapter.js";
@@ -291,7 +291,7 @@ export class Inbound {
       // A forge call refused with no calls left is a wait for the reset, not a failure: the next poll tries again.
       const until = rateLimitWait(err);
       if (until) this.d.log.warn("waiting for the GitHub rate-limit reset", { step: what, until });
-      else this.d.log.error("loop step failed", { step: what, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+      else this.d.log.error("loop step failed", { step: what, error: errorText(err) });
     }
   }
 }

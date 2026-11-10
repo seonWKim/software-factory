@@ -6,7 +6,7 @@
 
 import { DEAD_LETTERED, type EventBus } from "../bus/index.js";
 import { retryDelayMs } from "../core/policy.js";
-import type { Logger } from "../core/log.js";
+import { errorText, type Logger } from "../core/log.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, SyncFence } from "../interfaces/factory-store.js";
 import { envelope, type Envelope } from "../shared/envelope.js";
@@ -105,7 +105,7 @@ export class Outbound {
       try {
         if (await this.send(b, now)) sent++;
       } catch (err) {
-        this.d.log.error("outbound batch failed", { batch_id: String(b.id), error: err instanceof Error ? err.message.slice(0, 300) : "unknown" });
+        this.d.log.error("outbound batch failed", { batch_id: String(b.id), error: errorText(err) });
       }
     }
     return sent;
@@ -262,7 +262,7 @@ export class Outbound {
       try {
         url = (await target.deliver({ ...d, body: await this.scanned(d.body, d.target.id) })).url;
       } catch (err) {
-        const error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
+        const error = errorText(err);
         // Given up: the entry is done with no link, so the destination's later entries go on.
         if (this.givesUp(err, attempts, i, target, error, gaveUp)) {
           await this.d.store.finishDelivery(i.seq, token, null);
@@ -283,7 +283,7 @@ export class Outbound {
     try {
       made = await target.deliver({ ...d, row: await this.scannedAction(row) });
     } catch (err) {
-      error = err instanceof Error ? err.message.slice(0, 300) : "unknown";
+      error = errorText(err);
       // A close, a post, a PR close, a push, a PR or a filing retries with its batch, which holds its destination meanwhile
       // (later batches of it wait), until it is given up; a status label or a 👀 is best effort: a warning, never a hold.
       if (RETRIED_ACTIONS.includes(row.action)) {

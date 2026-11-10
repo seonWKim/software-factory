@@ -1,5 +1,5 @@
 import type { FactoryConfig } from "./config.js";
-import type { LogFields, Logger } from "./log.js";
+import { errorText, type LogFields, type Logger } from "./log.js";
 import type { Clock } from "../interfaces/clock.js";
 import type { FactoryStore, ListenerLease, SyncFence, SyncLease } from "../interfaces/factory-store.js";
 import type { SourceType } from "./types.js";
@@ -55,10 +55,6 @@ export function syncLeaseName(type: SourceType, project: string): string {
   return `sync:${type}:${project}`;
 }
 
-export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message.slice(0, 300) : "unknown";
-}
-
 /**
  * One lease as one replica holds it. The only in-process state is the token and the time of the last good renew,
  * which no other replica needs. `config` is read on every call, so a lease_ms or heartbeat_ms change applies next.
@@ -105,7 +101,7 @@ export class StoreLease {
     } catch (err) {
       if (this.clock.now().getTime() - this.lastOk < this.config.lease_ms) return { ok: true };
       this.token = null;
-      return { ok: false, fields: { reason: "renew_failed", error: errorMessage(err) } };
+      return { ok: false, fields: { reason: "renew_failed", error: errorText(err) } };
     }
   }
 
@@ -196,7 +192,7 @@ export class TickLease {
     } catch (err) {
       this.holder = null;
       this.otherUntil = Infinity;
-      this.log.warn("sync lease check failed", { sync: this.label, error: errorMessage(err) });
+      this.log.warn("sync lease check failed", { sync: this.label, error: errorText(err) });
     }
   }
 

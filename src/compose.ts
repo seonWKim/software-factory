@@ -14,7 +14,7 @@ import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } 
 import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
-import type { Logger } from "./core/log.js";
+import { errorText, type Logger } from "./core/log.js";
 import type { CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal } from "./core/local-merge.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -554,8 +554,6 @@ function permanentLookupError(err: unknown): boolean {
   return (err as { permanent?: unknown } | null)?.permanent === true;
 }
 
-const errorText = (err: unknown): string => (err instanceof Error ? err.message : String(err)).slice(0, 300);
-
 /** What startupProject needs: the store holding the key, the forge's read of it, and where to log and wait. */
 export interface StartupProjectDeps {
   store: Pick<FactoryStore, "getCursor" | "advanceCursor" | "listSettingOverrides" | "listWorkItems">;
@@ -939,7 +937,7 @@ export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, 
     db: storeSql(store),
     stateDir: loaded.stateDir,
     ...(auth ? { providers: (["github", "slack", "oidc"] as const).map((p) => new PluginIdentityProvider(p, auth)) } : {}),
-    onError: (schedule, err) => log.error("identity tick failed", { step: schedule, error: err instanceof Error ? err.message.slice(0, 300) : "unknown" }),
+    onError: (schedule, err) => log.error("identity tick failed", { step: schedule, error: errorText(err) }),
   });
 }
 
