@@ -14,7 +14,6 @@ import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
 import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "../../../core/suggest.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import type { CommandPassport, ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
@@ -23,11 +22,7 @@ import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEv
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
-/**
- * Who sent a gate command: a source account, resolved by the auth plugin of its origin (a comment), or the factory
- * user an app request names, checked by the local auth plugin under the request's edge passport.
- */
-export type CommandSender = { identity: ExternalIdentity } | { user_id: UserId; passport?: CommandPassport | undefined };
+type AppSender = { user_id: UserId; passport?: Extract<CommandEvent, { kind: "spec_approved" }>["approver"]["passport"] } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
 type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
@@ -99,16 +94,13 @@ function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAske
 function conflictPending(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING;
 }
+/** `d` with `tag` added to its state change detail; a refusal or no-op as it is. */
+const withTag = (d: Decision | Refusal, tag: StateChangeDetail | null): Decision | Refusal => (!tag || !d || "refuse" in d ? d : { ...d, detail: { ...d.detail, ...tag } });
 /**
  * A command on a floor_tier block (design §4). `/approve` raises the tier to the one the floor needs (never
  * lowers it), clears the block and enqueues implement under a new key (restart_count + 1), so it is not a
  * no-op. `/reject` closes the item. `/retry` is refused: a floor block is not a failed run.
  */
-/** `d` with `tag` added to its state change detail; a refusal or no-op as it is. */
-function withTag(d: Decision | Refusal, tag: StateChangeDetail | null): Decision | Refusal {
-  if (!tag || !d || "refuse" in d) return d;
-  return { ...d, detail: { ...d.detail, ...tag } };
-}
 function floorCommand(
   e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null, w: Widening,
 ): Decision | Refusal {
@@ -179,8 +171,7 @@ export class CommandsUnit {
     if (!item) return;
     // A `/revise` on the PR of a closed item is ordinary conversation now: no reaction, no reply (design §4).
     if (e.kind === "revise_requested" && onPr && item.stage === "CLOSED") return;
-    const who = e.kind === "retry_requested" || e.kind === "revise_requested" || e.kind === "resolve_requested" ? e.requester : e.approver;
-    const refusal = await this.gateCommand(item, e, { identity: who });
+    const refusal = await this.gateCommand(item, e);
     await this.c.unit("outbox").markSeen(e.source, e.comment_id);
     if (refusal === null) return;
     this.c.k.d.log.info("command refused", { work_item_id: item.id, command: e.kind, reason: refusal });
@@ -193,26 +184,19 @@ export class CommandsUnit {
     );
   }
 
-  /**
-   * One gate command on `item`, from a comment or from an app request (design §4): the `approve_spec` check for the
-   * sender, the note (and, from a comment, `+paths`) through the egress scan, the transition (with `tag` on its state
-   * change), the standing-rule follow-up and a reject's close. Returns the refusal reason, else null; the caller
-   * posts the refusal under its own marker. `/resolve` uses the same write-permission check; no new AuthAction.
-   */
-  async gateCommand(item: WorkItem, e: CommandEvent, from: CommandSender, tag: StateChangeDetail | null = null): Promise<string | null> {
-    const auth = this.c.unit("auth");
-    const principal = "identity" in from
-      ? await auth.authorize(from.identity, "approve_spec", item.id)
-      : await auth.allowed({ user_id: from.user_id, attributes: {} }, "approve_spec", item.id, true, from.passport);
+  /** A gate command from a comment (`app` null) or an app request (its user and edge passport, checked locally), design §4: `approve_spec`,
+   * the note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close. */
+  async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
+    const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
+    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id, true, app.passport)
+      : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
     if ("refuse" in principal) return principal.refuse;
-    // The note is untrusted text bound for the store and agent prompts: G5 before either.
-    const input = await this.commandInput(item.id, e, "identity" in from);
+    const input = await this.commandInput(item.id, e, app === null);
     if ("refuse" in input) return input.refuse;
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
-    if (refusal !== null) return refusal;
-    await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
-    if (e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
-    return null;
+    if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
+    if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
+    return refusal;
   }
 
   /**
@@ -428,16 +412,14 @@ export class CommandsUnit {
   /**
    * The note and the `+paths` of an `/approve`, `/retry` or `/resolve` (design §4, issue #280); none for other
    * commands. The whole text is egress-scanned first (so a refusal never quotes a flagged path), then `+paths` is
-   * split off and checked; the note is what is left, capped. A finding or a bad path refuses the command. `paths`
-   * false (an app request): no `+paths` is read, the whole text is the note.
+   * split off and checked (unless `paths` is false: an app request's), the note what is left, capped. A finding or a bad path refuses it.
    */
   async commandInput(id: WorkItemId, e: CommandEvent, paths = true): Promise<{ note: string | null; paths: string[] } | Refusal> {
     if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
     const text = e.kind === "resolve_requested" ? e.notes : e.note;
     const scanned = await this.approvalNote(id, text, COMMAND[e.kind]);
     if ("refuse" in scanned) return scanned;
-    if (!paths) return { note: scanned.note, paths: [] };
-    const split = parseCommandPaths(text ?? "");
+    const split = paths ? parseCommandPaths(text ?? "") : { note: text ?? "", paths: [] };
     if ("refuse" in split) return split;
     const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
     return { note: note || null, paths: split.paths };

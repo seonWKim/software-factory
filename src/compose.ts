@@ -1098,7 +1098,6 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const actor = who.actor;
   const commands: UiCommands = {
     ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    // The item commands' approve_spec and the Merge button's approve_merge, each asked once per page request (design §9).
     allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action)),
     ...(actor !== null ? { passport: () => identity.edge({ provider: "local", subject: actor }, "ui") } : {}),
   };

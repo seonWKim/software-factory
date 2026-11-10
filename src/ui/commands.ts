@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import { COMMANDS, type CommandName, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, roleRefusal } from "../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
+import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
 import type { AuthDecision } from "../interfaces/auth-provider.js";
 import type { UiDeps } from "./pages.js";
@@ -205,11 +206,15 @@ export async function itemCommands(
 }
 
 /**
- * Whether a Needs-you row gets a button for `name` (design §9): a command that changes the item's state, from the
- * command rules, but not `budget`, whose tokens are typed on the item page or the issue.
+ * A Needs-you row's `commands` (design §9): the item API's entries for the commands that change the item's state, from
+ * the command rules, but not `budget` (its tokens are typed on the item page or the issue), with the viewer's `allowed`
+ * and `reason` from `grant`, asked once per request. The item's runs are read only at agent_needs_human, where the run
+ * that asked decides which commands apply.
  */
-export function needsYouCommand(name: CommandName): boolean {
-  return name !== "budget" && commandSpec(name).changes_state;
+export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>) {
+  const runs = it.blocked_reason === AGENT_NEEDS_HUMAN ? await d.store.listRuns(it.id) : [];
+  const all = await itemCommands(it, runs, await grant(), text);
+  return all.filter((c) => c.name !== "budget" && commandSpec(c.name).changes_state);
 }
 
 /**

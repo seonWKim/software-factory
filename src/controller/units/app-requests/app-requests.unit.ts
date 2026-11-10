@@ -107,8 +107,8 @@ export class AppRequestsUnit {
       if ("refuse" in scanned) return scanned.refuse;
       note = scanned.note ?? "";
     }
-    const from = { user_id: r.actor, passport: appPassport(r) };
-    return this.c.unit("commands").gateCommand(item, gateEvent(kind, item, key, r, note), from, { [APP_REQUEST]: r.seq });
+    const app = { user_id: r.actor, passport: appPassport(r) };
+    return this.c.unit("commands").gateCommand(item, gateEvent(kind, item, key, r, note), app, { [APP_REQUEST]: r.seq });
   }
 
   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */
