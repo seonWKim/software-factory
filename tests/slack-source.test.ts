@@ -16,6 +16,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
 import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
+import { storedAnswers } from "../src/shared/command-notes.js";
 import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { META_STATUS, SlackSource, parseSlackSourceId, slackLink, slackSourceId } from "../src/impl/source/slack-source.js";
 import { FakeForge, FakeSource, config, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
@@ -565,6 +566,60 @@ describe("slack source: replies, buttons and commands", () => {
     expect(a).toEqual(b);
     expect(f.api.calls).toHaveLength(1);
     expect(JSON.stringify(f.api.messages)).not.toContain("m1");
+  });
+});
+
+describe("slack source: answers and structured revise (issue #527)", () => {
+  const DECISIONS = [
+    { question: "Fail the job, or only warn?", reason: "A failing job blocks merges.", options: ["Fail the job", "Only warn"], default: "Fail the job", owner_only: false },
+    { question: "Name the step?", reason: "It shows in CI.", options: [], default: "scope", owner_only: false },
+  ];
+  const ANSWERS = [
+    { question: "Fail the job, or only warn?", answer: "Only warn", accepted_default: false },
+    { question: "Name the step?", answer: "scope", accepted_default: true },
+  ];
+  const approval = async (f: F, it: WorkItem) => (await f.store.listStateChanges(it.id)).find((c) => c.reason === "spec_approved");
+
+  it("a thread /approve with N: lines stores the same answers as the dashboard approve, as the linked user's ID", async () => {
+    const f = await setup();
+    const thread = await specPending(f, "1800000050.000100", { ...triageSpec, decisions: DECISIONS });
+    const app = await specPending(f, "1800000050.000200", { ...triageSpec, decisions: DECISIONS });
+    await deliver(f, eventEnvelope(mention("1800000050.000300", "/approve\n1: Only warn\nkeep it small", { thread_ts: "1800000050.000100" })));
+    await f.store.recordAppCommandRequest({ key: "app-1", actor: "github:1" as UserId, command: "approve", args: { work_item_id: app.id, note: "1: Only warn\nkeep it small" } });
+    await f.controller.tickCommands();
+
+    const byThread = (await approval(f, thread))!;
+    const byApp = (await approval(f, app))!;
+    expect(storedAnswers(byThread.detail)).toEqual(ANSWERS);
+    expect(storedAnswers(byApp.detail)).toEqual(storedAnswers(byThread.detail));
+    expect(byThread.detail?.note).toBe("keep it small");
+    expect(byThread.actor).toEqual({ kind: "user", id: "github:1" });
+  });
+
+  it("a thread /revise with ### <Section> lines is stored with its text unchanged; one with no heading too", async () => {
+    const f = await setup();
+    const structured = "### Problem\nSay why the gate is slow.\n\n### Done when\nAdd a timing test.";
+    for (const [n, text] of [[1, structured], [2, "keep the existing CLI flag"]] as const) {
+      const ts = `180000005${n}.000100`;
+      const item = await specPending(f, ts);
+      await deliver(f, eventEnvelope(mention(`180000005${n}.000200`, `/revise ${text}`, { thread_ts: ts })));
+      expect(await f.store.getWorkItem(item.id), `revise ${n}`).toMatchObject({ stage: "NEW", spec_feedback: text });
+      const change = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_revision_requested");
+      expect(change?.actor).toEqual({ kind: "user", id: "github:1" });
+    }
+  });
+
+  it("a requester's thread /approve or /revise is still refused by the role check, and nothing changes", async () => {
+    const f = await setup();
+    const ts = "1800000053.000100";
+    const item = await specPending(f, ts, { ...triageSpec, decisions: DECISIONS });
+    const before = await f.store.getWorkItem(item.id);
+    await deliver(f, eventEnvelope(mention("1800000053.000200", "/approve\n1: Only warn", { thread_ts: ts, user: "U0BOB" })));
+    await deliver(f, eventEnvelope(mention("1800000053.000300", "/revise ### Problem\nnarrower", { thread_ts: ts, user: "U0BOB" })));
+    expect(await f.store.getWorkItem(item.id)).toEqual(before);
+    const replies = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
+    expect(replies).toHaveLength(2);
+    for (const r of replies) expect(r.text).toContain("github:2 has no role that allows it (`no_role`)");
   });
 });
 

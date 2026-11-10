@@ -558,7 +558,8 @@ export async function ensureSecretFile(
   if (added.length > 0) print(`   added empty ${added.join(", ")} (fill in as needed)`);
 }
 
-function keysOf(text: string): string[] {
+/** The keys a secret file or its template sets (`KEY=` or `export KEY=`), in order. */
+export function keysOf(text: string): string[] {
   return [...text.matchAll(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/gm)].map((m) => m[1]!);
 }
 

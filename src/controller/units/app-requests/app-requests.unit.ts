@@ -1,4 +1,4 @@
-// Applies the status page's requests (approve, reject, verdict, merge; anything else is refused).
+// Applies the status page's requests (approve, reject, revise, verdict, merge; anything else is refused).
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { COMMANDS } from "../../../core/commands.js";
@@ -12,22 +12,24 @@ import { controllerUnit } from "../context.js";
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
 /** The app commands that answer as their comment command in a refusal. */
-const AS_COMMENT: ReadonlyMap<string, string> = new Map([["approve", COMMAND.spec_approved], ["reject", COMMAND.spec_rejected], ["verdict", "/verdict"]]);
+const AS_COMMENT: ReadonlyMap<string, string> = new Map([
+  ["approve", COMMAND.spec_approved], ["reject", COMMAND.spec_rejected], ["revise", COMMAND.revise_requested], ["verdict", "/verdict"],
+]);
 
 /** The page's edge passport, checked for expiry at the time the request was recorded (absent: none). */
 function appPassport(r: AppCommandRequest) {
   return r.passport_id === undefined ? undefined : { id: r.passport_id, at: r.created_at };
 }
 
-/** Applies the status page's requests (approve, reject, verdict, merge; anything else is refused). */
+/** Applies the status page's requests (approve, reject, revise, verdict, merge; anything else is refused). */
 export class AppRequestsUnit {
   constructor(private readonly c: Ctx) {}
 
   /**
-   * One app command request (design §4, app requests): `approve` and `reject` go through the comment command path
-   * and get the `/approve` or `/reject` permission check, note scan and transition (a reject then closes its issue
-   * and its open PR, as `/reject` does); `verdict` gets the `/verdict` check, parser and store, keyed `app-<seq>`;
-   * `merge` on a local item with no PR goes to mergeLocal, the same local merge as `factory merge`, and on any item
+   * One app command request (design §4, app requests): `approve`, `reject` and `revise` go through the comment command
+   * path and get the `/approve`, `/reject` or `/revise` permission check, note scan and transition (a reject then closes
+   * its issue and its open PR, as `/reject` does; a revise stores its feedback as typed); `verdict` gets the
+   * `/verdict` check, parser and store, keyed `app-<seq>`; `merge` on a local item with no PR goes to mergeLocal, the same local merge as `factory merge`, and on any item
    * with a PR to the PR merge (design §9, the Merge button). Each puts the request's seq on the state change (a
    * verdict on its key). Any other command is refused. A refusal is posted once on the item's source, keyed on the
    * request, then stored on the row by the conditional mark. A failed post leaves the request pending for the next
@@ -61,10 +63,10 @@ export class AppRequestsUnit {
     } else if (r.command === "verdict") {
       const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "record_verdict", item.id, true, appPassport(r));
       refusal = "refuse" in principal ? principal.refuse : await this.c.unit("verdicts").verdictFrom(item.id, { comment_id: key, target: "issue" }, principal, note ?? "");
-    } else if (r.command === "approve" || r.command === "reject") {
+    } else if (r.command === "approve" || r.command === "reject" || r.command === "revise") {
       refusal = await this.specCommand(r, item, key, note);
     } else {
-      refusal = "only `approve`, `merge`, `reject` and `verdict` are applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
+      refusal = "only `approve`, `merge`, `reject`, `revise` and `verdict` are applied from an app request" + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     }
     // Refused here, but applied by a concurrent try of the same request: that one stands.
     if (refusal !== null && (await applied())) refusal = null;
@@ -72,24 +74,29 @@ export class AppRequestsUnit {
   }
 
   /**
-   * An app `approve` or `reject`, as the comment's: the `approve_spec` check, the note (the reject's reason) through
-   * the egress scan, the transition with the request's seq, the standing-rule follow-up and a reject's close.
+   * An app `approve`, `reject` or `revise`, as the comment's: the `approve_spec` check, the note (the reject's reason,
+   * the revise's feedback) through the egress scan, the transition with the request's seq, the standing-rule
+   * follow-up and a reject's close. A revise is the issue's `/revise` (`revise_requested`): its feedback is stored as typed.
    */
   private async specCommand(r: AppCommandRequest, item: WorkItem, key: string, raw: string | undefined): Promise<string | null> {
     const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true, appPassport(r));
     if ("refuse" in principal) return principal.refuse;
-    const reject = r.command === "reject";
-    const note = await this.c.unit("commands").approvalNote(item.id, raw, reject ? COMMAND.spec_rejected : COMMAND.spec_approved);
+    const note = await this.c.unit("commands").approvalNote(item.id, raw, AS_COMMENT.get(r.command));
     if ("refuse" in note) return note.refuse;
-    const approver = { provider: "local" as const, subject: r.actor };
-    const e: CommandEvent = reject
-      ? { kind: "spec_rejected", source: item.source, comment_id: key, approver, reason: note.note ?? "" }
-      : { kind: "spec_approved", source: item.source, comment_id: key, approver };
-    // The reject's reason is its spec feedback, never an approval note on the state change.
-    const refusal = await this.c.unit("commands").applyCommand(item.id, e, { kind: "user", id: principal.user_id }, reject ? null : note.note, { [APP_REQUEST]: r.seq });
+    const text = note.note ?? "";
+    const who = { provider: "local" as const, subject: r.actor };
+    const at = { source: item.source, comment_id: key };
+    const e: CommandEvent = r.command === "reject"
+      ? { kind: "spec_rejected", ...at, approver: who, reason: text }
+      : r.command === "revise"
+        ? { kind: "revise_requested", ...at, requester: who, feedback: text }
+        : { kind: "spec_approved", ...at, approver: who };
+    // The reject's reason and the revise's feedback are its spec feedback, never an approval note on the state change.
+    const approval = e.kind === "spec_approved" ? note.note : null;
+    const refusal = await this.c.unit("commands").applyCommand(item.id, e, { kind: "user", id: principal.user_id }, approval, { [APP_REQUEST]: r.seq });
     if (refusal !== null) return refusal;
     await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
-    if (reject) await this.c.unit("closes").afterReject(item.id);
+    if (e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
     return null;
   }
 

@@ -27,9 +27,8 @@ import { INBOUND_RECEIVED } from "./topics/inbound-records.topic.js";
 
 /** The cursor this process's forge budget is stored under after each poll, for the status page. */
 export const GITHUB_BUDGET_CURSOR = "github:budget";
-/** The command rows' cursor, and the `local` source's cursor it started from (issue #282). */
+/** The command rows' cursor; a one-time migration started it from the local source's old cursor (issue #467). */
 export const COMMANDS_CURSOR = "commands";
-const LEGACY_LOCAL_CURSOR = "intake:local";
 /** The stream of a command that names no source: the CLI's and the UI's. */
 export const LOCAL_STREAM = "local";
 /** Records and commands relayed per tick at most. */
@@ -132,9 +131,8 @@ export class Inbound {
   /** The command rows after the cursor, announced in order (the CLI's, the UI's and the comment commands a poll stored). */
   async relayCommands(t: Tick): Promise<void> {
     const cursor = await readCursor(this.d.db, COMMANDS_CURSOR);
-    const start = cursor ?? (await readCursor(this.d.db, LEGACY_LOCAL_CURSOR));
-    const after = start ? Number(start) : 0;
-    if (!Number.isSafeInteger(after) || after < 0) throw new Error(`command inbox: bad cursor ${JSON.stringify(start)}`);
+    const after = cursor ? Number(cursor) : 0;
+    if (!Number.isSafeInteger(after) || after < 0) throw new Error(`command inbox: bad cursor ${JSON.stringify(cursor)}`);
     const rows = await commandsAfter(this.d.db, after, RELAY_BATCH);
     if (rows.length === 0) return;
     // Passports are minted before the commit: one minted for a commit that loses its cursor race is never used.

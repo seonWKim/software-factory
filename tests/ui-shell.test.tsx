@@ -372,7 +372,7 @@ describe("Running now and Queue", () => {
   });
 });
 
-// ---- Item commands (issue #228): a button per command, the note box, reject's confirmation, the outcome ----
+// ---- Item commands (issue #228): a button per command, the note box, the reject and revise forms (issue #527), the outcome ----
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: `${name} it` });
 const reply = (seq: number, command: string, handled: boolean, refusal: string | null = null) =>
   ({ seq, command, created_at: AT, handled_at: handled ? AT : null, refusal });
@@ -421,17 +421,24 @@ describe("item commands", () => {
     }
   });
 
-  it("revise and reject stay disabled while the box is blank and send nothing", async () => {
+  it("revise and reject open their own forms, not the note box; the note box stays for the other commands", async () => {
     mountCommands();
-    expect(button("revise").disabled).toBe(true);
-    expect(button("reject").disabled).toBe(true);
-    expect(button("approve").disabled).toBe(false);
-    typeNote("   ");
+    expect(screen.getByRole("textbox", { name: "Note" })).toBeTruthy();
+    typeNote("tighten the tests");
+    expect(button("revise").getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(button("revise"));
+    expect(button("revise").getAttribute("aria-expanded")).toBe("true");
+    const form = screen.getByRole("group", { name: "Revise the spec" });
+    expect((within(form).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(button("reject"));
+    expect(screen.getByRole("group", { name: "Why reject?" })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "Revise the spec" })).toBeNull();
     await settle();
     expect(posts).toEqual([]);
-    typeNote("tighten the tests");
-    expect(button("revise").disabled).toBe(false);
+    cleanup();
+    // Only reject and revise: no note box at all.
+    mountCommands(["revise", "reject"].map(cmd));
+    expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
   });
 
   it("a send posts { command, note } with the session token; the note only when the box has text", async () => {
@@ -439,20 +446,26 @@ describe("item commands", () => {
     fireEvent.click(button("approve"));
     await settle();
     typeNote("  more tests please ");
+    fireEvent.click(button("retry"));
+    await settle();
     fireEvent.click(button("revise"));
+    fireEvent.change(screen.getByRole("textbox", { name: "Comment on Problem" }), { target: { value: "narrower" } });
+    fireEvent.click(button("Send revise"));
     await settle();
     expect(posts.map((p) => [p.url, p.body])).toEqual([
       ["/api/v1/items/wi_1/commands", { command: "approve" }],
-      ["/api/v1/items/wi_1/commands", { command: "revise", note: "more tests please" }],
+      ["/api/v1/items/wi_1/commands", { command: "retry", note: "more tests please" }],
+      ["/api/v1/items/wi_1/commands", { command: "revise", note: "### Problem\nnarrower" }],
     ]);
     expect(posts[0]!.headers["x-csrf-token"]).toBe("tok-123");
     expect(posts[0]!.headers["content-type"]).toBe("application/json");
   });
 
-  it("reject asks to confirm: cancel posts nothing, confirm posts once", async () => {
+  it("reject asks why and to confirm: cancel posts nothing, confirm posts the reason once", async () => {
     mountCommands();
-    typeNote("out of scope");
+    typeNote("not the reject reason");
     fireEvent.click(button("reject"));
+    fireEvent.click(screen.getByRole("radio", { name: "duplicate" }));
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("Cancel"));
@@ -460,9 +473,10 @@ describe("item commands", () => {
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("reject"));
+    fireEvent.click(screen.getByRole("radio", { name: "duplicate" }));
     fireEvent.click(button("Confirm reject"));
     await settle();
-    expect(posts.map((p) => p.body)).toEqual([{ command: "reject", note: "out of scope" }]);
+    expect(posts.map((p) => p.body)).toEqual([{ command: "reject", note: "duplicate" }]);
   });
 
   it("a 202 shows sent at once; a failed send shows its error next to its button", async () => {

@@ -56,6 +56,7 @@
   "component-imports-legacy|cli/handlers/status/status.command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/status/status.command.ts|core/types.ts",
   "component-imports-legacy|cli/handlers/status/status.command.ts|ui/factory-status.ts",
+  "component-imports-legacy|cli/handlers/teardown/teardown.command.ts|teardown.ts",
   "component-imports-legacy|cli/handlers/ui/ui.command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/ui/ui.command.ts|core/config.ts",
   "component-imports-legacy|cli/handlers/ui/ui.command.ts|core/local-cli.ts",
