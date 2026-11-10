@@ -1,29 +1,45 @@
-// The daily improve run and improve runs filed from a failed run.
+// The daily improve run, the improve run a burst or an old failure triggers, and filing an improve run's report.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { FIX_SPEC_APPROVED, enqueueImprove, fileReport, markerKey, utcDay } from "../../../core/improver.js";
+import { FIX_SPEC_APPROVED, enqueueImprove, fileReport, markerKey, triggerImprove, utcDay } from "../../../core/improver.js";
 import { type FiledPattern, type Run, type SourceRef, type WorkItem } from "../../../core/types.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
-/** The daily improve run and improve runs filed from a failed run. */
+/** The daily improve run, the triggered improve run, and filing an improve run's report. */
 export class ImproveUnit {
   constructor(private readonly c: Ctx) {}
 
   /** The UTC day whose improve run this process saw queued (design §7). A cache only: the run's key dedupes. */
   improveDay: string | null = null;
 
+  /** Each tick: the day's improve run, then the trigger check. */
+  async improveStep(): Promise<void> {
+    await this.dailyStep();
+    await this.triggerStep();
+  }
+
   /**
    * Queues the improve run of the current UTC day on the project's system work item. The run's key holds the
    * day, so a second tick, a restart or another replica queues nothing more; `improveDay` only saves this
    * process the store write once the day's run is there.
    */
-  async improveStep(): Promise<void> {
+  private async dailyStep(): Promise<void> {
     const day = utcDay(this.c.k.d.clock.now());
     if (this.improveDay === day) return;
     const { run, created } = await enqueueImprove(this.c.k.d, this.c.k.project(), "daily");
     if (created) this.c.k.d.log.info("improve run queued", { run_id: run.id, day });
     this.improveDay = day;
+  }
+
+  /**
+   * Queues one improve run when the project's unreviewed failures call for it (design §7: K failures of one run
+   * kind, or one older than the age limit). Store state only, no process memory: the run's key names the last
+   * improve run, so replicas on one store queue one run between them.
+   */
+  private async triggerStep(): Promise<void> {
+    const r = await triggerImprove(this.c.k.d, this.c.k.project());
+    if (r?.created) this.c.k.d.log.info("improve run triggered", { run_id: r.run.id, ...r.why });
   }
 
   /**

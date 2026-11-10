@@ -61,13 +61,28 @@ export function manualWindow(at: Date): ImproveWindow {
 }
 
 /**
+ * A trigger run's key (design §7): one per last improve run of the project (`none` before the first), so every
+ * replica that sees the same failures in the same state writes the same key and the store keeps one run.
+ */
+export function triggerImproveKey(project: string, after: RunId | null): string {
+  return `improve:${project}:trigger:${after ?? "none"}`;
+}
+
+/** A trigger run: queued after the improve run `after` (null: none yet), reporting from `since` to now. */
+export interface ImproveTriggerInput {
+  after: RunId | null;
+  since: Timestamp;
+}
+
+/**
  * Queues one improve run on the project's system work item (made on first use). `daily`: the current UTC day's
- * slot, a no-op when it is already queued. `manual`: a run of its own. The window goes into the run's input.
+ * slot, a no-op when it is already queued. `manual`: a run of its own. A trigger (`ImproveTriggerInput`): the
+ * slot after the last improve run, reporting the failures since it. The window goes into the run's input.
  */
 export async function enqueueImprove(
   d: { store: ImproveStore; clock: Clock },
   project: string,
-  trigger: "daily" | "manual",
+  trigger: "daily" | "manual" | ImproveTriggerInput,
 ): Promise<{ run: Run; created: boolean }> {
   const now = d.clock.now();
   const { item } = await d.store.createWorkItem(
@@ -82,13 +97,82 @@ export async function enqueueImprove(
     },
     IMPROVER,
   );
-  const daily = trigger === "daily";
-  return d.store.enqueueRun({
-    work_item_id: item.id,
-    kind: "improve",
-    idempotency_key: daily ? dailyImproveKey(project, utcDay(now)) : manualImproveKey(project, now),
-    input: { improve: daily ? dailyWindow(utcDay(now)) : manualWindow(now) },
-  });
+  const [idempotency_key, improve] =
+    trigger === "daily" ? [dailyImproveKey(project, utcDay(now)), dailyWindow(utcDay(now))]
+    : trigger === "manual" ? [manualImproveKey(project, now), manualWindow(now)]
+    : [triggerImproveKey(project, trigger.after), { window_start: trigger.since, window_end: now.toISOString() as Timestamp }];
+  return d.store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key, input: { improve } });
+}
+
+/** Unreviewed failures of one run kind that queue an improve run (design §7): a burst worth a report now. */
+export const TRIGGER_FAILURES = 10;
+/** An unreviewed failure this old queues an improve run (design §7): a lone failure is not left unseen for long. */
+export const TRIGGER_AGE_MS = 3 * DAY_MS;
+
+/** Why the trigger fires: a run kind with TRIGGER_FAILURES failures, or a failure older than TRIGGER_AGE_MS. */
+export type TriggerReason = { reason: "count"; kind: Run["kind"]; failures: number } | { reason: "age"; oldest: Timestamp };
+
+/** A failed run an improve report counts: the same runs groupFailures groups. */
+function reviewable(r: Run): boolean {
+  return r.kind !== "improve" && r.status === "failed" && r.outcome?.status === "failed";
+}
+
+/**
+ * The trigger rule (design §7), pure: given the project's unreviewed runs (finished since its last improve run
+ * was queued), whether an improve run is due. Counts the failed runs per run kind (the role) against
+ * TRIGGER_FAILURES, then the oldest failure's age against TRIGGER_AGE_MS. Null: nothing is due.
+ */
+export function improveTriggerDue(runs: readonly Run[], now: Date): TriggerReason | null {
+  const failed = runs.filter(reviewable);
+  const perKind = new Map<Run["kind"], number>();
+  for (const r of failed) perKind.set(r.kind, (perKind.get(r.kind) ?? 0) + 1);
+  const burst = [...perKind].filter(([, n]) => n >= TRIGGER_FAILURES).sort((a, b) => b[1] - a[1] || cmp(a[0], b[0]))[0];
+  if (burst) return { reason: "count", kind: burst[0], failures: burst[1] };
+  const oldest = failed.map((r) => r.finished_at).filter((t): t is Timestamp => t !== null).sort()[0];
+  return oldest !== undefined && now.getTime() - Date.parse(oldest) > TRIGGER_AGE_MS ? { reason: "age", oldest } : null;
+}
+
+type TriggerStore = ImproveStore & Pick<FactoryStore, "getWorkItemBySource" | "listRuns" | "listRunsFinishedBetween" | "getWorkItem">;
+
+/** The improve runs of `project` (its system work item's), oldest first. */
+export async function listImproveRuns(store: Pick<FactoryStore, "getWorkItemBySource" | "listRuns">, project: string): Promise<Run[]> {
+  const src = systemSource(project);
+  const item = await store.getWorkItemBySource(src.type, src.id);
+  return item ? (await store.listRuns(item.id)).filter((r) => r.kind === "improve") : [];
+}
+
+const isPending = (r: Run) => r.status === "queued" || r.status === "running";
+
+/** An improve run of `project` that is queued or running, or null: while one is, no other is started. */
+export async function pendingImprove(store: Pick<FactoryStore, "getWorkItemBySource" | "listRuns">, project: string): Promise<Run | null> {
+  return (await listImproveRuns(store, project)).find(isPending) ?? null;
+}
+
+/**
+ * The trigger step (design §7): reads the project's failed runs that finished since its last improve run was
+ * queued (all of them before the first), applies improveTriggerDue, and queues one improve run with
+ * triggerImproveKey when it is due. Nothing while an improve run is queued or running. Store state only: two
+ * replicas on one store read the same last run and write the same key, so the store keeps one run.
+ */
+export async function triggerImprove(
+  d: { store: TriggerStore; clock: Clock },
+  project: string,
+): Promise<{ run: Run; created: boolean; why: TriggerReason } | null> {
+  const improves = await listImproveRuns(d.store, project);
+  if (improves.some(isPending)) return null;
+  const last = improves.at(-1) ?? null;
+  const now = d.clock.now();
+  const finished = await d.store.listRunsFinishedBetween(last?.created_at ?? (new Date(0).toISOString() as Timestamp), now.toISOString() as Timestamp);
+  const projects = new Map<WorkItemId, string | null>();
+  const mine: Run[] = [];
+  for (const r of finished.filter(reviewable)) {
+    if (!projects.has(r.work_item_id)) projects.set(r.work_item_id, (await d.store.getWorkItem(r.work_item_id))?.project ?? null);
+    if (projects.get(r.work_item_id) === project) mine.push(r);
+  }
+  const why = improveTriggerDue(mine, now);
+  if (!why) return null;
+  const since = last?.created_at ?? mine.map((r) => r.finished_at!).sort()[0]!;
+  return { ...(await enqueueImprove(d, project, { after: last?.id ?? null, since })), why };
 }
 
 /**
@@ -112,7 +196,7 @@ export function normalizeDetail(detail: string): string {
  */
 export function groupFailures(runs: readonly Run[]): { groups: FailureGroup[]; patterns: FailureGroup[] } {
   const failed = runs
-    .filter((r) => r.kind !== "improve" && r.status === "failed" && r.outcome?.status === "failed")
+    .filter(reviewable)
     .sort((a, b) => cmp(a.finished_at ?? "", b.finished_at ?? "") || cmp(a.id, b.id));
   const byKey = new Map<string, FailureGroup>();
   for (const r of failed) {
