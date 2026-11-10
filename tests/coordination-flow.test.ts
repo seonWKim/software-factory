@@ -679,7 +679,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(commit).toBeGreaterThan(mv);
     expect(g.log.indexOf("npm test", commit)).toBeGreaterThan(commit);
     expect(await outcome(f, "update")).toMatchObject({ result: "pushed" });
-    expect(f.broker.calls.map((c) => c.name)).toContain("github.push_branch");
+    expect(f.broker.calls.map((c) => c.name)).toContain("forge.push_branch");
     expect(await f.runs(f.it, "resolve")).toEqual([]);
     expect(f.agentCalls("resolve")).toBe(0);
   });
@@ -759,7 +759,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(f.agentCalls("resolve")).toBe(0);
     expect(await outcome(f, "resolve")).toMatchObject({ result: "pushed", conflicts: ["docs/design.md"] });
     expect(g.log.indexOf("npm test")).toBeGreaterThan(g.log.findIndex((l) => l.startsWith("git update-index")));
-    expect(f.broker.calls.map((c) => c.name)).toContain("github.push_branch");
+    expect(f.broker.calls.map((c) => c.name)).toContain("forge.push_branch");
     // Only the update's conflict was recorded; the mechanical resolve recorded none.
     expect(record).not.toHaveBeenCalled();
   });
@@ -793,7 +793,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     gitIndex(f.sandbox, { stages: { "docs/design.md": APPENDED } });
     const it = await f.submit();
     await f.step();
-    expect(f.broker.calls.map((c) => c.name)).not.toContain("github.push_branch");
+    expect(f.broker.calls.map((c) => c.name)).not.toContain("forge.push_branch");
     const [run] = await f.runs(it, "implement");
     expect(run!.outcome).toMatchObject({ status: "failed" });
     expect(JSON.stringify(run!.outcome)).toContain("scope");
@@ -857,7 +857,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     expect(g.log.indexOf("npm test", commit)).toBeGreaterThan(commit);
     expect(g.log.some((l) => / commit --no-verify -m Renumber/.test(l))).toBe(false);
     expect(await outcome(f, "resolve")).toMatchObject({ result: "pushed" });
-    expect(f.broker.calls.map((c) => c.name)).toContain("github.push_branch");
+    expect(f.broker.calls.map((c) => c.name)).toContain("forge.push_branch");
   });
 
   it("a resolve run with a real conflict renumbers before the snapshot too, and its prompt lists the conflicting file that still names the old step", async () => {

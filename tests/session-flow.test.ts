@@ -295,7 +295,7 @@ describe("session finish", () => {
     expect(await h.item(h.it0.id)).toMatchObject({ stage: "RUNNING", blocked_on: "outbound", blocked_reason: "pr_pending" });
     h.clock.advance(h.cfg.retry_max_ms);
     await h.controller.tickOutbox();
-    expect(h.broker.calls.map((c) => [c.name, c.ctx])).toEqual([["github.push_branch", undefined], ["github.push_branch", undefined], ["github.open_pr", undefined]]);
+    expect(h.broker.calls.map((c) => [c.name, c.ctx])).toEqual([["forge.push_branch", undefined], ["forge.push_branch", undefined], ["forge.open_change", undefined]]);
     expect(h.forge.prOpens[0]!.body).toMatch(/split the parser[\s\S]*Closes #1/);
     expect(h.sandbox.gitCalls.some((c) => /(^| )push( |$)/.test(c))).toBe(false); // no git push of its own
     // The gates in order: scope, then size and floor (one numstat), then the test command.

@@ -116,7 +116,7 @@ async function implementItem(store: FactoryStore, n: number): Promise<WorkItem> 
 
 const onlyRun = async (store: FactoryStore, item: WorkItem): Promise<Run> => (await store.listRuns(item.id))[0]!;
 const flag = (args: string[], name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
-const forgeWrites = (broker: FakeBroker) => broker.calls.filter((c) => c.name === "github.push_branch" || c.name === "github.open_pr");
+const forgeWrites = (broker: FakeBroker) => broker.calls.filter((c) => c.name === "forge.push_branch" || c.name === "forge.open_change");
 
 /** Starts `w` on its implement run, holds the agent after `at` steps, pauses `w`'s host's run, and waits for the pause. */
 async function pauseMidRun(w: Awaited<ReturnType<typeof world>>, worker: Worker, item: WorkItem, at = 2) {
