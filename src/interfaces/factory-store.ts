@@ -705,20 +705,20 @@ export interface FactoryStore {
   releaseListenerLease(source_type: SourceType, token: number): Promise<void>;
 
   // Sync leases (design 05-coordination, sync lease): one replica per `sync:<type>:<project>` polls a sync source's
-  // inbox and delivers its outbox. Same rules as the listener lease, keyed by name; `listener_leases` is its own table.
-
+  // inbox and delivers its outbox. Same rules as the listener lease (renew, release), keyed by name; its own table.
   /**
-   * Takes lease `name` for `owner` if nobody holds it, the holder's lease expired, or `owner` already holds it
-   * (then the token stays and the lease is extended). The token goes up by one on every take by a new owner.
-   * Otherwise reports the current holder.
+   * Takes lease `name` for `owner` if nobody holds it, the holder's lease expired, or `owner` already holds it (then
+   * the token stays and the lease is extended); a new owner's take adds one to the token. Else reports the holder.
    */
   acquireSyncLease(name: string, owner: string, lease_ms: number): Promise<SyncLeaseResult>;
-  /** Extends the lease while `token` is still current, whatever the clock says (like heartbeat). */
   renewSyncLease(name: string, token: number, lease_ms: number): Promise<SyncLeaseResult>;
-  /** Ends the lease now if `token` is still current, so another replica can take it at once. */
   releaseSyncLease(name: string, token: number): Promise<void>;
   /** The lease row, expired or not; null when it was never taken. Read-only. */
   getSyncLease(name: string): Promise<SyncLease | null>;
+  // Retention (design 08-retention, its guards): rows deleted by table, at most `limit` each, older than `older_than_ms`.
+  pruneDeliveredOutbox(older_than_ms: number, limit: number): Promise<Record<string, number>>;
+  pruneHandledCommands(older_than_ms: number, limit: number): Promise<Record<string, number>>;
+  pruneRecords(older_than_ms: number, limit: number): Promise<Record<string, number>>;
   // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
   // one row per (project, plugin), shared by every replica.
 

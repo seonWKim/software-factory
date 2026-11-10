@@ -29,6 +29,8 @@ import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import { recordAction } from "../../../outbound/index.js";
+import { COMMANDS_CURSOR } from "../../../inbound/index.js";
+import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { recordLocalUserChange } from "../../../identity/index.js";
 import type {
   AbandonedAttempt,
@@ -1557,11 +1559,8 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async advanceCursor(name: string, expected: string | null, next: string): Promise<boolean> {
-    return this.db.transaction(async (tx) =>
-      expected === null
-        ? this.insertOnce(tx, "INSERT INTO inbound_cursors (name, value) VALUES (?, ?)", [name, next])
-        : (await tx.run("UPDATE inbound_cursors SET value = ? WHERE name = ? AND value = ?", [next, name, expected])) === 1,
-    );
+    if (expected === null) return this.db.transaction((tx) => this.insertOnce(tx, "INSERT INTO inbound_cursors (name, value) VALUES (?, ?)", [name, next]));
+    return (await this.db.run("UPDATE inbound_cursors SET value = ? WHERE name = ? AND value = ?", [next, name, expected])) === 1;
   }
 
   // Stream intake
@@ -1598,11 +1597,7 @@ export class SqlFactoryStore implements FactoryStore {
   async acquireListenerLease(source_type: SourceType, owner: string, lease_ms: number): Promise<ListenerLeaseResult> {
     return this.db.transaction(async (tx): Promise<ListenerLeaseResult> => {
       const expires_at = this.after(lease_ms);
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO inbound_listener_leases (source_type, owner, token, expires_at) VALUES (?, ?, 1, ?)",
-        [source_type, owner, expires_at],
-      );
+      const created = await this.insertOnce(tx, "INSERT INTO inbound_listener_leases (source_type, owner, token, expires_at) VALUES (?, ?, 1, ?)", [source_type, owner, expires_at]);
       if (created) return { ok: true, lease: { source_type, owner, token: 1, expires_at } };
       // Conditional: only an expired (or released) lease can be taken, and taking it bumps the token.
       const taken = await tx.run(
@@ -1635,17 +1630,12 @@ export class SqlFactoryStore implements FactoryStore {
   async acquireSyncLease(name: string, owner: string, lease_ms: number): Promise<SyncLeaseResult> {
     return this.db.transaction(async (tx): Promise<SyncLeaseResult> => {
       const expires_at = this.after(lease_ms);
-      const created = await this.insertOnce(tx, "INSERT INTO inbound_sync_leases (name, owner, token, expires_at) VALUES (?, ?, 1, ?)", [
-        name, owner, expires_at,
-      ]);
+      const created = await this.insertOnce(tx, "INSERT INTO inbound_sync_leases (name, owner, token, expires_at) VALUES (?, ?, 1, ?)", [name, owner, expires_at]);
       if (created) return { ok: true, lease: { name, owner, token: 1, expires_at } };
       // Conditional: the holder itself extends its lease with the same token; anyone else takes only an expired (or
       // released) lease, and taking it bumps the token.
-      const taken = await tx.run(
-        `UPDATE inbound_sync_leases SET token = CASE WHEN owner = ? THEN token ELSE token + 1 END, owner = ?, expires_at = ?
-         WHERE name = ? AND (owner = ? OR expires_at <= ?)`,
-        [owner, owner, expires_at, name, owner, this.now()],
-      );
+      const taken = await tx.run(`UPDATE inbound_sync_leases SET token = CASE WHEN owner = ? THEN token ELSE token + 1 END, owner = ?, expires_at = ?
+         WHERE name = ? AND (owner = ? OR expires_at <= ?)`, [owner, owner, expires_at, name, owner, this.now()]);
       const lease = await this.selectSyncLease(tx, name);
       return taken === 1 ? { ok: true, lease: lease! } : { ok: false, reason: "held", holder: lease };
     });
@@ -1665,6 +1655,37 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getSyncLease(name: string): Promise<SyncLease | null> {
     return this.selectSyncLease(this.db, name);
+  }
+
+  // Retention (design 08-retention): a batch of keys selected, then deleted with the guards checked again.
+  async pruneDeliveredOutbox(older_than_ms: number, limit: number): Promise<Record<string, number>> {
+    return { outbound_intents: await this.prune("outbound_intents", ["seq"], "delivered_at IS NOT NULL AND created_at < ?", [this.after(-older_than_ms)], limit) };
+  }
+  async pruneHandledCommands(older_than_ms: number, limit: number): Promise<Record<string, number>> {
+    // Read, not waiting for the mirror, and an app request (not a legacy command row) handled.
+    const guard = `seq <= ? AND created_at < ? AND NOT (mirror = 1 AND mirrored_at IS NULL) AND (origin <> 'app' OR legacy_table = 'command_inbox' OR handled_at IS NOT NULL)`;
+    // A request from before the merge (D7) waits for its app:<seq> command row; in the select only (MySQL's DELETE cannot name its table), as a gone row never returns.
+    const own = this.db.dialect.name === "mysql" ? "CONCAT('app:', inbound_commands.legacy_seq)" : "'app:' || inbound_commands.legacy_seq";
+    const legacy = ` AND (legacy_table IS NULL OR legacy_table <> 'app_command_requests' OR NOT EXISTS (SELECT 1 FROM inbound_commands c WHERE c.command_key = ${own}))`;
+    const params = [Number((await this.getCursor(COMMANDS_CURSOR)) ?? 0), this.after(-older_than_ms)];
+    return { inbound_commands: await this.prune("inbound_commands", ["seq"], guard + legacy, params, limit, guard) };
+  }
+  async pruneRecords(older_than_ms: number, limit: number): Promise<Record<string, number>> {
+    const before = [this.after(-older_than_ms)]; // A claim decision of a queued or running run stays (approveClaimHold, held_since); an alert in its dedupe window too.
+    const active = "NOT EXISTS (SELECT 1 FROM worker_runs r WHERE r.id = controller_claim_decisions.run_id AND r.status IN ('queued', 'running'))";
+    return {
+      controller_claim_decisions: await this.prune("controller_claim_decisions", ["run_id"], `at < ? AND ${active}`, before, limit),
+      worker_host_sleeps: await this.prune("worker_host_sleeps", ["worker_id", "woke_at"], "woke_at < ?", before, limit),
+      controller_alerts: await this.prune("controller_alerts", ["id"], "created_at < ?", [this.after(-Math.max(older_than_ms, ALERT_DEDUPE_MS))], limit),
+    };
+  }
+
+  /** At most `limit` rows of `table` matching `where`, by key (SQLite has no DELETE ... LIMIT). */
+  private async prune(table: string, keys: string[], where: string, params: SqlValue[], limit: number, recheck = where): Promise<number> {
+    const rows = await this.db.all(`SELECT ${keys.join(", ")} FROM ${table} WHERE ${where} ORDER BY ${keys.join(", ")} LIMIT ${Math.max(0, Math.floor(limit))}`, params);
+    const match = keys.length === 1 ? `${keys[0]} IN (${placeholders(rows.length)})` : rows.map(() => `(${keys.map((k) => `${k} = ?`).join(" AND ")})`).join(" OR ");
+    const keyed = rows.flatMap((r) => keys.map((k) => r[k] as SqlValue));
+    return rows.length === 0 ? 0 : this.db.run(`DELETE FROM ${table} WHERE (${match}) AND ${recheck}`, [...keyed, ...params]);
   }
 
   // Forge budget (design 05-sources, call budget)
@@ -2038,11 +2059,9 @@ export class SqlFactoryStore implements FactoryStore {
   async recordHostSleep(sleep: HostSleep): Promise<{ created: boolean; sleep: HostSleep }> {
     const existing = await this.selectHostSleep(sleep.worker_id, sleep.woke_at);
     if (existing) return { created: false, sleep: existing };
-    const created = await this.insertOnce(
-      this.db,
-      "INSERT INTO worker_host_sleeps (worker_id, woke_at, gap_ms, run_id) VALUES (?, ?, ?, ?)",
-      [sleep.worker_id, sleep.woke_at, Math.round(sleep.gap_ms), sleep.run_id],
-    );
+    const created = await this.insertOnce(this.db, "INSERT INTO worker_host_sleeps (worker_id, woke_at, gap_ms, run_id) VALUES (?, ?, ?, ?)", [
+      sleep.worker_id, sleep.woke_at, Math.round(sleep.gap_ms), sleep.run_id,
+    ]);
     // A concurrent first write that lost the insert reports the row the other one stored.
     return { created, sleep: (await this.selectHostSleep(sleep.worker_id, sleep.woke_at))! };
   }
@@ -2078,10 +2097,9 @@ export class SqlFactoryStore implements FactoryStore {
         ])) === 1;
       if (!due) return { created: false as const };
       const alert: Alert = { ...input, id: newId("al"), created_at: now };
-      await tx.run(
-        "INSERT INTO controller_alerts (id, pattern, pattern_key, error_code, count, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [alert.id, alert.pattern, alert.pattern_key, alert.error_code, alert.count, alert.detail, alert.created_at],
-      );
+      await tx.run("INSERT INTO controller_alerts (id, pattern, pattern_key, error_code, count, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)", [
+        alert.id, alert.pattern, alert.pattern_key, alert.error_code, alert.count, alert.detail, alert.created_at,
+      ]);
       return { created: true as const, alert };
     });
   }
@@ -2120,11 +2138,9 @@ export class SqlFactoryStore implements FactoryStore {
       const existing = await this.selectItemMessage(tx, input.work_item_id, input.marker);
       if (existing) return { created: false, message: existing };
       const now = this.now();
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO controller_item_thread (work_item_id, marker, body, created_at, actor) VALUES (?, ?, ?, ?, ?)",
-        [input.work_item_id, input.marker, input.body, now, input.actor ?? null],
-      );
+      const created = await this.insertOnce(tx, "INSERT INTO controller_item_thread (work_item_id, marker, body, created_at, actor) VALUES (?, ?, ?, ?, ?)", [
+        input.work_item_id, input.marker, input.body, now, input.actor ?? null,
+      ]);
       const message = (await this.selectItemMessage(tx, input.work_item_id, input.marker))!;
       const d = input.delivery;
       if (created && d) {
@@ -2249,34 +2265,25 @@ export class SqlFactoryStore implements FactoryStore {
       const existing = await this.selectCliCommand(tx, input.key);
       if (existing) return { created: false, command: existing };
       await this.lockCommandSequence(tx);
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0, input.passport_id ?? null],
-      );
+      const created = await this.insertOnce(tx, "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, passport_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        commandId(input.key), commandOrigin(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.mirror ? 1 : 0, input.passport_id ?? null,
+      ]);
       return { created, command: (await this.selectCliCommand(tx, input.key))! };
     });
   }
 
   async listCliCommandsAfter(after_seq: number, limit: number): Promise<CliCommand[]> {
-    const rows = await this.db.all(`SELECT * FROM inbound_commands WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [
-      after_seq,
-    ]);
+    const rows = await this.db.all(`SELECT * FROM inbound_commands WHERE seq > ? ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`, [after_seq]);
     return rows.map(rowToCliCommand);
   }
 
   async listUnmirroredCliCommands(limit: number): Promise<CliCommand[]> {
-    const rows = await this.db.all(
-      `SELECT * FROM inbound_commands WHERE mirror = 1 AND mirrored_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`,
-    );
+    const rows = await this.db.all(`SELECT * FROM inbound_commands WHERE mirror = 1 AND mirrored_at IS NULL ORDER BY seq LIMIT ${Math.max(0, Math.floor(limit))}`);
     return rows.map(rowToCliCommand);
   }
 
   async markCliCommandMirrored(key: string): Promise<boolean> {
-    const n = await this.db.run("UPDATE inbound_commands SET mirrored_at = ? WHERE command_key = ? AND mirror = 1 AND mirrored_at IS NULL", [
-      this.now(),
-      key,
-    ]);
+    const n = await this.db.run("UPDATE inbound_commands SET mirrored_at = ? WHERE command_key = ? AND mirror = 1 AND mirrored_at IS NULL", [this.now(), key]);
     return n > 0;
   }
 
@@ -2287,22 +2294,15 @@ export class SqlFactoryStore implements FactoryStore {
       const existing = await this.selectAppCommandRequest(tx, input.key);
       if (existing) return { created: false, request: existing };
       await this.lockCommandSequence(tx);
-      const created = await this.insertOnce(
-        tx,
-        "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, passport_id) VALUES (?, 'app', ?, ?, ?, ?, ?, ?)",
-        [commandId(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.passport_id ?? null],
-      );
+      const created = await this.insertOnce(tx, "INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, passport_id) VALUES (?, 'app', ?, ?, ?, ?, ?, ?)", [
+        commandId(input.key), input.key, input.actor, input.command, JSON.stringify(input.args), this.now(), input.passport_id ?? null,
+      ]);
       return { created, request: (await this.selectAppCommandRequest(tx, input.key))! };
     });
   }
 
   async markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean> {
-    const n = await this.db.run(`UPDATE inbound_commands SET handled_at = ?, refusal = ? WHERE ${APP_REQUEST_SEQ} AND handled_at IS NULL`, [
-      this.now(),
-      refusal,
-      seq,
-      seq,
-    ]);
+    const n = await this.db.run(`UPDATE inbound_commands SET handled_at = ?, refusal = ? WHERE ${APP_REQUEST_SEQ} AND handled_at IS NULL`, [this.now(), refusal, seq, seq]);
     return n > 0;
   }
 
