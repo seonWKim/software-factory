@@ -99,7 +99,7 @@ function JsonValue({ text }: { text: string }) {
   const obj = asObject(text);
   if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs break-words">{text}</span>;
   const list = (
-    <dl data-entries className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 font-mono text-xs">
+    <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
       {entries(obj).map(([k, v]) => (
         <Fragment key={k}>
           <dt className="text-zinc-600 dark:text-zinc-400">{k}</dt>
