@@ -10,7 +10,7 @@ import type { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { loadSignals, roleOfRun } from "../src/controller/signals/signal.js";
 import { Kernel } from "../src/controller/units/kernel.js";
 import signalsUnit, { OVERLAP_MS, readFrom } from "../src/controller/units/signals/signals.unit.js";
-import { Router } from "../src/controller/router/router.js";
+import { Router, type ControllerUnits } from "../src/controller/index.js";
 import { loadDescriptors } from "../src/runtime/registry/registry.js";
 import { CODE_ROOT, findDescriptorFiles } from "../src/state/index.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
@@ -30,7 +30,7 @@ function writer(store: FactoryStore, clock: FakeClock, root?: string) {
   const deps = { store, clock, config, scanner: cleanScanner, log: silent, auth: {} } as unknown as ControllerDeps;
   const none = async () => { throw new Error("the signal ledger writes no intent or message"); };
   const k = new Kernel(deps, { record: none, announce: none, emit: none, actions: none, byKey: none }, { beforeMerge: none }, root);
-  const r = new Router([signalsUnit], k, {
+  const r = new Router([signalsUnit] as unknown as ControllerUnits, k, {
     kinds: [], messages: [], guard: async (_w, fn) => fn(), reader: k.reader, commit: (d) => k.commit(d), now: () => tickAt("event", 1, clock.now().getTime()),
   });
   return { step: () => r.step(STEP, tickAt("poll", 1, clock.now().getTime())) };

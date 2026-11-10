@@ -184,13 +184,16 @@ export class Kernel {
     // Looked up at call time: a startup check may build the kernel over a store stub that has none of them.
     const reads = Object.fromEntries(READS.map((m) => [m, (...a: unknown[]) => (store[m] as (...a: unknown[]) => unknown).apply(store, a)]));
     const forge = this.forge;
+    // Discovered now, so a tick awaits a settled list instead of the imports (the code root's list is cached).
+    const signals = () => loadSignals(signal_root);
+    signals().catch(() => undefined);
     this.reader = {
       ...(reads as Pick<Store, (typeof READS)[number]>),
       scan: (channel, content) => d.scanner.scan(channel, content),
       forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
       llm: d.llm ?? null,
       auth: { forge: d.auth, local: d.local_auth ?? null, service: d.service_auth ?? null },
-      signals: () => loadSignals(signal_root),
+      signals,
     };
   }
 
