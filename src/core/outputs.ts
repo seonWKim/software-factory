@@ -1,6 +1,6 @@
 import { isCovered } from "./policy.js";
 import { MAX_PHASES, MIN_PHASES, type SplitLimits, splitError } from "./split.js";
-import type { Tier } from "./types.js";
+import type { Run, Tier } from "./types.js";
 
 // Structured outputs of each agent role: JSON Schema for the harness + a validator for the control plane.
 // Agents can be wrong; nothing they return is trusted until it passes these.
@@ -52,13 +52,22 @@ export interface TriageOutput {
 /**
  * One triage decision (issue #444): the question, the default triage proposes, and whether only the owner may answer
  * it. Auto mode approves a spec with each default unless a decision is owner-only. A plain-text decision (an older
- * answer), or one with no flag or no default, counts as owner-only.
+ * answer), or one with no flag or no default, counts as owner-only. Since issue #526 triage also gives the reason it
+ * asks and 2 to 4 options (or none); an older decision has neither.
  */
 export interface SpecDecision {
+  /** The question. Triage writes it as `question`; the stored decision keeps the name `text`. */
   text: string;
   default: string | null;
   owner_only: boolean;
+  reason?: string;
+  /** The answers to pick from, the default among them; absent or empty for a free answer. */
+  options?: string[];
 }
+
+/** How many options a decision with options offers (issue #526); a decision may also have none. */
+export const MIN_OPTIONS = 2;
+export const MAX_OPTIONS = 4;
 
 /** One phase of a split spec. On /approve it becomes a sub-issue and then an ordinary work item. */
 export interface TriagePhase {
@@ -189,10 +198,12 @@ export const TRIAGE_SCHEMA = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["text", "default", "owner_only"],
+        required: ["question", "reason", "options", "default", "owner_only"],
         properties: {
-          text: { type: "string" },
-          default: { type: "string", description: "The answer you propose; the factory takes it when it approves on its own." },
+          question: { type: "string", description: "The question, in one line." },
+          reason: { type: "string", description: "Why you ask: what the answer changes." },
+          options: { ...strings, maxItems: MAX_OPTIONS, description: `[] for a free answer, or ${MIN_OPTIONS} to ${MAX_OPTIONS} answers to pick from.` },
+          default: { type: "string", description: "The answer you propose, one of the options when there are any; the factory takes it when it approves on its own." },
           owner_only: { type: "boolean", description: "true when only the owner may answer: no default fits, or the choice is risky." },
         },
       },
@@ -341,21 +352,51 @@ function markupError(fields: Record<string, string | readonly string[] | undefin
   return null;
 }
 
+/** A decision's default: a non-empty string, else none. */
+const defaultOf = (v: unknown): string | null => (isStr(v) && v.trim() !== "" ? v : null);
+
 /**
- * The decisions of a triage answer, or null when they are not a list of decisions. A plain string (an older answer)
- * is an owner-only decision with no default; an object with no `owner_only` flag or no default is owner-only too.
+ * A decision in triage's shape (issue #526): a question, a reason, a default, and no options or 2 to 4 of them with
+ * the default among them. The error names the field.
  */
-function parseDecisions(v: unknown): SpecDecision[] | null {
-  if (!Array.isArray(v)) return null;
-  const out: SpecDecision[] = [];
-  for (const d of v) {
-    if (isStr(d)) out.push({ text: d, default: null, owner_only: true });
-    else if (isObj(d) && isStr(d.text) && (d.default === undefined || d.default === null || isStr(d.default))) {
-      const def = isStr(d.default) && d.default.trim() !== "" ? d.default : null;
-      out.push({ text: d.text, default: def, owner_only: d.owner_only !== false || def === null });
-    } else return null;
+function parseQuestion(d: Record<string, unknown>, at: string): SpecDecision | string {
+  if (!isStr(d.question) || d.question.trim() === "") return `${at}.question: must be a non-empty string`;
+  if (!isStr(d.reason) || d.reason.trim() === "") return `${at}.reason: must be a non-empty string`;
+  if (d.default !== undefined && d.default !== null && !isStr(d.default)) return `${at}.default: must be a string`;
+  const options = d.options ?? [];
+  if (!isStrs(options) || options.some((o) => o.trim() === "") || (options.length > 0 && (options.length < MIN_OPTIONS || options.length > MAX_OPTIONS))) {
+    return `${at}.options: must be [] or ${MIN_OPTIONS} to ${MAX_OPTIONS} non-empty strings`;
   }
-  return out;
+  const def = defaultOf(d.default);
+  if (options.length > 0 && (def === null || !options.includes(def))) return `${at}.default: must be one of the options`;
+  if (d.owner_only !== undefined && typeof d.owner_only !== "boolean") return `${at}.owner_only: must be true or false`;
+  return { text: d.question, default: def, owner_only: d.owner_only !== false || def === null, reason: d.reason, ...(options.length > 0 ? { options } : {}) };
+}
+
+/**
+ * The decisions of a triage answer, or an error naming the field. A decision with a `question` is triage's shape
+ * (`parseQuestion`). Older shapes still parse: a plain string is an owner-only decision with no default; a stored
+ * `{ text, default, owner_only }` keeps a reason and options it holds, and with no flag or no default is owner-only.
+ */
+function parseDecisions(v: unknown): Validation<SpecDecision[]> {
+  if (!Array.isArray(v)) return { ok: false, error: "decisions: must be a list" };
+  const out: SpecDecision[] = [];
+  for (const [i, d] of v.entries()) {
+    const at = `decisions[${i}]`;
+    if (isStr(d)) out.push({ text: d, default: null, owner_only: true });
+    else if (isObj(d) && d.question !== undefined) {
+      const q = parseQuestion(d, at);
+      if (isStr(q)) return { ok: false, error: q };
+      out.push(q);
+    } else if (isObj(d) && isStr(d.text) && (d.default === undefined || d.default === null || isStr(d.default))) {
+      const def = defaultOf(d.default);
+      out.push({
+        text: d.text, default: def, owner_only: d.owner_only !== false || def === null,
+        ...(isStr(d.reason) ? { reason: d.reason } : {}), ...(isStrs(d.options) && d.options.length > 0 ? { options: d.options } : {}),
+      });
+    } else return { ok: false, error: `${at}.question: must be a non-empty string` };
+  }
+  return { ok: true, value: out };
 }
 
 /** A decision as the spec comment lists it: the question, its proposed default, and whether only the owner answers. */
@@ -410,8 +451,9 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     : { scope: scope as string };
   // Optional: a triage output without `decisions` means none (the schema does not require it). A stored, already
   // parsed answer (the worker keeps parseTriage's value) carries them as `decision_items`, its `decisions` the lines.
-  const decision_items = parseDecisions(v.decision_items ?? v.decisions ?? []);
-  if (!decision_items) return { ok: false, error: "decisions: must be a list of { text, default, owner_only }" };
+  const parsedDecisions = parseDecisions(v.decision_items ?? v.decisions ?? []);
+  if (!parsedDecisions.ok) return parsedDecisions;
+  const decision_items = parsedDecisions.value;
   const decisions = decision_items.map(decisionLine);
   const applied_defaults = v.applied_defaults ?? [];
   if (!isStrs(applied_defaults)) return { ok: false, error: "applied_defaults: must be a list of strings" };
@@ -419,7 +461,7 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
   // Bare tool-call markup (issue #446) is refused, never repaired: the run is retried like any invalid output.
   const markup = markupError({
     in_short, problem, desired_output, tier_reason, ...(lists ? { in_scope: scoped.in_scope, out_of_scope: scoped.out_of_scope } : { scope: scoped.scope }),
-    done_criteria, decisions, applied_defaults,
+    done_criteria, decisions: [...decisions, ...decision_items.flatMap((d) => [d.reason ?? "", ...(d.options ?? [])])], applied_defaults,
   });
   if (markup) return { ok: false, error: markup };
   if (!isStrs(allowed_paths) || allowed_paths.length === 0 || !allowed_paths.every(isSafePath)) {
@@ -445,6 +487,17 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
       estimated_files, decisions, decision_items, applied_defaults, ...(phases.value ? { phases: phases.value } : {}),
     },
   };
+}
+
+/**
+ * The spec of the item's latest triage run that succeeded and was applied, read from the run's stored output; null
+ * when there is none or it no longer parses. Store reads only: the caller passes the item's runs.
+ */
+export function latestSpec(runs: readonly Run[]): TriageOutput | null {
+  const run = runs.filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null).at(-1);
+  if (run?.outcome?.status !== "succeeded") return null;
+  const parsed = parseTriage(run.outcome.data.spec);
+  return parsed.ok ? parsed.value : null;
 }
 
 /** A short, non-empty plain-text field of needs_human. */
