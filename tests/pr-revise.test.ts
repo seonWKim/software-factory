@@ -2,9 +2,10 @@ import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { phaseLabel } from "../src/core/commands.js";
 import type { FactoryConfig } from "../src/core/config.js";
-import type { SourceRef, WorkerId, WorkItem, WorkItemPatch } from "../src/core/types.js";
+import type { SourceRef, UserId, WorkerId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { newLinkCode } from "../src/impl/auth/link-code.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { SlackSource } from "../src/impl/source/slack-source.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
@@ -351,9 +352,9 @@ describe("feedback on an adopted PR", () => {
 });
 
 /**
- * A Slack-sourced item (issue #481): its events are what the real SlackSource makes of a mention in the thread, the
- * form Slack lets through (it takes a message that starts with `/` as its own slash command). FakeAuth allows user "1".
- * `gate`: the spec waits at the gate; else it runs on to the human-merge wait on PR 42.
+ * A Slack-sourced item (issue #481): what the real SlackSource makes of a mention in the thread. A `/revise` there is a
+ * chat command: stored in the command log as the linked factory user (`local:1`, whom FakeAuth allows), then applied
+ * by the controller's command step. `gate`: the spec waits at the gate; else it runs on to the human-merge wait on PR 42.
  */
 async function slackItem(o: { gate?: boolean; scanner?: EgressScanner } = {}) {
   const cfg: FactoryConfig = o.gate ? config : { ...config, dials: { spec_gate_min_tier: 3, auto_merge_max_tier: 0 } };
@@ -376,27 +377,34 @@ async function slackItem(o: { gate?: boolean; scanner?: EgressScanner } = {}) {
   const slack = new SlackSource({
     api: new FakeSlackApi(), connect: new FakeSocket().connect, channels: [CHANNEL], scanner: cleanScanner, store, repo: { owner: "o", name: "r" }, log: silent,
   });
+  const code = newLinkCode();
+  await store.createLinkCode("local:1" as UserId, code);
+  await store.redeemLinkCode(code, { provider: "slack", subject: "1" });
   const ROOT = "1800000000.000100";
   let n = 0;
-  /** What SlackSource makes of `@factory <text>`: at the thread's root, or as a reply in it. */
-  const said = async (text: string, reply = true): Promise<SourceEvent> => {
+  /** `@factory <text>` as Slack delivers it: at the thread's root, or as a reply in it. */
+  const envelope = (text: string, reply = true) => {
     const ts = reply ? `18000000${String(++n).padStart(2, "0")}.000200` : ROOT;
-    const env = eventEnvelope(mention(ts, text, { user: "1", ...(reply ? { thread_ts: ROOT } : {}) }));
-    return (await slack.toEvent(env, { team_id: TEAM, user_id: BOT }))!.event as SourceEvent;
+    return eventEnvelope(mention(ts, text, { user: "1", ...(reply ? { thread_ts: ROOT } : {}) }));
   };
   const step = async () => {
     await controller.tickIntake();
+    await controller.tickCommands();
     while (await worker.tick()) await controller.tickRuns();
     await controller.tickRuns();
   };
-  const say = async (text: string) => {
-    const e = await said(text);
-    source.queue.push(e);
+  /** Delivers one envelope to SlackSource: an event it maps goes to the poll queue; a chat command stores its row. */
+  const deliver = async (env: Record<string, unknown>) => {
+    const mapped = await slack.toEvent(env, { team_id: TEAM, user_id: BOT });
+    if (mapped) source.queue.push(mapped.event as SourceEvent);
     await step();
-    return e;
   };
-  source.queue.push(await said("please add a scope gate", false));
-  await step();
+  const say = async (text: string) => {
+    const env = envelope(text);
+    await deliver(env);
+    return env;
+  };
+  await deliver(envelope("please add a scope gate", false));
   const it = (await store.listWorkItems(10)).find((x) => x.source.type === "slack_thread")!;
   const item = async () => (await store.getWorkItem(it.id))!;
   const implementRuns = async () => (await store.listRuns(it.id)).filter((r) => r.kind === "implement");
@@ -407,7 +415,7 @@ async function slackItem(o: { gate?: boolean; scanner?: EgressScanner } = {}) {
     if (!r.ok) throw new Error("setup failed");
     return r.item;
   };
-  return { store, source, controller, it, item, implementRuns, refusals, put, say, step };
+  return { store, source, it, item, implementRuns, refusals, put, say, deliver };
 }
 
 describe("/revise in a Slack thread (issue #481)", () => {
@@ -429,7 +437,7 @@ describe("/revise in a Slack thread (issue #481)", () => {
   it("after a failed review run: the same thread /revise starts the implement run", async () => {
     const f = await slackItem();
     await f.put({ blocked_on: "human", blocked_reason: "run_failed:review:invalid_output" });
-    expect((await f.say("/revise fix the parse error")).kind).toBe("revise_requested");
+    await f.say("/revise fix the parse error");
     const runs = await f.implementRuns();
     expect(runs.map((r) => [r.idempotency_key, r.input])).toContainEqual([`${f.it.id}:implement:l1:r0`, { notes: "fix the parse error" }]);
     expect(f.refusals()).toEqual([]);
@@ -437,9 +445,7 @@ describe("/revise in a Slack thread (issue #481)", () => {
 
   it("delivered again (same comment id): no second run", async () => {
     const f = await slackItem();
-    const e = await f.say("/revise rename the flag");
-    await f.controller.handleEvent(e);
-    await f.step();
+    await f.deliver(await f.say("/revise rename the flag"));
     expect((await f.implementRuns()).map((r) => r.idempotency_key)).toEqual([`${f.it.id}:implement:l0:r0`, `${f.it.id}:implement:l1:r0`]);
     expect((await f.store.listStateChanges(f.it.id)).filter((c) => c.reason === "pr_revise_requested")).toHaveLength(1);
     expect(f.refusals()).toEqual([]);
@@ -485,7 +491,7 @@ describe("/revise in a Slack thread (issue #481)", () => {
     it(`while ${phaseLabel(phase)}: one reply in the thread naming the phase, no PR hint, and nothing changes`, async () => {
       const f = await slackItem();
       const before = await f.put(patch as WorkItemPatch);
-      expect((await f.say("/revise please change it")).kind).toBe("revise_requested");
+      await f.say("/revise please change it");
       expect(await f.item()).toEqual(before);
       expect(f.refusals()).toHaveLength(1);
       expect(f.refusals()[0]!.source).toEqual(f.it.source);
