@@ -136,20 +136,25 @@ Who may act: local commands (the CLI and the local UI) are checked by the local 
 
 A `permissions.static.deny` still refuses a local user. On a shared store the identity comes from each person's environment (git config, OS user), so anyone who can run the CLI against the store can set it: the store's credentials are the trust boundary.
 
-- `factory task create --title <t> --body-file <f>`: Create a local work item from a title and a body file; prints its work item ID.
-- `factory task list`: List local work items: ID, title, stage and blocked reason.
-- `factory task show <id>`: Print a work item's state, spec, runs and stored messages.
-- `factory approve <id> [notes]`: Store `/approve` for the item; the controller applies it.
-- `factory retry <id> [text]`: Store `/retry` for the item; the controller applies it.
-- `factory revise <id> <feedback>`: Store `/revise` for the item; the controller applies it.
-- `factory reject <id> <reason>`: Store `/reject` for the item; the controller applies it.
-- `factory resolve <id> [notes]`: Store `/resolve` for the item; the controller applies it.
-- `factory merge <id>`: Approver only: merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself); the controller applies it.
-- `factory users list`: Print your CLI identity and every local user with its role (owner, approver, requester).
-- `factory users add <user_id> --role approver|requester`: Owner only: give a local user a role, e.g. `local:dev@example.com`.
-- `factory users remove <user_id>`: Owner only: remove a local user's role.
+- `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
+- `factory task list`: List local work items. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason.
+- `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
+- `factory approve <id> [notes]`: Store `/approve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
+- `factory retry <id> [text]`: Store `/retry` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
+- `factory revise <id> <feedback>`: Store `/revise` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
+- `factory reject <id> <reason>`: Store `/reject` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
+- `factory resolve <id> [notes]`: Store `/resolve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
+- `factory merge <id>`: Merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself). Who: the owner and approvers (approve_merge). Prints: the stored command's number; the controller applies it and answers in the item's thread.
+- `factory users list`: List local users. Who: anyone. Prints: your identity and every local user with its role (owner, approver, requester).
+- `factory users add <user_id> --role approver|requester`: Give a local user a role, e.g. `local:dev@example.com`. Who: the local owner. Prints: the user's new role.
+- `factory users remove <user_id>`: Remove a local user's role. Who: the local owner. Prints: whether a role was removed.
+- `factory settings list`: List every settable key. Who: anyone. Prints: each key's effective value and its source (override, file, default).
+- `factory settings set <key> <value> [--project <owner/name>]`: Store an override; `<value>` is JSON. `mode`, `auto_merge_max_tier` and a change that loosens a tighten-only key need approve_merge. Who: anyone. Prints: the key's new and old value with their sources, and when it applies.
+- `factory settings reset <key> [--project <owner/name>]`: Remove an override, so the file value (else the default) applies again; the same approve_merge rule as `settings set`. Who: anyone. Prints: the key's new and old value with their sources, and when it applies.
+- `factory settings history [--limit <n>]`: Show the settings audit. Who: anyone. Prints: every set and reset, newest first (default 50).
+- `factory mode auto|manual [--project <owner/name>]`: The same as `settings set mode <auto|manual>`. Who: the owner and approvers (approve_merge). Prints: the mode's new and old value.
 
-`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` work for any work item, a GitHub one included, and only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check, so a local owner or approver needs no GitHub write access. For a GitHub item the factory also posts one comment on the issue saying who sent which command. That mirror is best effort: while GitHub is down or rate limited the command still applies, and the comment is posted on a later tick. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. `merge` is stored the same way; the controller merges the item's local branch `factory/<id>` into your local base branch with a merge commit, writing no checkout and pushing nothing, and closes the item. It needs the approver role (the owner has it), applies only to a local item waiting for a merge, and refuses while the base branch is checked out in a worktree (switch that checkout to another branch first) or when the branch conflicts (the reply lists the files). Generated from `src/core/local-cli.ts`; a test fails when this list differs.
+`task create` takes the item in and queues its triage run; the store must already know the configured repo, so start the factory once first. `approve`, `retry`, `revise`, `reject` and `resolve` work for any work item, a GitHub one included, and only store the command in the command log; the controller reads it on its next poll and applies it with the local auth plugin's check, so a local owner or approver needs no GitHub write access. For a GitHub item the factory also posts one comment on the issue saying who sent which command. That mirror is best effort: while GitHub is down or rate limited the command still applies, and the comment is posted on a later tick. Its replies (the spec, refusals, failures) are stored as the item's messages: read them with `task show`. A refusal names the `factory users add` command the owner can run. `merge` is stored the same way; the controller merges the item's local branch `factory/<id>` into your local base branch with a merge commit, writing no checkout and pushing nothing, and closes the item. It needs the approver role (the owner has it), applies only to a local item waiting for a merge, and refuses while the base branch is checked out in a worktree (switch that checkout to another branch first) or when the branch conflicts (the reply lists the files). Generated from the command table, `src/core/command-table.ts`; a test fails when this list differs.
 
 With no GitHub plugin selected (the solo default below) nothing ever reaches GitHub: `"auth": "local"`, `"permissions": { "grants": ["static"] }` and `"plugins": { …, "source": ["local"], "broker": "local" }`. Then the factory reads no GitHub credential, fetches no origin, opens no PR, and every item ends with `factory merge` (design `docs/design/05-sources.md`, Local startup).
 
@@ -381,10 +386,32 @@ One-time Slack app setup, details in [`docs/slack-setup.md`](docs/slack-setup.md
    "plugins": { "source": ["github-issues", "local", "slack"] }
    ```
 
-5. **Link your Slack account** to your factory user (with `auth: github`, a Slack account has no rights until it is linked): run `factory link-code github:<your GitHub user ID>`, then post `@software-factory /link <code>` in the channel.
+5. **Link your Slack account** to your factory user (a Slack account has no rights until it is linked; then it acts as that user, with that user's stored role): run `factory link-code <your factory user ID>` (solo: the local owner, e.g. `local:you@example.com`; `factory users list` shows it), then post `@software-factory /link <code>` in the channel.
 
 Known gaps (2026-11-09; issues #479–#486): people's Slack replies are not shown on the item page, `/revise` on a PR is refused from Slack, commands get no 👀 reaction, and private channels (`G…`) do not work yet.
 
-In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention (`@software-factory /revise <feedback>`) or use the buttons. To turn it off, drop `"slack"` from `plugins.source`. Several replicas: only one holds the Socket Mode connection at a time (the listener lease); `scripts/slack-app.sh check` reports one more connection while the factory runs.
+In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention (`@software-factory /revise <feedback>`) or use the buttons.
+
+The factory's commands in Slack, from the same command table as the CLI (`@bot` is the mention of the bot). Each runs as the factory user the Slack account is linked to, with that user's stored role; an unlinked account gets one reply saying so, and only `/link` and `help` are answered for it. `list`, `show`, `users list` and `settings` reads reply with what the CLI prints, cut to Slack's limits with a note naming the CLI command that prints the whole text and, for `show <id>`, a link to the item's source. Item commands and `merge` store the CLI's command row, and the controller answers in the item's thread. `help` lists only the commands you may run where you ask it. A mention with any other words is a request in plain words: outside an item's thread it starts a work item, in an item's thread the factory suggests a command.
+
+- `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
+- `@bot list`: as `factory task list`. Who: anyone.
+- `@bot show <id>`: as `factory task show <id>`. Who: anyone.
+- `@bot /approve [notes]`: as `factory approve <id> [notes]`, in the item's thread. Who: the owner and approvers.
+- `@bot /retry [text]`: as `factory retry <id> [text]`, in the item's thread. Who: the owner and approvers.
+- `@bot /revise <feedback>`: as `factory revise <id> <feedback>`, in the item's thread. Who: the owner and approvers.
+- `@bot /reject <reason>`: as `factory reject <id> <reason>`, in the item's thread. Who: the owner and approvers.
+- `@bot /resolve [notes]`: as `factory resolve <id> [notes]`, in the item's thread. Who: the owner and approvers.
+- `@bot merge`: as `factory merge <id>`, in the item's thread. Who: the owner and approvers (approve_merge).
+- `@bot users list`: as `factory users list`. Who: anyone.
+- `@bot users add <user_id> --role approver|requester`: as `factory users add <user_id> --role approver|requester`; refused in chat until #479, so use the CLI. Who: the local owner.
+- `@bot users remove <user_id>`: as `factory users remove <user_id>`; refused in chat until #479, so use the CLI. Who: the local owner.
+- `@bot settings list`: as `factory settings list`. Who: anyone.
+- `@bot settings set <key> <value> [--project <owner/name>]`: as `factory settings set <key> <value> [--project <owner/name>]`; refused in chat until #479, so use the CLI. Who: anyone.
+- `@bot settings reset <key> [--project <owner/name>]`: as `factory settings reset <key> [--project <owner/name>]`; refused in chat until #479, so use the CLI. Who: anyone.
+- `@bot settings history [--limit <n>]`: as `factory settings history [--limit <n>]`. Who: anyone.
+- `@bot mode auto|manual [--project <owner/name>]`: as `factory mode auto|manual [--project <owner/name>]`; refused in chat until #479, so use the CLI. Who: the owner and approvers (approve_merge).
+
+To turn it off, drop `"slack"` from `plugins.source`. Several replicas: only one holds the Socket Mode connection at a time (the listener lease); `scripts/slack-app.sh check` reports one more connection while the factory runs.
 
 Why the secret file lives where it does, and how each guard works: [`docs/setup.md`](docs/setup.md), [`docs/architecture.md` §5](docs/architecture.md#5-secret-isolation).

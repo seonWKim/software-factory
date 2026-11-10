@@ -1,27 +1,34 @@
 // Authorizes a person's command under the command's passport (RFC 0015 §8, M9): Identity checks the passport, and the
-// forge's auth plugin's grants (forge identities) or the local one's (the CLI and the app) decide the role. The
-// controller's automatic steps are authorized under its service passport. Each is a check through the kernel's reader.
+// forge's auth plugin's grants (forge identities) or the local one's (the CLI, the app and chat accounts) decide the
+// role. The controller's automatic steps are authorized under its service passport. Each is a check through the
+// kernel's reader.
+
+/**
+ * Providers the local auth plugin judges (design 08-permissions, issue #498): the CLI and the app (`local`), and chat
+ * accounts (`slack`), which act as the factory user they are linked to, with that user's stored role.
+ */
+const LOCALLY_JUDGED: readonly string[] = ["local", "slack"];
 
 import type { AuthAction, AuthProvider, CommandPassport, ExternalIdentity, Principal } from "../../../interfaces/auth-provider.js";
 import { type Refusal } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
-/** Authorizes a person's command: the forge's auth plugin for forge identities, the local one for the CLI and the app. */
+/** Authorizes a person's command: the forge's auth plugin for forge identities, the local one for the CLI, the app and chat. */
 export class AuthUnit {
   constructor(private readonly c: Ctx) {}
 
   async authorize(identity: ExternalIdentity, action: AuthAction, resource: string): Promise<Principal | Refusal> {
-    const local = identity.provider === "local";
+    const local = LOCALLY_JUDGED.includes(identity.provider);
     const principal = await this.plugin(local).resolve(identity);
     if (!principal) {
-      if (local) return { refuse: "your local identity resolves to no factory user under the local auth plugin" };
+      if (identity.provider === "local") return { refuse: "your local identity resolves to no factory user under the local auth plugin" };
       return { refuse: "your account is not linked to a factory user; link it with `/link <code>` (code from `factory link-code <user_id>`)" };
     }
     return this.allowed(principal, action, resource, local, identity.passport);
   }
 
-  /** The auth plugin of a command's origin: the local one for the CLI and the local UI (issue #318), else the forge's. */
+  /** The auth plugin of a command's origin: the local one for the CLI, the local UI (issue #318) and chat, else the forge's. */
   private plugin(local: boolean): AuthProvider {
     const { forge, local: own } = this.c.k.reader.auth;
     return local ? own ?? forge : forge;
@@ -29,7 +36,7 @@ export class AuthUnit {
 
   /**
    * The permission half of `authorize`, for a principal already known (an app request names its user). `local`:
-   * a command from the CLI or the local UI, checked by the local auth plugin. `passport`: the command's edge
+   * a command from the CLI, the local UI or chat, checked by the local auth plugin. `passport`: the command's edge
    * passport, which Identity checks first (absent: a row from before M9; the plugin alone decides).
    */
   async allowed(principal: Principal, action: AuthAction, resource: string, local = false, passport?: CommandPassport): Promise<Principal | Refusal> {

@@ -2,6 +2,7 @@ import type { UserId, WorkItem, WorkItemId } from "./types.js";
 import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
+import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
@@ -15,7 +16,7 @@ import { MERGE_COMMAND } from "./local-merge.js";
  */
 
 /** Where the CLI identity came from, for `users list`. */
-export type CliIdentitySource = "cli_user" | "git user.email" | "OS user" | "anonymous";
+export type CliIdentitySource = "cli_user" | "git user.email" | "OS user" | "anonymous" | "linked chat account";
 
 export interface CliIdentity {
   /** The factory user ID every CLI command acts as: `cli_user`, or `local:<value>`. */
@@ -59,37 +60,8 @@ export function isCliCommandKey(key: string): boolean {
 }
 const USER_ID = /^[a-z]+:\S+$/;
 
-export interface CliCommandSpec {
-  /** The words after `factory`, e.g. `task create`. */
-  name: string;
-  /** As typed after `factory`. */
-  usage: string;
-  /** One line. */
-  description: string;
-}
-
-/** Every CLI command for local tasks. The usage text, the `/help` line and the SET_UP.md list come from it. */
-export const CLI_COMMANDS: readonly CliCommandSpec[] = [
-  { name: "task create", usage: "task create --title <t> --body-file <f>", description: "Create a local work item from a title and a body file; prints its work item ID" },
-  { name: "task list", usage: "task list", description: "List local work items: ID, title, stage and blocked reason" },
-  { name: "task show", usage: "task show <id>", description: "Print a work item's state, spec, runs and stored messages" },
-  { name: "approve", usage: "approve <id> [notes]", description: "Store `/approve` for the item; the controller applies it" },
-  { name: "retry", usage: "retry <id> [text]",description: "Store `/retry` for the item; the controller applies it" },
-  { name: "revise", usage: "revise <id> <feedback>", description: "Store `/revise` for the item; the controller applies it" },
-  { name: "reject", usage: "reject <id> <reason>", description: "Store `/reject` for the item; the controller applies it" },
-  { name: "resolve", usage: "resolve <id> [notes]", description: "Store `/resolve` for the item; the controller applies it" },
-  {
-    name: "merge",
-    usage: "merge <id>",
-    description: "Approver only: merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself); the controller applies it",
-  },
-  { name: "users list", usage: "users list", description: "Print your CLI identity and every local user with its role (owner, approver, requester)" },
-  { name: "users add", usage: "users add <user_id> --role approver|requester", description: "Owner only: give a local user a role, e.g. `local:dev@example.com`" },
-  { name: "users remove", usage: "users remove <user_id>", description: "Owner only: remove a local user's role" },
-];
-
-/** The top-level words `factory` hands to this module. */
-export const CLI_TOP_WORDS = ["task", "approve", "retry", "revise", "reject", "resolve", "merge", "users"] as const;
+/** The top-level words `factory` hands to this module: the table's task, item and users commands. */
+export const CLI_TOP_WORDS = topWords(["task", "item", "users"]);
 
 const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve"] as const;
 
@@ -105,18 +77,21 @@ export type CliAction =
   | { action: "users_add"; user: UserId; role: Exclude<LocalRole, "owner"> }
   | { action: "users_remove"; user: UserId };
 
+/** This module's commands, from the command table (src/core/command-table.ts). */
+const LOCAL_COMMANDS = COMMAND_TABLE.filter((c) => (CLI_TOP_WORDS as readonly string[]).includes(c.name.split(" ")[0]!));
+
 export function cliUsage(): string {
-  return ["usage: npm run factory -- <command>", ...CLI_COMMANDS.map((c) => `  ${c.usage}`)].join("\n");
+  return ["usage: npm run factory -- <command>", ...LOCAL_COMMANDS.map((c) => `  ${cliUsageOf(c)}`)].join("\n");
 }
 
-/** The `/help` line naming the CLI commands (src/core/commands.ts). */
-export function cliHelpLine(): string {
-  return `From the command line on a local item: ${CLI_COMMANDS.map((c) => `\`factory ${c.usage}\``).join(", ")}.`;
+/** The usage lines of `factory --help`: each command with what it does. */
+export function cliUsageLines(): string {
+  return LOCAL_COMMANDS.map((c) => `  ${cliUsageOf(c).padEnd(40)} ${c.does}`).join("\n");
 }
 
-/** The SET_UP.md list, one bullet per command. tests/local-cli.test.ts fails when SET_UP.md differs. */
+/** The SET_UP.md list, one bullet per command of the table. tests/local-cli.test.ts fails when SET_UP.md differs. */
 export function cliCommandListMarkdown(): string {
-  return CLI_COMMANDS.map((c) => `- \`factory ${c.usage}\`: ${c.description}.`).join("\n");
+  return COMMAND_TABLE.map((c) => `- \`factory ${cliUsageOf(c)}\`: ${commandLine(c)}.`).join("\n");
 }
 
 /** The action, or an error line for anything incomplete or unknown (nothing is read or written). */
@@ -185,6 +160,11 @@ export interface LocalCliDeps {
   displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
   /** The CLI identity's edge passport (Identity, RFC 0015 §8), stored on each command row. Absent: none. */
   passport?: () => Promise<string>;
+  /**
+   * The source type the command was typed in, when not the CLI (a chat command, design 05-sources): an item of that
+   * source already shows it in its thread, so its row is not mirrored there. Absent: the CLI.
+   */
+  origin?: string;
 }
 
 export interface CliResult {
@@ -234,8 +214,9 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (a.command === MERGE_COMMAND && item.source.type !== "local") return fail(`${a.id} is not a local work item: merge its change on the forge instead`);
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
-      // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface.
-      const mirror = item.source.type !== "local";
+      // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface, and
+      // a command typed in the item's own thread is already there.
+      const mirror = item.source.type !== "local" && item.source.type !== d.origin;
       const passport_id = await d.passport?.();
       const { command } = await d.store.appendCliCommand({
         key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}), ...(passport_id ? { passport_id } : {}),
