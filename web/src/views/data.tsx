@@ -1,15 +1,15 @@
 import { Copy } from "lucide-react";
 import { type FormEvent, useState } from "react";
-import { API, type DataCell, type DataPageBody, type DataTables, useManualApi } from "../api.js";
+import { API, type DataAutonomy, type DataCell, type DataPageBody, type DataTables, useManualApi } from "../api.js";
 import { Empty, ErrorNote, Loading } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 
-// The Data page (design §9, issue #239): every store table on the left with its row count, one page of the
-// chosen table's rows on the right, newest first. Read-only. It reads only when a table, page or filter is
-// chosen and when the top bar's Refresh is pressed: no polling. Values arrive already withheld or hidden by the
+// The Data page (design §9, issue #239): one Autonomy line (design §6) above every store table on the left with
+// its row count, and one page of the chosen table's rows on the right, newest first. Read-only. It reads only
+// when a table, page or filter is chosen and when the top bar's Refresh is pressed: no polling. Values arrive already withheld or hidden by the
 // API; long values are cut here, not in the API, so "Show all" needs no second read.
 
 /** Cells longer than this are cut on display. */
@@ -31,37 +31,63 @@ export function DataPage() {
   };
 
   return (
-    <div className="flex min-w-0 gap-4 max-md:flex-col">
-      <nav aria-label="Tables" className="w-56 shrink-0 max-md:w-full">
-        {tables.isError ? <ErrorNote error={tables.error} /> : !tables.data ? <Loading rows={6} /> : (
-          <ul className="space-y-0.5 text-sm">
-            {tables.data.tables.map((t) => (
-              <li key={t.name}>
-                <button
-                  type="button"
-                  aria-pressed={t.name === table}
-                  onClick={() => choose(t.name)}
-                  className={cn(
-                    "flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800",
-                    t.name === table && "bg-zinc-100 font-medium dark:bg-zinc-800",
-                  )}
-                >
-                  <span className="min-w-0 truncate font-mono text-xs">{t.name}</span>
-                  <span className="ml-auto text-xs text-zinc-500 tabular-nums">{t.rows}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </nav>
-      <div className="min-w-0 flex-1">
-        {table === null ? (
-          <Empty>Choose a table to see its rows, newest first.</Empty>
-        ) : (
-          <TableRows key={`${table}|${page}|${filter?.column ?? ""}|${filter?.value ?? ""}`} table={table} page={page} setPage={setPage} filter={filter} setFilter={(f) => { setFilter(f); setPage(1); }} />
-        )}
+    <div className="min-w-0 space-y-3">
+      <AutonomyLine />
+      <div className="flex min-w-0 gap-4 max-md:flex-col">
+        <nav aria-label="Tables" className="w-56 shrink-0 max-md:w-full">
+          {tables.isError ? <ErrorNote error={tables.error} /> : !tables.data ? <Loading rows={6} /> : (
+            <ul className="space-y-0.5 text-sm">
+              {tables.data.tables.map((t) => (
+                <li key={t.name}>
+                  <button
+                    type="button"
+                    aria-pressed={t.name === table}
+                    onClick={() => choose(t.name)}
+                    className={cn(
+                      "flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800",
+                      t.name === table && "bg-zinc-100 font-medium dark:bg-zinc-800",
+                    )}
+                  >
+                    <span className="min-w-0 truncate font-mono text-xs">{t.name}</span>
+                    <span className="ml-auto text-xs text-zinc-500 tabular-nums">{t.rows}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </nav>
+        <div className="min-w-0 flex-1">
+          {table === null ? (
+            <Empty>Choose a table to see its rows, newest first.</Empty>
+          ) : (
+            <TableRows key={`${table}|${page}|${filter?.column ?? ""}|${filter?.value ?? ""}`} table={table} page={page} setPage={setPage} filter={filter} setFilter={(f) => { setFilter(f); setPage(1); }} />
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+/** One line above the tables: merged factory items with no person's push, from /api/v1/data/autonomy. */
+function AutonomyLine() {
+  const q = useManualApi<DataAutonomy>(API.dataAutonomy);
+  if (q.isError) return <ErrorNote error={q.error} />;
+  if (!q.data) return <Loading rows={1} />;
+  const a = q.data;
+  return (
+    <p className="text-sm" data-testid="data-autonomy">
+      <span className="font-medium">Autonomy:</span>{" "}
+      {a.autonomy === null ? (
+        <span className="text-zinc-500">not enough data</span>
+      ) : (
+        <span className="tabular-nums">
+          {a.autonomy.toFixed(2)}{" "}
+          <span className="text-zinc-500">
+            ({a.merged - a.with_push} of {a.merged} merged factory items with no person's push)
+          </span>
+        </span>
+      )}
+    </p>
   );
 }
 
