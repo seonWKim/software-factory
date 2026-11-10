@@ -9,7 +9,8 @@ import { Markdown } from "../web/src/components/ui/markdown.js";
 // The item page (design §9, issue #313): a split parent lists its phases and a phase links back to its parent;
 // the spec triage wrote sits behind "spec written (show)" and renders as markdown, never as escaped JSON; the
 // spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and ID. A waiting spec
-// (issue #526) shows In short above Commands, its decisions as questions, and a confirm step before approve.
+// (issue #526) shows In short above Commands, its decisions as questions, and a confirm step before approve; Reject
+// and Revise have their own forms (issue #527).
 
 const AT = "2026-11-07T00:00:00.000Z";
 const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
@@ -270,6 +271,131 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     expect(confirm.textContent).toContain("You approve the run held for a person by the Rule of Two.");
     expect(confirm.textContent).toContain("Next: The held run starts.");
     await send({ command: "approve" });
+  });
+});
+
+describe("item page: the Reject and Revise forms (issue #527)", () => {
+  const cmd = (name: string) => ({ name, usage: `/${name}`, description: name });
+  let posts: { url: string; body: unknown }[];
+
+  /** Serves wi_r at the spec gate with approve, revise and reject; `extra` sets the item's fields (a PR). */
+  function serve(extra: object = {}) {
+    const detail = {
+      as_of: AT, item: base("wi_r", 40, "Forms", extra), timeline: [], runs: [], commands: ["approve", "revise", "reject"].map(cmd), replies: [], spec: null,
+    };
+    posts = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0]!;
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { command: string };
+        posts.push({ url: path, body });
+        return new Response(JSON.stringify({ request_id: "app:x", seq: 7, command: body.command, work_item_id: "wi_r" }), { status: 202, headers: { "content-type": "application/json" } });
+      }
+      const bodies: Record<string, unknown> = {
+        "/api/v1/items/wi_r": detail,
+        "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+        "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
+      };
+      const body = bodies[path];
+      if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+  }
+
+  /** Clicks `name` once it is enabled; returns its form. */
+  async function open(name: "reject" | "revise") {
+    const button = (await screen.findByRole("button", { name })) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    fireEvent.click(button);
+    return screen.getByRole("group", { name: name === "reject" ? "Why reject?" : "Revise the spec" });
+  }
+
+  it("Reject opens a Why? form with four reasons and a text box; the reason and the text are sent as the reject note", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    const form = await open("reject");
+    expect(within(form).getByText("Why?")).toBeTruthy();
+    const reasons = within(within(form).getByRole("radiogroup", { name: "Reason" })).getAllByRole("radio") as HTMLInputElement[];
+    expect(reasons.map((r) => r.parentElement!.textContent)).toEqual(["not needed", "wrong approach", "duplicate", "too big; split it"]);
+    const confirm = within(form).getByRole("button", { name: "Confirm reject" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.click(reasons[1]!);
+    fireEvent.change(within(form).getByRole("textbox", { name: "Reject details" }), { target: { value: " use the existing hook " } });
+    expect(posts).toEqual([]);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_r/commands", body: { command: "reject", note: "wrong approach\nuse the existing hook" } }]));
+  });
+
+  it("free text alone is a reject note too; Cancel closes the form and sends nothing", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    let form = await open("reject");
+    fireEvent.change(within(form).getByRole("textbox", { name: "Reject details" }), { target: { value: "covered by #12" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("group", { name: "Why reject?" })).toBeNull();
+    expect(posts).toEqual([]);
+    form = await open("reject");
+    fireEvent.change(within(form).getByRole("textbox", { name: "Reject details" }), { target: { value: "covered by #12" } });
+    fireEvent.click(within(form).getByRole("button", { name: "Confirm reject" }));
+    await waitFor(() => expect(posts.map((p) => p.body)).toEqual([{ command: "reject", note: "covered by #12" }]));
+  });
+
+  it("the Reject confirm says the item closes, and its PR too when it has one", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    let form = await open("reject");
+    expect(form.querySelector("[data-reject-closes]")!.textContent).toBe("Rejecting closes this item.");
+    cleanup();
+    serve({ change_ref: "42", change_url: "https://github.com/o/r/pull/42" });
+    mount("/app/items/wi_r");
+    form = await open("reject");
+    expect(form.querySelector("[data-reject-closes]")!.textContent).toBe("Rejecting closes this item and its PR #42, without a merge.");
+  });
+
+  it("after a Reject is sent, its outcome shows next to the Reject button", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    const form = await open("reject");
+    fireEvent.click(within(form).getByRole("radio", { name: "duplicate" }));
+    fireEvent.click(within(form).getByRole("button", { name: "Confirm reject" }));
+    const row = document.querySelector<HTMLElement>('[data-command="reject"]')!;
+    await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
+    expect(screen.queryByRole("group", { name: "Why reject?" })).toBeNull();
+  });
+
+  it("Revise shows the spec sections, each with an optional comment box, and sends one revise with only the commented sections", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    const form = await open("revise");
+    expect([...form.querySelectorAll("[data-revise-section]")].map((x) => x.getAttribute("data-revise-section"))).toEqual(
+      ["In short", "Problem", "Done when", "Scope", "Allowed paths"],
+    );
+    for (const s of ["In short", "Problem", "Done when", "Scope", "Allowed paths"]) expect(within(form).getByRole("textbox", { name: `Comment on ${s}` })).toBeTruthy();
+    fireEvent.change(within(form).getByRole("textbox", { name: "Comment on Problem" }), { target: { value: " Say why the gate is slow. " } });
+    fireEvent.change(within(form).getByRole("textbox", { name: "Comment on Allowed paths" }), { target: { value: "Also `docs/`." } });
+    fireEvent.click(within(form).getByRole("button", { name: "Send revise" }));
+    await waitFor(() => expect(posts).toEqual([{
+      url: "/api/v1/items/wi_r/commands",
+      body: { command: "revise", note: "### Problem\nSay why the gate is slow.\n\n### Allowed paths\nAlso `docs/`." },
+    }]));
+    const row = document.querySelector<HTMLElement>('[data-command="revise"]')!;
+    await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
+  });
+
+  it("Revise stays disabled while no section has a comment; a blank comment does not count", async () => {
+    serve();
+    mount("/app/items/wi_r");
+    const form = await open("revise");
+    const send = within(form).getByRole("button", { name: "Send revise" }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
+    fireEvent.change(within(form).getByRole("textbox", { name: "Comment on Scope" }), { target: { value: "   " } });
+    expect(send.disabled).toBe(true);
+    fireEvent.click(send);
+    expect(posts).toEqual([]);
+    fireEvent.change(within(form).getByRole("textbox", { name: "Comment on Done when" }), { target: { value: "Add a timing test." } });
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(posts.map((p) => p.body)).toEqual([{ command: "revise", note: "### Done when\nAdd a timing test." }]));
   });
 });
 
