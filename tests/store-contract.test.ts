@@ -1660,7 +1660,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "worker_run_steps", // RFC 0015 M6: src/worker/migrations/20261108T1730-worker-run-journal
       "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
       "controller_merge_queue_entries",
-      "controller_signals", // the signal ledger: src/controller/migrations/20261111T1200-controller-signals
+      "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",
       "bus_topics",
