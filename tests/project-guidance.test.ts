@@ -34,7 +34,7 @@ describe("project guidance: rules and learnings of every layer", () => {
   it("puts every rules/*.md in full, then the unretired learnings, layer by layer", async () => {
     const base = layer({ "rules/b.md": "# Rule B\n\nAlways B.\n", "rules/a.md": "# Rule A\n\nAlways A.\n", "rules/notes.txt": "not a rule", "learnings.md": LEARNINGS });
     const org = layer({ "rules/org.md": "# Org rule\n\nNo force pushes.\n" });
-    const g = await new PackGuidance([{ layer: "base", dir: base }, { layer: "org", dir: org }]).read();
+    const g = await new PackGuidance([{ layer: "base", dir: base }, { layer: "org", dir: org }]).collect();
     expect(g.dropped).toBe(0);
     const t = g.text;
     expect(t.startsWith("## Rules and learnings\n\n")).toBe(true);
@@ -48,12 +48,12 @@ describe("project guidance: rules and learnings of every layer", () => {
   });
 
   it("no layer folder, no rules and no learnings: empty text", async () => {
-    const g = await new PackGuidance([{ layer: "base", dir: layer({}) }, { layer: "learned", dir: join(layer({}), "absent") }]).read();
+    const g = await new PackGuidance([{ layer: "base", dir: layer({}) }, { layer: "learned", dir: join(layer({}), "absent") }]).collect();
     expect(g).toEqual({ text: "", dropped: 0 });
   });
 
   it("only retired learnings: empty text", async () => {
-    const g = await new PackGuidance([{ layer: "base", dir: layer({ "learnings.md": "## Old\nstatus: retired\nx\n" }) }]).read();
+    const g = await new PackGuidance([{ layer: "base", dir: layer({ "learnings.md": "## Old\nstatus: retired\nx\n" }) }]).collect();
     expect(g).toEqual({ text: "", dropped: 0 });
   });
 
@@ -63,7 +63,7 @@ describe("project guidance: rules and learnings of every layer", () => {
     const entry = `## Late learning\n${"l".repeat(3000)}`;
     const dir = layer({ "rules/big.md": rule, "learnings.md": entry, "rules/zz.md": "# Last rule\n" });
     const packs: Pack[] = [{ layer: "base", dir }];
-    const g = await new PackGuidance(packs).read();
+    const g = await new PackGuidance(packs).collect();
     // Rules first: big (6000) and zz (12) in full, then 1988 characters of the learning.
     expect(g.text).toContain(rule);
     expect(g.text).toContain("# Last rule");
@@ -75,18 +75,43 @@ describe("project guidance: rules and learnings of every layer", () => {
 
   it("a rule past the cap is left out with its heading", async () => {
     const dir = layer({ "rules/a.md": "a".repeat(GUIDANCE_MAX), "rules/b.md": "bbb" });
-    const g = await new PackGuidance([{ layer: "base", dir }]).read();
+    const g = await new PackGuidance([{ layer: "base", dir }]).collect();
     expect(g.text).not.toContain("rules/b.md");
     expect(g.dropped).toBe(3);
   });
 
-  it("a read failure other than a missing file rejects (the worker logs it and goes on)", async () => {
+  it("collect(): a read failure other than a missing file rejects", async () => {
     const dir = layer({ "rules/a.md": "x" });
     mkdirSync(join(dir, "learnings.md")); // a folder where the file should be: EISDIR
-    await expect(new PackGuidance([{ layer: "base", dir }]).read()).rejects.toThrow();
+    await expect(new PackGuidance([{ layer: "base", dir }]).collect()).rejects.toThrow();
     const locked = layer({ "rules/a.md": "x" });
     chmodSync(join(locked, "rules", "a.md"), 0o000);
-    await expect(new PackGuidance([{ layer: "base", dir: locked }]).read()).rejects.toThrow();
+    await expect(new PackGuidance([{ layer: "base", dir: locked }]).collect()).rejects.toThrow();
+  });
+});
+
+describe("project guidance: best effort", () => {
+  const recording = () => {
+    const warnings: string[] = [];
+    return { warnings, info: () => {}, warn: (msg: string) => warnings.push(msg), error: () => {} };
+  };
+
+  it("read() logs a failed read and gives no section instead of rejecting", async () => {
+    const dir = layer({ "rules/a.md": "x" });
+    mkdirSync(join(dir, "learnings.md"));
+    const log = recording();
+    expect(await new PackGuidance([{ layer: "base", dir }]).read(log)).toBe("");
+    expect(log.warnings).toEqual(["rules and learnings could not be read; none in the prompt"]);
+  });
+
+  it("read() logs a warning when text is dropped at the cap, and none under it", async () => {
+    const log = recording();
+    const over = await new PackGuidance([{ layer: "base", dir: layer({ "rules/a.md": "a".repeat(GUIDANCE_MAX + 1) }) }]).read(log);
+    expect(over).toContain("a".repeat(GUIDANCE_MAX));
+    expect(log.warnings).toEqual(["rules and learnings over their cap; the rest was dropped"]);
+    const quiet = recording();
+    await new PackGuidance([{ layer: "base", dir: layer({ "rules/a.md": "a" }) }]).read(quiet);
+    expect(quiet.warnings).toEqual([]);
   });
 });
 

@@ -997,17 +997,15 @@ export class Worker {
   }
 
   /**
-   * Appends the packs' rules and learnings (withGuidance), then the top INDEX_SIZE docs for `query` as an index
-   * (path, name, snippet); the agent Reads a path for the full text. No search, no results, or a failed search:
-   * no index. Both are best effort.
+   * Appends the packs' rules and learnings (design 07-self-improvement.md), then the top INDEX_SIZE docs for `query`
+   * as an index (path, name, snippet) the agent Reads in full. No search, no results, or a failed search: no index.
    */
   async withIndex(prompt: string, query: string): Promise<string> {
-    prompt = await this.withGuidance(prompt);
-    if (!this.d.capability) return prompt;
-    const found = await this.d.capability.search(query, INDEX_SIZE).catch((err: unknown) => {
+    prompt = [prompt, (await this.d.guidance?.read(this.d.log)) ?? ""].filter((part) => part !== "").join("\n\n");
+    const found = (await this.d.capability?.search(query, INDEX_SIZE).catch((err: unknown) => {
       this.d.log.warn("capability search failed; no doc index", { error: errorText(err) });
       return [];
-    });
+    })) ?? [];
     if (found.length === 0) return prompt;
     const index = [
       "## Available docs (index)",
@@ -1017,17 +1015,6 @@ export class Worker {
       ...found.slice(0, INDEX_SIZE).map((c) => `- \`${c.id}\`: ${c.name}${c.summary ? `. ${c.summary}` : ""}`),
     ].join("\n");
     return `${prompt}\n\n${index}`;
-  }
-
-  /** Appends the rules and learnings section. None, or a failed read (a warning): `prompt` unchanged. */
-  private async withGuidance(prompt: string): Promise<string> {
-    if (!this.d.guidance) return prompt;
-    const g = await this.d.guidance.read().catch((err: unknown) => {
-      this.d.log.warn("rules and learnings could not be read; none in the prompt", { error: errorText(err) });
-      return { text: "", dropped: 0 };
-    });
-    if (g.dropped > 0) this.d.log.warn("rules and learnings over their cap; the rest was dropped", { dropped_chars: g.dropped });
-    return g.text === "" ? prompt : `${prompt}\n\n${g.text}`;
   }
 
   /**

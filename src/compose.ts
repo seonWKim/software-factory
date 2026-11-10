@@ -915,10 +915,7 @@ export async function build(
     // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
-    awake,
-    capability,
-    // Every layer's rules/*.md and unretired learnings.md entries, before the doc index (design 07-self-improvement.md).
-    guidance: new PackGuidance(loaded.packs),
+    awake, capability, guidance: new PackGuidance(loaded.packs), // the packs' rules and learnings (design 07-self-improvement.md)
     testDatabase,
     settings,
     engines,

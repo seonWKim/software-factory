@@ -1,14 +1,15 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { GuidanceSource, ProjectGuidance } from "../../core/worker-deps.js";
+import { type Logger, errorText } from "../../core/log.js";
+import type { GuidanceSource } from "../../core/worker-deps.js";
 import type { Pack } from "../../packs/packs.js";
 
 /**
  * Rules and learnings for every agent prompt (design 07-self-improvement.md). Each pack layer, in layer order,
  * may hold `rules/*.md` (each file goes into the prompt in full) and a `learnings.md` whose `## ` sections are
  * entries; an entry with a `status: retired` line is left out. Rules come first (every layer's), then learnings.
- * Rules and learnings together are capped at GUIDANCE_MAX characters; text past the cap is dropped and counted
- * in `dropped`. Nothing is cached: each read sees the files as they are now.
+ * Rules and learnings together are capped at GUIDANCE_MAX characters; text past the cap is dropped with a warning.
+ * Best effort: a failed read is a warning and gives no section. Nothing is cached: each read sees the files now.
  */
 
 /** The cap on rules and learnings text per prompt (fixed). */
@@ -22,7 +23,18 @@ const INTRO = "Rules and learnings from the factory's packs. Follow them unless 
 export class PackGuidance implements GuidanceSource {
   constructor(private readonly packs: readonly Pick<Pack, "layer" | "dir">[]) {}
 
-  async read(): Promise<ProjectGuidance> {
+  /** The `## Rules and learnings` section; "" when there is nothing to put in it or the read failed. */
+  async read(log: Logger): Promise<string> {
+    const g = await this.collect().catch((err: unknown) => {
+      log.warn("rules and learnings could not be read; none in the prompt", { error: errorText(err) });
+      return { text: "", dropped: 0 };
+    });
+    if (g.dropped > 0) log.warn("rules and learnings over their cap; the rest was dropped", { dropped_chars: g.dropped, cap: GUIDANCE_MAX });
+    return g.text;
+  }
+
+  /** The section and the characters cut at the cap. A read failure other than a missing file rejects. */
+  async collect(): Promise<{ text: string; dropped: number }> {
     const rules: { id: string; text: string }[] = [];
     const learnings: string[] = [];
     for (const p of this.packs) {

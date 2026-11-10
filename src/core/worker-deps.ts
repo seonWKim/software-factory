@@ -113,14 +113,9 @@ export function firstLine(s: string): string {
   return s.split("\n")[0] ?? s;
 }
 
-/** The rules and learnings section (`text`, empty when there are none) and the characters cut at its cap. */
-export interface ProjectGuidance {
-  text: string;
-  dropped: number;
-}
-
+/** The rules and learnings section for a prompt; "" for none. Best effort: it warns on `log` and never rejects. */
 export interface GuidanceSource {
-  read(): Promise<ProjectGuidance>;
+  read(log: Logger): Promise<string>;
 }
 
 export interface WorkerDeps {
@@ -165,7 +160,7 @@ export interface WorkerDeps {
   capability?: CapabilitySearch;
   /**
    * The packs' rules and learnings (design 07-self-improvement.md), put before the doc index in every agent
-   * prompt. Absent, or nothing to read: no section. A failed read is a warning; the run goes on without them.
+   * prompt. Absent, nothing to read, or a failed read (a warning): no section.
    */
   guidance?: GuidanceSource;
   /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */

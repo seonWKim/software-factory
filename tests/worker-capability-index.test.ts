@@ -221,7 +221,9 @@ describe("worker: pack rules, learnings and skills in the agent prompt", () => {
   it("a failed read of rules or learnings logs a warning; the prompt is as without them and the run goes on", async () => {
     const log = recording();
     const today = await flow(new FakeSearch(RESULTS));
-    const broken = { read: async () => Promise.reject(new Error("EACCES")) };
+    const dir = folder({ "rules/a.md": "# A rule\n" });
+    mkdirSync(join(dir, "learnings.md")); // a folder where the file should be: the read fails
+    const broken = new PackGuidance([{ layer: "base", dir }]);
     const specs = await flow(new FakeSearch(RESULTS), { guidance: broken, log });
     expect(specs.map((s) => s.prompt)).toEqual(today.map((s) => s.prompt));
     expect(log.warnings.filter((w) => w.includes("rules and learnings could not be read"))).toHaveLength(3);
