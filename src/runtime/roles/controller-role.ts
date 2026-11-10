@@ -213,6 +213,8 @@ export class ControllerRole implements Decisions {
     // The units' steps tick on the injected clock, so tests move them by hand.
     const units = ticks.create(onError, this.role.clock);
     this.decide(units, r);
+    // The daily retention pass (design 08-retention), tried each poll interval; the store's day mark makes it daily.
+    units.schedule("retention", () => this.kernel.cfg.poll_interval_ms, () => this.tickRetention());
     // The label, never the key: log lines and comments name a project by its readable path.
     this.role.log.info("controller started", { project: this.kernel.cfg.project.label });
     await Promise.all([
@@ -267,6 +269,11 @@ export class ControllerRole implements Decisions {
   /** Removes inbound records past inbox_retention_days, as inbound's `records` tick does. */
   async tickRecords(): Promise<void> {
     await (await this.wire()).inbound.prune(this.tick("records"));
+  }
+
+  /** One retention step (design 08-retention): today's pass, unless the day is marked or another replica holds it. */
+  async tickRetention(): Promise<void> {
+    await (await this.router()).unit("retention").retentionStep(this.role.store);
   }
 
   /**

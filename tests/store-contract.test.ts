@@ -2182,6 +2182,150 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
+  describe("retention (design 08-retention)", () => {
+    const DAY = 86_400_000;
+    const ALL_KINDS: RunKind[] = ["triage", "implement", "review", "update", "resolve"];
+    const finished = { status: "succeeded" as const, summary: "", data: {} };
+    /** The store's SQL driver, for rows only an old schema wrote (a request from before the command tables merged). */
+    const dbOf = (store: FactoryStore) => (store as unknown as { db: SqlDriver }).db;
+
+    it("pruneDeliveredOutbox deletes delivered rows past the cutoff, at most limit per call; an undelivered row stays at any age", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      for (const m of ["a", "b", "c", "pending"]) {
+        await store.recordItemMessage({ work_item_id: item.id, marker: `<!-- ${m} -->`, body: m, delivery: { source_type: "github_issue", target: issue(1).source } });
+      }
+      const rows = await store.listPendingDeliveries(["github_issue"], 10);
+      for (const row of rows.slice(0, 3)) await store.finishDelivery(row.seq, (await store.claimDelivery(row.seq, LEASE))!, null);
+      // Delivered but not old yet: nothing goes.
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 0 });
+      clock.advance(400 * DAY);
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 2 });
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 1 });
+      // Run twice: nothing more, no error; the undelivered row is still there to send.
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 0 });
+      expect((await store.listPendingDeliveries(["github_issue"], 10)).map((r) => r.seq)).toEqual([rows[3]!.seq]);
+    });
+
+    it("pruneHandledCommands deletes old commands the cursor passed; an unread, mirror-pending or unhandled app row stays", async () => {
+      const { store, clock } = await make();
+      const cmd = (key: string, mirror = false) => store.appendCliCommand({ key, actor: "local:me", command: "approve", args: {}, ...(mirror ? { mirror } : {}) });
+      await cmd("cli:read");
+      await cmd("cli:mirror", true);
+      const handled = (await store.recordAppCommandRequest({ key: "app:handled", actor: "local:me" as UserId, command: "approve", args: {} })).request;
+      await store.recordAppCommandRequest({ key: "app:open", actor: "local:me" as UserId, command: "approve", args: {} });
+      await store.markAppCommandRequest(handled.seq, null);
+      const last = (await store.listCliCommandsAfter(0, 10)).at(-1)!;
+      expect(await store.advanceCursor("commands", null, String(last.seq))).toBe(true);
+      await cmd("cli:unread");
+      expect(await store.pruneHandledCommands(30 * DAY, 100)).toEqual({ inbound_commands: 0 });
+      clock.advance(31 * DAY);
+      expect(await store.pruneHandledCommands(30 * DAY, 100)).toEqual({ inbound_commands: 2 });
+      const keys = async () => (await store.listCliCommandsAfter(0, 10)).map((c) => c.key);
+      expect(await keys()).toEqual(["cli:mirror", "app:open", "cli:unread"]);
+      expect(await store.getAppCommandRequest("app:handled")).toBeNull();
+      // Once mirrored it goes; a second pass deletes nothing.
+      await store.markCliCommandMirrored("cli:mirror");
+      expect(await store.pruneHandledCommands(30 * DAY, 100)).toEqual({ inbound_commands: 1 });
+      expect(await store.pruneHandledCommands(30 * DAY, 100)).toEqual({ inbound_commands: 0 });
+      expect(await keys()).toEqual(["app:open", "cli:unread"]);
+    });
+
+    it("a handled app request from before the merge stays until its app:<seq> command row is gone", async () => {
+      const { store, clock } = await make();
+      const at = clock.now().toISOString();
+      const db = dbOf(store);
+      await db.run(
+        `INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, handled_at, legacy_table, legacy_seq)
+         VALUES ('cmd_old', 'app', 'app:uuid-7', 'local:me', 'approve', '{}', ?, ?, 'app_command_requests', 7)`,
+        [at, at],
+      );
+      // Its command row, copied from command_inbox, still waiting for the mirror.
+      await db.run(
+        `INSERT INTO inbound_commands (id, origin, command_key, actor, command, args, created_at, mirror, legacy_table, legacy_seq)
+         VALUES ('cmd_old_row', 'app', 'app:7', 'local:me', 'approve', '{}', ?, 1, 'command_inbox', 3)`,
+        [at],
+      );
+      const last = (await store.listCliCommandsAfter(0, 10)).at(-1)!;
+      await store.advanceCursor("commands", null, String(last.seq));
+      clock.advance(31 * DAY);
+      expect(await store.pruneHandledCommands(30 * DAY, 100)).toEqual({ inbound_commands: 0 });
+      await store.markCliCommandMirrored("app:7");
+      // The command row goes first; its request waits for the next pass.
+      expect(await store.pruneHandledCommands(30 * DAY, 100)).toEqual({ inbound_commands: 1 });
+      expect((await store.listCliCommandsAfter(0, 10)).map((c) => c.key)).toEqual(["app:uuid-7"]);
+      expect(await store.pruneHandledCommands(30 * DAY, 100)).toEqual({ inbound_commands: 1 });
+      expect(await store.listCliCommandsAfter(0, 10)).toEqual([]);
+    });
+
+    it("pruneRecords keeps a claim decision of a queued or running run at any age; finished runs', host sleeps and alerts go", async () => {
+      const { store, clock } = await make();
+      const held = async (n: number) => {
+        const { item } = await store.createWorkItem(issue(n), system);
+        await store.transition({
+          id: item.id, expected_version: 1, actor: system, reason: "x",
+          patch: { stage: "RUNNING", files_to_change: ["src/worker/runner.ts"], allowed_paths: ["src/worker/"] },
+        });
+        await store.transition({ id: item.id, expected_version: 2, patch: {}, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: `${n}:implement` } });
+        clock.advance(1_000);
+        return item.id;
+      };
+      const a = await held(1);
+      const b = await held(2);
+      const claim = () => store.claimRun({ worker_id: w1, kinds: ALL_KINDS, lease_ms: LEASE });
+      const first = (await claim())!;
+      expect(await claim()).toBeNull();
+      expect(await store.listClaimDecisions(b)).toHaveLength(1);
+      await store.recordHostSleep({ worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 120_000, run_id: null });
+      await store.recordAlert({ pattern: "repeated_error", pattern_key: "k", error_code: "x", count: 3, detail: null }, 6 * 3_600_000);
+
+      clock.advance(400 * DAY);
+      const r = await store.pruneRecords(90 * DAY, 100);
+      expect(r).toMatchObject({ worker_host_sleeps: 1, controller_alerts: 1 });
+      expect(await store.listClaimDecisions(b)).toHaveLength(1);
+      // Running, still kept; finished, it goes.
+      await store.completeRun(first.id, first.lease!.token, finished);
+      const second = (await claim())!;
+      expect(second.work_item_id).toBe(b);
+      clock.advance(400 * DAY);
+      await store.pruneRecords(90 * DAY, 100);
+      expect(await store.listClaimDecisions(a)).toEqual([]);
+      expect(await store.listClaimDecisions(b)).toHaveLength(1);
+      await store.completeRun(second.id, second.lease!.token, finished);
+      expect((await store.pruneRecords(90 * DAY, 100)).controller_claim_decisions).toBe(1);
+      expect(await store.listClaimDecisions(b)).toEqual([]);
+      expect(await store.pruneRecords(90 * DAY, 100)).toEqual({ controller_claim_decisions: 0, worker_host_sleeps: 0, controller_alerts: 0 });
+    });
+
+    it("an alert inside the alarm dedupe window stays at any retention above 0", async () => {
+      const { store, clock } = await make();
+      await store.recordAlert({ pattern: "repeated_error", pattern_key: "k", error_code: "x", count: 3, detail: null }, 6 * 3_600_000);
+      clock.advance(6 * 3_600_000 - 1);
+      expect((await store.pruneRecords(1, 100)).controller_alerts).toBe(0);
+      clock.advance(2);
+      expect((await store.pruneRecords(1, 100)).controller_alerts).toBe(1);
+    });
+
+    it("state_changes, verdicts and runs are never deleted", async () => {
+      const { store, clock } = await make();
+      const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "o/r#1:triage" } });
+      await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "x", patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "9" } });
+      const v = await store.recordVerdict({
+        id: item.id, expected_version: 2, actor: human, verdict: "accept", severity: "none", reason: null, comment_id: "c1", target: "pr", implicit: false, pr_head: null,
+      });
+      expect(v.ok).toBe(true);
+      const kept = ["controller_state_changes", "controller_verdicts", "worker_runs"];
+      const counts = async () => Object.fromEntries((await store.listTables()).filter((t) => kept.includes(t.name)).map((t) => [t.name, t.rows]));
+      const before = await counts();
+      expect(Object.values(before).every((n) => n > 0)).toBe(true);
+      clock.advance(4000 * DAY);
+      await store.pruneDeliveredOutbox(1, 1000);
+      await store.pruneHandledCommands(1, 1000);
+      await store.pruneRecords(1, 1000);
+      expect(await counts()).toEqual(before);
+    });
+  });
+
   describe("recurring failure holds (design 05-alarms)", () => {
     it("a queued run of an item held with recurring_failure is not claimed; another item's is; released, it is", async () => {
       const { store } = await make();

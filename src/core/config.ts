@@ -168,6 +168,8 @@ export interface LoadedConfig {
    * are deleted by the controller's cleanup. Default 14.
    */
   inbox_retention_days: number;
+  /** `retention` (design 08-retention): days kept per class of operational rows; 0 keeps a class forever. File-only. */
+  retention: RetentionDays;
   /**
    * `outbound.batching` (RFC 0015 §15.1): each destination kind's batching policy (outbound's BatchingPolicy), `*`
    * for the rest. Empty: `auto`. Parsed by outbound's `batchingPolicies`; core imports no component.
@@ -243,6 +245,30 @@ export function toolchainCacheOverlaps(
   return caches.flatMap((cache, index) =>
     denied.filter((d) => isUnder(cache, d) || isUnder(d, cache)).map((d) => ({ index, cache, denied: d })),
   );
+}
+
+/** Days the controller's daily retention pass keeps each class of operational rows (design 08-retention). */
+export interface RetentionDays {
+  readonly outbox_days: number;
+  readonly commands_days: number;
+  readonly records_days: number;
+}
+
+/** The `retention` defaults, the same solo and enterprise: delivered outbox rows and handled commands 30 days, records 90. */
+export const RETENTION_DEFAULTS: RetentionDays = { outbox_days: 30, commands_days: 30, records_days: 90 };
+
+/** The `retention` block: each absent key its default; a value that is not an integer of 0 or more fails startup. */
+export function retentionConfig(raw: unknown): RetentionDays {
+  if (raw === undefined) return RETENTION_DEFAULTS;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("retention must be an object");
+  const out: Record<string, number> = { ...RETENTION_DEFAULTS };
+  for (const key of Object.keys(RETENTION_DEFAULTS)) {
+    const v = (raw as Record<string, unknown>)[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) throw new Error(`retention.${key} must be an integer of 0 or more (0 keeps forever)`);
+    out[key] = v;
+  }
+  return out as unknown as RetentionDays;
 }
 
 /** The alarm keys when factory.config.json gives none (design 05-alarms). */

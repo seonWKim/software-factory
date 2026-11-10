@@ -126,6 +126,7 @@ import {
   workItemInsert,
 } from "./rows.js";
 import * as filed from "./filed-patterns.js";
+import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords } from "./retention.js";
 import * as signals from "./signals.js";
 
 /**
@@ -1673,6 +1674,9 @@ export class SqlFactoryStore implements FactoryStore {
   async getSyncLease(name: string): Promise<SyncLease | null> {
     return this.selectSyncLease(this.db, name);
   }
+  pruneDeliveredOutbox(older_than_ms: number, limit: number) { return pruneDeliveredOutbox(this.db, this.after(-older_than_ms), limit); } // ./retention.ts
+  pruneHandledCommands(older_than_ms: number, limit: number) { return pruneHandledCommands(this.db, this.after(-older_than_ms), limit); }
+  pruneRecords(older_than_ms: number, limit: number) { return pruneRecords(this.db, this.after(-older_than_ms), this.now(), limit); }
 
   // Forge budget (design 05-sources, call budget)
 
@@ -2818,10 +2822,6 @@ const CLAIM_ORDER: readonly RunKind[] = ["review", "triage", "update", "implemen
 /** A JSON string array column (allowed_paths). */
 function parseList(value: unknown): string[] {
   return typeof value === "string" ? (JSON.parse(value) as string[]) : [];
-}
-
-function placeholders(n: number): string {
-  return Array.from({ length: n }, () => "?").join(", ");
 }
 
 /** Link codes are stored only as this hash (design 2026-11-01). */

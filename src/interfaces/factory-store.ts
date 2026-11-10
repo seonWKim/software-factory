@@ -724,6 +724,10 @@ export interface FactoryStore {
   releaseSyncLease(name: string, token: number): Promise<void>;
   /** The lease row, expired or not; null when it was never taken. Read-only. */
   getSyncLease(name: string): Promise<SyncLease | null>;
+  // Retention (design 08-retention, its guards): rows deleted by table, at most `limit` each, older than `older_than_ms`.
+  pruneDeliveredOutbox(older_than_ms: number, limit: number): Promise<Record<string, number>>;
+  pruneHandledCommands(older_than_ms: number, limit: number): Promise<Record<string, number>>;
+  pruneRecords(older_than_ms: number, limit: number): Promise<Record<string, number>>;
   // Forge budget (design 05-sources, call budget): the forge's rate limit as its last response anywhere reported it,
   // one row per (project, plugin), shared by every replica.
 
