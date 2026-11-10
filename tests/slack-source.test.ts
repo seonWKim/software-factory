@@ -9,9 +9,11 @@ import type { UserId, WorkItem } from "../src/core/types.js";
 import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMResponse } from "../src/interfaces/llm-provider.js";
+import type { Secret, SecretName } from "../src/interfaces/secret-store.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
 import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
@@ -470,6 +472,71 @@ describe("slack source: egress", () => {
     expect(f.api.thread(ts).some((m) => m.text?.includes("withheld by the leak scanner"))).toBe(true);
   });
 });
+
+describe("slack source: 👀 on a command", () => {
+  /** An item in review with PR 42, from a thread at `ts`. */
+  async function inReview(f: F, ts: string): Promise<WorkItem> {
+    const item = await specPending(f, ts);
+    await deliver(f, press(ts, "sf_cmd:approve", "/approve"));
+    await finishAll(f, "implement", { pr_number: 42 });
+    return (await f.store.getWorkItem(item.id))!;
+  }
+
+  it("/verdict accept in a thread gets exactly one eyes reaction on its message; a redelivered markSeen adds none", async () => {
+    const f = await setup();
+    const ts = "1800000020.000100";
+    const item = await inReview(f, ts);
+    const before = f.api.reactions.length;
+    await deliver(f, eventEnvelope(mention("1800000020.000200", "/verdict accept none looks right", { thread_ts: ts })));
+    expect((await f.store.listVerdicts(item.id)).map((v) => v.comment_id)).toContain("1800000020.000200");
+    const mine = () => f.api.reactions.filter((r) => r.ts === "1800000020.000200");
+    expect(mine()).toEqual([{ channel: CHANNEL, ts: "1800000020.000200", name: "eyes" }]);
+
+    await f.slack.markSeen(item.source, "1800000020.000200");
+    expect(mine()).toHaveLength(1);
+    // No other message got one from the verdict.
+    expect(f.api.reactions.length - before).toBe(1);
+  });
+
+  it("does nothing for no comment id or a button press's action key", async () => {
+    const f = await setup();
+    const source = { type: "slack_thread" as const, id: sourceId("1800000021.000100"), link: "" };
+    await f.slack.markSeen(source, null);
+    await f.slack.markSeen(source, "action:1800000121.000001");
+    expect(f.api.reactCalls).toBe(0);
+  });
+
+  it("a failed reaction (missing_scope) is a warning and the command still runs", async () => {
+    const f = await setup();
+    const ts = "1800000022.000100";
+    const item = await inReview(f, ts);
+    f.api.failReact = "missing_scope";
+    await deliver(f, eventEnvelope(mention("1800000022.000200", "/verdict accept none fine", { thread_ts: ts })));
+    expect((await f.store.listVerdicts(item.id)).map((v) => v.comment_id)).toContain("1800000022.000200");
+    expect(f.api.reactCalls).toBeGreaterThan(0);
+    expect(f.log.lines.some((l) => l.level === "warn" && l.msg === "mark seen failed" && String(l.fields?.error).includes("missing_scope"))).toBe(true);
+  });
+
+  it("HttpSlackApi.react calls reactions.add with the bot token and takes already_reacted as success", async () => {
+    const requests: { url: string; auth: string; body: string }[] = [];
+    let error: string | null = "already_reacted";
+    const fn: FetchFn = async (url, init) => {
+      requests.push({ url, auth: init.headers.authorization ?? "", body: init.body });
+      return { status: 200, json: async () => (error === null ? { ok: true } : { ok: false, error }) };
+    };
+    const api = new HttpSlackApi({ get: async (name) => (name === SLACK_BOT_TOKEN ? fakeSecret(name, "test-bot-value") : null) }, fn);
+    await api.react(CHANNEL, "1800000023.000200", "eyes");
+    expect(requests).toEqual([{ url: "https://slack.com/api/reactions.add", auth: "Bearer test-bot-value", body: JSON.stringify({ channel: CHANNEL, timestamp: "1800000023.000200", name: "eyes" }) }]);
+    error = "missing_scope";
+    await expect(api.react(CHANNEL, "1800000023.000200", "eyes")).rejects.toThrow("slack reactions.add failed: missing_scope");
+    error = null;
+    await api.react(CHANNEL, "1800000023.000200", "eyes");
+  });
+});
+
+function fakeSecret(name: SecretName, v: string): Secret {
+  return { name, reveal: () => v, toString: () => "[secret]", toJSON: () => "[secret]" };
+}
 
 describe("slack source: factory commands (issue #498)", () => {
   /** The code block a reply of printed lines starts with. */
