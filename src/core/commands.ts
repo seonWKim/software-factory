@@ -1,6 +1,7 @@
 import { COMMAND_TABLE, type CommandWho, type TableCommand, cliHelpLine } from "./command-table.js";
+import { type TriageOutput, parseTriage } from "./outputs.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE } from "./policy.js";
-import type { RunKind, WorkItem } from "./types.js";
+import type { Run, RunKind, WorkItem } from "./types.js";
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -485,4 +486,16 @@ function itemApplies(c: TableCommand, s: CommandState): boolean {
   if (c.name === "merge") return s.phase === "merge_pending";
   const spec = COMMANDS.find((x) => x.name === c.name);
   return spec !== undefined && applies(spec, s);
+}
+
+/**
+ * The spec an `/approve` answers (issue #526): the one the item's latest applied, successful triage run wrote, read
+ * from the run's stored output; null when there is none or it no longer parses. Store reads only: the caller passes
+ * the item's runs.
+ */
+export function latestSpec(runs: readonly Run[]): TriageOutput | null {
+  const run = runs.filter((r) => r.kind === "triage" && r.outcome?.status === "succeeded" && r.acknowledged_at !== null).at(-1);
+  if (run?.outcome?.status !== "succeeded") return null;
+  const parsed = parseTriage(run.outcome.data.spec);
+  return parsed.ok ? parsed.value : null;
 }

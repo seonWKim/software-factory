@@ -5,8 +5,9 @@ import { branchFor } from "../../../core/policy.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import { PREFLIGHT, type ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { type ResumePlan, RunFailure, ciResults, gitIdentity, hasTool, lastVerdictHead, renderAdoptedPr, renderSessionResume, renderWorkItem, reviewComment, specQuery, tail } from "../../support.js";
+import { type ResumePlan, RunFailure, ciResults, fenced, gitIdentity, hasTool, lastVerdictHead, renderAdoptedPr, renderSessionResume, renderWorkItem, reviewComment, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
+import { decisionsSection } from "../../../shared/command-notes.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
 async function review(
@@ -42,7 +43,8 @@ async function review(
   if (!plan?.session && head_sha !== "" && lastVerdictHead(await w.d.store.listRuns(item.id), run.id) === head_sha) {
     return { no_agent: "unchanged_head", head_sha };
   }
-  const notes = await w.approverNotes(item);
+  // The approver's notes, then the answers to the spec's decisions (issue #526).
+  const notes = [await w.approverNotes(item), decisionsSection(await w.d.store.listStateChanges(item.id), fenced)].filter(Boolean).join("\n\n");
   const subject = item.origin === "adopted" ? renderAdoptedPr(item) : renderWorkItem(item, { includeSpec: true });
   // Blind pass: work item + diff only, no implementer transcript (design §4). A paused review resumes its own
   // session on the same host; anywhere else it reviews afresh (design §5 Pause).
