@@ -270,13 +270,13 @@ describe("no source at all", () => {
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 
-  it("the inbox cursor starts where the local source's cursor stopped: commands it read are not applied again", async () => {
+  it("the inbox cursor starts at the commands cursor: commands before it are not applied again", async () => {
     const f = await factory();
     await f.link();
     const id = (await f.cli({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     await f.step();
     const old = (await f.store.appendCliCommand({ key: "old", actor: OWNER, command: "reject", args: { item: id, text: "no" } })).command;
-    await f.store.advanceCursor("intake:local", null, String(old.seq));
+    await f.store.advanceCursor("commands", null, String(old.seq));
     await f.step();
     expect((await f.store.getWorkItem(id))!.stage).toBe("READY");
     expect(await f.store.listItemMessages(id).then((ms) => ms.filter((m) => m.marker.includes(":old ")))).toEqual([]);
