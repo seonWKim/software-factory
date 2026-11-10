@@ -27,7 +27,7 @@ import { INBOUND_RECEIVED } from "./topics/inbound-records.topic.js";
 
 /** The cursor this process's forge budget is stored under after each poll, for the status page. */
 export const GITHUB_BUDGET_CURSOR = "github:budget";
-/** The command rows' cursor; a one-time migration started it from the old `intake:local` cursor (issue #467). */
+/** The command rows' cursor; a one-time migration started it from the local source's old cursor (issue #467). */
 export const COMMANDS_CURSOR = "commands";
 /** The stream of a command that names no source: the CLI's and the UI's. */
 export const LOCAL_STREAM = "local";
