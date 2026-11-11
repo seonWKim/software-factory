@@ -18,7 +18,8 @@ import { config, pipeline } from "./helpers/fakes.js";
 // step the worker runs before the agent. With no block, everything is as it was before the block existed.
 
 const REPO_ROOT = join(import.meta.dirname, "..");
-const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
+// The real config without its own toolchain block (this repo's warm step, issue #573): each test sets its own.
+const { toolchain: _realToolchain, ...REAL } = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
 const TEMPLATE = "Run: {{check_commands}}.{{toolchain}} Done.";
 
 afterEach(() => vi.unstubAllEnvs());
