@@ -1,4 +1,5 @@
 import { definePlugin } from "../../plugin-api.js";
+import { LocalAuthProvider } from "../auth/local-auth-provider.js";
 import { HttpSlackApi, SLACK_APP_TOKEN, SLACK_BOT_TOKEN } from "./slack-api.js";
 import { slackConfig } from "./slack-config.js";
 import { webSocketConnector } from "./slack-socket.js";
@@ -20,6 +21,8 @@ export default definePlugin({
       channels: slackConfig(c.loaded.file).channels,
       scanner: c.scanner,
       store: c.store,
+      // A Good, Bad or Feedback tap's record_verdict check: the linked user's local role, as chat commands are judged by default.
+      auth: new LocalAuthProvider(c.store),
       repo: c.repo,
       log: c.log,
       // `settings list` and `settings history` from Slack: the CLI's own reads over the same store and config file.

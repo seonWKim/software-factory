@@ -4,8 +4,10 @@ import { type CommandName, THREAD_BARE_COMMANDS, commandFooter, commandState, pa
 import type { Logger } from "../../core/log.js";
 import { inReactionWindow, reactionEvent, verdictReaction } from "../../core/reaction-verdict.js";
 import type { WorkStatus } from "../../core/status-label.js";
-import type { SourceRef, WorkItem } from "../../core/types.js";
-import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
+import type { SourceRef, UserId, WorkItem } from "../../core/types.js";
+import { type VerdictButton, VERDICT_BUTTON_LABELS, buttonVerdict, buttonVerdictKey, verdictButtonOf, verdictRefusal } from "../../core/verdict.js";
+import { utcMinute } from "../../core/spec-comment.js";
+import type { AuthProvider, ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { PushedEvent, SourceCloseReason, SourceEvent, StreamSource } from "../../interfaces/source-adapter.js";
@@ -13,7 +15,8 @@ import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi, type SlackMessage } from "./slack-api.js";
 import { commentEvent } from "../../core/comment-event.js";
 import {
-  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, ACTION_MAKE_TASK, BUTTON_COMMANDS, buttonApplies, doneLine, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
+  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, ACTION_MAKE_TASK, BUTTON_COMMANDS, FEEDBACK_CALLBACK, FEEDBACK_INPUT, buttonApplies, doneLine, escapeSlack,
+  feedbackModal, footerCommands, prUrl, renderComment, renderLines, resultMarker, unescapeSlack, verdictAction, type SlackRendered, type VerdictShown,
 } from "./slack-format.js";
 import { type ChatAnswer, type ChatDeps, type ChatStore, type ProposalPress, proposalPress, runChatCommand, runProposalPress } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
@@ -29,6 +32,10 @@ const replacedStatusMarker = (ts: string) => `slack:status:after:${ts}`;
 const isStatusMarker = (marker: string) => marker === STATUS_MARKER || marker.startsWith(replacedStatusMarker(""));
 /** The record of the chat.update that left message `ts` with the buttons `keep` (issue #586): one update each. */
 const doneMarker = (ts: string, keep: readonly CommandName[]) => `slack:done:${ts}:${keep.join(",")}`;
+/** The record of the chat.update that showed message `ts`'s verdict as of its state change: one update each. */
+const verdictMarker = (ts: string, state_change_id: string) => `slack:verdict:${ts}:${state_change_id}`;
+/** Version conflicts a one-tap verdict retries before it gives up (another write to the item won each time). */
+const VERDICT_TRIES = 5;
 
 const TITLE_MAX = 120;
 /** A Slack message timestamp, the comment id of a typed command. */
@@ -36,6 +43,15 @@ const MESSAGE_TS = /^\d+\.\d+$/;
 
 /** One envelope's event and its dedupe key. */
 type Mapped = { event: SourceEvent; key: string };
+
+/** A factory result message (resultMarker) with its thread, item, thread entry and its one-tap verdict's key. */
+interface ResultMessage {
+  source: SourceRef;
+  item: WorkItem;
+  ts: string;
+  entry: { marker: string; body: string };
+  key: string;
+}
 
 export interface SlackSourceDeps {
   api: SlackApi;
@@ -51,12 +67,18 @@ export interface SlackSourceDeps {
    * messages it posted (`getPostedComment`, `recordPostedComment`), so a repeat reads no thread; the item's thread
    * entries and state changes, for the earlier messages a state change updates and the reply to a stale button; a
    * stored proposal's rows, for its Cancel button (issue #584); the records of a reacted message's ts, to find the
-   * item a 👍 or 👎 is about (issue #524).
+   * item a 👍 or 👎 is about (issue #524); a result message's one-tap verdict, stored and read by its key.
    */
   store: ChatStore & Pick<
     FactoryStore,
     "getWorkItemBySource" | "recordItemMessage" | "getPostedComment" | "recordPostedComment" | "listStateChanges" | "listPostedCommentsById"
+    | "recordVerdict" | "listVerdicts"
   >;
+  /**
+   * The `record_verdict` check of a Good, Bad or Feedback tap, through the Slack account's linked factory user (the
+   * plugin passes the local auth plugin's check, as Slack chat commands are judged by default).
+   */
+  auth: Pick<AuthProvider, "resolve" | "authorize">;
   /** `settings list` and `settings history` from Slack; absent: they answer that settings are not readable here. */
   settings?: ChatDeps["settings"];
   /** Where PR links point. */
@@ -292,6 +314,7 @@ export class SlackSource implements StreamSource {
    * and index, and the controller reads the command and its args from the store.
    */
   private async fromInteraction(p: Record<string, unknown>, me: { team_id: string; user_id: string }): Promise<Mapped | null> {
+    if (p.type === "view_submission") return this.fromFeedback(p, me);
     if (p.type !== "block_actions") return null;
     const user = str(obj(p.user).id);
     const team = str(obj(p.team).id) ?? str(obj(p.user).team_id) ?? me.team_id;
@@ -303,6 +326,8 @@ export class SlackSource implements StreamSource {
     const action_ts = str(action.action_ts);
     if (user === null || channel === null || thread_ts === null || action_id === null || action_ts === null) return null;
     if (!this.d.channels.includes(channel) || user === me.user_id) return null;
+    const tap = verdictAction(action_id);
+    if (tap) return this.verdictTap(tap, channel, str(message.ts), user, str(p.trigger_id));
     // "Make this a task" under an unsure answer: the message (the button's value) taken in as the presser, keyed on
     // the message's source id (the thread root), so a second press changes nothing.
     if (action_id === ACTION_MAKE_TASK) {
@@ -340,6 +365,143 @@ export class SlackSource implements StreamSource {
   }
 
   /**
+   * A Good, Bad or Feedback press on a result message (design 04-gate-commands, one-tap verdicts). The message is
+   * found by its ts in the store's posted records (a result marker in this channel, in a work item's thread); a press
+   * by an account whose linked user lacks `record_verdict` (or none) stores nothing and gets no reply. Good and Bad
+   * store the message's one verdict, then edit the message to show it; Feedback opens the modal (views.open) and
+   * stores nothing until its submit. Nothing goes to the inbox; the envelope is acked after the store write.
+   */
+  private async verdictTap(tap: VerdictButton, channel: string, ts: string | null, user: string, trigger_id: string | null): Promise<null> {
+    const msg = ts === null ? null : await this.resultMessage(channel, ts);
+    const who = msg && (await this.verdictUser(user, msg.item));
+    if (!msg || !who) return null;
+    if (tap !== "feedback") return this.storeVerdict(msg, who, tap);
+    if (trigger_id === null) return null;
+    try {
+      await this.d.api.openView(trigger_id, feedbackModal({ channel, ts: msg.ts }));
+    } catch (err) {
+      // A redelivered press's trigger has expired (3 seconds): the person presses again.
+      if (!(err instanceof SlackApiError)) throw err;
+      this.d.log.warn("slack feedback modal not opened", { work_item_id: msg.item.id, code: err.code });
+    }
+    return null;
+  }
+
+  /**
+   * The Feedback modal's submit: the same checks as the press (the message is read again from the store, never from
+   * the modal's metadata alone), then G5 on the text. A finding stores nothing and posts one notice in the thread
+   * (keyed on the modal's view ID), without the text. Else the text is the reason of the message's one verdict, as
+   * `changes`/`none`. Returns null: the ack (which closes the modal) is sent after the store write.
+   */
+  private async fromFeedback(p: Record<string, unknown>, me: { user_id: string }): Promise<null> {
+    const view = obj(p.view);
+    if (view.callback_id !== FEEDBACK_CALLBACK) return null;
+    const user = str(obj(p.user).id);
+    const view_id = str(view.id);
+    let meta: Record<string, unknown> = {};
+    try {
+      meta = obj(JSON.parse(str(view.private_metadata) ?? "{}"));
+    } catch {
+      return null;
+    }
+    const channel = str(meta.channel);
+    const ts = str(meta.ts);
+    const text = str(obj(obj(obj(obj(view.state).values)[FEEDBACK_INPUT])[FEEDBACK_INPUT]).value)?.trim() ?? "";
+    if (user === null || view_id === null || channel === null || ts === null || text === "") return null;
+    if (!this.d.channels.includes(channel) || user === me.user_id) return null;
+    const msg = await this.resultMessage(channel, ts);
+    const who = msg && (await this.verdictUser(user, msg.item));
+    if (!msg || !who) return null;
+    const scan = await this.d.scanner.scan("comment", text);
+    if (!scan.clean) {
+      const rules = [...new Set(scan.findings.map((f) => f.rule))].join(",");
+      this.d.log.warn("slack feedback blocked by the egress scan; not stored", { work_item_id: msg.item.id, rules });
+      const notice = `Your feedback was not stored: the leak scanner found something in it (${escapeSlack(rules)}). Send it again without that.`;
+      await this.post(msg.source, () => ({ text: notice, blocks: [{ type: "section", text: { type: "mrkdwn", text: notice } }] }), `<!-- factory:feedback-withheld:${view_id} -->`);
+      return null;
+    }
+    return this.storeVerdict(msg, who, "feedback", text);
+  }
+
+  /** The result message `ts` in `channel`: its posted record with a result marker, in a work item's thread; else null. */
+  private async resultMessage(channel: string, ts: string): Promise<ResultMessage | null> {
+    for (const r of await this.d.store.listPostedCommentsById(ts)) {
+      const result = resultMarker(r.marker);
+      const thread = parseSlackSourceId(r.source_id);
+      if (!result || thread?.channel !== channel) continue;
+      const source = threadRef(thread);
+      const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
+      const entry = item && (await this.d.store.listItemMessages(item.id)).find((m) => m.marker === r.marker);
+      if (!item || !entry) return null;
+      return { source, item, ts, entry, key: buttonVerdictKey(channel, ts, result.run) };
+    }
+    return null;
+  }
+
+  /** The linked factory user of Slack account `user` when it may record a verdict on `item`, else null (logged only). */
+  private async verdictUser(user: string, item: WorkItem): Promise<UserId | null> {
+    const principal = await this.d.auth.resolve({ provider: "slack", subject: user });
+    const decision = principal && (await this.d.auth.authorize(principal, "record_verdict", { kind: "work_item", id: item.id }));
+    if (principal && decision?.allow) return principal.user_id;
+    this.d.log.info("slack verdict button ignored", { work_item_id: item.id, reason: decision && !decision.allow ? decision.reason : "not_linked" });
+    return null;
+  }
+
+  /**
+   * Stores the message's one verdict under its key, as `user` (recordVerdict with `replace`: a second tap updates the
+   * row, the same tap again changes nothing), retrying on version conflicts; then edits the message to show it. An
+   * item closed without a merge takes none (verdictRefusal). A failed write throws: the envelope stays unacked.
+   */
+  private async storeVerdict(msg: ResultMessage, user: UserId, tap: VerdictButton, text?: string): Promise<null> {
+    const v = buttonVerdict(tap, text);
+    for (let i = 0; i < VERDICT_TRIES; i++) {
+      const it = await this.d.store.getWorkItem(msg.item.id);
+      if (!it) return null;
+      const closed = verdictRefusal(it);
+      if (closed !== null) {
+        this.d.log.info("slack verdict button not stored", { work_item_id: it.id, reason: closed });
+        return null;
+      }
+      const r = await this.d.store.recordVerdict({
+        id: it.id, expected_version: it.version, actor: { kind: "user", id: user }, ...v, comment_id: msg.key, target: "issue",
+        implicit: false, pr_head: it.change_ref === null ? null : it.last_head_sha, replace: true,
+      });
+      if (r.ok || r.reason === "duplicate") {
+        await this.showVerdict({ ...msg, item: r.ok ? r.item : it });
+        return null;
+      }
+      if (r.reason !== "version_conflict") return null;
+    }
+    this.d.log.warn("slack verdict button gave up after conflicts", { work_item_id: msg.item.id });
+    return null;
+  }
+
+  /**
+   * Edits a result message to show its stored verdict, keeping what a state change left of it (`settle`). Recorded
+   * under the message and the verdict's state change, so the same verdict shown again makes no Slack call.
+   */
+  private async showVerdict(msg: ResultMessage): Promise<void> {
+    const v = (await this.d.store.listVerdicts(msg.item.id)).find((x) => x.comment_id === msg.key);
+    if (!v) return;
+    const marker = verdictMarker(msg.ts, v.state_change_id);
+    if ((await this.d.store.getPostedComment(msg.source.id, marker, ""))?.comment_id) return;
+    const had = footerCommands(msg.entry.body);
+    const keep = had.filter((c) => buttonApplies(c, msg.item));
+    const done = keep.length < had.length ? { line: await this.done(msg.item), keep } : undefined;
+    const rendered = renderComment(msg.entry.body, this.d.repo, (await this.identity()).user_id, done, await this.verdictShown(msg.item, msg.key));
+    await this.update(msg.source, msg.ts, rendered, marker, msg.entry.marker);
+  }
+
+  /** A result message's verdict as it shows: the stored verdict under `key` (its button, actor ID and time), or none. */
+  private async verdictShown(item: WorkItem, key: string): Promise<VerdictShown> {
+    const v = (await this.d.store.listVerdicts(item.id)).find((x) => x.comment_id === key);
+    if (!v) return { chosen: null };
+    const actor = (await this.d.store.listStateChanges(item.id)).find((c) => c.id === v.state_change_id)?.actor.id ?? "unknown";
+    const b = verdictButtonOf(v);
+    return { chosen: b, line: `Verdict: ${b ? VERDICT_BUTTON_LABELS[b] : v.verdict} by ${actor} at ${utcMinute(v.at)}.` };
+  }
+
+  /**
    * A chat command (issue #498) or a proposal press (issue #584): run through slack-commands.ts, which stores what it
    * stores with no Slack call; then its answer, if any, is posted in the thread under a marker keyed on `id`, so a
    * redelivery posts nothing more. Nothing goes to the inbox: the stored command row is what the controller applies.
@@ -363,17 +525,20 @@ export class SlackSource implements StreamSource {
     return null;
   }
 
-  /** The Done line of `item`: its last state change. */
+  /** The Done line of `item`: its last state change that is not a verdict (a verdict moves nothing on). */
   private async done(item: WorkItem): Promise<string> {
-    return doneLine((await this.d.store.listStateChanges(item.id)).at(-1) ?? null, item);
+    const moved = (await this.d.store.listStateChanges(item.id)).filter((c) => c.reason !== "human_verdict" && c.reason !== "implicit_verdict");
+    return doneLine(moved.at(-1) ?? null, item);
   }
 
   private rendered(a: NonNullable<ChatAnswer>, bot: string): SlackRendered {
     return "markdown" in a ? renderComment(a.markdown, this.d.repo, bot) : renderLines(a.lines, a.whole, a.link);
   }
 
+  /** A result message (resultMarker) also gets the Good, Bad and Feedback buttons. */
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
-    return this.post(source, (bot) => renderComment(body, this.d.repo, bot), marker, body);
+    const verdict = resultMarker(marker) ? { chosen: null } : undefined;
+    return this.post(source, (bot) => renderComment(body, this.d.repo, bot, undefined, verdict), marker, body);
   }
 
   /**
@@ -440,10 +605,10 @@ export class SlackSource implements StreamSource {
 
   /**
    * After a state change (issue #586): each earlier message of the item's thread whose buttons no longer all apply is
-   * edited once with chat.update, keeping only the buttons that still apply and ending with the Done line. Store reads
-   * only: the thread entries' bodies give the buttons each message had, their posted records its ts. An update is
-   * recorded under its message's ts and the buttons kept, so running this again makes no second call. A message posted
-   * before the records, or deleted since, is left as it is.
+   * edited once with chat.update, keeping only the buttons that still apply and ending with the Done line; a result
+   * message keeps its verdict buttons and stored verdict. Store reads only: the thread entries' bodies give the buttons
+   * each message had, their posted records its ts. An update is recorded under its message's ts and the buttons kept,
+   * so running this again makes no second call. A message posted before the records, or deleted since, is left as it is.
    */
   private async settle(source: SourceRef, item: WorkItem): Promise<void> {
     const t = this.thread(source);
@@ -458,19 +623,30 @@ export class SlackSource implements StreamSource {
       const marker = doneMarker(ts, keep);
       if ((await this.d.store.getPostedComment(source.id, marker, ""))?.comment_id) continue;
       line ??= await this.done(item);
-      const msg = renderComment(m.body, this.d.repo, (await this.identity()).user_id, { line, keep });
-      const scan = await this.d.scanner.scan("comment", `${msg.text}\n${JSON.stringify(msg.blocks)}`);
-      if (!scan.clean) {
-        this.d.log.warn("slack message update blocked by the egress scan; not edited", { source_id: source.id, marker_hash: markerHash(m.marker) });
-        continue;
-      }
-      try {
-        await this.d.api.updateMessage({ channel: t.channel, ts, text: msg.text, blocks: msg.blocks });
-      } catch (err) {
-        if (!(err instanceof SlackApiError && err.code === "message_not_found")) throw err;
-      }
-      await this.record(source, marker, ts, slackLink(t.channel, ts, t.thread_ts), line);
+      const result = resultMarker(m.marker);
+      const verdict = result ? await this.verdictShown(item, buttonVerdictKey(t.channel, ts, result.run)) : undefined;
+      const msg = renderComment(m.body, this.d.repo, (await this.identity()).user_id, { line, keep }, verdict);
+      await this.update(source, ts, msg, marker, m.marker, line);
     }
+  }
+
+  /**
+   * One chat.update of message `ts` in `source`'s thread, G5 on all of it first (a finding leaves it as it is), then
+   * recorded under `marker`. A message deleted since is left as it is, and recorded too.
+   */
+  private async update(source: SourceRef, ts: string, msg: SlackRendered, marker: string, of: string, body = msg.text): Promise<void> {
+    const t = this.thread(source);
+    const scan = await this.d.scanner.scan("comment", `${msg.text}\n${JSON.stringify(msg.blocks)}`);
+    if (!scan.clean) {
+      this.d.log.warn("slack message update blocked by the egress scan; not edited", { source_id: source.id, marker_hash: markerHash(of) });
+      return;
+    }
+    try {
+      await this.d.api.updateMessage({ channel: t.channel, ts, text: msg.text, blocks: msg.blocks });
+    } catch (err) {
+      if (!(err instanceof SlackApiError && err.code === "message_not_found")) throw err;
+    }
+    await this.record(source, marker, ts, slackLink(t.channel, ts, t.thread_ts), body);
   }
 
   /** The status message's text, written in place (or posted once); see setStatus. */

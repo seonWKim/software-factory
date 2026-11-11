@@ -88,7 +88,7 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
     if ("error" in a) return { ok: false, lines: [a.error] };
     return runSettings({ store: real, base: { file: {}, layers: config.settings }, repo, resolveProject: () => Promise.reject(new Error("no")), actor: "" }, a);
   };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo, log, settings });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();
@@ -446,7 +446,7 @@ describe("slack source: replies, buttons and commands", () => {
     const spec = f.api.thread(ts).find((m) => m.text?.includes("Factory spec") || FakeSlackApi.buttons(m).length > 0)!;
     expect(spec).toBeTruthy();
     // spec_pending: approve, reject, revise, help apply; reject and revise take text, so they stay typed.
-    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help"]);
+    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     const text = JSON.stringify(spec.blocks);
     expect(text).not.toContain("<!--");
     expect(text).toContain(`<@${BOT}> revise`);
@@ -628,7 +628,7 @@ describe("slack source: buttons after a state change (issue #586)", () => {
     const source = { type: "slack_thread" as const, id: sourceId("1800000018.000100"), link: "" };
     await f.slack.postComment(source, renderSpec(parsed.value, 2, {}, footer, { approved: true }), "<!-- factory:spec:r1 -->");
     const [posted] = f.api.thread("1800000018.000100");
-    expect(FakeSlackApi.buttons(posted!)).toEqual(["sf_cmd:help"]);
+    expect(FakeSlackApi.buttons(posted!)).toEqual(["sf_cmd:help", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     const text = JSON.stringify(posted!.blocks);
     expect(text).toContain("Approved automatically (auto mode, tier 2) at 2026-11-11 10:00 UTC.");
     expect(text).not.toContain("To answer, reply");
@@ -646,7 +646,8 @@ describe("slack source: buttons after a state change (issue #586)", () => {
     expect((await f.store.getWorkItem(item.id))!.stage).toBe("RUNNING");
     const edits = seen.filter((u) => u.ts === spec.ts);
     expect(edits).toHaveLength(1);
-    expect(buttonsOf(edits[0]!.blocks)).toEqual(["sf_cmd:help"]);
+    // A result message keeps its verdict buttons.
+    expect(buttonsOf(edits[0]!.blocks)).toEqual(["sf_cmd:help", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     const text = JSON.stringify(edits[0]!.blocks);
     const approved = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
     expect(text).toContain(`Done: spec approved by ${approved.actor.id} at ${utcMinute(approved.at)}. The item is now implementing.`);

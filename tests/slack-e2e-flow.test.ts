@@ -42,7 +42,7 @@ async function slackFactory() {
   const scanned: string[] = [];
   const inner = new PatternEgressScanner(async () => [PLANTED]);
   const scanner = { scan: (kind: Parameters<typeof inner.scan>[0], text: string) => (scanned.push(text), inner.scan(kind, text)) };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, repo: { owner: "o", name: "r" }, log });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo: { owner: "o", name: "r" }, log });
   const forge = new FakeForge();
   const grant = new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} });
   const auth = new GitHubAuthProvider(store, [grant]);
@@ -106,7 +106,7 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     // The spec is in the thread, with buttons for the commands that apply now, and no marker text.
     const spec = f.api.thread(ROOT).find((m) => FakeSlackApi.buttons(m).length > 0)!;
     expect(spec).toBeTruthy();
-    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help"]);
+    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     expect(statusLines(f).map((m) => m.text)).toEqual(["Status: *needs approval*"]);
 
     // Approve with a mention in the thread, as the spec's hint says (Slack itself takes a message that starts with

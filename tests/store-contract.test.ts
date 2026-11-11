@@ -690,6 +690,23 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.listStateChanges(item.id)).toHaveLength(2);
     });
 
+    it("replace (a one-tap verdict): a different verdict under the same comment id updates its one row; the same one is a duplicate", async () => {
+      const { store } = await make();
+      const { item } = await store.createWorkItem(issue(1), system);
+      const key = "button:C1:1800000000.000100:run_1";
+      const good = await store.recordVerdict({ ...verdict(item.id, 1, key), verdict: "accept", severity: "none", reason: null, replace: true });
+      if (!good.ok) throw new Error(good.reason);
+      const bad = await store.recordVerdict({ ...verdict(item.id, 2, key), reason: null, replace: true });
+      if (!bad.ok) throw new Error(bad.reason);
+      expect(bad.verdict).toMatchObject({ id: good.verdict.id, comment_id: key, verdict: "changes", severity: "minor", reason: null, state_change_id: bad.state_change.id });
+      expect(await store.listVerdicts(item.id)).toEqual([bad.verdict]);
+      expect(bad.state_change).toMatchObject({ version: 3, reason: "human_verdict", actor: user });
+      expect(await store.recordVerdict({ ...verdict(item.id, 3, key), reason: null, replace: true })).toEqual({ ok: false, reason: "duplicate", verdict: bad.verdict });
+      // Without replace, a stored comment id stays a duplicate.
+      expect(await store.recordVerdict({ ...verdict(item.id, 3, key), verdict: "accept", severity: "none", reason: null })).toMatchObject({ ok: false, reason: "duplicate" });
+      expect((await store.getWorkItem(item.id))!.version).toBe(3);
+    });
+
     it("concurrent deliveries of one comment store one verdict", async () => {
       const { store } = await make();
       const { item } = await store.createWorkItem(issue(1), system);

@@ -607,7 +607,7 @@ export interface Verdict {
   state_change_id: StateChangeId;
   verdict: VerdictKind;
   severity: VerdictSeverity;
-  /** Null only for `accept` without a reason. */
+  /** Null for `accept` without a reason, and for a Bad button tap (design §4). */
   reason: string | null;
   /**
    * The comment that held the command, or for an implicit verdict the key of the event it came from. Unique: a

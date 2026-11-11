@@ -2,6 +2,7 @@ import { COMMANDS, type CommandName, commandPhase, commandSpec, phaseLabel } fro
 import { parseProposalMarker, parseTaskOfferMarker } from "../../core/interpret.js";
 import { utcMinute } from "../../core/spec-comment.js";
 import type { StateChange, WorkItem } from "../../core/types.js";
+import { VERDICT_BUTTONS, VERDICT_BUTTON_LABELS, type VerdictButton } from "../../core/verdict.js";
 import type { RepoRef } from "../github/github-client.js";
 
 // How a control-plane comment (GitHub Markdown) becomes a Slack thread message (issue #109): mrkdwn text in
@@ -12,6 +13,8 @@ import type { RepoRef } from "../github/github-client.js";
 // Cancel instead (issue #584); their values carry only the proposal ID and index, the args are read at press time.
 // An unsure answer to a top-level message (its task-offer marker) gets one "Make this a task" button whose value is
 // the message text (design 04-gate-commands, the chat answer); a press takes the message in as the presser.
+// A result message (a spec, a finished run's ready-to-merge message, a merge: `resultMarker`) also ends with the Good,
+// Bad and Feedback buttons (design 04-gate-commands, one-tap verdicts), after its command buttons.
 
 /** Commands that take no text get a button; the others (reject, revise, verdict) stay typed. */
 export const BUTTON_COMMANDS: readonly CommandName[] = ["approve", "retry", "resolve", "budget", "help"];
@@ -29,6 +32,13 @@ export const ACTION_PROPOSAL_ALL = "sf_proposal_all";
 export const ACTION_PROPOSAL_CANCEL = "sf_proposal_cancel";
 /** "Make this a task" (the chat answer): its value is the top-level message's text, at most SLACK_VALUE_MAX characters. */
 export const ACTION_MAKE_TASK = "sf_make_task";
+/** A one-tap verdict button (`sf_verdict:good|bad|feedback`); its value names nothing, the message is read from the store. */
+export const ACTION_VERDICT = "sf_verdict";
+/** The Feedback modal's callback ID and its text input (block and action IDs). */
+export const FEEDBACK_CALLBACK = "sf_feedback";
+export const FEEDBACK_INPUT = "feedback";
+/** The most characters the Feedback modal takes. */
+export const FEEDBACK_MAX = 3000;
 /** The most characters Slack takes in a button's value. */
 export const SLACK_VALUE_MAX = 2000;
 
@@ -73,6 +83,50 @@ export function buttonApplies(name: CommandName, it: WorkItem): boolean {
 export function doneLine(last: Pick<StateChange, "reason" | "actor" | "at"> | null, it: WorkItem): string {
   const what = last ? `${last.reason.replace(/_/g, " ")} by ${last.actor.id} at ${utcMinute(last.at)}` : "the item moved on";
   return `Done: ${what}. The item is now ${phaseLabel(commandPhase(it))}.`;
+}
+
+/**
+ * Whether the message posted under `marker` is a result message, which gets the Good, Bad and Feedback buttons: a
+ * spec (`spec:<run>`), a finished review run's ready-to-merge message (`merge:<run>`) or a merge (`pr-merged:`,
+ * `local-merged:`). `run`: the run the message reports, for the verdict's key. Null for any other message.
+ */
+export function resultMarker(marker: string): { run: string | null } | null {
+  const m = /^<!-- factory:(spec|merge|pr-merged|local-merged)(?::(\S+))? -->$/.exec(marker);
+  if (!m) return null;
+  return { run: (m[1] === "spec" || m[1] === "merge") && m[2] ? m[2] : null };
+}
+
+/** The one-tap verdict button an action ID names, or null. */
+export function verdictAction(action_id: string): VerdictButton | null {
+  const b = action_id.startsWith(`${ACTION_VERDICT}:`) ? action_id.slice(ACTION_VERDICT.length + 1) : "";
+  return (VERDICT_BUTTONS as readonly string[]).includes(b) ? (b as VerdictButton) : null;
+}
+
+/**
+ * A result message's verdict as its message shows it: `chosen` the stored verdict's button (null: none yet), whose
+ * button is no longer offered, and `line`, the stored verdict in words.
+ */
+export interface VerdictShown {
+  chosen: VerdictButton | null;
+  line?: string;
+}
+
+/** The Feedback modal (views.open): one text input; `meta` (the message's channel and ts) comes back on its submit. */
+export function feedbackModal(meta: { channel: string; ts: string }): Record<string, unknown> {
+  return {
+    type: "modal",
+    callback_id: FEEDBACK_CALLBACK,
+    private_metadata: JSON.stringify(meta),
+    title: { type: "plain_text", text: "Feedback" },
+    submit: { type: "plain_text", text: "Send" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [{
+      type: "input",
+      block_id: FEEDBACK_INPUT,
+      label: { type: "plain_text", text: "What should the factory know about this result?" },
+      element: { type: "plain_text_input", action_id: FEEDBACK_INPUT, multiline: true, max_length: FEEDBACK_MAX },
+    }],
+  };
 }
 
 /** `&`, `<` and `>` as Slack wants them in text. */
@@ -189,11 +243,15 @@ function withoutFooter(body: string): string {
  * #541), and an actions block with the command buttons. A stored proposal's reply gets its proposal buttons instead
  * (`proposalButtons`); a reply with no marker (a question, or one not stored) stays plain text, with no buttons.
  * `done` (issue #586): the message after a state change, its footer dropped, the `done` line added, and only the
- * buttons in `keep` (those of its footer that still apply).
+ * buttons in `keep` (those of its footer that still apply). `verdict`: a result message's verdict buttons, all but the
+ * stored verdict's, after the others, with the stored verdict's line.
  */
-export function renderComment(body: string, repo: RepoRef, botUserId: string, done?: { line: string; keep: readonly CommandName[] }): SlackRendered {
+export function renderComment(
+  body: string, repo: RepoRef, botUserId: string, done?: { line: string; keep: readonly CommandName[] }, verdict?: VerdictShown,
+): SlackRendered {
   let text = toMrkdwn(done ? withoutFooter(body) : body, repo);
   if (done) text += `\n\n*${escapeSlack(done.line)}*`;
+  if (verdict?.line) text += `\n\n*${escapeSlack(verdict.line)}*`;
   const cmds = done ? done.keep : footerCommands(body);
   if (cmds.length > 0 || (!done && body.includes(FOOTER_HEADING))) {
     text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> approve or <@${botUserId}> revise &lt;feedback&gt; ` +
@@ -216,6 +274,8 @@ export function renderComment(body: string, repo: RepoRef, botUserId: string, do
     : offerFits
     ? [button("Make this a task", ACTION_MAKE_TASK, offer, "primary")]
     : cmds.map((c) => button(LABELS[c] ?? c, `${ACTION_COMMAND}:${c}`, `/${c}`, c === "approve" ? "primary" : undefined));
+  // No style: the buttons' look waits for the design system (decision 5 of the one-tap verdicts).
+  if (verdict) buttons.push(...VERDICT_BUTTONS.filter((b) => b !== verdict.chosen).map((b) => button(VERDICT_BUTTON_LABELS[b], `${ACTION_VERDICT}:${b}`, b)));
   if (buttons.length > 0) blocks.push({ type: "actions", elements: buttons });
   return { text: sections[0] ?? "", blocks };
 }

@@ -218,6 +218,12 @@ export interface RecordVerdictInput {
   target: VerdictTarget;
   implicit: boolean;
   pr_head: string | null;
+  /**
+   * A one-tap verdict on a factory message (design §4, the Good, Bad and Feedback buttons): a verdict already stored
+   * under `comment_id` is updated in place (kind, severity, reason, a new state change for the actor) instead of
+   * being a `duplicate`, so a message keeps one row. The same values again are still a `duplicate`.
+   */
+  replace?: boolean;
 }
 
 export type RecordVerdictResult =
@@ -392,7 +398,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /**
    * Stores a verdict: bumps the version and writes a state_changes row (reason `human_verdict`, or
    * `implicit_verdict` when `implicit`; `actor` as actor, `changes` = {}) and a linked verdicts row, in one
-   * transaction. No other field changes. Idempotent on `comment_id`. One verdict per PR head: an implicit one is a
+   * transaction. No other field changes. Idempotent on `comment_id`; with `replace`, a different verdict under the same
+   * `comment_id` updates that row and its state change link instead (no second row). One verdict per PR head: an implicit one is a
    * `duplicate` when the item already has a verdict for `pr_head`; an explicit one deletes the item's implicit
    * verdicts for `pr_head` (their state_changes rows stay) before it is stored.
    */

@@ -47,10 +47,11 @@ export class FakeSlackApi implements SlackApi {
     return { ts };
   }
   async updateMessage(m: Omit<SlackPost, "thread_ts"> & { ts: string }): Promise<void> {
-    this.calls.push({ method: "updateMessage", text: m.text });
+    this.calls.push({ method: "updateMessage", text: m.text, ...(m.blocks ? { blocks: m.blocks } : {}) });
     const msg = this.messages.find((x) => x.channel === m.channel && x.ts === m.ts);
     if (!msg) throw new SlackApiError("chat.update", "message_not_found");
     msg.text = m.text;
+    if (m.blocks) msg.blocks = m.blocks;
     if (m.metadata) msg.metadata = m.metadata;
   }
   async threadReplies(channel: string, thread_ts: string): Promise<SlackMessage[]> {
@@ -62,6 +63,12 @@ export class FakeSlackApi implements SlackApi {
     this.reactCalls++;
     if (this.failReact !== null) throw new SlackApiError("reactions.add", this.failReact);
     if (!this.reactions.some((r) => r.channel === channel && r.ts === ts && r.name === name)) this.reactions.push({ channel, ts, name });
+  }
+
+  /** views.open calls: the trigger and the modal. */
+  views: { trigger_id: string; view: Record<string, unknown> }[] = [];
+  async openView(trigger_id: string, view: Record<string, unknown>): Promise<void> {
+    this.views.push({ trigger_id, view });
   }
 
   /** The factory's messages in one thread. */
