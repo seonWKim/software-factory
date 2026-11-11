@@ -12,7 +12,7 @@ import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi, type SlackMessage } from "./slack-api.js";
 import { commentEvent } from "../../core/comment-event.js";
 import {
-  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, buttonApplies, doneLine, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
+  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, ACTION_MAKE_TASK, BUTTON_COMMANDS, buttonApplies, doneLine, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
 } from "./slack-format.js";
 import { type ChatAnswer, type ChatDeps, type ChatStore, type ProposalPress, proposalPress, runChatCommand, runProposalPress } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
@@ -83,6 +83,9 @@ function threadRef(t: SlackThread): SourceRef {
   return { type: "slack_thread", id: slackSourceId(t), link: slackLink(t.channel, t.thread_ts) };
 }
 
+/** A request's title: its first line, at most TITLE_MAX characters. */
+const titleOf = (text: string): string => (text.split(/\r?\n/)[0] ?? "").trim().slice(0, TITLE_MAX) || "Slack request";
+
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {});
 
@@ -109,7 +112,9 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * (src/core/listener.ts). Each envelope that means something becomes one PushedEvent; its ack goes back on the
  * socket only once the listener stored it. Anything else is acked at once and dropped. Only events in the
  * configured channels count, never the bot's own messages, edits, joins or other subtypes. A mention of the bot
- * starts a work item from its thread (`slack:<team>:<channel>:<thread ts>`); a mention followed by a command, a
+ * starts a work item from its thread (`slack:<team>:<channel>:<thread ts>`); a top-level one is marked `classify`, so
+ * the controller first reads whether it is a request or chat (a chat answer, or an offer whose "Make this a task"
+ * press is the same item request, as the presser, keyed on the message's source id); a mention followed by a command, a
  * reply in an item's thread and a button press are the same events a GitHub comment gives; a reply in any other
  * thread is not stored. After a mention in an item's thread, a command word with no slash is that command (`revise x`
  * is `/revise x`, issue #541); outside one, the same words are a request. A person's reply in an
@@ -231,8 +236,8 @@ export class SlackSource implements StreamSource {
     if (inThread && item) {
       return { event: { kind: "plain_comment", source, comment_id: ts, author: who, body: said }, key };
     }
-    const title = (said.split(/\r?\n/)[0] ?? "").trim().slice(0, TITLE_MAX) || "Slack request";
-    return { event: { kind: "item_requested", source, requester: who, title, body: said }, key };
+    // A top-level mention is read by the controller before intake (classify): it may be chat, not a request.
+    return { event: { kind: "item_requested", source, requester: who, title: titleOf(said), body: said, ...(inThread ? {} : { classify: true as const }) }, key };
   }
 
   /**
@@ -262,6 +267,15 @@ export class SlackSource implements StreamSource {
     const action_ts = str(action.action_ts);
     if (user === null || channel === null || thread_ts === null || action_id === null || action_ts === null) return null;
     if (!this.d.channels.includes(channel) || user === me.user_id) return null;
+    // "Make this a task" under an unsure answer: the message (the button's value) taken in as the presser, keyed on
+    // the message's source id (the thread root), so a second press changes nothing.
+    if (action_id === ACTION_MAKE_TASK) {
+      const text = str(action.value)?.trim();
+      if (!text) return null;
+      const source = threadRef({ team, channel, thread_ts });
+      const requester: ExternalIdentity = { provider: "slack", subject: user };
+      return { event: { kind: "item_requested", source, requester, title: titleOf(text), body: text }, key: `action:${team}:${user}:${action_ts}` };
+    }
     const proposal = proposalPress(action_id, str(action.value));
     if (proposal) {
       const source = threadRef({ team, channel, thread_ts });

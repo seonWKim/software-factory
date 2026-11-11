@@ -12,7 +12,7 @@ import { commandEvent, commandIdentity, syncedCommand } from "../../../core/comm
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
-import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretArgs, interpretReply, openItems, proposalEvent } from "../../../core/interpret.js";
+import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
@@ -456,10 +456,12 @@ export class CommandsUnit {
   /**
    * A plain-language comment on a work item (design §4, issues #583, #584): at most one reply, keyed on the comment
    * id, that proposes commands for any open item as typed lines (stored once as pending proposal rows, which Slack shows
-   * as buttons), answers a read, asks one question, or lists the commands for the item's state. Changes no item state:
-   * a proposal applies only when typed or confirmed by a press. In order: the item, the commenter's permission (no model
-   * call and no reply without it), the length and open-item filters, the egress scan of the message, the model call,
-   * the egress scan of each argument. A scan finding stores nothing and posts nothing.
+   * as buttons), answers a read, asks one question, or answers in plain words (chat) from the item's state label and
+   * block reason. Only a failed or malformed model answer gets the canned line and the commands for the item's state.
+   * Changes no item state: a proposal applies only when typed or confirmed by a press. In order: the item, the
+   * commenter's permission (no model call and no reply without it), the length and open-item filters, the egress scan
+   * of the message, the model call, the egress scan of each argument and of the chat answer. A scan finding stores
+   * nothing and posts nothing.
    */
   async handlePlainComment(e: PlainCommentEvent): Promise<void> {
     const code = parseLink(e.body);
@@ -472,10 +474,10 @@ export class CommandsUnit {
     if ("refuse" in principal) return;
     const text = e.body.trim();
     if (text === "" || text.length > INTERPRET_MAX_CHARS || item.stage === "CLOSED") return;
-    if (!(await this.scanClean(item.id, "message", [text]))) return;
+    if (!(await this.scanClean({ work_item_id: item.id }, "message", [text]))) return;
     const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
-    const result = await interpret(text, items, llm);
-    if (!(await this.scanClean(item.id, "proposal", interpretArgs(result)))) return;
+    const result = await interpret(text, items, llm, { item: openItems([item])[0]!, blocked_reason: item.blocked_reason });
+    if (!(await this.scanClean({ work_item_id: item.id }, "answer", interpretTexts(result)))) return;
     const body = interpretReply(result, await storeProposals(this.c, item, e, result))
       ?? ["The factory did not find a command in your comment, so nothing changed.", "", commandFooter(await this.stateOf(item))].join("\n");
     this.c.k.d.log.info("plain comment answered", { work_item_id: item.id, kind: result.kind });
@@ -483,15 +485,16 @@ export class CommandsUnit {
   }
 
   /**
-   * Whether every text of a plain comment's `what` (the message, or the proposed arguments) passes the egress scan.
-   * A finding is logged with its rules, never its text.
+   * Whether every text of a plain message's `what` (the message, or the model's answer: proposed arguments, chat
+   * text) passes the egress scan. A finding is logged with its rules and `where` (the item or source), never its text.
+   * Also the intake unit's check of a top-level chat message.
    */
-  private async scanClean(work_item_id: WorkItemId, what: "message" | "proposal", texts: readonly string[]): Promise<boolean> {
+  async scanClean(where: Record<string, string>, what: "message" | "answer", texts: readonly string[]): Promise<boolean> {
     for (const t of texts) {
       const scan = await this.c.k.d.scanner.scan("comment", t);
       if (scan.clean) continue;
       const rules = scan.findings.map((f) => f.rule).join(",");
-      this.c.k.d.log.warn(`plain comment ${what} blocked by the egress scan`, { work_item_id, rules });
+      this.c.k.d.log.warn(`plain message ${what} blocked by the egress scan`, { ...where, rules });
       return false;
     }
     return true;

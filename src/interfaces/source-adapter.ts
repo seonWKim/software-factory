@@ -13,8 +13,11 @@ export type SourceEvent =
    * An open source item, delivered when it is new and again after each edit (e.g. the open-issue list since the
    * cursor). `updated_at`: when the source item last changed, ISO time; the controller re-reads its dependency
    * links only when it moved past the time they were read at (issue #254). Absent when the source gives none.
+   * `classify`: a top-level chat message (a Slack mention outside any thread), which the controller reads before
+   * intake, from a requester who may approve: a chat answer or an offer of a task in its own thread instead of an item
+   * when it is not a work request. Absent: taken in as an item, as from every other source.
    */
-  | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string; updated_at?: string }
+  | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string; updated_at?: string; classify?: true }
   /**
    * `/approve [notes]`. `note` is the trimmed text after the command (same line and following lines), possibly
    * empty; untrusted. The controller splits a leading `+paths <path>...` line off it (parseCommandPaths), then

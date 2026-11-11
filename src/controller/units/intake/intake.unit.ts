@@ -1,6 +1,7 @@
 // Takes a requested item in: authorize, create, status, edges, links.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
+import { INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, openItems } from "../../../core/interpret.js";
 import { PHASE_MARKER } from "../../../core/split.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Ctx } from "../context.js";
@@ -23,6 +24,7 @@ export class IntakeUnit {
       }
       return;
     }
+    if (e.classify && (await this.answered(e))) return;
     const { item, created } = await this.c.k.d.store.createWorkItem(
       {
         source: e.source,
@@ -47,6 +49,32 @@ export class IntakeUnit {
     await this.c.unit("outbox").markSeen(e.source, null);
     // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
     await this.c.unit("verdicts").linkFixForward(item.id, `${e.title}\n${e.body}`);
+  }
+
+  /**
+   * A top-level chat message read before intake (design 05-sources, 04-gate-commands): true when it got a reply in
+   * its own thread instead of an item (a chat answer, an offer to make it a task, or proposals for open items), false
+   * when it is to be taken in as today. Taken in: a message already an item (a press, a redelivery), a requester
+   * without `approve_spec` (no model call), an empty or long message, one the egress scan flags, no model, and a
+   * `request`, failed or malformed answer, so no request is dropped silently. An answer the scan flags posts nothing
+   * and stores nothing. The reply is keyed on the message's source id, so a redelivery posts no second one.
+   */
+  private async answered(e: Extract<SourceEvent, { kind: "item_requested" }>): Promise<boolean> {
+    const llm = this.c.k.reader.llm;
+    if (!llm || (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id))) return false;
+    if ("refuse" in (await this.c.unit("auth").authorize(e.requester, "approve_spec", e.source.id))) return false;
+    const text = e.body.trim();
+    const where = { source_id: e.source.id };
+    const commands = this.c.unit("commands");
+    if (text === "" || text.length > INTERPRET_MAX_CHARS || !(await commands.scanClean(where, "message", [text]))) return false;
+    const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
+    const result = await interpret(text, items, llm, "top_level");
+    const body = interpretReply(result);
+    if (body === null) return false;
+    if (!(await commands.scanClean(where, "answer", interpretTexts(result)))) return true;
+    this.c.k.d.log.info("chat message answered", { ...where, kind: result.kind });
+    await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:chat-answer:${e.source.id} -->`);
+    return true;
   }
 }
 
