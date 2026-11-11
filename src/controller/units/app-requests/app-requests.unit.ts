@@ -1,5 +1,6 @@
 // Applies the status page's requests (the gate commands approve, reject, revise, retry and resolve, verdict, merge,
-// and through the commands unit a sentence and a proposal's Confirm all and Cancel; anything else is refused). Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// and through the commands unit a sentence and a proposal's Confirm all and Cancel; anything else is refused).
+// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { COMMANDS, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
