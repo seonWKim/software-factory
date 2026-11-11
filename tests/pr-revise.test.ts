@@ -55,7 +55,7 @@ async function atMergeWait(opts: Parameters<typeof pipeline>[0] = {}) {
   const item = await p.submit();
   await p.step();
   const waiting = await p.item(item);
-  expect(waiting).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: PR, loop_count: 0 });
+  expect(waiting).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: String(PR), loop_count: 0 });
   /** One poll tick: PR reviews come from the forge, comments from the source. */
   const poll = async (...events: (SourceEvent | ForgeEvent)[]) => {
     for (const e of events) {
@@ -83,7 +83,7 @@ describe("/revise on a factory PR", () => {
     await f.poll(revise(f.it, "900", "rename the flag to --dry-run\nand keep the old one as an alias"));
 
     const after = await f.item(f.it);
-    expect(after).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: 1, pr_number: PR });
+    expect(after).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: 1, change_ref: String(PR) });
     const queued = (await f.runs(f.it, "implement")).filter((r) => r.status === "queued");
     expect(queued).toHaveLength(1);
     expect(queued[0]!.idempotency_key).toBe(`${f.it.id}:implement:l1:r0`);
@@ -103,7 +103,7 @@ describe("/revise on a factory PR", () => {
 
     const reviews = await f.runs(f.it, "review");
     expect(reviews.map((r) => r.idempotency_key)).toEqual([`${f.it.id}:review:l0:r0`, `${f.it.id}:review:l1:r0`]);
-    expect(await f.item(f.it)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 1, pr_number: PR });
+    expect(await f.item(f.it)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", loop_count: 1, change_ref: String(PR) });
     const reasons = (await f.store.listStateChanges(f.it.id)).map((c) => c.reason);
     expect(reasons.slice(reasons.indexOf("pr_revise_requested"))).toEqual(["pr_revise_requested", "implemented", "pr_delivered", "review_passed"]);
   });
@@ -333,7 +333,7 @@ describe("feedback on an adopted PR", () => {
     });
     await controller.tickIntake();
     const adopted = (await store.getWorkItemBySource("github_issue", "o/r#50"))!;
-    expect(adopted).toMatchObject({ origin: "adopted", pr_number: 50, head_branch: "feature/x" });
+    expect(adopted).toMatchObject({ origin: "adopted", change_ref: "50", head_branch: "feature/x" });
     const r = await store.transition({
       id: adopted.id, expected_version: adopted.version, actor: { kind: "system", id: "test" }, reason: "setup",
       patch: { blocked_on: "human", blocked_reason: "merge_pending" },

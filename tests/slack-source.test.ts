@@ -542,7 +542,7 @@ describe("slack source: replies, buttons and commands", () => {
     const item = await specPending(f, ts);
     await deliver(f, press(ts, "sf_cmd:approve", "/approve"));
     await finishAll(f, "implement", { pr_number: 42 });
-    expect((await f.store.getWorkItem(item.id))!.pr_number).toBe(42);
+    expect((await f.store.getWorkItem(item.id))!.change_ref).toBe("42");
     const status = f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));
     expect(status).toHaveLength(1);
     expect(status[0]!.text).toBe("Status: *in review* · <https://github.com/o/r/pull/42|PR #42>");
@@ -554,11 +554,11 @@ describe("slack source: replies, buttons and commands", () => {
     const f = await setup();
     const ts = "1800000015.000300";
     const item = await specPending(f, ts);
-    // An item whose change_ref names PR 57 and that has no pr_number: the link can only come from change_ref.
+    // An item whose change_ref names PR 57: the link can only come from change_ref.
     const read = f.store.getWorkItemBySource.bind(f.store);
     f.store.getWorkItemBySource = async (type, id) => {
       const it = await read(type, id);
-      return it && { ...it, pr_number: null, change_ref: "57" };
+      return it && { ...it, change_ref: "57" };
     };
     await f.slack.setStatus(item.source, "in_review", null);
     const status = f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));

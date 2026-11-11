@@ -95,7 +95,7 @@ describe("adopting a pull request a person opened", () => {
       requester_id: "github:2",
       stage: "REVIEW",
       blocked_on: "none",
-      pr_number: 50,
+      change_ref: "50",
       head_branch: "feature/x",
       last_head_sha: "h1",
       allowed_paths: ["src/core/stats.ts", "docs/design.md"],
@@ -190,7 +190,7 @@ describe("factory: skip", () => {
     expect(await f.store.listWorkItems(10)).toEqual([]);
     const rows = await f.store.listUnreviewedMerges(10);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ project: PROJECT_KEY, pr_number: 51, merge_sha: "m51", merger_id: "github:1" });
+    expect(rows[0]).toMatchObject({ project: PROJECT_KEY, change_ref: "51", merge_sha: "m51", merger_id: "github:1" });
   });
 
   it("added by a user without write permission is ignored, and the PR is adopted", async () => {
@@ -257,7 +257,7 @@ describe("a person's push to a factory or adopted PR", () => {
     await f.work();
     const it = (await f.store.getWorkItemBySource("github_issue", src.id))!;
     // The implement run recorded the head it pushed (FakeSandbox's HEAD).
-    expect(it).toMatchObject({ origin: "factory", pr_number: 42, last_head_sha: "base", blocked_reason: "merge_pending" });
+    expect(it).toMatchObject({ origin: "factory", change_ref: "42", last_head_sha: "base", blocked_reason: "merge_pending" });
 
     const open = (sha: string) => prOpen(42, { head_branch: `factory/${it.id}`, head_sha: sha, source: prRef(42), author: alice });
     await f.poll(open("base"));
@@ -346,7 +346,7 @@ describe("merges of pull requests the factory did not open", () => {
     await f.poll({ kind: "change_merged", change_ref: "61", head_branch: "patch-1", merge_sha: "m61", merger: null });
     expect(await f.store.listWorkItems(10)).toEqual([]);
     const rows = await f.store.listUnreviewedMerges(10);
-    expect(rows.map((r) => [r.pr_number, r.merge_sha, r.merger_id]).sort()).toEqual([[60, "m60", "github:1"], [61, "m61", null]]);
+    expect(rows.map((r) => [r.change_ref, r.merge_sha, r.merger_id]).sort()).toEqual([["60", "m60", "github:1"], ["61", "m61", null]]);
   });
 
   it("a PR closed without a merge and with no item records nothing", async () => {
@@ -410,7 +410,7 @@ describe("the first start on a repository with history (design §5, Merges)", ()
     f.repo.closed = [merged(2, "2026-11-07T00:00:30Z"), merged(1, "2026-10-01T00:00:00Z")];
     await f.controller.tickIntake();
     await f.controller.tickIntake();
-    expect((await f.store.listUnreviewedMerges(100)).map((r) => [r.pr_number, r.merge_sha])).toEqual([[2, "m2"]]);
+    expect((await f.store.listUnreviewedMerges(100)).map((r) => [r.change_ref, r.merge_sha])).toEqual([["2", "m2"]]);
     expect(f.unreviewed().map((l) => l.fields?.change_ref)).toEqual(["2"]);
   });
 });
