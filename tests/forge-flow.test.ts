@@ -56,7 +56,7 @@ describe("a non-GitHub source alone with a forge (issue #273)", () => {
     await f.step();
     f.slack.queue.push({ kind: "spec_approved", source: slackRef(1), comment_id: "100", approver: slackAlice });
     await f.step();
-    expect(await f.item()).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(await f.item()).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
     // The PR's checks were read from the forge, its status shown there; the item's own status stays on Slack.
     expect(f.forge.checkCalls).toEqual([42]);
     expect(f.forge.prStatus(42)).toBe("ready_to_merge");
@@ -183,7 +183,7 @@ describe("GitHub with and without a forge (issue #273)", () => {
     expect(await f.store.listStateChanges(id)).toHaveLength(applied.length);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: "m42" });
     // Nothing between the old position and now is lost: the later merge with no item is recorded once.
-    expect((await f.store.listUnreviewedMerges(10)).map((m) => m.pr_number)).toEqual([43]);
+    expect((await f.store.listUnreviewedMerges(10)).map((m) => m.change_ref)).toEqual(["43"]);
     // The forge now keeps its own cursor, from the old position on; the source's cursor still moved.
     expect(JSON.parse((await f.store.getCursor("forge:github_issue"))!)).toMatchObject({ start: "2026-11-01T00:00:00Z", pulls: "2026-11-06T12:00:00Z" });
     expect(await f.store.getCursor("intake:github_issue")).not.toBe(old);
