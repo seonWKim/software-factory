@@ -30,9 +30,9 @@ export function Thread({ entries, now }: { entries: readonly ThreadEntry[]; now:
       {shown.length === 0 ? <Empty>No message yet.</Empty> : (
         <ol aria-label="Thread" className="space-y-4">
           {shown.map((m) => (
-            <li key={m.seq} id={m.anchor} data-seq={m.seq} className="min-w-0 scroll-mt-4 overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800">
-              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-                <span data-author className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">{m.author}</span>
+            <li key={m.seq} id={m.anchor} data-seq={m.seq} className="min-w-0 scroll-mt-4 overflow-hidden rounded-control border border-border">
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-bg px-3 py-2 text-xs text-text-2">
+                <span data-author className="font-mono font-semibold text-text-1">{m.author}</span>
                 <span data-channel>on {m.channel}</span>
                 <Badge>{m.kind}</Badge>
                 <time dateTime={m.at} title={m.at} className="ml-auto tabular-nums">{ago(m.at, now)} ago</time>

@@ -18,9 +18,9 @@ export function Switch({ checked, onCheckedChange, className, disabled, ...props
       disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
       className={cn(
-        "inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-transparent motion-safe:transition-colors",
-        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600 disabled:opacity-50",
-        checked ? "bg-zinc-900 dark:bg-zinc-100" : "bg-zinc-300 dark:bg-zinc-700",
+        "inline-flex h-5 w-9 shrink-0 items-center rounded-pill border border-transparent motion-safe:transition-colors",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus disabled:opacity-50",
+        checked ? "bg-text-1" : "bg-border-strong",
         className,
       )}
       {...props}
@@ -28,7 +28,7 @@ export function Switch({ checked, onCheckedChange, className, disabled, ...props
       <span
         aria-hidden
         className={cn(
-          "block size-4 rounded-full bg-white shadow motion-safe:transition-transform dark:bg-zinc-900",
+          "block size-4 rounded-pill bg-surface shadow motion-safe:transition-transform",
           checked ? "translate-x-4" : "translate-x-0",
         )}
       />
