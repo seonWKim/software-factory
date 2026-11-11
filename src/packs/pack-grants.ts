@@ -35,8 +35,6 @@ export async function checkPackGrants(
   grants: readonly string[],
   autoApproveReadOnly: boolean,
 ): Promise<{ broker: string[]; refused: PackRefusal[] }> {
-  const entries = new PackEntriesStore(db, () => "");
-  const approvals = new PackApprovalsStore(db, () => "");
   const broker: string[] = [];
   const refused: PackRefusal[] = [];
   for (const grant of grants) {
@@ -45,11 +43,26 @@ export async function checkPackGrants(
       broker.push(grant);
       continue;
     }
-    const entry = await entries.current(m[1] as PackEntryKind, m[2]!);
-    const approved = entry !== null && (autoApproved(entry, autoApproveReadOnly) || (await approvals.approved(entry)));
-    refused.push({ grant, reason: entry === null ? "no_entry" : approved ? "not_started" : "not_approved" });
+    const found = await approvedEntry(db, m[1] as PackEntryKind, m[2]!, autoApproveReadOnly);
+    refused.push({ grant, reason: typeof found === "string" ? found : "not_started" });
   }
   return { broker, refused };
+}
+
+/**
+ * The approval check of one entry: its current description, when it is approved; else why not. Reads the store
+ * only (no time, no write), so the grant check and the pack tool broker can each run it any number of times.
+ */
+export async function approvedEntry(
+  db: SqlDriver,
+  kind: PackEntryKind,
+  name: string,
+  autoApproveReadOnly: boolean,
+): Promise<StoredEntry | "no_entry" | "not_approved"> {
+  const entry = await new PackEntriesStore(db, () => "").current(kind, name);
+  if (entry === null) return "no_entry";
+  if (autoApproved(entry, autoApproveReadOnly)) return entry;
+  return (await new PackApprovalsStore(db, () => "").approved(entry)) ? entry : "not_approved";
 }
 
 /** The failed run's message: each refused grant with its reason. */

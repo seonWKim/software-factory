@@ -24,7 +24,6 @@ import { git } from "./helpers/git-fixture.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, Principal } from "../src/interfaces/auth-provider.js";
 import { type FactoryConfig, toolGrantsConfig } from "../src/core/config.js";
 import { PR_ONLY_KEYS } from "../src/core/settings.js";
-import type { UserId, WorkerId } from "../src/core/types.js";
 import { ROLE_ACTIONS as IDENTITY_ROLE_ACTIONS } from "../src/identity/index.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval } from "../src/packs/pack-approvals.store.js";
@@ -33,6 +32,13 @@ import { loadSettingCatalog } from "../src/runtime/index.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { writePackApproval } from "../src/ui/packs-api.js";
 import { Worker } from "../src/worker/index.js";
+import { PACK_CREDENTIAL_IN_RESULT, PACK_NOT_APPROVED, type PackTool, PackToolBroker } from "../src/impl/broker/pack-tool-broker.js";
+import { ToolGate, bridgeMcpConfig } from "../src/impl/runner/tool-bridge.js";
+import { buildAgentEnv } from "../src/impl/runner/claude-code-runner.js";
+import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
+import type { Run, RunId, UserId, WorkItemId, WorkerId } from "../src/core/types.js";
+import { ScriptedLLM, ScriptedRunner } from "./helpers/scripted-runner.js";
 
 // Every way to start a process, as pass-through spies: the pack add must call none of them (the fake process runner).
 vi.mock("node:child_process", async (original) => {
@@ -731,5 +737,126 @@ describe("packs: approvals, the pin and the grant check", () => {
     const { store } = await newStore();
     await m!.up({ dialect: "sqlite", run: (sql, p) => store.db.run(sql, p), all: (sql, p) => store.db.all(sql, p) });
     expect(await store.db.all("SELECT * FROM ext_packs_approvals")).toEqual([]);
+  });
+});
+
+describe("packs: the pack tool broker (approval before the call, no credential to the agent)", () => {
+  const ME = "local:me@example.com" as UserId;
+  const NAME = "issue-tracker";
+  const GRANT = `pack:tool:${NAME}`;
+  const DESCRIPTOR = { name: NAME, description: "Reads issues from the tracker.", credential: "TRACKER_TOKEN", read_only: true };
+  const CREDENTIAL = "tracker-cred-value-9d41e7";
+
+  class OneSecret implements SecretStore {
+    reads: string[] = [];
+    async get(name: SecretName): Promise<Secret | null> {
+      this.reads.push(name);
+      return name === "TRACKER_TOKEN" ? { name, reveal: () => CREDENTIAL, toString: () => `[secret ${name}]`, toJSON: () => `[secret ${name}]` } : null;
+    }
+    async valuesForScan(): Promise<readonly string[]> {
+      return [CREDENTIAL];
+    }
+  }
+
+  async function open(opts: { echo?: boolean } = {}) {
+    const clock = new FakeClock(new Date("2026-11-11T18:00:00.000Z"));
+    const { store } = await newStore(clock);
+    const now = () => clock.now().toISOString();
+    const entries = new PackEntriesStore(store.db, now);
+    const approvals = new PackApprovalsStore(store.db, now);
+    const canonical = canonicalJson(DESCRIPTOR as never);
+    const description_hash = createHash("sha256").update(canonical).digest("hex");
+    await entries.insert({ kind: "tool", name: NAME, description_hash, descriptor: canonical, credential_name: "TRACKER_TOKEN", added_by: ME });
+    const ref = { kind: "tool" as const, name: NAME, description_hash };
+    /** The tool's call function: records each call, and the credential it was given. */
+    const reached: { args: unknown; credential: string | null }[] = [];
+    const tool: PackTool = {
+      name: NAME, description_hash, description: DESCRIPTOR.description, input_schema: { type: "object" }, read_only: true,
+      async call(args, credential) {
+        reached.push({ args, credential: credential?.reveal() ?? null });
+        return { ok: true, content: opts.echo ? { auth: credential?.reveal() } : { issues: ["#1 open"] } };
+      },
+    };
+    const lease = { getRun: async () => ({ id: "run_p", work_item_id: "wi_p", status: "running", lease: { token: 3 } }) as unknown as Run };
+    const secrets = new OneSecret();
+    const broker = new PackToolBroker(new FakeBroker(), { db: store.db, store: lease, secrets, tools: [tool], autoApproveReadOnly: true });
+    const ctx = { run_id: "run_p" as RunId, work_item_id: "wi_p" as WorkItemId, lease_token: 3 };
+    return { store, approvals, ref, reached, broker, ctx, secrets };
+  }
+
+  it("refuses a credentialed tool until the owner approves it; the call function is never reached before approval", async () => {
+    const s = await open();
+    // auto_approve_read_only is on, but an entry with a credential always needs the owner's approval.
+    expect(await s.broker.call(s.ctx, GRANT, { q: "a" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+    // Safe to run twice: a retried call checks again, is refused again, and writes nothing.
+    expect(await s.broker.call(s.ctx, GRANT, { q: "a" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+    expect(s.reached).toEqual([]);
+    expect(s.secrets.reads).toEqual([]);
+    expect(await s.store.db.all("SELECT * FROM ext_packs_approvals")).toEqual([]);
+    await s.approvals.record(s.ref, "approve", ME);
+    expect(await s.broker.call(s.ctx, GRANT, { q: "a" })).toEqual({ ok: true, content: { issues: ["#1 open"] } });
+    expect(s.reached).toEqual([{ args: { q: "a" }, credential: CREDENTIAL }]);
+    // A revoke turns it off again before the call function.
+    await s.approvals.record(s.ref, "revoke", ME);
+    expect(await s.broker.call(s.ctx, GRANT, { q: "b" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+    expect(s.reached).toHaveLength(1);
+  });
+
+  it("refuses an approved tool whose implementation runs another description, and a run that lost its lease", async () => {
+    const s = await open();
+    await s.approvals.record(s.ref, "approve", ME);
+    const other = new PackToolBroker(new FakeBroker(), {
+      db: s.store.db, store: { getRun: async () => null }, secrets: s.secrets, autoApproveReadOnly: false,
+      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, call: async () => ({ ok: true, content: 1 }) }],
+    });
+    expect(await other.call(s.ctx, GRANT, {})).toMatchObject({ ok: false, error_code: "lease_lost" });
+    const stale = new PackToolBroker(new FakeBroker(), {
+      db: s.store.db, store: { getRun: async () => ({ id: "run_p", work_item_id: "wi_p", status: "running", lease: { token: 3 } }) as unknown as Run }, secrets: s.secrets, autoApproveReadOnly: false,
+      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, call: async () => { throw new Error("reached"); } }],
+    });
+    expect(await stale.call(s.ctx, GRANT, {})).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+    expect(s.reached).toEqual([]);
+  });
+
+  it("lists pack tools under their grant name beside the inner broker's, and sends other names to the inner broker", async () => {
+    const s = await open();
+    expect(s.broker.listTools([GRANT, "test.read_note"]).map((t) => t.name)).toEqual([GRANT]);
+    expect(s.broker.allTools().map((t) => t.name)).toContain(GRANT);
+    expect(await s.broker.call(s.ctx, "test.read_note", {})).toMatchObject({ ok: true });
+    expect(s.reached).toEqual([]);
+  });
+
+  it("no credential value in the agent's environment, prompt, transcript, logs or store rows for a pack tool run", async () => {
+    const s = await open({ echo: false });
+    await s.approvals.record(s.ref, "approve", ME);
+    const echo = await open({ echo: true });
+    await echo.approvals.record(echo.ref, "approve", ME);
+    const logged: string[] = [];
+    const log = { info: (m: string, f?: unknown) => logged.push(m, JSON.stringify(f ?? null)), warn: (m: string, f?: unknown) => logged.push(m, JSON.stringify(f ?? null)), error: (m: string, f?: unknown) => logged.push(m, JSON.stringify(f ?? null)) };
+    const spec: AgentRunSpec = {
+      run_id: "run_p" as RunId, work_item_id: "wi_p" as WorkItemId, role: "triage", sandbox: { id: "s", workdir: mkdtempSync(join(tmpdir(), "sf-pack-run-")) },
+      system_prompt: "You are the triage agent.", prompt: "Look up the tracker.", tools: [], tool_grants: [GRANT], lease_token: 3,
+      env_allowlist: { SF_WORKER_INDEX: "0" }, deny_paths: [], writable_paths: [], model_class: "cheap", timeout_ms: 30_000, signal: new AbortController().signal,
+    };
+    const seen: string[] = [];
+    for (const one of [s, echo]) {
+      const llm = new ScriptedLLM([{ tool: GRANT, input: { q: "open" } }, { final: { ok: true } }]);
+      const gate = new ToolGate({ broker: one.broker, scanner: cleanScanner }, spec);
+      const res = await new ScriptedRunner(new FakeSandbox(), llm, { broker: one.broker, scanner: cleanScanner }).run(spec);
+      log.info("run finished", { status: res.status, error: res.error ?? null });
+      expect(one.reached).toHaveLength(1);
+      expect(one.reached[0]!.credential).toBe(CREDENTIAL);
+      const tables = await one.store.db.all("SELECT name FROM sqlite_master WHERE type = 'table'");
+      const rows = await Promise.all(tables.map((t) => one.store.db.all(`SELECT * FROM "${String(t.name)}"`)));
+      seen.push(
+        JSON.stringify(buildAgentEnv(spec, { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "oauth-x" }, { home: "/h", claudeConfigDir: "/c", path: "/usr/bin" })),
+        JSON.stringify(bridgeMcpConfig("/tmp/sf-tools-x/s")),
+        spec.system_prompt, spec.prompt, JSON.stringify(gate.list()), res.transcript, JSON.stringify(llm.observations), JSON.stringify(rows),
+      );
+    }
+    // The echoing tool's result is withheld whole, so even a tool that returns its credential leaks nothing.
+    expect(seen.join("\n")).toContain(PACK_CREDENTIAL_IN_RESULT);
+    expect(seen.join("\n")).toContain("#1 open");
+    for (const text of [...seen, ...logged]) expect(text).not.toContain(CREDENTIAL);
   });
 });
