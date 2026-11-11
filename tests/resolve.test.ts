@@ -100,11 +100,12 @@ describe("resolve prompt fixed rules", () => {
     expect(prompt).toContain("AGENTS.md");
   });
 
-  it("AGENTS.md keeps both sides' sections in docs/design.md and SET_UP.md (moved from the prompt, issue #335)", () => {
+  it("AGENTS.md keeps both sides' sections in the design, plugin and settings docs and SET_UP.md (moved from the prompt, issue #335)", () => {
     const rule = readFileSync("AGENTS.md", "utf8").split("\n").find((l) => l.startsWith("- Merge conflicts in"));
     expect(rule, "the merge rule").toBeDefined();
-    expect(rule).toContain("`docs/design.md`");
-    expect(rule).toContain("`SET_UP.md`");
+    for (const doc of ["`docs/design.md`", "`SET_UP.md`", "`docs/design/", "`docs/plugins/", "`docs/settings.md`"]) {
+      expect(rule).toContain(doc);
+    }
     expect(rule).toMatch(/keep both sides' sections/i);
   });
 
