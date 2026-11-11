@@ -23,21 +23,19 @@ function setDark(dark: boolean): void {
   document.documentElement.classList.toggle("dark", dark);
 }
 
+/** Show the choice on the page once, with no listener: main.tsx paints it before the first render to avoid a flash. */
+export function paintChoice(choice: ThemeChoice): void {
+  setDark(choice === "system" ? typeof matchMedia === "function" && matchMedia(DARK_QUERY).matches : choice === "dark");
+}
+
 /**
  * Show the choice on the page. System follows the system colour scheme now and while the page is open; the returned
  * function removes that listener (call it before the next choice or on unmount). Light and Dark listen to nothing.
  */
 export function applyChoice(choice: ThemeChoice): () => void {
-  if (choice !== "system") {
-    setDark(choice === "dark");
-    return () => {};
-  }
-  if (typeof matchMedia !== "function") {
-    setDark(false);
-    return () => {};
-  }
+  paintChoice(choice);
+  if (choice !== "system" || typeof matchMedia !== "function") return () => {};
   const query = matchMedia(DARK_QUERY);
-  setDark(query.matches);
   const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
   query.addEventListener("change", onChange);
   return () => query.removeEventListener("change", onChange);

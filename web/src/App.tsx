@@ -86,7 +86,6 @@ function SideLinks({ label, pages, current }: { label: string; pages: readonly P
   );
 }
 
-/** The app (design §9): sidebar, top bar with "Needs you (N)", and the current page. */
 const THEME_CHOICES: readonly { choice: ThemeChoice; label: MessageKey; Icon: typeof Sun }[] = [
   { choice: "system", label: "topbar.themeSystem", Icon: Monitor },
   { choice: "light", label: "topbar.themeLight", Icon: Sun },
@@ -114,6 +113,7 @@ function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c:
   );
 }
 
+/** The app (design §9): sidebar, top bar with "Needs you (N)", and the current page. */
 export function App() {
   const overview = useQuery({
     queryKey: [API.overview],

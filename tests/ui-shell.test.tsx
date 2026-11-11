@@ -8,7 +8,7 @@ import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js"
 import type { ItemRow } from "../web/src/api.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
-import { THEME_KEY } from "../web/src/theme.js";
+import { THEME_KEY, paintChoice } from "../web/src/theme.js";
 import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
 import { RevisionBanner } from "../web/src/views/system-banner.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
@@ -219,6 +219,15 @@ describe("app shell", () => {
     expect(isDark()).toBe(true);
     expect(scheme.listeners()).toBe(1);
     act(() => scheme.set(false));
+    expect(isDark()).toBe(false);
+  });
+
+  it("the pre-render paint shows the system scheme without leaving a listener", () => {
+    const scheme = stubScheme(true);
+    paintChoice("system");
+    expect(isDark()).toBe(true);
+    expect(scheme.listeners()).toBe(0);
+    paintChoice("light");
     expect(isDark()).toBe(false);
   });
 
