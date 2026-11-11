@@ -110,7 +110,7 @@ export const UPDATER_KEYS = ["auto_migrate"] as const satisfies readonly (keyof 
 export const GITHUB_KEYS = ["min_remaining", "budget_share", "history_since"] as const satisfies readonly (keyof NonNullable<FileConfig["github"]>)[];
 export const STATS_KEYS = ["weights", "min_sample"] as const satisfies readonly (keyof NonNullable<FileConfig["stats"]>)[];
 export const RETENTION_KEYS = ["outbox_days", "commands_days", "records_days"] as const satisfies readonly (keyof NonNullable<FileConfig["retention"]>)[];
-export const PACKS_KEYS = ["order", "org"] as const satisfies readonly (keyof NonNullable<FileConfig["packs"]>)[];
+export const PACKS_KEYS = ["order", "org", "auto_approve_read_only"] as const satisfies readonly (keyof NonNullable<FileConfig["packs"]>)[];
 
 /** A suggestion is offered only within this edit distance. */
 export const SUGGEST_MAX_DISTANCE = 2;

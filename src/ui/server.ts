@@ -1,12 +1,12 @@
 // `factory ui`: the status page over FactoryStore (design §9, architecture §1).
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
-// except six write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
+// except seven write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
 // (design §9, issue #227; commands.ts), POST /api/v1/pauses/resume (design §5 Restarts, issue #291), POST
 // /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts), POST /api/v1/users (design 08
-// permissions, issue #445; users-api.ts) and POST /api/v1/improve/run (design §7, issue #508; improve-api.ts),
-// each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// permissions, issue #445; users-api.ts), POST /api/v1/improve/run (design §7, issue #508; improve-api.ts) and
+// POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing and improve routes then
-// check the owner (approve_spec), the users route the local owner. A POST to any
+// check the owner (approve_spec), the users route the local owner, the pack approvals route approve_tool. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
@@ -23,6 +23,7 @@ import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settin
 import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { USERS_PATH, writeUsers } from "./users-api.js";
+import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
 import { parseFilters } from "./filters.js";
@@ -119,7 +120,7 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "users" | "improve";
+type WriteRoute = "settings" | "resume" | "standing" | "users" | "improve" | "packs";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
@@ -135,6 +136,7 @@ function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (path === STANDING_PATH && d.pauses !== undefined) return "standing";
   if (path === USERS_PATH && d.users !== undefined) return "users";
   if (path === IMPROVE_RUN_PATH && improveRunWired(d)) return "improve";
+  if (path === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined) return "packs";
   return null;
 }
 
@@ -170,6 +172,7 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
     : route === "resume" ? await resumePause(d, d.pauses!, body)
     : route === "users" ? await writeUsers(d, d.users!, body)
     : route === "improve" ? await runImproveNow(d as ImproveRunDeps)
+    : route === "packs" ? await writePackApproval(d, d.pauses!, body)
     : await writeStanding(d, d.pauses!, body);
   return json(r.status, r.value);
 }
@@ -179,7 +182,7 @@ function commandsWrite(req: Pick<UiRequest, "method" | "url">): string | null {
   return req.method === "POST" ? commandsPathId(req.url) : null;
 }
 
-/** The whole request handling, without the socket. Writes only through the six write routes. */
+/** The whole request handling, without the socket. Writes only through the seven write routes. */
 export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
   const area = areaOf(req.url);
   if (!allowedHost(req.host)) return areaError(area, 403, "Host must be 127.0.0.1 or localhost.");
@@ -191,7 +194,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, users and improve run routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, users, improve run and pack approvals routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;

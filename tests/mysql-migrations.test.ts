@@ -19,9 +19,10 @@ import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { failureClass } from "../src/core/policy.js";
 import { PackEntriesStore } from "../src/packs/pack-entries.store.js";
+import { PackApprovalsStore } from "../src/packs/pack-approvals.store.js";
 import { discoverMigrations } from "../src/state/index.js";
 import { projectLabelCursor } from "../src/core/project.js";
-import { type Run, type RunUsage, type Timestamp, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
+import { type Run, type RunUsage, type Timestamp, type UserId, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { MYSQL_URL, OTHER_PROJECT_KEY, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newMysqlDatabase, newStore, system } from "./helpers/store.js";
 import { NODE_MODULES, tscArgs } from "./helpers/toolchain.js";
@@ -297,6 +298,27 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
     expect(await entries.insert(entry)).toBe(false);
     expect(await driver.all("SELECT kind, name, credential_name, status, created_at FROM ext_packs_entries")).toEqual([
       { kind: "tool", name: "t", credential_name: "T_TOKEN", status: "pending", created_at: "2026-11-11T12:00:00.000Z" },
+    ]);
+  });
+
+  it("20261111T1600 creates ext_packs_approvals; a rerun is a no-op and the latest row of a description decides", async () => {
+    const db = await newEmptyMysqlDatabase();
+    await new MysqlMigrations(await db.connect()).apply(() => undefined);
+    const driver = new MysqlDriver(db.options);
+    const store = new SqlFactoryStore(driver, new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const m = (await discoverMigrations()).find((x) => x.id === "20261111T1600-state-ext-packs-approvals")!;
+    await m.up({ dialect: "mysql", run: (sql, p) => driver.run(sql, p), all: (sql, p) => driver.all(sql, p) });
+    const approvals = new PackApprovalsStore(driver, () => "2026-11-11T16:00:00.000Z");
+    const ref = { kind: "tool", name: "t", description_hash: "a".repeat(64) } as const;
+    await approvals.record(ref, "approve", "local:me" as UserId);
+    expect(await approvals.approved(ref)).toBe(true);
+    await approvals.record(ref, "revoke", "local:me" as UserId);
+    expect(await approvals.approved(ref)).toBe(false);
+    expect(await driver.all("SELECT action, user_id, at FROM ext_packs_approvals ORDER BY seq")).toEqual([
+      { action: "approve", user_id: "local:me", at: "2026-11-11T16:00:00.000Z" },
+      { action: "revoke", user_id: "local:me", at: "2026-11-11T16:00:00.000Z" },
     ]);
   });
 
