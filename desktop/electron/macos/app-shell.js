@@ -1,15 +1,19 @@
 // The macOS AppShell (src/interfaces/app-shell.ts): one dashboard window, a menu bar item, system-wide shortcuts
 // (globalShortcut) and a Quit that drains.
 // Electron comes in as an argument; only main.js imports it, so tests pass a mock.
+import { PRODUCT_NAME } from "../common/product.js";
 import { menuTitle } from "../common/status.js";
 
 /** The dashboard window's options: no Node in the page, an isolated and sandboxed renderer. */
 export const windowOptions = (preload) => ({
   width: 1280,
   height: 860,
-  title: "Software Factory",
+  title: PRODUCT_NAME,
   webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload },
 });
+
+/** The title of the error dialog when the shell cannot start. */
+export const STARTUP_ERROR_TITLE = `${PRODUCT_NAME} could not start`;
 
 /** How long the window waits before loading the dashboard again after a failed load (the supervisor is starting). */
 export const RELOAD_DELAY_MS = 2_000;
@@ -53,7 +57,7 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
 
   const render = () => {
     tray.setTitle(menuTitle(status));
-    tray.setToolTip(`Software Factory: ${status.state}`);
+    tray.setToolTip(`${PRODUCT_NAME}: ${status.state}`);
     tray.setContextMenu(
       Menu.buildFromTemplate([
         { label: `Factory: ${status.state}`, enabled: false },
@@ -61,7 +65,7 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
         { type: "separator" },
         { label: "Open dashboard", click: show },
         ...menu.map(({ label, click }) => ({ label, click })),
-        { label: "Quit Software Factory", accelerator: "Command+Q", click: quit },
+        { label: `Quit ${PRODUCT_NAME}`, accelerator: "Command+Q", click: quit },
       ]),
     );
   };

@@ -1,6 +1,7 @@
 import type { AppShell } from "../../../src/interfaces/app-shell.js";
 import type { Timers } from "../common/timers.js";
 export declare const RELOAD_DELAY_MS: number;
+export declare const STARTUP_ERROR_TITLE: string;
 export interface WindowOptions {
   width: number;
   height: number;
