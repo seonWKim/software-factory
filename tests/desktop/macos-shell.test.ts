@@ -84,11 +84,27 @@ describe("desktop/electron sources", () => {
       e.isDirectory() ? sources(join(dir, e.name)) : /\.c?js$/.test(e.name) ? [join(dir, e.name)] : [],
     );
 
-  it("only macos/main.js imports electron", () => {
+  it("only macos/main.js and the panels' sandboxed preload import electron", () => {
     const importers = sources(DESKTOP)
       .filter((f) => /from\s+["']electron["']|require\(\s*["']electron["']\s*\)/.test(readFileSync(f, "utf8")))
-      .map((f) => f.slice(DESKTOP.length + 1));
-    expect(importers).toEqual(["macos/main.js"]);
+      .map((f) => f.slice(DESKTOP.length + 1))
+      .sort();
+    expect(importers).toEqual(["macos/main.js", "macos/panel-preload.cjs"]);
+  });
+
+  it("the panels' preload gives the page only the panel channels", () => {
+    const preload = readFileSync(join(DESKTOP, "macos", "panel-preload.cjs"), "utf8");
+    expect(preload).toContain('exposeInMainWorld("sf"');
+    expect([...preload.matchAll(/"((?:quick-add|settings):[a-z]+)"/g)].map((x) => x[1]).sort()).toEqual(
+      ["quick-add:key", "quick-add:opened", "quick-add:preview", "settings:get", "settings:set"],
+    );
+    expect(preload).not.toMatch(/ipcRenderer\.send|require\(\s*["'](?!electron)/);
+  });
+
+  it("the panels' pages name no colour values of their own", () => {
+    for (const f of ["panel.css", "quick-add.html", "settings.html"]) {
+      expect(readFileSync(join(DESKTOP, "macos", f), "utf8"), f).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/);
+    }
   });
 
   it("name no secrets file", () => {
