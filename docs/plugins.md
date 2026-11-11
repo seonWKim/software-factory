@@ -34,4 +34,5 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | EventBus | `sql` | [event-bus.md](plugins/event-bus.md) |
 | TickGenerator | `time-based`, `manual` | [tick-generator.md](plugins/tick-generator.md) |
 | ExecutionEngine | `journal` | [execution-engine.md](plugins/execution-engine.md) |
+| AppShell (wired by the desktop entry, not chosen in config) | `macos` | [app-shell.md](plugins/app-shell.md) |
 | Forge (optional; follows `plugins.source`: `github` with `github-issues`, else none) | `github`, `local` | [forge.md](plugins/forge.md) |

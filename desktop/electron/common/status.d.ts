@@ -1,0 +1,10 @@
+import type { ShellStatus } from "../../../src/interfaces/app-shell.js";
+import type { Timers } from "./timers.js";
+export declare const STATUS_INTERVAL_MS: number;
+export declare const UNREACHABLE: ShellStatus;
+export declare function dashboardUrl(port: number): string;
+export declare function overviewUrl(port: number): string;
+export declare function statusFromOverview(body: unknown): ShellStatus;
+export declare function menuTitle(status: ShellStatus): string;
+export type Fetch = (url: string) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
+export declare function pollStatus(o: { fetch: Fetch; url: string; onStatus: (s: ShellStatus) => void; intervalMs?: number; timers?: Timers }): () => void;

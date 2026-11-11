@@ -180,3 +180,78 @@ describe("GitHub code stays in src/impl/github/", () => {
     expect(GITHUB_EXEMPT.filter((e) => e.reason.trim() === "" || /^(core|interfaces)\//.test(e.file))).toEqual([]);
   });
 });
+
+// Core, interfaces, the status page server (src/ui/) and the dashboard (web/) have no platform branches and no OS
+// paths: platform code lives in a plugin (KeepAwake) or a desktop shell (desktop/, docs/design/09-desktop-app.md).
+// Full-line comments may name a path. The exemptions below (decision 2 of issue #573) are the known platform code,
+// each with its reason; they sit outside the checked layers today, and an exemption is dropped once its file has
+// no platform code left.
+
+const REPO = join(SRC, "..");
+const PLATFORM_LAYERS = ["src/core/", "src/interfaces/", "src/ui/", "web/"];
+
+const PLATFORM_CODE: readonly RegExp[] = [
+  /\bprocess\.platform\b/,
+  /\b(?:os\.)?platform\(\)/,
+  /\b(?:homedir|userInfo)\(/,
+  /["'`](?:darwin|win32)["'`]/,
+  /\/Library\/|Application Support|AppData|%APPDATA%|["'`](?:\/Users|\/home)\/|["'`]~\/|[A-Z]:\\\\|\bXDG_[A-Z_]+/,
+];
+
+const PLATFORM_EXEMPT: readonly Exempt[] = [
+  { file: "src/impl/awake/", reason: "the KeepAwake plugins: caffeinate is the darwin default, none the default elsewhere" },
+  { file: "src/plugins.ts", reason: "the registry picks a plugin's per-platform default from process.platform" },
+  { file: "src/impl/secrets/", reason: "the env-file SecretStore finds its file under XDG_CONFIG_HOME or the home folder" },
+  { file: "src/setup.ts", reason: "setup opens a URL with `open` or `xdg-open` (follow-up: move it into a plugin)" },
+];
+
+/** Each code line of `sources` (repo-relative paths) in a checked layer that holds platform code, but exempt files. */
+function platformViolations(sources: readonly { path: string; text: string }[]): string[] {
+  const out: string[] = [];
+  for (const { path, text } of sources) {
+    if (!PLATFORM_LAYERS.some((l) => path.startsWith(l)) || PLATFORM_EXEMPT.some((e) => path.startsWith(e.file))) continue;
+    text.split("\n").forEach((line, i) => {
+      if (/^\s*(?:\/\/|\/\*|\*)/.test(line)) return;
+      if (PLATFORM_CODE.some((p) => p.test(line))) out.push(`${path}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  return out;
+}
+
+function codeFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? (["node_modules", "dist"].includes(e.name) ? [] : codeFiles(join(dir, e.name))) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : [],
+  );
+}
+
+const repoSources = (dirs: readonly string[]): { path: string; text: string }[] =>
+  dirs.flatMap((d) => codeFiles(join(REPO, d)).map((f) => ({ path: relative(REPO, f), text: readFileSync(f, "utf8") })));
+
+describe("no platform code in core, interfaces, ui and web", () => {
+  it("src/core, src/interfaces, src/ui and web/ hold no process.platform and no OS path", () => {
+    expect(platformViolations(repoSources(PLATFORM_LAYERS))).toEqual([]);
+  });
+
+  it("fails on a fixture with a platform branch or an OS path, and passes it in an exempt file or a comment", () => {
+    const fixture = [
+      'const mac = process.platform === "darwin";',
+      'const dir = join(homedir(), "Library", "Application Support");',
+      'const data = "/Users/me/Library/Application Support/x";',
+      "// a comment may name ~/.config/software-factory/.env",
+    ].join("\n");
+    for (const layer of PLATFORM_LAYERS) {
+      expect(platformViolations([{ path: `${layer}fixture.ts`, text: fixture }]), layer).toHaveLength(3);
+    }
+    expect(platformViolations([{ path: "src/impl/awake/fixture.ts", text: fixture }])).toEqual([]);
+    expect(platformViolations([{ path: "src/ui/fixture.ts", text: 'const os = "macos"; const p = "/api/v1/overview";' }])).toEqual([]);
+  });
+
+  it("every exemption has a reason and still holds platform code", () => {
+    const stale = PLATFORM_EXEMPT.filter((e) => {
+      const files = e.file.endsWith("/") ? codeFiles(join(REPO, e.file)) : [join(REPO, e.file)];
+      return !files.some((f) => readFileSync(f, "utf8").split("\n").some((l) => PLATFORM_CODE.some((p) => p.test(l))));
+    });
+    expect(stale.map((e) => e.file)).toEqual([]);
+    expect(PLATFORM_EXEMPT.filter((e) => e.reason.trim() === "")).toEqual([]);
+  });
+});

@@ -347,6 +347,26 @@ The checked-in `factory.config.json` is this repository's own config. To point t
 
 With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve from the config file's folder (`~/factory/my-app/.factory`, `~/factory/my-app/.worktrees`); without them they stay under the folder you start in. Prompts still come from the factory checkout, and the secret file stays at `~/.config/software-factory/.env`. Solo use (SQLite) may set any key; on a shared MySQL store, `dials`, `floors`, `plugins`, `permissions` and `auth` always come from the checked-in file. Details: [`docs/plugins/selection.md`](docs/plugins/selection.md).
 
+## macOS app
+
+A Mac app that runs the factory for you: a window on the dashboard, `SF <n>` in the menu bar (`n`: how many items need you, refreshed every 15 seconds), and a Quit that lets the factory finish what it is doing. Unsigned, macOS only. Decisions: [`docs/design/09-desktop-app.md`](docs/design/09-desktop-app.md).
+
+Install:
+
+1. Finish `npm run setup` in this checkout, and build it once: `npm run build`.
+2. Build the app: `npm run build:desktop:macos`. It copies Electron from `node_modules/electron/dist` into `desktop/out/Software Factory.app`. If it says `node_modules/electron/dist` is missing, install the project's dependencies (`npm install`) and run it again; the script itself never installs anything.
+3. Optional: drag `desktop/out/Software Factory.app` to `/Applications`. The app runs the checkout it was built from, wherever the app itself is.
+4. Start it: `open "desktop/out/Software Factory.app"`. The app is not signed: the first time, macOS may refuse to open it; right-click it in Finder, choose Open, and confirm.
+
+Use:
+
+- The app starts the factory (`dist/main.js dev`) as its own child, so do not also run `npm run factory -- dev` for the same checkout. If the factory stops, the app starts it again after 5 seconds. Its output goes to `~/Library/Application Support/software-factory/state/supervisor.log`.
+- Closing the window keeps the factory and the menu bar item running; click the Dock icon or choose "Open dashboard" in the menu bar to see it again.
+- Cmd+Q, or Quit in the menu bar, drains the factory (in-flight work stops as on Ctrl-C) and waits up to 60 seconds before it stops the factory hard.
+- Its settings are in `~/Library/Application Support/software-factory/config.json`, written on first start: `checkout` (the factory checkout to run), `ui_port` (set it when `factory.config.json` sets another `ui.port`) and `keep_running_when_closed` (`false` makes closing the window quit). Quit and start the app again after a change.
+- The app never reads the secret file: the factory it starts does, as from a terminal.
+- Known limit: an app started from Finder or `open` gets macOS's short `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), not your shell's. If the log says the factory cannot find `claude` or another tool, that is why; a later change passes the login shell's `PATH`.
+
 ## Routine
 
 | When | Command |
