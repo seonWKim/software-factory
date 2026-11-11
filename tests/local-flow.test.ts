@@ -187,7 +187,7 @@ async function gitFactory(o: { github: boolean }) {
     expect((await cli(ME, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
     await step();
     await step();
-    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: null });
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: null });
     return id;
   };
   const merge = async (id: WorkItemId) => {

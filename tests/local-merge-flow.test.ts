@@ -127,7 +127,7 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     const id = await f.toMergePending();
     const branch = `factory/${id}`;
     // No PR: the item reviews and waits as its local branch.
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: null });
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: null });
     const head = git(f.repo, "rev-parse", `refs/heads/${branch}`);
     expect(git(f.repo, "show", `${head}:${WORKFLOW}`)).toBe("name: scope\non: push");
     // The review read the local branch's diff.
