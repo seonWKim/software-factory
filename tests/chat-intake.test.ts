@@ -90,7 +90,7 @@ async function deliver(f: F, ...envelopes: Record<string, unknown>[]): Promise<v
 const TS = "1800000001.000100";
 const items = (f: F) => f.store.listWorkItems(10);
 /** The factory's messages in the message's own thread, status messages left out. */
-const replies = (f: F, ts = TS) => f.api.thread(ts).filter((m) => !m.text.startsWith("Status:"));
+const replies = (f: F, ts = TS) => f.api.thread(ts).filter((m) => !(m.text ?? "").startsWith("Status:"));
 
 describe("chat intake: top-level Slack mentions", () => {
   it("'can you receive natural inputs?' from a linked owner creates no item and gets exactly one chat reply in its own thread", async () => {
