@@ -662,7 +662,7 @@ CREATE TABLE ext_packs_entries (
     status            TEXT NOT NULL,
     added_by          TEXT NOT NULL,
     created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL, module_hash TEXT,
     UNIQUE (kind, name, description_hash)
   );
 

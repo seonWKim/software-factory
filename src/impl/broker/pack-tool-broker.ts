@@ -2,13 +2,15 @@
 // this one, with the pack layers' tools (src/impl/broker/pack-tools.ts). A pack tool's grant is `pack:tool:<name>`; its
 // call runs here, in the worker, never in the agent's sandbox. Every call checks, in order: the run's lease, then the store's approval of
 // the entry's current description (`approvedEntry`, a read only, so a retried call checks again and writes nothing),
-// then that the approved description is the one this implementation runs. Only then is the credential read from the
+// then that the approved description is the one this implementation runs, then that the module file still hashes to
+// the bytes loaded at startup (re-read on every call). Only then is the credential read from the
 // SecretStore and the tool's call function reached. A refusal never reaches it. Any other tool name goes to `inner`.
 
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import { type Secret, type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { packGrantName } from "../../packs/pack-approvals.store.js";
+import { readModuleHash } from "../../packs/pack-entries.store.js";
 import { approvedEntry } from "../../packs/pack-grants.js";
 import type { PackTool } from "./pack-tools.js";
 import type { SqlDriver } from "../../state/index.js";
@@ -57,6 +59,9 @@ export class PackToolBroker implements ToolBroker {
     if (entry.description_hash !== tool.description_hash) {
       return { ok: false, error_code: PACK_NOT_APPROVED, message: `${name} is refused: the approved description is not the one this tool runs` };
     }
+    if (!(await sameModule(tool))) {
+      return { ok: false, error_code: PACK_NOT_APPROVED, message: `${name} is refused: its module changed since startup; pack add and approve it, then restart` };
+    }
     let credential: Secret | null = null;
     if (entry.credential_name !== null) {
       credential = await this.deps.secrets.get(secretName(entry.credential_name));
@@ -74,5 +79,14 @@ export class PackToolBroker implements ToolBroker {
       return { ok: false, error_code: PACK_CREDENTIAL_IN_RESULT, message: `${name} result withheld: it holds the tool's credential` };
     }
     return result;
+  }
+}
+
+/** Whether the tool's module file still holds the bytes loaded at startup; a missing or unreadable file does not. */
+async function sameModule(tool: PackTool): Promise<boolean> {
+  try {
+    return (await readModuleHash(tool.module_file)) === tool.module_hash;
+  } catch {
+    return false;
   }
 }

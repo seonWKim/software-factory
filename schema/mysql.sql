@@ -810,6 +810,7 @@ CREATE TABLE `ext_packs_entries` (
   `added_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,
   `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
   `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `module_hash` char(64) COLLATE utf8mb4_bin DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `ext_packs_entries_key` (`kind`,`name`,`description_hash`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
