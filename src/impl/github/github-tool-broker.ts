@@ -1,4 +1,3 @@
-import type { Logger } from "../../core/log.js";
 import type { Clock } from "../../interfaces/clock.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
@@ -6,7 +5,6 @@ import { PREFLIGHT, STORE_BRANCH, type ToolBroker, type ToolCallContext, type To
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, PREFLIGHT_ACCESS, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef } from "./github-client.js";
-import { brokerToolName } from "../broker/tool-alias.js";
 import { grantedTools, leaseLost } from "../broker/tool-broker-shared.js";
 import { branchAllowed, storeBranch } from "../broker/trusted-git.js";
 
@@ -69,8 +67,6 @@ export class GitHubToolBroker implements ToolBroker {
       branchPrefix: string;
       /** The factory repo: its origin is the trusted push remote, its origin/<base> the trusted base. */
       repoPath?: string;
-      /** Where an old tool name's one warning goes; stderr when absent. */
-      log?: Pick<Logger, "warn">;
     },
   ) {}
 
@@ -86,7 +82,7 @@ export class GitHubToolBroker implements ToolBroker {
   async call(ctx: ToolCallContext, name: string, args: unknown): Promise<ToolResult> {
     const lost = await leaseLost(this.deps.store, ctx);
     if (lost) return lost;
-    switch (brokerToolName(name, this.deps.log)) {
+    switch (name) {
       case STORE_BRANCH:
         return this.store(args as PushArgs);
       case PREFLIGHT:

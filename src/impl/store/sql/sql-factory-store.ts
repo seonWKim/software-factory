@@ -203,9 +203,9 @@ export class SqlFactoryStore implements FactoryStore {
 
   async getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null> {
     const [row] = await this.db.all(
-      `SELECT * FROM controller_work_items WHERE project = ? AND ${BY_CHANGE_REF}
+      `SELECT * FROM controller_work_items WHERE project = ? AND change_ref = ?
          ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [project, change_ref, prNumber({ change_ref })],
+      [project, change_ref],
     );
     return row ? rowToWorkItem(row) : null;
   }
@@ -615,7 +615,7 @@ export class SqlFactoryStore implements FactoryStore {
     for (const r of await tx.all(`SELECT * FROM controller_work_items WHERE id IN (${placeholders(ids.length)})`, ids)) {
       items.set(r.id as string, rowToWorkItem(r));
     }
-    const openPrs = (await tx.all(`SELECT * FROM controller_work_items WHERE ${HAS_CHANGE} AND stage <> 'CLOSED'`)).map(rowToWorkItem);
+    const openPrs = (await tx.all(`SELECT * FROM controller_work_items WHERE change_ref IS NOT NULL AND stage <> 'CLOSED'`)).map(rowToWorkItem);
     for (const it of openPrs) items.set(it.id, it);
     const queuedIds = [...new Set(runs.map((q) => q.work_item_id as string))];
     const edges = await tx.all(
@@ -1498,14 +1498,12 @@ export class SqlFactoryStore implements FactoryStore {
   async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
     assertProjectKey(input.project);
     return this.db.transaction(async (tx) => {
-      const pr = prNumber(input);
-      if (pr === null) throw new Error(`unreviewed merge change_ref is not a PR number (its mirror column is NOT NULL): ${input.change_ref}`);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO controller_unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, pr, input.change_ref, input.merge_sha, input.merger_id, this.now()],
+        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?)",
+        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now()],
       );
-      const [row] = await tx.all(`SELECT * FROM controller_unreviewed_merges WHERE project = ? AND ${BY_CHANGE_REF}`, [input.project, input.change_ref, pr]);
+      const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND change_ref = ?", [input.project, input.change_ref]);
       return { merge: rowToUnreviewedMerge(row!), created };
     });
   }
@@ -2505,7 +2503,7 @@ export class SqlFactoryStore implements FactoryStore {
     }
   }
 
-  /** A patch's diff as assignments, with pr_number and change_url when it sets change_ref (on the patched project). */
+  /** A patch's diff as assignments, with change_url when it sets change_ref (on the patched project). */
   private async patchSql(tx: SqlExecutor, current: WorkItem, patch: WorkItemPatch): Promise<ReturnType<typeof diffPatch>> {
     const diff = diffPatch(current, patch);
     const change = await changeAssignments(tx, patch.project ?? current.project, diff.changes, patch.change_url ?? null);
@@ -2736,9 +2734,6 @@ function rowToDelivery(row: Row): ThreadDelivery {
   };
 }
 
-// By change_ref (params: change_ref, its PR number); pr_number only for a row an older controller wrote without it.
-const BY_CHANGE_REF = "(change_ref = ? OR (change_ref IS NULL AND pr_number = ?))";
-const HAS_CHANGE = "(change_ref IS NOT NULL OR pr_number IS NOT NULL)";
 /** An app request by seq (RFC 0015 D7): one recorded before the merge keeps its old seq as `legacy_seq`; `?` twice. */
 const APP_REQUEST_SEQ = "origin = 'app' AND ((legacy_table = 'app_command_requests' AND legacy_seq = ?) OR (legacy_table IS NULL AND seq = ?))";
 /** A command's id from its key, so a repeated append computes the same one; its origin from the key's prefix. */

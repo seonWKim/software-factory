@@ -13,7 +13,8 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { recordAction } from "../src/outbound/intents.js";
-import type { SqlDriver } from "../src/state/index.js";
+import { type MigrationDb, type SqlDriver, applyMigrations, discoverMigrations } from "../src/state/index.js";
+import CHANGE_REF_ONLY from "../src/controller/migrations/20261112T1200-controller-change-ref-only.migration.js";
 import { newStore, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -1178,7 +1179,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
-  describe("change fields beside pr_number (migration 35)", () => {
+  describe("change fields (migration 35; pr_number removed by 20261112T1200-controller-change-ref-only)", () => {
     const raw = async (store: FactoryStore, table: string, id: string) =>
       (await store.listTableRows({ table, filter: { column: "id", value: id } }))!.rows[0]!;
     const adoptedIn = (n: number, project: string) => ({
@@ -1194,27 +1195,28 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const labelled = (await store.createWorkItem(adoptedIn(5, PROJECT_KEY), human)).item;
       const unlabelled = (await store.createWorkItem(adoptedIn(6, OTHER_PROJECT_KEY), human)).item;
       const plain = (await store.createWorkItem(issue(7), system)).item;
-      expect(await raw(store, "controller_work_items", labelled.id)).toMatchObject({ pr_number: 5, change_ref: "5", change_url: prUrl(LABEL, 5) });
-      expect(await raw(store, "controller_work_items", unlabelled.id)).toMatchObject({ pr_number: 6, change_ref: "6", change_url: null });
-      expect(await raw(store, "controller_work_items", plain.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: null });
+      expect(await raw(store, "controller_work_items", labelled.id)).toMatchObject({ change_ref: "5", change_url: prUrl(LABEL, 5) });
+      expect(await raw(store, "controller_work_items", labelled.id)).not.toHaveProperty("pr_number");
+      expect(await raw(store, "controller_work_items", unlabelled.id)).toMatchObject({ change_ref: "6", change_url: null });
+      expect(await raw(store, "controller_work_items", plain.id)).toMatchObject({ change_ref: null, change_url: null });
       expect((await store.getWorkItemByPr(PROJECT_KEY, "5"))!.id).toBe(labelled.id);
       expect((await store.getWorkItemByPr(OTHER_PROJECT_KEY, "6"))!.id).toBe(unlabelled.id);
     });
 
-    it("a patch that sets change_ref writes pr_number, and derives change_url from the label when no URL is given", async () => {
+    it("a patch that sets change_ref derives change_url from the label when no URL is given", async () => {
       const { store } = await make();
       const a = (await store.createWorkItem(issue(1), system)).item;
       const b = (await store.createWorkItem({ ...issue(2), project: OTHER_PROJECT_KEY }, system)).item;
       await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
       await store.transition({ id: a.id, expected_version: 1, patch: { change_ref: "34" }, actor: system, reason: "x" });
       await store.transition({ id: b.id, expected_version: 1, patch: { change_ref: "35" }, actor: system, reason: "x" });
-      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: prUrl(LABEL, 34) });
-      expect(await raw(store, "controller_work_items", b.id)).toMatchObject({ pr_number: 35, change_ref: "35", change_url: null });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
+      expect(await raw(store, "controller_work_items", b.id)).toMatchObject({ change_ref: "35", change_url: null });
       expect(await store.getWorkItem(a.id)).toMatchObject({ change_ref: "34" });
       // A patch without change_ref leaves the change columns alone.
       await store.transition({ id: a.id, expected_version: 2, patch: { blocked_on: "human" }, actor: system, reason: "x" });
       expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: "34", change_url: prUrl(LABEL, 34) });
-      // pr_number and change_url are not part of the state change: only the patched field is.
+      // change_url is not part of the state change: only the patched field is.
       const [, set] = await store.listStateChanges(a.id);
       expect(set!.changes).toEqual({ change_ref: { from: null, to: "34" } });
       expect((await store.getWorkItemByPr(PROJECT_KEY, "34"))!.id).toBe(a.id);
@@ -1227,7 +1229,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const a = (await store.createWorkItem(issue(1), system)).item;
       const opened = "https://github.example/o/r/pull/34";
       await store.transition({ id: a.id, expected_version: 1, patch: { change_ref: "34", change_url: opened }, actor: system, reason: "x" });
-      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 34, change_ref: "34", change_url: opened });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: "34", change_url: opened });
       expect(await store.getWorkItem(a.id)).toMatchObject({ change_ref: "34", change_url: opened });
     });
 
@@ -1240,7 +1242,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       // Another URL, and a new change_ref with no URL (which would derive one), both keep the stored URL.
       await store.transition({ id: a.id, expected_version: 2, patch: { change_ref: "35", change_url: "https://other/pull/35" }, actor: system, reason: "x" });
       await store.transition({ id: a.id, expected_version: 3, patch: { change_ref: "36" }, actor: system, reason: "x" });
-      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: 36, change_ref: "36", change_url: opened });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: "36", change_url: opened });
     });
 
     it("every work item read returns change_ref and change_url from the row, and intake returns the stored item", async () => {
@@ -1277,48 +1279,24 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       for (const [id, fields] of want) expect(listed.find((i) => i.id === id)).toMatchObject(fields);
     });
 
-    it("an unreviewed merge insert writes change_ref", async () => {
+    it("an unreviewed merge insert writes change_ref, also one that is not a PR number", async () => {
       const { store } = await make();
       const { merge } = await store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "7", merge_sha: "m7", merger_id: null });
-      expect(await raw(store, "controller_unreviewed_merges", merge.id)).toMatchObject({ pr_number: 7, change_ref: "7" });
+      expect(await raw(store, "controller_unreviewed_merges", merge.id)).toMatchObject({ change_ref: "7" });
+      expect(await raw(store, "controller_unreviewed_merges", merge.id)).not.toHaveProperty("pr_number");
+      const mr = await store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "MR-7", merge_sha: "m8", merger_id: null });
+      expect(mr).toMatchObject({ created: true, merge: { change_ref: "MR-7" } });
     });
 
-    it("a patch with a non-numeric change_ref, or none, writes the mirror columns as before", async () => {
+    it("a patch with a non-numeric change_ref, or none, writes the change columns", async () => {
       const { store } = await make();
       await store.advanceCursor(projectLabelCursor(PROJECT_KEY), null, LABEL);
       const a = (await store.createWorkItem(issue(1), system)).item;
       await store.transition({ id: a.id, expected_version: 1, patch: { change_ref: "MR-7" }, actor: system, reason: "x" });
-      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: null, change_ref: "MR-7", change_url: null });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: "MR-7", change_url: null });
       await store.transition({ id: a.id, expected_version: 2, patch: { change_ref: "34" }, actor: system, reason: "x" });
       await store.transition({ id: a.id, expected_version: 3, patch: { change_ref: null }, actor: system, reason: "x" });
-      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ pr_number: null, change_ref: null, change_url: prUrl(LABEL, 34) });
-    });
-
-    describe("rows an older controller wrote without change_ref", () => {
-      const dbOf = (store: FactoryStore) => (store as unknown as { db: SqlDriver }).db;
-
-      it("a work item is found by its legacy pr_number only while its change_ref is NULL", async () => {
-        const { store } = await make();
-        const legacy = (await store.createWorkItem(issue(1), system)).item;
-        const current = (await store.createWorkItem(issue(2), system)).item;
-        await store.transition({ id: legacy.id, expected_version: 1, patch: { change_ref: "34" }, actor: system, reason: "x" });
-        await store.transition({ id: current.id, expected_version: 1, patch: { change_ref: "50" }, actor: system, reason: "x" });
-        await dbOf(store).run("UPDATE controller_work_items SET change_ref = NULL WHERE id = ?", [legacy.id]);
-        // A stale mirror on a row with change_ref set is never read.
-        await dbOf(store).run("UPDATE controller_work_items SET pr_number = 60 WHERE id = ?", [current.id]);
-        expect(await store.getWorkItemByPr(PROJECT_KEY, "34")).toMatchObject({ id: legacy.id, change_ref: "34" });
-        expect((await store.getWorkItemByPr(PROJECT_KEY, "50"))!.id).toBe(current.id);
-        expect(await store.getWorkItemByPr(PROJECT_KEY, "60")).toBeNull();
-      });
-
-      it("an unreviewed merge is found by its legacy pr_number while its change_ref is NULL", async () => {
-        const { store } = await make();
-        const first = await store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "9", merge_sha: "m9", merger_id: null });
-        await dbOf(store).run("UPDATE controller_unreviewed_merges SET change_ref = NULL WHERE id = ?", [first.merge.id]);
-        const again = await store.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "9", merge_sha: "other", merger_id: null });
-        expect(again).toMatchObject({ created: false, merge: { id: first.merge.id, change_ref: "9", merge_sha: "m9" } });
-        expect((await store.listUnreviewedMerges(10)).map((m) => m.change_ref)).toEqual(["9"]);
-      });
+      expect(await raw(store, "controller_work_items", a.id)).toMatchObject({ change_ref: null, change_url: prUrl(LABEL, 34) });
     });
   });
 
@@ -1759,6 +1737,9 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t) && !merged.includes(t)),
       "legacy_inbound_app_requests",
       "legacy_inbound_commands",
+      // Rebuilt without pr_number (src/controller/migrations/20261112T1200-controller-change-ref-only); kept until its contract step.
+      "legacy_controller_unreviewed_merges",
+      "legacy_controller_work_items",
       ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
       "runtime_schema_migrations",
       // Tables of timestamped component migrations (RFC 0015 §6.3).
@@ -2945,6 +2926,100 @@ describe("migration 35 (change fields) on an existing SQLite database", () => {
     }
   });
 
+});
+
+describe("20261112T1200-controller-change-ref-only on an existing SQLite database", () => {
+  const ID = "20261112T1200-controller-change-ref-only";
+  const ITEM = "(id, version, source_type, source_id, source_link, requester_id, project, problem, resources, allowed_paths, stage, blocked_on, " +
+    "loop_count, restart_count, token_cost, created_at, updated_at, pr_number, change_ref, change_url)";
+  const at = "2026-11-01T00:00:00.000Z";
+  const cols = (db: DatabaseSync, t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+  const rows = (db: DatabaseSync, sql: string) => db.prepare(sql).all().map((r) => ({ ...r }));
+
+  /** A file database at the schema just before the migration, with rows in both tables and a child of a work item. */
+  async function oldDatabase(): Promise<string> {
+    const path = join(mkdtempSync(join(tmpdir(), "sf-change-ref-only-")), "factory.db");
+    const driver = new SqliteDriver(path, { baselineOnly: true });
+    await driver.migrate();
+    const db: MigrationDb = { dialect: "sqlite", all: (sql, p) => driver.all(sql, p), run: (sql, p) => driver.run(sql, p) };
+    const before = (await discoverMigrations()).filter((m) => m.id < ID);
+    await applyMigrations(db, { backupDir: null, now: () => at, migrations: before });
+    expect(cols(new DatabaseSync(path), "controller_work_items")).toContain("pr_number");
+    for (const [id, n] of [["wi_a", 5], ["wi_b", null], ["wi_c", 7]] as const) {
+      await driver.run(`INSERT INTO controller_work_items ${ITEM} VALUES (?, 1, 'github_issue', ?, 'l', 'github:1', ?, 'p', '[]', '[]', 'REVIEW', 'none', 0, 0, 0, ?, ?, ?, ?, ?)`, [
+        id, `o/r#${id}`, PROJECT_KEY, at, at, n, n === null ? null : String(n), n === null ? null : prUrl(LABEL, n),
+      ]);
+    }
+    await driver.run("INSERT INTO controller_state_changes (id, work_item_id, version, at, actor, reason, changes) VALUES ('sc_1', 'wi_a', 1, ?, ?, 'intake', '{}')", [at, JSON.stringify(system)]);
+    await driver.run("INSERT INTO controller_unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES ('um_1', ?, 9, '9', 'm9', NULL, ?)", [PROJECT_KEY, at]);
+    await driver.run("INSERT INTO controller_unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES ('um_2', ?, 9, '9', 'm9b', 'github:2', ?)", [OTHER_PROJECT_KEY, at]);
+    await driver.close();
+    return path;
+  }
+
+  it("is breaking, names both tables, and verifies itself", () => {
+    expect(CHANGE_REF_ONLY).toMatchObject({ change: "breaking", tables: expect.arrayContaining(["controller_work_items", "controller_unreviewed_merges"]) });
+    expect(CHANGE_REF_ONLY.verify).toBeTypeOf("function");
+  });
+
+  it("rebuilds both tables without pr_number, keeping every row, the indexes, the unique key and the children's foreign keys", async () => {
+    const path = await oldDatabase();
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), new FakeClock());
+    try {
+      await store.migrate();
+    } finally {
+      await store.close();
+    }
+    const db = new DatabaseSync(path);
+    try {
+      for (const t of ["controller_work_items", "controller_unreviewed_merges"]) {
+        expect(cols(db, t)).not.toContain("pr_number");
+        expect(cols(db, `legacy_${t}`)).toContain("pr_number");
+        const kept = cols(db, t).join(", ");
+        // Every row, every value, in both the new table and its legacy copy.
+        expect(rows(db, `SELECT ${kept} FROM ${t} ORDER BY id`)).toEqual(rows(db, `SELECT ${kept} FROM legacy_${t} ORDER BY id`));
+      }
+      expect(rows(db, "SELECT id, change_ref, change_url FROM controller_work_items ORDER BY id")).toEqual([
+        { id: "wi_a", change_ref: "5", change_url: prUrl(LABEL, 5) },
+        { id: "wi_b", change_ref: null, change_url: null },
+        { id: "wi_c", change_ref: "7", change_url: prUrl(LABEL, 7) },
+      ]);
+      expect(rows(db, "SELECT id, project, change_ref, merge_sha, merger_id, at FROM controller_unreviewed_merges ORDER BY id")).toEqual([
+        { id: "um_1", project: PROJECT_KEY, change_ref: "9", merge_sha: "m9", merger_id: null, at },
+        { id: "um_2", project: OTHER_PROJECT_KEY, change_ref: "9", merge_sha: "m9b", merger_id: "github:2", at },
+      ]);
+      // New index names on the new tables; the legacy tables keep the old ones.
+      const indexes = (t: string) => rows(db, `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = '${t}' AND sql IS NOT NULL`);
+      expect(indexes("controller_work_items")).toEqual(expect.arrayContaining([
+        { name: "controller_work_items_by_change", sql: expect.stringMatching(/\(project, change_ref\)$/) },
+        { name: "controller_work_items_by_merge_sha", sql: expect.stringMatching(/\(merge_sha\)$/) },
+      ]));
+      expect(indexes("controller_unreviewed_merges")).toEqual(expect.arrayContaining([
+        { name: "controller_unreviewed_merges_by_change", sql: expect.stringMatching(/^CREATE UNIQUE INDEX .*\(project, change_ref\)$/) },
+        { name: "controller_unreviewed_merges_by_at", sql: expect.stringMatching(/\(at\)$/) },
+      ]));
+      expect(indexes("legacy_controller_work_items").map((i) => i.name)).toContain("controller_work_items_change");
+      expect(() => db.prepare("INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, at) VALUES ('um_3', ?, '9', 'x', ?)").run(PROJECT_KEY, at)).toThrow(/UNIQUE/);
+      // The work item's children point to the new table, not its legacy copy.
+      expect(rows(db, "SELECT \"table\" AS t FROM pragma_foreign_key_list('controller_state_changes')")).toEqual([{ t: "controller_work_items" }]);
+      expect(rows(db, "PRAGMA foreign_key_check")).toEqual([]);
+    } finally {
+      db.close();
+    }
+
+    // The store reads and writes the rebuilt tables: lookups by change_ref, an intake with its state change, a merge.
+    const after = new SqlFactoryStore(new SqliteDriver(path), new FakeClock());
+    try {
+      await after.migrate();
+      expect((await after.getWorkItemByPr(PROJECT_KEY, "5"))!.id).toBe("wi_a");
+      expect(await after.listStateChanges("wi_a" as WorkItemId)).toHaveLength(1);
+      const { item } = await after.createWorkItem(issue(40), system);
+      expect(await after.listStateChanges(item.id)).toHaveLength(1);
+      expect(await after.recordUnreviewedMerge({ project: PROJECT_KEY, change_ref: "9", merge_sha: "x", merger_id: null })).toMatchObject({ created: false, merge: { id: "um_1" } });
+    } finally {
+      await after.close();
+    }
+  });
 });
 
 describe("migration 40 (sync leases, forge budget, thread actor)", () => {
