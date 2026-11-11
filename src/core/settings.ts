@@ -4,7 +4,7 @@ import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordi
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
-import type { Tier } from "./types.js";
+import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
 
 // Per-project settings in layers (design 2026-11-01, "Settings resolve in layers"). Pure: the parse and
@@ -60,11 +60,11 @@ export interface SettingsLayers {
   projects: Readonly<Record<string, Partial<ProjectSettings>>>;
 }
 
-/**
- * The learned layer (src/core/learned-settings.ts), written by the daily improve run. A learned value looser than the project override, else the global value, is ignored.
- */
+/** The learned layer (src/core/learned-settings.ts), written by the daily improve run. A learned value looser than the project override, else the global value, is ignored. */
 export interface LearnedSettingsSource {
   get<K extends ProjectSettingKey>(project: string, key: K): ProjectSettings[K] | undefined;
+  /** Why a learned value is there, for the Settings page: the failed runs it was learned from and when it was set. Absent: the source keeps none (the gates need only `get`). */
+  record?(project: string, key: ProjectSettingKey): { evidence_run_ids: RunId[]; set_at: Timestamp } | undefined;
 }
 
 export type EffectiveSetting<K extends ProjectSettingKey> = { value: ProjectSettings[K]; layer: SettingLayer };

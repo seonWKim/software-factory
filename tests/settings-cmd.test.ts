@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import { stallConfig } from "../src/compose.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
+import type { Timestamp } from "../src/core/types.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { type SettingsDeps, parseModeArgs, parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { type UiSettings, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
+import type { UiDeps } from "../src/ui/server.js";
 import { PROJECT } from "./helpers/fakes.js";
-import { BACKENDS, PROJECT_KEY } from "./helpers/store.js";
+import { BACKENDS, PROJECT_KEY, newStore } from "./helpers/store.js";
 
 /** The file: workers 5, heartbeat 60 s, lease 300 s, max_attempts 3, and o/r's block with max_diff_files 10. */
 const base: SettingsBase = {
@@ -325,5 +331,51 @@ describe.each(BACKENDS)("factory mode and auto_merge_max_tier: $name", ({ make }
     expect((await run(d, "set", "phases_auto_approve", "true")).ok).toBe(true);
     expect((await run(d, "reset", "max_loops")).ok).toBe(true);
     expect(await store.listSettingChanges(10)).toHaveLength(4);
+  });
+});
+
+describe("factory settings reset --learned and the Settings page: one check (design 08-settings)", () => {
+  const ui = async (store: FactoryStore, refusal: string | null) => {
+    const clock = new FakeClock();
+    const settings: UiSettings = {
+      base, repo: { owner: "o", name: "r" }, actor: "local:owner", resolveProject: async () => PROJECT, csrfToken: newCsrfToken(), mayApproveMerge: async () => refusal,
+    };
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), settings };
+    return writeSettings(d, settings, { action: "reset", key: "max_diff_lines", project: "o/r", learned: true });
+  };
+  const cliReset = (store: FactoryStore, refusal: string | null) => run({ ...deps(store), mayApproveMerge: async () => refusal }, "reset", "max_diff_lines", "--project", "o/r", "--learned");
+  const learn = (store: FactoryStore, value: number) =>
+    store.setLearnedSetting({ project: PROJECT.key, key: "max_diff_lines", expected: null, value: String(value), evidence_run_ids: [], window_end: "2026-03-05T00:00:00.000Z" as Timestamp, actor: "improver" });
+  const NO = "the requester role cannot approve_merge";
+
+  it("a loosening reset without approve_merge is refused by both, with the same message and no audit row", async () => {
+    const { store } = await newStore();
+    await learn(store, 800);
+    const cli = await cliReset(store, NO);
+    expect(cli.ok).toBe(false);
+    expect(cli.lines).toEqual([`refused: resetting the learned max_diff_lines for ${PROJECT.label} loosens it from 800 to 1500 and needs approve_merge on the project: ${NO}`]);
+    const page = await ui(store, NO);
+    expect(page).toEqual({ status: 422, value: { error: cli.lines.join("\n") } });
+    expect(await store.getLearnedSetting(PROJECT.key, "max_diff_lines")).toMatchObject({ value: "800" });
+    expect(await store.listLearnedSettingChanges(10)).toHaveLength(1); // the learned write's row only
+  });
+
+  it("with approve_merge the page clears the value with one audit row naming the actor", async () => {
+    const { store } = await newStore();
+    await learn(store, 800);
+    const page = await ui(store, null);
+    expect(page.status).toBe(200);
+    expect(await store.getLearnedSetting(PROJECT.key, "max_diff_lines")).toBeNull();
+    const [reset] = await store.listLearnedSettingChanges(10);
+    expect(reset).toMatchObject({ project: PROJECT.key, key: "max_diff_lines", old_value: "800", new_value: null, actor: "local:owner" });
+  });
+
+  it("a reset that loosens nothing (the project override is tighter than the learned value) needs no approve_merge", async () => {
+    const { store } = await newStore();
+    await learn(store, 800);
+    await store.setSettingOverride({ key: "max_diff_lines", project: PROJECT.key, value: "500", actor: "local:owner" });
+    const cli = await cliReset(store, NO);
+    expect(cli.ok).toBe(true);
+    expect(await store.getLearnedSetting(PROJECT.key, "max_diff_lines")).toBeNull();
   });
 });

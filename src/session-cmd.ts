@@ -133,11 +133,11 @@ export async function runSession(d: SessionCmdDeps, a: SessionAction): Promise<n
   return 0;
 }
 
-/** The command's deps from the built parts. The lease owner is never a worker id, so `workers pause` skips it. */
+/** The command's deps from the built parts; the learned layer as a run's (08-settings). The lease owner is never a worker id, so `workers pause` skips it. */
 export function sessionDeps(p: SessionParts, stateDir: string, stop: AbortSignal): SessionCmdDeps {
   const { owner, name } = p.config.repo;
   const sessions = new Sessions({
-    store: p.store, sandbox: p.sandbox, broker: p.broker, scanner: p.scanner, auth: p.auth, clock: p.clock, config: p.config,
+    store: p.store, sandbox: p.sandbox, broker: p.broker, scanner: p.scanner, auth: p.auth, clock: p.clock, config: p.config, learned: p.learned,
     log: new ConsoleLogger(p.clock, "session"), files: new FileSessionFiles(join(stateDir, "sessions")), issues: githubIssues(p.github, { owner, name }),
     // The host part is this machine's stable host id: a finished session's push and PR go to `git:<host id>:<branch>`.
     toolEnv: baseEnv(), owner: `session:${hostId(stateDir)}:${process.pid}`,
