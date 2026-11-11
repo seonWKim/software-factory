@@ -29,6 +29,7 @@
   "component-imports-legacy|cli/handlers/migrate/migrate.command.ts|impl/store/sqlite/rehearse.ts",
   "component-imports-legacy|cli/handlers/migrate/migrate.command.ts|impl/store/sqlite/sqlite-driver.ts",
   "component-imports-legacy|cli/handlers/migrate/migrate.command.ts|impl/updater/git-worktree.ts",
+  "component-imports-legacy|cli/handlers/migrate/migrate.command.ts|interfaces/secret-store.ts",
   "component-imports-legacy|cli/handlers/migrate/migrate.command.ts|migrate-drain.ts",
   "component-imports-legacy|cli/handlers/pack/pack.command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/pack/pack.command.ts|core/config.ts",
