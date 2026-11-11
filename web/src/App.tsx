@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Moon, RefreshCw, Sun } from "lucide-react";
+import { Monitor, Moon, RefreshCw, Sun } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Button } from "./components/ui/button.js";
@@ -9,7 +9,7 @@ import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
 import { BASE, PAGES, type PageDef, TOOL_PAGES, routeFor } from "./pages.js";
-import { type Theme, saveTheme, storedTheme } from "./theme.js";
+import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
 import { FailuresPage } from "./views/failures.js";
@@ -86,6 +86,33 @@ function SideLinks({ label, pages, current }: { label: string; pages: readonly P
   );
 }
 
+const THEME_CHOICES: readonly { choice: ThemeChoice; label: MessageKey; Icon: typeof Sun }[] = [
+  { choice: "system", label: "topbar.themeSystem", Icon: Monitor },
+  { choice: "light", label: "topbar.themeLight", Icon: Sun },
+  { choice: "dark", label: "topbar.themeDark", Icon: Moon },
+];
+
+/** System, Light or Dark: one radio group, the chosen one pressed. */
+function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c: ThemeChoice) => void }) {
+  return (
+    <div role="radiogroup" aria-label={t("topbar.theme")} className="flex shrink-0 gap-1">
+      {THEME_CHOICES.map(({ choice: c, label, Icon }) => (
+        <Button
+          key={c}
+          role="radio"
+          aria-checked={choice === c}
+          aria-label={t(label)}
+          title={t(label)}
+          className={cn("shrink-0", choice === c && "bg-surface-2")}
+          onClick={() => onChoose(c)}
+        >
+          <Icon aria-hidden className="size-4" />
+        </Button>
+      ))}
+    </div>
+  );
+}
+
 /** The app (design §9): sidebar, top bar with "Needs you (N)", and the current page. */
 export function App() {
   const overview = useQuery({
@@ -96,16 +123,17 @@ export function App() {
     refetchIntervalInBackground: false,
   });
   const client = useQueryClient();
-  const [theme, setTheme] = useState<Theme>(storedTheme);
+  const [choice, setChoice] = useState<ThemeChoice>(storedChoice);
+  // System listens for the system colour scheme; the cleanup removes that listener when the choice changes.
+  useEffect(() => applyChoice(choice), [choice]);
   const [path, navigate] = useLocationPath();
   const route = routeFor(path);
   // A run's transcript (items/<id>/runs/<run>), under Work items like an item page.
   const transcript = transcriptRoute(path);
   const current = transcript ? PAGES[1]! : route.page;
-  const toggle = () => {
-    const next = theme === "dark" ? "light" : "dark";
-    saveTheme(next);
-    setTheme(next);
+  const choose = (next: ThemeChoice) => {
+    saveChoice(next);
+    setChoice(next);
   };
   const needs = overview.data?.needs_you;
   const View = VIEWS[route.page.path] ?? FloorPage;
@@ -148,9 +176,7 @@ export function App() {
             <Button aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
               <RefreshCw aria-hidden className="size-4" />
             </Button>
-            <Button aria-label={theme === "dark" ? t("topbar.toLight") : t("topbar.toDark")} className="shrink-0" onClick={toggle}>
-              {theme === "dark" ? <Sun aria-hidden className="size-4" /> : <Moon aria-hidden className="size-4" />}
-            </Button>
+            <ThemeControl choice={choice} onChoose={choose} />
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <main className="min-w-0 p-4">

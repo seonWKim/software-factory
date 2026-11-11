@@ -523,6 +523,17 @@ CREATE TABLE controller_merge_queues (
     updated_at   TEXT NOT NULL
   );
 
+CREATE TABLE controller_notices (
+    work_item_id  TEXT NOT NULL,
+    wait_key      TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    held_until    TEXT,
+    delivered_at  TEXT,
+    count         INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (work_item_id, wait_key)
+  );
+
 CREATE TABLE controller_outbox (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   topic TEXT NOT NULL,
@@ -1610,6 +1621,8 @@ CREATE INDEX controller_merge_queue_entries_item ON controller_merge_queue_entri
 CREATE INDEX controller_merge_queue_entries_queue ON controller_merge_queue_entries (queue_id, state, seq);
 
 CREATE INDEX controller_merge_queue_entries_run ON controller_merge_queue_entries (run_key);
+
+CREATE INDEX controller_notices_undelivered ON controller_notices (delivered_at, held_until);
 
 CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 
