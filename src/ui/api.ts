@@ -269,7 +269,10 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + system_actions.length,
+    // "Needs you" and "Needs triage" (a person's or the budget's block) plus system actions; never "Blocked by another task".
+    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true }))
+      + (await s.countWorkItemsWhere({ blocked_on: "budget", exclude_closed: true }))
+      + system_actions.length,
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
     github_token_days: token,

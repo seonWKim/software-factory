@@ -25,7 +25,7 @@ const row = (name: string, p: Partial<FilterRow>): Row => ({
 const rows: Row[] = [
   row("merge", { level: "ready_to_merge", stage: "REVIEW", tier: 2, search: searchKeys("o/r#12", "Merge the gate") }),
   row("approve", { level: "needs_approval", stage: "READY", tier: 3, kind: "triage", search: searchKeys("o/r#7", "Spec for search") }),
-  row("failed", { level: "needs_human", stage: "RUNNING", tier: 3, kind: "implement", search: searchKeys("o/r#3", null) }),
+  row("failed", { level: "needs_you", stage: "RUNNING", tier: 3, kind: "implement", search: searchKeys("o/r#3", null) }),
   row("running", { level: "running", stage: "RUNNING", tier: 2, kind: "implement", search: searchKeys("o/r#4", "Running item") }),
   row("queued", { level: "queued", stage: "NEW", kind: "triage", search: searchKeys("o/r#5", "Queued item") }),
   row("closed", { level: "closed", stage: "CLOSED", tier: 2, search: searchKeys("o/r#9", "Done item") }),
@@ -100,6 +100,19 @@ describe("ui filters", () => {
       expect(parseFilters(new URLSearchParams(qs))).toEqual({ ok: false, error });
     }
     expect(parse("state=&stage=&tier=&kind=&q=").state).toBeUndefined();
+  });
+
+  it("`needs` is Needs you and Needs triage, never Blocked by another task", () => {
+    const split = [row("you", { level: "needs_you" }), row("triage", { level: "needs_triage" }), row("blocked", { level: "blocked_by_task" })];
+    expect(applyFilters(split, parse("state=needs")).map((r) => r.name)).toEqual(["you", "triage"]);
+    expect(applyFilters(split, parse("state=blocked_by_task")).map((r) => r.name)).toEqual(["blocked"]);
+    expect(facetCounts(split, NO_FILTERS).state.needs).toBe(2);
+  });
+
+  it("the old level ids needs_human and waiting_on_issue are unknown states", () => {
+    for (const old of ["needs_human", "waiting_on_issue"]) {
+      expect(parseFilters(new URLSearchParams(`state=${old}`))).toEqual({ ok: false, error: "Unknown state." });
+    }
   });
 
   it("run kind comes from a run_failed reason first, then the active run", () => {

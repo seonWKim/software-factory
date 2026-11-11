@@ -8,10 +8,10 @@ export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "C
 export const TIERS: readonly Tier[] = [1, 2, 3, 4, 5];
 export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "improve"];
 
-/** `needs` is the three levels that wait for a person; every other value is one level. */
+/** `needs` is every level that waits for a person (NEEDS_YOU); every other value is one level. */
 export type StateFilter = "needs" | Level;
 export const STATE_OPTIONS: readonly { value: StateFilter; label: string }[] = [
-  { value: "needs", label: "Needs you" },
+  { value: "needs", label: "All that need you" },
   ...LEVELS.map((l) => ({ value: l, label: LEVEL_LABELS[l] })),
 ];
 
