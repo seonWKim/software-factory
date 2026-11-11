@@ -613,6 +613,20 @@ CREATE TABLE controller_work_items (
     UNIQUE (source_type, source_id)
   );
 
+CREATE TABLE ext_packs_entries (
+    id                TEXT PRIMARY KEY,
+    kind              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    description_hash  TEXT NOT NULL,
+    descriptor        TEXT NOT NULL,
+    credential_name   TEXT,
+    status            TEXT NOT NULL,
+    added_by          TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (kind, name, description_hash)
+  );
+
 CREATE TABLE identity_link_codes (
     code_hash      TEXT PRIMARY KEY,
     user_id        TEXT NOT NULL,

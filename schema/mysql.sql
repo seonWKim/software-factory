@@ -756,6 +756,21 @@ CREATE TABLE `controller_work_items` (
   KEY `work_items_change` (`project`,`change_ref`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `ext_packs_entries` (
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `kind` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `name` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `description_hash` char(64) COLLATE utf8mb4_bin NOT NULL,
+  `descriptor` mediumtext COLLATE utf8mb4_bin NOT NULL,
+  `credential_name` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `status` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `added_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `ext_packs_entries_key` (`kind`,`name`,`description_hash`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `identity_link_codes` (
   `code_hash` char(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   `user_id` varchar(128) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,

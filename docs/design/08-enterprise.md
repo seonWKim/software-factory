@@ -7,7 +7,7 @@
 - **Earlier text, still describing the code until the removals land.** Interfaces with local and cloud backends, environments, tools, auth classes, audit and identity, as below. The parts about several people (auth classes, per-role bot identities, user attributes, access review) are deprecated by the decision above.
 - Every infra layer is an interface with local + cloud backends: store, **sandbox**, secrets, shared storage, search, **auth**, **LLM provider** (`LLMProvider`; first impl: Anthropic, transports: Claude Code CLI on subscription locally → API / company ML gateway; other vendors or self-hosted later) and **agent runner** (`AgentRunner`; first impl: `claude -p`). Local first.
 - Environments labeled by humans: test → DB data may reach the model; prod → blocked at the model interface.
-- Tools/MCP: users can add them; automated credential-leak check + human approval; rules scoped to the tool.
+- Tools/MCP (decision changed 2026-11-11, issue #588; current): the owner adds them with `factory pack add <path>`. Each descriptor passes the egress, credential-leak and tool-poisoning scans or is refused naming the rule; a passing one is stored as `pending` with only its credential's name, never its value, and nothing starts it. Approval, grants and rules scoped to the tool are later phases ([11-packs.md](11-packs.md)).
 
 - AuthN/Z behind an `AuthProvider` interface (`resolve`, `authorize`; impls: no-auth, SSO/OIDC, GitHub permissions, policy engine), called by intake, tool wrappers and the human gate. Since 2026-11-01 `authorize` is the shared grant check in [08-permissions.md](08-permissions.md). Factory acts on behalf of `requester_id`; effective permission = requester ∩ agent. Classes: local dev (no-auth), internal low risk, team-owned, restricted data, critical (two-person rule).
 - Audit: IDs for requester, agent role, approver on every record.
@@ -18,3 +18,4 @@
 ## History
 
 - **One owner, many workers** (decision changed 2026-11-11, owner decision). Before: every design served a solo developer and an enterprise team (many developers and several replicas on a shared store: per-person identity and permissions, audit, shared budgets), and AuthN/Z was planned around per-person classes, attributes and grants.
+- **Tool and MCP intake** (decision changed 2026-11-11, issue #588). Before: "Tools/MCP: users can add them; automated credential-leak check + human approval; rules scoped to the tool", with no command or table behind it.
