@@ -1,5 +1,5 @@
 import { COMMANDS, type CommandName, commandPhase, commandSpec, phaseLabel } from "../../core/commands.js";
-import { parseProposalMarker } from "../../core/interpret.js";
+import { parseProposalMarker, parseTaskOfferMarker } from "../../core/interpret.js";
 import { utcMinute } from "../../core/spec-comment.js";
 import type { StateChange, WorkItem } from "../../core/types.js";
 import type { RepoRef } from "../github/github-client.js";
@@ -10,6 +10,8 @@ import type { RepoRef } from "../github/github-client.js";
 // applies in the item's state when the comment was written. A press is checked again when it arrives. A stored
 // proposal's reply (its hidden marker, src/core/interpret.ts) gets one button per proposed command, Confirm all and
 // Cancel instead (issue #584); their values carry only the proposal ID and index, the args are read at press time.
+// An unsure answer to a top-level message (its task-offer marker) gets one "Make this a task" button whose value is
+// the message text (design 04-gate-commands, the chat answer); a press takes the message in as the presser.
 
 /** Commands that take no text get a button; the others (reject, revise, verdict) stay typed. */
 export const BUTTON_COMMANDS: readonly CommandName[] = ["approve", "retry", "resolve", "budget", "help"];
@@ -25,6 +27,10 @@ export const ACTION_CANCEL = "sf_cancel";
 export const ACTION_PROPOSAL = "sf_proposal";
 export const ACTION_PROPOSAL_ALL = "sf_proposal_all";
 export const ACTION_PROPOSAL_CANCEL = "sf_proposal_cancel";
+/** "Make this a task" (the chat answer): its value is the top-level message's text, at most SLACK_VALUE_MAX characters. */
+export const ACTION_MAKE_TASK = "sf_make_task";
+/** The most characters Slack takes in a button's value. */
+export const SLACK_VALUE_MAX = 2000;
 
 const FOOTER_HEADING = "Commands you can reply with now:";
 const SECTION_MAX = 3000;
@@ -195,11 +201,20 @@ export function renderComment(body: string, repo: RepoRef, botUserId: string, do
   }
   const proposal = done ? null : parseProposalMarker(body);
   if (proposal) text += "\n\n_Or press a command's button to apply it as you, *Confirm all* to apply them in order, or *Cancel*._";
+  const offer = done ? null : parseTaskOfferMarker(body);
+  const offerFits = offer !== null && offer.length <= SLACK_VALUE_MAX;
+  if (offerFits) text += "\n\n_To make your message a work item, press *Make this a task*._";
+  else if (offer !== null) {
+    text += `\n\n_Your message is too long for a *Make this a task* button (Slack takes ${SLACK_VALUE_MAX} characters), so none is offered. ` +
+      "Mention the bot again with a shorter request to make it a work item._";
+  }
   let sections = chunks(text);
   if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS), "_(message cut: too long for Slack)_"];
   const blocks: unknown[] = sections.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } }));
   const buttons = proposal
     ? proposalButtons(proposal.id, proposal.commands)
+    : offerFits
+    ? [button("Make this a task", ACTION_MAKE_TASK, offer, "primary")]
     : cmds.map((c) => button(LABELS[c] ?? c, `${ACTION_COMMAND}:${c}`, `/${c}`, c === "approve" ? "primary" : undefined));
   if (buttons.length > 0) blocks.push({ type: "actions", elements: buttons });
   return { text: sections[0] ?? "", blocks };

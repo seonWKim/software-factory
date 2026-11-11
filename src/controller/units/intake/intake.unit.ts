@@ -23,6 +23,7 @@ export class IntakeUnit {
       }
       return;
     }
+    if (e.classify && (await this.answered(e))) return;
     const { item, created } = await this.c.k.d.store.createWorkItem(
       {
         source: e.source,
@@ -47,6 +48,26 @@ export class IntakeUnit {
     await this.c.unit("outbox").markSeen(e.source, null);
     // Every delivery re-checks the link, so a re-polled issue finishes a link a crash interrupted.
     await this.c.unit("verdicts").linkFixForward(item.id, `${e.title}\n${e.body}`);
+  }
+
+  /**
+   * A top-level chat message read before intake (design 05-sources, 04-gate-commands): true when it got a reply in
+   * its own thread instead of an item (a chat answer, an offer to make it a task, or proposals for open items), false
+   * when it is to be taken in as today. Taken in: a message already an item (a press, a redelivery), a requester
+   * without `approve_spec` (no model call), an empty or long message, one the egress scan flags, no model, and a
+   * `request`, failed or malformed answer, so no request is dropped silently. An answer the scan flags posts nothing
+   * and stores nothing. The reply is keyed on the message's source id, so a redelivery posts no second one.
+   */
+  private async answered(e: Extract<SourceEvent, { kind: "item_requested" }>): Promise<boolean> {
+    if (!this.c.k.reader.llm || (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id))) return false;
+    if ("refuse" in (await this.c.unit("auth").authorize(e.requester, "approve_spec", e.source.id))) return false;
+    const where = { source_id: e.source.id };
+    const read = await this.c.unit("commands").readMessage(e.body, where, null);
+    if (read === "blocked") return true;
+    if (read === "unread" || read.body === null) return false;
+    this.c.k.d.log.info("chat message answered", { ...where, kind: read.kind });
+    await this.c.unit("outbox").postWithoutItem(e.source, read.body, `<!-- factory:chat-answer:${e.source.id} -->`);
+    return true;
   }
 }
 
