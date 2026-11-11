@@ -8,13 +8,14 @@ import type { SourceRef } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { HttpSlackApi, type FetchFn } from "../src/impl/source/slack-api.js";
 import type { ThreadDelivery } from "../src/interfaces/factory-store.js";
-import { Outbound, recordAction } from "../src/outbound/index.js";
+import { DEFAULT_BATCHING, Outbound, announce, recordAction } from "../src/outbound/index.js";
+import { aggregate, type Requested } from "../src/outbound/aggregator/aggregator.js";
 import { REFUSED_ATTEMPTS } from "../src/outbound/outbound.js";
 import type { Delivery, DeliveryTarget } from "../src/outbound/targets/target.js";
 import type { Envelope } from "../src/shared/envelope.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import { cleanScanner, silent } from "./helpers/fakes.js";
-import { newStore } from "./helpers/store.js";
+import { issue, newStore, system } from "./helpers/store.js";
 
 type Deps = ConstructorParameters<typeof Outbound>[0];
 type Db = Parameters<typeof recordAction>[0];
@@ -181,4 +182,70 @@ describe("outbound retry of a failed write", () => {
       expect(f.alarms()).toEqual([]);
     });
   }
+});
+
+describe("a transition's spec and status reach the thread in order (issue #586)", () => {
+  /**
+   * A real store and outbound: the item's thread entry (the spec) and its status action, written as the controller
+   * writes them for one transition (the entry before the transition, the status after it), announced, batched by the
+   * aggregator and flushed. The Slack target records each write; it fails `failing` comment writes first.
+   */
+  async function thread(failing = 0) {
+    const { store, clock } = await newStore(new FakeClock(START));
+    const db = store.db as Db;
+    const { item } = await store.createWorkItem({ ...issue(1), source: THREAD }, system);
+    const writes: string[] = [];
+    let fail = failing;
+    const target: DeliveryTarget = {
+      name: "slack-thread",
+      accepts: (d) => (d.kind === "comment" ? d.source_type : d.row.source_type) === THREAD.type,
+      deliver: async (d) => {
+        if (d.kind === "comment" && fail-- > 0) throw new Error("slack is down");
+        writes.push(d.kind === "comment" ? `comment ${d.marker}` : `${d.row.action} ${String(d.row.args.status)}`);
+        return { url: d.kind === "comment" ? "https://slack.test/spec" : null };
+      },
+    };
+    const outbound = new Outbound({
+      db: db as Deps["db"], store, targets: [target], scanner: cleanScanner, log: silent,
+      bus: { publish: async () => {} } as unknown as Deps["bus"],
+      config: () => ({ lease_ms: 60_000, retry_base_ms: BASE_MS, retry_max_ms: 3_600_000, project_key: "p" }),
+      canSend: () => true, kinds: () => [THREAD.type], fenceFor: () => null, fenceRefused: async () => {},
+    });
+    /** The controller's outbox step, then the aggregator's consumer: each announced intent joins a batch. */
+    const announceAll = async () => {
+      const sent: Envelope[] = [];
+      const bus = { publish: async (_tx: unknown, es: Envelope[]) => void sent.push(...es) } as unknown as Parameters<typeof announce>[1];
+      await announce(db as Parameters<typeof announce>[0], bus, "p", clock.now().toISOString(), "controller");
+      for (const e of sent) await aggregate(db as Parameters<typeof aggregate>[0], e.payload as unknown as Requested, DEFAULT_BATCHING, null, clock.now().toISOString());
+    };
+    const spec = () => store.recordItemMessage({
+      work_item_id: item.id, marker: "<!-- factory:spec:r1 -->", body: "## Factory spec", delivery: { source_type: THREAD.type as never, target: THREAD, link_field: null },
+    });
+    const status = () => recordAction(db, { action: "status", target: THREAD, work_item_id: item.id, args: { status: "implementing", change_ref: null } }, clock.now().toISOString());
+    const flush = () => outbound.flush(tickAt("outbound-flush", 250, clock.now().getTime()));
+    return { clock, writes, spec, status, announceAll, flush };
+  }
+
+  it("written in one transition and announced together, the spec is delivered before the status is posted", async () => {
+    const t = await thread();
+    await t.spec();
+    await t.status();
+    await t.announceAll();
+    await t.flush();
+    expect(t.writes).toEqual(["comment <!-- factory:spec:r1 -->", "status implementing"]);
+  });
+
+  it("announced apart, a status waits while its spec's delivery fails and is retried, and is posted only after it", async () => {
+    const t = await thread(1);
+    await t.spec();
+    await t.announceAll();
+    await t.status();
+    await t.announceAll();
+    await t.flush();
+    expect(t.writes).toEqual([]);
+    t.clock.advance(BASE_MS);
+    await t.flush();
+    await t.flush();
+    expect(t.writes).toEqual(["comment <!-- factory:spec:r1 -->", "status implementing"]);
+  });
 });
