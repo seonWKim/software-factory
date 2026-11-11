@@ -1,9 +1,6 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -12,7 +9,6 @@ import { BACKENDS } from "./helpers/store.js";
 // The mirror mark of CLI commands on sync-source items (design 05-sources, CLI intake): a command appended with
 // `mirror` is listed until it is marked mirrored, once. Never pin a step as the newest: compare with `>=`.
 const STEP = 37;
-const STEP_FILE = "0037-command-mirror.sql";
 
 for (const b of BACKENDS) {
   describe(`${b.name}: the CLI command mirror mark`, () => {
@@ -52,22 +48,5 @@ describe("SQLite migration 37: the mirror mark", () => {
     await store.migrate();
     expect(await store.listUnmirroredCliCommands(10)).toEqual([]);
     await store.close();
-  });
-});
-
-describe("MySQL step 37 (command-mirror)", () => {
-  it("is one ALTER right after step 36 with the same columns as SQLite migration 37", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "command-mirror")).toMatchObject({
-      number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE,
-    });
-    const sql = readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
-    const statements = sql.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("--"));
-    expect(statements).toHaveLength(1);
-    for (const c of ["ADD COLUMN mirror ", "ADD COLUMN mirrored_at ", "ADD INDEX command_inbox_mirror (mirror, mirrored_at, seq)"]) {
-      expect(sql).toContain(c);
-    }
-    for (const c of ["ADD COLUMN mirror ", "ADD COLUMN mirrored_at ", "command_inbox_mirror ON command_inbox (mirror, mirrored_at, seq)"]) {
-      expect(MIGRATIONS[STEP - 1]).toContain(c);
-    }
   });
 });

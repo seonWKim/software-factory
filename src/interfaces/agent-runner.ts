@@ -24,6 +24,12 @@ export interface AgentRunSpec {
    * cannot expose tools (`exposes_tools` absent or false) refuses a run with any grant.
    */
   tool_grants: readonly string[];
+  /**
+   * The approved pack MCP servers the run kind grants (`pack:mcp_server:<name>`, design 11-packs), stdio only and
+   * with no credential. A runner that runs them (`runs_mcp_servers`) starts each, and every result reaches the agent
+   * through the same egress scan and output cap as a granted broker tool. Absent: none.
+   */
+  mcp_servers?: readonly PackMcpServer[];
   lease_token: number;
   /** Non-secret env vars allowed into the agent process (G1). The runner adds only the harness credential. */
   env_allowlist: Readonly<Record<string, string>>;
@@ -75,6 +81,16 @@ export interface AgentRunSpec {
    * worker's gates would fail it. Advisory: the worker's gates still decide. Absent: no hooks.
    */
   gate_hooks?: GateHooks;
+}
+
+/**
+ * A pack MCP server as a run gets it: its approved descriptor's `command` and `args`. It always starts with an
+ * empty env, so it holds no secret value.
+ */
+export interface PackMcpServer {
+  readonly name: string;
+  readonly command: string;
+  readonly args: readonly string[];
 }
 
 /** What the gate hooks check against: the same values the worker's gates use. Holds no secret value. */
@@ -216,6 +232,12 @@ export interface AgentRunner {
    * with an error naming the granted tools, rather than ignore them.
    */
   readonly exposes_tools?: boolean;
+  /**
+   * Whether this runner starts the run's pack MCP servers (`AgentRunSpec.mcp_servers`) and routes their results
+   * through the egress scan and output cap. Absent: false, and the worker refuses a run granted one as `not_started`
+   * before its agent starts.
+   */
+  readonly runs_mcp_servers?: boolean;
   /**
    * Whether this runner runs `GateHooks.on_tool_call` on each Edit or Write (design §4, issue #494). Absent: false,
    * and startup refuses an enabled `on_tool_call` pack check, naming the check and the point.

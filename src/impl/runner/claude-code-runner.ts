@@ -9,7 +9,7 @@ import {
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks } from "./gate-hooks.js";
-import { type GrantedToolDeps, type RunningBridge, ToolGate, bridgeMcpConfig, harnessToolName, startBridgeHost } from "./tool-bridge.js";
+import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
 export interface ClaudeCodeRunnerOptions {
   sandbox: Sandbox;
@@ -26,13 +26,6 @@ export interface ClaudeCodeRunnerOptions {
    * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and refuses a run with grants.
    */
   tools?: GrantedToolDeps;
-}
-
-/** A run's granted tools as the harness sees them: the bridge's MCP config and the tool names to allow. */
-export interface BridgeArgs {
-  mcpConfig: Record<string, unknown>;
-  /** Granted broker tool names; each becomes `mcp__factory_tools__<name>` in `--allowedTools`. */
-  tools: readonly string[];
 }
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
@@ -241,6 +234,7 @@ export function buildClaudeArgs(
   const allowed = [
     ...spec.tools.map((t) => t.name).filter((n) => !PATH_SCOPED_TOOLS.has(n)),
     ...(bridge?.tools ?? []).map(harnessToolName),
+    ...(bridge?.server_tools ?? []),
   ].join(",");
   return [
     bin,
@@ -253,7 +247,7 @@ export function buildClaudeArgs(
     "--settings", JSON.stringify({ ...buildHarnessSettings(spec, spec.sandbox?.workdir, writes ? tmp : []), ...(hooks ? { hooks } : {}) }),
     "--setting-sources", "project",
     "--strict-mcp-config",
-    // The run's only MCP server, when it has granted tools: the bridge to the worker side (tool-bridge.ts).
+    // The run's only MCP servers, when it has granted tools or pack MCP servers: bridges to the worker side (tool-bridge.ts).
     ...(bridge ? ["--mcp-config", JSON.stringify(bridge.mcpConfig)] : []),
     ...sessionArgs(spec),
     // Permission mode stays default: with the env scrub on, Claude Code forces it anyway. In -p mode,
@@ -285,25 +279,32 @@ export class ClaudeCodeRunner implements AgentRunner {
     return this.opts.tools !== undefined;
   }
 
+  /** Runs pack MCP servers when it exposes tools: their results pass the same gate. */
+  get runs_mcp_servers(): boolean {
+    return this.exposes_tools;
+  }
+
   async run(spec: AgentRunSpec): Promise<AgentRunResult> {
-    if (spec.tool_grants.length === 0) return this.runWith(spec);
-    const error = toolsNotExposedMessage(spec.tool_grants);
-    if (!this.opts.tools) return { status: "failed", output: null, transcript: "", usage: NO_USAGE, error };
-    // The run's socket: every call the bridge forwards (or anyone sends) passes the gate in this process.
-    const gate = new ToolGate(this.opts.tools, spec);
-    const bridge = await startBridgeHost(gate);
-    try {
-      return await this.runWith(spec, bridge);
-    } finally {
-      await bridge.close();
-    }
+    const servers = spec.mcp_servers ?? [];
+    if (spec.tool_grants.length === 0 && servers.length === 0) return this.runWith(spec);
+    const fail = (error: string): AgentRunResult => ({ status: "failed", output: null, transcript: "", usage: NO_USAGE, error });
+    if (!this.opts.tools) return fail(toolsNotExposedMessage([...spec.tool_grants, ...servers.map((m) => `pack:mcp_server:${m.name}`)]));
+    // The guarded route for pack MCP servers (design 11-packs, issue #596): each starts here, in the worker, in the
+    // run's home with an empty env, never by the harness. The agent's --mcp-config names only bridges back to this
+    // process, one per server, so each result passes the gate's egress scan and output cap like a broker tool's.
+    // A server that names a credential, or is not stdio, never reaches here: the grant check refused it as
+    // not_started. Started servers and the socket are stopped when the run ends, however it ends.
+    // The run's home is the server's working folder: a per-run folder on the worker host, never the owner's checkout.
+    const home = join(this.opts.homesDir, spec.run_id);
+    await mkdir(home, { recursive: true });
+    return withRunBridge(this.opts.tools, spec, home, (bridge) => this.runWith(spec, bridge), fail);
   }
 
   /**
    * The gate hooks (design §4, issue #302), for an implement step the worker gave them to: the hook folder in the
    * harness config dir for the call, then the blocks it recorded on the result. Every other step runs as before.
    */
-  private async runWith(spec: AgentRunSpec, bridge?: RunningBridge): Promise<AgentRunResult> {
+  private async runWith(spec: AgentRunSpec, bridge?: BridgeArgs): Promise<AgentRunResult> {
     await mkdir(this.opts.claudeConfigDir, { recursive: true });
     const g = spec.gate_hooks;
     if (!g || !GATE_HOOK_ROLES.includes(spec.role)) return this.runClaude(spec, bridge);
@@ -324,7 +325,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     }
   }
 
-  private async runClaude(spec: AgentRunSpec, bridge?: RunningBridge, hooks?: RunningGateHooks): Promise<AgentRunResult> {
+  private async runClaude(spec: AgentRunSpec, bridge?: BridgeArgs, hooks?: RunningGateHooks): Promise<AgentRunResult> {
     const home = join(this.opts.homesDir, spec.run_id);
     // The run's TMPDIR (buildAgentEnv): the one folder outside the run folder Write and Edit may also use.
     const tmp = join(home, "tmp");
@@ -341,8 +342,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     const watch = new StallWatch(stallMs, firstOutputMs, hooks ? () => hooks.checking() : undefined);
     let result: Awaited<ReturnType<Sandbox["exec"]>>;
     try {
-      const bridgeArgs = bridge ? { mcpConfig: bridgeMcpConfig(bridge.socket), tools: spec.tool_grants } : undefined;
-      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridgeArgs, [tmp], hooks?.settings), {
+      result = await this.opts.sandbox.exec(spec.sandbox, buildClaudeArgs(spec, model, this.opts.claudeBin, bridge, [tmp], hooks?.settings), {
         env,
         stdin: spec.prompt,
         timeout_ms: spec.timeout_ms,

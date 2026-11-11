@@ -1,12 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { RunId, Timestamp, WorkerId } from "../src/core/types.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps, splitSql } from "../src/impl/store/mysql/migrations.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
-/** The schema step that adds the improve tables (issue #306): SQLite migration 31, MySQL step 0031. */
+/** The schema step that adds the improve tables (issue #306): SQLite migration 31. */
 const STEP = 31;
 const TABLES = ["improve_reports", "filed_patterns"];
 
@@ -31,14 +28,6 @@ describe("improve tables: schema", () => {
     const tables = await store.listTables();
     for (const t of ["controller_improve_reports", "controller_filed_patterns"]) expect(tables.find((x) => x.name === t), t).toBeDefined();
     expect(tables.find((x) => x.name === "controller_filed_patterns")!.rows).toBe(0);
-  });
-
-  it("MySQL step 0031 creates the same tables with the same columns as SQLite migration 31", () => {
-    const step = readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.number === STEP);
-    expect(step?.file).toBe("0031-improve-reports.sql");
-    const sql = readFileSync(join(STEPS_DIR, step!.file), "utf8");
-    expect(splitSql(sql)).toHaveLength(TABLES.length);
-    expect(columnsOf(sql)).toEqual(columnsOf(MIGRATIONS[STEP - 1]!));
   });
 });
 

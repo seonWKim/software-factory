@@ -81,9 +81,9 @@ export class PackEntriesStore {
       [kind, name],
     );
     if (!r) return null;
-    const descriptor = JSON.parse(String(r.descriptor)) as { read_only?: unknown };
+    const descriptor = JSON.parse(String(r.descriptor)) as Record<string, Json>;
     const credential_name = r.credential_name === null ? null : String(r.credential_name);
-    return { kind, name, description_hash: String(r.description_hash), credential_name, read_only: descriptor.read_only === true };
+    return { kind, name, description_hash: String(r.description_hash), credential_name, read_only: descriptor.read_only === true, descriptor };
   }
 
   /** Every stored description_hash of `kind` and `name`, oldest first. */
@@ -104,6 +104,8 @@ export interface PackEntryRef {
 export interface StoredEntry extends PackEntryRef {
   readonly credential_name: string | null;
   readonly read_only: boolean;
+  /** The scanned descriptor, parsed: what an approved MCP server starts from (`packMcpServer`). */
+  readonly descriptor: Readonly<Record<string, Json>>;
 }
 
 export const PACK_ENTRY_KINDS: readonly PackEntryKind[] = KIND_DIRS.map(([kind]) => kind);

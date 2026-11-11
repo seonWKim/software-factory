@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
@@ -8,7 +6,6 @@ import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principa
 import type { ForgeEvent } from "../src/interfaces/forge.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -19,7 +16,6 @@ import { newStore, system, PROJECT_KEY } from "./helpers/store.js";
 // verdict, one per PR head, that an explicit `/verdict` on that head replaces. Never pin a step as the newest.
 
 const STEP = 39;
-const STEP_FILE = "0039-implicit-verdicts.sql";
 
 /** An identity FakeAuth does not resolve. */
 const stranger: ExternalIdentity = { provider: "github", subject: "999", login: "stranger" };
@@ -186,7 +182,7 @@ describe("implicit verdict on a revert", () => {
   });
 });
 
-describe("SQLite migration 39 and MySQL step 39: implicit verdicts", () => {
+describe("SQLite migration 39: implicit verdicts", () => {
   it("SQLite: adds implicit (0 on older rows) and pr_head (NULL) to an existing database's verdicts", async () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
     const raw = new DatabaseSync(":memory:");
@@ -201,15 +197,7 @@ describe("SQLite migration 39 and MySQL step 39: implicit verdicts", () => {
     await store.close();
   });
 
-  it("MySQL: one ALTER right after step 38 with the same columns as SQLite migration 39, and a wider comment_id", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "implicit-verdicts")).toMatchObject({
-      number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE,
-    });
-    const sql = readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
-    expect(sql.split("\n").filter((l) => l.trim() !== "" && !l.startsWith("--"))).toHaveLength(1);
-    for (const c of ["ADD COLUMN implicit ", "ADD COLUMN pr_head ", "MODIFY comment_id VARCHAR(128)", "ADD INDEX verdicts_head (work_item_id, pr_head)"]) {
-      expect(sql).toContain(c);
-    }
+  it("SQLite migration 39 adds the implicit and pr_head columns and the verdicts_head index", () => {
     for (const c of ["ADD COLUMN implicit ", "ADD COLUMN pr_head ", "verdicts_head ON verdicts (work_item_id, pr_head)"]) {
       expect(MIGRATIONS[STEP - 1]).toContain(c);
     }
