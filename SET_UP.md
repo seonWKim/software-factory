@@ -157,6 +157,14 @@ Who may act is decided by the grant plugins in `permissions.grants` (default: wr
 
 If you have write permission and reply in plain words on an open work item's issue (300 characters or fewer, say "ship it"), the factory may answer once with the command it thinks you mean, such as `/approve`, or with the commands that apply now. It uses a cheap model call to do this. Nothing runs and nothing changes until you type the command yourself as a reply; that command is checked like any other.
 
+### Commands in your own words
+
+You can type a command in your own words in the dashboard, the CLI and Slack. The factory reads it with one cheap model call and answers with the commands it thinks you mean, as typed lines, stored as one pending proposal. Nothing changes until you confirm the proposal, or type a line yourself; a confirm is checked as the typed command is, as you, so a command you may not run, or one whose item has moved on, is refused with a reply saying why. You need the role that approves (the owner, or an approver).
+
+- **Dashboard:** on an item's page, write in the box under Commands ("Say it in your own words"), for example `looks good, approve it but keep the change small`, and press Read it. The factory answers in the item's thread; the proposal shows on the page with Confirm all and Cancel.
+- **CLI:** `factory "approve wi_123 but keep the change small"` prints each proposed command with its proposal ID, for example `proposal prop_3f2a…`. Run `factory confirm prop_3f2a…` to apply them. Any first word that is not a `factory` command is read this way.
+- **Slack:** in a work item's thread, reply with no mention, for example `ship it, the tests look fine`. The factory answers in the thread with a button per command, Confirm all and Cancel. In a thread that is not a work item's, a reply with no mention is not read; mention the bot there.
+
 ### Local tasks from the command line
 
 Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`). Run the commands as `npm run --silent factory -- <command>`. None of them calls GitHub, and they work the same whether GitHub is selected, unreachable or rate limited.
