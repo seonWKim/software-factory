@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import mysql from "mysql2/promise";
 import { fingerprintTables, lostRows, type Row } from "../../../state/index.js";
+import { livePids } from "../../../teardown.js";
+import { type CopyOptions, copyToSqlite, mysqlSnapshotReader } from "./copy-to-sqlite.js";
 import type { MysqlOptions } from "./mysql-driver.js";
 import { type MigrationStatus, MysqlMigrations, mysqlMigrationDb, type Queryable } from "./migrations.js";
 
@@ -162,6 +164,20 @@ async function rehearse(opts: MysqlOptions, print: (line: string) => void): Prom
     if (created) await src.query(`DROP DATABASE IF EXISTS \`${copy}\``);
     await src.end();
     await rm(backups, { recursive: true, force: true });
+  }
+}
+
+/** `--copy-from-mysql`: the copy reads `opts` and runs only while no factory process is live (teardown's check). */
+export function copyFromMysqlCommand(opts: MysqlOptions, o: Omit<CopyOptions, "livePids">): Promise<number> {
+  return copyToSqlite(mysqlSnapshotReader(opts), { ...o, livePids: () => livePids(o.stateDir, pidAlive) });
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

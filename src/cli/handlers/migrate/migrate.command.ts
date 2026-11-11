@@ -1,8 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { type Loaded, Plugins, type StoreConfig, resolveProject } from "../../../compose.js";
-import { copyToSqlite, mysqlSnapshotReader } from "../../../impl/store/mysql/copy-to-sqlite.js";
-import { type CopyFromMysql, SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "../../../impl/store/mysql/migrate-command.js";
+import { type CopyFromMysql, SQLITE_MIGRATE_MESSAGE, copyFromMysqlCommand, migrateCommand, parseMigrateArgs, pendingStepNames } from "../../../impl/store/mysql/migrate-command.js";
 import { MysqlDriver, type MysqlOptions } from "../../../impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "../../../impl/store/project-keys.js";
 import { migrateSqlite, rehearseSqlite, sqlitePendingSteps } from "../../../impl/store/sqlite/rehearse.js";
@@ -12,7 +11,6 @@ import { secretName } from "../../../interfaces/secret-store.js";
 import { withDrain } from "../../../migrate-drain.js";
 import { ensureDiscoveredTopicTables } from "../../../runtime/index.js";
 import { applyMigrations, type SqlExecutor } from "../../../state/index.js";
-import { livePids } from "../../../teardown.js";
 import { defineCommand } from "../../command.js";
 
 export default defineCommand({
@@ -120,25 +118,14 @@ async function copyFromMysql(loaded: Loaded, args: CopyFromMysql): Promise<numbe
     return 1;
   }
   const clock = await new Plugins(loaded).clock();
-  const read = mysqlSnapshotReader(options);
-  return copyToSqlite(read, {
+  return copyFromMysqlCommand(options, {
     stateDir: loaded.stateDir,
     dryRun: args.dryRun,
     replace: args.replace,
-    livePids: () => livePids(loaded.stateDir, pidAlive),
     schema: (driver) => ensureDiscoveredTopicTables("sqlite", driver),
     now: () => clock.now(),
     print,
   });
-}
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return (err as NodeJS.ErrnoException).code === "EPERM";
-  }
 }
 
 /** `--contract`: the contract migrations whose breaking migration is old enough (RFC 0015 §12 D2, D4). */
