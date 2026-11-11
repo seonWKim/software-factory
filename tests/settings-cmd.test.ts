@@ -241,6 +241,60 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
   });
 });
 
+// Built here so no secret-shaped literal sits in the repository.
+const STYLE_SECRET = `ghp_${"Ab3".repeat(12)}`;
+const styleScanner = new PatternEgressScanner(async () => []);
+
+describe.each(BACKENDS)("factory settings set message_style: $name", ({ make }) => {
+  const styled = (store: FactoryStore) => ({ ...deps(store), scanner: styleScanner });
+
+  it("a JSON string of at most 1000 characters is stored with the actor and the time in history", async () => {
+    const { store, clock } = await make();
+    const style = "Short sentences. Lead with the decision.";
+    const r = await run(styled(store), "set", "message_style", JSON.stringify(style));
+    expect(r).toEqual({ ok: true, lines: [`message_style = ${JSON.stringify(style)} (override; was "", default)`, "applies at the next model call, with no restart"] });
+    expect(await store.listSettingChanges(10)).toEqual([
+      { seq: expect.any(Number), key: "message_style", project: "", old_value: null, new_value: JSON.stringify(style), actor: "local:owner", at: clock.now().toISOString() },
+    ]);
+    // Exactly 1000 characters is allowed.
+    expect((await run(styled(store), "set", "message_style", JSON.stringify("x".repeat(1000)))).ok).toBe(true);
+  });
+
+  it("over 1000 characters is refused with the reason; nothing is stored", async () => {
+    const { store } = await make();
+    const r = await run(styled(store), "set", "message_style", JSON.stringify("x".repeat(1001)));
+    expect(r).toEqual({ ok: false, lines: ["refused: message_style is 1001 characters; at most 1000 are allowed"] });
+    expect(await store.listSettingOverrides()).toEqual([]);
+    expect(await store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("a value the egress scanner flags is refused naming the rule, never the text; nothing is stored", async () => {
+    const { store } = await make();
+    const r = await run(styled(store), "set", "message_style", JSON.stringify(`Sign off with ${STYLE_SECRET}`));
+    expect(r.ok).toBe(false);
+    expect(r.lines[0]).toMatch(/^refused: message_style was flagged by the egress scanner \(.+\)/);
+    expect(r.lines.join("\n")).not.toContain(STYLE_SECRET);
+    expect(await store.listSettingOverrides()).toEqual([]);
+    expect(await store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("with no scanner wired, a set is refused rather than stored unscanned; other keys are unaffected", async () => {
+    const { store } = await make();
+    const r = await run(deps(store), "set", "message_style", JSON.stringify("Plain words."));
+    expect(r.ok).toBe(false);
+    expect(r.lines[0]).toContain("egress scanner");
+    expect(await store.listSettingOverrides()).toEqual([]);
+    expect((await run(deps(store), "set", "max_loops", "4")).ok).toBe(true);
+  });
+
+  it("a value that is not a string is refused", async () => {
+    const { store } = await make();
+    const r = await run(styled(store), "set", "message_style", "42");
+    expect(r).toEqual({ ok: false, lines: ["refused: message_style must be a JSON string (the text of the style)"] });
+    expect(await store.listSettingOverrides()).toEqual([]);
+  });
+});
+
 describe("factory mode", () => {
   it("is settings set mode, with --project; anything else is an error", () => {
     expect(parseModeArgs(["auto"])).toEqual({ action: "set", key: "mode", value: '"auto"' });

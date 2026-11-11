@@ -122,10 +122,10 @@ export async function learnedWithRecords(
   return { rows, source: { get: (project, key) => view.get(project, key), record: (project, key) => records.get(JSON.stringify([project, key])) } };
 }
 
-/** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). */
-type Kind = "number" | "boolean" | "models" | "json" | "mode";
+/** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). `text`: free text, sent as a JSON string (`message_style`). */
+type Kind = "number" | "boolean" | "models" | "json" | "mode" | "text";
 const kindOf = (k: SettableKey): Kind =>
-  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" ? "json" : k === "mode" ? "mode" : "number";
+  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" ? "json" : k === "mode" ? "mode" : k === "message_style" ? "text" : "number";
 
 /** GET /api/v1/settings. */
 export async function readSettings(d: UiDeps, s: UiSettings) {
@@ -284,6 +284,8 @@ export async function writeSettings(d: UiDeps, s: UiSettings, body: unknown): Pr
     base: s.base,
     repo: s.repo,
     actor: s.actor,
+    // The same scanner the page's reads withhold through: a flagged message_style is refused, as on the CLI.
+    scanner: d.scanner,
     ...(s.mayApproveMerge ? { mayApproveMerge: s.mayApproveMerge } : {}),
     resolveProject: async () => {
       let ref: ProjectRef | null;

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { commandFooter, phaseLabel } from "../src/core/commands.js";
 import { interpret, interpretReply, openItems, parseTaskOfferMarker, taskOfferMarker } from "../src/core/interpret.js";
+import { withMessageStyle } from "../src/core/message-style.js";
+import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
@@ -31,11 +33,13 @@ const answer = (kind: string, entries: Entry[] = [], text?: string): Partial<LLM
 const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 };
 const NUMBERS = [566, 567, 568] as const;
 
-async function setup(replies: Partial<LLMResponse>[]) {
+async function setup(replies: Partial<LLMResponse>[], opts: { live?: boolean } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
   const llm = new ScriptedLLM(replies);
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, llm });
+  // `live`: the controller reads the stored overrides (message_style), as a running one does after each refresh.
+  const settings = opts.live ? new LiveSettings({ config, base: baseFromConfig(config), source: store, log: silent }) : undefined;
+  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner, llm, ...(settings ? { settings } : {}) });
   const actor = { kind: "system" as const, id: "test" };
   const items: WorkItem[] = [];
   for (const n of NUMBERS) {
@@ -55,7 +59,7 @@ async function setup(replies: Partial<LLMResponse>[]) {
     const now = (await store.getWorkItem(it.id))!;
     return { stage: now.stage, blocked_reason: now.blocked_reason, version: now.version, changes: (await store.listStateChanges(it.id)).length, runs: (await store.listRuns(it.id)).length };
   }));
-  return { store, source, llm, controller, items, snapshot };
+  return { store, source, llm, controller, items, snapshot, settings };
 }
 
 const plain = (body: string, comment_id = "100", author = alice, n = 566): SourceEvent => ({
@@ -200,6 +204,24 @@ describe("interpreter: chat answers", () => {
     expect(f.llm.requests).toHaveLength(1);
     expect(f.source.comments).toHaveLength(0);
     expect(await f.snapshot()).toEqual(before);
+  });
+
+  it("message_style: each chat call reads the live value; the style follows the rules once, the reply's footer never carries it", async () => {
+    const style = "Answer like a terse ship's log.";
+    const f = await setup([answer("chat", [], "Waiting on you.")], { live: true });
+    await f.settings!.refresh();
+    await f.controller.handleEvent(plain("how is it going?", "310"));
+    const before = f.llm.requests[0]!;
+    expect(before.system).not.toContain(style);
+    await f.store.setSettingOverride({ key: "message_style", project: "", value: JSON.stringify(style), actor: "local:owner" });
+    await f.settings!.refresh();
+    await f.controller.handleEvent(plain("how is it going?", "311"));
+    const after = f.llm.requests[1]!;
+    expect(after.system).toBe(withMessageStyle(before.system!, style));
+    expect(after.system!.split(style)).toHaveLength(2);
+    expect(after.output_schema).toEqual(before.output_schema);
+    expect(after.messages).toEqual(before.messages);
+    for (const c of f.source.comments) expect(c.body).not.toContain(style);
   });
 
   it("a failed model call keeps the canned line and the commands for the item's state", async () => {
