@@ -1,5 +1,6 @@
 // The Settings page's API (design §8 and §9, issue #236): GET /api/v1/settings reads every settable key with its
-// description, effective value, source, file value, project values and "applies at", the PR-only keys with their
+// description, effective value, source, file value, project values, learned values (each resolved through settingsFor,
+// with its evidence run IDs and set time) and "applies at", the PR-only keys with their
 // descriptions and the last 50 audit rows; POST /api/v1/settings sets or resets one key. Every write goes through runSettings (src/settings-cmd.ts),
 // the same function `factory settings` runs, so the page accepts and refuses exactly what the CLI does.
 //
@@ -10,12 +11,13 @@
 // server.ts before writeSettings is reached.
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { type LearnedSetting, learnedFromRows } from "../core/learned-settings.js";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
 import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
 import {
   PROJECT_SETTABLE_KEYS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettableKey,
-  type GlobalSettableKey, type SettableValues, type SettingsBase, type SettingSource,
-  effectiveSetting, isGateSettableKey, isProjectSettableKey, resolveSettings,
+  type GlobalSettableKey, type LearnedRecord, type LearnedSettingsSource, type SettableValues, type SettingsBase, type SettingSource,
+  effectiveSetting, isGateSettableKey, isProjectSettableKey, resolveSettings, settingsFor,
 } from "../core/settings.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { loadSettingCatalog } from "../runtime/index.js";
@@ -30,6 +32,8 @@ export const CSRF_HEADER = "x-csrf-token";
 export const SETTINGS_HISTORY = 50;
 /** Work items read to find the configured repo's project key from a stored label. */
 const PROJECT_SCAN = 500;
+/** Learned audit rows read to find each learned value's evidence: far more than the per-project keys a daily run writes. */
+const LEARNED_SCAN = 500;
 
 /** What the Settings routes need beside the store. Built once per UI process (compose.ts buildUiParts). */
 export interface UiSettings {
@@ -99,6 +103,24 @@ export async function effectiveGlobal<K extends GlobalSettableKey>(d: UiDeps, ke
   return { value: e.value, source: e.source };
 }
 
+/**
+ * The stored learned layer with each value's record (design 08-settings): the evidence run IDs of the newest audit
+ * row that wrote the stored value, and the time the value was stored. A value with no such row has no evidence.
+ */
+export async function learnedWithRecords(
+  store: Pick<FactoryStore, "listLearnedSettings" | "listLearnedSettingChanges">,
+): Promise<{ rows: LearnedSetting[]; source: LearnedSettingsSource }> {
+  const rows = await store.listLearnedSettings();
+  const changes = rows.length === 0 ? [] : await store.listLearnedSettingChanges(LEARNED_SCAN);
+  const records = new Map<string, LearnedRecord>();
+  for (const r of rows) {
+    const wrote = changes.find((c) => c.project === r.project && c.key === r.key && c.new_value === r.value);
+    records.set(JSON.stringify([r.project, r.key]), { evidence_run_ids: wrote?.evidence_run_ids ?? [], set_at: r.updated_at });
+  }
+  const view = learnedFromRows(rows);
+  return { rows, source: { get: (project, key) => view.get(project, key), record: (project, key) => records.get(JSON.stringify([project, key])) } };
+}
+
 /** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). */
 type Kind = "number" | "boolean" | "models" | "json" | "mode";
 const kindOf = (k: SettableKey): Kind =>
@@ -122,6 +144,10 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     : s.base;
   const r = resolveSettings(base, rows, label);
   const catalog = await loadSettingCatalog();
+  const learned = await learnedWithRecords(d.store);
+  for (const p of new Set(learned.rows.map((l) => l.project))) {
+    if (!labels.has(p)) labels.set(p, await readProjectLabel(d.store, p));
+  }
 
   const keys = [];
   for (const k of SETTABLE_KEYS) {
@@ -132,6 +158,22 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
       for (const [p, own] of Object.entries(r.projects)) {
         const v = own[k];
         if (v) projects.push({ project: await text(label(p)), value: await text(fmt(v.value)), source: v.source });
+      }
+    }
+    // Each stored learned value, with the layer settingsFor resolves for its project: "learned" while it is in force.
+    const learnedValues = [];
+    if (isGateSettableKey(k)) {
+      for (const l of learned.rows.filter((l) => l.key === k)) {
+        const v = learned.source.get(l.project, k);
+        if (v === undefined) continue;
+        const rec = learned.source.record?.(l.project, k);
+        learnedValues.push({
+          project: await text(label(l.project)),
+          value: await text(fmt(v)),
+          source: settingsFor(l.project, r.layers, learned.source)[k].layer,
+          evidence_run_ids: rec?.evidence_run_ids ?? [],
+          set_at: rec?.set_at ?? l.updated_at,
+        });
       }
     }
     keys.push({
@@ -145,6 +187,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
       applies_at: catalog.describe(k).applies,
       project_settable: isProjectSettableKey(k),
       projects,
+      learned: learnedValues,
       ...(k === "workers" ? { max: r.workers_cap, capped_at: r.values.workers < r.global.workers.value ? r.workers_cap : null } : {}),
     });
   }
@@ -186,25 +229,31 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
   };
 }
 
-export type SettingsWrite = { action: "set"; key: string; value: string; project?: string } | { action: "reset"; key: string; project?: string };
+export type SettingsWrite =
+  | { action: "set"; key: string; value: string; project?: string }
+  | { action: "reset"; key: string; project?: string; learned?: true };
 
 /** The POST body, or why it is not one. */
 export function parseWrite(body: unknown): SettingsWrite | { error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
-  const allowed = new Set(["action", "key", "value", "project"]);
+  const allowed = new Set(["action", "key", "value", "project", "learned"]);
   const extra = Object.keys(b).find((k) => !allowed.has(k));
   if (extra) return { error: `unknown field "${extra}"` };
   if (typeof b.key !== "string" || b.key === "") return { error: "key must be a non-empty string" };
   if (b.project !== undefined && typeof b.project !== "string") return { error: "project must be a string (owner/name)" };
   const project = typeof b.project === "string" ? { project: b.project } : {};
+  if (b.learned !== undefined && (b.learned !== true || b.action !== "reset")) return { error: "learned is only true, and only on a reset" };
   if (b.action === "set") {
     if (typeof b.value !== "string") return { error: "value must be JSON text, as `factory settings set` takes it" };
     return { action: "set", key: b.key, value: b.value, ...project };
   }
   if (b.action === "reset") {
     if (b.value !== undefined) return { error: "reset takes no value" };
-    return { action: "reset", key: b.key, ...project };
+    if (b.learned !== true) return { action: "reset", key: b.key, ...project };
+    // The CLI's own refusal (parseSettingsArgs): a learned value is per project.
+    if (b.project === undefined) return { error: "reset --learned needs --project <owner/name>: a learned value is per project" };
+    return { action: "reset", key: b.key, ...project, learned: true };
   }
   return { error: 'action must be "set" or "reset"' };
 }
