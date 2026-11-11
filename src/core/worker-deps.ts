@@ -163,7 +163,7 @@ export interface WorkerDeps {
    * prompt. Absent, nothing to read, or a failed read (a warning): no section.
    */
   guidance?: GuidanceSource;
-  /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
+  /** The learned settings layer (StoredLearnedSettings, src/core/learned-settings.ts), written by the daily improve run. Absent: none. */
   learned?: LearnedSettingsSource;
   /**
    * Model class per run kind and tier (`model_by`) and the model name per class (`models`), from

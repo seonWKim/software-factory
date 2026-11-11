@@ -1721,6 +1721,28 @@ CREATE TABLE `runtime_hook_decisions` (
   KEY `runtime_hook_decisions_subject` (`subject`,`seq`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `runtime_learned_setting_changes` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `project_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `setting_key` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `old_value` text COLLATE utf8mb4_bin,
+  `new_value` text COLLATE utf8mb4_bin,
+  `evidence_run_ids` text COLLATE utf8mb4_bin NOT NULL,
+  `window_end` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `actor` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`seq`),
+  UNIQUE KEY `runtime_learned_setting_changes_window` (`project_key`,`setting_key`,`window_end`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
+CREATE TABLE `runtime_learned_settings` (
+  `project_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `setting_key` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `value_json` text COLLATE utf8mb4_bin NOT NULL,
+  `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`project_key`,`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `runtime_schema_migrations` (
   `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
   `component` varchar(64) COLLATE utf8mb4_bin NOT NULL,
