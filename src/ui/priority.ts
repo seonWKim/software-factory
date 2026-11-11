@@ -50,8 +50,6 @@ export interface PriorityInput {
   waiting_on: number;
   /** The issue number this item waits on, when it is exactly one (a held phase's previous phase, one dependency). */
   waiting_on_number?: number | null;
-  /** The latest claim decision on the item's current run is a deadlock (why.ts `deadlocked`): a person looks. */
-  deadlock?: boolean;
 }
 
 export interface Ranked<T extends PriorityInput> {
@@ -76,13 +74,13 @@ function staleRun(i: PriorityInput, now: number, lease_ms: number): boolean {
  * The item's level. A running run past its lease is stuck; an open item that waits on nothing (no open item it
  * waits on, not blocked on another item, a person or the budget) and has no queued or running run is stuck too
  * (nothing moves it). An item blocked on `upstream` or `dependency` waits on another item, so it is never stuck;
- * a dependency blocker waits even while its run is queued (issue #310). A deadlock claim needs a human.
+ * a dependency blocker waits even while its run is queued (issue #310).
  */
 export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
   if (i.stage === "CLOSED") return "closed";
   if (i.blocked_on === "human" && i.blocked_reason === "merge_pending") return "ready_to_merge";
   if (i.blocked_on === "human" && i.blocked_reason === "spec_pending") return "needs_approval";
-  if (i.blocked_on === "human" || i.blocked_on === "budget" || i.deadlock) return "needs_human";
+  if (i.blocked_on === "human" || i.blocked_on === "budget") return "needs_human";
   if (staleRun(i, now.getTime(), lease_ms)) return "stuck";
   if (i.run?.status === "running") return "running";
   if (i.blocked_on === "dependency") return "waiting_on_issue";
@@ -93,7 +91,6 @@ export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
 
 function humanBadge(i: PriorityInput): string {
   if (i.blocked_on === "budget") return "budget check";
-  if (i.blocked_on !== "human" && i.deadlock) return "deadlock";
   const r = i.blocked_reason ?? "";
   if (r.startsWith("run_failed:") || r === "max_attempts" || r === "max_restart" || r === "repeated_failure") return "failed";
   if (r === "max_loops") return "too many loops";

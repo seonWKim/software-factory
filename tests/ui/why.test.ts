@@ -33,7 +33,7 @@ describe("whyWaiting: every case", () => {
     ["merge conflict", input({ item: { blocked_on: "human", blocked_reason: "merge_conflict_pending" } }), "A merge conflict needs a person", "human", []],
     ["failed run", input({ item: { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" } }), "The run failed (run_failed:implement:diff_too_large): a person decides what happens next", "human", []],
     ["other human", input({ item: { blocked_on: "human", blocked_reason: "needs a decision on #7" } }), "Waiting for a person: needs a decision on #7", "human", [7]],
-    ["deadlock", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null } }), "Started past a deadlock with #92: a person checks the overlap", "human", [92]],
+    ["deadlock", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null } }), "Started past a deadlock with #92: a person checks the overlap", "factory", [92]],
     ["running", input({ run: running }), "Running implement", "factory", []],
     ["rate limit", input({ run: queued("triage"), pauses: { rate_limit: UNTIL } }), "Paused by a usage or rate limit until 2026-11-07 12:30 UTC", "factory", []],
     ["model stall", input({ run: queued("review"), pauses: { model_stall: UNTIL } }), "Paused: the model is not answering; runs start again once a probe answers", "factory", []],

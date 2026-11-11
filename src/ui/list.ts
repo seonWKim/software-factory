@@ -10,7 +10,7 @@ import { alarmText, alarmsFor, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
 import { esc } from "./html.js";
 import { type PriorityInput, rank } from "./priority.js";
-import { type ClaimPauses, type Why, deadlocked, refsOf, whyWaiting, withAlarms } from "./why.js";
+import { type ClaimPauses, type Why, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
 
 /** Most rows any list or section reads from the store. */
@@ -80,7 +80,6 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       run: run ? { kind: run.kind, status: run.status as "queued" | "running", heartbeat_at: run.updated_at, paused_at: run.paused_at } : null,
       dependents: 0,
       ...waiting,
-      deadlock: deadlocked(decision, run),
       conflicts: conflictCounts(runs, changes),
       decision,
       alarms,
