@@ -14,6 +14,8 @@ import { type ItemDetail, type ItemRow, type MergeCheckView, type MergeReadiness
 // @ts-expect-error -- see above
 import { ItemsTable } from "../web/src/views/common.js";
 // @ts-expect-error -- see above
+import { NeedCommands, VERDICT_PLACEHOLDER, VerdictForm } from "../web/src/views/item-commands.js";
+// @ts-expect-error -- see above
 import { ItemPage } from "../web/src/views/pages.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -384,5 +386,29 @@ describe("ui app: the Merge button", () => {
     expect(url).toBe(API.itemCommands("wi_1"));
     expect(JSON.parse(String(init.body))).toEqual({ command: "merge" });
     expect(new Headers(init.headers).get("x-csrf-token")).toBe("tok");
+  });
+});
+
+// Needs you's verdict control (issue #513): a button that opens a one-line form, as reject and revise open theirs.
+describe("ui app: the Needs-you verdict control", () => {
+  const AT = "2026-11-07T00:00:00.000Z";
+  const client = () => {
+    const c = new QueryClient();
+    c.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
+    return c;
+  };
+  const VERDICT = { name: "verdict", usage: "/verdict accept|changes|reject <severity> <reason>", description: "Record a verdict", allowed: true, reason: null };
+
+  it("the verdict button opens a form (aria-expanded) instead of sending at once", () => {
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedCommands, { id: "wi_1", commands: [VERDICT], pr: "42" })));
+    expect(html).toMatch(/<span data-command="verdict"[^>]*><button[^>]*aria-expanded="false"[^>]*>verdict<\/button>/);
+  });
+
+  it("the form takes the verdict as typed after /verdict; Send stays disabled while it is blank", () => {
+    const html = renderToStaticMarkup(createElement(VerdictForm, { disabled: false, onSend: () => {}, onCancel: () => {} }));
+    expect(html).toContain(`placeholder="${(VERDICT_PLACEHOLDER as string).replace(/</g, "&lt;").replace(/>/g, "&gt;")}"`);
+    expect(VERDICT_PLACEHOLDER).toBe(VERDICT.usage.replace("/verdict ", "").replace("<severity>", "<none|minor|major|critical>"));
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Send verdict<\/button>/);
+    expect(html).toContain(">Cancel</button>");
   });
 });

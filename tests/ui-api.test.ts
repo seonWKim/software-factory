@@ -1348,7 +1348,7 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect(rows.find((r) => r.id === items.running.id)!.commands).toBeUndefined();
   });
 
-  it("a row's commands are the state-changing ones that apply, never budget or verdict, each with the viewer's allowed and reason (issue #453)", async () => {
+  it("a row's commands are the state-changing ones that apply, never budget, then verdict where it applies, each with the viewer's allowed and reason (issues #453, #513)", async () => {
     const { d, store, items } = await seeded();
     const failed = await make(store, 20, "Failed");
     await patch(store, failed, { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" });
@@ -1365,7 +1365,8 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect(of(all, items.approve.id)).toEqual(["approve", "reject", "revise"].map((name) => ({ name, usage: expect.any(String), description: expect.any(String), allowed: true, reason: null })));
     expect(of(all, failed.id).map((c) => c.name)).toEqual(["reject", "revise", "retry"]);
     expect(of(all, checkpoint.id).map((c) => c.name)).toEqual(["reject"]);
-    expect(of(all, items.merge.id)).toEqual([]);
+    // Waiting for its merge, with a PR: only verdict, which changes no state but has its own form in the row.
+    expect(of(all, items.merge.id).map((c) => c.name)).toEqual(["verdict"]);
     // approve_spec asked once for the whole list, approve_merge at most once.
     expect(asked.mock.calls.filter(([a]) => a === "approve_spec")).toHaveLength(1);
     expect(asked.mock.calls.filter(([a]) => a === "approve_merge").length).toBeLessThanOrEqual(1);

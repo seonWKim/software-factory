@@ -207,14 +207,15 @@ export async function itemCommands(
 
 /**
  * A Needs-you row's `commands` (design §9): the item API's entries for the commands that change the item's state, from
- * the command rules, but not `budget` (its tokens are typed on the item page or the issue), with the viewer's `allowed`
+ * the command rules, but not `budget` (its tokens are typed on the item page or the issue), then `verdict` where it
+ * applies (an item with a PR, or a local item: issue #513), sent from its own text form; with the viewer's `allowed`
  * and `reason` from `grant`, asked once per request. The item's runs are read only at agent_needs_human, where the run
  * that asked decides which commands apply.
  */
 export async function needsYouCommands(d: UiDeps, it: WorkItem, grant: () => Promise<ActorGrant>, text: (v: string) => Promise<string | null>) {
   const runs = it.blocked_reason === AGENT_NEEDS_HUMAN ? await d.store.listRuns(it.id) : [];
   const all = await itemCommands(it, runs, await grant(), text);
-  return all.filter((c) => c.name !== "budget" && commandSpec(c.name).changes_state);
+  return all.filter((c) => c.name === "verdict" || (c.name !== "budget" && commandSpec(c.name).changes_state));
 }
 
 /**

@@ -515,3 +515,77 @@ describe("verdict from the item page and the item API (issue #523)", () => {
     }
   });
 });
+
+describe("Needs you: the verdict control (issue #513)", () => {
+  const HOST = "127.0.0.1:4310";
+  const TOKEN = newCsrfToken();
+  const OWNER = "local:owner@example.com" as UserId;
+  const MERGE_PENDING: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" };
+  type Row = { id: string; commands?: { name: string; usage: string; allowed: boolean }[] };
+
+  /** The page as the local owner, its grants checked by the local auth plugin, as compose.ts checks them. */
+  function page(h: Awaited<ReturnType<typeof harness>>): ApiDeps {
+    const auth = new LocalAuthProvider(h.store);
+    const allowed = (action: PageAction) => auth.authorize({ user_id: OWNER, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
+    return {
+      store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
+      health: new HealthMonitor(async () => [], h.clock), commands: { actor: OWNER, source: "environment", token: TOKEN, allowed },
+    };
+  }
+  const rows = async (d: ApiDeps) => (JSON.parse((await respond(d, { method: "GET", url: "/api/v1/items?state=needs", host: HOST })).body) as { items: Row[] }).items;
+  const post = (d: ApiDeps, it: WorkItem, body: unknown) =>
+    respond(d, {
+      method: "POST", url: `/api/v1/items/${encodeURIComponent(it.id)}/commands`, host: HOST, origin: `http://${HOST}`,
+      contentType: "application/json", csrfToken: TOKEN, body: JSON.stringify(body),
+    });
+  const verdictOf = async (h: Awaited<ReturnType<typeof harness>>, it: WorkItem) =>
+    (await h.store.listVerdicts(it.id)).map((v) => ({ verdict: v.verdict, severity: v.severity, reason: v.reason, target: v.target, implicit: v.implicit }));
+
+  it("a waiting item with a PR offers verdict; its text, sent from the row, stores the same verdict as the item page's note box", async () => {
+    const h = await harness({ localAuth: true });
+    await h.store.claimLocalOwner(OWNER);
+    const fromRow = await h.itemIn(MERGE_PENDING, 1);
+    const fromNoteBox = await h.itemIn(MERGE_PENDING, 2);
+    const d = page(h);
+    const row = (await rows(d)).find((r) => r.id === fromRow.id)!;
+    expect(row.commands!.map((c) => c.name)).toContain("verdict");
+    expect(row.commands!.find((c) => c.name === "verdict")).toMatchObject({ usage: "/verdict accept|changes|reject <severity> <reason>", allowed: true });
+    // The row's form and the item page's note box send the same request: the command and the typed text.
+    expect((await post(d, fromRow, { command: "verdict", note: "changes minor rename the flag" })).status).toBe(202);
+    expect((await post(d, fromNoteBox, { command: "verdict", note: "changes minor rename the flag" })).status).toBe(202);
+    await h.controller.tickCommands();
+    const want = [{ verdict: "changes", severity: "minor", reason: "rename the flag", target: "issue", implicit: false }];
+    expect(await verdictOf(h, fromRow)).toEqual(want);
+    expect(await verdictOf(h, fromNoteBox)).toEqual(want);
+    // A verdict changes no state: the row still waits for its merge.
+    expect(await h.store.getWorkItem(fromRow.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+  });
+
+  it("a malformed verdict from the row is refused with the usage line, and nothing is stored", async () => {
+    const h = await harness({ localAuth: true });
+    await h.store.claimLocalOwner(OWNER);
+    const it1 = await h.itemIn(MERGE_PENDING, 1);
+    expect((await post(page(h), it1, { command: "verdict", note: "lgtm" })).status).toBe(202);
+    await h.controller.tickCommands();
+    expect(await h.store.listVerdicts(it1.id)).toEqual([]);
+    const [req] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
+    expect(req!.refusal).toContain("/verdict accept|changes|reject <none|minor|major|critical> <reason>");
+  });
+
+  it("a local item with no PR offers verdict too, and the controller takes it (decision 3)", async () => {
+    const h = await harness({ localAuth: true });
+    await h.store.claimLocalOwner(OWNER);
+    const actor = { kind: "system" as const, id: "system:test" };
+    const source = { type: "local", id: "local-1", link: "local:local-1" };
+    const { item } = await h.store.createWorkItem({ source, requester_id: OWNER, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
+    const r = await h.store.transition({
+      id: item.id, expected_version: item.version, actor, reason: "setup", patch: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", tier: 2 },
+    });
+    if (!r.ok) throw new Error("setup failed");
+    const d = page(h);
+    expect((await rows(d)).find((x) => x.id === item.id)!.commands!.map((c) => c.name)).toContain("verdict");
+    expect((await post(d, r.item, { command: "verdict", note: "accept" })).status).toBe(202);
+    await h.controller.tickCommands();
+    expect(await verdictOf(h, r.item)).toEqual([{ verdict: "accept", severity: "none", reason: null, target: "issue", implicit: false }]);
+  });
+});
