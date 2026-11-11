@@ -122,7 +122,7 @@ npm run factory -- settings history                    # who changed what, newes
 
 Applied live: `max_attempts`, `max_loops`, `max_restart`, `retry_base_ms`, `retry_max_ms` at the controller's next decision; `max_diff_lines`, `max_diff_files`, `run_timeout_ms`, `first_output_ms`, `models`, `model_by` at the next run that starts; `poll_interval_ms`, `tick_ms` at the next tick; `heartbeat_ms`, `lease_ms` at the next lease renewal; `workers` at the worker pool's next tick, never above the `workers` in `factory.config.json` (raise that by PR, then restart).
 
-Not applied live: every other key, which changes only by a PR to `factory.config.json` and a restart (`plugins`, `repo`, `store`, `floors`, `dials`, `auth`, the guards and secrets are refused outright). The update run's own timeout in the updater keeps the file value until the next restart. On MySQL, run `npm run migrate` first (step 0015 adds the settings tables).
+Not applied live: every other key, which changes only by a PR to `factory.config.json` and a restart (`plugins`, `repo`, `store`, `floors`, `dials`, `auth`, the guards and secrets are refused outright). The update run's own timeout in the updater keeps the file value until the next restart.
 
 ### Gate hooks (`agent_stop_checks`)
 

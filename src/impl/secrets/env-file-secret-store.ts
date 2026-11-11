@@ -78,18 +78,6 @@ export function parseEnvFile(text: string, names: Iterable<SecretName>): Map<Sec
   return out;
 }
 
-/**
- * Non-secret settings kept in the same file (e.g. MYSQL_HOST). No plugin declares them as secrets, so
- * the EgressScanner never treats them as secret values. Missing file: no settings.
- */
-export async function readEnvSettings(path: string, names: readonly string[]): Promise<Map<string, string>> {
-  const text = await readFile(path, "utf8").catch((err: NodeJS.ErrnoException) => {
-    if (err.code === "ENOENT") return "";
-    throw new Error(`cannot read secret file at ${path}: ${err.code ?? "unknown error"}`);
-  });
-  return new Map([...parseEnvLines(text)].filter(([key]) => names.includes(key)));
-}
-
 /** Every non-empty `KEY=value` line, comments and blanks skipped, surrounding quotes removed. */
 export function parseEnvLines(text: string): Map<string, string> {
   const out = new Map<string, string>();
