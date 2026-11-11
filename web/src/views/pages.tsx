@@ -179,6 +179,9 @@ export function NeedsYouPage() {
   );
 }
 
+/** The Floor's old name, kept for tests/ui-pause.test.tsx (outside this change's paths); drop it once that test names NeedsYouPage. */
+export const FloorPage = NeedsYouPage;
+
 /** Activity: what runs now, then the numbers of the last 24 hours. */
 export function ActivityPage() {
   const now = useNow();

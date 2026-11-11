@@ -304,6 +304,7 @@ describe("unreviewed merges", () => {
     cleanup();
     (overview as { unreviewed_merges_7d: number }).unreviewed_merges_7d = 0;
     try {
+      history.replaceState(null, "", "/app/activity");
       mount();
       await screen.findByRole("table", { name: "Running now" });
       expect(screen.queryByTestId("unreviewed-merges-line")).toBeNull();
