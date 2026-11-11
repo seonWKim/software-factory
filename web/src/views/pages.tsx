@@ -217,8 +217,8 @@ export function FloorPage() {
   );
 }
 
-const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
-const FILTER_LABELS: Record<string, string> = { needs: "All that need you", held: "Held", ...LEVEL_LABELS };
+const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
+const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: "Needs you", held: "Held" };
 
 /** The saved view: the tree unless the browser chose the list. */
 function savedView(): View {

@@ -8,11 +8,14 @@ export const STAGES: readonly Stage[] = ["NEW", "READY", "RUNNING", "REVIEW", "C
 export const TIERS: readonly Tier[] = [1, 2, 3, 4, 5];
 export const RUN_KINDS: readonly RunKind[] = ["triage", "implement", "review", "update", "improve"];
 
-/** `needs` is every level that waits for a person (NEEDS_YOU); every other value is one level. */
-export type StateFilter = "needs" | Level;
+/**
+ * `needs` ("Needs you") is every level that waits for a person (NEEDS_YOU); every other value is one level. The
+ * `needs_you` level is no option of its own: it shares the group's label, and the group shows it.
+ */
+export type StateFilter = "needs" | Exclude<Level, "needs_you">;
 export const STATE_OPTIONS: readonly { value: StateFilter; label: string }[] = [
-  { value: "needs", label: "All that need you" },
-  ...LEVELS.map((l) => ({ value: l, label: LEVEL_LABELS[l] })),
+  { value: "needs", label: "Needs you" },
+  ...LEVELS.filter((l): l is Exclude<Level, "needs_you"> => l !== "needs_you").map((l) => ({ value: l, label: LEVEL_LABELS[l] })),
 ];
 
 /** Longest search text kept; the rest is cut. */

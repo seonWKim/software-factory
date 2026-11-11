@@ -83,5 +83,8 @@ export const LEVEL_LABELS: Record<string, string> = {
   closed: "Closed",
 };
 
-/** Levels that wait on the operator: the Floor lists them first. */
-export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck"] as const;
+/**
+ * Levels that wait on the operator: the Floor lists them first. Never "Blocked by another task". `needs_human` is the
+ * id before the levels split (design 09-status-page, 2026-11-12), kept until tests/ui-thread.test.tsx's fixture moves.
+ */
+export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck", "needs_human"] as const;

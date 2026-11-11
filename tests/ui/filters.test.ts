@@ -109,6 +109,11 @@ describe("ui filters", () => {
     expect(facetCounts(split, NO_FILTERS).state.needs).toBe(2);
   });
 
+  it("the needs_you level is no option of its own: the Needs you group shows it", () => {
+    expect(parseFilters(new URLSearchParams("state=needs_you"))).toEqual({ ok: false, error: "Unknown state." });
+    expect(applyFilters([row("you", { level: "needs_you" })], parse("state=needs")).map((r) => r.name)).toEqual(["you"]);
+  });
+
   it("the old level ids needs_human and waiting_on_issue are unknown states", () => {
     for (const old of ["needs_human", "waiting_on_issue"]) {
       expect(parseFilters(new URLSearchParams(`state=${old}`))).toEqual({ ok: false, error: "Unknown state." });

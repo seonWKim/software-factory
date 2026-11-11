@@ -224,7 +224,7 @@ describe("ui api: items", () => {
     expect(api.facets.stage.CLOSED).toBe(1);
     expect(api.facets.state.closed).toBe(1);
     const page = (await get(d, "/classic")).body;
-    expect(page).toContain(`<option value="needs">All that need you (3)</option>`);
+    expect(page).toContain(`<option value="needs">Needs you (3)</option>`);
     expect(page).toContain(`>All (${api.facets.allStates})</option>`);
   });
 
