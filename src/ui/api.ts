@@ -258,7 +258,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     pending: status.pending ?? [],
   };
   // System actions (design §9 Status page): store reads and in-process values only, no forge call.
-  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
+  const actions = await systemActions({ store: s, factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
   const system_actions = [];
   for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
   const token = c.d.lastChecks?.tokenDays() ?? null;
