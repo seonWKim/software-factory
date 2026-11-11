@@ -4,7 +4,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { COMMAND_TABLE, type TableCommand, chatCliArgv, chatCommandListMarkdown, cliUsageOf, parseChatCommand } from "../src/core/command-table.js";
-import { type CommandPhase, THREAD_BARE_COMMANDS, chatForm, chatHelpReply, commandState, parseComment, parseLink, withSlash } from "../src/core/commands.js";
+import {
+  type CommandPhase, THREAD_BARE_COMMANDS, chatForm, chatHelpReply, commandSpec, commandState, parseComment, parseLink, withSlash,
+} from "../src/core/commands.js";
 import { CLI_TOP_WORDS, parseLocalCliArgs } from "../src/core/local-cli.js";
 import { SETTINGS_TOP_WORDS, parseModeArgs, parseSettingsArgs } from "../src/settings-cmd.js";
 import { APP_COMMANDS } from "../src/ui/commands.js";
@@ -16,7 +18,7 @@ function example(form: string): string {
     .replace(/\[[^\]]*\]/g, "")
     .split(/\s+/)
     .filter((w) => w !== "")
-    .map((w) => fill[w] ?? (w.includes("|") ? w.split("|")[0]! : w.startsWith("<") ? "words" : w))
+    .map((w) => fill[w] ?? (w.includes("|") ? w.split("|")[0]!.replace(/^</, "") : w.startsWith("<") ? "words" : w))
     .join(" ");
 }
 
@@ -33,17 +35,34 @@ describe("the command table", () => {
     for (const c of COMMAND_TABLE) expect({ name: c.name, r: cliParse(c) }).not.toMatchObject({ r: { error: expect.anything() } });
   });
 
-  it("every entry has a chat form the chat parser reads back as that entry; a request is never parsed", () => {
+  it("every entry has a chat form the chat parser reads back as that entry; a request is never parsed; a comment command is the comment's", () => {
     for (const c of COMMAND_TABLE) {
       expect(c.chat, c.name).not.toBe("");
       const parsed = parseChatCommand(example(c.chat));
       if (c.chat_args === "request") expect(parsed, c.name).toBeNull();
-      else expect(parsed?.kind === "command" ? parsed.entry.name : null, c.name).toBe(c.name);
+      else if (c.chat_args === "comment") {
+        // Passed on as the comment command (its event, keyed on it), never stored as a CLI row from chat.
+        expect(parsed, c.name).toBeNull();
+        expect(parseComment(example(c.chat)), c.name).toMatchObject({ kind: "command", name: c.name });
+      } else expect(parsed?.kind === "command" ? parsed.entry.name : null, c.name).toBe(c.name);
     }
   });
 
+  it("verdict: a CLI item command for record_verdict, its chat form `/verdict`, the comment command's usage", () => {
+    const verdict = COMMAND_TABLE.find((c) => c.name === "verdict");
+    expect(verdict).toMatchObject({
+      args: "<id> accept|changes|reject <none|minor|major|critical> <reason>", who: "record_verdict", group: "item", item: true, edge: false,
+      chat: commandSpec("verdict").usage, chat_args: "comment",
+    });
+    // In the table after the other comment item commands, before the local merge.
+    const names = COMMAND_TABLE.map((c) => c.name);
+    expect(names.indexOf("verdict")).toBeGreaterThan(names.indexOf("resolve"));
+    expect(names.indexOf("verdict")).toBeLessThan(names.indexOf("merge"));
+    expect(CLI_TOP_WORDS).toContain("verdict");
+  });
+
   it("a chat command stands for the CLI argv of the same command, the item ID coming from the thread", () => {
-    for (const c of COMMAND_TABLE.filter((x) => x.chat_args !== "request" && !x.edge)) {
+    for (const c of COMMAND_TABLE.filter((x) => x.chat_args !== "request" && x.chat_args !== "comment" && !x.edge)) {
       const parsed = parseChatCommand(example(c.chat));
       if (parsed?.kind !== "command") throw new Error(c.name);
       const { word, args } = chatCliArgv(parsed, c.item ? "wi_1" : null);

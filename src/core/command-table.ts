@@ -9,16 +9,18 @@ import type { CommandName } from "./commands.js";
  */
 
 /** Who may run a command: anyone, the holder of an action's role, or the local owner. */
-export type CommandWho = "anyone" | "submit_work" | "approve_spec" | "approve_merge" | "owner";
+export type CommandWho = "anyone" | "submit_work" | "approve_spec" | "approve_merge" | "record_verdict" | "owner";
 
 /** The CLI handler that runs it: local tasks, item commands, local users, or settings and the mode. */
 export type CommandGroup = "task" | "item" | "users" | "settings";
 
 /**
  * What the chat form takes after its words: nothing, one ID, free text (notes, feedback, a reason), any words
- * (checked by the CLI's own parser), or (`request`) the whole mention, in plain words, which is never parsed.
+ * (checked by the CLI's own parser), (`request`) the whole mention, in plain words, which is never parsed, or
+ * (`comment`) a comment command the chat source passes on as that comment's event, keyed on it, never as a stored
+ * CLI row: read by the comment parser (src/core/commands.ts parseComment), not by parseChatCommand.
  */
-export type ChatArgs = "none" | "id" | "text" | "any" | "request";
+export type ChatArgs = "none" | "id" | "text" | "any" | "request" | "comment";
 
 export interface TableCommand {
   /** The words after `factory`, e.g. `task show`. */
@@ -72,6 +74,13 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   item("revise", "<feedback>", "Store `/revise` for the item"),
   item("reject", "<reason>", "Store `/reject` for the item"),
   item("resolve", "[notes]", "Store `/resolve` for the item"),
+  {
+    // Checked with the controller's own parser (parseVerdict) before it is stored; in chat it stays the comment
+    // command, so a Slack thread's `/verdict` is keyed on its event as before.
+    name: "verdict", args: "<id> accept|changes|reject <none|minor|major|critical> <reason>", who: "record_verdict", group: "item",
+    does: "Store `/verdict` for the item: a verdict on its result, which changes no state", prints: ITEM_PRINTS,
+    chat: "/verdict accept|changes|reject <severity> <reason>", chat_args: "comment", item: true, edge: false,
+  },
   {
     name: "merge", args: "<id>", who: "approve_merge", group: "item",
     does: "Merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself)",
@@ -135,6 +144,7 @@ const WHO: Record<CommandWho, string> = {
   submit_work: "anyone who may submit work",
   approve_spec: "the owner and approvers",
   approve_merge: "the owner and approvers (approve_merge)",
+  record_verdict: "the owner and approvers (record_verdict)",
   owner: "the local owner",
 };
 
@@ -169,11 +179,11 @@ function chatWords(c: TableCommand): string[] {
   return out;
 }
 
-const BY_WORDS = COMMAND_TABLE.filter((c) => c.chat_args !== "request").sort((a, b) => chatWords(b).length - chatWords(a).length);
+const BY_WORDS = COMMAND_TABLE.filter((c) => c.chat_args !== "request" && c.chat_args !== "comment").sort((a, b) => chatWords(b).length - chatWords(a).length);
 
 /**
- * The chat command in `text` (the words after a mention), or null when it is none: then it is a request or a comment
- * in plain words. A form's words match whole and in any case; a form shown with `/` needs it, any other takes an
+ * The chat command in `text` (the words after a mention), or null when it is none: then it is a request, a comment
+ * command (`comment`, e.g. `/verdict`) or a comment in plain words. A form's words match whole and in any case; a form shown with `/` needs it, any other takes an
  * optional one. Its arguments must fit: `none` takes nothing more, `id` one word, `text` and `any` the rest. So
  * "list the open bugs" is a request, not `list`. `help` alone is help.
  */

@@ -25,6 +25,11 @@ import {
 
 /** Commands sent from their own form, not with the note box. */
 const FORMS = ["reject", "revise"];
+/** In Needs you, which has no note box, verdict has its own text form too (issue #513). */
+const NEED_FORMS = [...FORMS, "verdict"];
+
+/** The verdict as typed after `/verdict`, the placeholder of its text form. */
+export const VERDICT_PLACEHOLDER = "accept|changes|reject <none|minor|major|critical> <reason>";
 
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
 export type LocalSend = { seq: number } | { error: string };
@@ -243,10 +248,38 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
 }
 
 /**
- * A Needs-you row's command buttons (design §9, issue #453): one per entry of the row's `commands` (the item API's,
- * each allowed or not for the viewer). Approve, retry and resolve send at once; reject and revise open the item
- * page's forms first, and reject confirms what it closes. One the viewer may not send is disabled with its reason
- * beside it. A send re-reads the list, so the row moves on; a failed send shows its error.
+ * A Needs-you row's verdict form (issue #513): one line, as typed after `/verdict`, sent as the item page's note box
+ * sends it. The controller parses it; a malformed one is refused with the usage line, shown beside the button.
+ */
+export function VerdictForm({ disabled, onSend, onCancel }: { disabled: boolean; onSend: (note: string) => void; onCancel: () => void }) {
+  const [text, setText] = useState("");
+  return (
+    <span role="group" aria-label="Record a verdict" data-verdict-form className="inline-flex flex-wrap items-center gap-2">
+      <input
+        aria-label="Verdict"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder={VERDICT_PLACEHOLDER}
+        className={cn(
+          "h-8 w-full max-w-md min-w-0 rounded-md border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900",
+          "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
+        )}
+      />
+      <Button variant="outline" className={textButton} disabled={disabled || text.trim() === ""} onClick={() => onSend(text.trim())}>
+        Send verdict
+      </Button>
+      <Button variant="outline" className={textButton} onClick={onCancel}>
+        Cancel
+      </Button>
+    </span>
+  );
+}
+
+/**
+ * A Needs-you row's command buttons (design §9, issues #453, #513): one per entry of the row's `commands` (the item
+ * API's, each allowed or not for the viewer). Approve, retry and resolve send at once; reject and revise open the item
+ * page's forms first, and reject confirms what it closes; verdict opens its one-line form. One the viewer may not send
+ * is disabled with its reason beside it. A send re-reads the list, so the row moves on; a failed send shows its error.
  */
 export function NeedCommands({ id, commands, pr }: { id: string; commands: readonly ItemCommand[]; pr: string | null }) {
   const { on, busy, local, send: post } = useCommandSend(id);
@@ -259,7 +292,7 @@ export function NeedCommands({ id, commands, pr }: { id: string; commands: reado
     <span data-need-commands className="inline-flex flex-wrap items-center gap-2">
       {commands.map((c) => {
         const disabled = !on || busy || !c.allowed;
-        const hasForm = FORMS.includes(c.name);
+        const hasForm = NEED_FORMS.includes(c.name);
         return (
           <span key={c.name} data-command={c.name} className="inline-flex flex-wrap items-center gap-2">
             <Button
@@ -275,6 +308,7 @@ export function NeedCommands({ id, commands, pr }: { id: string; commands: reado
             <OutcomeText outcome={c.allowed ? commandOutcome([], c.name, local[c.name]) : notAllowed(c)} />
             {open === c.name && c.name === "reject" && <RejectForm pr={pr} disabled={disabled} onSend={(t) => void send("reject", t)} onCancel={close} />}
             {open === c.name && c.name === "revise" && <ReviseForm disabled={disabled} onSend={(t) => void send("revise", t)} onCancel={close} />}
+            {open === c.name && c.name === "verdict" && <VerdictForm disabled={disabled} onSend={(t) => void send("verdict", t)} onCancel={close} />}
           </span>
         );
       })}

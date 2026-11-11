@@ -1,4 +1,5 @@
 import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js";
+import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
 import { RECURRING_FAILURE, type Run, type RunKind, type WorkItem } from "./types.js";
@@ -49,10 +50,12 @@ const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed" && p !== "merged
 /** Open items and merged ones: where a `/verdict` applies. */
 const VERDICT_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
 
-/** What the human can do depends on the phase and, for `/verdict`, on whether a PR exists yet. */
+/** What the human can do depends on the phase and, for `/verdict`, on whether a PR exists yet or the item is local. */
 export interface CommandState {
   phase: CommandPhase;
   has_pr: boolean;
+  /** A local item: the controller judges it on the item itself, so `/verdict` needs no PR there (issue #452). */
+  local?: true;
   /**
    * At `agent_needs_human`: the kind of run that asked (read from the item's runs; the item's fields cannot tell
    * a resolve block from an implement block). Absent when not known.
@@ -70,7 +73,7 @@ export interface CommandSpec {
   description: string;
   /** Phases where the controller accepts it. */
   phases: readonly CommandPhase[];
-  /** Also needs the item to have a PR. */
+  /** Also needs the item to have a PR, unless it is a local item (`CommandState.local`). */
   needs_pr: boolean;
   /** Whether applying it can change the item's stage or block. */
   changes_state: boolean;
@@ -218,7 +221,7 @@ export function failedRunKind(it: WorkItem): RunKind | undefined {
   return undefined;
 }
 
-type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref"> & Partial<Pick<WorkItem, "merge_sha">>;
+type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref"> & Partial<Pick<WorkItem, "merge_sha" | "source">>;
 
 /** The phase of an item; the same checks, in the same order, as the controller's command handling. */
 export function commandPhase(it: ItemState): CommandPhase {
@@ -251,7 +254,8 @@ export function commandPhase(it: ItemState): CommandPhase {
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
 export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
   const phase = commandPhase(it);
-  return { phase, has_pr: it.change_ref !== null, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
+  const local = it.source?.type === LOCAL_SOURCE ? { local: true as const } : {};
+  return { phase, has_pr: it.change_ref !== null, ...local, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
 }
 
 /** The command state of `it` read with its runs (the kind of run that asked at agent_needs_human), as the controller reads it. */
@@ -260,7 +264,7 @@ export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandSt
 }
 
 export function applies(c: CommandSpec, s: CommandState): boolean {
-  if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr)) return false;
+  if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr && !s.local)) return false;
   return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
 }
 
@@ -378,7 +382,7 @@ function whenText(c: CommandSpec): string {
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const onPr = c.pr_phases?.length ? `; on its PR: ${c.pr_phases.map((p) => PHASE_LABELS[p]).join(", ")}` : "";
-  return (c.needs_pr ? `${where}, once it has a PR` : where) + onPr;
+  return (c.needs_pr ? `${where}, once it has a PR (a local item also without one)` : where) + onPr;
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */

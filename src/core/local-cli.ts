@@ -4,13 +4,15 @@ import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
 import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
+import { parseVerdict } from "./verdict.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
- * `retry`, `revise`, `reject` and `resolve` append one row to the CLI command log (`command_inbox`) and change no item
- * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
- * with its text before any write (issue #528). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
+ * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change
+ * no item state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and
+ * `verdict` the controller's parser (`parseVerdict`, issue #513), each refusing with the controller's text before any
+ * write (issue #528). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
  * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
  * answers (design 05-sources, CLI intake). Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
@@ -68,7 +70,7 @@ export const CLI_TOP_WORDS = topWords(["task", "item", "users"]);
 /** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
 export const HELP_WORD = "help";
 
-const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve"] as const;
+const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict"] as const;
 
 /** `merge` is the local merge (src/core/local-merge.ts); the others are the comment commands of the same name. */
 export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
@@ -223,8 +225,9 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!item) return fail(`no work item ${a.id}`);
       const name = a.command === MERGE_COMMAND ? "factory merge" : `/${a.command}`;
       if (a.command === MERGE_COMMAND && item.source.type !== "local") return fail(`${a.id} is not a local work item: merge its change on the forge instead`);
-      // The controller's phase check, before any write: the same refusal it would post (issue #528).
-      const refused = a.command === "approve" ? approveRefusal(item) : null;
+      // The controller's phase check (approve) or parser (verdict), before any write: the same refusal it would post
+      // (issues #528, #513).
+      const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(a.text) : null;
       if (refused !== null) return fail(refusalText(name, refused));
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
@@ -274,6 +277,12 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       return { code: 0, lines: [`${a.user} is now ${a.role === "approver" ? "an approver" : "a requester"}`] };
     }
   }
+}
+
+/** Why the controller would refuse `/verdict <text>` as malformed (its usage line, or the part that is wrong), else null. */
+function verdictRefusal(text: string): string | null {
+  const parsed = parseVerdict(text);
+  return parsed.ok ? null : parsed.refuse;
 }
 
 async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
