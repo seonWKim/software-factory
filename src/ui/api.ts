@@ -14,7 +14,7 @@ import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
-import { actorGrant, itemCommands, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
+import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
@@ -463,6 +463,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
     commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v)), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the viewer's (#453)
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
+    /** The item's pending proposals (the command box's and its thread's replies), each with its commands as typed lines. */
+    proposals: await itemProposals(c.d, it.id, (v) => c.text(v)),
   };
 }
 

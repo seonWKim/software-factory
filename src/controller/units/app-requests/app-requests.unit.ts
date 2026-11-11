@@ -20,7 +20,7 @@ const GATE: ReadonlyMap<string, Exclude<CommandEvent["kind"], "budget_continue">
   ["approve", "spec_approved"], ["reject", "spec_rejected"], ["revise", "revise_requested"], ["retry", "retry_requested"], ["resolve", "resolve_requested"],
 ]);
 /** The commands applied from an app request, as a refusal names them. */
-const APPLIED = "only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise`, `verdict`, a sentence and a proposal's confirm or cancel are applied from an app request";
+const APPLIED = "only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise` and `verdict` are applied from an app request";
 
 /** The page's edge passport, checked for expiry at the time the request was recorded (absent: none). */
 function appPassport(r: AppCommandRequest) {

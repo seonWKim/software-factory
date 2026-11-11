@@ -8,6 +8,7 @@ import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { PAGE_COMMANDS_PATH } from "../pages.js";
+import { CommandBox, type Outcome, OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import {
   ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approveNote, approvePhase, chosenAnswers, field, initialChoices, textButton, type CommandDialogProps,
 } from "./item-decisions.js";
@@ -23,7 +24,8 @@ import {
 // (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
 // A waiting spec (issue #526) shows its In short above Commands and its decisions as questions above the note box;
 // approve in an approve phase (the spec gate, the floor block, the Rule of Two) goes through a confirm step first;
-// approve sends the answers as `N: <answer>` lines.
+// approve sends the answers as `N: <answer>` lines. Below the buttons, the item's pending proposals and the command
+// box (command-box.tsx), sent through the same app request route.
 
 /** Commands sent from their own dialog, not with the note box. */
 const FORMS = ["reject", "revise"];
@@ -49,8 +51,6 @@ export function verdictNote(kind: VerdictChoice, severity: VerdictSeverityChoice
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
 export type LocalSend = { seq: number } | { error: string };
 
-/** The text next to a command's button, or null for none. */
-export type Outcome = { tone: "error" | "status"; text: string } | null;
 
 /** The text beside a button the viewer's grants do not allow: the controller's reason, in plain words. */
 export function notAllowed(c: ItemCommand): Outcome {
@@ -70,19 +70,6 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
   return { tone: "status", text: latest.handled_at === null ? "sent" : "Done" };
 }
 
-function OutcomeText({ outcome }: { outcome: Outcome }) {
-  if (!outcome) return null;
-  return (
-    <span
-      role={outcome.tone === "error" ? "alert" : "status"}
-      data-outcome
-      className={cn("text-xs text-pretty break-words", outcome.tone === "error" ? "text-red-700 dark:text-red-300" : "text-zinc-600 dark:text-zinc-400")}
-    >
-      {outcome.text}
-    </span>
-  );
-}
-
 /**
  * Sending app commands for item `id`: `send` posts one with the session's token, keeps what this page did with each
  * command (`local`), and on success re-reads the item and the list, so the controller's reply shows. `on`: commands
@@ -94,16 +81,18 @@ function useCommandSend(id: string) {
   const [busy, setBusy] = useState(false);
   const [local, setLocal] = useState<Record<string, LocalSend>>({});
   const token = session.data?.csrf_token;
-  const send = async (command: string, note: string): Promise<boolean> => {
+  const send = async (command: string, note: string, proposal?: string): Promise<boolean> => {
     if (!token) return false;
     setBusy(true);
+    // A proposal's Confirm all or Cancel is kept under the proposal's ID, every other send under its command.
+    const key = proposal ?? command;
     try {
-      const r = await postCommand(token, id, command, note);
-      setLocal((m) => ({ ...m, [command]: r.ok ? { seq: r.seq } : { error: r.error } }));
+      const r = await postCommand(token, id, command, note, proposal);
+      setLocal((m) => ({ ...m, [key]: r.ok ? { seq: r.seq } : { error: r.error } }));
       if (r.ok) await Promise.all([client.invalidateQueries({ queryKey: [API.item(id)] }), client.invalidateQueries({ queryKey: [API.items] })]);
       return r.ok;
     } catch (err) {
-      setLocal((m) => ({ ...m, [command]: { error: err instanceof Error ? err.message : String(err) } }));
+      setLocal((m) => ({ ...m, [key]: { error: err instanceof Error ? err.message : String(err) } }));
       return false;
     } finally {
       setBusy(false);
@@ -129,6 +118,19 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const decisions = phase === "spec_pending" || phase === "max_revisions" ? (data?.spec?.decisions ?? []) : [];
   const choices = picked ?? initialChoices(decisions);
   const answers = chosenAnswers(decisions, choices);
+  // The item's pending proposals and the command box, whatever the state: a sentence may name any open item.
+  const sentenceParts = (
+    <>
+      <PendingProposals
+        proposals={data?.proposals ?? []}
+        enabled={enabled}
+        busy={busy}
+        outcomes={(proposal) => commandOutcome([], proposal, local[proposal])}
+        send={post}
+      />
+      <CommandBox enabled={enabled} busy={busy} outcome={commandOutcome(replies, SENTENCE, local[SENTENCE])} send={post} />
+    </>
+  );
   // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
   if (commands.length === 0 && !showMerge) {
     return (
@@ -138,6 +140,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
           <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
             No command applies now; the factory continues on its own. Commands show here when the item waits for you.
           </p>
+          {sentenceParts}
         </Section>
       </>
     );
@@ -255,6 +258,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             onClose={() => setOpen(null)}
           />
         )}
+        {sentenceParts}
       </Section>
     </>
   );
