@@ -2,6 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
+import { dependencyReason, shortRef } from "../../../core/coordination.js";
 import { commandFooter, commandState, retryPathsReply } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
@@ -27,6 +28,12 @@ const EMPTY_DIFF = "empty_diff";
 const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
 const DIFF_TOO_LARGE = "diff_too_large";
+
+/** True when `text` names `ref` (`#9`, `owner/name#9`) as a whole: `#9` is not part of `#92` or `other/repo#9`. */
+function namesRef(text: string, ref: string): boolean {
+  const escaped = ref.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  return new RegExp(`(?<![\\w./#-])${escaped}(?!\\d)`).test(text);
+}
 /** A failed run's error code (`unknown` when the stored outcome has none), or `cancelled`. */
 const failedCode = (run: Run): string => (run.outcome?.status === "failed" ? run.outcome.error_code || "unknown" : "cancelled");
 /**
@@ -932,7 +939,9 @@ export class RunResultsUnit {
    * flags them) and the command footer. The run's tokens are added as for any finished run; the ack fences it.
    */
   async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
-    const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
+    const waits = run.kind === "implement" ? await this.dependencyStop(it, run, ask, tokens) : null;
+    if (waits) return waits;
+    const patch ={ blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
     const footer = commandFooter(commandState({ ...it, ...patch }, run.kind));
     const answer = run.kind === "resolve"
       ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
@@ -963,6 +972,36 @@ export class RunResultsUnit {
       reason: AGENT_NEEDS_HUMAN,
       detail: { run_id: run.id, run_kind: run.kind },
       ack_run: run.id,
+    };
+  }
+
+  /**
+   * An implement run's needs_human whose reason names one of the item's stored open dependency edges (design §5
+   * Restarts, decided 2026-11-12): the agent waits on an unmerged dependency, not on a person. The item is held on
+   * `blocked_on: dependency` with `waiting for #N to merge`, and one implement run is queued under a key that names
+   * the stopped run: the store keeps it queued while the item is held, and coordination's release lets it start
+   * once the edge merges. One comment says what the run waits for, with no retry footer. Null when the reason names
+   * no open edge, or the item has a PR (coordination changes only an item without one).
+   */
+  async dependencyStop(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
+    if (it.change_ref !== null) return null;
+    const open = (await this.c.k.d.store.listDependencyEdges({ work_item_id: it.id }))
+      .filter((e) => e.state === "open" && namesRef(ask.reason, shortRef(e.depends_on, it.source.id)))
+      .map((e) => e.depends_on);
+    if (open.length === 0) return null;
+    const reason = dependencyReason(open, it.source.id);
+    await this.c.unit("outbox").comment(it, `needs-human:${run.id}`, [
+      "## Factory: the implement run waits for a dependency",
+      "",
+      `The implement run stopped: ${reason}. Nothing was pushed. It starts again on its own once ${open.length === 1 ? "it merges" : "they merge"}.`,
+    ].join("\n"));
+    return {
+      patch: { blocked_on: "dependency", blocked_reason: reason, token_cost: tokens },
+      actor: SYSTEM,
+      reason: "dependency_hold",
+      detail: { run_id: run.id, run_kind: run.kind, depends_on: open.join(",") },
+      ack_run: run.id,
+      enqueue: { kind: "implement", idempotency_key: `${it.id}:implement:after-dependency:${run.id}` },
     };
   }
 

@@ -74,13 +74,14 @@ export const shortRev =(rev: string | null | undefined) => (rev ? rev.slice(0, 7
 export const LEVEL_LABELS: Record<string, string> = {
   ready_to_merge: "Ready to merge",
   needs_approval: "Needs approval",
-  needs_human: "Needs a human",
+  needs_you: "Needs you",
+  needs_triage: "Needs triage",
   stuck: "Stuck",
   running: "Running",
   queued: "Queued",
-  waiting_on_issue: "Waiting on another issue",
+  blocked_by_task: "Blocked by another task",
   closed: "Closed",
 };
 
 /** Levels that wait on the operator: the Floor lists them first. */
-export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_human", "stuck"] as const;
+export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck"] as const;
