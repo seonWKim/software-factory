@@ -12,6 +12,8 @@ web/dist/
 .vite-cache/
 /dist.*
 /web/dist.*
+# The macOS app build (npm run build:desktop:macos)
+desktop/out/
 
 # Browser screenshots from the local ui-reviewer agent (.claude/agents/ui-reviewer.md)
 .playwright-mcp/

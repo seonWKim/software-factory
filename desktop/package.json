@@ -1,0 +1,7 @@
+{
+  "name": "software-factory",
+  "productName": "Software Factory",
+  "private": true,
+  "type": "module",
+  "main": "electron/macos/main.js"
+}
