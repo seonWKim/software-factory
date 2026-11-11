@@ -18,9 +18,21 @@ import { PLUGIN_KINDS, REGISTRY, createPlugin } from "../src/plugins.js";
 import { LEARNED_PACK_DIR, PROJECT_PACK_DIR, mainCheckout, mergeSections, packSkills } from "../src/packs/packs.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import {
-  FAKE_GITHUB_TOOLS, FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config as fakeConfig, fakeRepoLookup, silent, triageSpec, waitFor,
+  FAKE_GITHUB_TOOLS, FakeBroker, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config as fakeConfig, fakeRepoLookup, prompts as fakePrompts, silent, triageSpec, waitFor,
 } from "./helpers/fakes.js";
 import { git } from "./helpers/git-fixture.js";
+import type { AuthAction, AuthDecision, AuthProvider, AuthResource, Principal } from "../src/interfaces/auth-provider.js";
+import { type FactoryConfig, toolGrantsConfig } from "../src/core/config.js";
+import { PR_ONLY_KEYS } from "../src/core/settings.js";
+import type { UserId, WorkerId } from "../src/core/types.js";
+import { ROLE_ACTIONS as IDENTITY_ROLE_ACTIONS } from "../src/identity/index.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval } from "../src/packs/pack-approvals.store.js";
+import { PACK_TOOL_REFUSED, checkPackGrants } from "../src/packs/pack-grants.js";
+import { loadSettingCatalog } from "../src/runtime/index.js";
+import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
+import { writePackApproval } from "../src/ui/packs-api.js";
+import { Worker } from "../src/worker/index.js";
 
 // Every way to start a process, as pass-through spies: the pack add must call none of them (the fake process runner).
 vi.mock("node:child_process", async (original) => {
@@ -519,5 +531,223 @@ describe("packs: tool and MCP server entries (pack add)", () => {
     const { store } = await newStore();
     await m!.up({ dialect: "sqlite", run: (sql, p) => store.db.run(sql, p), all: (sql, p) => store.db.all(sql, p) });
     expect(await store.db.all("SELECT * FROM ext_packs_entries")).toEqual([]);
+  });
+});
+
+describe("packs: approvals, the pin and the grant check", () => {
+  const ME = "local:me@example.com" as UserId;
+  const READER = { name: "docs-reader", description: "Reads the team docs.", read_only: true };
+  const TRACKER = { name: "issue-tracker", description: "Reads issues from the tracker.", credential: "TRACKER_TOKEN", read_only: true };
+  const GRANT = "pack:tool:docs-reader";
+
+  /** A fake AuthProvider: allows or refuses every call, and records each one. */
+  class FakeToolAuth implements AuthProvider {
+    calls: { user_id: string; action: AuthAction; resource: AuthResource }[] = [];
+    constructor(private readonly allow: boolean) {}
+    async resolve(): Promise<null> {
+      return null;
+    }
+    async authorize(p: Principal, action: AuthAction, resource: AuthResource): Promise<AuthDecision> {
+      this.calls.push({ user_id: p.user_id, action, resource });
+      return this.allow ? { allow: true } : { allow: false, reason: "no_role" };
+    }
+  }
+
+  async function open() {
+    const clock = new FakeClock(new Date("2026-11-11T16:00:00.000Z"));
+    const { store } = await newStore(clock);
+    const now = () => clock.now().toISOString();
+    const entries = new PackEntriesStore(store.db, now);
+    const approvals = new PackApprovalsStore(store.db, now);
+    /** Stores `descriptor` as a pending tool, as `pack add` would; returns its description_hash. */
+    const add = async (descriptor: Record<string, unknown>) => {
+      const canonical = canonicalJson(descriptor as never);
+      const description_hash = createHash("sha256").update(canonical).digest("hex");
+      const credential_name = typeof descriptor.credential === "string" ? descriptor.credential : null;
+      await entries.insert({ kind: "tool", name: String(descriptor.name), description_hash, descriptor: canonical, credential_name, added_by: ME });
+      clock.advance(1000);
+      return description_hash;
+    };
+    const change = (auth: AuthProvider, r: ApprovalRequest) => changeApproval({ auth, entries, approvals, user_id: ME }, r);
+    const rows = () => store.db.all("SELECT kind, name, description_hash, action, user_id, at FROM ext_packs_approvals ORDER BY seq");
+    const check = (grants: readonly string[], auto = false) => checkPackGrants(store.db, grants, auto);
+    return { clock, store, entries, approvals, add, change, rows, check };
+  }
+
+  /** One triage run of an item through a Worker with `grants` for triage; the run as stored, and the fake runner and broker. */
+  async function runWith(s: Awaited<ReturnType<typeof open>>, grants: readonly string[], extra: Partial<FactoryConfig> = {}) {
+    const { item } = await s.store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: `t-${grants.join()}` } });
+    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }) });
+    const broker = new FakeBroker();
+    const worker = new Worker({
+      id: "w1" as WorkerId, store: s.store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(), clock: s.clock,
+      config: { ...fakeConfig, tool_grants: { triage: grants }, ...extra }, prompts: fakePrompts, log: silent, scanner: cleanScanner, toolEnv: {}, awake: new NoKeepAwake(),
+    });
+    await worker.tick();
+    const [run] = await s.store.listRuns(item.id);
+    return { run: run!, runner, broker };
+  }
+
+  it("a granted but unapproved entry is refused, an approved but ungranted one is never listed, and both is not_started", async () => {
+    const s = await open();
+    const hash = await s.add(READER);
+    expect(await s.check(["test.read_note", GRANT])).toEqual({ broker: ["test.read_note"], refused: [{ grant: GRANT, reason: "not_approved" }] });
+    expect(await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" })).toMatchObject({ ok: true, ref: { description_hash: hash } });
+    expect(await s.check(["test.read_note"])).toEqual({ broker: ["test.read_note"], refused: [] });
+    expect(await s.check([GRANT])).toEqual({ broker: [], refused: [{ grant: GRANT, reason: "not_started" }] });
+    expect(await s.check(["pack:tool:missing"])).toEqual({ broker: [], refused: [{ grant: "pack:tool:missing", reason: "no_entry" }] });
+  });
+
+  it("a run that passes both checks is refused with not_started: no agent, no process, no tool call", async () => {
+    const s = await open();
+    await s.add(READER);
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
+    const starters = [childProcess.spawn, childProcess.spawnSync, childProcess.exec, childProcess.execSync, childProcess.execFile, childProcess.execFileSync, childProcess.fork];
+    for (const f of starters) vi.mocked(f).mockClear();
+    const { run, runner, broker } = await runWith(s, [GRANT]);
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${GRANT} not_started` });
+    expect(runner.specs).toEqual([]);
+    expect(starters.map((f) => vi.mocked(f).mock.calls.length)).toEqual(starters.map(() => 0));
+    expect([broker.calls, broker.preflights, broker.stores]).toEqual([[], [], []]);
+  });
+
+  it("a changed description turns the name off until the owner approves the new hash; the next run is refused", async () => {
+    const s = await open();
+    const first = await s.add(READER);
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
+    expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_started" }]);
+    const second = await s.add({ ...READER, description: "Reads and edits the team docs." });
+    expect(second).not.toBe(first);
+    expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
+    const { run, runner } = await runWith(s, [GRANT]);
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${GRANT} not_approved` });
+    expect(runner.specs).toEqual([]);
+    // Approving the old hash again changes nothing; approving the new one turns the name back on.
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader", hash: first.slice(0, 12) });
+    expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
+    expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_started" }]);
+  });
+
+  it("the setting packs.auto_approve_read_only is a review-only worker boolean, default false, and off unless the config says true", async () => {
+    const setting = (await loadSettingCatalog()).get("packs.auto_approve_read_only");
+    expect(setting).toMatchObject({ owner: "worker", type: "boolean", default: false, changed_by: "review", applies: null });
+    expect(PR_ONLY_KEYS).toContain("packs.auto_approve_read_only");
+    expect((await load(fixture().codeRoot)).config.packs_auto_approve_read_only).toBeUndefined();
+    expect((await load(fixture({ packs: { auto_approve_read_only: true } }).codeRoot)).config.packs_auto_approve_read_only).toBe(true);
+    expect((await loadError(fixture({ packs: { auto_approve_read_only: "yes" } }).codeRoot)).message).toContain("packs.auto_approve_read_only must be true or false");
+  });
+
+  it("with the setting on, only a read-only entry with no credential is auto-approved", async () => {
+    const s = await open();
+    await s.add(READER);
+    await s.add(TRACKER);
+    await s.add({ name: "writer", description: "Writes docs." });
+    await s.add({ name: "not-read-only", description: "Reads docs.", read_only: "true" });
+    const grants = [GRANT, "pack:tool:issue-tracker", "pack:tool:writer", "pack:tool:not-read-only"];
+    expect((await s.check(grants, true)).refused.map((r) => r.reason)).toEqual(["not_started", "not_approved", "not_approved", "not_approved"]);
+    // Off (the default): none is auto-approved, and no row was written either way.
+    expect((await s.check(grants, false)).refused.map((r) => r.reason)).toEqual(["not_approved", "not_approved", "not_approved", "not_approved"]);
+    expect(await s.rows()).toEqual([]);
+    const { run } = await runWith(s, [GRANT], { packs_auto_approve_read_only: true });
+    expect(run.outcome).toMatchObject({ status: "failed", detail: `pack tools refused: ${GRANT} not_started` });
+  });
+
+  it("an approve or revoke goes through AuthProvider.authorize with approve_tool and writes one row with the user ID and hash; a refused one writes nothing", async () => {
+    const s = await open();
+    const hash = await s.add(READER);
+    const refused = new FakeToolAuth(false);
+    const r = await s.change(refused, { action: "approve", kind: "tool", name: "docs-reader" });
+    expect(r).toEqual({ ok: false, refusal: "not_allowed", reason: "approve needs approve_tool: no_role" });
+    expect(refused.calls).toEqual([{ user_id: ME, action: "approve_tool", resource: { kind: "tool", id: GRANT } }]);
+    expect(await s.rows()).toEqual([]);
+    const allowed = new FakeToolAuth(true);
+    expect(approvalLine({ action: "approve", kind: "tool", name: "docs-reader" }, await s.change(allowed, { action: "approve", kind: "tool", name: "docs-reader" })))
+      .toBe(`approved tool docs-reader (description_hash ${hash.slice(0, 12)})`);
+    s.clock.advance(1000);
+    await s.change(allowed, { action: "revoke", kind: "tool", name: "docs-reader" });
+    expect(await s.rows()).toEqual([
+      { kind: "tool", name: "docs-reader", description_hash: hash, action: "approve", user_id: ME, at: "2026-11-11T16:00:01.000Z" },
+      { kind: "tool", name: "docs-reader", description_hash: hash, action: "revoke", user_id: ME, at: "2026-11-11T16:00:02.000Z" },
+    ]);
+    expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
+    // An unknown entry or hash: refused after the check, nothing written.
+    expect(await s.change(allowed, { action: "approve", kind: "tool", name: "nope" })).toMatchObject({ ok: false, refusal: "no_entry" });
+    expect(await s.change(allowed, { action: "approve", kind: "tool", name: "docs-reader", hash: "zz" })).toMatchObject({ ok: false, refusal: "no_entry" });
+    expect(await s.change(allowed, { action: "approve", kind: "server", name: "docs-reader" })).toMatchObject({ ok: false, refusal: "no_entry" });
+    expect(await s.rows()).toHaveLength(2);
+  });
+
+  it("approve_tool is the owner's only: the local owner is allowed, an approver and anonymous are not_owner", async () => {
+    const { store } = await newStore();
+    const auth = new LocalAuthProvider(store);
+    const ask = (user_id: string) => auth.authorize({ user_id: user_id as UserId, attributes: {} }, "approve_tool", { kind: "tool", id: GRANT });
+    expect(await ask("local:anonymous")).toEqual({ allow: false, reason: "not_owner" });
+    // Solo: the first local identity becomes the owner with no setup.
+    expect(await ask(ME)).toEqual({ allow: true });
+    await store.setLocalUserRole("local:other" as UserId, "approver", ME);
+    expect(await ask("local:other")).toEqual({ allow: false, reason: "not_owner" });
+    expect(await auth.authorize({ user_id: "local:other" as UserId, attributes: {} }, "approve_spec", { kind: "tool", id: GRANT })).toEqual({ allow: true });
+    expect(IDENTITY_ROLE_ACTIONS.owner).toContain("approve_tool");
+    expect(IDENTITY_ROLE_ACTIONS.approver).not.toContain("approve_tool");
+    expect(IDENTITY_ROLE_ACTIONS.requester).not.toContain("approve_tool");
+  });
+
+  it("factory pack approve acts as the CLI identity through the local owner check: the row stores its user ID", async () => {
+    const f = fixture({ cli_user: ME });
+    const path = temp("sf-pack-approve-");
+    write(join(path, "tools", "reader.json"), JSON.stringify(READER));
+    const out: string[] = [];
+    vi.spyOn(console, "log").mockImplementation((line: string) => void out.push(line));
+    vi.spyOn(console, "error").mockImplementation((line: string) => void out.push(line));
+    try {
+      const ctx = { name: "pack", usage: "", load: () => load(f.codeRoot) };
+      expect(await packCommand.run(["add", path], ctx)).toBe(0);
+      expect(await packCommand.run(["approve", "tool", "docs-reader"], ctx)).toBe(0);
+      expect(out[1]).toMatch(/^approved tool docs-reader \(description_hash [0-9a-f]{12}\)$/);
+      expect(await packCommand.run(["approve", "tool"], ctx)).toBe(1);
+      // Another identity is not the owner: refused, nothing written.
+      write(join(f.codeRoot, "factory.config.json"), JSON.stringify({ ...JSON.parse(readFileSync(join(f.codeRoot, "factory.config.json"), "utf8")), cli_user: "local:other" }));
+      expect(await packCommand.run(["revoke", "tool", "docs-reader"], ctx)).toBe(1);
+      expect(out.at(-1)).toBe("refused: revoke needs approve_tool: not_owner");
+    } finally {
+      vi.restoreAllMocks();
+    }
+    const loaded = await load(f.codeRoot);
+    const p = new Plugins(loaded);
+    const store = await p.store(await p.secrets(), await p.clock());
+    try {
+      const rows = await (store as unknown as { db: { all(sql: string): Promise<Record<string, unknown>[]> } }).db.all("SELECT name, action, user_id FROM ext_packs_approvals");
+      expect(rows).toEqual([{ name: "docs-reader", action: "approve", user_id: ME }]);
+    } finally {
+      await store.close();
+    }
+  });
+
+  it("the dashboard's approve action writes the same row as the page's user, and a refused one writes nothing", async () => {
+    const s = await open();
+    const hash = await s.add(READER);
+    const pauses = (auth: AuthProvider): UiPauses => ({ principal: async () => ME, authorize: async () => ({ allow: true }), csrfToken: "t", log: silent, auth });
+    const d = { store: s.store, clock: s.clock } as unknown as PauseDeps;
+    const body = { action: "approve", kind: "tool", name: "docs-reader", description_hash: hash.slice(0, 12) };
+    expect(await writePackApproval(d, pauses(new FakeToolAuth(false)), body)).toMatchObject({ status: 403 });
+    expect(await s.rows()).toEqual([]);
+    expect(await writePackApproval(d, pauses(new FakeToolAuth(true)), { ...body, action: "nope" })).toMatchObject({ status: 400 });
+    expect(await writePackApproval(d, pauses(new FakeToolAuth(true)), body)).toMatchObject({ status: 200, value: { kind: "tool", name: "docs-reader", description_hash: hash, action: "approve" } });
+    expect(await s.rows()).toEqual([expect.objectContaining({ description_hash: hash, action: "approve", user_id: ME })]);
+  });
+
+  it("tool_grants takes a pack entry name without the broker listing it, and refuses a malformed one", () => {
+    const broker = new FakeBroker();
+    expect(toolGrantsConfig({ triage: [GRANT, "pack:mcp_server:docs"] }, broker)).toEqual({ triage: [GRANT, "pack:mcp_server:docs"] });
+    expect(() => toolGrantsConfig({ triage: ["pack:server:docs"] }, broker)).toThrow(/pack:tool:<name> or pack:mcp_server:<name>/);
+  });
+
+  it("the approvals migration is additive, names ext_packs_approvals and is found by discovery", async () => {
+    const m = (await discoverMigrations()).find((x) => x.id === "20261111T1600-state-ext-packs-approvals");
+    expect(m).toMatchObject({ change: "additive", tables: ["ext_packs_approvals"], component: "state" });
+    const { store } = await newStore();
+    await m!.up({ dialect: "sqlite", run: (sql, p) => store.db.run(sql, p), all: (sql, p) => store.db.all(sql, p) });
+    expect(await store.db.all("SELECT * FROM ext_packs_approvals")).toEqual([]);
   });
 });

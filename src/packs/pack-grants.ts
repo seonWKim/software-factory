@@ -1,0 +1,58 @@
+// The grant check of pack tools and MCP servers (design 11-packs, issue #589), run where the worker builds a run's
+// grants. A run kind's `tool_grants` may name a pack entry as `pack:<kind>:<name>` (PACK_GRANT, src/core/config.ts).
+// Such an entry reaches a run only when both hold: the run kind grants it, and its current description is approved
+// (an approval row for that description_hash, or the default-off `packs.auto_approve_read_only` for a read-only
+// entry with no credential). An entry the run kind does not grant is never listed. This phase starts no pack tool:
+// an entry that passes both checks is still refused, as `not_started`, and the run fails before its agent starts.
+
+import { PACK_GRANT } from "../core/config.js";
+import type { SqlDriver } from "../state/index.js";
+import { PackApprovalsStore } from "./pack-approvals.store.js";
+import { PackEntriesStore, type PackEntryKind, type StoredEntry } from "./pack-entries.store.js";
+
+/** The run's error code when it is granted a pack entry it cannot have. */
+export const PACK_TOOL_REFUSED = "pack_tool_refused";
+
+/** `no_entry`: nothing is stored under the name. `not_approved`: its current description is not approved. `not_started`: both checks pass; phase 3 starts tools. */
+export type PackRefusalReason = "no_entry" | "not_approved" | "not_started";
+
+export interface PackRefusal {
+  readonly grant: string;
+  readonly reason: PackRefusalReason;
+}
+
+/** The auto-approve rule: only with the setting on, and only a read-only entry that reads no credential. */
+export function autoApproved(entry: Pick<StoredEntry, "read_only" | "credential_name">, autoApproveReadOnly: boolean): boolean {
+  return autoApproveReadOnly && entry.read_only && entry.credential_name === null;
+}
+
+/**
+ * A run kind's grants split in two: the broker tools, unchanged, and a refusal for each pack entry it names.
+ * Reads the store only (no time, no write).
+ */
+export async function checkPackGrants(
+  db: SqlDriver,
+  grants: readonly string[],
+  autoApproveReadOnly: boolean,
+): Promise<{ broker: string[]; refused: PackRefusal[] }> {
+  const entries = new PackEntriesStore(db, () => "");
+  const approvals = new PackApprovalsStore(db, () => "");
+  const broker: string[] = [];
+  const refused: PackRefusal[] = [];
+  for (const grant of grants) {
+    const m = PACK_GRANT.exec(grant);
+    if (!m) {
+      broker.push(grant);
+      continue;
+    }
+    const entry = await entries.current(m[1] as PackEntryKind, m[2]!);
+    const approved = entry !== null && (autoApproved(entry, autoApproveReadOnly) || (await approvals.approved(entry)));
+    refused.push({ grant, reason: entry === null ? "no_entry" : approved ? "not_started" : "not_approved" });
+  }
+  return { broker, refused };
+}
+
+/** The failed run's message: each refused grant with its reason. */
+export function packRefusalMessage(refused: readonly PackRefusal[]): string {
+  return `pack tools refused: ${refused.map((r) => `${r.grant} ${r.reason}`).join(", ")}`;
+}

@@ -30,7 +30,8 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 
 /**
  * The value problems of the `packs` key (its unknown keys are checked with the others in src/config-keys.ts).
- * `order` lists every layer once, base first and learned last; `org` is a non-empty path.
+ * `order` lists every layer once, base first and learned last; `org` is a non-empty path; `auto_approve_read_only`
+ * is a boolean.
  */
 export function packsProblems(raw: unknown): string[] {
   if (!isRecord(raw) || raw.packs === undefined) return [];
@@ -39,6 +40,9 @@ export function packsProblems(raw: unknown): string[] {
   const problems: string[] = [];
   if (packs.org !== undefined && (typeof packs.org !== "string" || packs.org.trim() === "")) {
     problems.push("packs.org must be a non-empty path to the org pack folder");
+  }
+  if (packs.auto_approve_read_only !== undefined && typeof packs.auto_approve_read_only !== "boolean") {
+    problems.push("packs.auto_approve_read_only must be true or false");
   }
   if (packs.order === undefined) return problems;
   const layers = PACK_LAYERS.join(", ");
@@ -61,6 +65,11 @@ export function packsProblems(raw: unknown): string[] {
 export function packOrder(packs: unknown): readonly PackLayer[] {
   const order = isRecord(packs) ? packs.order : undefined;
   return Array.isArray(order) ? (order as PackLayer[]) : PACK_LAYERS;
+}
+
+/** `packs.auto_approve_read_only` (checked by packsProblems at load); absent: false, the default. */
+export function autoApproveReadOnly(packs: unknown): boolean {
+  return isRecord(packs) && packs.auto_approve_read_only === true;
 }
 
 /**

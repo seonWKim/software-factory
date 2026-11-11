@@ -67,7 +67,43 @@ export class PackEntriesStore {
       [id, e.kind, e.name, e.description_hash, e.descriptor, e.credential_name, e.added_by, at, at],
     );
   }
+
+  /**
+   * The entry of `kind` and `name` added last: its description is the current one, the only one an approval can
+   * turn on (the pin, design 11-packs). Null when none is stored.
+   */
+  async current(kind: PackEntryKind, name: string): Promise<StoredEntry | null> {
+    const [r] = await this.db.all(
+      "SELECT description_hash, descriptor, credential_name FROM ext_packs_entries WHERE kind = ? AND name = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+      [kind, name],
+    );
+    if (!r) return null;
+    const descriptor = JSON.parse(String(r.descriptor)) as { read_only?: unknown };
+    const credential_name = r.credential_name === null ? null : String(r.credential_name);
+    return { kind, name, description_hash: String(r.description_hash), credential_name, read_only: descriptor.read_only === true };
+  }
+
+  /** Every stored description_hash of `kind` and `name`, oldest first. */
+  async hashes(kind: PackEntryKind, name: string): Promise<string[]> {
+    const rows = await this.db.all("SELECT description_hash FROM ext_packs_entries WHERE kind = ? AND name = ? ORDER BY created_at, id", [kind, name]);
+    return rows.map((r) => String(r.description_hash));
+  }
 }
+
+/** One stored description of an entry: what an approval is keyed by. */
+export interface PackEntryRef {
+  readonly kind: PackEntryKind;
+  readonly name: string;
+  readonly description_hash: string;
+}
+
+/** A stored entry as the grant check reads it: `read_only` is the descriptor's own `read_only: true`. */
+export interface StoredEntry extends PackEntryRef {
+  readonly credential_name: string | null;
+  readonly read_only: boolean;
+}
+
+export const PACK_ENTRY_KINDS: readonly PackEntryKind[] = KIND_DIRS.map(([kind]) => kind);
 
 async function jsonFiles(dir: string): Promise<string[]> {
   try {

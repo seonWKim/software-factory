@@ -35,7 +35,13 @@ export interface FactoryConfig extends LoadedConfig {
 export const GRANT_RUN_KINDS = ["triage", "implement", "review", "update", "resolve", "manual"] as const satisfies readonly RunKind[];
 export type GrantRunKind = (typeof GRANT_RUN_KINDS)[number];
 
-/** Checked `tool_grants`: read-only broker tool names per run kind. */
+/**
+ * A `tool_grants` name for a pack entry (design 11-packs): `pack:tool:<name>` or `pack:mcp_server:<name>`. Not a
+ * broker tool, so startup does not check it against the broker; the worker's grant check decides it per run.
+ */
+export const PACK_GRANT = /^pack:(tool|mcp_server):(\S+)$/;
+
+/** Checked `tool_grants`: read-only broker tool names and pack entry names per run kind. */
 export type ToolGrants = Partial<Record<GrantRunKind, readonly string[]>>;
 
 /** The tool names granted to one run kind; none when config grants none or the kind has no entry. */
@@ -69,6 +75,10 @@ export function toolGrantsConfig(raw: unknown, broker: Pick<ToolBroker, "allTool
       continue;
     }
     for (const name of names as string[]) {
+      if (name.startsWith("pack:")) {
+        if (!PACK_GRANT.test(name)) problems.push(`tool_grants.${kind} grants ${JSON.stringify(name)}: a pack entry is pack:tool:<name> or pack:mcp_server:<name>`);
+        continue;
+      }
       const tool = tools.find((t) => t.name === name);
       if (!tool) problems.push(`tool_grants.${kind} grants ${JSON.stringify(name)}, which the ${brokerName} broker does not list; ${valid}`);
       else if (!tool.read_only) problems.push(`tool_grants.${kind} grants ${JSON.stringify(name)}, which is not read-only (only read-only tools may be granted); ${valid}`);
@@ -185,6 +195,11 @@ export interface LoadedConfig {
    * `*.hook.ts`. A PR-only key, checked at startup. Absent or empty: no hook runs, solo or enterprise.
    */
   hooks?: readonly string[];
+  /**
+   * `packs.auto_approve_read_only` (design 11-packs): a read-only pack entry with no credential needs no approval
+   * of its own. A PR-only key; absent or false (the default): every pack entry needs the owner's approval.
+   */
+  packs_auto_approve_read_only?: boolean;
   /** Worker loops in one `dev` or `worker` process (architecture §4). An integer of 1 or more; default 1. */
   workers: number;
   /**

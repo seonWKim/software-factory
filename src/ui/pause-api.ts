@@ -6,7 +6,7 @@
 
 import type { Logger } from "../core/log.js";
 import type { Timestamp, UserId } from "../core/types.js";
-import type { AuthDecision } from "../interfaces/auth-provider.js";
+import type { AuthDecision, AuthProvider } from "../interfaces/auth-provider.js";
 import { RESUMABLE_PAUSES, type ResumablePause, endPause, isResumablePause } from "../resume-cmd.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
@@ -22,6 +22,8 @@ export interface UiPauses {
   /** The per-process token, the Settings page's own; POST must send it in x-csrf-token. */
   csrfToken: string;
   log: Logger;
+  /** The page's auth plugin, for `approve_tool` (POST /api/v1/packs/approvals, packs-api.ts). Absent: that route is a 405. */
+  auth?: Pick<AuthProvider, "authorize">;
 }
 
 /** The UI's dependencies with the pause routes. Absent `pauses`: the list is read-only and POST is a 405. */
