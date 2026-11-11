@@ -9,6 +9,7 @@ import type { ItemRow } from "../web/src/api.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY } from "../web/src/theme.js";
+import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
 import { RevisionBanner } from "../web/src/views/system-banner.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
 
@@ -154,21 +155,86 @@ describe("app shell", () => {
     expect(fetched.length).toBeGreaterThan(whileHidden);
   });
 
-  it("the theme toggle switches light and dark and keeps the choice in browser storage", async () => {
+  /** A matchMedia whose dark state a test can flip; counts the live "change" listeners. */
+  function stubScheme(dark: boolean) {
+    let matches = dark;
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    vi.stubGlobal("matchMedia", (q: string) => ({
+      get matches() { return q.includes("dark") && matches; },
+      addEventListener: (_: string, l: (e: { matches: boolean }) => void) => void listeners.add(l),
+      removeEventListener: (_: string, l: (e: { matches: boolean }) => void) => void listeners.delete(l),
+    }));
+    return {
+      set(next: boolean) { matches = next; for (const l of [...listeners]) l({ matches: next }); },
+      listeners: () => listeners.size,
+    };
+  }
+  const isDark = () => document.documentElement.classList.contains("dark");
+  const choose = (name: string) => fireEvent.click(within(screen.getByRole("radiogroup", { name: "Theme" })).getByRole("radio", { name }));
+
+  it("offers System, Light and Dark, System by default", async () => {
     mount();
     await screen.findByText("Needs you (4)");
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
-    fireEvent.click(screen.getByRole("button", { name: "Switch to light theme" }));
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    expect(localStorage.getItem(THEME_KEY)).toBe("light");
+    const group = screen.getByRole("radiogroup", { name: "Theme" });
+    expect(within(group).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["System", "Light", "Dark"]);
+    expect(within(group).getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
+  });
 
-    cleanup();
-    localStorage.setItem(THEME_KEY, "dark");
+  it("with no saved choice, a dark system scheme renders dark", async () => {
+    stubScheme(true);
     mount();
-    expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeTruthy();
+    await screen.findByText("Needs you (4)");
+    expect(isDark()).toBe(true);
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+  });
+
+  it("System follows a change of the system scheme with no reload", async () => {
+    const scheme = stubScheme(false);
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(isDark()).toBe(false);
+    act(() => scheme.set(true));
+    expect(isDark()).toBe(true);
+    act(() => scheme.set(false));
+    expect(isDark()).toBe(false);
+  });
+
+  it("Light or Dark overrides the system and removes the listener; System follows it again and clears the stored value", async () => {
+    const scheme = stubScheme(false);
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(scheme.listeners()).toBe(1);
+    choose("Dark");
+    expect(isDark()).toBe(true);
+    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
+    expect(scheme.listeners()).toBe(0);
+    act(() => scheme.set(false));
+    expect(isDark()).toBe(true);
+    choose("Light");
+    act(() => scheme.set(true));
+    expect(isDark()).toBe(false);
+    expect(localStorage.getItem(THEME_KEY)).toBe("light");
+    choose("System");
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+    expect(isDark()).toBe(true);
+    expect(scheme.listeners()).toBe(1);
+    act(() => scheme.set(false));
+    expect(isDark()).toBe(false);
+  });
+
+  it("a saved light or dark value applies on load, over the system", async () => {
+    stubScheme(true);
+    localStorage.setItem(THEME_KEY, "light");
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(isDark()).toBe(false);
+    expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("the banner link token has a dark variant and is used by the revision banner", () => {
+    expect(BANNER_LINK_CLASS).toMatch(/dark:text-/);
+    render(<RevisionBanner server="a" web="b" />);
+    expect(screen.getByText("reload").className).toBe(BANNER_LINK_CLASS);
   });
 });
 
@@ -201,8 +267,8 @@ describe("top bar on a narrow screen", () => {
     await screen.findByText("Needs you (4)");
     const header = document.querySelector("header")!;
     expect(header.className.split(" ")).toContain("flex-wrap");
-    for (const name of ["Refresh", "Switch to dark theme"]) {
-      expect(within(header).getByRole("button", { name }).className.split(" ")).toContain("shrink-0");
+    for (const el of [within(header).getByRole("button", { name: "Refresh" }), within(header).getByRole("radio", { name: "Dark" })]) {
+      expect(el.className.split(" ")).toContain("shrink-0");
     }
     const age = header.querySelector("[aria-live]")!;
     expect(age.textContent).toMatch(/^updated \d+s ago$/);

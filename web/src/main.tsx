@@ -3,10 +3,10 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
 import { locale } from "./i18n/index.js";
-import { applyTheme, storedTheme } from "./theme.js";
+import { applyChoice, storedChoice } from "./theme.js";
 import "./index.css";
 
-applyTheme(storedTheme());
+applyChoice(storedChoice());
 document.documentElement.lang = locale();
 const client = new QueryClient();
 createRoot(document.getElementById("root")!).render(

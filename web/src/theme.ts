@@ -1,29 +1,53 @@
-// The light/dark choice lives in this browser only (design §9). Storage can throw (private mode, blocked site
-// data), so every access is guarded and the page still works without it.
+// The theme choice lives in this browser only (design §9): System (follow the system colour scheme, the default),
+// Light or Dark. Storage can throw (private mode, blocked site data), so every access is guarded and the page
+// still works without it. Only "light" or "dark" is ever stored; System is the absence of a stored value.
 
-export type Theme = "light" | "dark";
+export type ThemeChoice = "system" | "light" | "dark";
 
 export const THEME_KEY = "sf-theme";
 
-/** The stored choice, else the system preference. */
-export function storedTheme(): Theme {
+const DARK_QUERY = "(prefers-color-scheme: dark)";
+
+/** The stored choice; System when there is none, or when storage is unavailable. */
+export function storedChoice(): ThemeChoice {
   try {
     const v = localStorage.getItem(THEME_KEY);
     if (v === "light" || v === "dark") return v;
   } catch {
     // no storage: fall through
   }
-  return typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "system";
 }
 
-export function applyTheme(t: Theme): void {
-  document.documentElement.classList.toggle("dark", t === "dark");
+function setDark(dark: boolean): void {
+  document.documentElement.classList.toggle("dark", dark);
 }
 
-export function saveTheme(t: Theme): void {
-  applyTheme(t);
+/**
+ * Show the choice on the page. System follows the system colour scheme now and while the page is open; the returned
+ * function removes that listener (call it before the next choice or on unmount). Light and Dark listen to nothing.
+ */
+export function applyChoice(choice: ThemeChoice): () => void {
+  if (choice !== "system") {
+    setDark(choice === "dark");
+    return () => {};
+  }
+  if (typeof matchMedia !== "function") {
+    setDark(false);
+    return () => {};
+  }
+  const query = matchMedia(DARK_QUERY);
+  setDark(query.matches);
+  const onChange = (e: MediaQueryListEvent) => setDark(e.matches);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+/** Keep the choice for this browser: Light or Dark is stored, System removes the stored value. */
+export function saveChoice(choice: ThemeChoice): void {
   try {
-    localStorage.setItem(THEME_KEY, t);
+    if (choice === "system") localStorage.removeItem(THEME_KEY);
+    else localStorage.setItem(THEME_KEY, choice);
   } catch {
     // no storage: the choice lasts for this page only
   }
