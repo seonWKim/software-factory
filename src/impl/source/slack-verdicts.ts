@@ -5,7 +5,6 @@ import type { AuthProvider } from "../../interfaces/auth-provider.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { Logger } from "../../core/log.js";
-import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi } from "./slack-api.js";
 import {
   FEEDBACK_CALLBACK, FEEDBACK_INPUT, buttonApplies, escapeSlack, feedbackModal, footerCommands, obj, renderComment, resultMarker, str, type SlackRendered, type VerdictShown,
@@ -36,7 +35,8 @@ export interface SlackVerdictDeps {
   scanner: EgressScanner;
   store: Pick<FactoryStore, "listPostedCommentsById" | "getWorkItemBySource" | "listItemMessages" | "getWorkItem" | "recordVerdict" | "listVerdicts" | "listStateChanges" | "getPostedComment">;
   auth: Pick<AuthProvider, "resolve" | "authorize">;
-  repo: RepoRef;
+  /** Where PR links point, as renderComment takes it. */
+  repo: Parameters<typeof renderComment>[1];
   log: Logger;
 }
 
