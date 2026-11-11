@@ -1,5 +1,5 @@
 // The macOS AppShell (src/interfaces/app-shell.ts): one dashboard window, a menu bar item, system-wide shortcuts
-// (globalShortcut) and a Quit that drains.
+// (globalShortcut), system notices (Notification) and a Quit that drains.
 // Electron comes in as an argument; only main.js imports it, so tests pass a mock.
 import { menuTitle } from "../common/status.js";
 
@@ -16,21 +16,34 @@ export const RELOAD_DELAY_MS = 2_000;
 
 /** `menu`: extra menu bar items, shown above Quit (the quick-add box and its shortcut setting). */
 export function createMacosShell(electron, { preload, keepRunningWhenClosed = true, menu = [], timers = globalThis }) {
-  const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut } = electron;
+  const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, Notification } = electron;
   let url = null;
   let win = null;
   let drain = async () => {};
   let quitting = false;
   let status = { state: "starting", needsYou: null };
   const tray = new Tray(nativeImage.createEmpty());
+  // Electron drops a notice's click handler once the notice is garbage collected: hold each until it is clicked or closed.
+  const notices = new Set();
 
   const quit = () => app.quit();
 
-  const show = () => {
+  /** Only a page of the dashboard, after resolving `..`: a notice never opens anything else in the window. */
+  const insideDashboard = (target) => {
+    try {
+      return url !== null && new URL(target).href.startsWith(url);
+    } catch {
+      return false;
+    }
+  };
+
+  /** Shows the window; `page` (under the dashboard URL) is loaded in it, else a new window loads the dashboard. */
+  const show = (page = null) => {
     if (url === null) return;
     if (win !== null && !win.isDestroyed()) {
       win.show();
       win.focus();
+      if (page !== null) void win.loadURL(page);
       return;
     }
     const w = new BrowserWindow(windowOptions(preload));
@@ -47,7 +60,7 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
       if (keepRunningWhenClosed) w.hide();
       else quit();
     });
-    void w.loadURL(only);
+    void w.loadURL(page ?? only);
     win = w;
   };
 
@@ -59,7 +72,7 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
         { label: `Factory: ${status.state}`, enabled: false },
         { label: `Needs you: ${status.needsYou ?? "–"}`, enabled: false },
         { type: "separator" },
-        { label: "Open dashboard", click: show },
+        { label: "Open dashboard", click: () => show() },
         ...menu.map(({ label, click }) => ({ label, click })),
         { label: "Quit Software Factory", accelerator: "Command+Q", click: quit },
       ]),
@@ -77,7 +90,7 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
   });
   app.on("will-quit", () => globalShortcut.unregisterAll());
   app.on("window-all-closed", () => {});
-  app.on("activate", show);
+  app.on("activate", () => show());
   render();
 
   return {
@@ -107,6 +120,16 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
       } catch {
         // Not an accelerator: nothing of ours to release.
       }
+    },
+    notify(title, body, target) {
+      const n = new Notification({ title, body });
+      notices.add(n);
+      n.on("close", () => notices.delete(n));
+      n.on("click", () => {
+        notices.delete(n);
+        if (insideDashboard(target)) show(target);
+      });
+      n.show();
     },
   };
 }
