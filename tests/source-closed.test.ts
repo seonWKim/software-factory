@@ -224,7 +224,7 @@ describe("closing the source issue stops its work item", () => {
     const implement = (await f.store.listRuns((await item(f)).id)).find((r) => r.kind === "implement")!;
     expect(implement).toMatchObject({ status: "cancelled", outcome: null });
     await f.controller.tickRuns();
-    expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "wont_do", pr_number: null });
+    expect(await item(f)).toMatchObject({ stage: "CLOSED", close_reason: "wont_do", change_ref: null });
     expect((await f.store.getRun(implement.id))!.acknowledged_at).not.toBeNull();
     expect(commentsAtClose).toBeGreaterThanOrEqual(0);
     expect(f.source.comments).toHaveLength(commentsAtClose);
