@@ -14,6 +14,7 @@ const pills = (mode) =>
       Object.entries(parts).map(([part, v]) => [`pill-${status}-${part}`, v]),
     ),
   );
+const typeScale = Object.entries(tokens.type).flatMap(([k, v]) => [[`fs-${k}`, v.size], [`lh-${k}`, v["line-height"]]]);
 const scale = (prefix, map) => decls(Object.entries(map).map(([k, v]) => [`${prefix}-${k}`, v]));
 
 const block = (selector, lines) => `${selector} {\n${lines.join("\n")}\n}\n`;
@@ -24,7 +25,7 @@ export function render() {
     block(":root", [
       ...colors("light"),
       ...pills("light"),
-      ...scale("fs", tokens.type),
+      ...decls(typeScale),
       ...scale("sp", tokens.space),
       ...scale("r", tokens.radius),
     ]),

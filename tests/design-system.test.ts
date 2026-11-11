@@ -73,6 +73,39 @@ describe("design tokens", () => {
   });
 });
 
+describe("contrast", () => {
+  const css = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
+  const block = (name: string) => new RegExp(`${name} \\{([^}]*)\\}`).exec(css)![1]!;
+  const rgb = (hex: string) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const lum = (hex: string) => {
+    const [r, g, b] = rgb(hex).map((x) => (x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4)) as [number, number, number];
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+
+  for (const [theme, selector] of [["light", ":root"], ["dark", "\\.dark"]] as const) {
+    it(`meets 4.5:1 in ${theme}`, () => {
+      const root = block(":root");
+      const t = (name: string) => {
+        const m = new RegExp(`--${name}: (#[0-9A-Fa-f]{6});`).exec(theme === "light" ? root : block(selector) + root);
+        return m![1]!;
+      };
+      const pairs: [string, string][] = [];
+      for (const fg of ["text", "text-2", "text-3"]) for (const bg of ["bg", "surface", "surface-2"]) pairs.push([fg, bg]);
+      for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "surface"]);
+      for (const s of ["ok", "warn", "bad", "info"]) pairs.push([`pill-${s}-fg`, `pill-${s}-bg`]);
+      for (const [fg, bg] of pairs) expect(ratio(t(fg), t(bg)), `${theme} ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+
+  it("the type scale has a size and a line height per step", () => {
+    for (const step of ["xs", "sm", "base", "lg", "xl"]) {
+      expect(css).toMatch(new RegExp(`--fs-${step}: [\\d.]+rem;`));
+      expect(css).toMatch(new RegExp(`--lh-${step}: [\\d.]+rem;`));
+    }
+  });
+});
+
 describe("the Gongbang mark in the dashboard", () => {
   const svg = readFileSync(join(ROOT, "design-system", "icon.svg"), "utf8");
 
