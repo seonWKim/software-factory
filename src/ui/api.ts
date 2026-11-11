@@ -304,8 +304,8 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
     const sha = await c.text(m.merge_sha);
     out.push({
       project: await c.text(label),
-      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the number): text only.
-      change_ref: String(m.pr_number),
+      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the ref): text only.
+      change_ref: m.change_ref,
       change_url: null,
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
