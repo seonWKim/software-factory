@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "./tokens.css";
 
-/* Dark mode follows the `dark` class on <html>, set by the theme toggle (web/src/theme.ts). */
+/* Dark mode follows the `dark` class on <html>, set from the theme choice (web/src/theme.ts). */
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {

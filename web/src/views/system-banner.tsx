@@ -1,4 +1,5 @@
 import type { SystemAction } from "../api.js";
+import { BANNER_LINK_CLASS } from "../components/ui/link-style.js";
 
 /**
  * Shown while the app was built from another revision than the server it talks to runs (design §9): the tab
@@ -8,7 +9,7 @@ export function RevisionBanner({ server, web }: { server: string | null | undefi
   if (!server || !web || server === web) return null;
   return (
     <p role="alert" data-testid="revision-banner" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-pretty text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
-      Dashboard out of date: reload / restart <code className="font-mono">factory ui</code>
+      Dashboard out of date: <a href="" className={BANNER_LINK_CLASS}>reload</a> / restart <code className="font-mono">factory ui</code>
     </p>
   );
 }

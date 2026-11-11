@@ -20,8 +20,10 @@ export const en = {
   "topbar.ago": " ago",
   "topbar.updateFailed": "update failed",
   "topbar.refresh": "Refresh",
-  "topbar.toLight": "Switch to light theme",
-  "topbar.toDark": "Switch to dark theme",
+  "topbar.theme": "Theme",
+  "topbar.themeSystem": "System",
+  "topbar.themeLight": "Light",
+  "topbar.themeDark": "Dark",
 } as const;
 
 export type MessageKey = keyof typeof en;
