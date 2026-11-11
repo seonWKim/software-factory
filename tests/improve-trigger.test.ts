@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import {
-  TRIGGER_AGE_MS, TRIGGER_FAILURES, dailyImproveKey, enqueueImprove, improveTriggerDue, listImproveRuns, triggerImprove, triggerImproveKey,
+  TRIGGER_AGE_MS, TRIGGER_FAILURES, TRIGGER_WINDOW_MS, dailyImproveKey, enqueueImprove, improveTriggerDue, listImproveRuns, triggerImprove, triggerImproveKey,
 } from "../src/core/improver.js";
 import type { Run, RunId, RunKind, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -62,12 +62,20 @@ describe("improve trigger: the rule", () => {
   const now = new Date("2026-03-04T00:00:00.000Z");
   const recent = (i: number) => new Date(now.getTime() - (i + 1) * 60_000).toISOString();
 
-  it("K failures of one run kind are due; K-1, or K spread over kinds, are not", () => {
+  it("K failed runs in the last 24 hours are due, whatever their kinds; K-1 are not", () => {
     const ten = Array.from({ length: TRIGGER_FAILURES }, (_, i) => run(`r${i}`, "implement", recent(i)));
-    expect(improveTriggerDue(ten, now)).toEqual({ reason: "count", kind: "implement", failures: TRIGGER_FAILURES });
+    expect(improveTriggerDue(ten, now)).toEqual({ reason: "count", failures: TRIGGER_FAILURES });
     expect(improveTriggerDue(ten.slice(1), now)).toBeNull();
     const mixed = ten.map((r, i) => ({ ...r, kind: i % 2 === 0 ? "implement" : "review" }) as Run);
-    expect(improveTriggerDue(mixed, now)).toBeNull();
+    expect(improveTriggerDue(mixed, now)).toEqual({ reason: "count", failures: TRIGGER_FAILURES });
+  });
+
+  it("a failure finished more than 24 hours ago does not count toward K", () => {
+    const nine = Array.from({ length: TRIGGER_FAILURES - 1 }, (_, i) => run(`r${i}`, "triage", recent(i)));
+    const edge = new Date(now.getTime() - TRIGGER_WINDOW_MS).toISOString();
+    const older = new Date(now.getTime() - TRIGGER_WINDOW_MS - 1).toISOString();
+    expect(improveTriggerDue([...nine, run("old", "triage", older)], now)).toBeNull();
+    expect(improveTriggerDue([...nine, run("edge", "triage", edge)], now)).toEqual({ reason: "count", failures: TRIGGER_FAILURES });
   });
 
   it("one failure older than the age limit is due; improve runs and runs that did not fail never count", () => {
@@ -79,7 +87,7 @@ describe("improve trigger: the rule", () => {
 });
 
 describe("improve trigger: the controller tick", () => {
-  it("10 unreviewed failed runs for one role queue exactly one improve run for the project, not two", async () => {
+  it("10 unreviewed failed runs in the last 24 hours queue exactly one improve run for the project, not two", async () => {
     const { clock, store, daily } = await settled();
     await failMany(store, clock, TRIGGER_FAILURES);
     const c = controller(store, clock);
