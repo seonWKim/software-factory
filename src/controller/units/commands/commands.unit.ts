@@ -6,9 +6,9 @@ import {
   CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
   latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
 } from "../../../core/commands.js";
-import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, branchFor, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
+import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
-import { LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal } from "../../../core/local-merge.js";
+import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
@@ -17,7 +17,7 @@ import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interf
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
-import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, awaitingMerge, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
+import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { confirmProposal, storeProposals } from "./proposals.js";
@@ -67,16 +67,13 @@ function awaitingSpec(it: WorkItem): boolean {
   return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions" || splitFilingFailed(it));
 }
 /**
- * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, on a local item waiting
- * for a merge whose branch conflicts with the local base (`localConflict`, decided 2026-11-12), or on one whose resolve
- * run asked for a human (agent_needs_human, decided 2026-11-07). Starts a resolve
+ * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, on a local item waiting for
+ * a merge whose branch conflicts (`localConflict`, 2026-11-12), or one whose resolve run asked for a human. Starts a resolve
  * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
  * /resolve would otherwise be a silent no-op. The notes (scanned and capped, the `+paths` line split off) go on
  * the run for the worker; they are untrusted. A `+paths` widens allowed_paths in the same transition (`w`).
  */
-function resolveCommand(
-  e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, localConflict: boolean, note: string | null, w: Widening,
-): Decision | Refusal {
+function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, localConflict: boolean, note: string | null, w: Widening): Decision | Refusal {
   // Also the answer to a resolve run that asked for a human (agent_needs_human): the reply is its notes.
   const asked = resolveAsked && it.blocked_on === "human" && it.blocked_reason === AGENT_NEEDS_HUMAN;
   if (!conflictPending(it) && !asked && !localConflict) {
@@ -518,18 +515,6 @@ export class CommandsUnit {
     else await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
   }
 
-  /**
-   * Whether `it` is a local item waiting for a merge whose branch conflicts with the local base (design §5 Merge
-   * conflict): the local merge's own probe (`localConflicts`, objects only). False with no sandbox that can probe.
-   */
-  async localConflict(it: WorkItem): Promise<boolean> {
-    const sandbox = this.c.k.d.sandbox;
-    if (!awaitingMerge(it) || it.change_ref !== null || !canMergeLocal(sandbox)) return false;
-    const { repo, branch_prefix } = this.c.k.cfg;
-    const conflicts = await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch: branchFor(it, branch_prefix) });
-    return (conflicts?.length ?? 0) > 0;
-  }
-
   /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
   async floorTierNeeded(it: WorkItem): Promise<number | null> {
     if (it.blocked_reason !== FLOOR_TIER) return null;
@@ -552,7 +537,7 @@ export class CommandsUnit {
     paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
     if (e.kind === "resolve_requested") {
-      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", await this.localConflict(it), note, this.widen(it, paths));
+      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", await this.c.unit("local-merge").conflicting(it), note, this.widen(it, paths));
     }
     // On the PR, in a Slack thread with a PR, or on a local item with no PR at the merge wait (its local branch, issue #563).
     const asFeedback = e.kind === "revise_requested" && (it.source.type === "slack_thread" ? appliesOnPr : appliesLocally)(commandSpec("revise"), commandState(it));

@@ -29,7 +29,7 @@ export class MergeCheckUnit {
     const ready = waiting.filter((it) => awaitingMerge(it) && it.head_branch === null && (it.change_ref !== null || local_only === true));
     await this.merges.step(ready, { repo: repo.path, base_ref: repo.base_branch, branch_prefix, poll_interval_ms }, (it, c) => {
       this.c.k.d.log.info("merge check conflict", { work_item_id: it.id, files: c.conflicts.length });
-      if (it.change_ref === null) return this.c.unit("run-results").startLocalResolve(it.id, c.base_sha, "merge_check");
+      if (it.change_ref === null) return this.c.unit("local-merge").startLocalResolve(it.id, c.base_sha, "merge_check");
       return this.c.unit("pr-events").startUpdate(it.id, it.change_ref, c.head_sha, c.base_sha);
     });
   }

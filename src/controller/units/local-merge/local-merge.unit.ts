@@ -88,7 +88,7 @@ export class LocalMergeUnit {
     else {
       const conflicts = await this.c.k.d.sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
       if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
-      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.autoResolve(item.id));
+      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item.id));
       else {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
@@ -213,13 +213,39 @@ export class LocalMergeUnit {
    * sandbox reads the local base (`local_only`); with a forge selected its base read is the remote's, so the
    * person resolves it as before. Returns whether the item moved to its resolve run.
    */
-  private async autoResolve(id: WorkItemId): Promise<boolean> {
+  private async resolveRefused(id: WorkItemId): Promise<boolean> {
     const sandbox = this.c.k.d.sandbox;
     if (this.c.k.cfg.local_only !== true || !sandbox) return false;
     const { repo } = this.c.k.cfg;
-    const base = await sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch });
-    await this.c.unit("run-results").startLocalResolve(id, base, "merge_refused");
+    await this.startLocalResolve(id, await sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch }), "merge_refused");
     return (await this.c.k.reader.getWorkItem(id))?.stage === "RUNNING";
+  }
+
+  /**
+   * A local item's branch conflicts with the local base at `baseSha` (design §5 Merge conflict, decision changed
+   * 2026-11-12): the merge check or `factory merge` found it. No update run (the resolve run merges the base and runs
+   * the gates itself): the automatic resolve starts at once, as after a PR's update run. Only an item still waiting
+   * for a merge with no PR changes, so a second call changes nothing.
+   */
+  async startLocalResolve(id: WorkItemId, baseSha: string, cause: string): Promise<void> {
+    await this.c.unit("transitions").decide(id, (it) =>
+      awaitingMerge(it) && it.change_ref === null ? this.c.unit("run-results").autoResolve(it, baseSha, { cause }, null) : null);
+  }
+
+  /**
+   * Whether `it` is a local item waiting for a merge whose branch conflicts with the local base (design §5 Merge
+   * conflict, `/resolve`): the local merge's own probe (`localConflicts`, objects only). False with no sandbox for it.
+   */
+  async conflicting(it: WorkItem): Promise<boolean> {
+    const sandbox = this.c.k.d.sandbox;
+    if (!awaitingMerge(it) || it.change_ref !== null || !canMergeLocal(sandbox)) return false;
+    const { repo } = this.c.k.cfg;
+    return ((await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch: this.branchOf(it) }))?.length ?? 0) > 0;
+  }
+
+  /** The change a conflict comment names: the PR, or a local item's branch (`start`: at the start of a sentence). */
+  changeName(it: WorkItem, start = false): string {
+    return it.change_ref !== null ? `PR #${it.change_ref}` : `${start ? "The" : "the"} local branch \`${this.branchOf(it)}\``;
   }
 
   /** The item's local branch. */
