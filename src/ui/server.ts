@@ -13,7 +13,8 @@
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
-// /api/v1 (api.ts; errors as JSON) and the app under /app (app.ts; its own CSP, errors as text).
+// /api/v1 (api.ts, and GET /api/v1/notices in notices-api.ts; errors as JSON) and the app under /app (app.ts; its own
+// CSP, errors as text).
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -28,6 +29,7 @@ import { USERS_PATH, writeUsers } from "./users-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASKS_PATH, writeTask } from "./tasks-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
+import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
 import { parseFilters } from "./filters.js";
 import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
@@ -216,7 +218,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
 
   // Decided on the parsed path too: "/app/../x" parses to "/x", which is not the app.
   if (isApiPath(url.pathname)) {
-    const r = await api(d, url);
+    const r = url.pathname === NOTICES_PATH ? await readNotices(d) : await api(d, url);
     return json(r.status, r.value);
   }
   if (isAppPath(url.pathname)) return serveApp(d.appDir ?? DEFAULT_APP_DIR, url.pathname);
