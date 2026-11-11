@@ -98,9 +98,9 @@ export const NEEDS_HUMAN_MAX_CHARS = 500;
 export const NEEDS_HUMAN_MAX_PATHS = 10;
 
 export interface ImplementOutput {
-  /** "" when the agent returned needs_human without it. */
+  /** "" when the agent returned needs_human or spec_conflict without it. */
   summary: string;
-  /** "" when the agent returned needs_human without it. */
+  /** "" when the agent returned needs_human or spec_conflict without it. */
   next_steps: string;
   /**
    * Work the spec asks for that this change does not do, one entry each (issue #229): a needed file outside
@@ -263,15 +263,15 @@ const IMPLEMENT_NEEDS_HUMAN_SCHEMA = {
   },
 };
 
-// summary and next_steps are not schema-required: they may be left out when needs_human is set. parseImplement
-// still requires both on every other answer.
+// summary and next_steps are not schema-required: they may be left out when needs_human or spec_conflict is set.
+// parseImplement still requires both on every other answer.
 export const IMPLEMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [],
   properties: {
-    summary: { type: "string", description: "Required unless needs_human is set." },
-    next_steps: { type: "string", description: "Required unless needs_human is set." },
+    summary: { type: "string", description: "Required unless needs_human or spec_conflict is set." },
+    next_steps: { type: "string", description: "Required unless needs_human or spec_conflict is set." },
     missing: {
       type: "array",
       maxItems: PR_NOTE_MAX_ITEMS,
@@ -510,11 +510,22 @@ export function parseNeedsHuman(v: unknown): Validation<NeedsHuman | undefined> 
 }
 
 /**
- * An implement or resolve answer. With needs_human, summary and next_steps may be left out (they become "").
- * `missing` and `deviations` are optional lists; absent is [].
+ * Why an answer is not an object. A runner that completed returns the structured output, or the agent's final
+ * text when it gave none (it stopped at max turns, or answered in prose): the error says which.
+ */
+function noAnswerError(v: unknown): string {
+  if (v === undefined || v === null || v === "") return "no structured answer: the agent ended without one";
+  // The text itself stays in the run's output tail: a failure detail never carries unscanned agent text.
+  if (typeof v === "string") return "no structured answer: the agent ended with plain text instead";
+  return `no structured answer: the answer is ${Array.isArray(v) ? "an array" : `a ${typeof v}`}, not an object`;
+}
+
+/**
+ * An implement or resolve answer. With needs_human or spec_conflict, summary and next_steps may be left out (they
+ * become ""). `missing` and `deviations` are optional lists; absent is [].
  */
 export function parseImplement(v: unknown): Validation<ImplementOutput> {
-  if (!isObj(v)) return { ok: false, error: "summary/next_steps" };
+  if (!isObj(v)) return { ok: false, error: noAnswerError(v) };
   const ask = parseNeedsHuman(v.needs_human);
   if (!ask.ok) return ask;
   const notes = (x: unknown) => x === undefined || (isStrs(x) && x.length <= PR_NOTE_MAX_ITEMS && x.every((e) => e.length <= PR_NOTE_MAX_CHARS));
@@ -526,12 +537,16 @@ export function parseImplement(v: unknown): Validation<ImplementOutput> {
     deviations: ((v.deviations as string[] | undefined) ?? []).map((e) => e.trim()).filter(Boolean),
     ...(conflict.trim() ? { spec_conflict: conflict.trim() } : {}),
   };
-  if (ask.value) {
+  // An agent that stops (needs_human) or reports a spec it cannot meet (spec_conflict) has no change to summarize.
+  if (ask.value || lists.spec_conflict) {
     const optional = (x: unknown) => x === undefined || isStr(x);
     if (!optional(v.summary) || !optional(v.next_steps)) return { ok: false, error: "summary/next_steps" };
     return {
       ok: true,
-      value: { summary: (v.summary as string | undefined) ?? "", next_steps: (v.next_steps as string | undefined) ?? "", ...lists, needs_human: ask.value },
+      value: {
+        summary: (v.summary as string | undefined) ?? "", next_steps: (v.next_steps as string | undefined) ?? "", ...lists,
+        ...(ask.value ? { needs_human: ask.value } : {}),
+      },
     };
   }
   if (!isStr(v.summary) || !isStr(v.next_steps)) return { ok: false, error: "summary/next_steps" };
