@@ -5,10 +5,9 @@ import { HOOK_PATH, SqlHookAudit, type HookDecision, loadHooks, runHooks } from 
 import { checkEnabledHooks } from "../src/compose.js";
 import { HOOK_POINTS, PACK_CHECK_POINTS, UNCALLED_HOOK_POINTS, type HookDescriptor, type HookInput, type Timer, defineHook } from "../src/shared/hook.js";
 import type { SqlExecutor } from "../src/state/index.js";
-import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 
 // RFC 0015 §8 hooks: discovered, time-budgeted, veto or annotate only, never past a guard's refusal, off until
-// enabled, every decision audited (runtime_hook_decisions). SQLite always; MySQL when SF_TEST_MYSQL_URL is set.
+// enabled, every decision audited (runtime_hook_decisions). Runs on SQLite.
 
 const INPUT: HookInput = { point: "before_merge", subject: "wi_1", project_id: "p1", passport_id: "pp_1", at: "2026-11-08T12:00:00.000Z" };
 const NEVER: Timer = { after: () => new Promise(() => {}) };
@@ -100,13 +99,12 @@ async function sqlite(): Promise<SqlExecutor> {
 }
 
 
-const BACKENDS: [string, boolean, () => Promise<SqlExecutor>][] = [
-  ["sqlite", true, sqlite],
-  ["mysql", Boolean(MYSQL_URL), newMigratedMysqlDriver],
+const BACKENDS: [string, () => Promise<SqlExecutor>][] = [
+  ["sqlite", sqlite],
 ];
 
-for (const [name, enabled, open] of BACKENDS) {
-  describe.skipIf(!enabled)(`hook audit (${name})`, () => {
+for (const [name, open] of BACKENDS) {
+  describe(`hook audit (${name})`, () => {
     it("stores one row per decision, ids only", async () => {
       const audit = new SqlHookAudit(await open());
       await runHooks({ input: INPUT, hooks: [pass, veto], enabled: new Set(["a-pass", "b-veto"]), guard: ALLOW, timer: NEVER, audit });

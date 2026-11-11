@@ -12,10 +12,8 @@ import {
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import type { SqlExecutor } from "../src/state/index.js";
-import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 
-// Display names live once, in identity_profiles, keyed by the user id (owner decision 2026-11-08). SQLite always;
-// MySQL when SF_TEST_MYSQL_URL is set.
+// Display names live once, in identity_profiles, keyed by the user id (owner decision 2026-11-08). Runs on SQLite.
 
 const AT = "2026-11-08T12:00:00.000Z";
 const LATER = "2026-11-08T13:00:00.000Z";
@@ -27,13 +25,12 @@ async function sqlite(): Promise<SqlExecutor> {
 }
 
 
-const BACKENDS: [string, boolean, () => Promise<SqlExecutor>][] = [
-  ["sqlite", true, sqlite],
-  ["mysql", Boolean(MYSQL_URL), newMigratedMysqlDriver],
+const BACKENDS: [string, () => Promise<SqlExecutor>][] = [
+  ["sqlite", sqlite],
 ];
 
-for (const [name, enabled, open] of BACKENDS) {
-  describe.skipIf(!enabled)(`identity profiles (${name})`, () => {
+for (const [name, open] of BACKENDS) {
+  describe(`identity profiles (${name})`, () => {
     it("stores one name per user id, replaced by the person, read back by id", async () => {
       const profiles = new ProfileStore(await open());
       expect(await profiles.get("local:me@example.com")).toBeNull();

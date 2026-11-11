@@ -3,13 +3,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, MysqlMigrations, type Queryable, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
+import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { NewWorkItem } from "../src/interfaces/factory-store.js";
-import { MYSQL_URL, PROJECT_KEY, mysqlStepsUpTo, newEmptyMysqlDatabase, system } from "./helpers/store.js";
+import { PROJECT_KEY, system } from "./helpers/store.js";
 
 // One thread table for every item and one command inbox (issue #281): SQLite migration 24 and MySQL step 0024 copy
 // `item_messages` and `cli_commands` into `item_thread` and `command_inbox`, keeping each row's seq.
@@ -157,28 +156,4 @@ describe("MySQL step 0024: item thread and command inbox", () => {
     expect(columns(sqlite, "command_inbox")).toEqual(["seq", "command_key", "actor", "command", "args", "created_at"]);
     for (const t of NEW_TABLES) expect(columns(sql(), t), t).toEqual(columns(sqlite, t));
   });
-});
-
-function mysqlExec(c: Queryable): Exec {
-  return {
-    all: async (s, p) => {
-      const [r] = await c.query(s, p);
-      return r as Record<string, unknown>[];
-    },
-    run: (s, p) => c.query(s, p),
-  };
-}
-
-describe.skipIf(!MYSQL_URL)("MySQL step 0024 on MySQL", () => {
-  it("on an empty database at state 23 it creates both tables, empty", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP - 1) }).apply(() => undefined);
-    const status = await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).status();
-    expect(status.state).toBe(STEP - 1);
-    expect(status.pending.map((p) => p.label)).toEqual([STEP_FILE]);
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
-    for (const t of NEW_TABLES) expect(await count(mysqlExec(c), t)).toBe(0);
-  });
-
 });

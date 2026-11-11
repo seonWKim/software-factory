@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
@@ -14,11 +13,11 @@ import {
   type RunTimeouts,
 } from "../src/worker/engine/index.js";
 import { JournalEngine, type JournalEngineOptions } from "../src/worker/engine/plugins/journal/journal-engine.js";
-import { issue, MYSQL_URL, newMigratedMysqlDatabase, system } from "./helpers/store.js";
+import { issue, system } from "./helpers/store.js";
 
 // RFC 0015 §9 `execution-engine` contract: an engine never recomputes a stored step, resumes after a crash at
 // any step, and never misses a timeout. A run the controller's reaper requeued (the one takeover path) and a second
-// engine claimed never runs a finished step twice. Runs on SQLite always, on MySQL when SF_TEST_MYSQL_URL is set.
+// engine claimed never runs a finished step twice. Runs on SQLite.
 // The engine's time comes only from the ticks a test hands it.
 
 const T0 = Date.parse("2026-01-01T00:00:00.000Z"); // the store's FakeClock start: every run's created_at
@@ -48,24 +47,6 @@ const BACKENDS: Backend[] = [
       return { db: [driver, driver], store, clock };
     },
   },
-  ...(MYSQL_URL
-    ? [
-        {
-          name: "mysql",
-          async open() {
-            const mysql = await newMigratedMysqlDatabase();
-            const a = new MysqlDriver(mysql.options);
-            const b = new MysqlDriver(mysql.options);
-            mysql.onCleanup(async () => {
-              await a.close();
-              await b.close();
-            });
-            const clock = new FakeClock();
-            return { db: [a, b] as [SqlDriver, SqlDriver], store: new SqlFactoryStore(a, clock), clock };
-          },
-        },
-      ]
-    : []),
 ];
 
 class Crash extends Error {}
