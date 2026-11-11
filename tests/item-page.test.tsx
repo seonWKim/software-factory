@@ -461,6 +461,78 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
   });
 });
 
+describe("item page: the command box and pending proposals (design 09-dashboard-app)", () => {
+  let posts: { url: string; body: unknown }[];
+  const PROPOSALS = [
+    { id: "prop_one", created_at: AT, commands: [{ index: 0, work_item_id: "wi_b", line: "/approve ship it" }, { index: 1, work_item_id: "wi_c", line: "/reject not needed" }] },
+    { id: "prop_two", created_at: AT, commands: [{ index: 0, work_item_id: "wi_b", line: "/retry" }] },
+  ];
+
+  /** Serves wi_b, running (no command applies) or at the spec gate, with `proposals`; records every POST. */
+  function serve(commands: string[], proposals: unknown[]) {
+    const detail = {
+      as_of: AT, item: base("wi_b", 50, "Box"), timeline: [], runs: [], replies: [], spec: null, proposals,
+      commands: commands.map((name) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null })),
+    };
+    posts = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0]!;
+      if (init?.method === "POST") {
+        posts.push({ url: path, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ request_id: "app:x", seq: 9, command: "x", work_item_id: "wi_b" }), { status: 202, headers: { "content-type": "application/json" } });
+      }
+      const bodies: Record<string, unknown> = {
+        "/api/v1/items/wi_b": detail,
+        "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+        "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
+      };
+      const body = bodies[path];
+      if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+  }
+
+  /** `name` in `scope` once it is enabled. */
+  async function enabled(scope: HTMLElement, name: string) {
+    const button = within(scope).getByRole("button", { name }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    return button;
+  }
+
+  it("shows each pending proposal with its commands, a Confirm all and a Cancel; each press sends one request carrying its proposal ID", async () => {
+    serve(["approve", "reject", "revise"], PROPOSALS);
+    mount("/app/items/wi_b");
+    const list = await screen.findByRole("list", { name: "Proposed commands" });
+    const shown = [...list.querySelectorAll<HTMLElement>("[data-proposal]")];
+    expect(shown.map((p) => p.dataset.proposal)).toEqual(["prop_one", "prop_two"]);
+    expect(shown[0]!.textContent).toContain("/approve ship it");
+    expect(shown[0]!.textContent).toContain("/reject not needed");
+    expect(shown[0]!.textContent).toContain("wi_c");
+    fireEvent.click(await enabled(shown[0]!, "Confirm all"));
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_b/commands", body: { command: "proposal_confirm", proposal: "prop_one" } }]));
+    fireEvent.click(await enabled(shown[1]!, "Cancel"));
+    await waitFor(() => expect(posts.map((p) => p.body)).toEqual([
+      { command: "proposal_confirm", proposal: "prop_one" },
+      { command: "proposal_cancel", proposal: "prop_two" },
+    ]));
+    await waitFor(() => expect(within(shown[0]!).getByRole("status").textContent).toBe("sent"));
+  });
+
+  it("the command box sends the sentence as one request, also when no typed command applies; an empty box sends nothing", async () => {
+    serve([], []);
+    mount("/app/items/wi_b");
+    const box = (await screen.findByRole("textbox", { name: "Say it in your own words" })) as HTMLTextAreaElement;
+    expect(screen.queryByRole("list", { name: "Proposed commands" })).toBeNull();
+    const form = box.closest("form")!;
+    const read = within(form).getByRole("button", { name: "Read it" }) as HTMLButtonElement;
+    expect(read.disabled).toBe(true);
+    fireEvent.change(box, { target: { value: "  approve wi_b but keep it small " } });
+    fireEvent.click(await enabled(form, "Read it"));
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_b/commands", body: { command: "sentence", note: "approve wi_b but keep it small" } }]));
+    await waitFor(() => expect(box.value).toBe(""));
+  });
+});
+
 describe("Markdown", () => {
   it("escapes raw HTML and links only http(s) URLs; a javascript: link is plain text", () => {
     const { container } = render(

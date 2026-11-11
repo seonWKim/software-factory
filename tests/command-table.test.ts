@@ -3,9 +3,9 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { COMMAND_TABLE, type TableCommand, chatCliArgv, chatCommandListMarkdown, cliUsageOf, parseChatCommand } from "../src/core/command-table.js";
+import { COMMAND_TABLE, SENTENCE_FORM, type TableCommand, chatCliArgv, chatCommandListMarkdown, cliUsageOf, parseChatCommand } from "../src/core/command-table.js";
 import { type CommandPhase, THREAD_BARE_COMMANDS, chatForm, chatHelpReply, commandState, parseComment, parseLink, withSlash } from "../src/core/commands.js";
-import { CLI_TOP_WORDS, parseLocalCliArgs } from "../src/core/local-cli.js";
+import { CLI_TOP_WORDS, parseLocalCliArgs, parseSentence } from "../src/core/local-cli.js";
 import { SETTINGS_TOP_WORDS, parseModeArgs, parseSettingsArgs } from "../src/settings-cmd.js";
 import { APP_COMMANDS } from "../src/ui/commands.js";
 
@@ -20,8 +20,9 @@ function example(form: string): string {
     .join(" ");
 }
 
-/** What the CLI makes of the entry's usage, by the handler that owns its top word. */
+/** What the CLI makes of the entry's usage, by the handler that owns its top word; the sentence form, of words typed in its place. */
 function cliParse(c: TableCommand): { error: string } | object {
+  if (c.group === "sentence") return parseSentence(["approve", "the", "spec"]);
   const [word, ...args] = example(cliUsageOf(c)).split(" ");
   if ((SETTINGS_TOP_WORDS as readonly string[]).includes(word!)) return word === "mode" ? parseModeArgs(args) : parseSettingsArgs(args);
   if ((CLI_TOP_WORDS as readonly string[]).includes(word!)) return parseLocalCliArgs(word!, args);
@@ -60,6 +61,18 @@ describe("the command table", () => {
       const { word, args } = chatCliArgv(parsed, c.item ? "wi_1" : null);
       expect({ name: c.name, r: word === "settings" ? parseSettingsArgs(args) : parseLocalCliArgs(word, args) }).not.toMatchObject({ r: { error: expect.anything() } });
     }
+  });
+
+  it("the sentence form and `confirm` each have a CLI form and a chat form", () => {
+    const sentence = COMMAND_TABLE.find((c) => c.name === SENTENCE_FORM)!;
+    expect(sentence).toMatchObject({ group: "sentence", chat_args: "request", item: false, edge: false });
+    expect(cliUsageOf(sentence)).toBe(SENTENCE_FORM);
+    expect(parseChatCommand("confirm prop_ab12")).toMatchObject({ kind: "command", entry: { name: "confirm" }, args: ["prop_ab12"] });
+    const confirm = parseChatCommand("confirm prop_ab12");
+    if (confirm?.kind !== "command") throw new Error("confirm");
+    expect(parseLocalCliArgs(...Object.values(chatCliArgv(confirm, null)) as [string, string[]])).toEqual({ action: "confirm", proposal: "prop_ab12" });
+    // Words that only start like it are no confirm.
+    expect(parseChatCommand("confirm the release date")).toBeNull();
   });
 
   it("every item command is a command the dashboard may send", () => {

@@ -66,12 +66,10 @@ export interface WorkItem {
   loop_count: number;
   restart_count: number;
   token_cost: number;
-  /** Kept in sync by the store from change_ref until the column is dropped. Nothing under src/ reads it: read change_ref. */
-  pr_number: number | null;
   /**
    * The change columns (migration 35): `change_ref`, the PR number as text, is the field a patch sets (prNumber converts
    * it for a forge call). `change_url` is the PR link: the forge's open result, else derived from a forge key's stored
-   * label. Null without a PR. A row an older controller wrote without change_ref reads its pr_number as text.
+   * label. Null without a PR.
    */
   change_ref: string | null;
   change_url: string | null;
@@ -127,15 +125,15 @@ export interface WorkItem {
 
 /**
  * Fields a transition may change. id, source, title, issue_text, requester, origin, head_branch,
- * last_head_sha, parent_id, phase, version and timestamps are store-owned. The PR field is `change_ref`: the
- * store writes pr_number from it. `change_url` (the forge's open result) is written only with a new change_ref,
+ * last_head_sha, parent_id, phase, version and timestamps are store-owned. The PR field is `change_ref`.
+ * `change_url` (the forge's open result) is written only with a new change_ref,
  * and never over a stored URL.
  */
 export type WorkItemPatch = Partial<
   Omit<
     WorkItem,
     | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
-    | "parent_id" | "phase" | "pr_number" | "created_at" | "updated_at"
+    | "parent_id" | "phase" | "created_at" | "updated_at"
   >
 >;
 
@@ -665,7 +663,6 @@ export interface UnreviewedMerge {
   /** The project key (design 2026-11-01), as on WorkItem. */
   project: string;
   change_ref: string;
-  pr_number: number;
   merge_sha: string;
   /** The merger's user ID; null when the forge did not name one or it did not resolve to a user. */
   merger_id: UserId | null;

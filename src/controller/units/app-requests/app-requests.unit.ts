@@ -1,5 +1,6 @@
-// Applies the status page's requests (the gate commands approve, reject, revise, retry and resolve, verdict, merge;
-// anything else is refused). Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Applies the status page's requests (the gate commands approve, reject, revise, retry and resolve, verdict, merge,
+// and through the commands unit a sentence and a proposal's Confirm all and Cancel; anything else is refused).
+// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { COMMANDS, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
@@ -50,7 +51,8 @@ export class AppRequestsUnit {
    * `approve_spec` check, note scan, transition, standing-rule follow-up and reject close as the comment. `verdict` gets
    * the `/verdict` check, parser and store, keyed `app-<seq>`; `merge` on a local item with no PR goes to mergeLocal,
    * the same local merge as `factory merge`, and on any item with a PR to the PR merge (design §9, the Merge button).
-   * Each puts the request's seq on the state change (a verdict on its key). Any other command is refused. A refusal
+   * Each puts the request's seq on the state change (a verdict on its key). The command box's sentence and a stored
+   * proposal's Confirm all and Cancel go to the commands unit (`appProposal`). Any other command is refused. A refusal
    * is posted once on the item's source, keyed on the request, then stored on the row by the conditional mark. A
    * failed post leaves the request pending for the next tick. Safe to run twice: a request whose transition is
    * already stored (an earlier try, another replica) is marked applied.
@@ -86,7 +88,8 @@ export class AppRequestsUnit {
     } else if (gate) {
       refusal = await this.gateRequest(r, item, gate, key, note);
     } else {
-      refusal = APPLIED + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
+      const proposal = this.c.unit("commands").appProposal(r, item, key);
+      refusal = proposal ? await proposal : APPLIED + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     }
     // Refused here, but applied by a concurrent try of the same request: that one stands.
     if (refusal !== null && (await applied())) refusal = null;
