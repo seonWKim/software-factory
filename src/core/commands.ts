@@ -84,6 +84,9 @@ export interface CommandSpec {
   pr_phases?: readonly CommandPhase[];
   /** One line: what it does on the PR. */
   pr_description?: string;
+  /** Phases where it also applies to a local item with no PR, with the meaning in `local_description` (issue #563). */
+  local_phases?: readonly CommandPhase[];
+  local_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
 }
@@ -121,6 +124,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     changes_state: true,
     pr_phases: ["merge_pending", "failed_review"],
     pr_description: "On the PR: send your feedback to the implementer, who pushes a fix to the PR branch; a review runs after it",
+    local_phases: ["merge_pending"],
+    local_description: "On a local item with no PR: send your feedback to the implementer, who commits a fix to the item's local branch; a review runs after it",
   },
   {
     name: "retry",
@@ -265,7 +270,11 @@ export function itemCommandState(it: ItemState, runs: readonly Run[]): CommandSt
   return commandState(it, it.blocked_reason === AGENT_NEEDS_HUMAN ? blockingRunKind(it.blocked_reason, runs) : undefined);
 }
 
+/** Whether `c` applies to the local item with no PR in `s` with its local meaning (`local_phases`, issue #563). */
+export const appliesLocally = (c: CommandSpec, s: CommandState): boolean => s.local === true && !s.has_pr && (c.local_phases?.includes(s.phase) ?? false);
+
 export function applies(c: CommandSpec, s: CommandState): boolean {
+  if (appliesLocally(c, s)) return true;
   if (!c.phases.includes(s.phase) || (c.needs_pr && !s.has_pr && !s.local)) return false;
   return s.phase !== "agent_needs_human" || !c.asked_by || (s.asked_by !== undefined && c.asked_by.includes(s.asked_by));
 }
@@ -292,10 +301,16 @@ const ACCOUNT_COMMANDS: readonly CommandName[] = ["link"];
  */
 const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 
-/** The commands that apply in `s`, in table order; `/help` always last. */
+/** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
   const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name);
-  return COMMANDS.filter((c) => shown(c) && applies(c, s)).concat(commandSpec("help"));
+  return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (appliesLocally(c, s) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
+}
+
+/** What `c` does in `s`: its local meaning where that applies (issue #563), else every meaning it has (`s` null: the table). */
+function meaning(c: CommandSpec, s: CommandState | null): string {
+  if (s !== null && appliesLocally(c, s) && c.local_description) return c.local_description;
+  return [c.description, c.pr_description, c.local_description].filter((d) => d).join(". ");
 }
 
 /** One command as every list shows it: the issue footer and `/help`, Slack's help in an item's thread. */
@@ -336,7 +351,7 @@ export function helpReply(s: CommandState | null): string {
     "",
     ...COMMANDS.map((c) => {
       const now = s === null ? "" : applies(c, s) ? " **(now)**" : appliesOnPr(c, s) ? " **(now, on the PR)**" : "";
-      return `- \`${c.usage}\`${now}: ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""}.`;
+      return `- \`${c.usage}\`${now}: ${meaning(c, s)}.`;
     }),
     "",
     cliHelpLine(),
@@ -344,28 +359,14 @@ export function helpReply(s: CommandState | null): string {
 }
 
 const PHASE_LABELS: Record<CommandPhase, string> = {
-  triaging: "triaging",
-  spec_pending: "spec waiting for approval",
-  budget_checkpoint: "paused at a budget checkpoint",
-  max_revisions: "spec at the revision limit",
-  implementing: "implementing",
-  dependency_hold: "waiting for a dependency to merge",
-  dependency_closed: "blocked: a dependency was closed without a merge",
-  floor_tier: "blocked by the floor check",
-  rule_of_two: "waiting for a person to approve its run (Rule of Two)",
-  too_large: "blocked: the change was too large",
-  failed_implement: "blocked by a failed implement run",
-  failed_review: "blocked by a failed review run",
-  failed_run: "blocked by a failed run",
-  agent_needs_human: "blocked: the agent asked for a human",
-  repeated_failure: "blocked: a run failed the same way twice",
-  recurring_failure: "held: its run failed like a known recurring failure",
-  reviewing: "in review",
-  merge_pending: "waiting for a human merge",
-  max_loops: "review loop limit reached",
-  merge_conflict: "PR has a merge conflict",
-  other_blocked: "blocked for another reason",
-  merged: "merged",
+  triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint",
+  max_revisions: "spec at the revision limit", implementing: "implementing", dependency_hold: "waiting for a dependency to merge",
+  dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
+  rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large",
+  failed_implement: "blocked by a failed implement run", failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run",
+  agent_needs_human: "blocked: the agent asked for a human", repeated_failure: "blocked: a run failed the same way twice",
+  recurring_failure: "held: its run failed like a known recurring failure", reviewing: "in review", merge_pending: "waiting for a human merge",
+  max_loops: "review loop limit reached", merge_conflict: "PR has a merge conflict", other_blocked: "blocked for another reason", merged: "merged",
   closed: "closed",
 };
 
@@ -383,8 +384,8 @@ function whenText(c: CommandSpec): string {
       : all(VERDICT_PHASES)
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
-  const onPr = c.pr_phases?.length ? `; on its PR: ${c.pr_phases.map((p) => PHASE_LABELS[p]).join(", ")}` : "";
-  return (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + onPr;
+  const on = (label: string, ps?: readonly CommandPhase[]) => (ps?.length ? `; ${label}: ${ps.map((p) => PHASE_LABELS[p]).join(", ")}` : "");
+  return (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + on("on a local item with no PR", c.local_phases) + on("on its PR", c.pr_phases);
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */
@@ -393,7 +394,7 @@ export function commandTableMarkdown(): string {
     "| Command | What it does | Applies when |",
     "|---|---|---|",
     ...COMMANDS.map((c) =>
-      `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${c.description}${c.pr_description ? `. ${c.pr_description}` : ""} | ${whenText(c)} |`),
+      `| \`${c.usage.replace(/\|/g, "\\|")}\` | ${meaning(c, null)} | ${whenText(c)} |`),
   ].join("\n");
 }
 
