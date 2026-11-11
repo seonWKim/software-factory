@@ -427,15 +427,11 @@ export async function loadConfig(
   const worktreesDir = resolve(stateBase, file.worktrees_dir);
   const repoPath = resolve(root, file.repo.path);
   // The pack layers (design 11-packs.md): base (the code root), org (`packs.org`), project (`.factory/` in the
-  // repo's main checkout) and learned (under the state dir). A missing layer is off.
+  // repo's main checkout) and learned (under the state dir). A missing layer is off. Their plugins and tools join a registry copy.
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
-  // Their plugins join a copy of the registry for this load only (REGISTRY never changes), their tools' credentials as the selected
-  // broker's secrets (#592). A guard from any pack fails, and so does a project pack's plugin or tool on a shared store (mysql).
   const sharedStore = store.type === "mysql";
   const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
-  const plugins = withForgeDefault(
-    packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
-  );
+  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
   const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
