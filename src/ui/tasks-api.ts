@@ -8,7 +8,7 @@
 
 import { parseQuickAdd } from "../core/quick-add.js";
 import { buildTask } from "../core/task-build.js";
-import { type Task, type TaskViews, taskViews } from "../core/tasks.js";
+import { type Task, taskViews } from "../core/tasks.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
@@ -37,9 +37,8 @@ async function shown(d: UiDeps, tasks: readonly Task[]): Promise<Task[]> {
 export async function readTasks(d: UiDeps): Promise<ApiResult> {
   const now = d.clock.now();
   const open = await shown(d, await d.store.listTasks(TASK_LIST_LIMIT));
-  const views: TaskViews = taskViews(open, now);
   const can_build = (d.commands?.actor ?? null) !== null;
-  return { status: 200, value: { as_of: now.toISOString(), ...views, csrf_token: d.commands?.token ?? null, can_build } };
+  return { status: 200, value: { as_of: now.toISOString(), ...taskViews(open, now), csrf_token: d.commands?.token ?? null, can_build } };
 }
 
 /**
