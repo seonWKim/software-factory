@@ -1,6 +1,6 @@
 // The English text of the app shell, keyed by name. `{name}` marks a value the caller fills in.
 export const en = {
-  "app.name": "software-factory",
+  "app.name": "Gongbang",
   "nav.sidebar": "Sidebar",
   "nav.pages": "Pages",
   "nav.tools": "Tools",
