@@ -95,7 +95,7 @@ describe("the checkpoint", () => {
     const f = await factory({ budgets: { 2: 1000 }, implement: () => used(900, done) });
     const it0 = await f.submit();
     const it1 = await f.item(it0);
-    expect(it1).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 1000, blocked_on: "budget", blocked_reason: "budget_checkpoint" });
+    expect(it1).toMatchObject({ stage: "REVIEW", change_ref: "42", token_cost: 1000, blocked_on: "budget", blocked_reason: "budget_checkpoint" });
     const runs = await f.store.listRuns(it0.id);
     expect(runs.map((r) => r.kind)).toEqual(["triage", "implement"]);
     expect(runs.every((r) => r.acknowledged_at !== null)).toBe(true);
@@ -146,7 +146,7 @@ describe("the checkpoint", () => {
       expect(after.map(({ acknowledged_at: _a, updated_at: _u, ...r }) => r)).toEqual(before.map(({ acknowledged_at: _a, updated_at: _u, ...r }) => r));
       // Only the run's own push and PR, which outbound delivers before the review the checkpoint holds.
       expect(f.broker.calls.slice(brokerCalls).map((c) => c.name)).toEqual(["forge.push_branch", "forge.open_change"]);
-      expect((await f.item(it0)).pr_number).toBe(42);
+      expect((await f.item(it0)).change_ref).toBe("42");
       checked = true;
     }
     expect(checked).toBe(true);
@@ -159,7 +159,7 @@ describe("the checkpoint", () => {
     const runs = await f.store.listRuns(it0.id);
     expect(runs.find((r) => r.kind === "implement")).toMatchObject({ status: "succeeded" });
     expect(await f.reasons(it0)).toEqual(["intake", "triaged_auto_approved", "implemented", "budget_checkpoint"]);
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 50_100, blocked_on: "budget" });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42", token_cost: 50_100, blocked_on: "budget" });
   });
 
   it("triage runs are never held; their tokens count and the check happens when implement would start", async () => {
@@ -241,7 +241,7 @@ describe("/budget", () => {
 
     // The same branch: the review runs on the open PR, then waits for a human merge.
     await f.step();
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
     expect((await f.store.listRuns(it0.id)).filter((r) => r.kind === "review")).toHaveLength(1);
 
     // A second /budget has no checkpoint to answer.
@@ -357,7 +357,7 @@ describe("/reject at a checkpoint", () => {
     const it0 = await f.submit();
     const brokerCalls = f.broker.calls.length;
     await f.reject();
-    expect(await f.item(it0)).toMatchObject({ stage: "CLOSED", close_reason: "rejected", blocked_on: "none", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "CLOSED", close_reason: "rejected", blocked_on: "none", change_ref: "42" });
     expect(f.broker.calls.length).toBe(brokerCalls);
     expect((await f.store.listBudgetCheckpoints(it0.id))[0]).toMatchObject({ answer: "rejected", granted_budget: null, outcome: "rejected" });
     const rows = (await f.store.listStateChanges(it0.id)).filter((c) => c.reason.startsWith("budget_"));

@@ -74,7 +74,7 @@ describe("CI check gate before merge_pending", () => {
 
   it("checks passed: the item moves to merge_pending", async () => {
     const f = await toReview([{ state: "passed" }]);
-    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
     expect(f.forge.checkCalls).toEqual([42]);
     expect(f.source.comments.at(-1)!.body).toContain("human merge is required");
     expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["review_passed"]);
@@ -97,12 +97,12 @@ describe("CI check gate before merge_pending", () => {
     const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
     const implement = (await f.store.listRuns(item.id)).find((r) => r.kind === "implement")!;
     expect(implement.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true } });
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, change_ref: "42", change_url: url });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42", change_url: url });
   });
 
   it("checks pending: the item stays in REVIEW with no merge_pending until they pass", async () => {
     const f = await toReview([{ state: "pending" }]);
-    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending", pr_number: 42, loop_count: 0 });
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending", change_ref: "42", loop_count: 0 });
     expect(f.source.comments.some((c) => c.body.includes("human merge is required"))).toBe(false);
     expect((await reasons(f, f.item.id)).slice(-1)).toEqual(["checks_pending"]);
 
@@ -390,7 +390,7 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "102", approver: alice });
     await f.step();
     item = (await f.store.getWorkItem(item.id))!;
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42, loop_count: 1 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42", loop_count: 1 });
 
     // Second implement run saw the reviewer's findings; reviewer prompt had no implementer transcript.
     const implementSpecs = runner.specs.filter((s) => s.role === "implement");
@@ -441,7 +441,7 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "300", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
-    expect(item).toMatchObject({ blocked_reason: "merge_pending", pr_number: 42 });
+    expect(item).toMatchObject({ blocked_reason: "merge_pending", change_ref: "42" });
 
     f.forge.commitAuthors.h9 = alice;
     f.forge.commitCounts[`${item.last_head_sha}..h9`] = 1;
@@ -472,7 +472,7 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: src, comment_id: "200", approver: alice });
     await f.step();
     const before = (await f.store.getWorkItemBySource("github_issue", src.id))!;
-    expect(before).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(before).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
     const replies = f.source.comments.length;
 
     const pr = { kind: "pr" as const, change_ref: "42", head_branch: `factory/${before.id}` };
@@ -707,7 +707,7 @@ describe("one issue to one merged PR", () => {
     f.source.queue.push({ kind: "spec_approved", source: issueRef(16), comment_id: "116", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", "o/r#16"))!;
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42, loop_count: 1 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42", loop_count: 1 });
 
     // Both implement runs (the first, and the review fix on PR 42) sync, then gate, then push.
     const calls = f.sandbox.gitCalls;
@@ -784,7 +784,7 @@ describe("one issue to one merged PR", () => {
     await step();
 
     const item = (await f.store.getWorkItemBySource("github_issue", src.id))!;
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
     const runs = await f.store.listRuns(item.id);
     expect(runs.map((r) => r.kind)).toEqual(["triage", "implement", "review"]);
     expect(runs.every((r) => r.attempt === 1 && r.status === "succeeded")).toBe(true);
@@ -906,7 +906,7 @@ describe("spec gate: /revise and /reject", () => {
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: f.next(), approver: alice });
     await f.step();
     item = (await f.store.getWorkItem(f.item.id))!;
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
     expect(await reasons(f)).toEqual([
       "intake", "triaged", "spec_revision_requested", "triaged", "spec_approved", "implemented", "pr_delivered", "review_passed",
     ]);
@@ -1193,7 +1193,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     const f = await implemented(60, (f) => {
       f.sandbox.numstat = numstat([...files(39), [1000, 461, ".github/workflows/scope.yml"]]);
     });
-    expect(f.item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(f.item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     expect(names(f)).toContain("forge.push_branch");
   });
 
@@ -1225,7 +1225,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     f.sandbox.numstat = numstat([[10, 1, ".github/workflows/scope.yml"]]);
     f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "6101", requester: alice });
     await f.step();
-    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
   });
 
   it("41 changed files fail with diff_too_large", async () => {
@@ -1287,7 +1287,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "6403", approver: alice });
     await f.step();
     const item = (await f.store.getWorkItem(f.item.id))!;
-    expect(item).toMatchObject({ stage: "REVIEW", tier: 3, restart_count: 1, pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", tier: 3, restart_count: 1, change_ref: "42" });
     expect(names(f)).toEqual(["forge.push_branch", "forge.open_change"]);
 
     const approval = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "floor_tier_approved")!;
@@ -1304,7 +1304,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     const f = await implemented(65, (f) => {
       f.sandbox.changedFiles = [".github/workflows/scope.yml"];
     }, { tier: 3, workerConfig: raised });
-    expect(f.item).toMatchObject({ stage: "REVIEW", tier: 3, pr_number: 42 });
+    expect(f.item).toMatchObject({ stage: "REVIEW", tier: 3, change_ref: "42" });
     expect(names(f)).toContain("forge.open_change");
     expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:floor:"))).toBe(false);
   });
@@ -1421,7 +1421,7 @@ describe("/revise after a failed implement run", () => {
       expect(failedKeys).not.toContain(queued[0]!.idempotency_key);
 
       await f.step();
-      expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+      expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
       expect(refusals(f)).toEqual([]);
     });
 
@@ -1455,7 +1455,7 @@ describe("/revise after a failed implement run", () => {
       f.succeed();
       f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: f.next(), requester: alice });
       await f.step();
-      expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, revision_count: 0 });
+      expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", change_ref: "42", revision_count: 0 });
       expect(refusals(f)).toHaveLength(1);
     });
   }
@@ -1532,7 +1532,7 @@ describe("/resolve on a merge conflict", () => {
     runner.script.resolve = resolve;
     runner.specs = [];
     const item = (await f.store.getWorkItem(id))!;
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42" });
     f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
     f.broker.stores.length = 0;
     f.sandbox.gitCalls = [];
@@ -1643,7 +1643,7 @@ describe("/resolve on a merge conflict", () => {
 
     // Back to REVIEW with the same PR; a review ran under a new key and passed.
     item = (await f.store.getWorkItem(f.item.id))!;
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
     const reviews = (await f.store.listRuns(f.item.id)).filter((r) => r.kind === "review");
     expect(reviews).toHaveLength(2);
     expect(reviews[1]!.idempotency_key).not.toBe(reviews[0]!.idempotency_key);
@@ -1668,7 +1668,7 @@ describe("/resolve on a merge conflict", () => {
 
     // Blocked, nothing pushed, nothing queued, one comment with the question and /resolve in its footer.
     let item = (await f.store.getWorkItem(f.item.id))!;
-    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", change_ref: "42" });
     expect(names(f)).not.toContain("forge.push_branch");
     expect((await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued")).toEqual([]);
     const asks = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:needs-human:"));
@@ -1876,7 +1876,7 @@ describe("/resolve on a merge conflict", () => {
     expect(f.sandbox.gitCalls.some((c) => c.startsWith("commit"))).toBe(false);
 
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({
-      stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", pr_number: 42,
+      stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending", change_ref: "42",
     });
     const note = f.source.comments.find((c) => c.marker === `<!-- factory:run-failed:${run.id} -->`)!;
     expect(note.body).toContain("`out_of_scope`");
@@ -1972,7 +1972,7 @@ describe("/resolve on a merge conflict", () => {
     f.source.queue.push(onPr("7903"));
     await f.step();
     expect(f.source.reactions.at(-1)).toEqual({ source: pr, comment_id: "7903" });
-    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
     expect(refusals(f)).toHaveLength(1);
   });
   it("an unmergeable PR starts a resolve run on its own: it pushes, comments both counts on the PR, and goes back to review", async () => {
@@ -1990,7 +1990,7 @@ describe("/resolve on a merge conflict", () => {
     expect(f.broker.calls.filter((c) => c.name === "forge.push_branch")).toHaveLength(2); // the implement run's, then the resolve's
 
     const item = (await f.store.getWorkItem(f.id))!;
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
     const trail = (await f.store.listStateChanges(f.id)).map((c) => c.reason);
     expect(trail.slice(-5)).toEqual(["update_started", "auto_resolve_started", "resolved", "push_delivered", "review_passed"]);
     const note = f.forge.comments.find((c) => c.marker === `<!-- factory:auto-resolved:${resolves[0]!.id} -->`)!;
@@ -2119,7 +2119,7 @@ describe("/resolve with real git (NoOpSandbox)", { timeout: 30_000 }, () => {
     expect(git(f.origin, "rev-list", "--parents", "-n", "1", head).split(" ").slice(1)).toEqual([f.branchSha, f.mainSha]);
     expect(git(f.origin, "show", `${head}:src/gate.ts`)).toBe("export const gate = both(branchGate(), mainGate());");
     expect(git(f.origin, "show", `${head}:docs.md`)).toBe("main doc");
-    expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
   });
 
   it("an untracked file outside the allowed paths fails out_of_scope and leaves the remote branch as it was", async () => {
@@ -2420,7 +2420,7 @@ describe("/retry, /revise and /reject at the review loop limit (max_loops)", () 
       if (!r.ok) throw new Error("setup failed");
     }
     item = (await f.store.getWorkItem(item.id))!;
-    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "max_loops", pr_number: withPr ? 42 : null });
+    expect(item).toMatchObject({ blocked_on: "human", blocked_reason: "max_loops", change_ref: withPr ? "42" : null });
     expect(item.loop_count).toBeGreaterThan(0);
     return { ...f, runner, src, item };
   }
@@ -2485,7 +2485,7 @@ describe("/retry, /revise and /reject at the review loop limit (max_loops)", () 
       const item = await current(f);
       expect(item).toMatchObject({
         stage: "NEW", blocked_on: "none", loop_count: 0, spec_feedback: "split the gate change", revision_count: before.revision_count + 1,
-        pr_number: before.pr_number,
+        change_ref: before.change_ref,
       });
       expect((await runsOf(f, "triage")).filter((r) => !triage.some((t) => t.id === r.id))).toHaveLength(1);
       expect(refusals(f, "11602")).toEqual([]);
@@ -2538,7 +2538,7 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "9002", requester: alice, note: "+paths src/x.ts\nkeep it small" });
     await f.step();
     const item = await current(f);
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42, tier: 2 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42", tier: 2 });
     expect(item.allowed_paths).toEqual([".github/workflows/", "src/x.ts"]);
     expect(names(f)).toContain("forge.push_branch");
 
@@ -2598,7 +2598,7 @@ describe("+paths on /approve and /retry, and /retry notes (issue #280)", () => {
     const row = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "retry_requested")!;
     expect(row.changes.tier).toEqual({ from: 2, to: 4 });
     // The floor check then passes at the raised tier: the branch is pushed.
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
   });
 
   it("/approve +paths on a waiting spec widens the paths once each, skipping covered ones, and the prompt lists them", async () => {

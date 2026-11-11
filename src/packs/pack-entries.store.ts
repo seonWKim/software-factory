@@ -2,6 +2,8 @@
 // `tools/*.json` (kind `tool`) and `mcp_servers/*.json` (kind `mcp_server`), runs the three scans (pack-scans.ts) on
 // each, and stores each passing one in `ext_packs_entries` as `pending`. A failing one is refused and nothing is
 // stored for it. Nothing here starts a process or calls a tool: a stored entry is data until a later phase approves it.
+// A tool's module beside its descriptor (`tools/<file>.tool.js`) is pinned too: its SHA-256 is stored as module_hash
+// and joins the description_hash, so a changed module is a new entry that needs its own approval.
 
 import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
@@ -24,6 +26,8 @@ interface NewPackEntry {
   readonly kind: PackEntryKind;
   readonly name: string;
   readonly description_hash: string;
+  /** The SHA-256 of the tool's module bytes; null for a tool with no module and for an MCP server. */
+  readonly module_hash: string | null;
   /** The scanned canonical JSON. */
   readonly descriptor: string;
   /** The environment variable a tool's credential comes from; never its value. */
@@ -34,7 +38,7 @@ interface NewPackEntry {
 
 /** What the add did with one descriptor file. A refused one is named by its file: its descriptor's text is never printed. */
 export type AddOutcome =
-  | { readonly outcome: "stored" | "already_added"; readonly kind: PackEntryKind; readonly name: string; readonly description_hash: string }
+  | { readonly outcome: "stored" | "already_added"; readonly kind: PackEntryKind; readonly name: string; readonly description_hash: string; readonly module_hash: string | null }
   | { readonly outcome: "refused"; readonly kind: PackEntryKind; readonly name: string; readonly rules: readonly string[] };
 
 /** JSON with every object's keys sorted, no spaces: one text per descriptor whatever its file's layout. */
@@ -46,10 +50,32 @@ export function canonicalJson(value: Json): string {
   return JSON.stringify(value);
 }
 
-const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+const sha256 = (data: string | Uint8Array): string => createHash("sha256").update(data).digest("hex");
 
-/** A descriptor's description_hash: the SHA-256 of its canonical JSON, what an approval is keyed by. */
-export const descriptionHash = (descriptor: Json): string => sha256(canonicalJson(descriptor));
+/** A pack tool's module, beside its descriptor: `tools/<file>.tool.js`. */
+export const PACK_TOOL_MODULE = ".tool.js";
+
+/** A tool module's module_hash: the SHA-256 of its bytes. */
+export const moduleHash = (bytes: Uint8Array): string => sha256(bytes);
+
+/**
+ * A descriptor's description_hash, what an approval is keyed by: the SHA-256 of its canonical JSON, or with a
+ * module, of that JSON and the module's hash. With no module it is the same value as before modules were pinned.
+ */
+export const descriptionHash = (descriptor: Json, module_hash: string | null = null): string => {
+  const canonical = canonicalJson(descriptor);
+  return sha256(module_hash === null ? canonical : `${canonical}\nmodule_hash:${module_hash}`);
+};
+
+/** The module beside a tool's descriptor file; null when there is none. Read at add, startup and every call. */
+export async function readModuleHash(file: string): Promise<string | null> {
+  try {
+    return moduleHash(await readFile(file));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+}
 
 export class PackEntriesStore {
   constructor(
@@ -66,8 +92,8 @@ export class PackEntriesStore {
     return insertOrSkip(
       this.db,
       this.db.dialect.name,
-      "ext_packs_entries (id, kind, name, description_hash, descriptor, credential_name, status, added_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
-      [id, e.kind, e.name, e.description_hash, e.descriptor, e.credential_name, e.added_by, at, at],
+      "ext_packs_entries (id, kind, name, description_hash, module_hash, descriptor, credential_name, status, added_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+      [id, e.kind, e.name, e.description_hash, e.module_hash, e.descriptor, e.credential_name, e.added_by, at, at],
     );
   }
 
@@ -77,21 +103,25 @@ export class PackEntriesStore {
    */
   async current(kind: PackEntryKind, name: string): Promise<StoredEntry | null> {
     const [r] = await this.db.all(
-      "SELECT description_hash, descriptor, credential_name FROM ext_packs_entries WHERE kind = ? AND name = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+      "SELECT description_hash, module_hash, descriptor, credential_name FROM ext_packs_entries WHERE kind = ? AND name = ? ORDER BY created_at DESC, id DESC LIMIT 1",
       [kind, name],
     );
     if (!r) return null;
     const descriptor = JSON.parse(String(r.descriptor)) as Record<string, Json>;
     const credential_name = r.credential_name === null ? null : String(r.credential_name);
-    return { kind, name, description_hash: String(r.description_hash), credential_name, read_only: descriptor.read_only === true, descriptor };
+    return { ...storedRef(kind, name, r), credential_name, read_only: descriptor.read_only === true, descriptor };
   }
 
-  /** Every stored description_hash of `kind` and `name`, oldest first. */
-  async hashes(kind: PackEntryKind, name: string): Promise<string[]> {
-    const rows = await this.db.all("SELECT description_hash FROM ext_packs_entries WHERE kind = ? AND name = ? ORDER BY created_at, id", [kind, name]);
-    return rows.map((r) => String(r.description_hash));
+  /** Every stored description of `kind` and `name`, oldest first. */
+  async refs(kind: PackEntryKind, name: string): Promise<StoredRef[]> {
+    const rows = await this.db.all("SELECT description_hash, module_hash FROM ext_packs_entries WHERE kind = ? AND name = ? ORDER BY created_at, id", [kind, name]);
+    return rows.map((r) => storedRef(kind, name, r));
   }
 }
+
+const storedRef = (kind: PackEntryKind, name: string, r: Record<string, unknown>): StoredRef => ({
+  kind, name, description_hash: String(r.description_hash), module_hash: r.module_hash === null || r.module_hash === undefined ? null : String(r.module_hash),
+});
 
 /** One stored description of an entry: what an approval is keyed by. */
 export interface PackEntryRef {
@@ -100,8 +130,13 @@ export interface PackEntryRef {
   readonly description_hash: string;
 }
 
+/** A stored description and its tool module's hash (null: no module), as the add and approve lines show it. */
+export interface StoredRef extends PackEntryRef {
+  readonly module_hash: string | null;
+}
+
 /** A stored entry as the grant check reads it: `read_only` is the descriptor's own `read_only: true`. */
-export interface StoredEntry extends PackEntryRef {
+export interface StoredEntry extends StoredRef {
   readonly credential_name: string | null;
   readonly read_only: boolean;
   /** The scanned descriptor, parsed: what an approved MCP server starts from (`packMcpServer`). */
@@ -133,11 +168,12 @@ async function addOne(store: PackEntriesStore, scanner: EgressScanner, kind: Pac
   const rules = await scanDescriptor(scanner, descriptor, canonical);
   if (rules.length > 0) return { outcome: "refused", kind, name: file, rules };
   const credential = (descriptor as { credential?: Json }).credential;
-  const description_hash = sha256(canonical);
+  const module_hash = kind === "tool" ? await readModuleHash(`${path.slice(0, -".json".length)}${PACK_TOOL_MODULE}`) : null;
+  const description_hash = descriptionHash(descriptor, module_hash);
   const stored = await store.insert({
-    kind, name, description_hash, descriptor: canonical, credential_name: typeof credential === "string" ? credential : null, added_by,
+    kind, name, description_hash, module_hash, descriptor: canonical, credential_name: typeof credential === "string" ? credential : null, added_by,
   });
-  return { outcome: stored ? "stored" : "already_added", kind, name, description_hash };
+  return { outcome: stored ? "stored" : "already_added", kind, name, description_hash, module_hash };
 }
 
 /** Adds every tool and MCP server descriptor of the pack at `path`, tools first, each folder in file-name order. */
@@ -155,5 +191,10 @@ export function addLine(r: AddOutcome): string {
   const what = `${r.kind === "tool" ? "tool" : "MCP server"} ${r.name}`;
   if (r.outcome === "refused") return `refused ${what}: ${r.rules.join(", ")}`;
   if (r.outcome === "already_added") return `already added ${what}`;
-  return `stored ${what} as pending (description_hash ${r.description_hash.slice(0, 12)})`;
+  return `stored ${what} as pending (${hashesText(r)})`;
+}
+
+/** The hashes a line shows: the description_hash, and the module_hash beside it when the tool has a module. */
+export function hashesText(r: { readonly description_hash: string; readonly module_hash: string | null }): string {
+  return `description_hash ${r.description_hash.slice(0, 12)}${r.module_hash === null ? "" : `, module_hash ${r.module_hash.slice(0, 12)}`}`;
 }

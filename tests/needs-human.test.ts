@@ -94,7 +94,7 @@ describe("an implement run that returns needs_human", () => {
   it("blocks on a human with agent_needs_human, queues nothing, pushes nothing, opens no PR, and adds its tokens", async () => {
     const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { needs_human: ASK } }) }));
     const it0 = await f.approved(1);
-    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: null });
+    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", change_ref: null });
     expect(await f.queued(it0)).toEqual([]);
     expect(await f.runs(it0, "implement")).toHaveLength(1);
     expect(f.broker.calls.map((c) => c.name)).not.toContain("forge.push_branch");
@@ -145,7 +145,7 @@ describe("an implement run that returns needs_human", () => {
     expect(retried).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: 1 });
     expect((await f.queued(it0)).map((r) => r.kind)).toEqual(["implement"]);
     await f.step();
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
   });
 
   it("/revise <feedback> starts a new triage with the feedback; /reject <reason> closes the item", async () => {
@@ -185,7 +185,7 @@ describe("a review run that returns needs_human", () => {
       review: () => (ask ? { output: { ...pass.output, needs_human: ASK } } : pass),
     }));
     const it0 = await f.approved(8);
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "agent_needs_human", change_ref: "42" });
     expect(await f.queued(it0)).toEqual([]);
     expect(f.broker.calls.some((c) => JSON.stringify(c.args).includes("factory:review:"))).toBe(false);
     expect(f.asks()).toHaveLength(1);
