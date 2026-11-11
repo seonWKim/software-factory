@@ -63,12 +63,14 @@ export async function startPackMcpServer(server: PackMcpServer, opts: { cwd?: st
     if (ended) return Promise.reject(ended);
     const id = ++next;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = AbortSignal.timeout(timeout);
+      const timedOut = () => {
         waiting.delete(id);
         reject(new Error(`${method} timed out`));
-      }, timeout);
+      };
+      timer.addEventListener("abort", timedOut, { once: true });
       waiting.set(id, (r) => {
-        clearTimeout(timer);
+        timer.removeEventListener("abort", timedOut);
         if (r.result && typeof r.result === "object") resolve(r.result);
         else reject(new Error(typeof r.error?.message === "string" ? r.error.message : `${method} failed`));
       });
@@ -81,9 +83,9 @@ export async function startPackMcpServer(server: PackMcpServer, opts: { cwd?: st
     const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
     child.stdin.end();
     child.kill("SIGTERM");
-    const kill = setTimeout(() => child.kill("SIGKILL"), 2000);
+    // One that ignores SIGTERM is killed; a kill after its exit does nothing.
+    AbortSignal.timeout(2000).addEventListener("abort", () => child.kill("SIGKILL"), { once: true });
     await exited;
-    clearTimeout(kill);
   };
 
   try {

@@ -49,13 +49,15 @@ export function packMcpServer(entry: Pick<StoredEntry, "name" | "credential_name
 
 /**
  * A run kind's grants split in three: the broker tools (with each approved pack tool), each approved MCP server
- * the factory starts, and a refusal for each other pack entry it names.
+ * the factory starts, and a refusal for each other pack entry it names. `runsMcpServers` false (the run's runner
+ * cannot run them): every approved MCP server is refused too.
  * Reads the store only (no time, no write).
  */
 export async function checkPackGrants(
   db: SqlDriver,
   grants: readonly string[],
   autoApproveReadOnly: boolean,
+  runsMcpServers = true,
 ): Promise<{ broker: string[]; mcp_servers: PackMcpServer[]; refused: PackRefusal[] }> {
   const broker: string[] = [];
   const mcp_servers: PackMcpServer[] = [];
@@ -72,7 +74,7 @@ export async function checkPackGrants(
     else if (kind === "tool") broker.push(grant);
     else {
       const server = packMcpServer(found);
-      if (server) mcp_servers.push(server);
+      if (server && runsMcpServers) mcp_servers.push(server);
       else refused.push({ grant, reason: "not_started" });
     }
   }

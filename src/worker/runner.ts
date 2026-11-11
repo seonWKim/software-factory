@@ -827,11 +827,8 @@ export class Worker {
     const session = SESSION_ROLES.includes(role.role ?? run.kind)
       ? { id: opts.resume ?? globalThis.crypto.randomUUID(), resume: Boolean(opts.resume) }
       : null;
-    // The run kind's read-only broker tools from `tool_grants` (checked at startup); none when config grants none.
-    // A granted pack entry needs its approval too (design 11-packs); an approved MCP server needs a runner that runs
-    // MCP servers. Any refusal fails the run before its agent.
-    const { broker: tool_grants, mcp_servers, refused } = await checkPackGrants(storeSql(this.d.store), grantsFor(this.cfg.tool_grants, run.kind), this.cfg.packs_auto_approve_read_only === true);
-    if (!this.d.runner.runs_mcp_servers) refused.push(...mcp_servers.map((m) => ({ grant: `pack:mcp_server:${m.name}`, reason: "not_started" as const })));
+    // The run kind's broker tools and pack MCP servers from `tool_grants`; a refused pack entry fails the run before its agent (design 11-packs).
+    const { broker: tool_grants, mcp_servers, refused } = await checkPackGrants(storeSql(this.d.store), grantsFor(this.cfg.tool_grants, run.kind), this.cfg.packs_auto_approve_read_only === true, this.d.runner.runs_mcp_servers === true);
     if (refused.length > 0) throw new RunFailure(PACK_TOOL_REFUSED, packRefusalMessage(refused));
     if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
@@ -854,7 +851,7 @@ export class Worker {
       role: run.kind,
       sandbox: handle,
       tool_grants,
-      ...(mcp_servers.length > 0 ? { mcp_servers } : {}),
+      mcp_servers,
       lease_token: run.lease!.token,
       deny_paths: this.cfg.deny_paths,
       writable_paths: [],

@@ -633,7 +633,7 @@ describe("packs: approvals, the pin and the grant check", () => {
     for (const grants of [[], ["test.read_note"]]) {
       const { runner } = await runWith(s, grants);
       const [spec] = runner.specs;
-      expect(spec?.mcp_servers).toBeUndefined();
+      expect(spec?.mcp_servers).toEqual([]);
       const args = buildClaudeArgs(spec!, "haiku");
       expect(args.join(" ")).not.toContain("docs-search");
       expect(args).not.toContain("--mcp-config");

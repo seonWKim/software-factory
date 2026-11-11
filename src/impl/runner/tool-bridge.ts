@@ -13,7 +13,7 @@ import { OUTPUT_CAP } from "../../core/tools/index.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { type JsonLineHost, startJsonLineHost } from "./json-line-host.js";
-import type { RunningMcpServer } from "./pack-mcp-client.js";
+import { type RunningMcpServer, startPackMcpServer } from "./pack-mcp-client.js";
 import { type HostReply, type HostTool, mcpToolName } from "./tool-bridge-mcp.js";
 
 /** What a runner needs to expose granted tools: the broker that serves them and the scanner for their results. */
@@ -208,4 +208,48 @@ export function bridgeMcpConfig(
       ...Object.fromEntries((opts.servers ?? []).map((name) => [packServerKey(name), entry(name)])),
     },
   };
+}
+
+/** A run's granted tools as the harness sees them: the bridges' MCP config and the tool names to allow. */
+export interface BridgeArgs {
+  mcpConfig: Record<string, unknown>;
+  /** Granted broker tool names; each becomes `mcp__factory_tools__<name>` in `--allowedTools`. */
+  tools: readonly string[];
+  /** The run's pack MCP servers' tools as the harness names them (`packToolHarnessName`), for `--allowedTools`. */
+  server_tools?: readonly string[];
+}
+
+/**
+ * A run with granted tools or pack MCP servers: starts each server in `cwd` (pack-mcp-client.ts), then the run's
+ * socket, whose every call (from a bridge or anyone) passes the gate in this process; runs `run` with the harness
+ * args, then stops the socket and the servers. A server that does not start: `fail`, naming the server only, since
+ * its own error text could hold anything it saw.
+ */
+export async function withRunBridge<T>(
+  deps: GrantedToolDeps,
+  spec: GateSpec & Pick<AgentRunSpec, "mcp_servers">,
+  cwd: string,
+  run: (bridge: BridgeArgs) => Promise<T>,
+  fail: (error: string) => T,
+): Promise<T> {
+  const started: RunningMcpServer[] = [];
+  try {
+    for (const m of spec.mcp_servers ?? []) {
+      const s = await startPackMcpServer(m, { cwd }).catch(() => null);
+      if (!s) return fail(`pack MCP server ${m.name} did not start`);
+      started.push(s);
+    }
+    const bridge = await startBridgeHost(new ToolGate(deps, spec, started));
+    try {
+      return await run({
+        mcpConfig: bridgeMcpConfig(bridge.socket, { broker: spec.tool_grants.length > 0, servers: started.map((s) => s.name) }),
+        tools: spec.tool_grants,
+        server_tools: started.flatMap((s) => s.tools.map((t) => packToolHarnessName(s.name, t.name))),
+      });
+    } finally {
+      await bridge.close();
+    }
+  } finally {
+    await Promise.all(started.map((s) => s.close()));
+  }
 }

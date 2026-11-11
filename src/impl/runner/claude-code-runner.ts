@@ -9,8 +9,7 @@ import {
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks } from "./gate-hooks.js";
-import { type RunningMcpServer, startPackMcpServer } from "./pack-mcp-client.js";
-import { type GrantedToolDeps, ToolGate, bridgeMcpConfig, harnessToolName, packToolHarnessName, startBridgeHost } from "./tool-bridge.js";
+import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
 export interface ClaudeCodeRunnerOptions {
   sandbox: Sandbox;
@@ -27,15 +26,6 @@ export interface ClaudeCodeRunnerOptions {
    * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and refuses a run with grants.
    */
   tools?: GrantedToolDeps;
-}
-
-/** A run's granted tools as the harness sees them: the bridge's MCP config and the tool names to allow. */
-export interface BridgeArgs {
-  mcpConfig: Record<string, unknown>;
-  /** Granted broker tool names; each becomes `mcp__factory_tools__<name>` in `--allowedTools`. */
-  tools: readonly string[];
-  /** The run's pack MCP servers' tools as the harness names them (`packToolHarnessName`), for `--allowedTools`. */
-  server_tools?: readonly string[];
 }
 
 /** The harness credential: the one secret the agent process holds (architecture §5). */
@@ -298,35 +288,16 @@ export class ClaudeCodeRunner implements AgentRunner {
     const servers = spec.mcp_servers ?? [];
     if (spec.tool_grants.length === 0 && servers.length === 0) return this.runWith(spec);
     const fail = (error: string): AgentRunResult => ({ status: "failed", output: null, transcript: "", usage: NO_USAGE, error });
-    if (!this.opts.tools) {
-      return fail(spec.tool_grants.length > 0 ? toolsNotExposedMessage(spec.tool_grants) : `this agent runner cannot run pack MCP servers; granted: ${servers.map((m) => m.name).join(", ")}`);
-    }
-    // Each pack MCP server runs here, in the run's home with an empty env (design 11-packs, issue #596): the agent
-    // reaches it only through its bridge entry, so each result passes the gate's egress scan and output cap.
+    if (!this.opts.tools) return fail(toolsNotExposedMessage([...spec.tool_grants, ...servers.map((m) => `pack:mcp_server:${m.name}`)]));
+    // The guarded route for pack MCP servers (design 11-packs, issue #596): each starts here, in the worker, in the
+    // run's home with an empty env, never by the harness. The agent's --mcp-config names only bridges back to this
+    // process, one per server, so each result passes the gate's egress scan and output cap like a broker tool's.
+    // A server that names a credential, or is not stdio, never reaches here: the grant check refused it as
+    // not_started. Started servers and the socket are stopped when the run ends, however it ends.
+    // The run's home is the server's working folder: a per-run folder on the worker host, never the owner's checkout.
     const home = join(this.opts.homesDir, spec.run_id);
     await mkdir(home, { recursive: true });
-    const started: RunningMcpServer[] = [];
-    try {
-      for (const m of servers) {
-        // The server's own error text could hold anything it saw: the run's error names the server only.
-        const s = await startPackMcpServer(m, { cwd: home }).catch(() => null);
-        if (!s) return fail(`pack MCP server ${m.name} did not start`);
-        started.push(s);
-      }
-      // The run's socket: every call a bridge forwards (or anyone sends) passes the gate in this process.
-      const bridge = await startBridgeHost(new ToolGate(this.opts.tools, spec, started));
-      try {
-        return await this.runWith(spec, {
-          mcpConfig: bridgeMcpConfig(bridge.socket, { broker: spec.tool_grants.length > 0, servers: started.map((s) => s.name) }),
-          tools: spec.tool_grants,
-          server_tools: started.flatMap((s) => s.tools.map((t) => packToolHarnessName(s.name, t.name))),
-        });
-      } finally {
-        await bridge.close();
-      }
-    } finally {
-      await Promise.all(started.map((s) => s.close()));
-    }
+    return withRunBridge(this.opts.tools, spec, home, (bridge) => this.runWith(spec, bridge), fail);
   }
 
   /**
