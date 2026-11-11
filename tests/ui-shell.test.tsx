@@ -509,6 +509,24 @@ describe("item commands", () => {
     expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["retry", "approve", "budget"]);
   });
 
+  it("verdict shows Good, Bad and Feedback, each sending the verdict request; Feedback waits for the note box's text", async () => {
+    mountCommands([cmd("verdict")]);
+    expect([...document.querySelectorAll("[data-verdict-tap]")].map((b) => b.textContent)).toEqual(["Good", "Bad", "Feedback"]);
+    expect(button("Feedback").disabled).toBe(true);
+    fireEvent.click(button("Good"));
+    await settle();
+    fireEvent.click(button("Bad"));
+    await settle();
+    typeNote("the flag name is wrong");
+    fireEvent.click(button("Feedback"));
+    await settle();
+    expect(posts.map((p) => p.body)).toEqual([
+      { command: "verdict", note: "accept none" },
+      { command: "verdict", note: "changes minor Bad" },
+      { command: "verdict", note: "changes none the flag name is wrong" },
+    ]);
+  });
+
   it("with no command that applies (a running item), says so and offers no note box or button", () => {
     mountCommands([]);
     expect(document.querySelector("[data-commands-none]")?.textContent).toContain("No command applies now");

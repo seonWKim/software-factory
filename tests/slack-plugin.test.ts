@@ -52,6 +52,7 @@ function fakeFetch(answers: Record<string, unknown> = {}, http: Record<string, {
       "chat.postMessage": { ok: true, ts: "1800000000.000001" },
       "chat.update": { ok: true },
       "conversations.replies": { ok: true, messages: [] },
+      "views.open": { ok: true },
     };
     const headers = http[method]?.headers ?? {};
     return { status: http[method]?.status ?? 200, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, json: async () => answers[method] ?? defaults[method] };
@@ -163,12 +164,15 @@ describe("slack plugin secrets", () => {
     await api.postMessage({ channel: CHANNEL, thread_ts: "1800000000.000001", text: "hi" });
     await api.updateMessage({ channel: CHANNEL, ts: "1800000000.000002", text: "hi" });
     await api.threadReplies(CHANNEL, "1800000000.000001");
+    await api.openView("trigger-1", { type: "modal" });
     expect([...new Set(secrets.reads)].sort()).toEqual(["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]);
     expect(requests.every((r) => r.url.startsWith("https://slack.com/api/"))).toBe(true);
     // The app token opens the socket and nothing else; the bot token does the rest.
     const byToken = (v: string) => requests.filter((r) => r.headers.authorization === `Bearer ${v}`).map((r) => r.url.split("/").at(-1));
     expect(byToken(VALUES.SLACK_APP_TOKEN!)).toEqual(["apps.connections.open"]);
-    expect(byToken(VALUES.SLACK_BOT_TOKEN!)).toEqual(["auth.test", "chat.postMessage", "chat.update", "conversations.replies"]);
+    expect(byToken(VALUES.SLACK_BOT_TOKEN!)).toEqual(["auth.test", "chat.postMessage", "chat.update", "conversations.replies", "views.open"]);
+    // The Feedback modal goes to views.open with the press's trigger, as JSON.
+    expect(JSON.parse(requests.at(-1)!.body)).toEqual({ trigger_id: "trigger-1", view: { type: "modal" } });
     expect(JSON.stringify(requests)).not.toContain(VALUES.GITHUB_TOKEN);
   });
 

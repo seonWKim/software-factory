@@ -8,6 +8,8 @@ import { ago } from "../lib/format.js";
 // (the store's seq breaks a tie), each with its author ID, channel and time, its body as markdown, and its anchor
 // (`msg-<seq>`) as the element id, so a Needs-you row can link to the factory's latest "why". A command reply
 // shows up here once the controller writes it and the item is read again (the send re-reads it, the poll too).
+// The item's verdicts are entries too (kind `verdict`, a Good, Bad or Feedback among them): the actor ID as author,
+// the kind and severity, and the Feedback text as the body. Entries are keyed on their anchor (a verdict has no seq).
 
 /** The entries oldest first: by time, then by seq. */
 export function threadOrder(entries: readonly ThreadEntry[]): ThreadEntry[] {
@@ -30,7 +32,7 @@ export function Thread({ entries, now }: { entries: readonly ThreadEntry[]; now:
       {shown.length === 0 ? <Empty>No message yet.</Empty> : (
         <ol aria-label="Thread" className="space-y-4">
           {shown.map((m) => (
-            <li key={m.seq} id={m.anchor} data-seq={m.seq} className="min-w-0 scroll-mt-4 overflow-hidden rounded-control border border-border">
+            <li key={m.anchor} id={m.anchor} data-seq={m.seq} className="min-w-0 scroll-mt-4 overflow-hidden rounded-control border border-border">
               <p className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-border bg-bg px-3 py-2 text-xs text-text-2">
                 <span data-author className="font-mono font-semibold text-text-1">{m.author}</span>
                 <span data-channel>on {m.channel}</span>

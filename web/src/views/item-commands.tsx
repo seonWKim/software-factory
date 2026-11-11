@@ -17,7 +17,9 @@ import {
 // in its order: the commands that apply now. One the viewer's grants do not allow (`allowed` false, issue #453) is
 // disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject and revise open a dialog (issue #527): reject asks why and confirms what closes,
 // revise takes a comment per spec section. Verdict (issue #523) is three buttons, Accept, Changes and Reject, with a
-// severity choice; a click sends `<kind> <severity> <reason>` (verdictNote), the reason the note box's text. Every
+// severity choice; a click sends `<kind> <severity> <reason>` (verdictNote), the reason the note box's text. Beside
+// them, the one-tap Good, Bad and Feedback (oneTapNote), the same verdict request as Slack's buttons store: Good is
+// accept/none, Bad changes/minor, Feedback changes/none with the note box's text. Every
 // other command carries the note box's text when it has any (tokens for budget, the approve note). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
 // next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
@@ -46,6 +48,21 @@ export type VerdictSeverityChoice = (typeof SEVERITIES)[number];
 /** The note a verdict button sends: `<kind> <severity> <reason>`, the reason left out when empty. */
 export function verdictNote(kind: VerdictChoice, severity: VerdictSeverityChoice, reason: string): string {
   return [kind, severity, reason.trim()].filter((s) => s !== "").join(" ");
+}
+
+/** The one-tap verdicts (design §9), as Slack's result messages offer them, with their labels. */
+const ONE_TAP = [["good", "Good"], ["bad", "Bad"], ["feedback", "Feedback"]] as const;
+export type OneTapChoice = (typeof ONE_TAP)[number][0];
+
+/**
+ * The verdict note a one-tap button sends, with `reason` the note box's text: Good `accept none`, Bad `changes minor`
+ * (`/verdict` needs a reason, so `Bad` when the box is empty), Feedback `changes none <text>`; null for Feedback with
+ * no text, which waits for it.
+ */
+export function oneTapNote(choice: OneTapChoice, reason: string): string | null {
+  if (choice === "good") return verdictNote("accept", "none", reason);
+  if (choice === "bad") return verdictNote("changes", "minor", reason.trim() || "Bad");
+  return reason.trim() === "" ? null : verdictNote("changes", "none", reason);
 }
 
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
@@ -273,7 +290,8 @@ function CommandDialog({ command, pr, ...props }: CommandDialogProps & { command
 
 /**
  * The verdict buttons (issue #523): a severity choice, then Accept, Changes and Reject, each sending verdictNote with
- * `reason` (the note box's text). Changes and reject need a reason, so they wait for one.
+ * `reason` (the note box's text). Changes and reject need a reason, so they wait for one. Then Good, Bad and Feedback
+ * (oneTapNote); Feedback waits for the note box's text.
  */
 function VerdictButtons({ title, disabled, reason, onSend }: { title: string; disabled: boolean; reason: string; onSend: (note: string) => void }) {
   const [severity, setSeverity] = useState<VerdictSeverityChoice>("none");
@@ -305,6 +323,22 @@ function VerdictButtons({ title, disabled, reason, onSend }: { title: string; di
           {label}
         </Button>
       ))}
+      {ONE_TAP.map(([choice, label]) => {
+        const sent = oneTapNote(choice, reason);
+        return (
+          <Button
+            key={choice}
+            variant="outline"
+            className={textButton}
+            data-verdict-tap={choice}
+            disabled={disabled || sent === null}
+            title={choice === "feedback" ? `${title} (write your feedback in the note box first)` : title}
+            onClick={() => sent !== null && onSend(sent)}
+          >
+            {label}
+          </Button>
+        );
+      })}
     </span>
   );
 }
