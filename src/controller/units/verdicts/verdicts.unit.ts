@@ -5,7 +5,7 @@ import { prNumber } from "../../../core/change-ref.js";
 import { LOCAL_SOURCE } from "../../../core/local-merge.js";
 import { workItemIdFromBranch } from "../../../core/policy.js";
 import { type Actor, type StateChangeDetail, type VerdictKind, type VerdictSeverity, type VerdictTarget, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import { type ParsedVerdict, parseVerdict } from "../../../core/verdict.js";
+import { type ParsedVerdict, parseVerdict, verdictRefusal } from "../../../core/verdict.js";
 import type { Principal } from "../../../interfaces/auth-provider.js";
 import type { Forge } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
@@ -110,10 +110,8 @@ export class VerdictsUnit {
       const it = await this.c.k.reader.getWorkItem(id);
       if (!it) return null;
       if ((await this.c.k.reader.listVerdicts(id)).some((x) => x.comment_id === key.comment_id)) return null;
-      // A merged item still takes a verdict (design §4); a closed one that was not merged does not.
-      if (it.stage === "CLOSED" && it.merge_sha === null) {
-        return it.change_ref === null ? "the work item is closed" : "the work item is closed and its PR was not merged";
-      }
+      const closed = verdictRefusal(it);
+      if (closed !== null) return closed;
       // A local item is judged on the item itself (its local merge, or no merge yet); any other needs its PR.
       if (it.change_ref === null && it.source.type !== LOCAL_SOURCE) return "the work item has no PR yet";
       const r = await this.c.k.commitItem([], { kind: "verdict", input: {

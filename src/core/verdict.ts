@@ -1,6 +1,16 @@
-import type { VerdictKind, VerdictSeverity } from "./types.js";
+import { CLOSED_REFUSAL } from "./commands.js";
+import type { VerdictKind, VerdictSeverity, WorkItem } from "./types.js";
 
-// Pure parser for `/verdict accept|changes|reject <severity> <reason>` (design §4).
+// Pure parser for `/verdict accept|changes|reject <severity> <reason>` (design §4), and its closed-item refusal.
+
+/**
+ * Why `it` takes no verdict because it is closed: a merged item still takes one, a closed one that was not merged
+ * does not. Null when it is open or merged. The verdict unit and `factory verdict` (before any write) both ask it.
+ */
+export function verdictRefusal(it: Pick<WorkItem, "stage" | "merge_sha" | "change_ref">): string | null {
+  if (it.stage !== "CLOSED" || it.merge_sha !== null) return null;
+  return it.change_ref === null ? CLOSED_REFUSAL : `${CLOSED_REFUSAL} and its PR was not merged`;
+}
 
 /** The kinds a person can write; `reverted` is implicit only. */
 export type ExplicitVerdictKind = Exclude<VerdictKind, "reverted">;

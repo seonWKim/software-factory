@@ -208,6 +208,22 @@ describe("command table", () => {
     expect(phaseLabel("repeated_failure")).toBe("blocked: a run failed the same way twice");
   });
 
+  it("/verdict needs a PR, except on a local item; a closed item takes none (issue #523)", () => {
+    const verdict = commandSpec("verdict");
+    const item = (type: string, change_ref: string | null) => ({
+      stage: "REVIEW" as const, blocked_on: "human" as const, blocked_reason: "merge_pending", change_ref, source: { type, id: "x", link: "x" },
+    });
+    expect(applies(verdict, commandState(item("local", null)))).toBe(true);
+    expect(applies(verdict, commandState(item("local", "42")))).toBe(true);
+    for (const type of ["github_issue", "slack_thread"]) {
+      expect(applies(verdict, commandState(item(type, null))), type).toBe(false);
+      expect(applies(verdict, commandState(item(type, "42"))), type).toBe(true);
+    }
+    expect(applies(verdict, { phase: "closed", has_pr: false, local: true })).toBe(false);
+    expect(applies(verdict, { phase: "merged", has_pr: false, local: true })).toBe(true);
+    expect(commandTableMarkdown()).toContain("| any open or merged item, once it has a PR (a local item needs none) |");
+  });
+
   it("/help names the state by its label, not its phase id", () => {
     expect(helpReply(s("spec_pending"))).toContain("(spec waiting for approval)");
     expect(helpReply(s("spec_pending"))).not.toContain("spec_pending");
