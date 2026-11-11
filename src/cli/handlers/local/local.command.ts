@@ -11,8 +11,8 @@ import { defineCommand } from "../../command.js";
 import { cliEnvironment } from "../../support.js";
 
 /**
- * `factory task …`, `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200), `factory merge <id>` and
- * `factory help [<id>]` (issue #528): the store only, no GitHub call. Item commands are appended to the CLI command log;
+ * `factory task …`, `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200), `factory verdict <id> <verdict>`
+ * (issue #523), `factory merge <id>` and `factory help [<id>]` (issue #528): the store only, no GitHub call. Item commands are appended to the CLI command log;
  * the controller applies them.
  */
 export default defineCommand({

@@ -54,7 +54,7 @@ const VERDICT_PHASES = COMMAND_PHASES.filter((p) => p !== "closed");
 export interface CommandState {
   phase: CommandPhase;
   has_pr: boolean;
-  /** A local item: the controller judges it on the item itself, so `/verdict` needs no PR there (issue #452). */
+  /** A local item: it takes a `/verdict` with no PR, judged on the item itself (design §4). Absent: not local. */
   local?: true;
   /**
    * At `agent_needs_human`: the kind of run that asked (read from the item's runs; the item's fields cannot tell
@@ -73,7 +73,7 @@ export interface CommandSpec {
   description: string;
   /** Phases where the controller accepts it. */
   phases: readonly CommandPhase[];
-  /** Also needs the item to have a PR, unless it is a local item (`CommandState.local`). */
+  /** Also needs the item to have a PR, unless it is a local item. */
   needs_pr: boolean;
   /** Whether applying it can change the item's stage or block. */
   changes_state: boolean;
@@ -254,8 +254,10 @@ export function commandPhase(it: ItemState): CommandPhase {
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */
 export function commandState(it: ItemState, askedBy?: RunKind): CommandState {
   const phase = commandPhase(it);
-  const local = it.source?.type === LOCAL_SOURCE ? { local: true as const } : {};
-  return { phase, has_pr: it.change_ref !== null, ...local, ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}) };
+  return {
+    phase, has_pr: it.change_ref !== null, ...(it.source?.type === LOCAL_SOURCE ? { local: true as const } : {}),
+    ...(phase === "agent_needs_human" && askedBy ? { asked_by: askedBy } : {}),
+  };
 }
 
 /** The command state of `it` read with its runs (the kind of run that asked at agent_needs_human), as the controller reads it. */
@@ -382,7 +384,7 @@ function whenText(c: CommandSpec): string {
         ? "any open or merged item"
         : c.phases.map((p) => PHASE_LABELS[p]).join(", ");
   const onPr = c.pr_phases?.length ? `; on its PR: ${c.pr_phases.map((p) => PHASE_LABELS[p]).join(", ")}` : "";
-  return (c.needs_pr ? `${where}, once it has a PR (a local item also without one)` : where) + onPr;
+  return (c.needs_pr ? `${where}, once it has a PR (a local item needs none)` : where) + onPr;
 }
 
 /** The command table in SET_UP.md, generated from COMMANDS; a test keeps the two equal. */

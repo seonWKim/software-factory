@@ -1,4 +1,4 @@
-// `factory verdict` (issue #513): the CLI's item command for `/verdict`. It runs the controller's parser before any
+// `factory verdict` (issues #513, #523): the CLI's item command for `/verdict`. It runs the controller's parser before any
 // write, so a malformed verdict prints the usage line and stores nothing; a valid one is one command row, which the
 // controller applies as the comment `/verdict`: one verdict row, no change to stage, blocked_on or blocked_reason.
 
@@ -63,15 +63,12 @@ describe("factory verdict", () => {
     expect(await f.store.getWorkItem(f.id)).toEqual(before);
   });
 
-  it("a malformed verdict prints the controller's refusal with the usage line and stores nothing", async () => {
+  it("a malformed verdict is an error with the usage line and stores nothing", async () => {
     const f = await setup(MERGE_PENDING_PR);
-    for (const words of [["lgtm"], ["changes"], ["reject", "huge", "no"]]) {
-      const r = await f.verdict(...words);
-      expect(r.code, words.join(" ")).toBe(1);
-      expect(r.lines[0], words.join(" ")).toMatch(/^`\/verdict` was not applied: /);
+    for (const words of [["lgtm"], ["changes"], ["reject", "huge", "no"], ["changes", "minor"]]) {
+      const a = parseLocalCliArgs("verdict", [f.id, ...words]);
+      expect(a, words.join(" ")).toMatchObject({ error: expect.stringContaining(VERDICT_USAGE) });
     }
-    expect((await f.verdict("lgtm")).lines).toEqual([`\`/verdict\` was not applied: the expected format is ${VERDICT_USAGE}.`]);
-    expect((await f.verdict("changes", "minor")).lines).toEqual(["`/verdict` was not applied: `changes` needs a reason after the severity."]);
     expect(await f.store.listCliCommandsAfter(0, 100)).toEqual([]);
   });
 
