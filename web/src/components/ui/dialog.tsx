@@ -116,16 +116,30 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
   );
 }
 
-/** A short status line outside the page's layout (a live region), for a command's send confirmation. */
-export function StatusToast({ children }: { children: ReactNode }) {
-  return createPortal(
-    <div
-      role="status"
-      data-toast
-      className="fixed bottom-4 left-1/2 z-50 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-    >
-      {children}
-    </div>,
-    document.body,
-  );
+/** How long a send confirmation stays on screen. */
+export const STATUS_MS = 4000;
+const STATUS_CLASS =
+  "fixed bottom-4 left-1/2 z-50 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100";
+let statusRegion: HTMLElement | null = null;
+let statusTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Shows `text` in one short status line (a live region, `role="status"`) on `document.body`, outside every React
+ * tree, for STATUS_MS. It outlives the component that sent the command: a Needs-you row leaves the list as soon as
+ * its command moves the item on, and its confirmation must still show. A newer message replaces the shown one.
+ */
+export function announceStatus(text: string): void {
+  if (!statusRegion?.isConnected) {
+    statusRegion = document.createElement("div");
+    statusRegion.setAttribute("role", "status");
+    statusRegion.dataset.toast = "";
+    statusRegion.className = STATUS_CLASS;
+    document.body.append(statusRegion);
+  }
+  statusRegion.textContent = text;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => {
+    statusRegion?.remove();
+    statusRegion = null;
+  }, STATUS_MS);
 }

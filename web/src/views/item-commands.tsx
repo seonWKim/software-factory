@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { Dialog, StatusToast } from "../components/ui/dialog.js";
+import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
@@ -366,25 +366,21 @@ function VerdictDialog({ id, busy, error, returnFocusTo, onSend, onClose }: Comm
  * for (approve, retry or resolve, the first the viewer may send), and one "⋯" menu with every other command of the
  * row's `commands`. One the viewer may not send stays in the menu, disabled, with its reason. Reject, revise and
  * verdict open a dialog (outside the row, so the row never grows); the others send at once. A send re-reads the list,
- * so the row moves on; a failed send shows its error in the row, a sent one in a short status message.
+ * so the row moves on; a failed send shows its error in the row, a sent one in a short status message that
+ * outlives the row (announceStatus).
  */
 export function NeedCommands({ id, commands, pr }: { id: string; commands: readonly ItemCommand[]; pr: string | null }) {
   const { on, busy, local, send: post } = useCommandSend(id);
   const [open, setOpen] = useState<"reject" | "revise" | "verdict" | null>(null);
-  const [sent, setSent] = useState<string | null>(null);
   const moreButton = useRef<HTMLButtonElement>(null);
   const primary = commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
   const others = commands.filter((c) => c !== primary);
   const send = async (command: string, note: string) => {
     if (!(await post(command, note))) return;
+    // The row may have left the list by now (the send re-read it); the status line outlives it.
+    announceStatus(`Command sent: ${command}`);
     setOpen(null);
-    setSent(command);
   };
-  useEffect(() => {
-    if (sent === null) return;
-    const t = setTimeout(() => setSent(null), 4000);
-    return () => clearTimeout(t);
-  }, [sent]);
   const failed = commands.flatMap((c) => {
     const l = local[c.name];
     return l && "error" in l ? [l.error] : [];
@@ -409,7 +405,6 @@ export function NeedCommands({ id, commands, pr }: { id: string; commands: reado
       {failed.map((text) => (
         <OutcomeText key={text} outcome={{ tone: "error", text }} />
       ))}
-      {sent !== null && <StatusToast>Command sent: {sent}</StatusToast>}
       {open !== null && (
         <CommandDialog
           command={open}

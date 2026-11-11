@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
 import { FactoryBanner } from "../web/src/views/pages.js";
 import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
-import type { ItemRow } from "../web/src/api.js";
+import { API, type Items, type ItemRow, useApi } from "../web/src/api.js";
+import { STATUS_MS } from "../web/src/components/ui/dialog.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
 import { THEME_KEY } from "../web/src/theme.js";
@@ -109,6 +110,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // The send confirmation lives on document.body, outside every rendered tree.
+  document.querySelector("[data-toast]")?.remove();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -833,6 +836,35 @@ describe("Needs-you command buttons (issue #453)", () => {
       expect(document.querySelector("tr")!.textContent).not.toContain("sent");
       expect(screen.getByRole("status").textContent).toBe(`Command sent: ${name}`);
       cleanup();
+    }
+  });
+
+  it("the status message outlives a row that leaves the list after its send, then goes", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/v1/session"], SESSION);
+    const it = row(1, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", need: { reason: "spec ready", anchor: null }, commands: [cmd("approve")] });
+    client.setQueryData(["/api/v1/items"], { ...items, items: [it] });
+    function Listed() {
+      const list = useApi<Items>(API.items, false).data;
+      return <ItemsTable items={list?.items ?? []} now={Date.parse(AT)} label="Needs you" empty="none" actions />;
+    }
+    const saved = RESPONSES["/api/v1/items"];
+    RESPONSES["/api/v1/items"] = { ...items, items: [] };
+    try {
+      render(
+        <QueryClientProvider client={client}>
+          <Listed />
+        </QueryClientProvider>,
+      );
+      fireEvent.click(button("approve"));
+      await settle();
+      expect(posts.map((p) => p.body)).toEqual([{ command: "approve" }]);
+      expect(document.querySelector("[data-need-commands]")).toBeNull();
+      expect(screen.getByRole("status").textContent).toBe("Command sent: approve");
+      await act(async () => void (await vi.advanceTimersByTimeAsync(STATUS_MS)));
+      expect(screen.queryByRole("status")).toBeNull();
+    } finally {
+      RESPONSES["/api/v1/items"] = saved;
     }
   });
 
