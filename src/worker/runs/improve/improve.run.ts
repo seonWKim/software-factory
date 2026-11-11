@@ -1,5 +1,4 @@
 import { type Grade, type GradeSubject, improvePrompts, learnFromReport, runImprove, scoreRun, scorerFor } from "../../../core/improver.js";
-import { withMessageStyle } from "../../../core/message-style.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { LLMProvider } from "../../../interfaces/llm-provider.js";
 import { addUsage } from "../../support.js";
@@ -16,7 +15,7 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
   const report = await runImprove(
     {
       store: w.d.store, storage: w.d.storage, scanner: w.d.scanner, signal,
-      ...(metered ? { llm: metered } : {}), ...(w.d.prompts.improve !== undefined ? { prompt: draftPrompt(w, w.d.prompts.improve) } : {}),
+      ...(metered ? { llm: metered } : {}), ...(w.d.prompts.improve !== undefined ? { prompt: w.live.styled(improvePrompts(w.d.prompts.improve).draft) } : {}),
     },
     run,
     item,
@@ -26,11 +25,6 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
     report_id: report.id, groups: report.groups.length, patterns: report.patterns.length,
     ...(learned ? { learned: { key: learned.key, old_value: learned.old_value, new_value: learned.new_value } } : {}),
   };
-}
-
-/** The improve draft's system prompt with the owner's `message_style` after it, read live (design 04-agents); the scorer's prompt never takes it. */
-export function draftPrompt(w: Pick<Worker, "live">, improve: string): string {
-  return withMessageStyle(improvePrompts(improve).draft, w.live.values().message_style);
 }
 
 /** The worker's LLMProvider with each call's usage added to the run's (design §6); absent when it has none. */

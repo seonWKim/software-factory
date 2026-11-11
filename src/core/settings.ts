@@ -3,7 +3,7 @@ import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js"
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
-import { MESSAGE_STYLE_MAX_CHARS } from "./message-style.js";
+import { parseMessageStyle, withMessageStyle } from "./message-style.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
 import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
@@ -254,29 +254,18 @@ function set<K extends ProjectSettingKey>(o: Partial<ProjectSettings>, k: K, v: 
 /** The keys `factory settings set` accepts. An allow-list: every other key is refused. */
 export const SETTABLE_KEYS = [
   "max_attempts",
-  "max_loops",
-  "max_restart",
-  "retry_base_ms",
-  "retry_max_ms",
-  "max_diff_lines",
-  "max_diff_files",
-  "run_timeout_ms",
-  "first_output_ms",
-  "models",
-  "model_by",
-  "poll_interval_ms",
-  "tick_ms",
-  "heartbeat_ms",
-  "lease_ms",
+  "max_loops", "max_restart",
+  "retry_base_ms", "retry_max_ms",
+  "max_diff_lines", "max_diff_files",
+  "run_timeout_ms", "first_output_ms",
+  "models", "model_by",
+  "poll_interval_ms", "tick_ms",
+  "heartbeat_ms", "lease_ms",
   "workers",
-  "phases_auto_approve",
-  "hold_policy",
-  "alarm_repeat_count",
-  "alarm_window_minutes",
-  "alarm_restart_count",
+  "phases_auto_approve", "hold_policy",
+  "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
-  "mode",
-  "auto_merge_max_tier",
+  "mode", "auto_merge_max_tier",
   "message_style",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
@@ -296,9 +285,6 @@ export type Mode = (typeof MODES)[number];
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
-
-/** Free-text keys that reach a model's prompt: a set runs the egress scanner on the value and refuses a hit (design 04-agents). */
-export const SCANNED_SETTABLE_KEYS: readonly SettableKey[] = ["message_style"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -453,11 +439,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       }
       return value as SettableValues[K];
     case "message_style":
-      if (typeof value !== "string") throw new Error("message_style must be a JSON string (the text of the style)");
-      if (value.length > MESSAGE_STYLE_MAX_CHARS) {
-        throw new Error(`message_style is ${value.length} characters; at most ${MESSAGE_STYLE_MAX_CHARS} are allowed`);
-      }
-      return value as SettableValues[K];
+      return parseMessageStyle(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -744,6 +726,11 @@ export class LiveSettings {
 
   resolved(): ResolvedSettings {
     return this.current;
+  }
+
+  /** `system` with the owner's `message_style` after it, as it stands now (design 04-agents); empty: `system` unchanged. */
+  styled(system: string): string {
+    return withMessageStyle(system, this.current.values.message_style);
   }
 
   /** Worker slots that may claim: the effective `workers`, capped at the file's `max_workers`. */

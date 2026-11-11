@@ -11,7 +11,6 @@ import {
   type GateSettableKey,
   MODES,
   PROJECT_SETTABLE_KEYS,
-  SCANNED_SETTABLE_KEYS,
   SETTABLE_KEYS,
   type SettableKey,
   type SettingsBase,
@@ -60,6 +59,9 @@ export type SettingsAction =
   | { action: "history"; limit: number };
 
 const DEFAULT_HISTORY = 50;
+
+/** Free-text keys that reach a model's prompt: a set runs the egress scanner on the value and refuses a hit (design 04-agents). */
+const SCANNED_KEYS: readonly SettableKey[] = ["message_style"];
 
 /** The action, or an error to print with the usage. */
 export function parseSettingsArgs(args: readonly string[]): SettingsAction | { error: string } {
@@ -201,7 +203,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
       return fail(err instanceof Error ? err.message : String(err));
     }
     value = JSON.stringify(raw);
-    if (SCANNED_SETTABLE_KEYS.includes(key)) {
+    if (SCANNED_KEYS.includes(key)) {
       const refused = await scanRefusal(deps.scanner, key, String(parsed));
       if (refused) return fail(refused);
     }
