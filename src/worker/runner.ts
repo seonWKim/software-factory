@@ -1,4 +1,5 @@
 import { type RunCall, type RunKindDescriptor, loadRunKinds } from "./run-kind.js";
+import { gradeRun } from "./runs/improve/improve.run.js";
 import { type ExecutionEngine, type ExecutionEngines, LeaseLostError, RunDeadlineError, type RunRef, StepTimeoutError } from "./engine/index.js";
 import { JournalEngines } from "./engine/plugins/journal/journal-engine.js";
 import { type Period, type TickHandler, type TickSource, tickAt } from "../shared/ticks/tick-generator.js";
@@ -24,9 +25,7 @@ import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-databas
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
-/**
- * Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs.
- */
+/** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
 export class Worker {
   /**
    * The usage of the run being executed, summed over its agent calls (design §6 Measurement). Scratch for one
@@ -278,8 +277,9 @@ export class Worker {
             throw stepFailure(err);
           });
       };
-      const data = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
-      // Recorded next to the run's usage, so cost and failure rate can be compared per class. data.tokens: the full count, where readers from before usage existed look for it.
+      // Graded by judges independent of the producing call (design §7); then recorded next to the run's usage, so cost
+      // and failure rate can be compared per class. data.tokens: the full count, where readers from before usage existed look for it.
+      const data = await gradeRun(this, run, item, model, await this.role({ run, item, ctx, signal, model: model ?? "cheap", step }), signal);
       const withUsage = { ...data, tokens: usageTokens(usage), usage };
       outcome = { status: "succeeded", summary: `${run.kind} done`, data: model ? { ...withUsage, ...this.modelRecord(model) } : withUsage };
     } catch (err) {
