@@ -15,6 +15,7 @@ import type { MergeEvaluation } from "../core/merge-evaluation.js";
 import type { LearnedSettingsStore } from "../core/learned-settings.js";
 import type { CommandProposalStore } from "../core/interpret.js";
 import type { TaskStore } from "../core/tasks.js";
+import type { NoticeStore } from "../core/notifications.js";
 import type { PostedCommentReads } from "../core/reaction-verdict.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
@@ -340,12 +341,9 @@ export type StartSessionResult =
 export interface SessionUpdate { note?: string; tokens?: number; transcript_url?: string; last_finish?: Omit<SessionFinish, "at"> }
 
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
-export interface SchemaVersion {
-  applied: number;
-  latest: number;
-}
+export interface SchemaVersion { applied: number; latest: number }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

@@ -41,7 +41,7 @@ export function ItemTitle({ id, title, source }: { id: string; title: string | n
 
 /** A ready-to-merge item's merge check label; the conflicting file names show on hover. */
 export function MergeCheckNote({ check }: { check: MergeCheckView }) {
-  const tone = check.state === "conflicts" ? "text-red-700 dark:text-red-400" : check.state === "mergeable" ? "text-emerald-700 dark:text-emerald-400" : "text-zinc-600 dark:text-zinc-400";
+  const tone = check.state === "conflicts" ? "text-pill-bad-fg" : check.state === "mergeable" ? "text-pill-ok-fg" : "text-text-2";
   return (
     <span data-merge-check={check.state} className={cn("ml-2 text-xs whitespace-nowrap", tone)} {...(check.conflicts.length > 0 ? { title: check.conflicts.join("\n") } : {})}>
       {mergeCheckLabel(check)}
@@ -110,7 +110,7 @@ export function ItemsTable({ items, now, label, empty, plugins, actions = false 
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
-          <Td className="text-zinc-600 dark:text-zinc-400">
+          <Td className="text-text-2">
             {it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
             {actions && (it.commands?.length ?? 0) > 0 && (
               <span className="ml-2">

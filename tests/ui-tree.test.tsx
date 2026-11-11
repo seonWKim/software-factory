@@ -215,14 +215,13 @@ describe("items tree", () => {
     expect(titles(again)).not.toContain("Phase one");
   });
 
-  it("moves the wait reason and worker to a second line at phone width and adds no colours of its own", async () => {
+  it("moves the wait reason and worker to a second line at phone width and uses no animation", async () => {
     const tree = await mount();
     const second = within(rowOf(tree, "Phase one")).getByText("host:7:0").parentElement;
     expect(second.className).toContain("basis-full");
     expect(second.className).toContain("sm:basis-auto");
-    // Only the zinc/blue palette the other pages use, with dark variants; no animation.
+    // Token classes switch themes through CSS variables, so there is no dark: variant; no animation.
     expect(tree.innerHTML).not.toMatch(/animate-|transition/);
-    expect(tree.innerHTML).toContain("dark:");
   });
 
   it("has no axe violations", async () => {

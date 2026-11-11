@@ -798,6 +798,33 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  describe("owner notices (design 09-notifications)", () => {
+    const at = (h: number) => `2026-11-12T0${h}:00:00.000Z` as Timestamp;
+    const notice = { work_item_id: "wi_1", wait_key: "sc_1", kind: "spec" as const, created_at: at(1), held_until: null, count: 1 };
+
+    it("recordNotice stores a (work item, wait key) once; listNoticesFor reads by item ID", async () => {
+      const { store } = await make();
+      expect(await store.recordNotice(notice)).toBe(true);
+      expect(await store.recordNotice({ ...notice, kind: "merge", created_at: at(2) })).toBe(false);
+      expect(await store.recordNotice({ ...notice, wait_key: "sc_2", created_at: at(3) })).toBe(true);
+      expect(await store.recordNotice({ ...notice, work_item_id: "wi_2" })).toBe(true);
+      expect(await store.recordNotice({ ...notice, work_item_id: "", wait_key: "quiet:x", kind: "summary", count: 3 })).toBe(true);
+      const of1 = await store.listNoticesFor(["wi_1"]);
+      expect(of1.map((n) => [n.wait_key, n.kind, n.created_at, n.delivered_at]).sort()).toEqual([["sc_1", "spec", at(1), null], ["sc_2", "spec", at(3), null]]);
+      expect((await store.listNoticesFor(["", "wi_2"])).map((n) => [n.work_item_id, n.count]).sort()).toEqual([["", 3], ["wi_2", 1]]);
+      expect(await store.listNoticesFor([])).toEqual([]);
+    });
+
+    it("listHeldNotices and listPendingNotices split the undelivered notices on held_until, oldest first", async () => {
+      const { store } = await make();
+      await store.recordNotice({ ...notice, wait_key: "sc_held", created_at: at(2), held_until: at(7) });
+      await store.recordNotice({ ...notice, wait_key: "sc_late", created_at: at(3) });
+      await store.recordNotice({ ...notice, wait_key: "sc_early", created_at: at(1) });
+      expect((await store.listHeldNotices()).map((n) => [n.wait_key, n.held_until])).toEqual([["sc_held", at(7)]]);
+      expect((await store.listPendingNotices()).map((n) => n.wait_key)).toEqual(["sc_early", "sc_late"]);
+    });
+  });
+
   describe("listStatsRecords", () => {
     it("returns every item with its tier, stage, token_cost, the requested reasons, its explicit verdict severities and its implicit count", async () => {
       const { store, clock } = await make();
@@ -1726,6 +1753,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_merge_queue_entries",
       "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
       "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
+      "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       // The sql bus's own tables (RFC 0015 M3).

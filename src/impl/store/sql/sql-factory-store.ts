@@ -119,6 +119,7 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
+import * as notices from "./notices.js";
 import * as posted from "./posted-comments.js";
 
 /**
@@ -385,15 +386,9 @@ export class SqlFactoryStore implements FactoryStore {
   recordSignal(s: NewSignal): Promise<boolean> { return signals.recordSignal(this.db, s); }
   latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> { return signals.latestSignalTimes(this.db); }
   listSignalRefs(windows: Parameters<FactoryStore["listSignalRefs"]>[0]) { return signals.listSignalRefs(this.db, windows); }
-  listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> {
-    return signals.listStateChangesSince(this.db, q);
-  }
-  listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> {
-    return signals.listVerdictsSince(this.db, since);
-  }
-  listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> {
-    return signals.listRunsFinishedSince(this.db, q);
-  }
+  listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> { return signals.listStateChangesSince(this.db, q); }
+  listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> { return signals.listVerdictsSince(this.db, since); }
+  listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> { return signals.listRunsFinishedSince(this.db, q); }
   listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
 
   // Command proposals (design 04-gate-commands, issue #584): command-proposals.ts
@@ -404,6 +399,11 @@ export class SqlFactoryStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); }
+  // Owner notices (design 09-notifications): notices.ts
+  recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
+  listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }
+  listHeldNotices() { return notices.listHeldNotices(this.db); }
+  listPendingNotices() { return notices.listPendingNotices(this.db); }
 
   // Budget checkpoints
 
