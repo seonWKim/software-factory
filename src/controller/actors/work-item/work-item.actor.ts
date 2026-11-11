@@ -2,8 +2,9 @@
 // found by tracing every stage change in the test suite (2026-11-08) and checked against the code:
 // - NEW → READY/RUNNING/REVIEW/CLOSED: triage outcome, implement start, an adopted change, a close at intake.
 // - READY/RUNNING/REVIEW → NEW: a spec revision sends the item back to triage.
-// - READY → REVIEW (max_loops) and REVIEW → READY (max_revisions): both wait on a person.
-// CLOSED is final: a reopened source makes a new item. Not seen: RUNNING → READY.
+// - READY → REVIEW (max_loops) and REVIEW/RUNNING → READY (max_revisions): both wait on a person. RUNNING → READY is
+//   an implement run's spec_conflict at the revision limit (added 2026-11-11: without it that outcome never landed).
+// CLOSED is final: a reopened source makes a new item.
 
 import { defineActor } from "../../router/actor.js";
 
@@ -23,6 +24,7 @@ export default defineActor<WorkItemStage>({
     ["READY", "REVIEW"],
     ["READY", "NEW"],
     ["READY", "CLOSED"],
+    ["RUNNING", "READY"],
     ["RUNNING", "REVIEW"],
     ["RUNNING", "NEW"],
     ["RUNNING", "CLOSED"],

@@ -215,3 +215,33 @@ export function suggestSplit(diff: { lines: number; files: number; paths: readon
     };
   });
 }
+
+/**
+ * The size checkpoint's suggested split (design 2026-11-01): built from the diff size in the size gate's detail
+ * and the paths the item may change, never the code; no agent runs. Empty when the detail has no counts or
+ * there is nothing to split. Ends with a blank line, so the footer follows.
+ */
+export function suggestedSplit(detail: string, paths: readonly string[], limits: { max_diff_lines: number; max_diff_files: number }): string[] {
+  const size = parseSizeDetail(detail);
+  const phases = size ? suggestSplit({ ...size, paths }, limits) : [];
+  if (!size || phases.length === 0) return [];
+  const out = [
+    "### Suggested split",
+    `Built from the diff size (${size.lines} lines in ${size.files} files) and the item's allowed paths, not from the code, so treat it as a starting point. To use it, reply \`/revise <feedback>\` and ask for these phases; the new spec then files one sub-issue per phase on \`/approve\`.`,
+  ];
+  phases.forEach((p, i) => {
+    out.push(
+      "",
+      `#### Phase ${i + 1} of ${phases.length}: ${p.title}`,
+      p.problem,
+      "",
+      "Done when:",
+      ...p.done_criteria.map((c) => `- ${c}`),
+      "",
+      "Allowed to change:",
+      ...p.allowed_paths.map((a) => `- \`${a}\``),
+    );
+  });
+  out.push("");
+  return out;
+}
