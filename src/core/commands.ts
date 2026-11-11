@@ -1,7 +1,7 @@
 import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
-import type { Run, RunKind, WorkItem } from "./types.js";
+import { RECURRING_FAILURE, type Run, type RunKind, type WorkItem } from "./types.js";
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -28,6 +28,8 @@ export type CommandPhase =
   | "failed_run"
   | "agent_needs_human"
   | "repeated_failure"
+  /** Held because its run failed with a pattern whose fix is filed or keeps recurring (design 05-alarms). */
+  | "recurring_failure"
   | "reviewing"
   | "merge_pending"
   | "max_loops"
@@ -40,7 +42,7 @@ export type CommandPhase =
 export const COMMAND_PHASES: readonly CommandPhase[] = [
   "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "floor_tier",
   "rule_of_two", "too_large",
-  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "merged", "closed",
+  "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "recurring_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "merged", "closed",
 ];
 
 const OPEN_PHASES = COMMAND_PHASES.filter((p) => p !== "closed" && p !== "merged");
@@ -124,9 +126,10 @@ export const COMMANDS: readonly CommandSpec[] = [
       "Run the failed run again. Notes on the same line or below go to the implementer and the reviewer. " +
       "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. " +
       "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
-      "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too",
+      "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too. " +
+      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start",
     // At a dependency closed unmerged it reads the dependencies again and releases the item if they merged (design §5).
-    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops"],
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure"],
     needs_pr: false,
     changes_state: true,
   },
@@ -226,6 +229,7 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.blocked_on === "human") {
     if (it.blocked_reason === AGENT_NEEDS_HUMAN) return "agent_needs_human";
     if (it.blocked_reason === REPEATED_FAILURE) return "repeated_failure";
+    if (it.blocked_reason === RECURRING_FAILURE) return "recurring_failure";
     if (it.blocked_reason?.startsWith(`${DEPENDENCY_CLOSED}:`)) return "dependency_closed";
     const kind = failedRunKind(it as WorkItem);
     if (kind === "implement") return it.blocked_reason === "run_failed:implement:diff_too_large" ? "too_large" : "failed_implement";
@@ -349,6 +353,7 @@ const PHASE_LABELS: Record<CommandPhase, string> = {
   failed_run: "blocked by a failed run",
   agent_needs_human: "blocked: the agent asked for a human",
   repeated_failure: "blocked: a run failed the same way twice",
+  recurring_failure: "held: its run failed like a known recurring failure",
   reviewing: "in review",
   merge_pending: "waiting for a human merge",
   max_loops: "review loop limit reached",

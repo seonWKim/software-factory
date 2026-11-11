@@ -270,6 +270,7 @@ describe("footers match what the controller accepts", () => {
     failed_implement: { stage: "RUNNING", blocked_on: "human", blocked_reason: "max_attempts" },
     agent_needs_human: { stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human" },
     repeated_failure: { stage: "RUNNING", blocked_on: "human", blocked_reason: "repeated_failure" },
+    recurring_failure: { stage: "RUNNING", blocked_on: "human", blocked_reason: "recurring_failure" },
     reviewing: { stage: "REVIEW" },
     merge_pending: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" },
     max_loops: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops" },

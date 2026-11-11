@@ -4,7 +4,7 @@ import { commandFooter, commandState } from "../../core/commands.js";
 import { AUTO_ACTOR, runKey } from "../../core/policy.js";
 import { MERGE_CONFLICT_PENDING } from "../../core/resolve.js";
 import { PHASES_OPEN, SPLIT_FILING } from "../../core/split.js";
-import { type Actor, type RunKind, type SourceType, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
+import { type Actor, RECURRING_FAILURE, type RunKind, type SourceType, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
 import type { TransitionInput } from "../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../interfaces/source-adapter.js";
 
@@ -63,9 +63,14 @@ export const GITHUB_SOURCE_TYPE: SourceType = "github_issue";
  * `/retry [notes]`: the failed step again under a new key. `widen` (a `+paths`, issue #280) applies only to a
  * failed implement run; on any other kind it is refused and nothing changes. The note goes on the state change
  * (and is a resolve run's notes). At the review loop limit it is an implement run with loop_count back at 0 and
- * the item RUNNING (a human chose to try again).
+ * the item RUNNING (a human chose to try again). On a `recurring_failure` hold it only lifts the hold.
  */
 export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, note: string | null, widen: Widening | null): Decision | Refusal {
+  // A recurring failure's hold (design 05-alarms) has its runs queued already: lifted, they are claimed.
+  if (it.blocked_on === "human" && it.blocked_reason === RECURRING_FAILURE) {
+    if (widen) return { refuse: "`+paths` does not apply to an item held for a recurring failure, which has no failed run to widen; reply `/retry` without `+paths`" };
+    return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason: "retry_requested", ...(note ? { detail: { note } } : {}) };
+  }
   if (it.blocked_on !== "human" || !kind) return { refuse: "there is no failed run to retry" };
   if (widen && kind !== "implement") {
     return { refuse: `\`+paths\` applies only to a failed implement run, and this item's failed run is a ${kind} run; reply \`/retry\` without \`+paths\`` };

@@ -24,6 +24,12 @@ export const ALERT_DEDUPE_MS = 6 * 3_600_000;
 export const RESTART_WINDOW_MS = 30 * 60_000;
 /** A recurring pattern counts its new failures over this long, and re-raises at most once per this long. */
 export const RERAISE_WINDOW_MS = 3_600_000;
+/**
+ * A filed item not in the store yet counts as open this long after its filing. Intake takes a filed item in at its
+ * next poll, so one still missing after this never will be: filed without the intake label, refused, or closed
+ * before intake read it. Read from the filing's time alone: no forge call.
+ */
+export const FILED_INTAKE_MS = 3_600_000;
 /** The newest alerts a re-raise reads for a pattern's last alert and last re-raise: far more than one hour stores. */
 const ALERTS_READ = 100;
 /** The run kinds whose work is an agent's, so a run with no tokens means the model did nothing. */
@@ -167,11 +173,13 @@ function recentPatterns(runs: readonly Run[], now: Date): FailureGroup[] {
  * pattern), and that failed `threshold` more runs within the last hour after its last re-raise (none yet: after it
  * was first known, the earlier of its alert and its filing). The re-raise is an alert (pattern `repeated_error`, key
  * `recurring:<key>`) the store dedupes for RERAISE_WINDOW_MS, so of several replicas or steps exactly one stores it,
- * at most once an hour. That one holds the pattern's items and comments the count since filing on its filed item.
+ * at most once an hour. That one holds the pattern's items (each not held for it since its run, `unheld`) and comments the
+ * count since filing on its filed item.
  * Returns the re-raises it stored.
  */
 async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold: number): Promise<Alert[]> {
   const finished = new Map(runs.map((r) => [r.id, Date.parse(r.finished_at ?? "")]));
+  const byRun = new Map(runs.map((r) => [r.id, r]));
   const stored: Alert[] = [];
   // Each pattern key's newest alert, read once and only when some pattern is a candidate.
   let newest: Map<string, number> | null = null;
@@ -194,18 +202,17 @@ async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold:
     if (!r.created) continue;
     stored.push(r.alert);
     d.log.warn("alarm: recurring failure", { alert_id: r.alert.id, error_code: g.error_code, count: fresh, items: g.work_item_ids.length });
-    if (d.hold) await d.hold({ pattern_key: key, work_item_ids: g.work_item_ids });
+    if (d.hold) await d.hold({ pattern_key: key, work_item_ids: await unheld(d, g, key, byRun, null) });
     if (filed?.filed_ref && d.comment) await commentFiled(d, { ...filed, filed_ref: filed.filed_ref }, now, fresh, r.alert.id);
   }
   return stored;
 }
 
 /**
- * Holds the item of each failed run of the last RERAISE_WINDOW_MS whose pattern has an open filed item (in the store
- * and not closed, or not in the store: filed, nobody started it) and that finished after the filing: from its first
- * matching run, not after `alarm_repeat_count` of them. A run whose item a hold of this pattern already took after
- * it finished holds nothing again, so a hold a person cleared is not put back by the same run. The hold itself is a
- * conditional transition of an item nothing else blocks, so a second step writes nothing.
+ * Holds the item of each failed run of the last RERAISE_WINDOW_MS whose pattern has an open filed item and that
+ * finished after the filing: from its first matching run, not after `alarm_repeat_count` of them. Open: in the store
+ * and not closed, or not in the store yet and filed less than FILED_INTAKE_MS ago. The hold itself is a conditional
+ * transition of an item nothing else blocks, so a second step writes nothing.
  */
 async function holdFiled(d: AlarmDeps, runs: readonly Run[], now: Date): Promise<void> {
   if (!d.hold) return;
@@ -215,17 +222,28 @@ async function holdFiled(d: AlarmDeps, runs: readonly Run[], now: Date): Promise
     const filed = await d.store.getFiledPattern(d.project, key);
     if (!filed?.filed_ref) continue;
     const fix = await d.store.getWorkItemBySource(filed.filed_ref.type, filed.filed_ref.id);
-    if (fix?.stage === "CLOSED") continue;
-    const items = new Set<WorkItemId>();
-    for (const id of g.run_ids) {
-      const r = byId.get(id)!;
-      if (r.finished_at! <= filed.created_at || items.has(r.work_item_id)) continue;
-      const held = (await d.store.listStateChanges(r.work_item_id))
-        .some((c) => c.reason === RECURRING_FAILURE && c.detail?.pattern_key === key && c.at >= r.finished_at!);
-      if (!held) items.add(r.work_item_id);
-    }
-    if (items.size > 0) await d.hold({ pattern_key: key, work_item_ids: [...items] });
+    if (fix ? fix.stage === "CLOSED" : now.getTime() - Date.parse(filed.created_at) >= FILED_INTAKE_MS) continue;
+    const items = await unheld(d, g, key, byId, filed.created_at);
+    if (items.length > 0) await d.hold({ pattern_key: key, work_item_ids: items });
   }
+}
+
+/**
+ * The items of `g`'s runs that finished after `after` (null: any) and that no hold of `key` took after the run
+ * finished, so a hold a person lifted (`/retry`) or the release cleared is not put back by the same run.
+ */
+async function unheld(
+  d: Pick<AlarmDeps, "store">, g: FailureGroup, key: string, byId: ReadonlyMap<string, Run>, after: Timestamp | null,
+): Promise<WorkItemId[]> {
+  const items = new Set<WorkItemId>();
+  for (const id of g.run_ids) {
+    const r = byId.get(id)!;
+    if ((after !== null && r.finished_at! <= after) || items.has(r.work_item_id)) continue;
+    const held = (await d.store.listStateChanges(r.work_item_id))
+      .some((c) => c.reason === RECURRING_FAILURE && c.detail?.pattern_key === key && c.at >= r.finished_at!);
+    if (!held) items.add(r.work_item_id);
+  }
+  return [...items];
 }
 
 /** One comment on the pattern's filed item: its failed runs since filing and in the last hour; scanned, else none. */

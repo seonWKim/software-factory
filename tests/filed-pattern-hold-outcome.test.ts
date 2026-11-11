@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { FILED_INTAKE_MS } from "../src/core/alarms.js";
 import { OUTCOME_WAIT_MS, enqueueImprove, manualWindow, patternKey, settleOutcomes } from "../src/core/improver.js";
 import { type ControllerDeps } from "../src/core/controller-deps.js";
 import { RECURRING_FAILURE, type CloseReason, type RunOutcome, type WorkerId, type WorkItemId } from "../src/core/types.js";
@@ -7,7 +8,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import outcomeMigration from "../src/controller/migrations/20261111T1500-controller-filed-pattern-outcome.migration.js";
 import { tableColumns, type MigrationDb } from "../src/state/index.js";
-import { FakeAuth, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // Issue #511: a failed run of a filed pattern holds its item for a person at once (design 05-alarms), and a filed
@@ -118,6 +119,51 @@ describe("filed pattern: hold at the first matching run", () => {
     const after = await finish(store, clock);
     await c.tickAlarms();
     expect(await store.getWorkItem(after.work_item_id)).toMatchObject({ blocked_on: "none" });
+  });
+});
+
+describe("filed pattern: a filed item that is no longer open, and /retry", () => {
+  /** A person's `/retry` on the item `id`, on its own issue. */
+  const retry = async (store: FactoryStore, c: ControllerRole, id: WorkItemId) =>
+    c.handleEvent({ kind: "retry_requested", source: (await store.getWorkItem(id))!.source, comment_id: `retry-${id}`, requester: alice });
+
+  it("a filed item never taken into the store holds nothing once FILED_INTAKE_MS passed since filing (closed or unlabelled before intake)", async () => {
+    const { store, clock } = await newStore();
+    await file(store);
+    clock.advance(FILED_INTAKE_MS);
+    const r = await finish(store, clock);
+    await controller(store, clock).tickAlarms();
+    expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    expect(await holds(store, r.work_item_id)).toEqual([]);
+  });
+
+  it("/retry lifts a recurring_failure hold: its queued run is claimed, and neither the hold step nor the re-raise puts the hold back for the same run", async () => {
+    const { store, clock } = await newStore();
+    const c = controller(store, clock);
+    await file(store);
+    const r = await finish(store, clock);
+    // A triage run, so `finish` (which claims implement runs) leaves it queued.
+    await store.enqueueRun({ work_item_id: r.work_item_id, kind: "triage", idempotency_key: `${r.id}:retry` });
+    await c.tickAlarms();
+    const claim = () => store.claimRun({ worker_id: "w2" as WorkerId, kinds: ["triage"], lease_ms: 60_000 });
+    expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
+    expect(await claim()).toBeNull();
+
+    clock.advance(MIN);
+    await retry(store, c, r.work_item_id);
+    expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+    expect((await store.listStateChanges(r.work_item_id)).at(-1)).toMatchObject({ reason: "retry_requested", actor: { kind: "user" } });
+
+    // Two more failures on other items: the pattern re-raises within the hour and holds those, not this one again.
+    // With tokens, so the zero-token alarm pauses no claim.
+    const used = { ...boom(), usage: { input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0, cost_usd: null, model: null } };
+    const more = [await finish(store, clock, used), await finish(store, clock, used)];
+    await c.tickAlarms();
+    expect((await store.listAlerts({ limit: 10 })).some((a) => a.pattern_key === `recurring:${KEY}`)).toBe(true);
+    for (const m of more) expect(await store.getWorkItem(m.work_item_id)).toMatchObject({ blocked_reason: RECURRING_FAILURE });
+    expect(await store.getWorkItem(r.work_item_id)).toMatchObject({ blocked_on: "none" });
+    expect(await holds(store, r.work_item_id)).toHaveLength(1);
+    expect((await claim())?.work_item_id).toBe(r.work_item_id);
   });
 });
 
