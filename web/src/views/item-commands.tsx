@@ -76,7 +76,7 @@ function OutcomeText({ outcome }: { outcome: Outcome }) {
     <span
       role={outcome.tone === "error" ? "alert" : "status"}
       data-outcome
-      className={cn("text-xs text-pretty break-words", outcome.tone === "error" ? "text-red-700 dark:text-red-300" : "text-zinc-600 dark:text-zinc-400")}
+      className={cn("text-xs text-pretty break-words", outcome.tone === "error" ? "text-pill-bad-fg" : "text-text-2")}
     >
       {outcome.text}
     </span>
@@ -135,7 +135,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
       <>
         <InShort spec={data?.spec} />
         <Section title="Commands">
-          <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          <p data-commands-none className="text-sm text-pretty text-text-2">
             No command applies now; the factory continues on its own. Commands show here when the item waits for you.
           </p>
         </Section>
@@ -159,7 +159,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
       <InShort spec={data?.spec} />
       <Section title="Commands">
         {off && (
-          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-text-2">
             Commands are off: this server is not on loopback, so it needs ui.user_id.{" "}
             <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
               Settings
@@ -168,7 +168,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
           </p>
         )}
         {enabled && session.data?.actor && (
-          <p data-commands-actor className="mb-2 text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+          <p data-commands-actor className="mb-2 text-xs text-pretty text-text-2">
             Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
           </p>
         )}
@@ -181,8 +181,8 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             onChange={(e) => setNote(e.target.value)}
             placeholder="Tokens for budget, a verdict's reason, or a note"
             className={cn(
-              "mb-2 w-full max-w-xl rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900",
-              "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
+              "mb-2 w-full max-w-xl rounded-control border border-border-strong bg-surface px-2 py-1 text-sm",
+              "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus",
             )}
           />
         )}
@@ -280,7 +280,7 @@ function VerdictButtons({ title, disabled, reason, onSend }: { title: string; di
         value={severity}
         disabled={disabled}
         onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}
-        className="h-8 rounded-md border border-zinc-300 bg-white px-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        className="h-8 rounded-control border border-border-strong bg-surface px-1 text-sm"
       >
         {SEVERITIES.map((s) => (
           <option key={s} value={s}>
@@ -446,8 +446,8 @@ function MoreMenu({
         ref={buttonRef}
         type="button"
         className={cn(
-          "inline-flex items-center justify-center rounded-md border border-zinc-300 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800",
-          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600",
+          "inline-flex items-center justify-center rounded-control border border-border-strong text-sm font-medium hover:bg-surface-2",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
           textButton,
         )}
         aria-label="More commands"
@@ -460,7 +460,7 @@ function MoreMenu({
       {shown && (
         <ul
           role="menu"
-          className="absolute top-full right-0 z-20 mt-1 w-max max-w-[calc(100vw-2rem)] rounded-md border border-zinc-300 bg-white p-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+          className="absolute top-full right-0 z-20 mt-1 w-max max-w-[calc(100vw-2rem)] rounded-control border border-border-strong bg-surface p-1 text-sm"
         >
           {commands.map((c) => {
             const off = disabled || !c.allowed;
@@ -473,7 +473,7 @@ function MoreMenu({
                   disabled={off}
                   title={why ?? `${c.usage}: ${c.description}`}
                   aria-describedby={why ? `${uid}-why-${c.name}` : undefined}
-                  className="block w-full rounded px-2 py-1 text-left hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800"
+                  className="block w-full rounded-control px-2 py-1 text-left hover:bg-surface-2 disabled:opacity-50"
                   onClick={() => {
                     setShown(false);
                     onPick(c.name);
@@ -482,7 +482,7 @@ function MoreMenu({
                   {c.name}
                 </button>
                 {why && (
-                  <span id={`${uid}-why-${c.name}`} className="block max-w-xs px-2 pb-1 text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">
+                  <span id={`${uid}-why-${c.name}`} className="block max-w-xs px-2 pb-1 text-xs text-pretty break-words text-text-2">
                     {why}
                   </span>
                 )}

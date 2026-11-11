@@ -7,8 +7,8 @@ import { Button } from "./button.js";
 // It renders into document.body, so a table row that opens one keeps its own children. Esc and a click on the
 // backdrop (the dialog element itself; the content sits in an inner box) cancel without confirming; Enter in a
 // single-line field submits the form, which is the confirm button. Focus moves into the dialog when it opens and
-// goes back to `returnFocusTo` (else the element focused when it opened) when it closes. Colours are the theme's own
-// CSS variables, the failed colour for a destructive confirm.
+// goes back to `returnFocusTo` (else the element focused when it opened) when it closes. Colours are token classes, and the failed
+// colour variable for a destructive confirm.
 
 const BUTTON = "h-8 w-auto px-2";
 /** The destructive confirm: the theme's failed (red) colour variable. */
@@ -82,9 +82,9 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
         if (e.target === ref.current) close.current();
       }}
       className={cn(
-        "m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-md p-0",
-        "border border-zinc-300 bg-white text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100",
-        "backdrop:bg-zinc-950/50",
+        "m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-control p-0",
+        "border border-border-strong bg-surface text-text-1",
+        "backdrop:bg-text-1/50",
       )}
     >
       <form onSubmit={submit} className="flex flex-col gap-3 p-4">
@@ -98,7 +98,7 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
           </p>
         )}
         {error && (
-          <p role="alert" className="text-sm text-pretty break-words text-red-700 dark:text-red-300">
+          <p role="alert" className="text-sm text-pretty break-words text-pill-bad-fg">
             {error}
           </p>
         )}
@@ -119,7 +119,7 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
 /** How long a send confirmation stays on screen. */
 export const STATUS_MS = 4000;
 const STATUS_CLASS =
-  "fixed bottom-4 left-1/2 z-50 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100";
+  "fixed bottom-4 left-1/2 z-50 max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-control border border-border-strong bg-surface px-3 py-2 text-sm text-text-1";
 let statusRegion: HTMLElement | null = null;
 let statusTimer: ReturnType<typeof setTimeout> | undefined;
 
