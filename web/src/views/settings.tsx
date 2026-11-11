@@ -15,6 +15,8 @@ import { ProposalsSection, StandingSection } from "./standing.js";
 // the same checks as `factory settings`; a refusal is shown next to the field it came from. A per-project gate key
 // also shows the configured project's learned value (design 08-settings) next to its file and override values, with
 // its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
+// The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
+// and a quiet-hours field.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
@@ -305,6 +307,91 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
   );
 }
 
+/** The kinds of wait on the owner that `notice_kinds` lists, in its order, each with its switch's label. */
+const NOTICE_KINDS = [
+  ["spec", "A spec waits for approval"],
+  ["merge", "A change waits for its merge"],
+  ["failure", "An item failed"],
+  ["other", "Anything else that needs you"],
+] as const;
+/** The keys the Notices section edits; their table rows point there instead of a generic editor that does not fit. */
+const NOTICE_KEYS = new Set(["notice_kinds", "quiet_hours"]);
+
+/** The strings in a JSON list; none for anything else. */
+function listOf(text: string): string[] {
+  try {
+    const v: unknown = JSON.parse(text);
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** A switch per kind; each change writes the whole `notice_kinds` list, kinds in their fixed order. */
+function NoticeKinds({ row, token }: { row: SettingRow; token: string }) {
+  const { busy, error, done, write } = useWrite(token);
+  const on = listOf(row.value);
+  const set = (kind: string, next: boolean) => {
+    const kinds = NOTICE_KINDS.map(([k]) => k).filter((k) => (k === kind ? next : on.includes(k)));
+    void write({ action: "set", key: row.key, value: JSON.stringify(kinds) });
+  };
+  return (
+    <div className="flex max-w-md flex-col gap-2 text-sm">
+      <span className="font-medium">Notice when</span>
+      {NOTICE_KINDS.map(([kind, label]) => (
+        <label key={kind} className="flex items-center gap-2">
+          <Switch aria-label={`Notice: ${kind}`} checked={on.includes(kind)} disabled={busy} onCheckedChange={(next) => set(kind, next)} />
+          <span className="text-pretty">{label}</span>
+        </label>
+      ))}
+      <Outcome error={error} done={done} />
+    </div>
+  );
+}
+
+/** The quiet-hours window as plain text (`HH:MM-HH:MM`, empty for off), sent as a JSON string; the server checks it. */
+function QuietHours({ row, token }: { row: SettingRow; token: string }) {
+  const { busy, error, done, write } = useWrite(token);
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? stringOf(row.value);
+  const save = async () => {
+    if (await write({ action: "set", key: row.key, value: JSON.stringify(shown.trim()) })) setDraft(null);
+  };
+  return (
+    <div className="flex max-w-md flex-col gap-1 text-sm">
+      <span className="font-medium">Quiet hours</span>
+      <p className="text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+        Local time, e.g. 22:00-07:00; empty is off. Notices inside it wait, then come as one summary.
+      </p>
+      <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
+        <input aria-label="Quiet hours" placeholder="22:00-07:00" className={cn(input, "w-32")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label="Save Quiet hours">
+          Save
+        </Button>
+      </form>
+      <Outcome error={error} done={done} />
+    </div>
+  );
+}
+
+/** Owner notices (design 09-notifications): which waits raise one, and the quiet hours that hold them. */
+function NoticesSection({ view }: { view: SettingsView }) {
+  const kinds = view.keys.find((k) => k.key === "notice_kinds");
+  const quiet = view.keys.find((k) => k.key === "quiet_hours");
+  if (!kinds && !quiet) return null;
+  return (
+    <Section title="Notices">
+      <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+        The macOS app shows a notice when an item starts waiting on you. Changes apply on the next notifications pass.
+      </p>
+      <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
+        {kinds && <NoticeKinds row={kinds} token={view.csrf_token} />}
+        {quiet && <QuietHours row={quiet} token={view.csrf_token} />}
+      </div>
+    </Section>
+  );
+}
+
 function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
@@ -315,7 +402,13 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         <Description text={row.description} />
       </Td>
       <Td className="min-w-56">
-        <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        {NOTICE_KEYS.has(row.key) ? (
+          <p className="text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+            <span className="font-mono break-words">{row.value}</span> · edit under Notices
+          </p>
+        ) : (
+          <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        )}
         <Duration settingKey={row.key} value={row.value} />
         {row.key === "workers" && row.max !== undefined && (
           <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
@@ -458,6 +551,7 @@ export function SettingsPage() {
     <>
       <ProposalsSection />
       <ModeSection view={v} />
+      <NoticesSection view={v} />
       <PageCommands />
       <Section title="Settable keys" count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
