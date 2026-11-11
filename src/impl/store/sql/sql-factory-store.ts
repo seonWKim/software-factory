@@ -121,6 +121,7 @@ import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
 import * as notices from "./notices.js";
 import * as posted from "./posted-comments.js";
+import * as verdicts from "./verdicts.js";
 
 /**
  * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -324,9 +325,7 @@ export class SqlFactoryStore implements FactoryStore {
         if (!current) return { ok: false, reason: "not_found" };
         // Before the version: a redelivered comment is a no-op whatever happened to the item since.
         const existing = await this.selectVerdictByComment(tx, input.comment_id);
-        if (existing && !(input.replace && existing.work_item_id === input.id && changesVerdict(existing, input))) {
-          return { ok: false, reason: "duplicate", verdict: existing };
-        }
+        if (existing && verdicts.isDuplicate(existing, input)) return { ok: false, reason: "duplicate", verdict: existing };
         if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
         // One verdict per PR head (design §4): an implicit one never adds a second, an explicit one replaces it.
         if (input.pr_head !== null) {
@@ -344,17 +343,8 @@ export class SqlFactoryStore implements FactoryStore {
           version, now, input.id, input.expected_version,
         ]);
         if (updated !== 1) return { ok: false, reason: "version_conflict", current };
-
-        const reason = input.implicit ? "implicit_verdict" : "human_verdict";
-        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, reason, {});
-        if (existing) {
-          // A one-tap verdict changed on its message: the one row is updated, linked to the new state change.
-          const verdict: Verdict = { ...existing, state_change_id: state_change.id, verdict: input.verdict, severity: input.severity, reason: input.reason, at: now };
-          await tx.run("UPDATE controller_verdicts SET state_change_id = ?, verdict = ?, severity = ?, reason = ?, at = ? WHERE id = ?", [
-            verdict.state_change_id, verdict.verdict, verdict.severity, verdict.reason, verdict.at, verdict.id,
-          ]);
-          return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, verdict };
-        }
+        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.implicit ? "implicit_verdict" : "human_verdict", {});
+        if (existing) return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, verdict: await verdicts.replaceVerdict(tx, existing, input, state_change.id, now) };
         const verdict: Verdict = {
           id: newId("vd") as VerdictId,
           work_item_id: input.id,
@@ -2655,11 +2645,6 @@ export class SqlFactoryStore implements FactoryStore {
     );
     return change;
   }
-}
-
-/** Whether `input` would change the stored verdict `v` (its kind, severity or reason). */
-function changesVerdict(v: Verdict, input: RecordVerdictInput): boolean {
-  return v.verdict !== input.verdict || v.severity !== input.severity || v.reason !== input.reason;
 }
 
 /** Thrown inside recordVerdict's transaction to roll it back when the verdict's comment id is already taken. */

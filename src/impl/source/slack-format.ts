@@ -129,6 +129,11 @@ export function feedbackModal(meta: { channel: string; ts: string }): Record<str
   };
 }
 
+/** A non-empty string from an untrusted payload field, else null. */
+export const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
+/** An untrusted payload field as an object (empty when it is not one). */
+export const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {});
+
 /** `&`, `<` and `>` as Slack wants them in text. */
 export function escapeSlack(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

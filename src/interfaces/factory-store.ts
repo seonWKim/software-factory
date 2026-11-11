@@ -213,16 +213,11 @@ export interface RecordVerdictInput {
   verdict: VerdictKind;
   severity: VerdictSeverity;
   reason: string | null;
-  /** The comment id, or an implicit verdict's event key. */
+  /** The comment id, or an implicit verdict's event key. With `replace` (a one-tap verdict), a different verdict updates its row. */
   comment_id: string;
   target: VerdictTarget;
   implicit: boolean;
   pr_head: string | null;
-  /**
-   * A one-tap verdict on a factory message (design §4, the Good, Bad and Feedback buttons): a verdict already stored
-   * under `comment_id` is updated in place (kind, severity, reason, a new state change for the actor) instead of
-   * being a `duplicate`, so a message keeps one row. The same values again are still a `duplicate`.
-   */
   replace?: boolean;
 }
 
@@ -396,12 +391,10 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   transition(input: TransitionInput): Promise<TransitionResult>;
   listStateChanges(id: WorkItemId): Promise<StateChange[]>;
   /**
-   * Stores a verdict: bumps the version and writes a state_changes row (reason `human_verdict`, or
-   * `implicit_verdict` when `implicit`; `actor` as actor, `changes` = {}) and a linked verdicts row, in one
-   * transaction. No other field changes. Idempotent on `comment_id`; with `replace`, a different verdict under the same
-   * `comment_id` updates that row and its state change link instead (no second row). One verdict per PR head: an implicit one is a
-   * `duplicate` when the item already has a verdict for `pr_head`; an explicit one deletes the item's implicit
-   * verdicts for `pr_head` (their state_changes rows stay) before it is stored.
+   * Stores a verdict: bumps the version and writes a state_changes row (reason `human_verdict`, or `implicit_verdict`
+   * when `implicit`; `actor` as actor, `changes` = {}) and a linked verdicts row (`replace`: or updates the comment's
+   * row), in one transaction; no other field changes. Idempotent on `comment_id`. One verdict per PR head: an implicit
+   * one is a `duplicate` when the item has one for `pr_head`; an explicit one first deletes those (state changes stay).
    */
   recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult>;
   /** The item's verdicts, oldest first. Read-only. */
