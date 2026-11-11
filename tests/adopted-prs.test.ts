@@ -411,6 +411,6 @@ describe("the first start on a repository with history (design §5, Merges)", ()
     await f.controller.tickIntake();
     await f.controller.tickIntake();
     expect((await f.store.listUnreviewedMerges(100)).map((r) => [r.pr_number, r.merge_sha])).toEqual([[2, "m2"]]);
-    expect(f.unreviewed().map((l) => l.fields?.pr_number)).toEqual([2]);
+    expect(f.unreviewed().map((l) => l.fields?.change_ref)).toEqual(["2"]);
   });
 });
