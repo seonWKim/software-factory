@@ -1,3 +1,5 @@
+import { locale } from "../i18n/index.js";
+
 // Display helpers. Pure: `now` is passed in, so a test can fix it.
 
 /** "12s", "4m", "3h", "2d" since `at`; "–" for none. */
@@ -34,9 +36,10 @@ export function shortSource(id: string): string {
 /** 38521431 → "38.5M"; 29285 → "29.3k". */
 export function tokens(n: number | null | undefined): string {
   if (n === null || n === undefined) return "–";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
+  const one = new Intl.NumberFormat(locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  if (n >= 1_000_000) return `${one.format(n / 1_000_000)}M`;
+  if (n >= 1000) return `${one.format(n / 1000)}k`;
+  return new Intl.NumberFormat(locale(), { useGrouping: false }).format(n);
 }
 
 const DURATION_UNITS = [["d", 86_400_000], ["h", 3_600_000], ["m", 60_000], ["s", 1000], ["ms", 1]] as const;
