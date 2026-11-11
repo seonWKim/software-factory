@@ -2,8 +2,10 @@
 // pack add` stores and the owner approves; a `tools/<file>.tool.js` beside it is the code that serves it. Startup
 // imports every such module, in layer order, into the worker process only: the pack tool broker
 // (pack-tool-broker.ts) calls it there, after the approval check, with the entry's credential. The agent's sandbox
-// never loads it. A descriptor with no module stays data, as before. Each tool's credential is declared as a secret
-// of the selected broker (which the pack tool broker wraps), so the SecretStore loads and scans it and setup asks for it.
+// never loads it. A descriptor with no module stays data, as before. The tool's description_hash covers the descriptor
+// and the module's bytes, and the broker re-hashes the module on every call. Each tool's credential is declared as a
+// secret of the selected broker (which the pack tool broker wraps), so the SecretStore loads and scans it and setup
+// asks for it; a credential a built-in plugin already declares (the GitHub App key, the Slack tokens) fails startup.
 
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -11,21 +13,25 @@ import { pathToFileURL } from "node:url";
 import { PACK_GRANT, type ToolGrants } from "../../core/config.js";
 import { type Secret, type SecretName, secretName } from "../../interfaces/secret-store.js";
 import type { ToolBroker, ToolResult } from "../../interfaces/tool-broker.js";
-import { descriptionHash } from "../../packs/pack-entries.store.js";
+import { PACK_TOOL_MODULE, descriptionHash, moduleHash } from "../../packs/pack-entries.store.js";
 import type { Json } from "../../packs/pack-scans.js";
 import type { Pack } from "../../packs/packs.js";
-import type { Registry } from "../../plugin-api.js";
+import type { PluginKind, Registry } from "../../plugin-api.js";
 import { PackToolBroker } from "./pack-tool-broker.js";
-
-/** A pack tool's module, beside its descriptor: `tools/<file>.tool.js`. */
-export const PACK_TOOL_MODULE = ".tool.js";
 
 /** One pack tool's implementation, as the worker holds it. */
 export interface PackTool {
   /** The entry's name; the tool is listed and granted as `pack:tool:<name>`. */
   readonly name: string;
-  /** The description_hash of the descriptor this implementation runs: it runs only while that one is approved and current. */
+  /**
+   * The description_hash of the descriptor and module this implementation runs: it runs only while that one is
+   * approved and current.
+   */
   readonly description_hash: string;
+  /** The module file, re-read and re-hashed on every call. */
+  readonly module_file: string;
+  /** The module_hash of the bytes loaded at startup: a call whose module file hashes otherwise is refused. */
+  readonly module_hash: string;
   readonly description: string;
   readonly input_schema: Record<string, unknown>;
   readonly read_only: boolean;
@@ -37,8 +43,20 @@ export interface PackTool {
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** Each secret name a built-in plugin declares, with the plugin that declares it (`<kind> <name>`). */
+export type ReservedSecrets = ReadonlyMap<string, string>;
+
+/** The secrets of `builtin` (the registry before any pack plugin joins): no pack tool may take one as its credential. */
+function reservedSecrets(builtin: Registry): ReservedSecrets {
+  const out = new Map<string, string>();
+  for (const kind of Object.keys(builtin) as PluginKind[]) {
+    for (const [plugin, decls] of Object.entries(builtin[kind].secrets)) for (const d of decls) if (!out.has(d.name)) out.set(d.name, `${kind} ${plugin}`);
+  }
+  return out;
+}
+
 /** One module and its descriptor, checked; any problem fails startup, naming the file. */
-async function loadOne(dir: string, module: string): Promise<PackTool> {
+async function loadOne(dir: string, module: string, reserved: ReservedSecrets): Promise<PackTool> {
   const file = join(dir, module);
   const descriptorFile = join(dir, `${module.slice(0, -PACK_TOOL_MODULE.length)}.json`);
   const bad = (why: string) => new Error(`pack tool ${file}: ${why} (docs/design/11-packs.md)`);
@@ -59,11 +77,22 @@ async function loadOne(dir: string, module: string): Promise<PackTool> {
   } catch (err) {
     throw bad((err as Error).message);
   }
-  const call = ((await import(pathToFileURL(file).href)) as { default?: unknown }).default;
+  const owner = credential_name === null ? undefined : reserved.get(credential_name);
+  if (owner !== undefined) {
+    throw new Error(
+      `pack tool ${descriptorFile}: its credential ${credential_name} is a secret the built-in plugin ${owner} declares; ` +
+        "give the tool a secret of its own (docs/design/11-packs.md)",
+    );
+  }
+  const module_hash = moduleHash(await readFile(file));
+  // The hash in the URL: a restarted load in the same process imports the bytes it hashed, not a cached older module.
+  const call = ((await import(`${pathToFileURL(file).href}?sha256=${module_hash}`)) as { default?: unknown }).default;
   if (typeof call !== "function") throw bad("write `export default async function (args, credential) { return { ok: true, content } }`");
   return {
     name: descriptor.name,
-    description_hash: descriptionHash(descriptor as Json),
+    description_hash: descriptionHash(descriptor as Json, module_hash),
+    module_file: file,
+    module_hash,
     description: descriptor.description,
     input_schema: (descriptor.input_schema as Record<string, unknown> | undefined) ?? { type: "object" },
     read_only: descriptor.read_only === true,
@@ -76,7 +105,7 @@ async function loadOne(dir: string, module: string): Promise<PackTool> {
  * Every layer's pack tools, in layer order. A name in two layers fails startup, naming both files. On a shared store
  * a project pack's tool module fails startup too: only reviewed layers (base, org) may add code there.
  */
-export async function loadPackTools(packs: readonly Pack[], opts: { sharedStore: boolean }): Promise<PackTool[]> {
+export async function loadPackTools(packs: readonly Pack[], opts: { sharedStore: boolean; reserved: ReservedSecrets }): Promise<PackTool[]> {
   const out: PackTool[] = [];
   const where = new Map<string, string>();
   for (const p of packs) {
@@ -95,7 +124,7 @@ export async function loadPackTools(packs: readonly Pack[], opts: { sharedStore:
       );
     }
     for (const module of modules) {
-      const tool = await loadOne(dir, module);
+      const tool = await loadOne(dir, module, opts.reserved);
       const seen = where.get(tool.name);
       if (seen) throw new Error(`pack tool ${tool.name} is in two layers: ${seen} and ${join(dir, module)}; keep one`);
       where.set(tool.name, join(dir, module));
@@ -107,10 +136,16 @@ export async function loadPackTools(packs: readonly Pack[], opts: { sharedStore:
 
 /**
  * The pack layers' tools, and the registry with each one's credential declared as a secret of the selected broker
- * (`broker`). What loadConfig keeps; a bad tool fails startup.
+ * (`broker`). What loadConfig keeps; a bad tool fails startup, and so does a credential `opts.builtin` (the built-in
+ * registry, before the packs' plugins join) declares for any plugin.
  */
-export async function withPackTools(registry: Registry, broker: string, packs: readonly Pack[], opts: { sharedStore: boolean }): Promise<{ registry: Registry; pack_tools: PackTool[] }> {
-  const pack_tools = await loadPackTools(packs, opts);
+export async function withPackTools(
+  registry: Registry,
+  broker: string,
+  packs: readonly Pack[],
+  opts: { sharedStore: boolean; builtin: Registry },
+): Promise<{ registry: Registry; pack_tools: PackTool[] }> {
+  const pack_tools = await loadPackTools(packs, { sharedStore: opts.sharedStore, reserved: reservedSecrets(opts.builtin) });
   const declared = pack_tools.flatMap((t) => (t.credential_name ? [{ name: t.credential_name, purpose: `the pack tool ${t.name}` }] : []));
   if (declared.length === 0) return { registry, pack_tools };
   const entry = registry.broker;

@@ -16,8 +16,8 @@ export default defineCommand({
       const stall = await modelStallLine(app.store);
       if (stall) console.log(stall);
       const items = await app.store.listWorkItems(50);
-      console.table(items.map(({ id, source, stage, blocked_on, blocked_reason, tier, loop_count, pr_number, version }) =>
-        ({ id, source: source.id, stage, blocked_on, blocked_reason, tier, loop_count, pr_number, version })));
+      console.table(items.map(({ id, source, stage, blocked_on, blocked_reason, tier, loop_count, change_ref, version }) =>
+        ({ id, source: source.id, stage, blocked_on, blocked_reason, tier, loop_count, change_ref, version })));
     }
     await app.close();
     return 0;
