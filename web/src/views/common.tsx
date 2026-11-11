@@ -60,13 +60,17 @@ export function SourceLink({ source, className, itemId }: { source: { id: string
   );
 }
 
-/** An item's title (or its source id) linking to its page, with the source link beside it. */
-export function ItemTitle({ id, title, source }: { id: string; title: string | null; source: { id: string; link: string } }) {
+/**
+ * An item's title (or its short source id) linking to its page, with the source link beside it. `itemPage`: a source
+ * with no web address links to the item page (the app's tables set it; the stored-link default goes once its last
+ * test, tests/ui-source-id.test.tsx, moves to it).
+ */
+export function ItemTitle({ id, title, source, itemPage = false }: { id: string; title: string | null; source: { id: string; link: string }; itemPage?: boolean }) {
   return (
     <span className="flex min-w-0 items-baseline gap-2">
-      <SourceLink source={source} className="shrink-0" />
+      <SourceLink source={source} className="shrink-0" {...(itemPage ? { itemId: id } : {})} />
       <Link href={itemPath(id)} className={cn("truncate font-medium", LINK_CLASS)}>
-        {title ?? source.id}
+        {title ?? shortSource(source.id)}
       </Link>
     </span>
   );
@@ -179,7 +183,7 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
         const it = items.get(r.work_item_id);
         return (
           <Tr key={r.id}>
-            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
+            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} itemPage /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
             <Td><WorkerName id={r.owner} /></Td>
@@ -203,7 +207,7 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
         return (
           <Tr key={q.id}>
             <Td className="tabular-nums">{q.position}</Td>
-            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
+            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} itemPage /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
             <Td>{q.kind}</Td>
             <Td className="tabular-nums">{q.attempt}</Td>
             <Td className="tabular-nums">{ago(q.created_at, now)} ago</Td>
