@@ -10,18 +10,18 @@ import {
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
-import { localIdentity } from "../../../core/local-cli.js";
+import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
+import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { type ConfirmCommand, confirmProposal, storeProposals } from "./proposals.js";
+import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
 import { scanClean } from "./scan.js";
 
 type AppSender = { user_id: UserId; passport?: Extract<CommandEvent, { kind: "spec_approved" }>["approver"]["passport"] } | null;
@@ -152,21 +152,13 @@ export class CommandsUnit {
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     if (!item) return;
     // A proposal's confirm press (proposals.ts) and `factory merge <id>` (local items only) skip the comment mapping.
-    if (c.command === CONFIRM_COMMAND) return this.confirm(c, item);
+    if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, commandIdentity(c, localIdentity(c.actor))), say: refusalText });
     if (c.command === MERGE_COMMAND) {
       if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, commandIdentity(c, localIdentity(c.actor)), c.key);
       return;
     }
     const e = commandEvent(c, item.source);
     if (e) await this.c.dispatch(e);
-  }
-
-  /**
-   * A confirm of a stored proposal (proposals.ts) as `cmd`'s actor, checked with its edge passport: a CLI or chat
-   * command row, or the dashboard's app request. Refusals and "nothing applied" are answered on `at`'s thread.
-   */
-  confirm(cmd: ConfirmCommand, at: WorkItem): Promise<void> {
-    return confirmProposal(this.c, cmd, at, { event: (r, s) => proposalEvent(r, s, commandIdentity(cmd, localIdentity(cmd.actor))), say: refusalText });
   }
 
   /**
@@ -463,12 +455,9 @@ export class CommandsUnit {
   }
 
   /**
-   * A plain-language comment on a work item (design §4, issues #583, #584): at most one reply, keyed on the comment
-   * id, that proposes commands for any open item as typed lines (stored once as pending proposal rows, which Slack shows
-   * as buttons), answers a read, asks one question, or answers in plain words (chat) from the item's state label and
-   * block reason. Only a failed or malformed model answer gets the canned line and the commands for the item's state.
-   * Changes no item state: a proposal applies only when typed or confirmed by a press. In order: the item, the
-   * commenter's permission (no model call and no reply without it), then `readMessage`.
+   * A plain-language comment on a work item (design §4, issues #583, #584): at most one reply, keyed on the comment id
+   * (proposals.ts answerPlain). Changes no item state. In order: the item, the commenter's permission (no model call
+   * and no reply without it), then the answer, whose fallback lists the commands for the item's state.
    */
   async handlePlainComment(e: PlainCommentEvent): Promise<void> {
     const code = parseLink(e.body);
@@ -477,11 +466,14 @@ export class CommandsUnit {
     const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item || item.stage === "CLOSED") return;
     if ("refuse" in (await this.c.unit("auth").authorize(e.author, "approve_spec", item.id))) return;
-    const read = await this.readMessage(e.body, { work_item_id: item.id }, { item, e });
-    if (typeof read === "string") return;
-    const body = read.body ?? ["The factory did not find a command in your comment, so nothing changed.", "", commandFooter(await this.stateOf(item))].join("\n");
-    this.c.k.d.log.info("plain comment answered", { work_item_id: item.id, kind: read.kind });
-    await this.c.unit("outbox").post(item, item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+    await answerPlain(this.c, item, e, async () => commandFooter(await this.stateOf(item)));
+  }
+
+  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal); undefined for any other app command. */
+  appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
+    const kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
+    const who = commandIdentity(r, localIdentity(r.actor));
+    return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;
   }
 
   /**

@@ -1,7 +1,7 @@
 // Stored command proposals (design 04-gate-commands, issue #584): a plain-language reply's proposals stored once, and
 // the confirm path of a press (Slack's proposal buttons, slack-commands.ts), which stores one `proposal_confirm`
-// command row as the presser's linked factory user, of `factory confirm <proposal-id>` (the same row as the CLI
-// identity), and of the dashboard's Confirm all (an app request, app-requests.unit.ts). Each pending command it names goes through the typed command's
+// command row as the presser's linked factory user, and of `factory confirm` (the same row, as the CLI identity); the
+// dashboard's sentence, Confirm all and Cancel (app requests, `appProposal`); and the one answer to a plain message. Each pending command it names goes through the typed command's
 // path (CommandsUnit.gateCommand): the same AuthProvider check, note scan and state checks. Imports only the
 // controller's own modules; what needs the legacy core comes in from the commands unit (`ConfirmDeps`). Its store
 // I/O is inline, as the commands unit's is (unit-purity ratchet): the kernel has no proposal write yet.
@@ -15,8 +15,8 @@ type Store = Ctx["k"]["d"]["store"];
 type Proposal = Awaited<ReturnType<Store["listCommandProposals"]>>[number];
 type Item = Parameters<CommandsUnit["gateCommand"]>[0];
 type InboxCommand = Parameters<CommandsUnit["handleInboxCommand"]>[0];
-/** What a confirm reads of its command: a CLI or chat row, or the dashboard's app request (the same fields). */
-export type ConfirmCommand = Pick<InboxCommand, "key" | "actor" | "args" | "passport_id" | "created_at">;
+type AppRequest = Parameters<CommandsUnit["appProposal"]>[0];
+type PlainMessage = NonNullable<Parameters<CommandsUnit["readMessage"]>[2]>["e"];
 
 /** The interpretation's shape this file reads: a `commands` answer's proposals. */
 interface Answer {
@@ -30,6 +30,65 @@ export interface ConfirmDeps {
   event: (row: Proposal, source: Item["source"]) => { kind: string } | null;
   /** The refusal reply's text: `command` was not applied, and why. */
   say: (command: string, reason: string) => string;
+}
+
+/** What the dashboard's requests need beside a confirm's: the request's user as an identity, and the item's command list. */
+export interface AppProposalDeps extends ConfirmDeps {
+  /** The request's user, `local` with its edge passport, as a typed command from it is checked. */
+  who: PlainMessage["author"];
+  /** The commands that apply to the item now, for an answer with no command in it. */
+  footer: () => Promise<string>;
+}
+
+/** The answer to a message the reader found no command in, above the item's command list. */
+const NO_COMMAND = "The factory did not find a command in your comment, so nothing changed.";
+
+/**
+ * One plain message `e` on `item` (a comment, or the dashboard's sentence keyed on its request), read by the commands
+ * unit's `readMessage`, answered once in the item's thread, keyed on the message: commands proposed for any open item
+ * as typed lines (stored once as pending proposal rows, which Slack shows as buttons), a read answered, one question,
+ * or a plain-words answer from the item's state label and block reason. Only a failed or malformed model answer gets
+ * the fixed line and `footer`. Changes no item state. `unread` or `blocked` when nothing is posted.
+ */
+export async function answerPlain(c: Ctx, item: Item, e: PlainMessage, footer: () => Promise<string>): Promise<"unread" | "blocked" | null> {
+  const read = await c.unit("commands").readMessage(e.body, { work_item_id: item.id }, { item, e });
+  if (typeof read === "string") return read;
+  c.k.d.log.info("plain comment answered", { work_item_id: item.id, kind: read.kind });
+  await c.unit("outbox").post(item, item.source, read.body ?? [NO_COMMAND, "", await footer()].join("\n"), `<!-- factory:suggest:${e.comment_id} -->`);
+  return null;
+}
+
+/**
+ * The dashboard's requests on `item`, keyed `key` (design 09-dashboard-app), as the request's user: Confirm all
+ * (`args.proposal`) goes through `confirmProposal`, as a `factory confirm` row does, each command checked as typed;
+ * Cancel and a sentence (`args.note`) need approve_spec first, as a plain reply's author does. Cancel marks the pending
+ * rows cancelled and stores no command, with one reply, as Slack's Cancel does; a sentence is a plain message keyed
+ * on the request. The refusal, or null.
+ */
+export async function appProposal(c: Ctx, r: AppRequest, item: Item, key: string, kind: "confirm" | "cancel" | "sentence", deps: AppProposalDeps): Promise<string | null> {
+  const proposal = typeof r.args.proposal === "string" ? r.args.proposal : "";
+  if (kind === "confirm") {
+    await confirmProposal(c, { key, actor: r.actor, args: { proposal } }, item, deps);
+    return null;
+  }
+  const principal = await c.unit("auth").authorize(deps.who, "approve_spec", item.id);
+  if ("refuse" in principal) return principal.refuse;
+  if (kind === "sentence") {
+    const body = typeof r.args.note === "string" ? r.args.note : "";
+    const read = await answerPlain(c, item, { kind: "plain_comment", source: item.source, comment_id: key, author: deps.who, body }, deps.footer);
+    if (read === "unread") return "the words were not read: they were empty or too long, did not pass the egress scan, or no model is configured";
+    return read === "blocked" ? "the model's answer did not pass the egress scan, so it is not shown" : null;
+  }
+  let cancelled = 0;
+  for (const row of await c.k.d.store.listCommandProposals(proposal)) {
+    if (row.status !== "pending") continue;
+    if (await c.k.d.store.answerCommandProposal({ proposal_id: row.proposal_id, idx: row.idx, from: "pending", to: "cancelled", answered_by: r.actor })) cancelled++;
+  }
+  const body = cancelled > 0
+    ? `Cancelled by \`${r.actor}\`: the proposed ${cancelled === 1 ? "command was" : "commands were"} not applied, and no command was stored.`
+    : "Nothing to cancel: every command of this proposal was already applied or answered.";
+  await c.unit("outbox").post(item, item.source, body, `<!-- factory:proposal-cancelled:${key} -->`);
+  return null;
 }
 
 /** The proposal ID of the reply to comment `comment_id` on item `item`: the same for every delivery of that comment. */
@@ -57,23 +116,6 @@ function answeredLine(r: Proposal): string {
 }
 
 /**
- * A dashboard Cancel (an app request): marks each pending row of `proposal` cancelled as `actor` and stores no
- * command; one reply on `at`'s thread, keyed `key`, says what it did, as Slack's Cancel press answers.
- */
-export async function cancelProposal(c: Ctx, proposal: string, actor: string, at: Item, key: string): Promise<void> {
-  const store = c.k.d.store;
-  let cancelled = 0;
-  for (const r of await store.listCommandProposals(proposal)) {
-    if (r.status !== "pending") continue;
-    if (await store.answerCommandProposal({ proposal_id: r.proposal_id, idx: r.idx, from: "pending", to: "cancelled", answered_by: actor })) cancelled++;
-  }
-  const body = cancelled > 0
-    ? `Cancelled by \`${actor}\`: the proposed ${cancelled === 1 ? "command was" : "commands were"} not applied, and no command was stored.`
-    : "Nothing to cancel: every command of this proposal was already applied or answered.";
-  await c.unit("outbox").post(at, at.source, body, `<!-- factory:proposal-cancelled:${key} -->`);
-}
-
-/**
  * A confirm press's command row (`args.proposal`, `args.index`; no index: confirm all) on the thread's item `at`.
  * Each pending row it names, in index order, is claimed (pending → applied, conditional, so a second confirm, a
  * redelivery or another replica applies it once) and then applied through the typed path as the row's actor; a
@@ -82,7 +124,7 @@ export async function cancelProposal(c: Ctx, proposal: string, actor: string, at
  * what already happened. A stop between the claim and the apply leaves the row applied with nothing applied: the
  * person types the line, which the reply keeps.
  */
-export async function confirmProposal(c: Ctx, cmd: ConfirmCommand, at: Item, deps: ConfirmDeps): Promise<void> {
+export async function confirmProposal(c: Ctx, cmd: Pick<InboxCommand, "key" | "actor" | "args">, at: Item, deps: ConfirmDeps): Promise<void> {
   const store = c.k.d.store;
   const proposal = typeof cmd.args.proposal === "string" ? cmd.args.proposal : "";
   const index = typeof cmd.args.index === "number" ? cmd.args.index : null;

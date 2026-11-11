@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { loadCommands, resolveCommand } from "../src/cli/index.js";
-import { type SentenceDeps, parseSentence, runSentence } from "../src/cli/handlers/interpret/sentence.js";
+import { defineCommand } from "../src/cli/command.js";
 import { SENTENCE_FORM } from "../src/core/command-table.js";
+import { type SentenceDeps, parseSentence, runSentence } from "../src/core/local-cli.js";
 import { isProposalId } from "../src/core/interpret.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -12,7 +13,7 @@ import { issue, newStore, system } from "./helpers/store.js";
 
 // `factory "<words>"` (design 04-gate-commands, the CLI sentence form): the plain-words reader over the open items,
 // with a fake model. Each proposed command prints as its typed line with the proposal ID and is stored pending; no item
-// changes state. An unknown first word reaches it through src/main.ts (resolveCommand).
+// changes state. An unknown first word reaches it through src/main.ts (resolveCommand, its fallback the sentence form).
 
 const ME = "local:me@example.com" as UserId;
 const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 };
@@ -95,13 +96,15 @@ describe("factory \"<words>\": the sentence form", () => {
 describe("src/main.ts: which command runs (resolveCommand)", () => {
   it("a known first word runs its command; an unknown one runs the sentence form with every word; a flag runs nothing", async () => {
     const commands = await loadCommands();
-    expect(resolveCommand(commands, "confirm", ["prop_1"])).toMatchObject({ name: "confirm", args: ["prop_1"] });
-    expect(resolveCommand(commands, "confirm", ["prop_1"])!.command).toBe(commands.get("task"));
-    const sentence = resolveCommand(commands, "please", ["approve", "wi_1"])!;
+    const SENTENCE = defineCommand({ names: [SENTENCE_FORM], usage: "", run: async () => 0 });
+    expect(resolveCommand(commands, SENTENCE, "confirm", ["prop_1"])).toMatchObject({ name: "confirm", args: ["prop_1"] });
+    expect(resolveCommand(commands, SENTENCE, "confirm", ["prop_1"])!.command).toBe(commands.get("task"));
+    const sentence = resolveCommand(commands, SENTENCE, "please", ["approve", "wi_1"])!;
     expect(sentence).toMatchObject({ name: SENTENCE_FORM, args: ["please", "approve", "wi_1"] });
-    expect(sentence.command).toBe(commands.get(SENTENCE_FORM));
-    expect(resolveCommand(commands, "approve the spec for wi_1", [])).toMatchObject({ name: SENTENCE_FORM, args: ["approve the spec for wi_1"] });
-    expect(resolveCommand(commands, "--help", [])).toBeNull();
-    expect(resolveCommand(commands, undefined, [])).toBeNull();
+    expect(sentence.command).toBe(SENTENCE);
+    expect(commands.has(SENTENCE_FORM)).toBe(false);
+    expect(resolveCommand(commands, SENTENCE, "approve the spec for wi_1", [])).toMatchObject({ name: SENTENCE_FORM, args: ["approve the spec for wi_1"] });
+    expect(resolveCommand(commands, SENTENCE, "--help", [])).toBeNull();
+    expect(resolveCommand(commands, SENTENCE, undefined, [])).toBeNull();
   });
 });

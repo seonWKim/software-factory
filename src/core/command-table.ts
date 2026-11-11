@@ -21,14 +21,6 @@ export type CommandGroup = "task" | "item" | "users" | "settings" | "sentence";
 export const SENTENCE_FORM = '"<words>"';
 
 /**
- * The dashboard's app commands beside the item commands (design 09-dashboard-app): the command box's sentence, read by
- * the controller's plain-words reader, and a stored proposal's Cancel. A proposal's Confirm all is `proposal_confirm`,
- * the confirm command row's own name (CONFIRM_COMMAND).
- */
-export const SENTENCE_APP_COMMAND = "sentence";
-export const CANCEL_APP_COMMAND = "proposal_cancel";
-
-/**
  * What the chat form takes after its words: nothing, one ID, free text (notes, feedback, a reason), any words
  * (checked by the CLI's own parser), (`request`) the whole mention, in plain words, which is never parsed, or
  * (`comment`) a comment command the chat parser leaves to the comment parser (`parseComment`), so a chat source

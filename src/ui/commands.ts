@@ -17,9 +17,10 @@
 // marker of the replies in its thread. This process makes no model call and applies none of them.
 
 import { randomUUID } from "node:crypto";
-import { CANCEL_APP_COMMAND, COMMAND_TABLE, SENTENCE_APP_COMMAND } from "../core/command-table.js";
+import { COMMAND_TABLE } from "../core/command-table.js";
 import { COMMANDS, type CommandName, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, roleRefusal } from "../core/commands.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
+import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
 import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";

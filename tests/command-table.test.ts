@@ -4,9 +4,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { COMMAND_TABLE, SENTENCE_FORM, type TableCommand, chatCliArgv, chatCommandListMarkdown, cliUsageOf, parseChatCommand } from "../src/core/command-table.js";
-import { parseSentence } from "../src/cli/handlers/interpret/sentence.js";
 import { type CommandPhase, THREAD_BARE_COMMANDS, chatForm, chatHelpReply, commandState, parseComment, parseLink, withSlash } from "../src/core/commands.js";
-import { CLI_TOP_WORDS, parseLocalCliArgs } from "../src/core/local-cli.js";
+import { CLI_TOP_WORDS, parseLocalCliArgs, parseSentence } from "../src/core/local-cli.js";
 import { SETTINGS_TOP_WORDS, parseModeArgs, parseSettingsArgs } from "../src/settings-cmd.js";
 import { APP_COMMANDS } from "../src/ui/commands.js";
 

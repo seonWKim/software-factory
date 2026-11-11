@@ -1,17 +1,13 @@
 // Applies the status page's requests (the gate commands approve, reject, revise, retry and resolve, verdict, merge,
-// a sentence for the plain-words reader, and a stored proposal's Confirm all and Cancel; anything else is refused). Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// and through the commands unit a sentence and a proposal's Confirm all and Cancel; anything else is refused). Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../../../core/command-table.js";
-import { COMMANDS, commandFooter, refusalText } from "../../../core/commands.js";
-import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS } from "../../../core/interpret.js";
-import { localIdentity } from "../../../core/local-cli.js";
+import { COMMANDS, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest } from "../../../interfaces/factory-store.js";
 import { type CommandEvent, COMMAND, QUOTABLE_COMMAND } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { cancelProposal } from "../commands/proposals.js";
 
 /** The state change detail key that names the app request a transition applied, so a second apply finds it. */
 const APP_REQUEST = "app_request";
@@ -44,7 +40,7 @@ function gateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, item:
   }
 }
 
-/** Applies the status page's requests (gate commands, verdict, merge, a sentence, a proposal's confirm or cancel; anything else is refused). */
+/** Applies the status page's requests (approve, reject, revise, retry, resolve, verdict, merge; anything else is refused). */
 export class AppRequestsUnit {
   constructor(private readonly c: Ctx) {}
 
@@ -54,10 +50,8 @@ export class AppRequestsUnit {
    * `approve_spec` check, note scan, transition, standing-rule follow-up and reject close as the comment. `verdict` gets
    * the `/verdict` check, parser and store, keyed `app-<seq>`; `merge` on a local item with no PR goes to mergeLocal,
    * the same local merge as `factory merge`, and on any item with a PR to the PR merge (design §9, the Merge button).
-   * Each puts the request's seq on the state change (a verdict on its key). A sentence (`sentence`, the command box)
-   * goes through the plain-words reader as a plain reply on the item would (`sentence`); a stored proposal's Confirm all
-   * (`proposal_confirm`) through the confirm path a `factory confirm` takes, as the request's user; its Cancel
-   * (`proposal_cancel`) marks the pending rows cancelled. Any other command is refused. A refusal
+   * Each puts the request's seq on the state change (a verdict on its key). The command box's sentence and a stored
+   * proposal's Confirm all and Cancel go to the commands unit (`appProposal`). Any other command is refused. A refusal
    * is posted once on the item's source, keyed on the request, then stored on the row by the conditional mark. A
    * failed post leaves the request pending for the next tick. Safe to run twice: a request whose transition is
    * already stored (an earlier try, another replica) is marked applied.
@@ -90,14 +84,11 @@ export class AppRequestsUnit {
     } else if (r.command === "verdict") {
       const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "record_verdict", item.id, true, appPassport(r));
       refusal = "refuse" in principal ? principal.refuse : await this.c.unit("verdicts").verdictFrom(item.id, { comment_id: key, target: "issue" }, principal, note ?? "");
-    } else if (r.command === SENTENCE_APP_COMMAND) {
-      refusal = await this.sentence(r, item, key, note ?? "");
-    } else if (r.command === CONFIRM_COMMAND || r.command === CANCEL_APP_COMMAND) {
-      refusal = await this.proposalRequest(r, item, key);
     } else if (gate) {
       refusal = await this.gateRequest(r, item, gate, key, note);
     } else {
-      refusal = APPLIED + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
+      const proposal = this.c.unit("commands").appProposal(r, item, key);
+      refusal = proposal ? await proposal : APPLIED + (known ? `; reply \`/${r.command}\` on the issue instead` : "");
     }
     // Refused here, but applied by a concurrent try of the same request: that one stands.
     if (refusal !== null && (await applied())) refusal = null;
@@ -120,42 +111,6 @@ export class AppRequestsUnit {
     }
     const app = { user_id: r.actor, passport: appPassport(r) };
     return this.c.unit("commands").gateCommand(item, gateEvent(kind, item, key, r, note), app, { [APP_REQUEST]: r.seq });
-  }
-
-  /**
-   * The command box's sentence (design 09-dashboard-app): the request's user must hold approve_spec (with its edge
-   * passport), as a plain reply's author must; then the commands unit's reader, as a plain reply on the item keyed
-   * `key`, so its proposals are stored once under that key; one reply in the item's thread, keyed on the request.
-   * Changes no item state. The UI process made no model call: this is the only one.
-   */
-  private async sentence(r: AppCommandRequest, item: WorkItem, key: string, text: string): Promise<string | null> {
-    const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true, appPassport(r));
-    if ("refuse" in principal) return principal.refuse;
-    const e = { kind: "plain_comment" as const, source: item.source, comment_id: key, author: localIdentity(r.actor), body: text };
-    const read = await this.c.unit("commands").readMessage(text, { work_item_id: item.id }, { item, e });
-    if (read === "unread") return `the words were not read: they must be 1 to ${INTERPRET_MAX_CHARS} characters, pass the egress scan, and a model must be configured`;
-    if (read === "blocked") return "the model's answer did not pass the egress scan, so it is not shown";
-    const body = read.body ?? ["The factory did not find a command in your words, so nothing changed.", "", commandFooter(await this.c.unit("commands").stateOf(item))].join("\n");
-    await this.c.unit("outbox").post(item, item.source, body, `<!-- factory:suggest:${key} -->`);
-    return null;
-  }
-
-  /**
-   * A stored proposal's Confirm all or Cancel from the item page, naming the proposal by its ID (`args.proposal`).
-   * Confirm goes through the commands unit's confirm path as the request's user and passport, which checks each
-   * command as the typed command is checked and answers on this item's thread. Cancel needs approve_spec.
-   */
-  private async proposalRequest(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> {
-    const proposal = typeof r.args.proposal === "string" ? r.args.proposal : "";
-    if (proposal === "") return "the request names no proposal";
-    if (r.command === CONFIRM_COMMAND) {
-      await this.c.unit("commands").confirm({ key, actor: r.actor, args: { proposal }, created_at: r.created_at, ...(r.passport_id === undefined ? {} : { passport_id: r.passport_id }) }, item);
-      return null;
-    }
-    const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "approve_spec", item.id, true, appPassport(r));
-    if ("refuse" in principal) return principal.refuse;
-    await cancelProposal(this.c, proposal, r.actor, item, key);
-    return null;
   }
 
   /** Posts `text` (a refusal) once on the item's source, keyed on the request, then marks the request handled. */

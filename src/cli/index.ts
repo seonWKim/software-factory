@@ -2,7 +2,6 @@
 
 import { relative } from "node:path";
 import { pathToFileURL } from "node:url";
-import { SENTENCE_FORM } from "../core/command-table.js";
 import { findDescriptorFiles } from "../state/index.js";
 import { COMMAND_FILE, type CommandDescriptor } from "./command.js";
 
@@ -24,15 +23,14 @@ export async function loadCommands(root: string = import.meta.dirname): Promise<
 
 /**
  * The command `factory <cmd> <args...>` runs, the name it is called by and its arguments; null for none (print the
- * usage). A first word no command claims, unless it is a flag, is the sentence form (`factory "<words>"`, design
- * 04-gate-commands), which gets every word, the first included.
+ * usage). A first word no command claims, unless it is a flag, runs `fallback` (main.ts: the sentence form,
+ * `factory "<words>"`, design 04-gate-commands), which gets every word, the first included.
  */
 export function resolveCommand(
-  commands: ReadonlyMap<string, CommandDescriptor>, cmd: string | undefined, args: readonly string[],
+  commands: ReadonlyMap<string, CommandDescriptor>, fallback: CommandDescriptor, cmd: string | undefined, args: readonly string[],
 ): { command: CommandDescriptor; name: string; args: readonly string[] } | null {
   if (cmd === undefined) return null;
   const known = commands.get(cmd);
   if (known) return { command: known, name: cmd, args };
-  const sentence = cmd.startsWith("-") ? undefined : commands.get(SENTENCE_FORM);
-  return sentence ? { command: sentence, name: SENTENCE_FORM, args: [cmd, ...args] } : null;
+  return cmd.startsWith("-") ? null : { command: fallback, name: fallback.names[0]!, args: [cmd, ...args] };
 }
