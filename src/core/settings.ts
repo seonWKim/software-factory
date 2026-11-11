@@ -11,8 +11,8 @@ import type { SettingOverride } from "../interfaces/factory-store.js";
 // gate checks run once at config load; settingsFor resolves one project's effective values on each read.
 //
 // Order, first hit wins: learned value → project override → `defaults` (or the same key at top level) →
-// built-in default. Every per-project key is a gate, so a project override (and a learned value) may only
-// tighten it against the global value: the `defaults` layer, else the built-in default.
+// built-in default. Every per-project key is a gate: a project override may only tighten it against the global
+// value (`defaults`, else built-in), and a learned value against the project override, else the global value.
 
 /** The only keys a project may set. Everything else in a project block is an unknown key. */
 export const PROJECT_SETTING_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files", "budgets", "floors"] as const;
@@ -61,8 +61,7 @@ export interface SettingsLayers {
 }
 
 /**
- * The learned layer: values the factory may learn per project. Pluggable; no writer exists yet, so the
- * composition root passes none. A learned value that would loosen a gate past the global value is ignored.
+ * The learned layer (src/core/learned-settings.ts), written by the daily improve run. A learned value looser than the project override, else the global value, is ignored.
  */
 export interface LearnedSettingsSource {
   get<K extends ProjectSettingKey>(project: string, key: K): ProjectSettings[K] | undefined;
@@ -88,7 +87,7 @@ export function settingsFor(project: string, layers: SettingsLayers, learned?: L
   const out = {} as Record<ProjectSettingKey, EffectiveSetting<ProjectSettingKey>>;
   for (const k of PROJECT_SETTING_KEYS) {
     const l = learned?.get(project, k);
-    if (l !== undefined && loosening(k, l, global[k].value) === null) out[k] = { value: l, layer: "learned" };
+    if (l !== undefined && loosening(k, l, own[k] ?? global[k].value) === null) out[k] = { value: l, layer: "learned" };
     else if (own[k] !== undefined) out[k] = { value: own[k], layer: "project" };
     else out[k] = global[k];
   }
@@ -676,7 +675,7 @@ export interface OverrideSource {
 }
 
 /**
- * The settings a running process acts on. refresh() re-reads the stored overrides (the controller each tick,
+ * The settings a running process acts on. refresh() re-reads the stored overrides and learned values (the controller each tick,
  * the worker pool each tick, a worker before each claim and each lease renewal); the getters return the last
  * resolved values without I/O. Only a cache of store rows: no replica needs it, and a restart rebuilds it.
  * A failed read keeps the values in use; an override that fails a check is logged once and ignored.
@@ -687,7 +686,7 @@ export class LiveSettings {
   private readonly reported = new Set<string>();
 
   constructor(
-    private readonly opts: { config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; log?: Logger },
+    private readonly opts: { config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger },
   ) {
     this.current = resolveSettings(opts.base, [], this.label);
     this.view = this.viewOf(this.current);
@@ -699,6 +698,7 @@ export class LiveSettings {
   }
 
   async refresh(): Promise<void> {
+    await this.opts.learned?.refresh(); // the learned layer's cache (StoredLearnedSettings), which keeps its values on a failed read
     const source = this.opts.source;
     if (!source) return;
     let rows: SettingOverride[];

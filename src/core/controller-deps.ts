@@ -98,7 +98,7 @@ export interface ControllerDeps {
    * probe time, as a stall pause does with no LLM provider.
    */
   network_probe?: NetworkProbe;
-  /** The learned settings layer (src/core/settings.ts). Absent: no learned values; none are written yet. */
+  /** The learned settings layer (StoredLearnedSettings, src/core/learned-settings.ts), written by the daily improve run. Absent: none. */
   learned?: LearnedSettingsSource;
   /**
    * The live settings (design 2026-11-03): refreshed at the start of each tick and of each public tick step, so
