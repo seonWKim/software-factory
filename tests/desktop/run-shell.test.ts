@@ -7,9 +7,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { type ShellFs, appDataPaths, loadShellConfig } from "../../desktop/electron/common/app-data.js";
+import { type ShellFs, appDataPaths, loadShellConfig, saveQuickAddShortcut } from "../../desktop/electron/common/app-data.js";
 import { pidAlive, supervisorStatusFile } from "../../desktop/electron/common/attach.js";
 import { runShell } from "../../desktop/electron/common/run-shell.js";
+import { quickAddShortcut } from "../../desktop/electron/macos/shortcut.js";
 import { FakeAppShell, fakeSpawn, flush } from "./fakes.js";
 
 const fakeHome = (): string => mkdtempSync(join(tmpdir(), "sf-desktop-home-"));
@@ -37,10 +38,10 @@ describe("app data folder", () => {
     for (const path of [p.log, p.chromium]) expect(path.startsWith(`${p.state}/`)).toBe(true);
   });
 
-  it("writes the default config on first start: the checkout the app was built from, port 4310, keep running", () => {
+  it("writes the default config on first start: the checkout the app was built from, port 4310, keep running, Alt+Space", () => {
     const paths = appDataPaths(fakeHome());
     const c = loadShellConfig(paths, nodeFs, "/src/software-factory");
-    expect(c).toEqual({ checkout: "/src/software-factory", ui_port: 4310, keep_running_when_closed: true });
+    expect(c).toEqual({ checkout: "/src/software-factory", ui_port: 4310, keep_running_when_closed: true, app: { quick_add_shortcut: "Alt+Space" } });
     expect(JSON.parse(readFileSync(paths.config, "utf8"))).toEqual(c);
   });
 
@@ -48,9 +49,20 @@ describe("app data folder", () => {
     const paths = appDataPaths(fakeHome());
     mkdirSync(paths.dir, { recursive: true });
     writeFileSync(paths.config, JSON.stringify({ checkout: "/work/other", ui_port: 4400 }));
-    expect(loadShellConfig(paths, nodeFs, "/src/software-factory")).toEqual({ checkout: "/work/other", ui_port: 4400, keep_running_when_closed: true });
-    writeFileSync(paths.config, JSON.stringify({ checkout: "relative", ui_port: 0, keep_running_when_closed: "yes" }));
-    expect(() => loadShellConfig(paths, nodeFs, "/x")).toThrow(/checkout must be an absolute folder; ui_port .*; keep_running_when_closed/);
+    expect(loadShellConfig(paths, nodeFs, "/src/software-factory")).toEqual({
+      checkout: "/work/other", ui_port: 4400, keep_running_when_closed: true, app: { quick_add_shortcut: "Alt+Space" },
+    });
+    writeFileSync(paths.config, JSON.stringify({ checkout: "relative", ui_port: 0, keep_running_when_closed: "yes", app: { quick_add_shortcut: 3 } }));
+    expect(() => loadShellConfig(paths, nodeFs, "/x")).toThrow(/checkout must be an absolute folder; ui_port .*; keep_running_when_closed.*; app.quick_add_shortcut/);
+  });
+
+  it("reads a chosen quick-add shortcut, and saving one keeps every other key", () => {
+    const paths = appDataPaths(fakeHome());
+    mkdirSync(paths.dir, { recursive: true });
+    writeFileSync(paths.config, JSON.stringify({ checkout: "/work/other", app: { quick_add_shortcut: "Control+Alt+T" } }));
+    expect(loadShellConfig(paths, nodeFs, "/x").app).toEqual({ quick_add_shortcut: "Control+Alt+T" });
+    saveQuickAddShortcut(paths, nodeFs, "Command+Shift+K");
+    expect(JSON.parse(readFileSync(paths.config, "utf8"))).toEqual({ checkout: "/work/other", app: { quick_add_shortcut: "Command+Shift+K" } });
   });
 });
 
@@ -59,8 +71,12 @@ describe("runShell", () => {
    * One shell over a fake home. The dashboard answers only once a supervisor runs: `dashboardUp` (someone else's
    * supervisor) or after the shell spawned its own. `alivePids` are the pids the fake `process.kill(pid, 0)` finds.
    */
-  async function run({ checkout = "/src/software-factory", dashboardUp = false, alivePids = [] as number[] } = {}) {
+  async function run({ checkout = "/src/software-factory", dashboardUp = false, alivePids = [] as number[], config = undefined as object | undefined, taken = [] as string[] } = {}) {
     const home = fakeHome();
+    if (config !== undefined) {
+      mkdirSync(appDataPaths(home).dir, { recursive: true });
+      writeFileSync(appDataPaths(home).config, JSON.stringify(config));
+    }
     // A secrets file where the factory keeps one: the shell must never open it.
     mkdirSync(join(home, ".config", "software-factory"), { recursive: true });
     writeFileSync(join(home, ".config", "software-factory", ".env"), "SECRET=x\n");
@@ -81,7 +97,7 @@ describe("runShell", () => {
       defaultCheckout: checkout,
       alive: (pid) => alivePids.includes(pid as number),
       makeShell: () => {
-        shells.push(new FakeAppShell());
+        shells.push(new FakeAppShell(true, new Set(taken)));
         return shells[0]!;
       },
     });
@@ -105,6 +121,41 @@ describe("runShell", () => {
     expect(shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
     await flush();
     expect(shell.status.needsYou).toBe(7);
+  });
+
+  /** The quick-add shortcut on a started shell, as main.js registers it. */
+  function startShortcut(r: Awaited<ReturnType<typeof run>>) {
+    const told: string[] = [];
+    let opened = 0;
+    const shortcut = quickAddShortcut({
+      shell: r.shell,
+      accelerator: r.config.app.quick_add_shortcut,
+      onPress: () => void opened++,
+      notify: (m) => told.push(m),
+      save: (a) => saveQuickAddShortcut(r.paths, r.fs, a),
+    });
+    return { shortcut, told, opened: () => opened };
+  }
+
+  it("a config with no app.quick_add_shortcut key uses Alt+Space and starts as usual", async () => {
+    const r = await run({ config: { checkout: "/src/software-factory", ui_port: 4310 } });
+    expect(r.config.app.quick_add_shortcut).toBe("Alt+Space");
+    expect(r.calls).toHaveLength(1);
+    expect(r.shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
+    const s = startShortcut(r);
+    expect(s.shortcut.current()).toBe("Alt+Space");
+    expect(s.told).toEqual([]);
+    r.shell.shortcuts.get("Alt+Space")!();
+    expect(s.opened()).toBe(1);
+  });
+
+  it("a refused shortcut at start is told, and the shell runs on with none held", async () => {
+    const r = await run({ taken: ["Alt+Space"] });
+    const s = startShortcut(r);
+    expect(s.shortcut.current()).toBeNull();
+    expect(s.told).toEqual([expect.stringContaining("Alt+Space could not be registered")]);
+    expect(r.calls).toHaveLength(1);
+    expect(r.shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
   });
 
   it("writes only its app data folder, reads only the checkout's status file, never the secrets file", async () => {

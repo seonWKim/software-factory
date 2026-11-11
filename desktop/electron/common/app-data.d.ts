@@ -1,5 +1,6 @@
 // Types of app-data.js for the tests and typecheck; the shell itself runs the plain module.
 export declare const DEFAULT_UI_PORT: number;
+export declare const DEFAULT_QUICK_ADD_SHORTCUT: string;
 export interface AppDataPaths {
   readonly dir: string;
   readonly config: string;
@@ -11,6 +12,7 @@ export interface ShellConfig {
   readonly checkout: string;
   readonly ui_port: number;
   readonly keep_running_when_closed: boolean;
+  readonly app: { readonly quick_add_shortcut: string };
 }
 /** The fs calls the shell makes; node:fs fits. */
 export interface ShellFs {
@@ -23,3 +25,4 @@ export interface ShellFs {
 }
 export declare function appDataPaths(home: string): AppDataPaths;
 export declare function loadShellConfig(paths: AppDataPaths, fs: ShellFs, defaultCheckout: string): ShellConfig;
+export declare function saveQuickAddShortcut(paths: AppDataPaths, fs: ShellFs, accelerator: string): void;
