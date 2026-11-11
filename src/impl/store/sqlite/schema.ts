@@ -1,3 +1,4 @@
+import { COMMAND_PROPOSALS_SQLITE } from "../sql/command-proposals.js";
 // Append-only list. Never edit a migration that has shipped; add a new one.
 export const MIGRATIONS: readonly string[] = [
   `
@@ -373,8 +374,7 @@ export const MIGRATIONS: readonly string[] = [
   `,
   // 21: local work items (issue #198). `item_messages`: the messages the controller would post as comments on an
   // item, one per (item, marker). `cli_commands`: the commands the CLI sends, read in `seq` order; `command_key` is
-  // the idempotency key. `args` is JSON text. AUTOINCREMENT: seq only grows, even after deletes.
-  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 21.
+  // the idempotency key. `args` is JSON text. AUTOINCREMENT: seq only grows, even after deletes. IF NOT EXISTS.
   `
   CREATE TABLE IF NOT EXISTS item_messages (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -394,9 +394,8 @@ export const MIGRATIONS: readonly string[] = [
   );
   `,
   // 22: app command requests (issue #244). One row per command request; read in `seq` order. `request_key` is the
-  // idempotency key. `args` is JSON text. AUTOINCREMENT: seq only grows, even after deletes. Table only: nothing
-  // reads or writes it yet.
-  // IF NOT EXISTS: safe to run again on a database whose recorded version was set back below 22.
+  // idempotency key. `args` is JSON text. AUTOINCREMENT: seq only grows, even after deletes. IF NOT EXISTS: safe to
+  // run again on a database whose recorded version was set back below 22.
   `
   CREATE TABLE IF NOT EXISTS app_command_requests (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -731,4 +730,5 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX IF NOT EXISTS controller_merge_evaluations_at ON controller_merge_evaluations (merged_at);
   `,
+  COMMAND_PROPOSALS_SQLITE, // 43: command proposals (design 04-gate-commands, issue #584), beside their store methods.
 ];

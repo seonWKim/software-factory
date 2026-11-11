@@ -10,7 +10,7 @@ import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
-import { parseSizeDetail, suggestSplit } from "../../../core/split.js";
+import { suggestedSplit } from "../../../core/split.js";
 import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem, type WorkItemId, runTokenCount } from "../../../core/types.js";
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
@@ -27,7 +27,8 @@ const EMPTY_DIFF = "empty_diff";
 const CONFLICT_PATCH = { stage: "REVIEW", blocked_on: "human", blocked_reason: CONFLICT_PENDING } as const;
 /** error_code of an implement run whose diff is over max_diff_lines or max_diff_files (design §4). */
 const DIFF_TOO_LARGE = "diff_too_large";
-/** A human `/retry`: the failed run again, or why there is none. */
+/** A failed run's error code (`unknown` when the stored outcome has none), or `cancelled`. */
+const failedCode = (run: Run): string => (run.outcome?.status === "failed" ? run.outcome.error_code || "unknown" : "cancelled");
 /**
  * A failed or cancelled run's decision with its usage added to `token_cost` (design §6 Measurement): only a
  * decision that acknowledges this run, so the add lands in the ack's transaction and the ack fences it (a
@@ -45,35 +46,6 @@ function withSpent(d: Decision, run: Run, it: WorkItem): Decision {
   const spent = runTokenCount(run);
   if (!d || spent === 0 || d.ack_run !== run.id || "token_cost" in d.patch) return d;
   return { ...d, patch: { ...d.patch, token_cost: it.token_cost + spent } };
-}
-/**
- * The size checkpoint's suggested split (design 2026-11-01): built from the diff size in the size gate's detail
- * and the paths the item may change, never the code; no agent runs. Empty when the detail has no counts or
- * there is nothing to split. Ends with a blank line, so the footer follows.
- */
-function suggestedSplit(detail: string, paths: readonly string[], limits: { max_diff_lines: number; max_diff_files: number }): string[] {
-  const size = parseSizeDetail(detail);
-  const phases = size ? suggestSplit({ ...size, paths }, limits) : [];
-  if (!size || phases.length === 0) return [];
-  const out = [
-    "### Suggested split",
-    `Built from the diff size (${size.lines} lines in ${size.files} files) and the item's allowed paths, not from the code, so treat it as a starting point. To use it, reply \`/revise <feedback>\` and ask for these phases; the new spec then files one sub-issue per phase on \`/approve\`.`,
-  ];
-  phases.forEach((p, i) => {
-    out.push(
-      "",
-      `#### Phase ${i + 1} of ${phases.length}: ${p.title}`,
-      p.problem,
-      "",
-      "Done when:",
-      ...p.done_criteria.map((c) => `- ${c}`),
-      "",
-      "Allowed to change:",
-      ...p.allowed_paths.map((a) => `- \`${a}\``),
-    );
-  });
-  out.push("");
-  return out;
 }
 /** The PR link a run outcome carries from the forge's open result (`pr_url`), as the patch's change_url (design 02). */
 /** An implement run's push and PR wait in outbound (RFC 0015 M7): `blocked_on: outbound`. */
@@ -442,8 +414,17 @@ export class RunResultsUnit {
         }
       }
     };
-    await this.c.unit("transitions").decide(run.work_item_id, async (it) => withSpent(await decision(it), run, it));
+    await this.c.unit("transitions").decide(run.work_item_id, async (it) => this.landed(it, run, withSpent(await decision(it), run, it)));
     await this.deliveredMeanwhile(run);
+  }
+
+  /**
+   * A failed run's outcome always lands (design 05-restarts, 2026-11-11): a decision the WorkItem state table refuses
+   * becomes the plain failed-run block, so `/retry` works and the run is acknowledged, not refused on every tick.
+   */
+  private async landed(it: WorkItem, run: Run, d: Decision): Promise<Decision> {
+    if (!d || run.outcome?.status === "succeeded" || this.c.unit("transitions").inTable(it, d.patch)) return d;
+    return withSpent(await this.failedBlock(it, run), run, it);
   }
 
   /**
@@ -560,7 +541,7 @@ export class RunResultsUnit {
       await this.preflightAccessComment(it, run);
     }
     if (!this.c.unit("transitions").expects(it, run.kind)) return { patch: {}, actor: SYSTEM, reason: "run_ignored", ack_run: run.id };
-    const code = run.outcome?.status === "failed" ? run.outcome.error_code : "cancelled";
+    const code = failedCode(run);
     if (run.kind === "resolve") return this.resolveFailed(it, run, code);
     if (run.kind === "interactive") return sessionReleased(it, run, code);
     // The provider's account or config needs a person (design §5 Restarts): no retry would get further.
@@ -576,6 +557,11 @@ export class RunResultsUnit {
     if (run.kind === "implement" && NO_AUTO_RETRY.includes(code)) return this.noAutoRetry(it, run, code);
     // A forge rate limit is no attempt for an update run either: it waits for the reset (design §5 Restarts).
     if (run.kind !== "update" || code === GITHUB_RATE_LIMITED) return this.retryOrBlock(it, run, failureClass(run.outcome), code);
+    return this.failedBlock(it, run, code);
+  }
+
+  /** The plain failed-run block: blocked on a human with `run_failed:<kind>:<code>`, one comment offering `/retry`. */
+  async failedBlock(it: WorkItem, run: Run, code = failedCode(run)): Promise<Decision> {
     const patch = { blocked_on: "human" as const, blocked_reason: `run_failed:${run.kind}:${code}` };
     const url = await this.c.unit("outbox").comment(it, `run-failed:${run.id}`,
       `The ${run.kind} run failed (\`${code}\`). Comment \`/retry\` to run it again.\n\n${footerAfter(it, patch)}`, "failure_comment_url");
@@ -583,6 +569,7 @@ export class RunResultsUnit {
       patch: { ...patch, failure_comment_url: url },
       actor: SYSTEM,
       reason: "run_failed",
+      detail: { run_id: run.id, error_code: code },
       ack_run: run.id,
     };
   }

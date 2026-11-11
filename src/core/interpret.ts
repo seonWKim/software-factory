@@ -1,14 +1,18 @@
 import { issueNumber } from "./change-ref.js";
+import { commentEvent } from "./comment-event.js";
 import { type CommandName, type CommandState, applies, commandSpec, commandState, phaseLabel } from "./commands.js";
-import type { WorkItem, WorkItemId } from "./types.js";
+import type { SourceRef, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
+import type { SourceEvent } from "../interfaces/source-adapter.js";
 
 /**
  * Reads one plain-language message against the open items (design §4, 2026-11-11, issue #583). One cheap model call
  * whose input is only the message and the open-item list (ID, number, title, state). The answer is checked against
  * that list and the command table and turned into one reply: zero or more proposed commands as typed lines, a direct
  * answer to a read ("show 566"), or one question listing the readings. Nothing here changes state: the model's
- * output is never applied; the person types a proposed line, which goes through the normal command path.
+ * output is never applied by itself; the person types a proposed line, or presses its button where the surface has
+ * buttons (Slack, issue #584), and either goes through the normal command path with that person's check.
  */
 
 /** Messages longer than this are never sent to the model. */
@@ -239,14 +243,17 @@ function typedLines(ps: readonly Proposal[]): string[] {
 
 /**
  * The one reply to an interpretation, or null for `none` (the caller answers that with the command list). Plain
- * text: on every surface a proposal is applied only by typing its line on its item.
+ * text, applied by typing a line on its item. With `proposal` (the stored proposal's ID, issue #584) a `commands`
+ * reply ends with its hidden marker, from which a surface with buttons (Slack) builds one per command; the forge and
+ * any other surface show the same plain text.
  */
-export function interpretReply(r: Interpretation): string | null {
+export function interpretReply(r: Interpretation, proposal: string | null = null): string | null {
   switch (r.kind) {
     case "commands":
       return [
         `The factory read ${r.proposals.length === 1 ? "one command" : `${r.proposals.length} commands`} in your message. Nothing has changed. To apply one, reply on its item with its line:`,
         ...typedLines(r.proposals),
+        ...(proposal === null ? [] : ["", proposalMarker(proposal, r.proposals.map((p) => p.command))]),
       ].join("\n");
     case "question":
       return [
@@ -264,4 +271,80 @@ export function interpretReply(r: Interpretation): string | null {
 export function interpretArgs(r: Interpretation): string[] {
   const ps = r.kind === "commands" ? r.proposals : r.kind === "question" ? r.readings : [];
   return ps.map((p) => p.args).filter((a) => a !== "");
+}
+
+// Stored proposals (design §4, issue #584): one row per proposed command of a `commands` reply, keyed by the reply's
+// proposal ID and the command's index, so storing the same reply again writes nothing. A press confirms or cancels
+// rows; a confirmed row goes through the typed command's path and check, as the person who pressed.
+
+export type CommandProposalStatus = "pending" | "applied" | "refused" | "cancelled";
+
+export interface NewCommandProposal {
+  /** One per plain-language reply. Letters, digits and `_` only, so a button value `<id>:<index>` splits on `:`. */
+  proposal_id: string;
+  /** The command's place in the reply, from 0. */
+  idx: number;
+  /** The item the command is for (any open item, not only the thread's). */
+  work_item_id: WorkItemId;
+  command: CommandName;
+  /** The text after the command word; "" for none. */
+  args: string;
+  /** Who wrote the message, `<provider>:<subject>` (a Slack user as `slack:<id>`), never a display name. */
+  author_id: string;
+}
+
+export interface CommandProposal extends NewCommandProposal {
+  status: CommandProposalStatus;
+  /** The factory user who confirmed or cancelled it; null while pending. */
+  answered_by: string | null;
+  /** Why it was refused at confirm time; null unless refused. */
+  refusal: string | null;
+  created_at: Timestamp;
+  answered_at: Timestamp | null;
+}
+
+/** The store's proposal methods, part of FactoryStore; implemented once in the shared SQL store. */
+export interface CommandProposalStore {
+  /** Inserts each row whose (proposal_id, idx) is not stored, `pending`; a stored one is left as it is. How many it inserted. */
+  recordCommandProposals(rows: readonly NewCommandProposal[]): Promise<number>;
+  /** The rows of one proposal, in index order; [] for an unknown ID. Read-only. */
+  listCommandProposals(proposal_id: string): Promise<CommandProposal[]>;
+  /**
+   * Moves row (proposal_id, idx) from status `from` to `to`, recording who answered, when, and the refusal (`to`
+   * refused). Conditional on the stored status being `from`: false, and nothing written, when it is not.
+   */
+  answerCommandProposal(a: {
+    proposal_id: string; idx: number; from: CommandProposalStatus; to: CommandProposalStatus; answered_by: string; refusal?: string;
+  }): Promise<boolean>;
+}
+
+/** The command a confirm press stores in the command inbox: args `item` (the thread's item), `proposal`, and `index` (absent: all). */
+export const CONFIRM_COMMAND = "proposal_confirm";
+
+const PROPOSAL_ID = /^[A-Za-z0-9_]{1,64}$/;
+const MARKER = /^<!-- factory:proposal:([A-Za-z0-9_]{1,64}):([a-z,]+) -->$/m;
+
+/** The hidden line that ends a stored proposal's reply: its ID and its commands in index order. */
+export function proposalMarker(id: string, commands: readonly CommandName[]): string {
+  if (!PROPOSAL_ID.test(id)) throw new Error(`not a proposal ID: ${JSON.stringify(id)}`);
+  return `<!-- factory:proposal:${id}:${commands.join(",")} -->`;
+}
+
+/** The proposal a reply's body carries (its marker), or null. */
+export function parseProposalMarker(body: string): { id: string; commands: CommandName[] } | null {
+  const m = MARKER.exec(body);
+  return m ? { id: m[1]!, commands: m[2]!.split(",") as CommandName[] } : null;
+}
+
+/** Whether `id` has the shape of a proposal ID (a button value is untrusted input). */
+export function isProposalId(id: string): boolean {
+  return PROPOSAL_ID.test(id);
+}
+
+/**
+ * A stored proposal as the event its typed line is, from `presser`, on `source` (its item's): the same mapping as a
+ * typed comment, keyed `proposal:<id>:<index>` so the row's command is one comment however often it is confirmed.
+ */
+export function proposalEvent(row: CommandProposal, source: SourceRef, presser: ExternalIdentity): SourceEvent | null {
+  return commentEvent(source, `proposal:${row.proposal_id}:${row.idx}`, presser, typed(row));
 }
