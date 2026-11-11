@@ -1,8 +1,8 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/users (postUsers) and POST /api/v1/rules/verdict
-// (postRuleVerdict), each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/session, /api/v1/pauses,
-// /api/v1/standing, /api/v1/users or /api/v1/rules) in x-csrf-token.
+// (postResume), POST /api/v1/standing (postStanding) and POST /api/v1/rules/verdict (postRuleVerdict), each with
+// the per-process CSRF token (from GET /api/v1/settings, /api/v1/session, /api/v1/pauses, /api/v1/standing or
+// /api/v1/rules) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -509,29 +509,6 @@ export interface StandingView {
   proposals: StandingProposalRow[];
 }
 
-/** One user of `/api/v1/users` (design 08-permissions): a local user, or one the `static` grant names. */
-export interface UserRow {
-  user_id: string;
-  role: "owner" | "approver" | "requester";
-  source: "local" | "static";
-  /** Null for a static grant user (it comes from config, not from a person). */
-  added_by: string | null;
-  added_at: string | null;
-  /** The static grant's roles per project key (`*` for every project); empty for a local user. */
-  projects: { project: string; roles: string[] }[];
-  links: { provider: string; subject: string }[];
-}
-
-/** `/api/v1/users`: the viewer and the users; `read_only_reason` is why the viewer cannot change roles, or null. */
-export interface UsersView {
-  as_of: string;
-  csrf_token: string;
-  viewer: { user_id: string; source: "cli_user" | "git user.email" | "OS user" | "anonymous"; role: string | null };
-  can_change: boolean;
-  read_only_reason: string | null;
-  users: UserRow[];
-}
-
 /** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
 export interface RuleRow {
   id: string;
@@ -556,9 +533,6 @@ export interface RulesView {
 }
 
 export type RuleVerdict = "promote" | "reject" | "hold";
-
-/** A Users page write: add a user, change one's role, or remove one. */
-export type UsersWrite = { action: "add" | "change"; user_id: string; role: "approver" | "requester" } | { action: "remove"; user_id: string };
 
 declare const __FACTORY_REV__: string | null | undefined;
 
@@ -636,7 +610,6 @@ export const API = {
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",
-  users: "/api/v1/users",
   rules: "/api/v1/rules",
   ruleVerdict: "/api/v1/rules/verdict",
   dataTables: "/api/v1/data/tables",
@@ -715,13 +688,6 @@ export async function postStanding(
 ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
   if (r.ok) return { ok: true, changed: r.value.changed === true };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
-}
-
-/** POST /api/v1/users: an add, change or remove. A refusal (403, 409, 400, …) comes back as `{ ok: false, error }`. */
-export async function postUsers(token: string, body: UsersWrite): Promise<{ ok: true; done: string } | { ok: false; error: string }> {
-  const r = await postJson<{ done?: string; error?: string }>(API.users, token, body);
-  if (r.ok) return { ok: true, done: r.value.done ?? "" };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
