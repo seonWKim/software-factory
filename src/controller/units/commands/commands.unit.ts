@@ -12,7 +12,7 @@ import { commandEvent, commandIdentity, syncedCommand } from "../../../core/comm
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
-import { INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretArgs, interpretReply, openItems } from "../../../core/interpret.js";
+import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretArgs, interpretReply, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
@@ -21,6 +21,7 @@ import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { confirmProposal, storeProposals } from "./proposals.js";
 
 type AppSender = { user_id: UserId; passport?: Extract<CommandEvent, { kind: "spec_approved" }>["approver"]["passport"] } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
@@ -147,11 +148,10 @@ export class CommandsUnit {
     const id = c.args.item;
     if (typeof id !== "string" || id === "") return;
     const item = await this.c.k.reader.getWorkItem(id as WorkItemId);
-    // Any source's item (design 05-sources, CLI intake): the identity is provider `local`, so the local auth plugin
-    // judges it, and a sync source item's transition never waits on its source. Its mirror on the issue is the mirror step's.
+    // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     if (!item) return;
-    // `factory merge <id>`: no comment command, so it does not go through the comment mapping. Local items only; the
-    // CLI refuses it for any other when it writes one.
+    // A proposal's confirm press (proposals.ts) and `factory merge <id>` (local items only) skip the comment mapping.
+    if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, commandIdentity(c, localIdentity(c.actor))), say: refusalText });
     if (c.command === MERGE_COMMAND) {
       if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, commandIdentity(c, localIdentity(c.actor)), c.key);
       return;
@@ -454,12 +454,12 @@ export class CommandsUnit {
   }
 
   /**
-   * A plain-language comment on a work item (design §4, issue #583): at most one reply, keyed on the comment id,
-   * that proposes commands for any open item as typed lines, answers a read, asks one question, or lists the
-   * commands for the item's state. Changes no state, and the model's answer is never applied: the person types a
-   * proposed line. In order: the work item, the commenter's permission (no model call and no reply without it), the
-   * length and open-item filters, the egress scan of the message, the model call, the egress scan of each argument.
-   * A scan finding stores nothing and posts nothing.
+   * A plain-language comment on a work item (design §4, issues #583, #584): at most one reply, keyed on the comment
+   * id, that proposes commands for any open item as typed lines (stored once as pending proposal rows, which Slack shows
+   * as buttons), answers a read, asks one question, or lists the commands for the item's state. Changes no item state:
+   * a proposal applies only when typed or confirmed by a press. In order: the item, the commenter's permission (no model
+   * call and no reply without it), the length and open-item filters, the egress scan of the message, the model call,
+   * the egress scan of each argument. A scan finding stores nothing and posts nothing.
    */
   async handlePlainComment(e: PlainCommentEvent): Promise<void> {
     const code = parseLink(e.body);
@@ -476,7 +476,7 @@ export class CommandsUnit {
     const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
     const result = await interpret(text, items, llm);
     if (!(await this.scanClean(item.id, "proposal", interpretArgs(result)))) return;
-    const body = interpretReply(result)
+    const body = interpretReply(result, await storeProposals(this.c, item, e, result))
       ?? ["The factory did not find a command in your comment, so nothing changed.", "", commandFooter(await this.stateOf(item))].join("\n");
     this.c.k.d.log.info("plain comment answered", { work_item_id: item.id, kind: result.kind });
     await this.c.unit("outbox").post(item, item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);

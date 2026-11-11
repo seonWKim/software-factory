@@ -14,7 +14,7 @@ import { commentEvent } from "../../core/comment-event.js";
 import {
   ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, buttonApplies, doneLine, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
 } from "./slack-format.js";
-import { type ChatAnswer, type ChatDeps, type ChatStore, runChatCommand } from "./slack-commands.js";
+import { type ChatAnswer, type ChatDeps, type ChatStore, type ProposalPress, proposalPress, runChatCommand, runProposalPress } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
 
 /** Metadata event types on the factory's own messages: a comment (by marker hash) and the one status message. */
@@ -46,7 +46,8 @@ export interface SlackSourceDeps {
    * stored as a thread entry (`recordItemMessage`, issue #480); for chat commands (slack-commands.ts), the account
    * links, the local users, the reads `list` and `show` print, and the command rows they store; the records of the
    * messages it posted (`getPostedComment`, `recordPostedComment`), so a repeat reads no thread; the item's thread
-   * entries and state changes, for the earlier messages a state change updates and the reply to a stale button.
+   * entries and state changes, for the earlier messages a state change updates and the reply to a stale button; a
+   * stored proposal's rows, for its Cancel button (issue #584).
    */
   store: ChatStore & Pick<FactoryStore, "getWorkItemBySource" | "recordItemMessage" | "getPostedComment" | "recordPostedComment" | "listStateChanges">;
   /** `settings list` and `settings history` from Slack; absent: they answer that settings are not readable here. */
@@ -244,7 +245,11 @@ export class SlackSource implements StreamSource {
     await this.d.store.recordItemMessage({ work_item_id: item.id, marker: `slack:${ts}`, body: said, actor: `slack:${user}` });
   }
 
-  /** A button press on one of the factory's messages: the command it names, as the presser typing it. */
+  /**
+   * A button press on one of the factory's messages: the command it names, as the presser typing it. A stored
+   * proposal's button (issue #584) goes to slack-commands.ts as the linked user: its value names only the proposal
+   * and index, and the controller reads the command and its args from the store.
+   */
   private async fromInteraction(p: Record<string, unknown>, me: { team_id: string; user_id: string }): Promise<Mapped | null> {
     if (p.type !== "block_actions") return null;
     const user = str(obj(p.user).id);
@@ -257,6 +262,11 @@ export class SlackSource implements StreamSource {
     const action_ts = str(action.action_ts);
     if (user === null || channel === null || thread_ts === null || action_id === null || action_ts === null) return null;
     if (!this.d.channels.includes(channel) || user === me.user_id) return null;
+    const proposal = proposalPress(action_id, str(action.value));
+    if (proposal) {
+      const source = threadRef({ team, channel, thread_ts });
+      return this.chat({ press: proposal }, source, user, `${team}-${user}-${action_ts}`, await this.d.store.getWorkItemBySource("slack_thread", source.id));
+    }
     let body: string | null = null;
     let button: CommandName | null = null;
     if (action_id === ACTION_CONFIRM) body = str(action.value);
@@ -280,14 +290,14 @@ export class SlackSource implements StreamSource {
   }
 
   /**
-   * A chat command (issue #498): run through slack-commands.ts, which stores what it stores with no Slack call; then
-   * its answer, if any, is posted in the thread under a marker keyed on `id`, so a redelivery posts nothing more.
-   * Nothing goes to the inbox: the stored command row is what the controller applies.
+   * A chat command (issue #498) or a proposal press (issue #584): run through slack-commands.ts, which stores what it
+   * stores with no Slack call; then its answer, if any, is posted in the thread under a marker keyed on `id`, so a
+   * redelivery posts nothing more. Nothing goes to the inbox: the stored command row is what the controller applies.
    */
-  private async chat(cmd: ChatCommand, source: SourceRef, user: string, id: string, item: WorkItem | null): Promise<null> {
-    const answer = await runChatCommand({ store: this.d.store, ...(this.d.settings ? { settings: this.d.settings } : {}) }, cmd, {
-      user, item, id: `slack-${id}`, origin: this.type,
-    });
+  private async chat(cmd: ChatCommand | { press: ProposalPress }, source: SourceRef, user: string, id: string, item: WorkItem | null): Promise<null> {
+    const deps = { store: this.d.store, ...(this.d.settings ? { settings: this.d.settings } : {}) };
+    const ctx = { user, item, id: `slack-${id}`, origin: this.type };
+    const answer = "press" in cmd ? await runProposalPress(deps, cmd.press, ctx) : await runChatCommand(deps, cmd, ctx);
     if (answer !== null) await this.post(source, (bot) => this.rendered(answer, bot), `<!-- factory:chat:${id} -->`);
     return null;
   }

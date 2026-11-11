@@ -1,8 +1,10 @@
 import { type ChatCommand, type CommandWho, type TableCommand, chatCliArgv, cliUsageOf } from "../../core/command-table.js";
 import { chatForm, chatHelpReply, commandSpec, commandState } from "../../core/commands.js";
+import { CONFIRM_COMMAND, isProposalId } from "../../core/interpret.js";
 import { type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../../core/local-cli.js";
 import type { UserId, WorkItem } from "../../core/types.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
+import { ACTION_PROPOSAL, ACTION_PROPOSAL_ALL, ACTION_PROPOSAL_CANCEL } from "./slack-format.js";
 
 // Factory commands typed in Slack (issue #498; docs/plugins/source-adapter.md, `slack`): the command table's chat
 // forms (src/core/command-table.ts) run as the factory user the Slack account is linked to. Reads print what the CLI
@@ -16,7 +18,8 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
  */
 export type ChatAnswer = { markdown: string } | { lines: string[]; whole: string; link?: string } | null;
 
-export type ChatStore = LocalCliDeps["store"] & Pick<FactoryStore, "resolveLink" | "getLocalUser" | "listLocalUsers">;
+export type ChatStore = LocalCliDeps["store"] &
+  Pick<FactoryStore, "resolveLink" | "getLocalUser" | "listLocalUsers" | "listCommandProposals" | "answerCommandProposal">;
 
 export interface ChatDeps {
   store: ChatStore;
@@ -96,4 +99,45 @@ export async function runChatCommand(d: ChatDeps, cmd: ChatCommand, ctx: ChatCon
   if (c.item && r.code === 0) return null;
   const shown = action.action === "show" ? await d.store.getWorkItem(action.id) : null;
   return { lines: r.lines, whole, ...(shown ? { link: shown.source.link } : {}) };
+}
+
+/** A press of a stored proposal's button (issue #584): Confirm one command (its index) or all (index null), or Cancel. */
+export type ProposalPress = { kind: "confirm"; id: string; index: number | null } | { kind: "cancel"; id: string };
+
+/** The proposal press an action means, or null: another button, or a value not shaped as one (values are untrusted). */
+export function proposalPress(action_id: string, value: string | null): ProposalPress | null {
+  if (value === null) return null;
+  if (action_id === ACTION_PROPOSAL_ALL) return isProposalId(value) ? { kind: "confirm", id: value, index: null } : null;
+  if (action_id === ACTION_PROPOSAL_CANCEL) return isProposalId(value) ? { kind: "cancel", id: value } : null;
+  const m = /^([^:]+):(\d{1,2})$/.exec(value);
+  if (!m || !isProposalId(m[1]!) || action_id !== `${ACTION_PROPOSAL}:${m[2]}`) return null;
+  return { kind: "confirm", id: m[1]!, index: Number(m[2]) };
+}
+
+/**
+ * A proposal press in an item's thread (issue #584), as the linked factory user; an unlinked presser gets the one
+ * refusal a typed command gets, and nothing is stored. Cancel marks the proposal's pending rows cancelled and stores
+ * no command. Confirm stores one `proposal_confirm` command row keyed on the press (`cli:<id>`, so a redelivery stores
+ * nothing more) and answers nothing here: the controller reads the rows' args from the store, applies each through the
+ * typed command's path and check, and replies in the thread.
+ */
+export async function runProposalPress(d: ChatDeps, p: ProposalPress, ctx: ChatContext): Promise<ChatAnswer> {
+  const user = await d.store.resolveLink("slack", ctx.user);
+  if (user === null) return { markdown: UNLINKED };
+  if (ctx.item === null) return null;
+  if (p.kind === "confirm") {
+    const args = { item: ctx.item.id, proposal: p.id, ...(p.index === null ? {} : { index: p.index }) };
+    await d.store.appendCliCommand({ key: `cli:${ctx.id}`, actor: user, command: CONFIRM_COMMAND, args });
+    return null;
+  }
+  let cancelled = 0;
+  for (const r of await d.store.listCommandProposals(p.id)) {
+    if (r.status !== "pending") continue;
+    if (await d.store.answerCommandProposal({ proposal_id: r.proposal_id, idx: r.idx, from: "pending", to: "cancelled", answered_by: user })) cancelled++;
+  }
+  return {
+    markdown: cancelled > 0
+      ? `Cancelled by \`${user}\`: the proposed ${cancelled === 1 ? "command was" : "commands were"} not applied, and no command was stored.`
+      : "Nothing to cancel: every command of this proposal was already applied or answered.",
+  };
 }

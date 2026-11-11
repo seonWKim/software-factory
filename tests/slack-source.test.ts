@@ -14,7 +14,7 @@ import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
-import { cutNote, escapeSlack, toMrkdwn } from "../src/impl/source/slack-format.js";
+import { cutNote, escapeSlack, proposalButtons, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { commentEvent } from "../src/core/comment-event.js";
 import { chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
@@ -70,7 +70,7 @@ afterEach(async () => {
   }
 });
 
-async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[] } = {}) {
+async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[]; llm?: LLMProvider } = {}) {
   const clock = new FakeClock();
   const { store: real } = await newStore(clock);
   const store = opts.store ? opts.store(real) : real;
@@ -97,7 +97,7 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   }
   await real.claimLocalOwner("github:1" as UserId);
   const controller = new ControllerRole({
-    store: real, sources: [gh, slack], forge, auth, local_auth: new LocalAuthProvider(real), clock, config, log, scanner, llm: new ApproveLLM(),
+    store: real, sources: [gh, slack], forge, auth, local_auth: new LocalAuthProvider(real), clock, config, log, scanner, llm: opts.llm ?? new ApproveLLM(),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log: silentLike(log), owner: "replica-a" });
@@ -518,7 +518,7 @@ describe("slack source: replies, buttons and commands", () => {
     for (const r of replies) expect(r.text).toContain(refusal);
   });
 
-  it("a plain reply gets a proposal as plain text, with no Confirm or Cancel; nothing changes until the command is typed", async () => {
+  it("a plain reply gets a proposal with its buttons; nothing changes until a press or the typed command", async () => {
     const f = await setup();
     const ts = "1800000014.000100";
     const item = await specPending(f, ts);
@@ -526,7 +526,7 @@ describe("slack source: replies, buttons and commands", () => {
     await deliver(f, eventEnvelope(message("1800000014.000200", "looks good to me", { thread_ts: ts })));
     const proposal = f.api.thread(ts).find((m) => m.text?.startsWith("The factory read one command"))!;
     expect(JSON.stringify(proposal.blocks)).toContain("/approve");
-    expect(FakeSlackApi.buttons(proposal)).toEqual([]);
+    expect(FakeSlackApi.buttons(proposal)).toEqual(["sf_proposal:0", "sf_proposal_all", "sf_proposal_cancel"]);
     expect(await f.store.getWorkItem(item.id)).toEqual(before);
 
     await deliver(f, eventEnvelope(mention("1800000014.000300", "/approve", { thread_ts: ts })));
@@ -1262,5 +1262,209 @@ describe("slack source: commands with no slash after a mention (issue #541)", ()
     expect((await f.store.getWorkItem(item.id))?.blocked_reason).toBe("spec_pending");
     await deliver(f, eventEnvelope(message("1800000091.000300", "/revise narrower scope", { thread_ts: ts })));
     expect(await rows(f)).toEqual([["revise", { item: item.id, text: "narrower scope" }]]);
+  });
+});
+
+/** Answers every plain reply with `entries` (item IDs from the test), as the interpreter's model would. */
+class ScriptedLLM implements LLMProvider {
+  entries: { item: string; command: string; args: string }[] = [];
+  async complete(): Promise<LLMResponse> {
+    const parsed = { kind: "commands", entries: this.entries };
+    return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
+  }
+}
+
+describe("slack source: proposal buttons (issue #584)", () => {
+  type Btn = { action_id: string; value: string };
+  const buttonsOf = (m: { blocks?: readonly unknown[] | undefined }): Btn[] =>
+    ((m.blocks ?? []).find((b) => (b as { type: string }).type === "actions") as { elements: Btn[] } | undefined)?.elements ?? [];
+  const PROPOSAL_TEXT = /^The factory read (one command|\d+ commands)/;
+
+  /** A plain reply in thread `ts` answered with `entries`; the posted proposal message and its proposal ID. */
+  async function propose(f: F, llm: ScriptedLLM, ts: string, reply_ts: string, entries: ScriptedLLM["entries"]) {
+    llm.entries = entries;
+    await deliver(f, eventEnvelope(message(reply_ts, "please do what we said", { thread_ts: ts })));
+    const msg = f.api.thread(ts).find((m) => PROPOSAL_TEXT.test(m.text ?? ""))!;
+    const id = buttonsOf(msg).find((b) => b.action_id === "sf_proposal_all")!.value;
+    return { msg, id };
+  }
+
+  /** A press, then the controller's command step. */
+  async function pressed(f: F, ts: string, action_id: string, value: string, user = "U0ALICE") {
+    await deliver(f, press(ts, action_id, value, user));
+    await f.controller.tickCommands();
+  }
+
+  const replies = (f: F, ts: string, re: RegExp) => f.api.thread(ts).filter((m) => re.test(m.text ?? ""));
+  const statuses = async (f: F, id: string) => (await f.store.listCommandProposals(id)).map((r) => [r.idx, r.status, r.answered_by, r.refusal]);
+
+  it("stores one pending row per proposed command, once, and posts one button each plus Confirm all and Cancel, built by the button builder", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const ts = "1800000090.000100";
+    const a = await specPending(f, ts);
+    const b = await specPending(f, "1800000090.000200");
+    const { msg, id } = await propose(f, llm, ts, "1800000090.000300", [
+      { item: a.id, command: "approve", args: "ship it" },
+      { item: b.id, command: "reject", args: "not needed any more" },
+    ]);
+    expect(buttonsOf(msg)).toEqual(proposalButtons(id, ["approve", "reject"]));
+    expect(buttonsOf(msg).map((x) => x.action_id)).toEqual(["sf_proposal:0", "sf_proposal:1", "sf_proposal_all", "sf_proposal_cancel"]);
+    // Values carry the proposal ID and index only: no command text, no args.
+    expect(buttonsOf(msg).map((x) => x.value)).toEqual([`${id}:0`, `${id}:1`, id, id]);
+    expect(JSON.stringify(buttonsOf(msg))).not.toMatch(/ship it|not needed/);
+    expect((await f.store.listCommandProposals(id)).map((r) => [r.idx, r.work_item_id, r.command, r.args, r.author_id, r.status])).toEqual([
+      [0, a.id, "approve", "ship it", "slack:U0ALICE", "pending"],
+      [1, b.id, "reject", "not needed any more", "slack:U0ALICE", "pending"],
+    ]);
+    // The same reply delivered again (a new event ID for the same message) stores nothing new and posts nothing more.
+    await deliver(f, eventEnvelope(message("1800000090.000300", "please do what we said", { thread_ts: ts }), "Ev0AGAIN584"));
+    expect(await f.store.listCommandProposals(id)).toHaveLength(2);
+    expect(replies(f, ts, PROPOSAL_TEXT)).toHaveLength(1);
+    expect((await f.store.getWorkItem(a.id))!.blocked_reason).toBe("spec_pending");
+    expect((await f.store.getWorkItem(b.id))!.stage).not.toBe("CLOSED");
+  });
+
+  it("a confirm applies its command once, with the args read from the store; a second confirm applies nothing and gets one reply", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const ts = "1800000091.000100";
+    const a = await specPending(f, ts);
+    const { id } = await propose(f, llm, ts, "1800000091.000200", [{ item: a.id, command: "approve", args: "ship it" }]);
+    await pressed(f, ts, "sf_proposal:0", `${id}:0`);
+    const after = (await f.store.getWorkItem(a.id))!;
+    expect(after.stage).toBe("RUNNING");
+    const approved = (await f.store.listStateChanges(a.id)).filter((c) => c.reason === "spec_approved");
+    expect(approved).toHaveLength(1);
+    expect(approved[0]!.actor).toEqual({ kind: "user", id: "github:1" });
+    expect(approved[0]!.detail?.note).toBe("ship it");
+    expect(await statuses(f, id)).toEqual([[0, "applied", "github:1", null]]);
+    // The press stored one confirm row as the linked user; the args are not on it.
+    expect((await f.store.listCliCommandsAfter(0, 50)).map((c) => [c.command, c.actor, c.args])).toEqual([
+      ["proposal_confirm", "github:1", { item: a.id, proposal: id, index: 0 }],
+    ]);
+
+    await pressed(f, ts, "sf_proposal:0", `${id}:0`);
+    await pressed(f, ts, "sf_proposal_all", id);
+    expect((await f.store.getWorkItem(a.id))!.version).toBe(after.version);
+    const again = replies(f, ts, /^Nothing was applied this time/);
+    expect(again).toHaveLength(2);
+    for (const r of again) expect(r.text).toContain("was already applied");
+  });
+
+  it("a command refused at confirm time (the item moved on) gets one reply saying why, and its row is marked refused", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const ts = "1800000092.000100";
+    const a = await specPending(f, ts);
+    const { id } = await propose(f, llm, ts, "1800000092.000200", [{ item: a.id, command: "approve", args: "" }]);
+    await deliver(f, eventEnvelope(mention("1800000092.000300", "/approve", { thread_ts: ts })));
+    await f.controller.tickCommands();
+    const moved = (await f.store.getWorkItem(a.id))!;
+    expect(moved.stage).toBe("RUNNING");
+    await pressed(f, ts, "sf_proposal:0", `${id}:0`);
+    expect((await f.store.getWorkItem(a.id))!.version).toBe(moved.version);
+    const [row] = await f.store.listCommandProposals(id);
+    expect(row).toMatchObject({ status: "refused", answered_by: "github:1" });
+    expect(row!.refusal).toContain("implementing");
+    const refused = replies(f, ts, /^`\/approve` was not applied/);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.text).toContain(escapeSlack(row!.refusal!));
+  });
+
+  it("a press is checked like the typed command: a linked presser without the permission is refused; an unlinked one gets one refusal and stores nothing", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const ts = "1800000093.000100";
+    const a = await specPending(f, ts);
+    const { id } = await propose(f, llm, ts, "1800000093.000200", [{ item: a.id, command: "approve", args: "" }]);
+    const before = await f.store.getWorkItem(a.id);
+
+    await pressed(f, ts, "sf_proposal:0", `${id}:0`, "U0CAROL");
+    expect(replies(f, ts, /not linked to a factory user/)).toHaveLength(1);
+    expect(await f.store.listCliCommandsAfter(0, 50)).toEqual([]);
+    expect(await statuses(f, id)).toEqual([[0, "pending", null, null]]);
+
+    await pressed(f, ts, "sf_proposal:0", `${id}:0`, "U0BOB");
+    expect(await f.store.getWorkItem(a.id)).toEqual(before);
+    const [row] = await f.store.listCommandProposals(id);
+    expect(row).toMatchObject({ status: "refused", answered_by: "github:2" });
+    // The refusal a typed `/approve` from the same account gets.
+    expect(row!.refusal).toContain("github:2 has no role that allows it");
+    expect(replies(f, ts, /^`\/approve` was not applied/)).toHaveLength(1);
+  });
+
+  it("Confirm all applies the pending commands in index order; one refused command does not stop the others", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const ts = "1800000094.000100";
+    const a = await specPending(f, ts);
+    const b = await specPending(f, "1800000094.000200");
+    const c = await specPending(f, "1800000094.000300");
+    const { id } = await propose(f, llm, ts, "1800000094.000400", [
+      { item: a.id, command: "approve", args: "" },
+      { item: b.id, command: "approve", args: "" },
+      { item: c.id, command: "approve", args: "" },
+    ]);
+    // b moves on before the press, so its approve is refused then.
+    await deliver(f, eventEnvelope(mention("1800000094.000500", "/approve", { thread_ts: "1800000094.000200" })));
+    await f.controller.tickCommands();
+    const order: string[] = [];
+    const transition = f.store.transition.bind(f.store);
+    f.store.transition = async (input) => {
+      if (input.reason === "spec_approved") order.push(input.id);
+      return transition(input);
+    };
+    await pressed(f, ts, "sf_proposal_all", id);
+    expect(order).toEqual([a.id, c.id]);
+    expect((await statuses(f, id)).map(([i, st]) => [i, st])).toEqual([[0, "applied"], [1, "refused"], [2, "applied"]]);
+    expect(replies(f, ts, /^`\/approve` was not applied/)).toHaveLength(1);
+  });
+
+  it("Cancel stores no command and applies nothing; a later confirm applies nothing either", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const ts = "1800000095.000100";
+    const a = await specPending(f, ts);
+    const { id } = await propose(f, llm, ts, "1800000095.000200", [{ item: a.id, command: "approve", args: "" }]);
+    const before = await f.store.getWorkItem(a.id);
+    await pressed(f, ts, "sf_proposal_cancel", id);
+    expect(await f.store.listCliCommandsAfter(0, 50)).toEqual([]);
+    expect(await f.store.getWorkItem(a.id)).toEqual(before);
+    expect(await statuses(f, id)).toEqual([[0, "cancelled", "github:1", null]]);
+    expect(replies(f, ts, /^Cancelled by/)).toHaveLength(1);
+
+    await pressed(f, ts, "sf_proposal_all", id);
+    expect(await f.store.getWorkItem(a.id)).toEqual(before);
+    expect(replies(f, ts, /^Nothing was applied this time/)[0]!.text).toContain("was already cancelled");
+  });
+
+  it("a press with a value not shaped as a proposal's starts nothing", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const ts = "1800000096.000100";
+    const a = await specPending(f, ts);
+    const { id } = await propose(f, llm, ts, "1800000096.000200", [{ item: a.id, command: "approve", args: "" }]);
+    await pressed(f, ts, "sf_proposal:0", `${id}:1`);
+    await pressed(f, ts, "sf_proposal_all", "/approve ship it");
+    expect(await f.store.listCliCommandsAfter(0, 50)).toEqual([]);
+    expect(await statuses(f, id)).toEqual([[0, "pending", null, null]]);
+  });
+
+  it("a reply on a GitHub issue stays plain text with no buttons; its proposal is still stored once", async () => {
+    const llm = new ScriptedLLM();
+    const f = await setup({ llm });
+    const a = await specPending(f, "1800000097.000100");
+    await f.store.createWorkItem(issue(84), system);
+    llm.entries = [{ item: a.id, command: "approve", args: "" }];
+    f.gh.queue.push(commentEvent(issueRef(84), "584", { provider: "github", subject: "1" }, "approve the slack one please")!);
+    await f.controller.tickIntake();
+    await f.controller.tickOutbox();
+    const posted = f.gh.comments.find((c) => c.marker === "<!-- factory:suggest:584 -->")!;
+    expect(posted.body).toMatch(PROPOSAL_TEXT);
+    expect(posted.body).not.toMatch(/sf_proposal|"button"|Confirm all/);
+    const id = /<!-- factory:proposal:(prop_[0-9a-f]+):approve -->/.exec(posted.body)![1]!;
+    expect((await f.store.listCommandProposals(id)).map((r) => [r.work_item_id, r.author_id, r.status])).toEqual([[a.id, "github:1", "pending"]]);
+    expect((await f.store.getWorkItem(a.id))!.blocked_reason).toBe("spec_pending");
   });
 });

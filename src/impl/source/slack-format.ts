@@ -1,4 +1,5 @@
 import { COMMANDS, type CommandName, commandPhase, commandSpec, phaseLabel } from "../../core/commands.js";
+import { parseProposalMarker } from "../../core/interpret.js";
 import { utcMinute } from "../../core/spec-comment.js";
 import type { StateChange, WorkItem } from "../../core/types.js";
 import type { RepoRef } from "../github/github-client.js";
@@ -6,18 +7,24 @@ import type { RepoRef } from "../github/github-client.js";
 // How a control-plane comment (GitHub Markdown) becomes a Slack thread message (issue #109): mrkdwn text in
 // section blocks, then the buttons. The command buttons come from the comment's own command footer, which the
 // controller builds from the command table in src/core/commands.ts, so a button exists only for a command that
-// applies in the item's state when the comment was written. A press is checked again when it arrives.
+// applies in the item's state when the comment was written. A press is checked again when it arrives. A stored
+// proposal's reply (its hidden marker, src/core/interpret.ts) gets one button per proposed command, Confirm all and
+// Cancel instead (issue #584); their values carry only the proposal ID and index, the args are read at press time.
 
 /** Commands that take no text get a button; the others (reject, revise, verdict) stay typed. */
 export const BUTTON_COMMANDS: readonly CommandName[] = ["approve", "retry", "resolve", "budget", "help"];
 
 /**
- * Button action IDs: a command button, and Confirm and Cancel. No message gets Confirm or Cancel any more (proposals
- * are plain text, design §4, issue #583); the source still reads a press on a message posted before.
+ * Button action IDs: a command button; the old Confirm (its value the command text) and Cancel, which no new message
+ * gets but whose press on a message posted before is still read; and a stored proposal's buttons (issue #584): one
+ * per command (`sf_proposal:<index>`, value `<proposal id>:<index>`), Confirm all and Cancel (value `<proposal id>`).
  */
 export const ACTION_COMMAND = "sf_cmd";
 export const ACTION_CONFIRM = "sf_confirm";
 export const ACTION_CANCEL = "sf_cancel";
+export const ACTION_PROPOSAL = "sf_proposal";
+export const ACTION_PROPOSAL_ALL = "sf_proposal_all";
+export const ACTION_PROPOSAL_CANCEL = "sf_proposal_cancel";
 
 const FOOTER_HEADING = "Commands you can reply with now:";
 const SECTION_MAX = 3000;
@@ -173,7 +180,8 @@ function withoutFooter(body: string): string {
 /**
  * The Slack message for one comment: mrkdwn sections, a line on typing commands in Slack (a leading `/` would be
  * taken by Slack itself, so a command follows a mention, with no slash: `approve`, `revise <feedback>`, `help`; issue
- * #541), and an actions block with the command buttons. A proposed command (design §4) is plain text, with no buttons.
+ * #541), and an actions block with the command buttons. A stored proposal's reply gets its proposal buttons instead
+ * (`proposalButtons`); a reply with no marker (a question, or one not stored) stays plain text, with no buttons.
  * `done` (issue #586): the message after a state change, its footer dropped, the `done` line added, and only the
  * buttons in `keep` (those of its footer that still apply).
  */
@@ -185,10 +193,14 @@ export function renderComment(body: string, repo: RepoRef, botUserId: string, do
     text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> approve or <@${botUserId}> revise &lt;feedback&gt; ` +
       `(<@${botUserId}> help lists them), or use the buttons._`;
   }
+  const proposal = done ? null : parseProposalMarker(body);
+  if (proposal) text += "\n\n_Or press a command's button to apply it as you, *Confirm all* to apply them in order, or *Cancel*._";
   let sections = chunks(text);
   if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS), "_(message cut: too long for Slack)_"];
   const blocks: unknown[] = sections.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } }));
-  const buttons = cmds.map((c) => button(LABELS[c] ?? c, `${ACTION_COMMAND}:${c}`, `/${c}`, c === "approve" ? "primary" : undefined));
+  const buttons = proposal
+    ? proposalButtons(proposal.id, proposal.commands)
+    : cmds.map((c) => button(LABELS[c] ?? c, `${ACTION_COMMAND}:${c}`, `/${c}`, c === "approve" ? "primary" : undefined));
   if (buttons.length > 0) blocks.push({ type: "actions", elements: buttons });
   return { text: sections[0] ?? "", blocks };
 }
@@ -213,6 +225,18 @@ export function renderLines(lines: readonly string[], whole: string, link?: stri
   let sections = chunks(escapeSlack(lines.join("\n")), SECTION_MAX - 2 * (FENCE.length + 1)).map((t) => `${FENCE}\n${t}\n${FENCE}`);
   if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS - 1), cutNote(whole, link)];
   return { text: sections[0] ?? "", blocks: sections.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } })) };
+}
+
+/**
+ * A stored proposal's buttons (issue #584): one per proposed command, in index order, then Confirm all and Cancel.
+ * Each value is the proposal ID, with the index for one command: never the args, which the press reads from the store.
+ */
+export function proposalButtons(id: string, commands: readonly CommandName[]): unknown[] {
+  return [
+    ...commands.map((c, i) => button(`${i + 1}. /${c}`, `${ACTION_PROPOSAL}:${i}`, `${id}:${i}`)),
+    button("Confirm all", ACTION_PROPOSAL_ALL, id, "primary"),
+    button("Cancel", ACTION_PROPOSAL_CANCEL, id),
+  ];
 }
 
 function button(label: string, action_id: string, value: string, style?: "primary"): unknown {

@@ -109,27 +109,15 @@ import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index
 import { countLegacyProjectRows, legacyRowsMessage } from "../project-keys.js";
 import { changeAssignments, changeFields } from "./change-fields.js";
 import {
-  diffPatch,
-  newId,
-  newWorkItem,
-  rowToBudgetCheckpoint,
-  rowToClaimDecision,
-  rowToDependencyEdge,
-  rowToHandoff,
-  rowToHostSleep,
-  rowToRun,
-  rowToRunAttempt,
-  rowToStateChange,
-  rowToUnreviewedMerge,
-  rowToVerdict,
-  rowToWorkItem,
-  workItemInsert,
+  diffPatch, newId, newWorkItem, rowToBudgetCheckpoint, rowToClaimDecision, rowToDependencyEdge, rowToHandoff, rowToHostSleep, rowToRun,
+  rowToRunAttempt, rowToStateChange, rowToUnreviewedMerge, rowToVerdict, rowToWorkItem, workItemInsert,
 } from "./rows.js";
 import * as filed from "./filed-patterns.js";
 import * as settingsSql from "./settings.js";
 import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords } from "./retention.js";
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
+import * as proposals from "./command-proposals.js";
 
 /**
  * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -413,6 +401,11 @@ export class SqlFactoryStore implements FactoryStore {
     return signals.listRunsFinishedSince(this.db, q);
   }
   listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
+
+  // Command proposals (design 04-gate-commands, issue #584): command-proposals.ts
+  recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
+  listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
+  answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
 
   // Budget checkpoints
 

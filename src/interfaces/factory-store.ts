@@ -13,11 +13,11 @@ import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
 import type { MergeEvaluation } from "../core/merge-evaluation.js";
 import type { LearnedSettingsStore } from "../core/learned-settings.js";
+import type { CommandProposalStore } from "../core/interpret.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
-// - Time comes from the Clock injected into the implementation (SystemClock in prod, FakeClock in tests).
-//   Method arguments never carry "now".
+// - Time comes from the injected Clock (SystemClock in prod, FakeClock in tests). Method arguments never carry "now".
 // - Losing a race is a normal result, not an exception. Exceptions mean the store itself failed.
 
 export interface NewWorkItem {
@@ -344,7 +344,7 @@ export interface SchemaVersion {
   latest: number;
 }
 
-export interface FactoryStore extends LearnedSettingsStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

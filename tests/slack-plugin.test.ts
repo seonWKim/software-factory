@@ -9,7 +9,7 @@ import { commandFooter } from "../src/core/commands.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { HttpSlackApi, SlackApiError, type FetchFn } from "../src/impl/source/slack-api.js";
 import { slackConfig, slackConfigProblems } from "../src/impl/source/slack-config.js";
-import { footerCommands, renderComment, toMrkdwn } from "../src/impl/source/slack-format.js";
+import { footerCommands, proposalButtons, renderComment, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { interpretReply } from "../src/core/interpret.js";
 import { SlackSource, type SlackSourceDeps } from "../src/impl/source/slack-source.js";
 import slackPlugin from "../src/impl/source/slack.plugin.js";
@@ -260,13 +260,27 @@ describe("slack message format", () => {
     expect(JSON.stringify(r.blocks.at(-1))).toContain('"action_id":"sf_cmd:approve"');
   });
 
-  it("a proposal is plain text: no Confirm, no Cancel, no buttons at all", () => {
+  it("a stored proposal's reply gets one button per command, Confirm all and Cancel; its values name only the proposal and index", () => {
     const item = { id: "wi_1" as never, number: 566, title: "T", state: { phase: "spec_pending" as const, has_pr: false }, ref: "o/r#566", link: "" };
-    const body = interpretReply({ kind: "commands", proposals: [{ item, command: "approve", args: "ship it" }] })!;
-    const r = renderComment(body, REPO, BOT);
-    expect(r.blocks.every((b) => (b as { type: string }).type === "section")).toBe(true);
-    expect(JSON.stringify(r.blocks)).not.toMatch(/sf_confirm|sf_cancel|"button"/);
-    expect(JSON.stringify(r.blocks)).toContain("/approve ship it");
+    const r = { kind: "commands" as const, proposals: [{ item, command: "approve" as const, args: "ship it" }, { item, command: "reject" as const, args: "no" }] };
+    const rendered = renderComment(interpretReply(r, "prop_abc")!, REPO, BOT);
+    const actions = rendered.blocks.at(-1) as { type: string; elements: unknown[] };
+    expect(actions.type).toBe("actions");
+    expect(actions.elements).toEqual(proposalButtons("prop_abc", ["approve", "reject"]));
+    expect(actions.elements.map((b) => (b as { value: string }).value)).toEqual(["prop_abc:0", "prop_abc:1", "prop_abc", "prop_abc"]);
+    expect(JSON.stringify(rendered.blocks)).toContain("/approve ship it");
+    // The hidden marker is not shown as text.
+    expect(JSON.stringify(rendered.blocks)).not.toContain("factory:proposal");
+  });
+
+  it("a reply with no stored proposal (a question, or one not stored) is plain text: no Confirm, no Cancel, no buttons", () => {
+    const item = { id: "wi_1" as never, number: 566, title: "T", state: { phase: "spec_pending" as const, has_pr: false }, ref: "o/r#566", link: "" };
+    const p = { item, command: "approve" as const, args: "ship it" };
+    for (const body of [interpretReply({ kind: "commands", proposals: [p] })!, interpretReply({ kind: "question", readings: [p, { ...p, args: "" }] })!]) {
+      const r = renderComment(body, REPO, BOT);
+      expect(r.blocks.every((b) => (b as { type: string }).type === "section")).toBe(true);
+      expect(JSON.stringify(r.blocks)).not.toMatch(/sf_confirm|sf_cancel|sf_proposal|"button"/);
+    }
   });
 
   it("splits a long message into sections Slack accepts", () => {

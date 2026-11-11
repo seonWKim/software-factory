@@ -393,6 +393,21 @@ CREATE TABLE controller_claim_decisions (
     at                   TEXT NOT NULL
   , held_since TEXT);
 
+CREATE TABLE controller_command_proposals (
+    proposal_id   TEXT NOT NULL,
+    idx           INTEGER NOT NULL,
+    work_item_id  TEXT NOT NULL,
+    command       TEXT NOT NULL,
+    args          TEXT NOT NULL,
+    author_id     TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    answered_by   TEXT,
+    refusal       TEXT,
+    created_at    TEXT NOT NULL,
+    answered_at   TEXT,
+    PRIMARY KEY (proposal_id, idx)
+  );
+
 CREATE TABLE controller_dependency_edges (
     work_item_id  TEXT NOT NULL REFERENCES controller_work_items(id),
     depends_on    TEXT NOT NULL,
