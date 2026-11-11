@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClaimDecision, Timestamp, WorkItemId, WorkerId } from "../src/core/types.js";
 import type { FactoryStore, SchemaVersion } from "../src/interfaces/factory-store.js";
+import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { migrationPendingError } from "../src/interfaces/updater.js";
@@ -171,6 +172,19 @@ describe("system actions: claim deadlock", () => {
     const o = await overview();
     expect(o.system_actions).toEqual([]);
     expect(o.needs_you).toBe(0);
+  });
+});
+
+describe("system actions: open alarms", () => {
+  it("each open alarm is listed, but all of them count once in needs_you: the Floor shows them as one line", async () => {
+    const { overview, store } = await setup();
+    await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
+    await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
+    await store.pauseWorkers({ all: true }, "local:me");
+    const o = await overview();
+    expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
+    expect(codes(o)).toContain("worker_pause");
+    expect(o.needs_you).toBe(2);
   });
 });
 
