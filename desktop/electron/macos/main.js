@@ -23,22 +23,25 @@ if (!app.requestSingleInstanceLock()) {
   // A second copy would start a second supervisor on the same checkout.
   app.exit(0);
 } else {
-  await app.whenReady();
-  try {
-    const { shell, config } = runShell({
-      home,
-      fs,
-      spawn,
-      execPath: process.execPath,
-      env: process.env,
-      fetch: globalThis.fetch,
-      // The build writes the folder it ran in; run from the repository, the checkout is the repository itself.
-      defaultCheckout: pkg.softwareFactory?.checkout ?? resolve(here, "..", "..", ".."),
-      makeShell: (c) => createMacosShell(electron, { preload: join(here, "preload.cjs"), keepRunningWhenClosed: c.keep_running_when_closed }),
-    });
-    app.on("second-instance", () => shell.openWindow(dashboardUrl(config.ui_port)));
-  } catch (e) {
-    dialog.showErrorBox("Software Factory could not start", e instanceof Error ? e.message : String(e));
-    app.exit(1);
-  }
+  // Never a top-level await before "ready": Electron emits it only once the ESM entry has finished loading, so
+  // `await app.whenReady()` here waits forever and the app hangs with no window.
+  void app.whenReady().then(async () => {
+    try {
+      const { shell, config } = await runShell({
+        home,
+        fs,
+        spawn,
+        execPath: process.execPath,
+        env: process.env,
+        fetch: globalThis.fetch,
+        // The build writes the folder it ran in; run from the repository, the checkout is the repository itself.
+        defaultCheckout: pkg.softwareFactory?.checkout ?? resolve(here, "..", "..", ".."),
+        makeShell: (c) => createMacosShell(electron, { preload: join(here, "preload.cjs"), keepRunningWhenClosed: c.keep_running_when_closed }),
+      });
+      app.on("second-instance", () => shell.openWindow(dashboardUrl(config.ui_port)));
+    } catch (e) {
+      dialog.showErrorBox("Software Factory could not start", e instanceof Error ? e.message : String(e));
+      app.exit(1);
+    }
+  });
 }
