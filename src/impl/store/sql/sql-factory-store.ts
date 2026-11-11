@@ -2736,10 +2736,10 @@ function rowToDelivery(row: Row): ThreadDelivery {
   };
 }
 
-/** An app request by seq (RFC 0015 D7): one recorded before the merge keeps its old seq as `legacy_seq`; `?` twice. */
 // By change_ref (params: change_ref, its PR number); pr_number only for a row an older controller wrote without it.
 const BY_CHANGE_REF = "(change_ref = ? OR (change_ref IS NULL AND pr_number = ?))";
-const HAS_CHANGE = "(change_ref IS NOT NULL OR (change_ref IS NULL AND pr_number IS NOT NULL))";
+const HAS_CHANGE = "(change_ref IS NOT NULL OR pr_number IS NOT NULL)";
+/** An app request by seq (RFC 0015 D7): one recorded before the merge keeps its old seq as `legacy_seq`; `?` twice. */
 const APP_REQUEST_SEQ = "origin = 'app' AND ((legacy_table = 'app_command_requests' AND legacy_seq = ?) OR (legacy_table IS NULL AND seq = ?))";
 /** A command's id from its key, so a repeated append computes the same one; its origin from the key's prefix. */
 const commandId = (key: string) => `cmd_${createHash("sha256").update(key).digest("hex").slice(0, 32)}`;

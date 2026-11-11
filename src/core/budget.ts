@@ -128,6 +128,7 @@ export function parseBudgetAmount(
 export interface CheckpointText {
   tier: Tier;
   stage: Stage;
+  /** The PR as a number for the comment text; callers pass prNumber() of the item. */
   pr_number: number | null;
   runs: number;
   tokens: number;

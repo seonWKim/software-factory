@@ -181,6 +181,7 @@ export class PrEventsUnit {
       merger_id: merger?.user_id ?? null,
     });
     if (created) {
+      // Log fields keep their names (design 02-work-item, 2026-11-08), so the key stays pr_number.
       this.c.k.d.log.warn("unreviewed merge", { pr_number: prNumber(e), merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });
     }
   }
