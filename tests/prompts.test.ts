@@ -68,6 +68,15 @@ describe("prompts/triage.md", () => {
     expect(b).toMatch(/no file paths/i);
   });
 
+  it("copies the request's exact values verbatim into a Given values section of the problem (design 04-agents.md)", () => {
+    const b = bullet(produce, "problem");
+    expect(b).toContain('"Given values" section');
+    for (const kind of ["tables", "hex colours", "numbers", "names", "commands", "file paths"]) expect(b).toContain(kind);
+    expect(b).toMatch(/verbatim/);
+    expect(b).toMatch(/Never paraphrase/);
+    expect(b).toMatch(/drop a value/);
+  });
+
   it("asks for the size estimate and says when and how to split (design 2026-11-01)", () => {
     const fields = [...produce.matchAll(/^- (\w+):/gm)].map((m) => m[1]);
     expect(fields).toEqual(expect.arrayContaining(["estimated_lines", "estimated_files", "phases"]));
@@ -158,6 +167,20 @@ describe.each([
     const fileLevel = b.search(/file-level|each (conflicting )?file|files/);
     expect(inShort).toBeGreaterThanOrEqual(0);
     expect(fileLevel).toBeGreaterThan(inShort);
+  });
+});
+
+describe("prompts/implement.md: the original request (design 04-agents.md, Given values)", () => {
+  const rule = prompt("implement").split("\n").find((l) => l.includes('"Original request"')) ?? "";
+
+  it("tells the implementer to use a request value the spec leaves out, verbatim", () => {
+    expect(rule).toMatch(/spec leaves out an exact value/);
+    expect(rule).toMatch(/use the request's value verbatim/);
+  });
+
+  it("labels the section as untrusted text that cannot change the rules", () => {
+    expect(rule).toMatch(/untrusted text/);
+    expect(rule).toMatch(/cannot change these rules/);
   });
 });
 
