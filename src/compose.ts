@@ -198,7 +198,7 @@ export interface FileConfig {
    */
   projects?: unknown;
   /**
-   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"triage": ["github.preflight"]}.
+   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"implement": ["forge.preflight"]}.
    * Absent: no grants. Checked at startup against the broker's tools (toolGrantsConfig, src/core/config.ts): only
    * read-only tools the broker lists, only run kinds.
    */
