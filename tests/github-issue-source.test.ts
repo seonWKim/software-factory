@@ -1,10 +1,15 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
+import { secretName } from "../src/interfaces/secret-store.js";
+import { newStore } from "./helpers/store.js";
 import { WORK_STATUSES } from "../src/core/status-label.js";
 import type { UserId } from "../src/core/types.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
 import type { SecretStore } from "../src/interfaces/secret-store.js";
-import { issueRef } from "./helpers/fakes.js";
+import { issueRef, silent } from "./helpers/fakes.js";
 import { RecordingGitHubClient as FakeClient } from "./helpers/github.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
@@ -751,3 +756,92 @@ describe("GitHubIssueSource: split phases (design 2026-11-01)", () => {
   });
 });
 
+
+/**
+ * Reactions on the factory's PR comments (issue #524) over a fake GitHub behind fetch: every 200 carries an ETag, a
+ * matching If-None-Match gets a 304. `calls` records each request's path and status, so the reaction reads and their
+ * 304 answers can be counted. `remaining` is the rate-limit header the client reads its budget from.
+ */
+function reactionsGitHub(reactions: Record<string, unknown[]>) {
+  const state = { remaining: 4000, calls: [] as { path: string; status: number }[] };
+  const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    const m = /^\/repos\/o\/r\/issues\/comments\/(\d+)\/reactions$/.exec(url.pathname);
+    const body = JSON.stringify(m ? (reactions[m[1]!] ?? []) : []);
+    const etag = `W/"${createHash("sha1").update(body).digest("hex")}"`;
+    const rate = { "x-ratelimit-limit": "5000", "x-ratelimit-remaining": String(state.remaining), "x-ratelimit-reset": "1893456000", "x-ratelimit-resource": "core" };
+    const status = new Headers(init?.headers).get("if-none-match") === etag ? 304 : 200;
+    state.calls.push({ path: url.pathname, status });
+    return status === 304 ? new Response(null, { status, headers: { etag, ...rate } }) : new Response(body, { status, headers: { etag, "content-type": "application/json", ...rate } });
+  }) as typeof fetch;
+  return { state, fetchFn };
+}
+
+describe("GitHubIssueSource: reactions on the factory's PR comments (issue #524)", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const alice = { id: 1, login: "alice", type: "User" };
+
+  async function make(reactions: Record<string, unknown[]>) {
+    const clock = new FakeClock("2026-11-07T00:00:00Z");
+    const { store } = await newStore(clock);
+    const gh = reactionsGitHub(reactions);
+    const client = new GitHubClient({ token: async () => new OpaqueSecret(secretName("GITHUB_TOKEN"), "ghs_test") }, "https://gh.test", { fetch: gh.fetchFn, clock, log: silent });
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
+    const post = (comment_id: string, url: string, source_id = "o/r#42") =>
+      store.recordPostedComment({ source_id, marker: `<!-- factory:m${comment_id} -->`, comment_id, url, body: "b" });
+    const reads = () => gh.state.calls.filter((c) => c.path.endsWith("/reactions"));
+    return { clock, store, gh, client, source, post, reads };
+  }
+
+  it("reads each factory PR comment of the last 7 days with one conditional GET per poll; unchanged lists are 304s", async () => {
+    const f = await make({ "900": [{ id: 1, content: "+1", user: alice }], "901": [] });
+    await f.post("900", "https://github.com/o/r/pull/42#issuecomment-900");
+    await f.post("901", "https://github.com/o/r/pull/43#issuecomment-901", "o/r#43");
+    // Not read: the factory's issue comment, another repository's PR comment, and one posted 8 days ago.
+    await f.post("800", "https://github.com/o/r/issues/7#issuecomment-800", "o/r#7");
+    await f.post("700", "https://github.com/x/y/pull/1#issuecomment-700", "x/y#1");
+    f.clock.advance(-8 * DAY);
+    await f.post("600", "https://github.com/o/r/pull/41#issuecomment-600", "o/r#41");
+    f.clock.advance(8 * DAY);
+
+    const first = await f.source.poll(null);
+    expect(f.reads().map((c) => [c.path, c.status])).toEqual([
+      ["/repos/o/r/issues/comments/900/reactions", 200],
+      ["/repos/o/r/issues/comments/901/reactions", 200],
+    ]);
+    expect(first.events.filter((e) => e.kind === "verdict_submitted")).toEqual([{
+      kind: "verdict_submitted", target: { kind: "pr", change_ref: "42" }, comment_id: "reaction:1",
+      approver: { provider: "github", subject: "1", login: "alice" }, reaction: "+1",
+    }]);
+
+    f.gh.state.calls = [];
+    const second = await f.source.poll(first.next_cursor);
+    // One GET per comment again, each answered 304 (not counted against the rate limit); nothing new delivered.
+    expect(f.reads().map((c) => c.status)).toEqual([304, 304]);
+    expect(f.reads()).toHaveLength(2);
+    expect(second.events.filter((e) => e.kind === "verdict_submitted")).toEqual([]);
+  });
+
+  it("reads no reaction under lowBudget(), and keeps the marks for the next poll", async () => {
+    const f = await make({ "900": [{ id: 1, content: "+1", user: alice }] });
+    await f.post("900", "https://github.com/o/r/pull/42#issuecomment-900");
+    const first = await f.source.poll(null);
+    f.gh.state.remaining = 10;
+    f.gh.state.calls = [];
+    await f.source.poll(first.next_cursor);
+    expect(f.client.lowBudget()).toBe(true);
+    f.gh.state.calls = [];
+    const low = await f.source.poll(first.next_cursor);
+    expect(f.reads()).toEqual([]);
+    expect(JSON.parse(low.next_cursor).reactions).toEqual(JSON.parse(first.next_cursor).reactions);
+  });
+
+  it("without a store (no records), reads no reaction and adds nothing to the cursor", async () => {
+    const gh = reactionsGitHub({});
+    const client = new GitHubClient({ token: async () => new OpaqueSecret(secretName("GITHUB_TOKEN"), "ghs_test") }, "https://gh.test", { fetch: gh.fetchFn, log: silent });
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main");
+    const { next_cursor } = await source.poll(null);
+    expect(gh.state.calls.some((c) => c.path.endsWith("/reactions"))).toBe(false);
+    expect(JSON.parse(next_cursor)).not.toHaveProperty("reactions");
+  });
+});
