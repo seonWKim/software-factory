@@ -16,7 +16,7 @@ import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import { MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, renumberPlan, touchesSqliteSchema } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
 import { type Run, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
-import { type AgentRunResult, type AgentRunSpec, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
@@ -24,8 +24,7 @@ import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfac
 import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /**
- * Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a
- * transition; the controller does that from the outcome. Holds nothing between runs.
+ * Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs.
  */
 export class Worker {
   /**
@@ -66,7 +65,7 @@ export class Worker {
    * database, the plugin's default. `plugins.ticks`: the selected `ticks` plugin; absent: `time-based`. Every wait
    * of the worker is a schedule on it over the injected clock, so tests move them with a FakeClock.
    */
-  constructor(readonly d: WorkerDeps, plugins: WorkerPlugins = {}) {
+  constructor(readonly d: WorkerDeps, readonly plugins: WorkerPlugins = {}) {
     this.engines = plugins.engines ?? new JournalEngines(storeSql(d.store));
     this.ticks = plugins.ticks ?? new TimeBasedTicks();
     this.rolesReady = plugins.roles ? Promise.resolve(plugins.roles) : null;
@@ -85,8 +84,7 @@ export class Worker {
   }
 
   /**
-   * The claim loop: each tick claims and executes runs until none is left, then waits the live tick_ms. A tick
-   * after a wait checks for a host sleep first.
+   * The claim loop: each tick claims and executes runs until none is left, then waits the live tick_ms. A tick after a wait checks for a host sleep first.
    */
   async run(signal: AbortSignal): Promise<void> {
     await this.every("claim", () => this.live.config().tick_ms, signal, async (t) => {
@@ -125,8 +123,7 @@ export class Worker {
 
   /**
    * The system prompt and tools of a run role (`src/worker/roles/<role>.role.ts`): the prompt file it names under
-   * prompts/, and its tools by name. Every agent step takes them from here. A role with no prompt, or whose prompt
-   * file is missing, fails the run (`prompt_missing`).
+   * prompts/, and its tools by name. Every agent step takes them from here. A role with no prompt, or whose prompt file is missing, fails the run (`prompt_missing`).
    */
   async roleSpec(name: string): Promise<{ system_prompt: string; tools: ToolSpec[] }> {
     this.rolesReady ??= loadRoles();
@@ -197,8 +194,7 @@ export class Worker {
   }
 
   /**
-   * The journal engine over the store's database (RFC 0015 §7 Workers): each run kind with its named timeouts,
-   * this worker's id as lease owner, the live `lease_ms` at each renewal.
+   * The journal engine over the store's database (RFC 0015 §7 Workers): each run kind with its named timeouts, this worker's id as lease owner, the live `lease_ms` at each renewal.
    */
   engine(): Promise<ExecutionEngine> {
     this.engineReady ??= loadRunKinds().then((kinds) => this.engines.create({
@@ -282,8 +278,7 @@ export class Worker {
           });
       };
       const data = await this.role({ run, item, ctx, signal, model: model ?? "cheap", step });
-      // Recorded next to the run's usage, so cost and failure rate can be compared per class. data.tokens: the
-      // full count, where readers from before usage existed look for it.
+      // Recorded next to the run's usage, so cost and failure rate can be compared per class. data.tokens: the full count, where readers from before usage existed look for it.
       const withUsage = { ...data, tokens: usageTokens(usage), usage };
       outcome = { status: "succeeded", summary: `${run.kind} done`, data: model ? { ...withUsage, ...this.modelRecord(model) } : withUsage };
     } catch (err) {
@@ -358,8 +353,7 @@ export class Worker {
       // The forge refused the credentials: implement-type claims pause for every worker, also before the outcome
       // is stored (design §5 Restarts). A pause that was not in effect starts here: one log line, and the
       // controller posts one owner comment for it. Only the code goes in the line, never the forge's answer.
-      // `started` comes from the store's conditional write, never a read before it, so two workers refused at
-      // the same moment cannot both start the pause.
+      // `started` comes from the store's conditional write, never a read before it, so two workers refused at the same moment cannot both start the pause.
       const pause = await this.d.store.pauseClaims(this.after(this.cfg.auth_pause_ms ?? this.cfg.retry_max_ms), "forge_auth");
       const started = pause.started === true;
       outcome = { ...outcome, reset_at: pause.resume_at, pause_started: started };
@@ -414,8 +408,7 @@ export class Worker {
   /**
    * Every tick_ms while an implement or review run executes: is this worker paused (its own row or the all-flag)?
    * Then the run's agent is stopped through the pause signal. Only an agent step listens to it; the steps after
-   * the agent (sync, gates, push) finish as usual and the worker stops claiming afterwards. A failed read is
-   * retried on the next tick.
+   * the agent (sync, gates, push) finish as usual and the worker stops claiming afterwards. A failed read is retried on the next tick.
    */
   async watchPause(run: Run, s: RunScratch, stop: AbortSignal): Promise<void> {
     const done = new AbortController();
@@ -434,8 +427,7 @@ export class Worker {
 
   /**
    * Back to `queued` with paused_at (design §5 Pause): no outcome, nothing for the controller, the folder and
-   * sessions kept for the resume. False when the store refused (lease lost): the folder is removed then, and the
-   * caller drops the sessions as for any ended run.
+   * sessions kept for the resume. False when the store refused (lease lost): the folder is removed then, and the caller drops the sessions as for any ended run.
    */
   async storePause(run: Run, token: number, p: RunPaused, log: Record<string, unknown>): Promise<boolean> {
     const resume = p.resume;
@@ -451,8 +443,7 @@ export class Worker {
   }
 
   /**
-   * Removes every agent session the run started or resumed, except the one a stopped run keeps for its retry. Best
-   * effort: a failure is only logged.
+   * Removes every agent session the run started or resumed, except the one a stopped run keeps for its retry. Best effort: a failure is only logged.
    */
   async dropSessions(s: RunScratch): Promise<void> {
     if (!this.d.runner.removeSession) return;
@@ -495,8 +486,7 @@ export class Worker {
   }
 
   /**
-   * The model class of this run kind for this item (src/core/model-choice.ts). A triage run also reads whether
-   * the item's latest finished triage attempt failed with `agent_failed`.
+   * The model class of this run kind for this item (src/core/model-choice.ts). A triage run also reads whether the item's latest finished triage attempt failed with `agent_failed`.
    */
   async modelFor(run: Run, kind: ModelRunKind, item: WorkItem): Promise<ModelClass> {
     const table = this.runModels?.table ?? DEFAULT_MODEL_TABLE;
@@ -507,8 +497,7 @@ export class Worker {
   /**
    * Whether the latest finished attempt record of the item's triage runs failed with `agent_failed`. A failed
    * triage run is retried as a new run, so the earlier runs count, and this run's own earlier claims too: a
-   * restart retry (lease_expired, a network or rate-limit pause, a stall) ends with another status or code, so
-   * it is the latest record and the retry is not bumped.
+   * restart retry (lease_expired, a network or rate-limit pause, a stall) ends with another status or code, so it is the latest record and the retry is not bumped.
    */
   async lastTriageAttemptAgentFailed(run: Run): Promise<boolean> {
     const triage = new Set((await this.d.store.listRuns(run.work_item_id)).filter((r) => r.kind === "triage").map((r) => r.id));
@@ -533,8 +522,7 @@ export class Worker {
     const plan = await this.resumePlan(run);
     const kept = plan || run.kind !== "implement" ? null : await this.keptFolder(run);
     const handle = plan?.folder ?? kept?.handle ?? (await this.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }));
-    // The folder lives until the run ends, whatever the outcome; only a pause, or a stopped run that keeps it for
-    // its retry, keeps it (design §5 Pause, Restarts).
+    // The folder lives until the run ends, whatever the outcome; only a pause, or a stopped run that keeps it for its retry, keeps it (design §5 Pause, Restarts).
     let keep = false;
     try {
       return await kind.execute(this, { ...call, handle, plan, kept: kept?.session ?? null });
@@ -577,8 +565,7 @@ export class Worker {
    * How a paused implement or review run picks up (design §5 Pause), or null for any other run. On the host that
    * paused it, with its folder still there: that folder, and the stored session when the runner still has it
    * (`--resume`). Otherwise a new folder and a new session; an implement run restores its WIP commit from the
-   * bundle. A review with no session to resume reviews afresh in a new folder. A gone or unreadable session
-   * takes the cross-host path and never fails the run.
+   * bundle. A review with no session to resume reviews afresh in a new folder. A gone or unreadable session takes the cross-host path and never fails the run.
    */
   async resumePlan(run: Run): Promise<ResumePlan | null> {
     const state = PAUSABLE_KINDS.includes(run.kind) ? run.resume : null;
@@ -624,8 +611,7 @@ export class Worker {
 
   /**
    * The PR text an update or resolve run's push sends with it (issue #229): the PR body rebuilt from the last
-   * implement run's notes and this run's checks, so it describes the branch as it is now. No stored notes (older
-   * runs, adopted PRs): null, and the PR is left as it is.
+   * implement run's notes and this run's checks, so it describes the branch as it is now. No stored notes (older runs, adopted PRs): null, and the PR is left as it is.
    */
   async prRefresh(item: WorkItem, checks: readonly string[]): Promise<PrText | null> {
     const notes = lastPrNotes(await this.d.store.listRuns(item.id));
@@ -647,8 +633,7 @@ export class Worker {
   /**
    * An update or resolve run's push (RFC 0015 M7), as the implement run's: the branch stored, its head recorded,
    * then the keyed push intent and, with `pr`, the PR refresh behind it. Two journaled steps, so a run taken over
-   * after them records nothing again. Returns the push intent's key, which the controller waits on; null for a
-   * local branch (nothing goes to a forge).
+   * after them records nothing again. Returns the push intent's key, which the controller waits on; null for a local branch (nothing goes to a forge).
    */
   async pushBranch(c: Pick<RunCall, "run" | "item" | "ctx" | "step">, workdir: string, branch: string, head: string, pr: () => Promise<PrText | null>): Promise<string | null> {
     const stored = await c.step("store-branch", async () => {
@@ -752,8 +737,7 @@ export class Worker {
    * Migration renumbering (design §5, issue #297), after a base merge is committed: when a MySQL step file the
    * branch adds has a number the base already has, the branch's new steps move to the next free numbers, literal
    * references to the old names in the branch's changed files follow, and the worker commits that. Skipped (and
-   * logged) when the branch also changes a SQLite schema file: SQLite numbers its migrations in code, so the
-   * collision is a real one and the gates report it. Returns the moves made.
+   * logged) when the branch also changes a SQLite schema file: SQLite numbers its migrations in code, so the collision is a real one and the gates report it. Returns the moves made.
    */
   async renumberSteps(run: Run, handle: SandboxHandle, baseSha: string): Promise<Renumbering[]> {
     const plan = await this.stageRenumbering(run, handle, [baseSha, "HEAD"]);
@@ -801,8 +785,7 @@ export class Worker {
   /**
    * The toolchain's warm step (design 05-sandbox.md, issue #334): `warm_command` in the run folder before the
    * run's first agent step, as the worker (its tool env: the owner's HOME and caches, and the network), with the
-   * slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends
-   * the run before any agent starts, naming the command.
+   * slot env and no credential or test database. It fills the caches the agent then reads offline. A failure ends the run before any agent starts, naming the command.
    */
   async warm(run: Run, handle: SandboxHandle, signal: AbortSignal, cmd: readonly string[]): Promise<void> {
     const round = await runChecks({
@@ -857,6 +840,8 @@ export class Worker {
     if (s) s.step_session = session?.id ?? null;
     // The system prompt and tools are the role's (src/worker/roles/<role>.role.ts), never the run kind's own choice.
     const declared = await this.roleSpec(role.role ?? run.kind);
+    await this.packChecks("before_agent", run, item, handle, signal);
+    const on_tool_call = role.gate_hooks && this.packGate("on_tool_call", run, item, handle);
     const liveBefore = await this.liveUntracked(handle);
     const result = await this.d.runner.run({
       run_id: run.id,
@@ -873,6 +858,7 @@ export class Worker {
       signal: pause ? AbortSignal.any([signal, pause]) : signal,
       ...declared,
       ...role,
+      ...(on_tool_call ? { gate_hooks: { ...role.gate_hooks!, on_tool_call } } : {}),
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       // The toolchain block (design 05-sandbox.md): caches the agent may read, never write, and its env entries.
       ...(toolchain ? { readable_paths: toolchain.caches, toolchain_env: toolchain.env } : {}),
@@ -889,8 +875,7 @@ export class Worker {
     }
 
     // G5 before the transcript is stored anywhere. A known secret value or the canary fails the run; a pattern hit
-    // alone (a token-shaped test fixture a failing test printed) only keeps the transcript out of storage, since
-    // the commit, PR and comment scans still stop that text from leaving.
+    // alone (a token-shaped test fixture a failing test printed) only keeps the transcript out of storage, since the commit, PR and comment scans still stop that text from leaving.
     const scan = await this.d.scanner.scan("log", result.transcript);
     const rules = scan.clean ? [] : scan.findings.map((f) => f.rule);
     if (rules.some((r) => TRANSCRIPT_FAIL_RULES.includes(r))) throw new RunFailure("egress_blocked", rules.join(","));
@@ -900,8 +885,7 @@ export class Worker {
       await this.d.storage.put(`transcripts/${item.id}/${run.id}${step ? `.${step}` : ""}.json`, new TextEncoder().encode(result.transcript));
     }
 
-    // A fallback chain (design 2026-11-07): one line per member that gave the run to the next. The reason is a
-    // member's error text, scanned like any other before it reaches a log.
+    // A fallback chain (design 2026-11-07): one line per member that gave the run to the next. The reason is a member's error text, scanned like any other before it reaches a log.
     for (const f of result.fallbacks ?? []) {
       const clean = (await this.d.scanner.scan("log", f.reason)).clean;
       this.d.log.warn("runner fallback", { run_id: run.id, step: step ?? "", from: f.from, to: f.to, reason: clean ? f.reason.slice(0, 300) : "[withheld]" });
@@ -932,7 +916,23 @@ export class Worker {
     if (result.status !== "completed") {
       throw new RunFailure(`agent_${result.status}`, result.error ?? "", result.status === "timed_out", { output_tail: tail(result.transcript) });
     }
+    await this.packChecks("after_agent", run, item, handle, signal);
     return result;
+  }
+
+  /** An implement step's pack checks at `point` (design §4, issue #494), on its sandbox with the tool env; null: none, or another run kind. */
+  packGate(point: PackCheckPoint, run: Run, item: WorkItem, handle: SandboxHandle): PackGate | null {
+    const ctx = { subject: run.id, project_id: item.project, sandbox: handle, env: { ...this.d.toolEnv, ...this.slotEnv() } };
+    return run.kind === "implement" ? (this.plugins.pack_checks?.at(point, ctx) ?? null) : null;
+  }
+
+  /** Runs them; a refusal fails the run, naming the check. With `fix` (before_finish), each refusal first sends the agent back, up to the check's retries. */
+  async packChecks(point: PackCheckPoint, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, fix?: (r: PackRefusal) => Promise<void>): Promise<boolean> {
+    let sent = false;
+    const gate = this.packGate(point, run, item, handle);
+    const r = await (fix ? gate?.untilPassed((x) => ((sent = true), fix(x)), signal) : gate?.run([], signal));
+    if (r) throw new RunFailure(HOOK_REFUSED, `pack check ${r.check} refused at ${point}: ${r.reason}`.slice(0, 500), false);
+    return sent;
   }
 
   /**
@@ -968,8 +968,7 @@ export class Worker {
 
   /**
    * The head this run just pushed, as the item's last recorded head (design 2026-11-01), so the next poll does
-   * not take the factory's own push for a person's. Written while the run still holds its lease: the controller
-   * leaves a PR's head alone while any run of its item is running.
+   * not take the factory's own push for a person's. Written while the run still holds its lease: the controller leaves a PR's head alone while any run of its item is running.
    */
   /** A run's push and PR (`runPushIntents`) recorded through the store; returns the intents' keys. */
   async recordPush(item: WorkItem, run: Run, p: { branch: string; sha: string }, pr: PrText | null): Promise<{ push: string; pr: string | null }> {
@@ -1103,15 +1102,16 @@ export class Worker {
   }
 }
 
-/** The plugins and discovered descriptors a Worker runs on; absent ones are their defaults (discovery for roles and hooks). */
+/** The plugins, discovered descriptors and pack checks (issue #494) a Worker runs on; absent: the defaults (discovery for roles and hooks, no pack check). */
 export interface WorkerPlugins {
   engines?: ExecutionEngines;
   ticks?: TickSource;
   roles?: RoleCatalog;
   hooks?: readonly HookDescriptor[];
+  pack_checks?: PackChecks;
 }
 
-/** A run an enabled `before_run` hook refused (a veto, a timeout or an error): a task failure, not retried as infra. */
+/** A run an enabled `before_run` hook or a pack check refused (a veto, a timeout or an error): a task failure, not retried as infra. */
 export const HOOK_REFUSED = "hook_refused";
 
 /** WorkerDeps.code_version when the process names none. */

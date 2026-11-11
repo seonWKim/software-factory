@@ -412,9 +412,14 @@ force.
   (`Worker.roleSpec`; the run kind's role, or `resolve` for implement's conflict retry); a run kind names neither. A
   role whose prompt file is missing fails the run `prompt_missing` before the agent starts.
 - **Hooks veto or annotate, never approve** (since 2026-11-08, RFC 0015 M10; decision changed in the M6 leftovers:
-  `before_run` is called and the `hooks` setting enables them, see History). A hook is
+  `before_run` is called and the `hooks` setting enables them; changed 2026-11-11, issue #494: four pack check
+  points, see History). A hook is
   `src/<component>/hooks/<name>/<name>.hook.ts` (`defineHook`, `src/shared/hook.ts`) at one point (`before_merge`,
-  `before_run`, `before_delivery`) with a budget of at most 10 s. `runHooks` (`src/runtime/hooks/`, on the gate list)
+  `before_run`, `before_delivery`) with a budget of at most 10 s. `HOOK_POINTS` also holds the four pack check
+  points (`before_agent`, `on_tool_call`, `before_finish`, `after_agent`), where only a pack layer's
+  `checks/<name>.json` runs (04-pre-push-gates.md): they are in `UNCALLED_HOOK_POINTS`, so a `*.hook.ts` enabled at
+  one fails startup. `hooks` names both kinds; a name a pack layer has is a pack check, any other must be a
+  discovered `*.hook.ts`. A pack check's refusal is a `runtime_hook_decisions` row like a hook's. `runHooks` (`src/runtime/hooks/`, on the gate list)
   runs only after the guards allowed the action: a guard's refusal stands and no hook runs. Each enabled hook of the
   point runs in name order; a veto, a hook over its budget (`hook_timeout`) or one that throws (`hook_error`)
   refuses the action (fail closed); a note is passed on. Every decision is a `runtime_hook_decisions` row (ids only,
@@ -651,6 +656,8 @@ force.
 - **`hooks` on a shared store** (changed 2026-11-09, runtime review M1). Before: `hooks` was PR-only but not a
   reviewed key, so a MySQL replica started with its own `--config` took `hooks` from that file; `hooks: []` there
   skipped the owner's `before_merge` veto whenever that replica landed the merge queue.
+- **Hook points** (changed 2026-11-11, issue #494). Before: three points (`before_merge`, `before_run`,
+  `before_delivery`), all for `*.hook.ts`, and `hooks` named only `*.hook.ts` files; nothing ran a pack's checks.
 - **An enabled `before_delivery` hook** (changed 2026-11-09, runtime review L1). Before: startup accepted it (the
   name was discovered) though nothing ran it, so every delivery went out unchecked with no error.
 - **Topic tables at start** (changed 2026-11-09, runtime review M3). Before: every start ran each topic's
