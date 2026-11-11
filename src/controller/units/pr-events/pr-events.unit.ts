@@ -66,11 +66,9 @@ export class PrEventsUnit {
             reason: "pr_closed_unmerged",
           };
     });
-    // A merge completes the plain task `task build` linked to the item (design 02-tasks); conditional in the store,
-    // so a repeated event closes nothing more.
     if (e.kind === "change_merged") {
       const closed = await this.c.k.reader.getWorkItem(item.id);
-      if (closed?.stage === "CLOSED" && closed.close_reason === "completed" && closed.merge_sha === e.merge_sha) await this.c.k.d.store.closeLinkedTasks(item.id);
+      if (closed?.stage === "CLOSED" && closed.close_reason === "completed" && closed.merge_sha === e.merge_sha) await this.closeLinkedTasks(item.id);
     }
     // Items waiting on this one move now, with no other action (design §5, 2026-11-03).
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
@@ -138,11 +136,20 @@ export class PrEventsUnit {
         }));
     const closed = await this.c.k.reader.getWorkItem(item.id);
     if (closed?.stage !== "CLOSED" || closed.merge_sha !== r.sha) return;
-    await this.c.k.d.store.closeLinkedTasks(item.id); // its plain task, as in prFinished
+    await this.closeLinkedTasks(item.id);
     this.c.k.d.log.info("PR merged", { work_item_id: item.id, change_ref, merge_sha: r.sha, user_id: actor.id });
     const head = String(a.head_sha).slice(0, 12);
     await this.c.unit("outbox").post(item, item.source, `Merged PR #${pr} at its reviewed head \`${head}\` as \`${r.sha.slice(0, 12)}\` (a merge commit). The item is closed.`, `<!-- factory:pr-merged:${key} -->`);
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
+  }
+
+  /**
+   * A merged item's plain task, the one `task build` linked to it (design 02-tasks), is done: called by each merge path
+   * (this unit's two and the local merge) once the item is closed as merged. Conditional in the store, so a repeated
+   * event or delivery closes nothing more; an unlinked task is never read.
+   */
+  async closeLinkedTasks(id: WorkItemId): Promise<void> {
+    await this.c.k.d.store.closeLinkedTasks(id);
   }
 
   /**
