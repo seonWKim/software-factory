@@ -234,7 +234,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     const item = await f.approveAndImplement();
     const branch = `refs/heads/factory/${item.id}`;
 
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     expect(f.contains(branch, mainSha)).toBe(true);
     // Mergeable: main is already in the branch, so merging the PR into main is a fast-forward.
     expect(f.contains(branch, f.remote("refs/heads/main"))).toBe(true);
@@ -255,7 +255,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     const f = await setup();
     const item = await f.approveAndImplement();
     const branch = `refs/heads/factory/${item.id}`;
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     expect(git(f.origin, "log", "-1", "--format=%s", branch)).toBe("implementer edits a (1)");
     expect(f.sandbox.execs.some((c) => c.includes(" merge --no-ff"))).toBe(false);
   });
@@ -266,7 +266,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     const branch = `refs/heads/factory/${item.id}`;
     const mainSha = f.remote("refs/heads/main");
 
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     expect(f.conflictSteps).toHaveLength(1);
     const prompt = f.conflictSteps[0]!.prompt;
     expect(prompt).toContain("- `src/a.txt`");
@@ -424,7 +424,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
       },
     });
     const item = await f.approveAndImplement();
-    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
     expect(mains).toHaveLength(2); // main moved during the first implement and during the review fix
     const branch = `refs/heads/factory/${item.id}`;
     expect(f.contains(branch, mains[1]!)).toBe(true);
@@ -440,7 +440,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     const item = await f.approveAndImplement();
     const branch = `refs/heads/factory/${item.id}`;
 
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     const runs = await f.implementRuns(item.id);
     expect(runs).toHaveLength(1);
     expect(runs[0]!.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["src/a.txt"] } });
@@ -517,7 +517,7 @@ describe("implement run: sync with base before push", { timeout: 60_000 }, () =>
     });
     const item = await f.approveAndImplement();
     const branch = `refs/heads/factory/${item.id}`;
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     const run = (await f.implementRuns(item.id))[0]!;
     expect(run.outcome).toMatchObject({ status: "succeeded", data: { conflicts: ["docs/x.txt"] } });
     expect(git(f.origin, "show", `${branch}:docs/x.txt`)).toBe("x merged");

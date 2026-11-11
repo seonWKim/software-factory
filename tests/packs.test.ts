@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import packCommand from "../src/cli/handlers/pack/pack.command.js";
 import { type Loaded, Plugins, build, fillPrompt, loadConfig } from "../src/compose.js";
 import type { EgressChannel, EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
-import { PackEntriesStore, addLine, addPack, canonicalJson } from "../src/packs/pack-entries.store.js";
+import { PackEntriesStore, addLine, addPack, canonicalJson, descriptionHash, moduleHash } from "../src/packs/pack-entries.store.js";
 import { discoverMigrations } from "../src/state/index.js";
 import type { WorkerDeps } from "../src/worker/index.js";
 import { WorkerPool } from "../src/worker/index.js";
@@ -381,14 +381,15 @@ describe("packs: tool and MCP server entries (pack add)", () => {
     const s = await open();
     const r = await s.add(pack({ "mcp_servers/docs.json": MCP, "tools/tracker.json": TOOL }));
     expect(r.results.map((x) => [x.kind, x.name, x.outcome])).toEqual([["tool", "issue-tracker", "stored"], ["mcp_server", "docs-search", "stored"]]);
-    expect(r.lines[0]).toMatch(/^stored tool issue-tracker as pending/);
+    expect(r.lines[0]).toBe(`stored tool issue-tracker as pending (description_hash ${sha256(canonicalJson(TOOL)).slice(0, 12)})`);
     expect(await s.rows()).toEqual([
       {
-        id: expect.stringMatching(/^pe_/), kind: "mcp_server", name: "docs-search", description_hash: sha256(canonicalJson(MCP)),
+        id: expect.stringMatching(/^pe_/), kind: "mcp_server", name: "docs-search", description_hash: sha256(canonicalJson(MCP)), module_hash: null,
         descriptor: canonicalJson(MCP), credential_name: null, status: "pending", added_by: ME,
         created_at: "2026-11-11T12:00:00.000Z", updated_at: "2026-11-11T12:00:00.000Z",
       },
-      expect.objectContaining({ kind: "tool", name: "issue-tracker", description_hash: sha256(canonicalJson(TOOL)), credential_name: "TRACKER_TOKEN", status: "pending" }),
+      // A tool with no module keeps the descriptor-only hash, so its stored entries and approvals are unchanged.
+      expect.objectContaining({ kind: "tool", name: "issue-tracker", description_hash: sha256(canonicalJson(TOOL)), module_hash: null, credential_name: "TRACKER_TOKEN", status: "pending" }),
     ]);
     // Canonical: the same descriptor in another key order and layout has the same hash.
     expect(canonicalJson({ b: 1, a: [{ d: 2, c: 3 }] })).toBe('{"a":[{"c":3,"d":2}],"b":1}');
@@ -523,6 +524,48 @@ describe("packs: tool and MCP server entries (pack add)", () => {
     await m!.up({ dialect: "sqlite", run: (sql, p) => store.db.run(sql, p), all: (sql, p) => store.db.all(sql, p) });
     expect(await store.db.all("SELECT * FROM ext_packs_entries")).toEqual([]);
   });
+
+  it("a tool's module joins its description_hash: the same descriptor with another module is a new entry, and the lines show the module_hash", async () => {
+    const s = await open();
+    const MODULE = "export default async () => ({ ok: true, content: 1 });\n";
+    const path = pack({ "tools/tracker.json": TOOL });
+    write(join(path, "tools", "tracker.tool.js"), MODULE);
+    const first = await s.add(path);
+    const module_hash = sha256(MODULE);
+    const description_hash = descriptionHash(TOOL as never, module_hash);
+    expect(moduleHash(Buffer.from(MODULE))).toBe(module_hash);
+    expect(description_hash).not.toBe(sha256(canonicalJson(TOOL)));
+    expect(first.results).toEqual([{ outcome: "stored", kind: "tool", name: "issue-tracker", description_hash, module_hash }]);
+    expect(first.lines).toEqual([`stored tool issue-tracker as pending (description_hash ${description_hash.slice(0, 12)}, module_hash ${module_hash.slice(0, 12)})`]);
+    // Only the module changes: a new entry with a new description_hash.
+    s.clock.advance(1000);
+    write(join(path, "tools", "tracker.tool.js"), MODULE.replace("content: 1", "content: 2"));
+    const second = await s.add(path);
+    expect(second.results[0]).toMatchObject({ outcome: "stored", module_hash: sha256(MODULE.replace("content: 1", "content: 2")) });
+    expect((await s.rows()).map((x) => [x.description_hash, x.module_hash])).toEqual([
+      [description_hash, module_hash],
+      [(second.results[0] as { description_hash: string }).description_hash, sha256(MODULE.replace("content: 1", "content: 2"))],
+    ]);
+    // The approve and revoke lines show the module_hash beside the description_hash; a tool with no module shows none.
+    const approvals = new PackApprovalsStore(s.store.db, () => s.clock.now().toISOString());
+    const change = (r: ApprovalRequest) => changeApproval({ auth: { authorize: async () => ({ allow: true }) }, entries: s.entries, approvals, user_id: ME as UserId }, r);
+    const approve: ApprovalRequest = { action: "approve", kind: "tool", name: "issue-tracker", hash: description_hash.slice(0, 12) };
+    expect(approvalLine(approve, await change(approve))).toBe(`approved tool issue-tracker (description_hash ${description_hash.slice(0, 12)}, module_hash ${module_hash.slice(0, 12)})`);
+    const revoke: ApprovalRequest = { action: "revoke", kind: "tool", name: "issue-tracker" };
+    expect(approvalLine(revoke, await change(revoke))).toMatch(/^revoked tool issue-tracker \(description_hash [0-9a-f]{12}, module_hash [0-9a-f]{12}\)$/);
+    s.clock.advance(1000);
+    await s.add(pack({ "tools/tracker.json": TOOL }));
+    expect(approvalLine(revoke, await change(revoke))).toBe(`revoked tool issue-tracker (description_hash ${sha256(canonicalJson(TOOL)).slice(0, 12)})`);
+  });
+
+  it("the module_hash migration is additive, adds a nullable column to ext_packs_entries, and a rerun is a no-op", async () => {
+    const m = (await discoverMigrations()).find((x) => x.id === "20261111T2000-state-ext-packs-entries-module-hash");
+    expect(m).toMatchObject({ change: "additive", component: "state" });
+    const { store } = await newStore();
+    await m!.up({ dialect: "sqlite", run: (sql, p) => store.db.run(sql, p), all: (sql, p) => store.db.all(sql, p) });
+    const columns = await store.db.all("SELECT name, \"notnull\" AS nn FROM pragma_table_info('ext_packs_entries') WHERE name = 'module_hash'");
+    expect(columns).toEqual([{ name: "module_hash", nn: 0 }]);
+  });
 });
 
 describe("packs: approvals, the pin and the grant check", () => {
@@ -555,7 +598,7 @@ describe("packs: approvals, the pin and the grant check", () => {
       const canonical = canonicalJson(descriptor as never);
       const description_hash = createHash("sha256").update(canonical).digest("hex");
       const credential_name = typeof descriptor.credential === "string" ? descriptor.credential : null;
-      await entries.insert({ kind, name: String(descriptor.name), description_hash, descriptor: canonical, credential_name, added_by: ME });
+      await entries.insert({ kind, name: String(descriptor.name), description_hash, module_hash: null, descriptor: canonical, credential_name, added_by: ME });
       clock.advance(1000);
       return description_hash;
     };
@@ -857,13 +900,17 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     const entries = new PackEntriesStore(store.db, now);
     const approvals = new PackApprovalsStore(store.db, now);
     const canonical = canonicalJson(DESCRIPTOR as never);
-    const description_hash = createHash("sha256").update(canonical).digest("hex");
-    await entries.insert({ kind: "tool", name: NAME, description_hash, descriptor: canonical, credential_name: "TRACKER_TOKEN", added_by: ME });
+    // The module file the broker re-hashes on every call; the call function itself is the fake below.
+    const module_file = join(temp("sf-pack-module-"), "tracker.tool.js");
+    write(module_file, "export default async () => ({ ok: true, content: 1 });\n");
+    const module_hash = moduleHash(readFileSync(module_file));
+    const description_hash = descriptionHash(DESCRIPTOR as never, module_hash);
+    await entries.insert({ kind: "tool", name: NAME, description_hash, module_hash, descriptor: canonical, credential_name: "TRACKER_TOKEN", added_by: ME });
     const ref = { kind: "tool" as const, name: NAME, description_hash };
     /** The tool's call function: records each call, and the credential it was given. */
     const reached: { args: unknown; credential: string | null }[] = [];
     const tool: PackTool = {
-      name: NAME, description_hash, description: DESCRIPTOR.description, input_schema: { type: "object" }, read_only: true, credential_name: secretName("TRACKER_TOKEN"),
+      name: NAME, description_hash, module_file, module_hash, description: DESCRIPTOR.description, input_schema: { type: "object" }, read_only: true, credential_name: secretName("TRACKER_TOKEN"),
       async call(args, credential) {
         reached.push({ args, credential: credential?.reveal() ?? null });
         return { ok: true, content: opts.echo ? { auth: credential?.reveal() } : { issues: ["#1 open"] } };
@@ -873,7 +920,7 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     const secrets = new OneSecret();
     const broker = new PackToolBroker(new FakeBroker(), { db: store.db, store: lease, secrets, tools: [tool], autoApproveReadOnly: true });
     const ctx = { run_id: "run_p" as RunId, work_item_id: "wi_p" as WorkItemId, lease_token: 3 };
-    return { store, approvals, ref, reached, broker, ctx, secrets };
+    return { store, approvals, ref, reached, broker, ctx, secrets, module_file, module_hash };
   }
 
   it("refuses a credentialed tool until the owner approves it; the call function is never reached before approval", async () => {
@@ -899,15 +946,28 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     await s.approvals.record(s.ref, "approve", ME);
     const other = new PackToolBroker(new FakeBroker(), {
       db: s.store.db, store: { getRun: async () => null }, secrets: s.secrets, autoApproveReadOnly: false,
-      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, credential_name: null, call: async () => ({ ok: true, content: 1 }) }],
+      tools: [{ name: NAME, description_hash: "0".repeat(64), module_file: s.module_file, module_hash: s.module_hash, description: "x", input_schema: {}, read_only: true, credential_name: null, call: async () => ({ ok: true, content: 1 }) }],
     });
     expect(await other.call(s.ctx, GRANT, {})).toMatchObject({ ok: false, error_code: "lease_lost" });
     const stale = new PackToolBroker(new FakeBroker(), {
       db: s.store.db, store: { getRun: async () => ({ id: "run_p", work_item_id: "wi_p", status: "running", lease: { token: 3 } }) as unknown as Run }, secrets: s.secrets, autoApproveReadOnly: false,
-      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, credential_name: null, call: async () => { throw new Error("reached"); } }],
+      tools: [{ name: NAME, description_hash: "0".repeat(64), module_file: s.module_file, module_hash: s.module_hash, description: "x", input_schema: {}, read_only: true, credential_name: null, call: async () => { throw new Error("reached"); } }],
     });
     expect(await stale.call(s.ctx, GRANT, {})).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
     expect(s.reached).toEqual([]);
+  });
+
+  it("re-hashes the module on every call: a changed or missing module is refused with not_approved before the credential is read", async () => {
+    const s = await open();
+    await s.approvals.record(s.ref, "approve", ME);
+    expect(await s.broker.call(s.ctx, GRANT, { q: "a" })).toMatchObject({ ok: true });
+    expect(s.secrets.reads).toEqual(["TRACKER_TOKEN"]);
+    write(s.module_file, "export default async () => ({ ok: true, content: 2 });\n");
+    expect(await s.broker.call(s.ctx, GRANT, { q: "b" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED, message: expect.stringContaining("module changed") });
+    rmSync(s.module_file);
+    expect(await s.broker.call(s.ctx, GRANT, { q: "c" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+    expect(s.reached).toHaveLength(1);
+    expect(s.secrets.reads).toEqual(["TRACKER_TOKEN"]);
   });
 
   it("lists pack tools under their grant name beside the inner broker's, and sends other names to the inner broker", async () => {
@@ -1026,6 +1086,74 @@ describe("packs: the pack tool broker (approval before the call, no credential t
       vi.restoreAllMocks();
       delete (globalThis as { __sfPackToolCalls?: unknown }).__sfPackToolCalls;
     }
+  });
+
+  it("a module changed after approval is refused without reaching its call; pack add, approving the new hash and a restart serve the new module", async () => {
+    const calls: { args: unknown; credential: string | null }[] = [];
+    (globalThis as { __sfPackToolCalls?: unknown }).__sfPackToolCalls = calls;
+    const f = composedFixture({ tool_grants: { triage: [GRANT] } });
+    const clock = new FakeClock(new Date("2026-11-11T20:00:00.000Z"));
+    /** Starts the factory, adds the pack, approves the current description, and returns a gate over a claimed run. */
+    const start = async (n: number) => {
+      clock.advance(1000);
+      const built = await build(await load(f.codeRoot), { clock, repoLookup: fakeRepoLookup });
+      const broker = ((built.worker as unknown as { d: WorkerDeps }).d.broker as PassportToolBroker).inner;
+      const db = storeSql(built.store);
+      const now = () => built.clock.now().toISOString();
+      const added = (await addPack({ path: f.project, store: new PackEntriesStore(db, now), scanner: cleanScanner, added_by: ME }))[0] as { outcome: string; description_hash: string };
+      await built.store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+      const run = (await built.store.claimRun({ worker_id: "w1" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
+      const spec = {
+        run_id: run.id, work_item_id: run.work_item_id, role: "triage", sandbox: { id: "s", workdir: temp("sf-pack-module-run-") }, system_prompt: "", prompt: "",
+        tools: [], tool_grants: [GRANT], lease_token: run.lease!.token, env_allowlist: {}, deny_paths: [], writable_paths: [], model_class: "cheap", timeout_ms: 30_000, signal: new AbortController().signal,
+      } as AgentRunSpec;
+      const approve = () => new PackApprovalsStore(db, now).record({ kind: "tool", name: NAME, description_hash: added.description_hash }, "approve", ME);
+      return { built, added, approve, gate: new ToolGate({ broker, scanner: cleanScanner }, spec) };
+    };
+    const module = join(f.project, "tools", "tracker.tool.js");
+    const first = await start(1);
+    try {
+      await first.approve();
+      expect(await first.gate.call(GRANT, { q: "a" })).toEqual({ ok: true, content: { issues: ["#1 open"] } });
+      expect(calls).toHaveLength(1);
+      // Only the .tool.js changes: the next call is refused before the call function, with the old approval still in place.
+      writeFileSync(module, readFileSync(module, "utf8").replace('"#1 open"', '"#2 changed"'));
+      expect(await first.gate.call(GRANT, { q: "b" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+      expect(calls).toHaveLength(1);
+    } finally {
+      await first.built.close();
+    }
+    // A restart without a new approval: the loaded hash is the new module's, which nobody approved.
+    const second = await start(2);
+    try {
+      expect(second.added).toMatchObject({ outcome: "stored" });
+      expect(second.added.description_hash).not.toBe(first.added.description_hash);
+      expect(await second.gate.call(GRANT, { q: "c" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+      await second.approve();
+    } finally {
+      await second.built.close();
+    }
+    const third = await start(3);
+    try {
+      expect(third.added).toMatchObject({ outcome: "already_added", description_hash: second.added.description_hash });
+      expect(await third.gate.call(GRANT, { q: "d" })).toEqual({ ok: true, content: { issues: ["#2 changed"] } });
+      expect(calls).toEqual([{ args: { q: "a" }, credential: CREDENTIAL }, { args: { q: "d" }, credential: CREDENTIAL }]);
+    } finally {
+      await third.built.close();
+      delete (globalThis as { __sfPackToolCalls?: unknown }).__sfPackToolCalls;
+    }
+  });
+
+  it("startup refuses a credential a built-in plugin declares, naming the secret and the descriptor; a pack-only secret starts", async () => {
+    const slack = composedFixture({}, { ...DESCRIPTOR, credential: "SLACK_BOT_TOKEN" });
+    expect(REGISTRY.source.secrets.slack!.map((d) => d.name)).toContain("SLACK_BOT_TOKEN");
+    const err = await loadError(slack.codeRoot);
+    expect(err.message).toContain("SLACK_BOT_TOKEN");
+    expect(err.message).toContain(join(slack.project, "tools", "tracker.json"));
+    // TRACKER_TOKEN is the pack's own: startup loads it as the broker's secret (its call gets it: the tests above).
+    const own = composedFixture({});
+    const loaded = await load(own.codeRoot);
+    expect(loaded.pack_tools.map((t) => [t.name, t.credential_name])).toEqual([[NAME, "TRACKER_TOKEN"]]);
   });
 
   it("startup refuses a pack tool grant with no tool module or a tool that is not read-only, and a module with no descriptor", async () => {

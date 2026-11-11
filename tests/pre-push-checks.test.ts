@@ -257,7 +257,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
       expect(f.fixSteps[0]!.writable_paths).toHaveLength(1);
       expect(f.fixSteps[0]!.writable_paths[0]).toMatch(/[/]\.worktrees[/]sbx_[^/]+[/]\.git$/);
 
-      expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+      expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
       const branch = `refs/heads/factory/${item.id}`;
       expect(git(f.origin, "log", "-1", "--format=%s", branch)).toBe(`fix: remove ${c.file}`);
       expect(f.broker.pushes()).toEqual([`factory/${item.id}`]);
@@ -455,7 +455,7 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
       scanner: new PatternEgressScanner(async () => []),
     });
     const item = await f.approveAndImplement();
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     const prompt = f.fixSteps[0]!.prompt;
     expect(prompt).toContain("`sh -c");
     expect(prompt).toContain("leaky` failed (exited 1)");
@@ -596,7 +596,7 @@ describe("TestDatabase plugins", { timeout: 60_000 }, () => {
   it("none sets no SF_TEST_MYSQL_URL, and the PR body says the MySQL checks were skipped", async () => {
     const f = await setup({ testDatabase: new NoTestDatabase() });
     const item = await f.approveAndImplement();
-    expect(item).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     for (const e of f.checkExecs()) expect(e.env).not.toHaveProperty("SF_TEST_MYSQL_URL");
     expect(f.broker.prBody()).toContain(MYSQL_SKIPPED);
     expect(MYSQL_SKIPPED).toMatch(/MySQL checks skipped/);
