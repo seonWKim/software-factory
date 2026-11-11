@@ -13,7 +13,7 @@ import { appDataPaths, saveQuickAddShortcut } from "../common/app-data.js";
 import { runShell } from "../common/run-shell.js";
 import { dashboardUrl } from "../common/status.js";
 import { taskPoster } from "./tasks-client.js";
-import { createMacosShell } from "./app-shell.js";
+import { STARTUP_ERROR_TITLE, createMacosShell } from "./app-shell.js";
 import { createQuickAdd } from "./quick-add.js";
 import { createSettingsView } from "./settings-view.js";
 import { quickAddShortcut } from "./shortcut.js";
@@ -91,7 +91,7 @@ if (!app.requestSingleInstanceLock()) {
       settingsView = createSettingsView(electron, { pageUrl: page("settings.html"), preload: panelPreload, shortcut });
       app.on("second-instance", () => shell.openWindow(dashboardUrl(config.ui_port)));
     } catch (e) {
-      dialog.showErrorBox("Software Factory could not start", e instanceof Error ? e.message : String(e));
+      dialog.showErrorBox(STARTUP_ERROR_TITLE, e instanceof Error ? e.message : String(e));
       app.exit(1);
     }
   });

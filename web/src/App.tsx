@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Monitor, Moon, RefreshCw, Sun } from "lucide-react";
 import { type JSX, useEffect, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
+import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
 import { LINK_CLASS } from "./components/ui/link-style.js";
 import { type MessageKey } from "./i18n/en.js";
@@ -141,16 +142,16 @@ export function App() {
   const needs = overview.data?.needs_you;
   const View = VIEWS[route.page.path] ?? FloorPage;
   useEffect(() => {
-    // The Needs you count leads the tab title, so a background tab shows it: "(4) Floor · software-factory".
+    // The Needs you count leads the tab title, so a background tab shows it: "(4) Floor · Gongbang".
     const count = needs ? `(${needs}) ` : "";
-    document.title = `${count}${transcript ? "Run transcript" : route.itemId ? "Work item" : pageLabel(route.page)} · software-factory`;
+    document.title = `${count}${transcript ? "Run transcript" : route.itemId ? "Work item" : pageLabel(route.page)} · ${t("app.name")}`;
   }, [route.page, route.itemId, transcript, needs]);
 
   return (
     <NavProvider value={navigate}>
       <div className="flex min-h-dvh bg-surface font-sans text-text-1">
         <aside aria-label={t("nav.sidebar")} className="w-44 shrink-0 border-r border-border p-3 max-sm:w-14">
-          <p className="mb-4 px-2 text-sm font-semibold max-sm:hidden">{t("app.name")}</p>
+          <Brand />
           <SideLinks label={t("nav.pages")} pages={PAGES} current={current} />
           <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("nav.tools")} pages={TOOL_PAGES} current={current} />
