@@ -1,11 +1,14 @@
 // The tool bridge's worker side (architecture §5, granted tools). For a run with granted broker tools the runner
 // opens a local socket that only this run's bridge is told about; every request on it, whoever sends it, goes
 // through ToolGate: the grant list, the lease, the broker's own call (which attaches any credential and fences on
-// the lease token), then the egress scan of the result. Nothing here hands a credential to the agent side.
+// the lease token), then the egress scan of the result, then the output cap. Nothing here hands a credential to the
+// agent side.
 
+import { mkdir, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentRunSpec } from "../../interfaces/agent-runner.js";
+import { OUTPUT_CAP } from "../../core/tools/index.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { type JsonLineHost, startJsonLineHost } from "./json-line-host.js";
@@ -17,20 +20,32 @@ export interface GrantedToolDeps {
   scanner: EgressScanner;
 }
 
-export type GateSpec = Pick<AgentRunSpec, "run_id" | "work_item_id" | "lease_token" | "tool_grants" | "signal">;
+/** `sandbox.workdir` is the run folder, where a result over the cap is written; without it such a result is cut. */
+export type GateSpec = Pick<AgentRunSpec, "run_id" | "work_item_id" | "lease_token" | "tool_grants" | "signal"> & {
+  sandbox?: Pick<AgentRunSpec["sandbox"], "workdir">;
+};
 
 /** The error codes a granted-tool call returns to the agent when the gate, not the tool, answers. */
 export const NOT_GRANTED = "not_granted";
 export const LEASE_LOST = "lease_lost";
 export const EGRESS_BLOCKED = "egress_blocked";
 
+/** A result whose text is longer than this many bytes goes to a file in the run folder (the shared tools' cap). */
+export const RESULT_CAP_BYTES = OUTPUT_CAP;
+/** The bytes of a capped result the agent still gets in place. */
+export const RESULT_PREVIEW_BYTES = 2 * 1024;
+/** The run folder's subfolder for capped results; it holds a `.gitignore` of `*`, so no result is ever committed. */
+export const RESULT_DIR = ".factory-tool-results";
+
 /**
  * One run's granted tools. `list` is what the agent may see; `call` is the only way a call reaches the broker:
  * a name outside the grant list (or not read-only) is refused without calling the broker, a run that lost its
- * lease gets `lease_lost` without calling it, and a result the egress scan flags is withheld.
+ * lease gets `lease_lost` without calling it, a result the egress scan flags is withheld, and a result over the cap
+ * comes back as its file's path and its first 2 KB.
  */
 export class ToolGate {
   private readonly ctx: ToolCallContext;
+  private capped = 0;
 
   constructor(
     private readonly deps: GrantedToolDeps,
@@ -66,7 +81,30 @@ export class ToolGate {
       const rules = [...new Set(scan.findings.map((f) => f.rule))].join(",");
       return { ok: false, error_code: EGRESS_BLOCKED, message: `${tool.name} result withheld: the egress scan flagged it (${rules})` };
     }
-    return result;
+    return result.ok ? this.cap(tool.name, result.content) : result;
+  }
+
+  /**
+   * The output cap, after the egress scan: content whose text is over RESULT_CAP_BYTES is written whole to a file
+   * in the run folder, and the agent gets `{ truncated, path, bytes, preview }`, the preview its first 2 KB. With
+   * no run folder, `path` is null and the rest of the text is dropped.
+   */
+  private async cap(name: string, content: unknown): Promise<ToolResult> {
+    const text = typeof content === "string" ? content : JSON.stringify(content);
+    const bytes = Buffer.from(text ?? "", "utf8");
+    if (bytes.length <= RESULT_CAP_BYTES) return { ok: true, content };
+    const preview = bytes.subarray(0, RESULT_PREVIEW_BYTES).toString("utf8");
+    const workdir = this.spec.sandbox?.workdir;
+    let path: string | null = null;
+    if (workdir !== undefined) {
+      const dir = join(workdir, RESULT_DIR);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, ".gitignore"), "*\n");
+      this.capped += 1;
+      path = join(dir, `${this.spec.run_id}-${this.capped}-${name.replace(/[^A-Za-z0-9._-]/g, "_")}.txt`);
+      await writeFile(path, bytes);
+    }
+    return { ok: true, content: { truncated: true, path, bytes: bytes.length, preview } };
   }
 }
 
