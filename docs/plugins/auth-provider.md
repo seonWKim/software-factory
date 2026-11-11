@@ -2,6 +2,8 @@
 
 What it does: resolves an external identity to a factory user and decides whether it may act (submit work, approve, reject, retry). Deny by default. Since 2026-11-01 (design §8) it decides through the one shared check in `src/core/authorize.ts`, which asks the grant plugins (GrantSource, [grant-source.md](grant-source.md)); no auth plugin asks GitHub for a permission itself.
 
+**`github`, `local` and `none` are deprecated, to be replaced by one owner check (decision changed 2026-11-11, owner decision; current).** The factory serves one owner ([08-enterprise.md](../design/08-enterprise.md), One owner, many workers), so deciding which of several people may act has no reason left. Replaced by: one owner check, which allows a command when its identity is the owner (from the environment, or the owner's own linked GitHub or Slack account) and refuses every other one. Removal plan: a follow-up issue (number added when filed) adds the owner check and removes the three plugins, the per-origin `auth` selection (`github_issue`, `local`, `slack_thread`) and the roles they read; the grants go with the GrantSource interface ([grant-source.md](grant-source.md)). Until then the plugins below still work as described.
+
 Selection is per command origin (issue #318): `auth` as a string selects the plugin for GitHub comments, and local commands (the CLI and the local UI) and Slack accounts (issue #498: a linked account acts as its factory user, whose stored role decides) use `local`; `"auth": { "github_issue": "github", "local": "local" }` names both. Local commands never depend on the GitHub plugin.
 
 Slack thread commands (identity provider `slack`) have their own origin, `slack_thread` (issue #486; current decision):
@@ -23,6 +25,7 @@ Switch back / disable: set `auth` to `github` (local commands keep `local`; set 
 
 ## History
 
+- **`github`, `local` and `none` deprecated** (decision changed 2026-11-11, owner decision). Before: the three plugins, selected per command origin, judged several people by their links, stored local roles and grants.
 - **Slack accounts are judged by `local`** (decision changed 2026-11-09, issue #498). Before: the plugin selected for GitHub comments (`github`) judged Slack accounts through their links, so their rights came from GitHub grants, not from the stored local roles.
 
 - **Auth per command origin, `local` plugin** (new decision, 2026-11-07, issue #318). Before: one `auth` plugin judged every command, so local CLI commands under `auth: github` needed a link that no command created.
