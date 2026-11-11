@@ -1,5 +1,14 @@
 # 4. Agents: gate commands
 
+**A pushback is captured in the owner's tacit ledger** (decision changed 2026-11-11, issue #570; replaces "a `/revise`, a `/reject` and a `changes` verdict are stored only in the factory's store"). The decision that changed: **once a `/revise`, a `/reject` or a `/verdict changes` applied, the controller records one capture for the owner's ledger (`plugins.tacit`, [tacit-ledger.md](../plugins/tacit-ledger.md)); outbound delivers it.**
+
+- **Where.** The hooks sit after a successful apply: `gateCommand` in the commands unit for `/revise` and `/reject` (a comment, the CLI or a dashboard request), `recordVerdict` in the verdicts unit for a `changes` verdict. A refused command, an `accept` verdict, a "Request changes" PR review, implicit verdicts and reverts capture nothing (the review is a follow-up issue).
+- **How.** The capture is an outbound action (`tacit_capture`) in the existing `outbound_actions` table (no schema change), destination `tacit:ledger`, keyed `tacit:<item>:<comment ID>`: the same command delivered twice, or handled by two workers on one store, stores one intent. The command's stage change commits without waiting for it.
+- **Delivery.** Outbound's `tacit` target, in the process that flushes and holds the plugin (the controller; never an agent run), calls the ledger. The pushback and the proposal pass the egress scanner (G5) first; a flagged text becomes the notice naming the rules. A failure is retried with outbound's backoff and holds only `tacit:ledger`; GitHub, Slack and the factory repo keep sending.
+- **What.** `session` is the item ID, `proposal` the stored summary of the item's latest finished run, `pushback` the owner's words verbatim; the ledger's own fields stay empty.
+- **Default `none`:** nothing is captured and no intent is recorded. Pushbacks stored before the plugin was selected are not backfilled.
+- **Solo and enterprise.** Solo default: `none`; with `agents-home`, the home is on the owner's machine. Enterprise (one owner's replicas on one store): the comment-ID key keeps each capture once; a ledger shared between people is not built.
+
 **A 👍 or 👎 on a factory message is a verdict** (decision changed 2026-11-11, issue #524; replaces "reactions are ignored: only a typed `/verdict`, `factory verdict` and the app's verdict request record a person's verdict"). The decision that changed: **a reaction by a person on the factory's PR comment (GitHub) or on its message in a work item's Slack thread is read and maps onto the `/verdict` path.**
 
 - **The mapping** (`src/core/reaction-verdict.ts`, pure): 👍 (`+1`, Slack `thumbsup`, any skin tone) is `accept` with severity `none`; 👎 (`-1`, `thumbsdown`) asks for the severity first; any other emoji, and any bot's reaction (the factory's own 👀 included), means nothing. Reactions are read up to 7 days after the message (`REACTION_WINDOW_MS`); older ones are not, and there is no backfill.
@@ -99,6 +108,7 @@ Any other command (`budget` among them: a follow-up) is refused (`only \`approve
 
 ## History
 
+- **A pushback stayed in the factory's store** (decision changed 2026-11-11, issue #570). Before: `/revise` and `/reject` were applied in the commands unit and a `/verdict` stored in the verdicts unit, and neither called anything outside the store, so a pushback left no trace the owner's ledger could read.
 - **Reactions were ignored** (decision changed 2026-11-11, issue #524). Before: the GitHub source added 👀 but never read reactions, and the Slack app had no `reactions:read` scope or `reaction_added` event, so a 👍 or 👎 on a factory message recorded nothing; only a typed `/verdict`, `factory verdict` and the app's verdict request did.
 - **Proposals were plain text only, with no store table** (decision changed 2026-11-11, issue #584). Before: a plain-language reply showed its proposed commands as typed lines on every surface, nothing stored them (so a proposal did not survive a restart or reach another replica), and Slack drew no buttons for them; the Confirm and Cancel action IDs in `slack-format.ts` were wired to nothing new.
 - **`/revise` on a local item at the merge wait** (decision changed 2026-11-11, issue #563). Before: a local item had no PR, so its `/revise` at the merge wait fell through to the spec path and was refused as "the spec is not waiting for approval"; the command table listed `revise` for local items only at the spec gate and after failures, so `/help`, the footer and the item page did not offer it there.
