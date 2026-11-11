@@ -2,7 +2,7 @@ import { errorText } from "../core/log.js";
 import { LiveSettings } from "../core/settings.js";
 import type { Timestamp, WorkerId } from "../core/types.js";
 import { loadRunKinds, runKindProblems } from "./run-kind.js";
-import { Worker } from "./runner.js";
+import { Worker, type WorkerPlugins } from "./runner.js";
 import { KINDS, type WorkerDeps } from "./support.js";
 import type { ExecutionEngines } from "./engine/index.js";
 import type { TickSource } from "../shared/ticks/tick-generator.js";
@@ -25,6 +25,8 @@ export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "activ
   engines?: ExecutionEngines;
   /** The selected `ticks` plugin (`plugins.ticks`); absent: `time-based`. Each Worker runs its waits on it. */
   ticks?: TickSource;
+  /** The enabled pack checks (design §4, issue #494), loaded and checked at startup; absent: none. Each Worker runs them in its implement runs. */
+  pack_checks?: WorkerPlugins["pack_checks"];
 }
 
 /** Why the live slot count changed, as the `worker slots` line gives it. "drain" is any stop of the pool. */
@@ -66,7 +68,7 @@ export class WorkerPool {
   private reportFailing = false;
 
   constructor(private readonly d: WorkerPoolDeps) {
-    const { id_prefix, index_base = 0, engines, ticks, ...shared } = d;
+    const { id_prefix, index_base = 0, engines, ticks, pack_checks, ...shared } = d;
     const awake = new CountedKeepAwake(d.awake);
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     const settings = this.live;
@@ -75,7 +77,9 @@ export class WorkerPool {
     this.workers = Array.from({ length: size }, (_, i) => {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
-      return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake: slotAwake, active: () => i < settings.workers() }, { ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}) });
+      return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake: slotAwake, active: () => i < settings.workers() }, {
+        ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}),
+      });
     });
     // id_prefix is `<host>:<pid>`.
     const cut = id_prefix.lastIndexOf(":");
