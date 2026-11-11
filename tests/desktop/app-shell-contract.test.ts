@@ -1,0 +1,94 @@
+// The AppShell contract (src/interfaces/app-shell.ts), run against the fake and the macOS shell with Electron mocked.
+import { describe, expect, it } from "vitest";
+import type { AppShell } from "../../src/interfaces/app-shell.js";
+import { createMacosShell } from "../../desktop/electron/macos/app-shell.js";
+import { FakeAppShell, electronMock, flush } from "./fakes.js";
+
+interface Harness {
+  readonly shell: AppShell;
+  /** The URL each window loaded first, one entry per window. */
+  windows(): string[];
+  windowVisible(): boolean;
+  menuText(): string;
+  closeWindow(): void;
+  exited(): boolean;
+}
+
+const harnesses: Record<string, () => Harness> = {
+  fake: () => {
+    const shell = new FakeAppShell();
+    return {
+      shell,
+      windows: () => shell.windows,
+      windowVisible: () => shell.visible,
+      menuText: () => shell.menuText(),
+      closeWindow: () => shell.closeWindow(),
+      exited: () => shell.exited,
+    };
+  },
+  macos: () => {
+    const m = electronMock();
+    const shell = createMacosShell(m.electron, { preload: "/app/preload.cjs" });
+    return {
+      shell,
+      windows: () => m.windows.map((w) => w.loads[0]!),
+      windowVisible: () => m.windows.some((w) => w.visible && !w.destroyed),
+      menuText: () => m.tray.title,
+      closeWindow: () => m.windows.at(-1)!.close(),
+      exited: m.exited,
+    };
+  },
+};
+
+const DASHBOARD = "http://127.0.0.1:4310/app/";
+
+for (const [name, make] of Object.entries(harnesses)) {
+  describe(`AppShell contract: ${name}`, () => {
+    it("opens one window on the given URL and shows it again on the next openWindow", () => {
+      const h = make();
+      h.shell.openWindow(DASHBOARD);
+      h.closeWindow();
+      expect(h.windowVisible()).toBe(false);
+      h.shell.openWindow(DASHBOARD);
+      expect(h.windows()).toEqual([DASHBOARD]);
+      expect(h.windowVisible()).toBe(true);
+    });
+
+    it("shows the needs-you count in the menu bar, and a dash while it is unknown", () => {
+      const h = make();
+      h.shell.setStatus({ state: "running", needsYou: 3 });
+      expect(h.menuText()).toContain("3");
+      h.shell.setStatus({ state: "not reachable", needsYou: null });
+      expect(h.menuText()).toContain("–");
+    });
+
+    it("closing the window neither drains nor exits", async () => {
+      const h = make();
+      let drains = 0;
+      h.shell.onQuit(async () => void drains++);
+      h.shell.openWindow(DASHBOARD);
+      h.closeWindow();
+      await flush();
+      expect(drains).toBe(0);
+      expect(h.exited()).toBe(false);
+    });
+
+    it("quit runs the drain once and exits only after it finished", async () => {
+      const h = make();
+      let drains = 0;
+      let finish!: () => void;
+      h.shell.onQuit(() => {
+        drains += 1;
+        return new Promise<void>((r) => (finish = r));
+      });
+      h.shell.quit();
+      h.shell.quit();
+      await flush();
+      expect(drains).toBe(1);
+      expect(h.exited()).toBe(false);
+      finish();
+      await flush();
+      expect(h.exited()).toBe(true);
+    });
+  });
+}

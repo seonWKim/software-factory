@@ -58,6 +58,7 @@ the `05-*` files.
 - [09-health.md](design/09-health.md): the Health panel and the read-only schema probe.
 - [09-dashboard-app.md](design/09-dashboard-app.md): the client dashboard app, its read-only JSON API and how `/app/` is served.
 - [09-status-banner.md](design/09-status-banner.md): the banner that shows what the update supervisor is doing.
+- [09-desktop-app.md](design/09-desktop-app.md): the macOS app that runs the supervisor as its child, shows the dashboard and the needs-you count, and drains on Quit.
 
 ## 10. Event-driven factory
 - [10-event-driven.md](design/10-event-driven.md): the RFC 0015 move, prefixed tables, timestamped migrations with backups and verified copies, and architecture tests.
