@@ -6,6 +6,7 @@ import {
   unknownCommandReply, withSlash,
 } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { itemCommands } from "../src/ui/commands.js";
 import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { runLocalCli } from "../src/core/local-cli.js";
@@ -222,6 +223,43 @@ describe("command table", () => {
     expect(applies(verdict, { phase: "closed", has_pr: false, local: true })).toBe(false);
     expect(applies(verdict, { phase: "merged", has_pr: false, local: true })).toBe(true);
     expect(commandTableMarkdown()).toContain("| any open or merged item, once it has a PR (a local item needs none) |");
+  });
+
+  it("/revise has a local meaning at the merge wait on a local item with no PR (issue #563)", async () => {
+    const revise = commandSpec("revise");
+    const item = (type: string, change_ref: string | null, blocked_reason = "merge_pending") => ({
+      stage: "REVIEW" as const, blocked_on: "human" as const, blocked_reason, change_ref, source: { type, id: "x", link: "x" },
+    });
+    const local = commandState(item("local", null));
+    expect(local).toEqual({ phase: "merge_pending", has_pr: false, local: true });
+    expect(applies(revise, local)).toBe(true);
+    const shown = commandsFor(local).find((c) => c.name === "revise")!;
+    expect(shown.description).toMatch(/implementer/);
+    expect(shown.description).toMatch(/local branch/);
+    expect(shown.description).not.toContain("On the PR");
+    expect(shown.description).not.toBe(revise.description);
+    const footer = commandFooter(local);
+    expect(footer).not.toContain("On the change");
+    expect(footer).toContain(`- \`/revise <feedback>\`: ${shown.description}.`);
+    expect(footer).not.toContain("No command changes this item's state now.");
+    const help = helpReply(local).split("\n").find((l) => l.startsWith("- `/revise <feedback>`"))!;
+    expect(help).toBe(`- \`/revise <feedback>\` **(now)**: ${shown.description}.`);
+    // A local item with a PR, a GitHub or Slack item, and a local item in any other phase: as before.
+    expect(applies(revise, commandState(item("local", "42")))).toBe(false);
+    for (const type of ["github_issue", "slack_thread"]) expect(applies(revise, commandState(item(type, null))), type).toBe(false);
+    for (const phase of COMMAND_PHASES) {
+      const s = { phase, has_pr: false, local: true as const };
+      expect({ phase, on: applies(revise, s) }).toEqual({ phase, on: phase === "merge_pending" || revise.phases.includes(phase) });
+      if (phase !== "merge_pending" && applies(revise, s)) expect(commandsFor(s).find((c) => c.name === "revise")!.description).toBe(revise.description);
+    }
+    expect(applies(revise, commandState(item("local", null, "run_failed:review:invalid_output")))).toBe(false);
+    // The item API offers it with the local description, under the same grant as approve.
+    const it = item("local", null) as unknown as WorkItem;
+    const rows = await itemCommands(it, [], { allow: false, reason: "no role" }, async (v) => v);
+    expect(rows.find((r) => r.name === "revise")).toEqual({ name: "revise", usage: "/revise <feedback>", description: shown.description, allowed: false, reason: "no role" });
+    expect((await itemCommands(it, [], { allow: true }, async (v) => v)).find((r) => r.name === "revise")?.allowed).toBe(true);
+    expect(commandTableMarkdown()).toContain(`. ${revise.local_description} |`);
+    expect(commandTableMarkdown()).toContain("; on a local item with no PR: waiting for a human merge; on its PR: ");
   });
 
   it("/help names the state by its label, not its phase id", () => {

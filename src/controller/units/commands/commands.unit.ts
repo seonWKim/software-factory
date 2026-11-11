@@ -4,7 +4,7 @@
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import { prNumber } from "../../../core/change-ref.js";
 import {
-  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
+  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
   latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
@@ -234,7 +234,7 @@ export class CommandsUnit {
   }
 
   /**
-   * Feedback on a PR (design §4): a `/revise` on the PR or a "Request changes" review. Accepted while the PR
+   * Feedback on a PR (design §4): a `/revise` on the PR or a "Request changes" review, or a local item's `/revise` (`change_ref` null, issue #563). Accepted while it
    * waits for a human merge or its review run failed: the item goes to RUNNING with one implement run on its
    * branch, keyed on the next loop (loop_count + 1), with the feedback as its input and on the state change.
    * At the loop limit the item blocks on a human with `max_loops` and starts nothing. `key` (the comment or the
@@ -242,20 +242,18 @@ export class CommandsUnit {
    */
   async prFeedback(
     it: WorkItem,
-    f: { text: string; actor: Actor; reason: string; change_ref: string; key: { comment_id: string } | { review_id: string } },
+    f: { text: string; actor: Actor; reason: string; change_ref: string | null; key: { comment_id: string } | { review_id: string } },
   ): Promise<Decision | Refusal> {
     if (it.stage === "CLOSED" || it.change_ref !== f.change_ref) return null;
     const [field, value] = Object.entries(f.key)[0] as [string, string];
     const done = (await this.c.k.reader.listStateChanges(it.id)).some(
       (c) => (c.reason === f.reason || c.reason === "max_loops") && c.detail?.[field] === value);
     if (done) return null;
-    const phase = commandPhase(it);
-    const accepted = commandSpec("revise").pr_phases ?? [];
+    const [phase, local] = [commandPhase(it), f.change_ref === null];
+    const accepted = (local ? commandSpec("revise").local_phases : commandSpec("revise").pr_phases) ?? [];
     if (!accepted.includes(phase)) {
-      return {
-        refuse: `the item is ${phaseLabel(phase)}; feedback on the PR is taken only when it is ` +
-          accepted.map((p) => phaseLabel(p)).join(" or "),
-      };
+      const where = local ? "on a local item" : "on the PR";
+      return { refuse: `the item is ${phaseLabel(phase)}; feedback ${where} is taken only when it is ${accepted.map(phaseLabel).join(" or ")}` };
     }
     const feedback = f.text.trim();
     if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
@@ -266,12 +264,12 @@ export class CommandsUnit {
       return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
     }
     const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
-    const detail = { ...f.key, pr_number: prNumber(f) };
+    const detail = { ...f.key, ...(local ? {} : { pr_number: prNumber(f) }) };
     const limit = this.c.k.cfg.max_loops;
     if (it.loop_count + 1 >= limit) {
       const patch = { blocked_on: "human" as const, blocked_reason: "max_loops" };
       await this.c.unit("outbox").comment(it, `max-loops:${field}-${value}`, [
-        `The PR feedback would start loop ${it.loop_count + 1} (limit \`max_loops\` = ${limit}), so the factory started no implement run. A human needs to decide.`,
+        `The ${local ? "" : "PR "}feedback would start loop ${it.loop_count + 1} (limit \`max_loops\` = ${limit}), so the factory started no implement run. A human needs to decide.`,
         "",
         footerAfter(it, patch),
       ].join("\n"));
@@ -541,8 +539,10 @@ export class CommandsUnit {
     if (e.kind === "resolve_requested") {
       return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
     }
-    if (e.kind === "revise_requested" && (e.pr || (it.source.type === "slack_thread" && appliesOnPr(commandSpec("revise"), commandState(it))))) {
-      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref!, key: { comment_id: e.comment_id } });
+    // On the PR, in a Slack thread with a PR, or on a local item with no PR at the merge wait (its local branch, issue #563).
+    const asFeedback = e.kind === "revise_requested" && (it.source.type === "slack_thread" ? appliesOnPr : appliesLocally)(commandSpec("revise"), commandState(it));
+    if (e.kind === "revise_requested" && (e.pr || asFeedback)) {
+      return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
     if (it.stage === "CLOSED") return { refuse: CLOSED_REFUSAL };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
