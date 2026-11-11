@@ -771,6 +771,17 @@ CREATE TABLE `controller_work_items` (
   KEY `work_items_change` (`project`,`change_ref`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `ext_packs_approvals` (
+  `seq` bigint NOT NULL AUTO_INCREMENT,
+  `kind` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `name` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `description_hash` char(64) COLLATE utf8mb4_bin NOT NULL,
+  `action` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `user_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`seq`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `ext_packs_entries` (
   `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
   `kind` varchar(16) COLLATE utf8mb4_bin NOT NULL,

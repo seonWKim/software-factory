@@ -1710,6 +1710,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
       "controller_merge_queue_entries",
       "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
+      "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       // The sql bus's own tables (RFC 0015 M3).
       "bus_scheduler",

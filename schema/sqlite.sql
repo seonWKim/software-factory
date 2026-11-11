@@ -628,6 +628,16 @@ CREATE TABLE controller_work_items (
     UNIQUE (source_type, source_id)
   );
 
+CREATE TABLE ext_packs_approvals (
+    seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    description_hash  TEXT NOT NULL,
+    action            TEXT NOT NULL,
+    user_id           TEXT NOT NULL,
+    at                TEXT NOT NULL
+  );
+
 CREATE TABLE ext_packs_entries (
     id                TEXT PRIMARY KEY,
     kind              TEXT NOT NULL,
