@@ -80,8 +80,9 @@ export function nextDueDate(date: string, every: Recurrence): string {
   return next.toISOString().slice(0, 10);
 }
 
-/** One line per task: ID, title, due, priority, list and recurrence, `-` for each unset. */
+/** One line per task: ID, title, due, priority, list (as `#label`) and recurrence, `-` for each unset. */
 export function taskLine(t: Task): string {
   const due = t.due_date === null ? "-" : t.due_time === null ? t.due_date : `${t.due_date} ${t.due_time}`;
-  return [t.id, t.title, due, t.priority === null ? "-" : `!${t.priority}`, t.list === null ? "-" : `#${t.list}`, t.recurrence === null ? "-" : `every ${t.recurrence}`].join("\t");
+  const list = t.list === null ? "-" : "#" + t.list;
+  return [t.id, t.title, due, t.priority === null ? "-" : `!${t.priority}`, list, t.recurrence === null ? "-" : `every ${t.recurrence}`].join("\t");
 }
