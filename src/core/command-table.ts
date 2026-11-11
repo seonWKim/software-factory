@@ -31,7 +31,11 @@ export interface TableCommand {
   does: string;
   /** One line: what it prints. */
   prints: string;
-  /** As typed after a mention of the bot, e.g. `show <id>`, `/approve [notes]`. A leading `/` is required when shown. */
+  /**
+   * As typed after a mention of the bot, e.g. `show <id>`, `/approve [notes]`. A leading `/` is required when shown,
+   * except in an item's thread, where the Slack source adds it to a bare command word (issue #541); lists show the
+   * form without it.
+   */
   chat: string;
   chat_args: ChatArgs;
   /** Acts on one work item: in chat only in the item's thread (which names the item), on the dashboard a command on its page. */
@@ -139,11 +143,14 @@ export function commandLine(c: TableCommand): string {
   return `${c.does}. Who: ${WHO[c.who]}. Prints: ${c.prints}`;
 }
 
-/** The SET_UP.md chat list, one bullet per command. tests/command-table.test.ts fails when SET_UP.md differs. */
+/**
+ * The SET_UP.md chat list, one bullet per command, each without a leading `/` (an item command is typed in its item's
+ * thread, where the bare word works). tests/command-table.test.ts fails when SET_UP.md differs.
+ */
 export function chatCommandListMarkdown(): string {
   return COMMAND_TABLE.map((c) => {
     const where = c.edge ? "; refused in chat until #479, so use the CLI" : c.item ? ", in the item's thread" : "";
-    return `- \`@bot ${c.chat}\`: as \`factory ${cliUsageOf(c)}\`${where}. Who: ${WHO[c.who]}.`;
+    return `- \`@bot ${c.chat.replace(/^\//, "")}\`: as \`factory ${cliUsageOf(c)}\`${where}. Who: ${WHO[c.who]}.`;
   }).join("\n");
 }
 

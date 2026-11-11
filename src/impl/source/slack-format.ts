@@ -143,15 +143,16 @@ const LABELS: Record<string, string> = { approve: "Approve", retry: "Retry", res
 
 /**
  * The Slack message for one comment: mrkdwn sections, a line on typing commands in Slack (a leading `/` would be
- * taken by Slack itself, so a command follows a mention; it names the `/approve` form, bare `approve` and `/help`), and an actions block with the command buttons, or Confirm and Cancel under a suggestion.
+ * taken by Slack itself, so a command follows a mention, with no slash: `approve`, `revise <feedback>`, `help`; issue
+ * #541), and an actions block with the command buttons, or Confirm and Cancel under a suggestion.
  */
 export function renderComment(body: string, repo: RepoRef, botUserId: string): SlackRendered {
   let text = toMrkdwn(body, repo);
   const cmds = footerCommands(body);
   const suggestion = suggestedCommand(body);
   if (cmds.length > 0 || suggestion !== null || body.includes(FOOTER_HEADING)) {
-    text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> /approve or <@${botUserId}> /revise &lt;feedback&gt; ` +
-      `(after the mention, approve with no slash works too; <@${botUserId}> /help lists them), or use the buttons._`;
+    text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> approve or <@${botUserId}> revise &lt;feedback&gt; ` +
+      `(<@${botUserId}> help lists them), or use the buttons._`;
   }
   let sections = chunks(text);
   if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS), "_(message cut: too long for Slack)_"];

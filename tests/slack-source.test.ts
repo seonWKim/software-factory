@@ -17,7 +17,7 @@ import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/
 import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { commentEvent } from "../src/core/comment-event.js";
-import { commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
+import { chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { plainRefusal } from "../web/src/api.js";
@@ -443,10 +443,11 @@ describe("slack source: replies, buttons and commands", () => {
     expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help"]);
     const text = JSON.stringify(spec.blocks);
     expect(text).not.toContain("<!--");
-    expect(text).toContain(`<@${BOT}> /revise`);
-    expect(text).toContain(`<@${BOT}> /approve`);
-    expect(text).toContain("approve with no slash works too");
-    expect(text).toContain(`<@${BOT}> /help`);
+    expect(text).toContain(`<@${BOT}> revise`);
+    expect(text).toContain(`<@${BOT}> approve`);
+    expect(text).toContain(`<@${BOT}> help`);
+    // The hint shows no slash form of a command.
+    expect(text).not.toContain(`<@${BOT}> /`);
     expect(f.api.thread(ts).find((m) => m.text?.startsWith("Status:"))!.text).toBe("Status: *needs approval*");
   });
 
@@ -901,11 +902,11 @@ describe("slack source: factory commands (issue #498)", () => {
     await deliver(f, eventEnvelope(mention("1800000035.000400", "help", { thread_ts: "1800000035.000100", user: "U0BOB" })));
     const channel = f.api.thread("1800000035.000200")[0]!.text!;
     expect(channel).toContain("`list`");
-    expect(channel).not.toContain("/approve");
+    expect(channel).not.toContain("approve");
     const replies = f.api.thread("1800000035.000100").filter((m) => m.text?.startsWith("Commands you can run in this item"));
     expect(replies).toHaveLength(2);
-    expect(replies[0]!.text).toContain("/approve");
-    expect(replies[1]!.text).not.toContain("/approve");
+    expect(replies[0]!.text).toContain("`approve [notes]`");
+    expect(replies[1]!.text).not.toContain("approve");
     expect(replies[1]!.text).toContain("`list`");
   });
 
@@ -998,11 +999,11 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     expect(now.map((c) => c.name)).toEqual(["approve", "reject", "revise"]);
     for (const c of now) {
       expect(helpReply(state)).toContain(`- \`${c.usage}\` **(now)**: ${c.description}.`);
-      expect(help).toContain(toMrkdwn(`- \`${c.usage}\`: ${c.description}.`, repo));
+      // The same words, each command shown without its slash, as typed after the mention.
+      expect(help).toContain(toMrkdwn(chatForm(`- \`${c.usage}\`: ${c.description}.`), repo));
     }
-    // The slash form after a mention, and the bare approve.
-    expect(help).toContain("`@software-factory /help`");
-    expect(help).toContain("`approve` with no slash works too: `@software-factory approve` is `@software-factory /approve`.");
+    expect(help).toContain("`@software-factory help`");
+    expect(help).not.toMatch(/(^|[\s`(])\/[a-z]/);
   });
 
   it("in an item's thread, `@bot /approve` and `@bot approve` both approve; outside one, a bare `approve` is a request", async () => {
@@ -1023,7 +1024,6 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     await deliver(f, eventEnvelope(mention("1800000062.000500", "approve")));
     expect((await itemOf(f, "1800000062.000500"))?.title).toBe("approve");
   });
-
   it("the same command refused for the same reason reads the same on GitHub, the CLI, Slack and the dashboard", async () => {
     const f = await setup();
     const want = refusalText("/approve", specNotWaiting("triaging"));
@@ -1067,5 +1067,106 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     await deliver(f, eventEnvelope(mention("1800000064.000200", "approve", { thread_ts: ts, user: "U0BOB" })));
     const [refused] = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
     expect(refused!.text).toContain(refusalText("/approve", page.commands[0]!.reason!));
+  });
+});
+
+describe("slack source: commands with no slash after a mention (issue #541)", () => {
+  /** The stored CLI rows, as command and arguments. */
+  const rows = async (f: F) => (await f.store.listCliCommandsAfter(0, 50)).map((c) => [c.command, c.args]);
+  /** The inbox events of the Slack source from `after`, without their comment IDs. */
+  const events = async (f: F, after: number) =>
+    (await f.store.listInboxAfter("slack_thread", after, 50)).map((r) => {
+      const { comment_id: _id, ...e } = r.event as unknown as Record<string, unknown>;
+      return e;
+    });
+  const lastSeq = async (f: F) => (await f.store.listInboxAfter("slack_thread", 0, 500)).at(-1)?.seq ?? 0;
+
+  it("in an item's thread, `@bot revise <feedback>` stores and applies the same command as `@bot /revise <feedback>`", async () => {
+    const f = await setup();
+    const slashed = await specPending(f, "1800000070.000100");
+    const bare = await specPending(f, "1800000070.000200");
+    await deliver(f, eventEnvelope(mention("1800000070.000300", "/revise narrower scope\nkeep the flag", { thread_ts: "1800000070.000100" })));
+    await deliver(f, eventEnvelope(mention("1800000070.000400", "revise narrower scope\nkeep the flag", { thread_ts: "1800000070.000200" })));
+    await f.controller.tickIntake();
+    expect(await rows(f)).toEqual([
+      ["revise", { item: slashed.id, text: "narrower scope\nkeep the flag" }],
+      ["revise", { item: bare.id, text: "narrower scope\nkeep the flag" }],
+    ]);
+    const a = (await f.store.getWorkItem(slashed.id))!;
+    const b = (await f.store.getWorkItem(bare.id))!;
+    expect(fields(b)).toEqual(fields(a));
+    expect(b).toMatchObject({ stage: "NEW", spec_feedback: "narrower scope\nkeep the flag" });
+  });
+
+  it("every table command (approve, retry, reject, resolve, merge) stores the same row bare as with its slash", async () => {
+    for (const [i, text] of ["approve, but fix the tests", "retry once more", "reject duplicate emails", "resolve keep ours", "merge"].entries()) {
+      const f = await setup();
+      const slashed = await specPending(f, `18000000${71 + i}.000100`);
+      const bare = await specPending(f, `18000000${71 + i}.000200`);
+      await deliver(f, eventEnvelope(mention(`18000000${71 + i}.000300`, `/${text}`, { thread_ts: slashed.source.id.split(":")[3] })));
+      await deliver(f, eventEnvelope(mention(`18000000${71 + i}.000400`, text, { thread_ts: bare.source.id.split(":")[3] })));
+      await f.controller.tickIntake();
+      await f.controller.tickCommands();
+      const [r1, r2] = await rows(f);
+      if (text === "merge") {
+        // Not a local item: the CLI refuses both the same way, before any row.
+        expect([r1, r2], text).toEqual([undefined, undefined]);
+        const refusals = (ts: string) => f.api.thread(ts).filter((m) => m.text?.includes("is not a local work item")).length;
+        expect([refusals(`18000000${71 + i}.000100`), refusals(`18000000${71 + i}.000200`)]).toEqual([1, 1]);
+      } else {
+        expect(r1, text).toEqual([r1![0], { ...(r1![1] as object), item: slashed.id }]);
+        expect(r2, text).toEqual([r1![0], { ...(r1![1] as object), item: bare.id }]);
+      }
+      expect(fields(await f.store.getWorkItem(bare.id)), text).toEqual(fields(await f.store.getWorkItem(slashed.id)));
+    }
+  });
+
+  it("budget, verdict, standing and link bare after a mention in an item's thread are the same events as with the slash", async () => {
+    const f = await setup();
+    const item = await specPending(f, "1800000080.000100");
+    const thread_ts = "1800000080.000100";
+    for (const [n, text] of ["budget 50000", "verdict accept none fine", "standing accept spec-t1"].entries()) {
+      const from = await lastSeq(f);
+      await deliver(f, eventEnvelope(mention(`18000000${81 + n}.000100`, `/${text}`, { thread_ts })));
+      await deliver(f, eventEnvelope(mention(`18000000${81 + n}.000200`, text, { thread_ts })));
+      const [slashed, bare, ...more] = await events(f, from);
+      expect(more, text).toEqual([]);
+      expect(bare, text).toEqual(slashed);
+      expect(slashed!.kind, text).not.toBe("plain_comment");
+    }
+    // `link <code>`: an unlinked account links itself in the thread with the bare word as with `/link`.
+    for (const [who, user, typed] of [["U0CAROL", "github:3", "link code-carol"], ["U0DAVE", "github:4", "/link code-dave"]] as const) {
+      await f.store.createLinkCode(user as UserId, `code-${who === "U0CAROL" ? "carol" : "dave"}`);
+      await deliver(f, eventEnvelope(mention(`1800000085.00010${who === "U0CAROL" ? 1 : 2}`, typed, { thread_ts, user: who })));
+      expect(await f.store.resolveLink("slack", who), typed).toBe(user);
+    }
+    expect((await f.store.getWorkItem(item.id))?.blocked_reason).toBe("spec_pending");
+  });
+
+  it("outside an item's thread, a bare command word starts a work item; the slash form gets the refusal naming the bare form", async () => {
+    const f = await setup();
+    await deliver(f, eventEnvelope(mention("1800000090.000100", "reject duplicate emails")));
+    await deliver(f, eventEnvelope(mention("1800000090.000200", "budget the parser work")));
+    expect((await itemOf(f, "1800000090.000100"))?.title).toBe("reject duplicate emails");
+    expect((await itemOf(f, "1800000090.000200"))?.title).toBe("budget the parser work");
+    await deliver(f, eventEnvelope(mention("1800000090.000300", "/reject duplicate emails")));
+    expect(f.api.thread("1800000090.000300").map((m) => m.text)).toEqual([
+      "`reject &lt;reason&gt;` works only in a work item's thread: post it there, after a mention of the bot.",
+    ]);
+    expect(await itemOf(f, "1800000090.000300")).toBeNull();
+    expect(await rows(f)).toEqual([]);
+  });
+
+  it("a reply in an item's thread with no mention still needs the slash: a bare word is a plain comment", async () => {
+    const f = await setup();
+    const ts = "1800000091.000100";
+    const item = await specPending(f, ts);
+    const from = await lastSeq(f);
+    await deliver(f, eventEnvelope(message("1800000091.000200", "revise narrower scope", { thread_ts: ts })));
+    expect((await events(f, from)).map((e) => [e.kind, e.body])).toEqual([["plain_comment", "revise narrower scope"]]);
+    expect(await rows(f)).toEqual([]);
+    expect((await f.store.getWorkItem(item.id))?.blocked_reason).toBe("spec_pending");
+    await deliver(f, eventEnvelope(message("1800000091.000300", "/revise narrower scope", { thread_ts: ts })));
+    expect(await rows(f)).toEqual([["revise", { item: item.id, text: "narrower scope" }]]);
   });
 });
