@@ -1,3 +1,5 @@
+import type { VerdictReaction } from "../core/reaction-verdict.js";
+import type { ParsedVerdict } from "../core/verdict.js";
 import type { WorkStatus } from "../core/status-label.js";
 import type { SourceRef, SourceType, UserId } from "../core/types.js";
 import type { ExternalIdentity } from "./auth-provider.js";
@@ -91,6 +93,16 @@ export type SourceEvent =
    */
   | { kind: "verdict_submitted"; target: VerdictEventTarget; comment_id: string; approver: ExternalIdentity; args: string }
   /**
+   * A 👍 or 👎 by a person on a message the factory posted (issue #524): its comment on a PR, or a message in a chat
+   * item's thread. Same kind as `/verdict`, since it is one, and taken by the same unit; told apart by `reaction`.
+   * `verdict`: what it stores at once (reactionVerdict: `accept`/`none` for 👍), null for 👎, which asks for the
+   * severity. `comment_id` is `reaction:<reaction id>`, so a redelivery stores nothing more. No 👀, no refusal reply.
+   */
+  | {
+      kind: "verdict_submitted"; target: ReactionTarget; comment_id: string; approver: ExternalIdentity; reaction: VerdictReaction;
+      verdict: ParsedVerdict | null;
+    }
+  /**
    * A commit that landed on the base branch, with its full message. The controller matches reverts of
    * factory merges in it (design §6). A boundary commit may be delivered again; handling is idempotent.
    */
@@ -121,6 +133,14 @@ export interface SubIssueInput extends Omit<IssueInput, "project" | "requester_i
 export type VerdictEventTarget =
   | { kind: "issue"; source: SourceRef }
   | { kind: "pr"; change_ref: string; head_branch: string };
+
+/**
+ * What a reacted message belongs to: a factory PR by its change ref (the item whose PR it is), or the item whose
+ * source is `source` (a chat thread).
+ */
+export type ReactionTarget =
+  | { kind: "issue"; source: SourceRef }
+  | { kind: "pr"; change_ref: string };
 
 export interface PollResult {
   events: SourceEvent[];

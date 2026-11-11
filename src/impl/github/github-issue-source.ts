@@ -4,6 +4,7 @@ import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { incompleteLabel } from "../../core/pr-body.js";
 import { workItemIdFromBranch } from "../../core/policy.js";
+import { type ListedReaction, REACTION_WINDOW_MS, changeComments, newReactionEvents } from "../../core/reaction-verdict.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { Logger } from "../../core/log.js";
 import type { DependencyState, SourceRef, WorkItemId } from "../../core/types.js";
@@ -114,6 +115,7 @@ interface Cursor {
    * catch-up allowance (GitHubClient.takeCatchUp), and the cursor stops at the last one read. Absent: caught up.
    */
   closed_catch_up?: boolean;
+  reactions?: Record<string, number> | undefined; // Per factory PR comment of the last 7 days, its highest reaction id delivered.
 }
 
 /** What the GitHub forge's poll needs beyond the client: the Clock the starting point comes from, `github.history_since`, a log. */
@@ -268,6 +270,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     // In comment-id order, so the commands of one poll are applied in the order they were written (issue #284).
     read.sort((a, b) => a.cm.id - b.cm.id);
     for (const r of read) events.push(...(await this.recordComment(r)));
+    next.reactions = this.store && !this.client.lowBudget() ? await this.readReactions(this.store, c.reactions ?? {}, events) : c.reactions;
 
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
     // Under the budget threshold the cursor stays put, so the next poll reads them. With no cursor yet (a first
@@ -298,6 +301,18 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     return { events, next_cursor: JSON.stringify(next) };
   }
 
+  /** 👍/👎 on the factory's PR comments of the last 7 days (issue #524, design 05-sources): one conditional GET each per poll. */
+  private async readReactions(store: FactoryStore, seen: Record<string, number>, events: SourceEvent[]): Promise<Record<string, number> | undefined> {
+    const marks: Record<string, number> = {};
+    for (const { comment_id, change_ref } of changeComments(await store.listPostedComments(`${this.repo.owner}/${this.repo.name}#`, REACTION_WINDOW_MS))) {
+      const list = await this.optionalList<ListedReaction>(`/repos/${this.repo.owner}/${this.repo.name}/issues/comments/${encodeURIComponent(comment_id)}/reactions`);
+      const r = newReactionEvents(list, seen[comment_id] ?? 0, { kind: "pr", change_ref }, identity);
+      marks[comment_id] = r.mark;
+      events.push(...r.events);
+    }
+    return Object.keys(marks).length > 0 ? marks : undefined;
+  }
+
   /**
    * One new comment by a person: a plain comment on an issue, or a command as its command inbox row with the PR
    * context a command on a PR's conversation needs (read here, so applying it reads nothing more). Null for what
@@ -317,7 +332,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       if (target.kind === "pr") pr = { change_ref: target.change_ref, head_branch: target.head_branch };
     } else if (onPr && parsed.kind === "command" && (parsed.name === "revise" || parsed.name === "resolve")) {
       // `/revise`: any PR of this repository (factory or adopted); `/resolve`: factory PRs only.
-      pr = parsed.name === "revise" ? await this.pullHead(base, n) : await this.factoryPull(base, n);
+      pr = await this.pullHead(base, n, parsed.name === "resolve");
       if (!pr) return null;
     }
     const command = githubCommand({
@@ -361,27 +376,13 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   }
 
   /**
-   * The PR's number and head branch if it is a factory PR; null for another PR or one that is gone (404), so
-   * a stray comment cannot wedge the poll. Other errors are thrown and the poll is retried.
+   * The PR's number and head branch (with `factoryOnly`, only on a factory branch); null for another PR or one that is
+   * gone (404), so a stray comment cannot wedge the poll. Other errors are thrown and the poll is retried.
    */
-  private async factoryPull(base: string, n: number): Promise<CommandPr | null> {
+  private async pullHead(base: string, n: number, factoryOnly: boolean): Promise<CommandPr | null> {
     try {
       const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
-      return p.head.ref.startsWith(this.branchPrefix) ? { change_ref: String(p.number), head_branch: p.head.ref } : null;
-    } catch (err) {
-      if (err instanceof GitHubError && err.status === 404) return null;
-      throw err;
-    }
-  }
-
-  /**
-   * The PR's number and head branch, whatever the branch; null for one that is gone (404). Other errors are
-   * thrown and the poll is retried.
-   */
-  private async pullHead(base: string, n: number): Promise<CommandPr | null> {
-    try {
-      const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
-      return { change_ref: String(p.number), head_branch: p.head.ref };
+      return !factoryOnly || p.head.ref.startsWith(this.branchPrefix) ? { change_ref: String(p.number), head_branch: p.head.ref } : null;
     } catch (err) {
       if (err instanceof GitHubError && err.status === 404) return null;
       throw err;
@@ -629,9 +630,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const issue = await this.client.request<Pick<GhIssue, "pull_request">>("GET", `${base}/issues/${number}`);
     if (!issue.pull_request) return { kind: "issue", source: this.ref(number) };
-    const pull = await this.client.request<GhPullHead>("GET", `${base}/pulls/${number}`);
-    if (!pull.head.ref.startsWith(this.branchPrefix)) return null;
-    return { kind: "pr", change_ref: String(number), head_branch: pull.head.ref };
+    const pr = await this.pullHead(base, number, true);
+    return pr && { kind: "pr", ...pr };
   }
 
   private ref(number: number): SourceRef {

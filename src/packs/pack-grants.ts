@@ -2,8 +2,10 @@
 // grants. A run kind's `tool_grants` may name a pack entry as `pack:<kind>:<name>` (PACK_GRANT, src/core/config.ts).
 // Such an entry reaches a run only when both hold: the run kind grants it, and its current description is approved
 // (an approval row for that description_hash, or the default-off `packs.auto_approve_read_only` for a read-only
-// entry with no credential). An entry the run kind does not grant is never listed. This phase starts no pack tool:
-// an entry that passes both checks is still refused, as `not_started`, and the run fails before its agent starts.
+// entry with no credential). An entry the run kind does not grant is never listed. A tool that passes both checks
+// joins the run's broker tools: the pack tool broker (src/impl/broker/pack-tool-broker.ts) serves it and checks the
+// approval again on every call (issue #592). No MCP server starts yet: one that passes both checks is refused, as
+// `not_started`, and the run fails before its agent starts.
 
 import { PACK_GRANT } from "../core/config.js";
 import type { SqlDriver } from "../state/index.js";
@@ -13,7 +15,7 @@ import { PackEntriesStore, type PackEntryKind, type StoredEntry } from "./pack-e
 /** The run's error code when it is granted a pack entry it cannot have. */
 export const PACK_TOOL_REFUSED = "pack_tool_refused";
 
-/** `no_entry`: nothing is stored under the name. `not_approved`: its current description is not approved. `not_started`: both checks pass; phase 3 starts tools. */
+/** `no_entry`: nothing is stored under the name. `not_approved`: its current description is not approved. `not_started`: an MCP server passes both checks; none starts yet. */
 export type PackRefusalReason = "no_entry" | "not_approved" | "not_started";
 
 export interface PackRefusal {
@@ -27,7 +29,8 @@ export function autoApproved(entry: Pick<StoredEntry, "read_only" | "credential_
 }
 
 /**
- * A run kind's grants split in two: the broker tools, unchanged, and a refusal for each pack entry it names.
+ * A run kind's grants split in two: the broker tools (with each approved pack tool) and a refusal for each other pack
+ * entry it names.
  * Reads the store only (no time, no write).
  */
 export async function checkPackGrants(
@@ -35,8 +38,6 @@ export async function checkPackGrants(
   grants: readonly string[],
   autoApproveReadOnly: boolean,
 ): Promise<{ broker: string[]; refused: PackRefusal[] }> {
-  const entries = new PackEntriesStore(db, () => "");
-  const approvals = new PackApprovalsStore(db, () => "");
   const broker: string[] = [];
   const refused: PackRefusal[] = [];
   for (const grant of grants) {
@@ -45,11 +46,29 @@ export async function checkPackGrants(
       broker.push(grant);
       continue;
     }
-    const entry = await entries.current(m[1] as PackEntryKind, m[2]!);
-    const approved = entry !== null && (autoApproved(entry, autoApproveReadOnly) || (await approvals.approved(entry)));
-    refused.push({ grant, reason: entry === null ? "no_entry" : approved ? "not_started" : "not_approved" });
+    const kind = m[1] as PackEntryKind;
+    const found = await approvedEntry(db, kind, m[2]!, autoApproveReadOnly);
+    if (typeof found === "string") refused.push({ grant, reason: found });
+    else if (kind === "tool") broker.push(grant);
+    else refused.push({ grant, reason: "not_started" });
   }
   return { broker, refused };
+}
+
+/**
+ * The approval check of one entry: its current description, when it is approved; else why not. Reads the store
+ * only (no time, no write), so the grant check and the pack tool broker can each run it any number of times.
+ */
+export async function approvedEntry(
+  db: SqlDriver,
+  kind: PackEntryKind,
+  name: string,
+  autoApproveReadOnly: boolean,
+): Promise<StoredEntry | "no_entry" | "not_approved"> {
+  const entry = await new PackEntriesStore(db, () => "").current(kind, name);
+  if (entry === null) return "no_entry";
+  if (autoApproved(entry, autoApproveReadOnly)) return entry;
+  return (await new PackApprovalsStore(db, () => "").approved(entry)) ? entry : "not_approved";
 }
 
 /** The failed run's message: each refused grant with its reason. */
