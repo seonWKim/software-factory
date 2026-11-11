@@ -1,4 +1,6 @@
-import { COMMANDS, type CommandName } from "../../core/commands.js";
+import { COMMANDS, type CommandName, commandPhase, commandSpec, phaseLabel } from "../../core/commands.js";
+import { utcMinute } from "../../core/spec-comment.js";
+import type { StateChange, WorkItem } from "../../core/types.js";
 import type { RepoRef } from "../github/github-client.js";
 
 // How a control-plane comment (GitHub Markdown) becomes a Slack thread message (issue #109): mrkdwn text in
@@ -39,6 +41,25 @@ export function footerCommands(body: string): CommandName[] {
     if (spec && BUTTON_COMMANDS.includes(spec.name) && !out.includes(spec.name)) out.push(spec.name);
   }
   return out;
+}
+
+/**
+ * Whether a button for `name` (pressed, or shown on an earlier message) still means something for `it` (issue #586):
+ * the item's phase is one the command applies in. The phase only: a run held for coordination cost is in no field,
+ * so an Approve from the spec is stale once the item is implementing.
+ */
+export function buttonApplies(name: CommandName, it: WorkItem): boolean {
+  return commandSpec(name).phases.includes(commandPhase(it));
+}
+
+/**
+ * What already happened to `it`, in plain words with no error wording (issue #586): `Done: <reason> by <actor ID> at
+ * <time>. The item is now <phase>.`, from its last state change. Ends an earlier message whose buttons no longer
+ * apply, and the reply to a stale button press.
+ */
+export function doneLine(last: Pick<StateChange, "reason" | "actor" | "at"> | null, it: WorkItem): string {
+  const what = last ? `${last.reason.replace(/_/g, " ")} by ${last.actor.id} at ${utcMinute(last.at)}` : "the item moved on";
+  return `Done: ${what}. The item is now ${phaseLabel(commandPhase(it))}.`;
 }
 
 /** `&`, `<` and `>` as Slack wants them in text. */
@@ -136,14 +157,31 @@ function chunks(text: string, max = SECTION_MAX): string[] {
 const LABELS: Record<string, string> = { approve: "Approve", retry: "Retry", resolve: "Resolve", budget: "Continue (budget)", help: "Help" };
 
 /**
+ * `body` without its command footer (the heading, its list and the "No command changes" line after it): what an
+ * earlier message keeps once its commands no longer apply (issue #586).
+ */
+function withoutFooter(body: string): string {
+  const lines = body.split(/\r?\n/);
+  const at = lines.findIndex((l) => l.trim() === FOOTER_HEADING);
+  if (at < 0) return body;
+  let end = at + 1;
+  while (end < lines.length && /^- `/.test(lines[end]!.trim())) end++;
+  if (lines[end]?.startsWith("No command changes")) end++;
+  return [...lines.slice(0, at), ...lines.slice(end)].join("\n");
+}
+
+/**
  * The Slack message for one comment: mrkdwn sections, a line on typing commands in Slack (a leading `/` would be
  * taken by Slack itself, so a command follows a mention, with no slash: `approve`, `revise <feedback>`, `help`; issue
  * #541), and an actions block with the command buttons. A proposed command (design §4) is plain text, with no buttons.
+ * `done` (issue #586): the message after a state change, its footer dropped, the `done` line added, and only the
+ * buttons in `keep` (those of its footer that still apply).
  */
-export function renderComment(body: string, repo: RepoRef, botUserId: string): SlackRendered {
-  let text = toMrkdwn(body, repo);
-  const cmds = footerCommands(body);
-  if (cmds.length > 0 || body.includes(FOOTER_HEADING)) {
+export function renderComment(body: string, repo: RepoRef, botUserId: string, done?: { line: string; keep: readonly CommandName[] }): SlackRendered {
+  let text = toMrkdwn(done ? withoutFooter(body) : body, repo);
+  if (done) text += `\n\n*${escapeSlack(done.line)}*`;
+  const cmds = done ? done.keep : footerCommands(body);
+  if (cmds.length > 0 || (!done && body.includes(FOOTER_HEADING))) {
     text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> approve or <@${botUserId}> revise &lt;feedback&gt; ` +
       `(<@${botUserId}> help lists them), or use the buttons._`;
   }

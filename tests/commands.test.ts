@@ -5,6 +5,7 @@ import {
   commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, refusalText, retryPathsReply,
   unknownCommandReply, withSlash,
 } from "../src/core/commands.js";
+import { autoApprovedFooter, utcMinute } from "../src/core/spec-comment.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { itemCommands } from "../src/ui/commands.js";
 import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
@@ -777,5 +778,26 @@ describe("one refusal and help text on every surface (issue #528)", () => {
     expect(withSlash("approve")).toBe("/approve");
     expect(withSlash("Approve ship it\nnow")).toBe("/Approve ship it\nnow");
     for (const t of ["approved it", "retry", "reject no", "please approve", "/approve"]) expect(withSlash(t), t).toBeNull();
+  });
+});
+
+describe("the footer of a spec auto mode approved (issue #586)", () => {
+  const AT = "2026-11-11T10:04:59.123Z";
+
+  it("names the approval with its tier and time, then the commands after it, and never lists /approve", () => {
+    for (const patch of [{ stage: "RUNNING" }, { stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" }] as const) {
+      const s = commandState({ blocked_on: "none", blocked_reason: null, change_ref: null, ...patch });
+      const footer = autoApprovedFooter(s, 2, AT);
+      expect(footer.split("\n")[0]).toBe("Approved automatically (auto mode, tier 2) at 2026-11-11 10:04 UTC.");
+      expect(footer).toContain("Commands you can reply with now:");
+      expect(footer).not.toContain("/approve");
+      // The rest is the plain footer of that state, less /approve.
+      for (const c of commandsFor(s).filter((c) => c.name !== "approve")) expect(footer).toContain(`\`${c.usage}\``);
+    }
+  });
+
+  it("utcMinute reads an ISO time as its minute in UTC, and leaves other text as it is", () => {
+    expect(utcMinute(AT)).toBe("2026-11-11 10:04 UTC");
+    expect(utcMinute("soon")).toBe("soon");
   });
 });

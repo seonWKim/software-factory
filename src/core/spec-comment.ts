@@ -1,3 +1,4 @@
+import { type CommandState, commandFooter } from "./commands.js";
 import type { AddedPath } from "./companions.js";
 import { MAX_DECISIONS, type TriageOutput, type TriagePhase } from "./outputs.js";
 import { inShortParagraphs } from "./pr-body.js";
@@ -49,6 +50,17 @@ function splitSection(spec: TriageOutput, phases: TriagePhase[]): string[] {
   return out;
 }
 
+/** `2026-11-11 10:00 UTC` from an ISO time (issue #586); the text as is when it is not one. */
+export const utcMinute = (iso: string): string => (/^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : iso);
+
+/**
+ * The footer of a spec auto mode approved (issue #586): a line naming the approval, its tier and its time, then the
+ * commands for `s`, the state after the approval. `/approve` is never listed, so no source offers it on this spec.
+ */
+export function autoApprovedFooter(s: CommandState, tier: Tier, at: string): string {
+  return [`Approved automatically (auto mode, tier ${tier}) at ${utcMinute(at)}.`, "", commandFooter(s, ["approve"])].join("\n");
+}
+
 /** Done criteria shown before the rest fold into a `<details>` block (issue #229). */
 export const VISIBLE_DONE = 10;
 
@@ -93,9 +105,10 @@ function answerBlock(n: number): string[] {
 /**
  * The triage spec comment a human reads before typing /approve, /reject or /revise (layout issue #229): In
  * short, Problem, Decisions for you, Applied defaults, Done when, scope, Files, Risk. `footer` replaces the default last line;
- * the controller passes the command footer for the spec gate (`commandFooter`).
+ * the controller passes the command footer for the spec gate (`commandFooter`). `approved`: the spec was approved with
+ * no reply (auto mode, a standing rule, the parent's split), so it has no answer block asking for `/approve` (issue #586).
  */
-export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER): string {
+export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER, o: { approved?: boolean } = {}): string {
   // The plain AS-IS → TO-BE statement comes first, so the reader has the idea before any file-level detail.
   const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", inShortParagraphs(spec.in_short), ""];
   out.push("### Problem", spec.problem, "");
@@ -106,7 +119,7 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   ];
   if (decisions.length > 0) {
     out.push("### Decisions for you", ...folded(decisions, MAX_DECISIONS, (n) => `${n} more`), "");
-    if (spec.decisions?.length) out.push(...answerBlock(spec.decisions.length), "");
+    if (spec.decisions?.length && !o.approved) out.push(...answerBlock(spec.decisions.length), "");
   }
   // Owner defaults triage applied instead of asking (issue #315): shown apart, so they are not mistaken for questions.
   if (spec.applied_defaults?.length) out.push("### Applied defaults", ...spec.applied_defaults.map((d) => `- ${d}`), "");

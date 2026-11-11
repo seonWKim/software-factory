@@ -89,6 +89,9 @@ export class OutboxUnit {
   /**
    * The item's status on its issue and, once it has one, on its PR. Best effort, each write on its own. An
    * adopted item's source is its PR, so it is labelled once. `current` says a target already shows the status.
+   * Called after its transition commits, so the transition's comments (the spec) are stored first; one announce lists
+   * thread entries before actions and outbound sends a destination's batches one at a time in intent order, so a
+   * status is never posted before the spec of its transition is delivered (issue #586).
    */
   async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);

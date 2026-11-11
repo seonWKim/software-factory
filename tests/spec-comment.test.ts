@@ -394,4 +394,12 @@ describe("the answer block after the decisions (issue #527)", () => {
     expect(body).not.toContain("To answer, reply");
     expect(renderSpec(spec, 2)).not.toContain("To answer, reply");
   });
+
+  it("is absent on a spec approved with no reply (auto mode, issue #586): its decisions stay, and the footer given ends it", () => {
+    const body = renderSpec(two, 2, {}, "Approved automatically (auto mode, tier 2) at 2026-11-11 10:00 UTC.", { approved: true });
+    expect(section(body)).toContain("2. Name the step?");
+    expect(body).not.toContain("To answer, reply");
+    expect(body).not.toContain("/approve");
+    expect(body.endsWith("Approved automatically (auto mode, tier 2) at 2026-11-11 10:00 UTC.")).toBe(true);
+  });
 });

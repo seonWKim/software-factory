@@ -18,6 +18,8 @@ import { cutNote, escapeSlack, toMrkdwn } from "../src/impl/source/slack-format.
 import { runLocalCli } from "../src/core/local-cli.js";
 import { commentEvent } from "../src/core/comment-event.js";
 import { chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
+import { parseTriage } from "../src/core/outputs.js";
+import { autoApprovedFooter, renderSpec, utcMinute } from "../src/core/spec-comment.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { plainRefusal } from "../web/src/api.js";
@@ -572,6 +574,101 @@ describe("slack source: replies, buttons and commands", () => {
     expect(a).toEqual(b);
     expect(f.api.calls).toHaveLength(1);
     expect(JSON.stringify(f.api.messages)).not.toContain("m1");
+  });
+});
+
+describe("slack source: buttons after a state change (issue #586)", () => {
+  /** Every chat.update with its blocks (the fake keeps only the text). */
+  function updates(f: F): { ts: string; text: string; blocks: readonly unknown[] }[] {
+    const out: { ts: string; text: string; blocks: readonly unknown[] }[] = [];
+    const update = f.api.updateMessage.bind(f.api);
+    f.api.updateMessage = async (m) => {
+      out.push({ ts: m.ts, text: m.text, blocks: m.blocks ?? [] });
+      return update(m);
+    };
+    return out;
+  }
+  const buttonsOf = (blocks: readonly unknown[]) => FakeSlackApi.buttons({ blocks } as never);
+  const specMessage = (f: F, ts: string) => f.api.thread(ts).find((m) => FakeSlackApi.buttons(m).includes("sf_cmd:approve"))!;
+
+  it("posting an auto-approved spec renders no Approve button, only the buttons of the state after it", async () => {
+    const f = await setup();
+    const parsed = parseTriage({ ...triageSpec, decisions: ["Fail the job, or only warn?"] });
+    if (!parsed.ok) throw new Error(parsed.error);
+    const footer = autoApprovedFooter(commandState({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, change_ref: null }), 2, "2026-11-11T10:00:00.000Z");
+    const source = { type: "slack_thread" as const, id: sourceId("1800000018.000100"), link: "" };
+    await f.slack.postComment(source, renderSpec(parsed.value, 2, {}, footer, { approved: true }), "<!-- factory:spec:r1 -->");
+    const [posted] = f.api.thread("1800000018.000100");
+    expect(FakeSlackApi.buttons(posted!)).toEqual(["sf_cmd:help"]);
+    const text = JSON.stringify(posted!.blocks);
+    expect(text).toContain("Approved automatically (auto mode, tier 2) at 2026-11-11 10:00 UTC.");
+    expect(text).not.toContain("To answer, reply");
+  });
+
+  it("a state change edits each earlier message with buttons once: stale buttons dropped, a Done line added; again, no call", async () => {
+    const f = await setup();
+    const ts = "1800000019.000100";
+    const item = await specPending(f, ts);
+    const spec = specMessage(f, ts);
+    const seen = updates(f);
+    await deliver(f, eventEnvelope(mention("1800000019.000200", "/approve", { thread_ts: ts })));
+    await f.controller.tickCommands();
+    await f.controller.tickOutbox();
+    expect((await f.store.getWorkItem(item.id))!.stage).toBe("RUNNING");
+    const edits = seen.filter((u) => u.ts === spec.ts);
+    expect(edits).toHaveLength(1);
+    expect(buttonsOf(edits[0]!.blocks)).toEqual(["sf_cmd:help"]);
+    const text = JSON.stringify(edits[0]!.blocks);
+    const approved = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
+    expect(text).toContain(`Done: spec approved by ${approved.actor.id} at ${utcMinute(approved.at)}. The item is now implementing.`);
+    expect(text).not.toContain("Commands you can reply with now");
+    expect(text).toContain("Factory spec");
+
+    // The same update again (a redelivered status, the next state change with the same buttons left): no call.
+    await f.slack.setStatus(item.source, "implementing", null);
+    await f.slack.setStatus(item.source, "implementing", null);
+    expect(seen.filter((u) => u.ts === spec.ts)).toHaveLength(1);
+  });
+
+  it("a press of a stale Approve says what already happened and when, with the current buttons, and no error wording", async () => {
+    const f = await setup();
+    const ts = "1800000020.000100";
+    const item = await specPending(f, ts);
+    await deliver(f, eventEnvelope(mention("1800000020.000200", "/approve", { thread_ts: ts })));
+    await f.controller.tickCommands();
+    const before = await f.store.getWorkItem(item.id);
+    const changes = (await f.store.listStateChanges(item.id)).length;
+    const inbox = (await f.store.listInboxAfter("slack_thread", 0, 100)).length;
+    const posts = f.api.calls.filter((c) => c.method === "postMessage").length;
+    await deliver(f, press(ts, "sf_cmd:approve", "/approve", "U0ALICE", "1800000120.000001"));
+    await f.controller.tickCommands();
+
+    const replies = f.api.calls.filter((c) => c.method === "postMessage").slice(posts);
+    expect(replies).toHaveLength(1);
+    const reply = JSON.stringify(replies[0]!.blocks);
+    const approved = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
+    expect(reply).toContain(`Done: spec approved by ${approved.actor.id} at ${utcMinute(approved.at)}. The item is now implementing.`);
+    expect(reply).not.toMatch(/not applied|refused|error|failed/i);
+    // The current buttons: implementing has Help only.
+    expect(buttonsOf(replies[0]!.blocks!)).toEqual(["sf_cmd:help"]);
+    // Nothing else happened: no state change, no inbox row, no CLI command.
+    expect(fields(await f.store.getWorkItem(item.id))).toEqual(fields(before));
+    expect(await f.store.listStateChanges(item.id)).toHaveLength(changes);
+    expect(await f.store.listInboxAfter("slack_thread", 0, 100)).toHaveLength(inbox);
+    // The same press sent again (a new envelope, the same action): no second reply.
+    await deliver(f, press(ts, "sf_cmd:approve", "/approve", "U0ALICE", "1800000120.000001"));
+    expect(f.api.calls.filter((c) => JSON.stringify(c.blocks ?? []).includes("from an earlier step"))).toHaveLength(1);
+  });
+
+  it("a typed /approve on an item that left the spec gate still gets the shared refusal", async () => {
+    const f = await setup();
+    const ts = "1800000021.000100";
+    await specPending(f, ts);
+    await deliver(f, eventEnvelope(mention("1800000021.000200", "/approve", { thread_ts: ts })));
+    await f.controller.tickCommands();
+    await deliver(f, eventEnvelope(mention("1800000021.000300", "/approve", { thread_ts: ts })));
+    await f.controller.tickCommands();
+    expect(JSON.stringify(f.api.thread(ts).map((m) => m.blocks))).toContain("was not applied");
   });
 });
 

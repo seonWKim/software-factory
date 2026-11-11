@@ -460,6 +460,17 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     await h.controller.tickCommands();
     for (const it of [byPage, byCli]) expect((await h.store.getWorkItem(it.id))!.stage).toBe("RUNNING");
   });
+
+  it("an item that left the spec gate lists no approve, reject or revise: the actions follow the item's state now (issue #586)", async () => {
+    const h = await harness({ localAuth: true });
+    const me = "local:me@example.com" as UserId;
+    const it1 = await h.itemIn(SPEC_PENDING, 1);
+    expect(names(await listed(page(h, me), it1))).toEqual(["approve", "reject", "revise"]);
+    await h.request("app-586", me, "approve", { work_item_id: it1.id });
+    await h.controller.tickCommands();
+    expect((await h.store.getWorkItem(it1.id))!.stage).toBe("RUNNING");
+    expect(names(await listed(page(h, me), it1))).toEqual([]);
+  });
 });
 
 describe("verdict from the item page and the item API (issue #523)", () => {

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { type ChatCommand, parseChatCommand } from "../../core/command-table.js";
-import { THREAD_BARE_COMMANDS, parseComment, parseLink, withSlash } from "../../core/commands.js";
+import { type CommandName, THREAD_BARE_COMMANDS, commandFooter, commandState, parseComment, parseLink, withSlash } from "../../core/commands.js";
 import type { Logger } from "../../core/log.js";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItem } from "../../core/types.js";
@@ -12,7 +12,7 @@ import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi, type SlackMessage } from "./slack-api.js";
 import { commentEvent } from "../../core/comment-event.js";
 import {
-  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, escapeSlack, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
+  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, buttonApplies, doneLine, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
 } from "./slack-format.js";
 import { type ChatAnswer, type ChatDeps, type ChatStore, runChatCommand } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
@@ -24,6 +24,8 @@ export const META_STATUS = "factory_status";
 const STATUS_MARKER = "slack:status";
 /** The record of the status message posted after message `ts` was deleted. */
 const replacedStatusMarker = (ts: string) => `slack:status:after:${ts}`;
+/** The record of the chat.update that left message `ts` with the buttons `keep` (issue #586): one update each. */
+const doneMarker = (ts: string, keep: readonly CommandName[]) => `slack:done:${ts}:${keep.join(",")}`;
 
 const TITLE_MAX = 120;
 /** A Slack message timestamp, the comment id of a typed command. */
@@ -43,9 +45,10 @@ export interface SlackSourceDeps {
    * Whether a thread is already a work item, and its PR for the status line; a person's reply in an item's thread,
    * stored as a thread entry (`recordItemMessage`, issue #480); for chat commands (slack-commands.ts), the account
    * links, the local users, the reads `list` and `show` print, and the command rows they store; the records of the
-   * messages it posted (`getPostedComment`, `recordPostedComment`), so a repeat reads no thread.
+   * messages it posted (`getPostedComment`, `recordPostedComment`), so a repeat reads no thread; the item's thread
+   * entries and state changes, for the earlier messages a state change updates and the reply to a stale button.
    */
-  store: ChatStore & Pick<FactoryStore, "getWorkItemBySource" | "recordItemMessage" | "getPostedComment" | "recordPostedComment">;
+  store: ChatStore & Pick<FactoryStore, "getWorkItemBySource" | "recordItemMessage" | "getPostedComment" | "recordPostedComment" | "listStateChanges">;
   /** `settings list` and `settings history` from Slack; absent: they answer that settings are not readable here. */
   settings?: ChatDeps["settings"];
   /** Where PR links point. */
@@ -121,7 +124,9 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * notice without its content, under the same marker, so it is not tried again. Each message carries its marker's
  * hash in Slack metadata and is recorded in the store (ts and link); postComment checks that record first and
  * reads the thread only when there is none, so a marker is posted at most once. The item's status is one message
- * per thread, its ts recorded, edited in place with no thread read, with a link to the PR once there is one.
+ * per thread, its ts recorded, edited in place with no thread read, with a link to the PR once there is one. On each
+ * status write, an earlier message whose buttons no longer apply is edited once to drop them and say what was done;
+ * a press of a button that no longer applies gets a reply saying what already happened, with the current buttons.
  *
  * The only in-process state is the bot's identity (auth.test), which any replica reads for itself.
  */
@@ -253,16 +258,21 @@ export class SlackSource implements StreamSource {
     if (user === null || channel === null || thread_ts === null || action_id === null || action_ts === null) return null;
     if (!this.d.channels.includes(channel) || user === me.user_id) return null;
     let body: string | null = null;
+    let button: CommandName | null = null;
     if (action_id === ACTION_CONFIRM) body = str(action.value);
     else if (action_id.startsWith(`${ACTION_COMMAND}:`)) {
       const name = action_id.slice(ACTION_COMMAND.length + 1);
-      body = (BUTTON_COMMANDS as readonly string[]).includes(name) ? `/${name}` : null;
+      button = (BUTTON_COMMANDS as readonly string[]).includes(name) ? (name as CommandName) : null;
+      body = button ? `/${button}` : null;
     }
     // Cancel, and anything else: nothing runs and nothing is stored.
     if (action_id === ACTION_CANCEL || body === null) return null;
     const source = threadRef({ team, channel, thread_ts });
+    const id = `${team}-${user}-${action_ts}`;
+    const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
+    if (button && item && !buttonApplies(button, item)) return this.stale(source, item, id);
     const chat = parseChatCommand(body);
-    if (chat) return this.chat(chat, source, user, `${team}-${user}-${action_ts}`, await this.d.store.getWorkItemBySource("slack_thread", source.id));
+    if (chat) return this.chat(chat, source, user, id, item);
     const parsed = parseComment(body);
     if (parsed === null || parsed.kind !== "command") return null;
     const e = commentEvent(source, `action:${action_ts}`, { provider: "slack", subject: user }, body);
@@ -280,6 +290,22 @@ export class SlackSource implements StreamSource {
     });
     if (answer !== null) await this.post(source, (bot) => this.rendered(answer, bot), `<!-- factory:chat:${id} -->`);
     return null;
+  }
+
+  /**
+   * A press of a button whose command no longer applies (issue #586; only a press: a typed command keeps the shared
+   * refusal): one reply in the thread saying what already happened and when, with the buttons that apply now, and no
+   * error wording. Nothing is stored and nothing goes to the inbox; the reply's marker keeps it to one per press.
+   */
+  private async stale(source: SourceRef, item: WorkItem, id: string): Promise<null> {
+    const text = ["That button is from an earlier step, so it did nothing now.", await this.done(item), "", commandFooter(commandState(item))].join("\n");
+    await this.post(source, (bot) => renderComment(text, this.d.repo, bot), `<!-- factory:stale:${id} -->`);
+    return null;
+  }
+
+  /** The Done line of `item`: its last state change. */
+  private async done(item: WorkItem): Promise<string> {
+    return doneLine((await this.d.store.listStateChanges(item.id)).at(-1) ?? null, item);
   }
 
   private rendered(a: NonNullable<ChatAnswer>, bot: string): SlackRendered {
@@ -342,12 +368,54 @@ export class SlackSource implements StreamSource {
    * here. The message's ts is kept in the store under STATUS_MARKER, so a change is one chat.update and no thread
    * read; the thread is read only when there is no record (a status posted before the records), and what it finds
    * is recorded. A status message someone deleted (`message_not_found`) is replaced by a new one, recorded under
-   * the deleted message's replacement marker, since a stored record keeps its first ts.
+   * the deleted message's replacement marker, since a stored record keeps its first ts. Then the earlier messages
+   * whose buttons no longer apply are updated (`settle`): outbound delivers one status write per state change.
    */
   async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
     if (change_ref !== null) return;
-    const t = this.thread(source);
     const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
+    await this.writeStatus(source, status, item);
+    if (item) await this.settle(source, item);
+  }
+
+  /**
+   * After a state change (issue #586): each earlier message of the item's thread whose buttons no longer all apply is
+   * edited once with chat.update, keeping only the buttons that still apply and ending with the Done line. Store reads
+   * only: the thread entries' bodies give the buttons each message had, their posted records its ts. An update is
+   * recorded under its message's ts and the buttons kept, so running this again makes no second call. A message posted
+   * before the records, or deleted since, is left as it is.
+   */
+  private async settle(source: SourceRef, item: WorkItem): Promise<void> {
+    const t = this.thread(source);
+    let line: string | null = null;
+    for (const m of await this.d.store.listItemMessages(item.id)) {
+      if (m.actor) continue;
+      const had = footerCommands(m.body);
+      const keep = had.filter((c) => buttonApplies(c, item));
+      if (keep.length === had.length) continue;
+      const ts = (await this.d.store.getPostedComment(source.id, m.marker, m.body))?.comment_id;
+      if (!ts) continue;
+      const marker = doneMarker(ts, keep);
+      if ((await this.d.store.getPostedComment(source.id, marker, ""))?.comment_id) continue;
+      line ??= await this.done(item);
+      const msg = renderComment(m.body, this.d.repo, (await this.identity()).user_id, { line, keep });
+      const scan = await this.d.scanner.scan("comment", `${msg.text}\n${JSON.stringify(msg.blocks)}`);
+      if (!scan.clean) {
+        this.d.log.warn("slack message update blocked by the egress scan; not edited", { source_id: source.id, marker_hash: markerHash(m.marker) });
+        continue;
+      }
+      try {
+        await this.d.api.updateMessage({ channel: t.channel, ts, text: msg.text, blocks: msg.blocks });
+      } catch (err) {
+        if (!(err instanceof SlackApiError && err.code === "message_not_found")) throw err;
+      }
+      await this.record(source, marker, ts, slackLink(t.channel, ts, t.thread_ts), line);
+    }
+  }
+
+  /** The status message's text, written in place (or posted once); see setStatus. */
+  private async writeStatus(source: SourceRef, status: WorkStatus, item: WorkItem | null): Promise<void> {
+    const t = this.thread(source);
     const pr = item?.change_ref ? ` · <${prUrl(this.d.repo, item.change_ref)}|PR #${item.change_ref}>` : "";
     const text = `Status: *${escapeSlack(STATUS_WORDS[status] ?? status)}*${pr}`;
     const scan = await this.d.scanner.scan("comment", text);

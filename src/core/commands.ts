@@ -321,10 +321,10 @@ const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description
 /**
  * The commands that apply now, then a note when none of them changes the state. Ends every waiting comment.
  * When a command applies on the item's PR with its PR meaning, a block naming it comes first; the list and
- * the note after it are about replies on the comment's own issue.
+ * the note after it are about replies on the comment's own issue. `except`: commands left out (#586).
  */
-export function commandFooter(s: CommandState): string {
-  const cmds = commandsFor(s);
+export function commandFooter(s: CommandState, except: readonly CommandName[] = []): string {
+  const cmds = commandsFor(s).filter((c) => !except.includes(c.name));
   const onPr = prCommandsFor(s);
   const out = onPr.length ? ["On the change, you can reply with:", ...onPr.map(prLine), ""] : [];
   out.push("Commands you can reply with now:", ...cmds.map(line));
