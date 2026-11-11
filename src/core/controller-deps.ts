@@ -15,6 +15,7 @@ import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { NetworkProbe } from "../interfaces/network-probe.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { SourceAdapter } from "../interfaces/source-adapter.js";
+import type { TacitLedger } from "../interfaces/tacit-ledger.js";
 import type { ChildRestart } from "../interfaces/updater.js";
 
 /**
@@ -143,4 +144,10 @@ export interface ControllerDeps {
    * merge (design 03-risk), as the worker's checks get it. Absent: an empty environment.
    */
   check_env?: Readonly<Record<string, string>>;
+  /**
+   * The owner's tacit ledger (`plugins.tacit`, issue #570): a `/revise`, a `/reject` and a `changes` verdict each
+   * record one capture intent, keyed by the command's comment ID, that outbound delivers to it. Absent, or not
+   * `enabled` (the `none` plugin): nothing is captured and no intent recorded.
+   */
+  tacit?: TacitLedger;
 }

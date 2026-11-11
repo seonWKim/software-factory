@@ -1,5 +1,5 @@
 // Needs you's system actions (design §9 Status page, issue #311): a pending migration, a GitHub token expiring
-// within 3 days, a claim or worker pause, a claim deadlock and a revision mismatch, each with its command, in
+// within 3 days, a claim or worker pause, and a revision mismatch, each with its command, in
 // /api/v1/overview's `system_actions` and counted in `needs_you`. The poll asks GitHub nothing.
 
 import { execFileSync } from "node:child_process";
@@ -74,7 +74,7 @@ async function setup(opts: { version?: SchemaVersion | Error; checks?: Check[]; 
 const codes = (o: Overview) => o.system_actions.map((a) => a.code);
 
 describe("system actions: none on a quiet factory", () => {
-  it("an up-to-date store with no pause, no deadlock and equal revisions lists nothing", async () => {
+  it("an up-to-date store with no pause and equal revisions lists nothing", async () => {
     const { overview } = await setup({ revision: REV_A });
     const o = await overview(`?rev=${REV_A}`);
     expect(o.system_actions).toEqual([]);
@@ -87,7 +87,7 @@ describe("system actions: pending migration", () => {
   it("a schema behind the code is listed with `npm run migrate` and counts in needs_you", async () => {
     const { overview } = await setup({ version: { applied: 3, latest: 8 } });
     const o = await overview();
-    expect(o.system_actions).toContainEqual({ code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null, work_item_id: null });
+    expect(o.system_actions).toContainEqual({ code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null });
     expect(o.needs_you).toBe(1);
   });
 
@@ -142,7 +142,7 @@ describe("system actions: claim and worker pauses", () => {
     const until = new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp;
     await store.pauseClaims(until, "rate_limit");
     const o = await overview();
-    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command: "factory resume rate_limit", until, work_item_id: null });
+    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command: "factory resume rate_limit", until });
     expect(o.needs_you).toBe(1);
   });
 
@@ -150,7 +150,7 @@ describe("system actions: claim and worker pauses", () => {
     const { overview, store } = await setup();
     await store.pauseWorkers({ all: true }, "local:me");
     expect((await overview()).system_actions).toEqual([
-      { code: "worker_pause", text: "1 worker pause in effect (factory workers pause)", command: "factory workers resume", until: null, work_item_id: null },
+      { code: "worker_pause", text: "1 worker pause in effect (factory workers pause)", command: "factory workers resume", until: null },
     ]);
     await store.resumeWorkers();
     expect(codes(await overview())).toEqual([]);
@@ -158,26 +158,19 @@ describe("system actions: claim and worker pauses", () => {
 });
 
 describe("system actions: claim deadlock", () => {
-  it("is listed while the latest claim decision on the item's current run is a deadlock", async () => {
+  it("is not listed: the run goes on and the item shows the sentence", async () => {
     const { overview, store, decisions, clock } = await setup();
     const { item } = await store.createWorkItem({ ...issue(5), title: "Overlapping" }, system);
     const cur = (await store.getWorkItem(item.id))!;
     await store.transition({ id: item.id, expected_version: cur.version, patch: { stage: "RUNNING" }, actor: system, reason: "x", enqueue: { kind: "implement", idempotency_key: "i" } });
     const run = (await store.claimRun({ worker_id: "host:1:0" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
-    const decide = (decision: string) =>
-      decisions.set(item.id, [{
-        run_id: run.id, work_item_id: item.id, decision, holder_work_item_id: null, holder_ref: "#92", holder_kind: "waiting",
-        shared: [], cost: 4, threshold: 2.5, fallback: false, approved_by: null, at: clock.now().toISOString(),
-      } as unknown as ClaimDecision]);
-
-    decide("free");
-    expect(codes(await overview())).toEqual([]);
-    decide("deadlock");
+    decisions.set(item.id, [{
+      run_id: run.id, work_item_id: item.id, decision: "deadlock", holder_work_item_id: null, holder_ref: "#92", holder_kind: "waiting",
+      shared: [], cost: 4, threshold: 2.5, fallback: false, approved_by: null, at: clock.now().toISOString(),
+    } as unknown as ClaimDecision]);
     const o = await overview();
-    expect(o.system_actions).toEqual([{
-      code: "claim_deadlock", text: "Started past a deadlock with #92: a person checks the overlap", command: `factory status ${item.id}`, until: null, work_item_id: item.id,
-    }]);
-    expect(o.needs_you).toBe(1);
+    expect(o.system_actions).toEqual([]);
+    expect(o.needs_you).toBe(0);
   });
 });
 

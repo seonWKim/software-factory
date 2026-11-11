@@ -1248,16 +1248,28 @@ describe("ui api: why an item waits (issue #310)", () => {
     expect((await whyOn(d, items.queued.id)).queued!.why).toMatchObject({ code: "queued" });
   });
 
-  it("a deadlock claim decision puts its item in Needs you and in the overview's needs_you", async () => {
-    const { d, items, claimed, decide } = await withDecisions();
+  it("a deadlock claim decision keeps its item running, with the sentence, and out of Needs you and needs_you", async () => {
+    const { d, store, items, claimed, decide } = await withDecisions();
     const before = (await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you;
     decide(items.running, claimed.id, "deadlock", "waiting");
-    expect((await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you).toBe(before + 1);
+    // The seeded run's heartbeat is stale (stuck); a fresh one is running.
+    await store.heartbeat(claimed.id, claimed.lease!.token, LEASE);
+    const o = await json<{ needs_you: number; system_actions: { code: string }[] }>(d, "/api/v1/overview");
+    expect(o.needs_you).toBe(before);
+    expect(o.system_actions.map((a) => a.code)).not.toContain("claim_deadlock");
     const w = await whyOn(d, items.running.id);
-    expect(w.row.level).toBe("needs_human");
-    expect(w.row.why).toMatchObject({ code: "deadlock", next_actor: "human", refs: [92] });
+    expect(w.row.level).toBe("running");
+    const why = { code: "deadlock", text: "Started past a deadlock with #92: a person checks the overlap", next_actor: "factory", refs: [92] };
+    expect(w.row.why).toMatchObject(why);
+    expect(w.item).toMatchObject(why);
     const needs = await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=needs");
-    expect(needs.items.map((i) => i.id)).toContain(items.running.id);
+    expect(needs.items.map((i) => i.id)).not.toContain(items.running.id);
+  });
+
+  it("a merge conflict the resolve run gives up on still needs a human", async () => {
+    const { d, store, items } = await withDecisions();
+    await patch(store, items.running, { blocked_on: "human", blocked_reason: "merge_conflict_pending" });
+    expect((await whyOn(d, items.running.id)).row.level).toBe("needs_human");
   });
 
   it("free text in why passes the Withholder", async () => {
@@ -1535,7 +1547,7 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     const created = clock.now().getTime();
     const o = await overview(d);
     expect(o.system_actions).toContainEqual({
-      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: new Date(created + ALERT_DEDUPE_MS).toISOString(), work_item_id: null,
+      code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: new Date(created + ALERT_DEDUPE_MS).toISOString(),
     });
     expect(o.needs_you).toBe(1 + o.system_actions.length);
     clock.advance(ALERT_DEDUPE_MS);

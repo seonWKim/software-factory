@@ -1,0 +1,49 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+const ROOT = join(import.meta.dirname, "..");
+const WEB_SRC = join(ROOT, "web", "src");
+const generate = () => execFileSync("node", [join(ROOT, "scripts", "build-tokens.mjs"), "--stdout"], { encoding: "utf8" });
+
+function files(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? files(join(dir, e.name)) : [join(dir, e.name)],
+  );
+}
+
+describe("design tokens", () => {
+  it("web/src/tokens.css is the generator's output, and the output is stable", () => {
+    const out = generate();
+    expect(out).toBe(generate());
+    expect(readFileSync(join(WEB_SRC, "tokens.css"), "utf8")).toBe(out);
+    expect(out).toContain("scripts/build-tokens.mjs");
+    expect(out).toMatch(/Do not edit/);
+  });
+
+  it("holds light values on :root and dark values under .dark", () => {
+    const css = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
+    expect(css).toMatch(/:root \{[^}]*--surface:/);
+    expect(css).toMatch(/\.dark \{[^}]*--surface:/);
+    expect(css).toMatch(/\.dark \{[^}]*--pill-bad-bg:/);
+  });
+
+  it("index.css imports the tokens and maps the Tailwind names", () => {
+    const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
+    expect(css).toContain('@import "./tokens.css"');
+    for (const name of ["--color-surface:", "--color-text-2:", "--color-accent:", "--radius-card:"]) {
+      expect(css).toContain(name);
+    }
+    expect(css).toContain("prefers-reduced-motion: reduce");
+  });
+
+  it("no file under web/src except tokens.css holds a hex colour", () => {
+    // Six or eight digits always; three or four only with a letter a-f, so "#192" is not flagged.
+    const hex = /#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|(?=[0-9]*[a-fA-F])[0-9a-fA-F]{3,4})\b/;
+    const hits = files(WEB_SRC)
+      .filter((f) => !f.endsWith("tokens.css") && /\.(css|tsx?|html|svg)$/.test(f))
+      .filter((f) => hex.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+  });
+});

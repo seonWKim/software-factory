@@ -185,18 +185,18 @@ export class CommandsUnit {
     );
   }
 
-  /** A gate command from a comment (`app` null) or an app request (its user and edge passport, checked locally), design §4: `approve_spec`,
-   * the note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close. */
+  /** A gate command from a comment (`app` null) or an app request (its user and edge passport, checked locally), design §4: `approve_spec`, the
+   * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close, the pushback's capture. */
   async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
     const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
-    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id, true, app.passport)
-      : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
+    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id, true, app.passport) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
     if ("refuse" in principal) return principal.refuse;
     const input = await this.commandInput(item.id, e, app === null);
     if ("refuse" in input) return input.refuse;
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
     if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
+    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
     return refusal;
   }
 

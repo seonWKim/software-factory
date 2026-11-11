@@ -304,11 +304,15 @@ export class Outbound {
   }
 
   /**
-   * G5 on an action's text: a post's body, a PR's or a filed sub-issue's title and body (a flagged one goes out as
-   * the notice only; a sub-issue keeps its marker, so a retry finds it).
+   * G5 on an action's text: a post's body, a PR's or a filed sub-issue's title and body, a tacit capture's pushback and
+   * proposal (a flagged one goes out as the notice only; a sub-issue keeps its marker, so a retry finds it).
    */
   private async scannedAction(row: ActionRow): Promise<ActionRow> {
     if (row.action === "post") return { ...row, args: { ...row.args, body: await this.scanned(String(row.args.body), row.target.id) } };
+    if (row.action === "tacit_capture") {
+      const id = String(row.args.session);
+      return { ...row, args: { ...row.args, pushback: await this.scanned(String(row.args.pushback), id), proposal: await this.scanned(String(row.args.proposal), id) } };
+    }
     if (row.action === "file_sub_issue") {
       const text = `${String(row.args.title)}\n${String(row.args.body)}`;
       const notice = await this.scanned(text, row.target.id);

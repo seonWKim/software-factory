@@ -34,6 +34,7 @@ import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.j
 import { SqlBus } from "../src/bus/index.js";
 import { TimeBasedTicks } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { JournalEngines } from "../src/worker/engine/plugins/journal/journal-engine.js";
+import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import type { AuthProvider } from "../src/interfaces/auth-provider.js";
 import type { UserId } from "../src/core/types.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
@@ -94,6 +95,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   bus: { sql: SqlBus },
   ticks: { "time-based": TimeBasedTicks },
   engine: { journal: JournalEngines },
+  tacit: { none: NoTacitLedger },
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -197,6 +199,7 @@ describe("plugin registry: defaults", () => {
       bus: "sql",
       ticks: "time-based",
       engine: "journal",
+      tacit: "none",
       // Derived from github-issues, the default source (issue #273).
       forge: "github",
     });
@@ -226,7 +229,8 @@ describe("plugin registry: defaults", () => {
       const { github_auth: _g, capability: _c, ...defaults } = defaultPlugins(platform);
       expect(rest).toEqual(defaults);
     }
-    const { awake: _w, ...fixed } = defaultPlugins("darwin");
+    // tacit is left out of the checked-in config: its default, `none`, applies.
+    const { awake: _w, tacit: _t, ...fixed } = defaultPlugins("darwin");
     expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25" });
   });
 
@@ -959,7 +963,8 @@ describe("docs/plugins/<interface>.md", () => {
     expect(s).toMatch(/Not wired in yet/);
   });
 
-  it("covers 21 interfaces", () => {
-    expect(PLUGIN_KINDS).toHaveLength(21);
+  it("covers every interface in the registry, the tacit ledger among them", () => {
+    expect(PLUGIN_KINDS).toEqual(Object.keys(REGISTRY));
+    expect(PLUGIN_KINDS).toContain("tacit");
   });
 });

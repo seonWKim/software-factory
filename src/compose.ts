@@ -875,9 +875,9 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
-    network_probe,
-    bus,
-    ticks,
+    network_probe, bus, ticks,
+    // The owner's tacit ledger (issue #570): the controller's outbound runs its CLIs; no agent run gets it.
+    tacit: await createPlugin(registry, "tacit", sel.tacit, base),
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     // The factory repo's git writes under this machine's stable host id; a SQLite store (solo) flushes every host's.
