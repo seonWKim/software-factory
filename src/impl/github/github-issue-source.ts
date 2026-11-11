@@ -4,6 +4,7 @@ import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { incompleteLabel } from "../../core/pr-body.js";
 import { workItemIdFromBranch } from "../../core/policy.js";
+import { REACTION_WINDOW_MS, reactionKey, verdictReaction } from "../../core/reaction-verdict.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { Logger } from "../../core/log.js";
 import type { DependencyState, SourceRef, WorkItemId } from "../../core/types.js";
@@ -77,6 +78,12 @@ interface GhPullHead {
   number: number;
   head: { ref: string };
 }
+/** A reaction as the comment reactions list returns it; `user` is null for a deleted account. */
+interface GhReaction {
+  id: number;
+  content: string;
+  user: GhUser | null;
+}
 interface GhCommit {
   sha: string;
   commit: { message: string; committer: { date: string } | null };
@@ -114,6 +121,11 @@ interface Cursor {
    * catch-up allowance (GitHubClient.takeCatchUp), and the cursor stops at the last one read. Absent: caught up.
    */
   closed_catch_up?: boolean;
+  /**
+   * Per factory PR comment whose reactions were read (issue #524), the highest reaction id already delivered.
+   * Only comments still in the 7-day window are kept. Absent: none read yet.
+   */
+  reactions?: Record<string, number>;
 }
 
 /** What the GitHub forge's poll needs beyond the client: the Clock the starting point comes from, `github.history_since`, a log. */
@@ -269,6 +281,10 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     read.sort((a, b) => a.cm.id - b.cm.id);
     for (const r of read) events.push(...(await this.recordComment(r)));
 
+    const marks = await this.readReactions(c.reactions ?? {}, events);
+    if (marks && Object.keys(marks).length > 0) next.reactions = marks;
+    else delete next.reactions;
+
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
     // Under the budget threshold the cursor stays put, so the next poll reads them. With no cursor yet (a first
     // start) the pages are catch-up reads: as many as this minute's allowance grants, none when it is used.
@@ -296,6 +312,43 @@ export class GitHubIssueSource implements PollSource, DependencySource {
 
     events.push(...closes);
     return { events, next_cursor: JSON.stringify(next) };
+  }
+
+  /**
+   * 👍 and 👎 on the factory's PR comments (design §4, issue #524): the comments the store records as posted on a PR
+   * of this repository in the last 7 days, each read with one GET of its reactions per poll (a conditional request:
+   * an unchanged list is a 304, not counted against the rate limit). Each new 👍 or 👎 by a person, above the
+   * comment's mark, becomes one `verdict_submitted` reaction event on the PR. Other emoji, the bot's own 👀 and other
+   * bots are passed over. Returns the new marks; null with no store (no records to read). Under `lowBudget()` nothing
+   * is read and the marks are kept. A comment that is gone (404) is skipped.
+   */
+  private async readReactions(seen: Record<string, number>, events: SourceEvent[]): Promise<Record<string, number> | null> {
+    if (!this.store) return null;
+    if (this.client.lowBudget()) return seen;
+    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+    const marks: Record<string, number> = {};
+    for (const posted of await this.store.listPostedComments(`${this.repo.owner}/${this.repo.name}#`, REACTION_WINDOW_MS)) {
+      const pr = /\/pull\/(\d+)(?:#|$)/.exec(posted.url ?? "")?.[1];
+      const id = posted.comment_id;
+      if (!pr || id === null || id in marks) continue;
+      let reactions: GhReaction[];
+      try {
+        reactions = await this.client.list<GhReaction>(`${base}/issues/comments/${encodeURIComponent(id)}/reactions`, 1);
+      } catch (err) {
+        if (err instanceof GitHubError && err.status === 404) continue;
+        throw err;
+      }
+      const mark = seen[id] ?? 0;
+      marks[id] = mark;
+      for (const r of [...reactions].sort((a, b) => a.id - b.id)) {
+        if (r.id <= mark) continue;
+        marks[id] = r.id;
+        const reaction = verdictReaction(r.content);
+        if (reaction === null || r.user === null || r.user.type === "Bot") continue;
+        events.push({ kind: "verdict_submitted", target: { kind: "pr", change_ref: pr }, comment_id: reactionKey(String(r.id)), approver: identity(r.user), reaction });
+      }
+    }
+    return marks;
   }
 
   /**

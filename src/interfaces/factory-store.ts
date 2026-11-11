@@ -876,6 +876,16 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    */
   recordPostedComment(input: NewPostedComment): Promise<void>;
   /**
+   * The posted records whose comment ID is `comment_id`, oldest first (a Slack message's ts can be recorded under
+   * more than one marker, e.g. its button update). Rows of failed posts only are never returned. Read-only.
+   */
+  listPostedCommentsById(comment_id: string): Promise<PostedComment[]>;
+  /**
+   * The comments posted on sources whose id starts with `source_prefix` (e.g. `owner/name#`) in the last
+   * `within_ms` by the store clock, oldest first. Rows of failed posts only are never returned. Read-only.
+   */
+  listPostedComments(source_prefix: string, within_ms: number): Promise<PostedComment[]>;
+  /**
    * Records failed post number `attempts`; the next may be tried `delay_ms` after the store clock's now.
    * Conditional: only when the stored count is `attempts - 1` (no row counts as 0), so two replicas recording the
    * same failure count it once. Returns whether this call recorded it.
@@ -1081,6 +1091,8 @@ export interface PostedComment {
   attempts: number;
   /** When the next post may be tried; null with no failures. */
   next_attempt_at: Timestamp | null;
+  /** When it was posted (recorded); null on a row of failed posts only. */
+  posted_at: Timestamp | null;
 }
 
 export interface NewItemMessage {

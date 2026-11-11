@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { type ChatCommand, parseChatCommand } from "../../core/command-table.js";
 import { type CommandName, THREAD_BARE_COMMANDS, commandFooter, commandState, parseComment, parseLink, withSlash } from "../../core/commands.js";
 import type { Logger } from "../../core/log.js";
+import { inReactionWindow, reactionKey, verdictReaction } from "../../core/reaction-verdict.js";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItem } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
@@ -24,6 +25,8 @@ export const META_STATUS = "factory_status";
 const STATUS_MARKER = "slack:status";
 /** The record of the status message posted after message `ts` was deleted. */
 const replacedStatusMarker = (ts: string) => `slack:status:after:${ts}`;
+/** Whether a stored marker is the status message's (the first or a replacement of a deleted one). */
+const isStatusMarker = (marker: string) => marker === STATUS_MARKER || marker.startsWith(replacedStatusMarker(""));
 /** The record of the chat.update that left message `ts` with the buttons `keep` (issue #586): one update each. */
 const doneMarker = (ts: string, keep: readonly CommandName[]) => `slack:done:${ts}:${keep.join(",")}`;
 
@@ -47,9 +50,13 @@ export interface SlackSourceDeps {
    * links, the local users, the reads `list` and `show` print, and the command rows they store; the records of the
    * messages it posted (`getPostedComment`, `recordPostedComment`), so a repeat reads no thread; the item's thread
    * entries and state changes, for the earlier messages a state change updates and the reply to a stale button; a
-   * stored proposal's rows, for its Cancel button (issue #584).
+   * stored proposal's rows, for its Cancel button (issue #584); the records of a reacted message's ts, to find the
+   * item a 👍 or 👎 is about (issue #524).
    */
-  store: ChatStore & Pick<FactoryStore, "getWorkItemBySource" | "recordItemMessage" | "getPostedComment" | "recordPostedComment" | "listStateChanges">;
+  store: ChatStore & Pick<
+    FactoryStore,
+    "getWorkItemBySource" | "recordItemMessage" | "getPostedComment" | "recordPostedComment" | "listStateChanges" | "listPostedCommentsById"
+  >;
   /** `settings list` and `settings history` from Slack; absent: they answer that settings are not readable here. */
   settings?: ChatDeps["settings"];
   /** Where PR links point. */
@@ -186,6 +193,7 @@ export class SlackSource implements StreamSource {
     const team = str(p.team_id) ?? me.team_id;
     const ev = obj(p.event);
     const type = ev.type;
+    if (event_id !== null && type === "reaction_added") return this.fromReaction(ev, event_id, me);
     if (event_id === null || (type !== "app_mention" && type !== "message")) return null;
     const channel = str(ev.channel);
     const user = str(ev.user);
@@ -233,6 +241,39 @@ export class SlackSource implements StreamSource {
     }
     const title = (said.split(/\r?\n/)[0] ?? "").trim().slice(0, TITLE_MAX) || "Slack request";
     return { event: { kind: "item_requested", source, requester: who, title, body: said }, key };
+  }
+
+  /**
+   * `reaction_added` (issue #524): a 👍 or 👎 by a person, in a configured channel, on a message the factory posted
+   * in a work item's thread, within 7 days of the message (Slack timestamps: the message ts and the event_ts). The
+   * message is found by its ts in the store's posted records, which name its thread; the status message, a message
+   * with no record and a thread that is no work item mean nothing. The event targets the item, keyed on the channel,
+   * message, person and emoji, so a remove and re-add stores nothing more. Needs `reactions:read`: without it no
+   * such event arrives and nothing else changes.
+   */
+  private async fromReaction(ev: Record<string, unknown>, event_id: string, me: { user_id: string }): Promise<Mapped | null> {
+    const user = str(ev.user);
+    const msg = obj(ev.item);
+    const channel = str(msg.channel);
+    const ts = str(msg.ts);
+    const reaction = verdictReaction(str(ev.reaction) ?? "");
+    if (user === null || channel === null || ts === null || reaction === null || msg.type !== "message") return null;
+    if (!this.d.channels.includes(channel) || user === me.user_id) return null;
+    const reacted = Number(str(ev.event_ts)) * 1000;
+    if (!Number.isFinite(reacted) || !inReactionWindow(Number(ts) * 1000, reacted)) return null;
+    const records = await this.d.store.listPostedCommentsById(ts);
+    if (records.some((r) => isStatusMarker(r.marker))) return null;
+    const thread = records.map((r) => parseSlackSourceId(r.source_id)).find((t) => t?.channel === channel);
+    if (!thread) return null;
+    const source = threadRef(thread);
+    if (!(await this.d.store.getWorkItemBySource("slack_thread", source.id))) return null;
+    return {
+      event: {
+        kind: "verdict_submitted", target: { kind: "issue", source }, comment_id: reactionKey(`slack:${channel}:${ts}:${user}:${reaction}`),
+        approver: { provider: "slack", subject: user }, reaction,
+      },
+      key: `event:${event_id}`,
+    };
   }
 
   /**

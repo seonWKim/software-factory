@@ -1956,6 +1956,22 @@ export class SqlFactoryStore implements FactoryStore {
     if (!(await this.insertOnce(this.db, sql, [...values, now, c.source_id, c.marker]))) await update();
   }
 
+  async listPostedCommentsById(comment_id: string): Promise<PostedComment[]> {
+    const rows = await this.db.all(
+      "SELECT * FROM outbound_deliveries WHERE comment_id = ? ORDER BY created_at, updated_at, marker", [comment_id],
+    );
+    return rows.map(rowToPostedComment);
+  }
+
+  async listPostedComments(source_prefix: string, within_ms: number): Promise<PostedComment[]> {
+    const rows = await this.db.all(
+      `SELECT * FROM outbound_deliveries WHERE comment_id IS NOT NULL AND updated_at >= ? AND SUBSTR(source_id, 1, ?) = ?
+       ORDER BY updated_at, source_id, marker`,
+      [this.after(-within_ms), source_prefix.length, source_prefix],
+    );
+    return rows.map(rowToPostedComment);
+  }
+
   async recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number): Promise<boolean> {
     const now = this.now();
     const next_attempt_at = this.after(delay_ms);
@@ -2855,6 +2871,8 @@ function rowToPostedComment(row: Row): PostedComment {
     body_hash: (row.body_hash as string | null) ?? null,
     attempts: Number(row.attempts),
     next_attempt_at: (row.next_attempt_at as Timestamp | null) ?? null,
+    // A posted row's updated_at is its post time: recordPostedComment never updates a row that has a comment.
+    posted_at: row.comment_id == null ? null : (row.updated_at as Timestamp),
   };
 }
 

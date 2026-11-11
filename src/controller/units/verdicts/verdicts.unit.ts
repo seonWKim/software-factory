@@ -4,6 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { LOCAL_SOURCE } from "../../../core/local-merge.js";
 import { workItemIdFromBranch } from "../../../core/policy.js";
+import { followUpKey, reactionOutcome } from "../../../core/reaction-verdict.js";
 import { type Actor, type StateChangeDetail, type VerdictKind, type VerdictSeverity, type VerdictTarget, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import { type ParsedVerdict, parseVerdict, verdictRefusal } from "../../../core/verdict.js";
 import type { Principal } from "../../../interfaces/auth-provider.js";
@@ -13,7 +14,10 @@ import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
-type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
+/** A `/verdict` comment. */
+type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted"; args: string }>;
+/** A 👍 or 👎 on a factory message (issue #524). */
+type ReactionEvent = Extract<SourceEvent, { kind: "verdict_submitted"; reaction: string }>;
 /** Records reverts and fix-forwards (design §6). */
 const LINKS: Actor = { kind: "system", id: "system:links" };
 /** What an implicit verdict says (design §4): its kind and severity, its reason and its event key. */
@@ -75,6 +79,38 @@ export class VerdictsUnit {
     );
   }
 
+  /**
+   * A 👍 or 👎 by a person on a factory message (design §4, issue #524), mapped by reactionOutcome. Only a linked
+   * user with `record_verdict` counts; anyone else gets nothing stored and no reply. 👍 stores `accept`/`none` through
+   * recordVerdict under the reaction's key; 👎 gets one follow-up asking for the severity, keyed on the reaction, on
+   * the PR or in the item's thread (the person's `/verdict changes` reply stores the verdict). An item that takes no
+   * verdict now (closed unmerged, no PR) gets nothing either. No 👀: the reaction is the person's own mark.
+   */
+  async handleReaction(e: ReactionEvent): Promise<void> {
+    const item = e.target.kind === "issue"
+      ? await this.c.k.reader.getWorkItemBySource(e.target.source.type, e.target.source.id)
+      : await this.c.k.reader.getWorkItemByPr(this.c.k.project(), e.target.change_ref);
+    if (!item) return;
+    const principal = await this.c.unit("auth").authorize(e.approver, "record_verdict", item.id);
+    if ("refuse" in principal) {
+      this.c.k.d.log.info("reaction ignored", { work_item_id: item.id, reason: principal.refuse });
+      return;
+    }
+    const out = reactionOutcome(e.reaction);
+    if (out.kind === "record") {
+      const refusal = await this.recordVerdict(item.id, { comment_id: e.comment_id, target: e.target.kind }, principal, out.verdict);
+      if (refusal !== null) this.c.k.d.log.info("reaction verdict not stored", { work_item_id: item.id, reason: refusal });
+      return;
+    }
+    const closed = noVerdictReason(item);
+    if (closed !== null) {
+      this.c.k.d.log.info("reaction follow-up not posted", { work_item_id: item.id, reason: closed });
+      return;
+    }
+    if (e.target.kind === "pr") await this.c.unit("outbox").prComment(item, followUpKey(e.comment_id), out.body);
+    else await this.c.unit("outbox").comment(item, followUpKey(e.comment_id), out.body);
+  }
+
   /** The work item a verdict names: by issue, or by the PR's head branch when that PR is the item's. */
   async verdictItem(e: VerdictEvent): Promise<WorkItem | null> {
     if (e.target.kind === "issue") return this.c.k.reader.getWorkItemBySource(e.target.source.type, e.target.source.id);
@@ -103,10 +139,8 @@ export class VerdictsUnit {
       const it = await this.c.k.reader.getWorkItem(id);
       if (!it) return null;
       if ((await this.c.k.reader.listVerdicts(id)).some((x) => x.comment_id === key.comment_id)) return null;
-      const closed = verdictRefusal(it);
+      const closed = noVerdictReason(it);
       if (closed !== null) return closed;
-      // A local item is judged on the item itself (its local merge, or no merge yet); any other needs its PR.
-      if (it.change_ref === null && it.source.type !== LOCAL_SOURCE) return "the work item has no PR yet";
       const r = await this.c.k.commitItem([], { kind: "verdict", input: {
         id,
         expected_version: it.version,
@@ -198,6 +232,16 @@ export class VerdictsUnit {
   }
 }
 
+/**
+ * Why `it` takes no verdict now, else null: closed without a merge (verdictRefusal), or no PR yet. A local item is
+ * judged on the item itself (its local merge, or no merge yet); any other needs its PR.
+ */
+function noVerdictReason(it: WorkItem): string | null {
+  const closed = verdictRefusal(it);
+  if (closed !== null) return closed;
+  return it.change_ref === null && it.source.type !== LOCAL_SOURCE ? "the work item has no PR yet" : null;
+}
+
 /** A change ref in a state-change detail: a numbered change as its number (as before change refs), else the ref. */
 function refDetail(ref: string | null): string | number | null {
   return ref === null ? null : (prNumber({ change_ref: ref }) ?? ref);
@@ -213,7 +257,7 @@ export default controllerUnit({
   name: "verdicts",
   create: (c: Ctx) => new VerdictsUnit(c),
   events: {
-    verdict_submitted: (u, e) => u.handleVerdict(e),
+    verdict_submitted: (u, e) => ("reaction" in e ? u.handleReaction(e) : u.handleVerdict(e)),
     base_commit: (u, e) => u.recordReverts(e),
   },
 });
