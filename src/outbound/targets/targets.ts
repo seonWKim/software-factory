@@ -1,9 +1,9 @@
 // The delivery targets outbound runs (RFC 0015 §7): github-push, github-change, github-issue, github-comment,
-// github-labels, slack-thread, local, and source for any other configured adapter. A process delivers only what one of its targets accepts; the rest
+// github-labels, slack-thread, local, tacit (the owner's ledger), and source for any other configured adapter. A process delivers only what one of its targets accepts; the rest
 // waits for a process that has the adapter.
 
 import type { SourceRef } from "../../core/types.js";
-import { GIT_TARGET } from "../intents.js";
+import { GIT_TARGET, TACIT_TARGET } from "../intents.js";
 import { deliverGit, gitAccepts } from "./local-git.js";
 import { act, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
 
@@ -124,8 +124,19 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
       },
     },
     {
+      // A pushback captured in the owner's ledger (issue #570): its CLI runs here, in the process that flushes.
+      name: "tacit",
+      accepts: (d) => d.kind === "action" && d.row.action === "tacit_capture" && t.tacit?.enabled === true,
+      async deliver(d) {
+        if (d.kind !== "action" || !t.tacit) throw new Error("tacit delivers captures only");
+        const a = d.row.args;
+        await t.tacit.capture({ session: String(a.session), proposal: String(a.proposal ?? ""), pushback: String(a.pushback ?? "") });
+        return { url: null };
+      },
+    },
+    {
       name: "source",
-      accepts: (d) => ![GITHUB, SLACK, LOCAL, GIT_TARGET].includes(typeOf(d)) && prStatus(d) === null && adapter(typeOf(d)) !== null,
+      accepts: (d) => ![GITHUB, SLACK, LOCAL, GIT_TARGET, TACIT_TARGET].includes(typeOf(d)) && prStatus(d) === null && adapter(typeOf(d)) !== null,
       deliver: (d) => (d.kind === "comment" ? adapter(d.source_type)!.postComment(d.target, d.body, d.marker) : act(adapter(typeOf(d))!, d.row)),
     },
   ];

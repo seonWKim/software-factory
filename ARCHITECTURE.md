@@ -13,7 +13,7 @@ The factory is split into components under `src/` (inbound, controller, worker, 
 | **Call** | `call` | In-process TypeScript call, through an interface or a component's `index.ts` | inbound → `SourceAdapter.poll()`, worker → `Sandbox.create()`, one unit → another through `ctx.unit(name)` |
 | **Bus** | `publish <topic>`, `consume <topic>` | A component publishes in its own transaction into its `<component>_outbox`; its `relay` tick moves the rows to the topic's `bus_<topic>` table; a consumer group reads each partition in order under a lease and dedupes in its `<component>_inbox`. Retries, delayed messages and dead letters are due against the retry scheduler's release horizon (`bus_scheduler`) | `inbound.records`, `controller.commands`, `controller.events`, `deliveries.requests`, `deliveries.results`, `system.alerts` (§3) |
 | **Kernel commit** | `commit` | A controller unit's decision is a list of writes (`ControllerWrite`) the router applies through `Kernel.commit` / `commitItem`; each is one keyed or conditional store write | `thread_entry`, `intent`, `emit`, `expire_leases`, a transition at the item's version |
-| **Outbound delivery** | `intent`, `deliver` | A producer stores an intent (`outbound_intents` for a thread entry, `outbound_actions` for every other write); outbound batches it per destination and a delivery target writes it to the outside world | spec comment, status label, `push`, `pr`, `close_pr`, `merge_pr`, `merge`, `push_base`, `file_sub_issue` |
+| **Outbound delivery** | `intent`, `deliver` | A producer stores an intent (`outbound_intents` for a thread entry, `outbound_actions` for every other write); outbound batches it per destination and a delivery target writes it to the outside world | spec comment, status label, `push`, `pr`, `close_pr`, `merge_pr`, `merge`, `push_base`, `file_sub_issue`, `tacit_capture` |
 | **Store** | `store` | A legacy `FactoryStore` method: a conditional update, a queue claim with a lease, or a plain read | `worker_runs` (claim + lease + heartbeat), command rows in `inbound_commands`, settings |
 | **Lease** | `lease` | One holder at a time across replicas, by conditional update with expiry | run leases, `inbound_sync_leases` (one forge sync per project), `inbound_listener_leases` (one stream connection per source type), outbound batch claims, merge queue landing |
 | **HTTP** | `HTTP` | Local JSON API, 127.0.0.1 only | `factory ui` on port 4310: `/app`, `/api/v1/*`, `/api/health` |
@@ -119,6 +119,7 @@ graph TB
   subgraph SYNC["Sync plugins"]
     SRC["SourceAdapter<br/><b>github-issues</b>, <b>local</b>, slack"]
     FORGE["Forge (optional)<br/><b>github</b> (derived); none = local only"]
+    TACIT["TacitLedger (owner's ledger)<br/><b>none</b>, agents-home"]
   end
 
   subgraph GUARDS["Guards: switchable, never disabled"]
@@ -174,6 +175,7 @@ graph TB
   OUT -- "deliver: comments, labels, closes" --> SRC
   OUT -- "deliver: push, pr, close_pr, push_base" --> FORGE
   OUT -- "deliver: merge, base sync (local target)" --> SBX
+  OUT -- "deliver: tacit_capture (tacit target)" --> TACIT
   OUT -- "call: scan every text" --> EGR
   OUT -- "call: authorize (service:outbound)" --> IDN
   CTL -- "call: triage helpers, improve drafts" --> LLMP
@@ -197,7 +199,7 @@ graph TB
 | inbound | `src/inbound/` | The only caller of a source's or the forge's poll. Stores each record (`inbound_raw_records`) or relays each command row (`inbound_commands`) with an `InboundReceived` in the transaction that moves its cursor; the `normalize-source` handler turns it into the controller's message. Prunes old records | publish `inbound.records`, `controller.commands`; sync lease; stream listeners under the listener lease |
 | controller | `src/controller/` | Decides. The router (`router/`) hands each event kind to the one unit that accepts it and runs the units' tick steps in order; 23 units under `units/<unit>/<unit>.unit.ts`; state tables for `WorkItem` and `MergeQueue` (`actors/`); handlers `legacy-controller`, `delivery-results`, `unit-messages`, `dead-letter-alarm` | consume `controller.commands`, `controller.events`, `deliveries.results`, `system.alerts`; Kernel commit; intents; publish `controller.events`, `deliveries.requests` (the outbox step) |
 | worker | `src/worker/` | Runs. Claims a run, adopts it into the engine (lease fencing, heartbeat, named timeouts, `code_version`), drives its kind (`runs/<kind>/<kind>.run.ts`: triage, implement, review, update, resolve, improve, merge-check), each agent step's prompt and tools from its role (`roles/<kind>.role.ts`) | store (claim, journal `worker_run_steps`, outcome, thread entries, intents); calls to the plugins |
-| outbound | `src/outbound/` | Writes to the outside world. `announce` turns unannounced intents into one `DeliveryRequested` per destination; the `aggregate` handler batches per destination (`outbound.batching`); the `outbound-flush` tick sends each destination's oldest due batch, scanned (G5), under `service:outbound`, through a target: `github-push`, `github-change`, `github-issue`, `github-comment`, `github-labels`, `slack-thread`, `local`, `source` | consume `deliveries.requests`; publish `deliveries.results`; deliver through the forge, the source adapters and the factory repo |
+| outbound | `src/outbound/` | Writes to the outside world. `announce` turns unannounced intents into one `DeliveryRequested` per destination; the `aggregate` handler batches per destination (`outbound.batching`); the `outbound-flush` tick sends each destination's oldest due batch, scanned (G5), under `service:outbound`, through a target: `github-push`, `github-change`, `github-issue`, `github-comment`, `github-labels`, `slack-thread`, `local`, `tacit`, `source` | consume `deliveries.requests`; publish `deliveries.results`; deliver through the forge, the source adapters, the factory repo and the owner's tacit ledger |
 | bus | `src/bus/` | `EventBus`, `Inbox`, `Relay`, `RetryScheduler`; the `sql` plugin (`plugins/sql/`): per-topic tables made from each topic descriptor, partition cursors under leases, retries, delayed messages, dead letters (announced on `system.alerts`) | store (bus tables) in the publisher's or consumer's transaction |
 | identity | `src/identity/` | Passports: authenticate at the edge, `narrow` for runs, `authorize`, `check` offline (HMAC chain, expiry, revocations), revoke, audit every decision in `authz_audit`; display names (`identity_profiles`) | call (its `index.ts` only) |
 | runtime | `src/runtime/` | Discovery (`registry/`), the controller role (`roles/`), the settings catalog and levels (`settings/`), hooks (`hooks/`, fail closed, audited), run roles loader (`run-roles/`), the component consumer | call |
@@ -228,6 +230,7 @@ graph TB
 | `Updater` | Keeps the running factory on the latest base commit; drains children, optional unattended migrations | git, npm build, process fork |
 | `NetworkProbe` | Decides when a `network` claim pause ends | HEAD requests to the selected plugins' endpoints |
 | `Clock` | Time, injected for tests; components get time from ticks | none |
+| `TacitLedger` | The owner's tacit-knowledge ledger: a `/revise`, `/reject` or `changes` verdict is captured as a `tacit_capture` intent (destination `tacit:ledger`, keyed by the comment ID) that outbound's `tacit` target delivers, scanned (G5). Built in the controller only; default `none` | exec: `<agents home>/bin/tacit capture` with the record as JSON on stdin, 30 s timeout (`agents-home`) |
 
 ## 3. Message flows (the bus topics)
 
