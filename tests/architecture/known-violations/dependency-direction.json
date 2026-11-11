@@ -145,6 +145,7 @@
   "component-imports-legacy|controller/units/model-probe/model-probe.unit.ts|core/policy.ts",
   "component-imports-legacy|controller/units/model-probe/model-probe.unit.ts|core/types.ts",
   "component-imports-legacy|controller/units/model-probe/model-probe.unit.ts|interfaces/llm-provider.ts",
+  "component-imports-legacy|controller/units/notifications/notifications.unit.ts|core/notifications.ts",
   "component-imports-legacy|controller/units/outbox/outbox.unit.ts|core/change-ref.ts",
   "component-imports-legacy|controller/units/outbox/outbox.unit.ts|core/local-cli.ts",
   "component-imports-legacy|controller/units/outbox/outbox.unit.ts|core/local-merge.ts",

@@ -40,6 +40,7 @@ const READS = [
   "listDeliveries", "listRuns", "listUnacknowledgedRuns", "listStateChanges", "listBudgetCheckpoints", "listClaimDecisions", "getTierHistory",
   "getMergeCheck", "getAppCommandRequest", "listItemMessages", "listSettingChanges", "getWorkItemByMergeSha",
   "listVerdicts", "listStandingRules", "latestSignalTimes", "listSignalRefs", "listStateChangesSince", "listVerdictsSince", "listRunsFinishedSince",
+  "listNoticesFor", "listHeldNotices",
 ] as const;
 
 /**
@@ -101,7 +102,9 @@ export type ControllerWrite =
   /** An intent for outbound (RFC 0015 M7): an action the outbox step announces; a keyed one is stored once. */
   | { kind: "intent"; action: NewAction }
   /** A signal ledger row, skipped when its (source, source_ref) is stored (design 11-signal-ledger). */
-  | { kind: "signal"; signal: Parameters<Store["recordSignal"]>[0] };
+  | { kind: "signal"; signal: Parameters<Store["recordSignal"]>[0] }
+  /** An owner notice, skipped when its (work item, wait key) is stored (design 09-notifications). */
+  | { kind: "notice"; notice: Parameters<Store["recordNotice"]>[0] };
 
 /** What one lease expiry did: each attempt it cut off, and the runs it requeued or failed. */
 export interface ExpiredLeases {
@@ -229,6 +232,7 @@ export class Kernel {
       else if (w.kind === "emit") await this.deliveries.emit(w.draft, this.d.clock.now().toISOString());
       else if (w.kind === "intent") await this.deliveries.record(w.action, this.d.clock.now().toISOString());
       else if (w.kind === "signal") await store.recordSignal(w.signal);
+      else if (w.kind === "notice") await store.recordNotice(w.notice);
       else await this.commit({ writes: w.then(await this.expireLeases(w)) });
     }
   }
