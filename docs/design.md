@@ -13,6 +13,7 @@ the `05-*` files.
 
 ## 2. Work item
 - [02-work-item.md](design/02-work-item.md): the one work-item shape for every source, and projects keyed by the forge's repository ID.
+- [02-tasks.md](design/02-tasks.md): plain tasks in `controller_tasks`, never work items: quick-add words, `task add`, `task done`, recurring completion.
 
 ## 3. Risk
 - [03-risk.md](design/03-risk.md): how the tier is set and rechecked, which tiers need a human, and the safety ratchet.

@@ -118,6 +118,7 @@ import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords 
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
+import * as tasks from "./tasks.js";
 import * as posted from "./posted-comments.js";
 
 /**
@@ -383,15 +384,9 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   // Signal ledger (design 11-signal-ledger): in ./signals.ts.
-  recordSignal(s: NewSignal): Promise<boolean> {
-    return signals.recordSignal(this.db, s);
-  }
-  latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> {
-    return signals.latestSignalTimes(this.db);
-  }
-  listSignalRefs(windows: Parameters<FactoryStore["listSignalRefs"]>[0]): Promise<{ source: string; source_ref: string }[]> {
-    return signals.listSignalRefs(this.db, windows);
-  }
+  recordSignal(s: NewSignal): Promise<boolean> { return signals.recordSignal(this.db, s); }
+  latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> { return signals.latestSignalTimes(this.db); }
+  listSignalRefs(windows: Parameters<FactoryStore["listSignalRefs"]>[0]) { return signals.listSignalRefs(this.db, windows); }
   listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> {
     return signals.listStateChangesSince(this.db, q);
   }
@@ -407,6 +402,10 @@ export class SqlFactoryStore implements FactoryStore {
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
   answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
+  // Plain tasks (design 02-tasks, issue #606): tasks.ts
+  addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
+  listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
+  completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); }
 
   // Budget checkpoints
 

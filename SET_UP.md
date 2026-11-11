@@ -178,7 +178,9 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 `factory help` prints the same command list as a `/help` reply; `factory help <id>` marks the ones that apply to that item now, exactly as `/help` on its issue does. `factory approve <id>` checks first that approve applies to the item (the spec gate, the floor block, a run held for the Rule of Two or by coordination cost); anywhere else it prints the refusal the controller would give and stores nothing. The status page lists only the commands that apply now and that your role allows; the ones it leaves out are named once, with the reason, and every refusal there shows as plain text.
 
 - `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
-- `factory task list`: List local work items. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason.
+- `factory task add <words>`: Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, `HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title. Who: anyone who may submit work. Prints: the task: ID, title, due, priority, list and recurrence.
+- `factory task done <task_id>`: Complete a plain task; a recurring one gets its next occurrence once, however often it is completed. Who: anyone who may submit work. Prints: that it is done (or already was), and the next occurrence.
+- `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task.
 - `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
 - `factory approve <id> [notes]`: Store `/approve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
 - `factory retry <id> [text]`: Store `/retry` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
@@ -459,6 +461,8 @@ The factory's commands in Slack, from the same command table as the CLI (`@bot` 
 In Slack a command follows a mention of the bot, in the item's thread and with no slash: `@software-factory approve`, `@software-factory revise <feedback>`, and so for every command (`retry`, `reject`, `resolve`, `budget`, `merge`, `verdict`, `standing`, `link`). The slash form after a mention (`@software-factory /approve`) still works. Outside an item's thread, a mention that starts with a command word and no slash is a request and starts a work item; there `link` keeps its slash (`@software-factory /link <code>`). A reply in an item's thread with no mention still needs the slash. `@software-factory help` answers in the mention's thread: outside an item's thread with how to start work and `/link <code>`, in an item's thread with the commands that apply now, in the same words as `/help` on GitHub but without the slash.
 
 - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
+- `@bot task add <words>`: as `factory task add <words>`. Who: anyone who may submit work.
+- `@bot task done <task_id>`: as `factory task done <task_id>`. Who: anyone who may submit work.
 - `@bot list`: as `factory task list`. Who: anyone.
 - `@bot show <id>`: as `factory task show <id>`. Who: anyone.
 - `@bot approve [notes]`: as `factory approve <id> [notes]`, in the item's thread. Who: the owner and approvers.

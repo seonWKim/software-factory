@@ -576,6 +576,20 @@ CREATE TABLE controller_state_changes (
     UNIQUE (work_item_id, version)
   );
 
+CREATE TABLE controller_tasks (
+    id          TEXT PRIMARY KEY,
+    title       TEXT NOT NULL,
+    list        TEXT,
+    priority    INTEGER,
+    due_date    TEXT,
+    due_time    TEXT,
+    recurrence  TEXT,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    done_at     TEXT,
+    parent_id   TEXT UNIQUE
+  );
+
 CREATE TABLE controller_unreviewed_merges (
     id          TEXT PRIMARY KEY,
     project     TEXT NOT NULL,
@@ -1602,6 +1616,8 @@ CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 
 CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
+
+CREATE INDEX controller_tasks_open ON controller_tasks (done_at, created_at);
 
 CREATE INDEX controller_unreviewed_merges_at ON controller_unreviewed_merges (at);
 
