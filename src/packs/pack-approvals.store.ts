@@ -8,7 +8,7 @@
 import type { UserId } from "../core/types.js";
 import type { AuthProvider } from "../interfaces/auth-provider.js";
 import type { SqlExecutor } from "../state/index.js";
-import { type PackEntriesStore, type PackEntryKind, type PackEntryRef, PACK_ENTRY_KINDS } from "./pack-entries.store.js";
+import { type PackEntriesStore, type PackEntryKind, type PackEntryRef, type StoredRef, PACK_ENTRY_KINDS, hashesText } from "./pack-entries.store.js";
 
 export type ApprovalAction = "approve" | "revoke";
 
@@ -49,15 +49,15 @@ export interface ApprovalRequest {
 }
 
 /** A refusal is `not_allowed` (the authorize check) or `no_entry` (no stored description matches). */
-export type ApprovalResult = { ok: true; ref: PackEntryRef } | { ok: false; refusal: "not_allowed" | "no_entry"; reason: string };
+export type ApprovalResult = { ok: true; ref: StoredRef } | { ok: false; refusal: "not_allowed" | "no_entry"; reason: string };
 
 /** Which stored description a request names, or why none. */
-async function target(entries: PackEntriesStore, r: ApprovalRequest): Promise<PackEntryRef | string> {
+async function target(entries: PackEntriesStore, r: ApprovalRequest): Promise<StoredRef | string> {
   if (!(PACK_ENTRY_KINDS as readonly string[]).includes(r.kind)) return `kind must be one of ${PACK_ENTRY_KINDS.join(", ")}`;
   const kind = r.kind as PackEntryKind;
   if (r.hash === undefined) return (await entries.current(kind, r.name)) ?? `no ${kind} ${r.name} is stored`;
-  const found = (await entries.hashes(kind, r.name)).filter((h) => h.startsWith(r.hash!.toLowerCase()));
-  if (found.length === 1) return { kind, name: r.name, description_hash: found[0]! };
+  const found = (await entries.refs(kind, r.name)).filter((e) => e.description_hash.startsWith(r.hash!.toLowerCase()));
+  if (found.length === 1) return found[0]!;
   return found.length === 0 ? `no ${kind} ${r.name} has a description_hash starting ${r.hash}` : `${r.hash} names more than one description of ${kind} ${r.name}`;
 }
 
@@ -74,12 +74,12 @@ export async function changeApproval(
   const ref = await target(o.entries, r);
   if (typeof ref === "string") return { ok: false, refusal: "no_entry", reason: ref };
   await o.approvals.record(ref, r.action, o.user_id);
-  return { ok: true, ref: { kind: ref.kind, name: ref.name, description_hash: ref.description_hash } };
+  return { ok: true, ref: { kind: ref.kind, name: ref.name, description_hash: ref.description_hash, module_hash: ref.module_hash } };
 }
 
-/** The line a change prints: what changed and the description it is pinned to. */
+/** The line a change prints: what changed and the description (and tool module) it is pinned to. */
 export function approvalLine(r: ApprovalRequest, result: ApprovalResult): string {
   if (!result.ok) return `refused: ${result.reason}`;
   const what = `${result.ref.kind === "tool" ? "tool" : "MCP server"} ${result.ref.name}`;
-  return `${r.action === "approve" ? "approved" : "revoked"} ${what} (description_hash ${result.ref.description_hash.slice(0, 12)})`;
+  return `${r.action === "approve" ? "approved" : "revoked"} ${what} (${hashesText(result.ref)})`;
 }
