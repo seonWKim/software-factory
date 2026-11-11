@@ -9,6 +9,8 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { IMPROVER } from "../src/core/improver.js";
 import { AUTO_ACTOR } from "../src/core/policy.js";
+import { utcMinute } from "../src/core/commands.js";
+import { footerCommands } from "../src/impl/source/slack-format.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
@@ -198,9 +200,25 @@ describe("auto mode: specs", { timeout: 60_000 }, () => {
     expect(approved.actor).toEqual(AUTO);
     expect(approved.detail).toMatchObject({ approved_by: AUTO_ACTOR, decisions: 2 });
     const spec = (await f.messages(id, "<!-- factory:spec:")).join("\n");
-    expect(spec).toContain("Approved in auto mode");
+    expect(spec).toContain("Auto mode (`system:auto`) approves");
     expect(spec).toContain("- Fail the job, or only warn? → Fail the job");
     expect(spec).toContain("- Name the step? → scope");
+  });
+
+  it("an auto-approved spec names the approval with its tier and time, and offers no /approve: no answer block, no Approve button (issue #586)", async () => {
+    const decisions = [{ text: "Fail the job, or only warn?", default: "Fail the job", owner_only: false }];
+    const f = await autoFactory({ spec: { decisions } });
+    await f.mode("auto");
+    const id = await f.create();
+    await f.step();
+    const approved = (await f.changes(id)).find((c) => c.reason === "spec_approved")!;
+    const tier = (await f.store.getWorkItem(id))!.tier;
+    const [spec] = await f.messages(id, "<!-- factory:spec:");
+    expect(spec).toContain(`Approved automatically (auto mode, tier ${tier}) at ${utcMinute(approved.at)}.`);
+    expect(spec).not.toContain("To answer, reply");
+    expect(spec).not.toContain("`/approve");
+    // The footer a source builds its buttons from lists no approve.
+    expect(footerCommands(spec!)).not.toContain("approve");
   });
 
   for (const [what, spec] of [

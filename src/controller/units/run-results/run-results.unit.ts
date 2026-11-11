@@ -2,7 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { prNumber } from "../../../core/change-ref.js";
-import { commandFooter, commandState, retryPathsReply } from "../../../core/commands.js";
+import { autoApprovedFooter, commandFooter, commandState, retryPathsReply } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
@@ -139,10 +139,13 @@ function parseFloorHits(v: unknown): { path: string; tier: number }[] {
   return hits.length === v.length ? hits : [];
 }
 /** A PR that passed review and waits for a human merge, the state an update run usually changes. */
-/** What auto mode answered for each decision of a spec it approved: posted in the thread with the spec (design 03-risk). */
+/**
+ * What auto mode answered for each decision of a spec it approved: posted in the thread with the spec (design 03-risk);
+ * the footer after it names the approval (`autoApprovedFooter`).
+ */
 function autoAnswers(spec: TriageOutput): string {
   const items = spec.decision_items ?? [];
-  const head = "Approved in auto mode (`system:auto`): below tier 4, no owner-only decision, no path on the gate list.";
+  const head = "Auto mode (`system:auto`) approves a spec below tier 4 with no owner-only decision and no path on the gate list.";
   if (items.length === 0) return head;
   return [head, "", "Answers taken (each decision's proposed default):", ...items.map((d) => `- ${d.text} → ${d.default}`)].join("\n");
 }
@@ -209,11 +212,14 @@ export class RunResultsUnit {
             tier,
             token_cost: tokens,
           };
-          // Each approval below without a person's reply: the spec comment with its note, RUNNING, the implement run queued.
-          const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }): Promise<Decision> => {
+          // Each approval below without a person's reply: the spec comment with its note and no answer block, RUNNING, the
+          // implement run queued. `footer`: the comment's last part, the commands after the approval by default.
+          const approved = async (
+            note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }, footer = footerAfter(it, { stage: "RUNNING" }),
+          ): Promise<Decision> => {
             const patch = { ...fields, stage: "RUNNING" as const };
             const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-              renderSpec(spec, tier, { floor, previous: it.tier, added }, [...note, "", footerAfter(it, patch)].join("\n")), "spec_comment_url");
+              renderSpec(spec, tier, { floor, previous: it.tier, added }, [...note, "", footer].join("\n"), { approved: true }), "spec_comment_url");
             return { patch: { ...patch, spec_comment_url: url }, ...how, ack_run: run.id, enqueue: { kind: "implement", idempotency_key: runKey({ ...it, ...fields }, "implement") } };
           };
           // A split spec always waits for a human: its /approve files issues on the source.
@@ -227,7 +233,7 @@ export class RunResultsUnit {
                 "The owner approved the split on the parent issue (`phases_auto_approve`), so this phase is implemented without its own `/approve`.",
                 "",
                 footerAfter(it, patch),
-              ].join("\n")), "spec_comment_url");
+              ].join("\n"), { approved: true }), "spec_comment_url");
             return {
               patch: { ...patch, spec_comment_url: url },
               actor: SYSTEM,
@@ -277,11 +283,12 @@ export class RunResultsUnit {
               ?? (await this.c.unit("auth").automatic("approve_spec", it))
             : null;
           if (auto && refusal === null) {
+            // No Approve anywhere on it (issue #586): the footer names the approval and lists no `/approve`.
             return approved([autoAnswers(spec)], {
               actor: AUTO,
               reason: "spec_approved",
               detail: autoApprovalDetail({ approved_by: AUTO_ACTOR, mode_change: auto.seq }, spec.decision_items ?? []),
-            });
+            }, autoApprovedFooter(commandState({ ...it, stage: "RUNNING" }), tier, this.c.k.d.clock.now().toISOString()));
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
           const waits = auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";

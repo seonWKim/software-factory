@@ -93,9 +93,10 @@ function answerBlock(n: number): string[] {
 /**
  * The triage spec comment a human reads before typing /approve, /reject or /revise (layout issue #229): In
  * short, Problem, Decisions for you, Applied defaults, Done when, scope, Files, Risk. `footer` replaces the default last line;
- * the controller passes the command footer for the spec gate (`commandFooter`).
+ * the controller passes the command footer for the spec gate (`commandFooter`). `approved`: the spec was approved with
+ * no reply (auto mode, a standing rule, the parent's split), so it has no answer block asking for `/approve` (issue #586).
  */
-export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER): string {
+export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER, o: { approved?: boolean } = {}): string {
   // The plain AS-IS → TO-BE statement comes first, so the reader has the idea before any file-level detail.
   const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", inShortParagraphs(spec.in_short), ""];
   out.push("### Problem", spec.problem, "");
@@ -106,7 +107,7 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   ];
   if (decisions.length > 0) {
     out.push("### Decisions for you", ...folded(decisions, MAX_DECISIONS, (n) => `${n} more`), "");
-    if (spec.decisions?.length) out.push(...answerBlock(spec.decisions.length), "");
+    if (spec.decisions?.length && !o.approved) out.push(...answerBlock(spec.decisions.length), "");
   }
   // Owner defaults triage applied instead of asking (issue #315): shown apart, so they are not mistaken for questions.
   if (spec.applied_defaults?.length) out.push("### Applied defaults", ...spec.applied_defaults.map((d) => `- ${d}`), "");

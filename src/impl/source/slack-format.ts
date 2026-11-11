@@ -136,14 +136,31 @@ function chunks(text: string, max = SECTION_MAX): string[] {
 const LABELS: Record<string, string> = { approve: "Approve", retry: "Retry", resolve: "Resolve", budget: "Continue (budget)", help: "Help" };
 
 /**
+ * `body` without its command footer (the heading, its list and the "No command changes" line after it): what an
+ * earlier message keeps once its commands no longer apply (issue #586).
+ */
+function withoutFooter(body: string): string {
+  const lines = body.split(/\r?\n/);
+  const at = lines.findIndex((l) => l.trim() === FOOTER_HEADING);
+  if (at < 0) return body;
+  let end = at + 1;
+  while (end < lines.length && /^- `/.test(lines[end]!.trim())) end++;
+  if (lines[end]?.startsWith("No command changes")) end++;
+  return [...lines.slice(0, at), ...lines.slice(end)].join("\n");
+}
+
+/**
  * The Slack message for one comment: mrkdwn sections, a line on typing commands in Slack (a leading `/` would be
  * taken by Slack itself, so a command follows a mention, with no slash: `approve`, `revise <feedback>`, `help`; issue
  * #541), and an actions block with the command buttons. A proposed command (design §4) is plain text, with no buttons.
+ * `done` (issue #586): the message after a state change, its footer dropped, the `done` line added, and only the
+ * buttons in `keep` (those of its footer that still apply).
  */
-export function renderComment(body: string, repo: RepoRef, botUserId: string): SlackRendered {
-  let text = toMrkdwn(body, repo);
-  const cmds = footerCommands(body);
-  if (cmds.length > 0 || body.includes(FOOTER_HEADING)) {
+export function renderComment(body: string, repo: RepoRef, botUserId: string, done?: { line: string; keep: readonly CommandName[] }): SlackRendered {
+  let text = toMrkdwn(done ? withoutFooter(body) : body, repo);
+  if (done) text += `\n\n*${escapeSlack(done.line)}*`;
+  const cmds = done ? done.keep : footerCommands(body);
+  if (cmds.length > 0 || (!done && body.includes(FOOTER_HEADING))) {
     text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> approve or <@${botUserId}> revise &lt;feedback&gt; ` +
       `(<@${botUserId}> help lists them), or use the buttons._`;
   }
