@@ -1,7 +1,6 @@
 // Takes a requested item in: authorize, create, status, edges, links.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, openItems } from "../../../core/interpret.js";
 import { PHASE_MARKER } from "../../../core/split.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import type { Ctx } from "../context.js";
@@ -60,20 +59,14 @@ export class IntakeUnit {
    * and stores nothing. The reply is keyed on the message's source id, so a redelivery posts no second one.
    */
   private async answered(e: Extract<SourceEvent, { kind: "item_requested" }>): Promise<boolean> {
-    const llm = this.c.k.reader.llm;
-    if (!llm || (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id))) return false;
+    if (!this.c.k.reader.llm || (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id))) return false;
     if ("refuse" in (await this.c.unit("auth").authorize(e.requester, "approve_spec", e.source.id))) return false;
-    const text = e.body.trim();
     const where = { source_id: e.source.id };
-    const commands = this.c.unit("commands");
-    if (text === "" || text.length > INTERPRET_MAX_CHARS || !(await commands.scanClean(where, "message", [text]))) return false;
-    const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
-    const result = await interpret(text, items, llm, "top_level");
-    const body = interpretReply(result);
-    if (body === null) return false;
-    if (!(await commands.scanClean(where, "answer", interpretTexts(result)))) return true;
-    this.c.k.d.log.info("chat message answered", { ...where, kind: result.kind });
-    await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:chat-answer:${e.source.id} -->`);
+    const read = await this.c.unit("commands").readMessage(e.body, where, null);
+    if (read === "blocked") return true;
+    if (read === "unread" || read.body === null) return false;
+    this.c.k.d.log.info("chat message answered", { ...where, kind: read.kind });
+    await this.c.unit("outbox").postWithoutItem(e.source, read.body, `<!-- factory:chat-answer:${e.source.id} -->`);
     return true;
   }
 }
