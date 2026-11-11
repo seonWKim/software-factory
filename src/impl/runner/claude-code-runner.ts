@@ -23,8 +23,7 @@ export interface ClaudeCodeRunnerOptions {
   /** Wall clock for reading a rate-limit reset time. Absent: the system clock. */
   now?: () => Date;
   /**
-   * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and
-   * refuses a run with grants.
+   * The broker and scanner granted tools go through (architecture §5). Absent: the runner exposes no tools and refuses a run with grants.
    */
   tools?: GrantedToolDeps;
 }
@@ -225,8 +224,7 @@ function sessionArgs(spec: Pick<AgentRunSpec, "role" | "session">): string[] {
 
 /**
  * Builds the `claude -p` argument list. `tmp`: the run's temp folders, writable by Write and Edit (a rule only when
- * the spec offers one of them). `hooks`: the gate hooks' settings block, for the steps that get them. Exported for
- * tests.
+ * the spec offers one of them). `hooks`: the gate hooks' settings block, for the steps that get them. Exported for tests.
  */
 export function buildClaudeArgs(
   spec: AgentRunSpec,
@@ -278,6 +276,9 @@ export async function harnessCredential(secrets: SecretStore): Promise<HarnessCr
 
 export class ClaudeCodeRunner implements AgentRunner {
   constructor(private readonly opts: ClaudeCodeRunnerOptions) {}
+
+  /** Its PreToolUse gate hook runs the on_tool_call pack checks (`GateHooks.on_tool_call`, issue #494). */
+  readonly supports_tool_hooks = true;
 
   /** Exposes granted tools when it was given the broker and scanner they go through. */
   get exposes_tools(): boolean {
@@ -622,8 +623,7 @@ function streamFacts(stdout: string, writeTools: ReadonlySet<string>): { usage: 
 /**
  * The reset time in a Claude usage-limit message, as ISO-8601 UTC, or null if the text has none we can read.
  * Two forms: an epoch suffix (`...limit reached|1762000200`, seconds or ms), and a wall-clock time
- * (`resets 12:10pm`, optionally `(Area/City)`), read as its next occurrence after `now` in that zone (host
- * zone when none is given). Exported for tests.
+ * (`resets 12:10pm`, optionally `(Area/City)`), read as its next occurrence after `now` in that zone (host zone when none is given). Exported for tests.
  */
 export function parseRateLimitReset(text: string, now: Date): string | null {
   const epoch = text.match(/\|\s*(\d{10}|\d{13})\b/);

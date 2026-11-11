@@ -22,7 +22,8 @@ import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { gitHost, hostId } from "./runtime/host-id.js";
 import { ControllerRole } from "./runtime/roles/controller-role.js";
-import { loadHooks } from "./runtime/index.js";
+import { SqlHookAudit, loadHooks } from "./runtime/index.js";
+import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
@@ -67,7 +68,7 @@ import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
-import { type Pack, findPacks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
+import { type Pack, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 
 /** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
@@ -188,8 +189,7 @@ export interface FileConfig {
   defaults?: unknown;
   /**
    * Overrides per project ID ("owner/name", the configured repo's only; re-keyed to its project key at startup).
-   * Per-project keys only, and each may only tighten its gate against the global value. Checked by
-   * settingsLayers (src/core/settings.ts).
+   * Per-project keys only, and each may only tighten its gate against the global value. Checked by settingsLayers (src/core/settings.ts).
    */
   projects?: unknown;
   /**
@@ -259,8 +259,7 @@ export function cliConfig(
  * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, `toolchain`: what agents may read and
  * the env they get, `hooks`: the owner's checks, such as a `before_merge` veto, and `packs`: where the org
  * pack's prompts and plugins come from). On a shared store (MySQL: the
- * enterprise case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use
- * may set any key.
+ * enterprise case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use may set any key.
  */
 const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain", "hooks", "packs"] as const;
 
@@ -515,8 +514,7 @@ const GITHUB_GRANTS: readonly string[] = ["github-permission"];
 
 /**
  * Whether config selects any GitHub plugin: a GitHub source, auth, broker, forge or grant. The one rule for the
- * local path (`local_only`): none selected means no GitHub credential, repo lookup, origin fetch or PR, whether
- * or not the factory repo has a remote.
+ * local path (`local_only`): none selected means no GitHub credential, repo lookup, origin fetch or PR, whether or not the factory repo has a remote.
  */
 export function selectsGitHub(sel: Selection, grants: readonly string[]): boolean {
   if (selectedSources(sel).some((s) => GITHUB_SOURCES.includes(s))) return true;
@@ -845,7 +843,9 @@ export async function build(
     store, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup"), ...(opts.signal ? { signal: opts.signal } : {}),
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
-  await checkEnabledHooks(config.hooks ?? []);
+  // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
+  const checks = packChecks(loaded.packs, config.hooks ?? [], { sharedStore: loaded.store.type === "mysql", toolHooks: runner.supports_tool_hooks === true });
+  await checkEnabledHooks((config.hooks ?? []).filter((n) => !checks.some((c) => c.name === n)));
   shareGitHubBudget(loaded, github, store, config);
 
   // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
@@ -921,6 +921,7 @@ export async function build(
     settings,
     engines,
     ticks,
+    pack_checks: new PackCheckRunner(checks, { sandbox, audit: new SqlHookAudit(storeSql(store)), now: () => clock.now().toISOString() }),
     // A run's PR comment is a thread entry on this ref; outbound posts it (RFC 0015 M7).
     ...(forge ? { prRef: (pr: number) => forge.prRef(pr) } : {}),
   });
@@ -1171,8 +1172,7 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
 
 /**
  * The configured store for `factory stats`, and nothing else. Unlike build() and buildUiParts() it never
- * calls migrate(): stats writes nothing, not even a schema change. The secret store is loaded only because
- * the MySQL store needs MYSQL_PASSWORD.
+ * calls migrate(): stats writes nothing, not even a schema change. The secret store is loaded only because the MySQL store needs MYSQL_PASSWORD.
  */
 export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
   const p = new Plugins(loaded);

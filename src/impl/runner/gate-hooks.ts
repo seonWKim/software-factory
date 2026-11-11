@@ -4,7 +4,8 @@
 // Write) and on Stop; the script forwards the event over a local socket to this module in the runner's process,
 // which answers with the worker's own rules (isCovered, runCommits, diffStat and sizeDetail, runChecks) and the
 // egress scanner. Advisory only: a hook that crashes, times out or cannot reach the host allows, and the worker's
-// gates still decide. No secret value is written to the folder.
+// gates still decide. The on_tool_call pack checks (issue #494) are the exception: they fail closed, so with any
+// enabled a PreToolUse that cannot get an answer refuses the edit. No secret value is written to the folder.
 
 import { appendFile, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import type { Socket } from "node:net";
@@ -33,12 +34,22 @@ export const PATH_REFUSAL =
 
 /** Seconds Claude Code gives the PreToolUse hook; past it the hook is killed and the edit goes ahead. */
 const PRE_TOOL_TIMEOUT_S = 30;
+/** The most the on_tool_call pack checks of one edit may take together, under PRE_TOOL_TIMEOUT_S; past it the edit is refused. */
+export const ON_TOOL_CALL_BUDGET_MS = 25_000;
 /** A request line longer than this is refused and the connection closed (the script sends no file content). */
 const MAX_REQUEST_BYTES = 64 * 1024;
 
 export function pathRefusal(allowed: readonly string[]): string {
   return `${PATH_REFUSAL} Allowed paths: ${allowed.length > 0 ? allowed.join(", ") : "(none)"}.`;
 }
+
+/** An on_tool_call pack check's refusal of an edit; `why` is the check's own reason (untrusted text). */
+export function packRefusal(check: string, why: string): string {
+  return `The pack check ${check} refused this edit: ${why}. Change the edit so the check passes, or stop and say why in your final message.`;
+}
+
+/** Claude Code's PreToolUse output that refuses the tool call. */
+const denyOutput = (reason: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } });
 
 /**
  * Whether an Edit or Write of `filePath` stays inside allowed_paths, with the scope gate's rule (`isCovered`): the
@@ -64,12 +75,16 @@ export function hookScript(): string {
 import { readFileSync } from "node:fs";
 import { connect } from "node:net";
 const done = (out) => { if (out) process.stdout.write(out); process.exit(0); };
+let failed = () => done("");
 try {
   const spec = JSON.parse(readFileSync(new URL("./${HOOK_SPEC}", import.meta.url), "utf8"));
+  if (spec.fail_closed && process.argv[2] === "pre_tool_use") {
+    failed = () => done(JSON.stringify(${JSON.stringify(denyOutput("The factory could not check this edit with its pack checks, so it is refused. Try again."))}));
+  }
   let raw = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (c) => { raw += c; });
-  process.stdin.on("error", () => done(""));
+  process.stdin.on("error", () => failed());
   process.stdin.on("end", () => {
     try {
       const input = JSON.parse(raw || "{}");
@@ -82,13 +97,13 @@ try {
         buf += c;
         const nl = buf.indexOf("\\n");
         if (nl < 0) return;
-        try { const reply = JSON.parse(buf.slice(0, nl)); done(reply.output ? JSON.stringify(reply.output) : ""); } catch { done(""); }
+        try { const reply = JSON.parse(buf.slice(0, nl)); done(reply.output ? JSON.stringify(reply.output) : ""); } catch { failed(); }
       });
-      sock.on("error", () => done(""));
-      sock.on("close", () => done(""));
-    } catch { done(""); }
+      sock.on("error", () => failed());
+      sock.on("close", () => failed());
+    } catch { failed(); }
   });
-} catch { done(""); }
+} catch { failed(); }
 `;
 }
 
@@ -158,13 +173,18 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
     return { output: { decision: "block", reason }, block: { hook: "stop", check } };
   };
 
-  const preToolUse = (tool: unknown, path: unknown): Answer | null => {
+  // The on_tool_call pack checks first (fail closed: a throw or the budget running out refuses), then the path check.
+  const preToolUse = async (tool: unknown, path: unknown): Promise<Answer | null> => {
     if (typeof tool !== "string" || !(PATH_TOOLS as readonly string[]).includes(tool) || typeof path !== "string") return null;
+    if (g.on_tool_call) {
+      const budget = AbortSignal.any([signal, AbortSignal.timeout(ON_TOOL_CALL_BUDGET_MS)]);
+      const r = await g.on_tool_call.run([tool, path], budget).catch((err: unknown) => ({
+        check: g.on_tool_call!.checks.join(", "), reason: `pack_check_error: ${err instanceof Error ? err.message : String(err)}`,
+      }));
+      if (r) return { output: denyOutput(packRefusal(r.check, r.reason)), block: { hook: "pre_tool_use", check: `pack:${r.check}` } };
+    }
     if (editCovered(path, workdirs, g.allowed_paths)) return null;
-    return {
-      output: { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: pathRefusal(g.allowed_paths) } },
-      block: { hook: "pre_tool_use", check: "allowed_paths" },
-    };
+    return { output: denyOutput(pathRefusal(g.allowed_paths)), block: { hook: "pre_tool_use", check: "allowed_paths" } };
   };
 
   const stop = async (): Promise<Answer | null> => {
@@ -192,7 +212,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
     answer: async (req) => {
       const r = (typeof req === "object" && req !== null ? req : {}) as { event?: unknown; tool_name?: unknown; file_path?: unknown };
       try {
-        if (r.event === "pre_tool_use") return preToolUse(r.tool_name, r.file_path);
+        if (r.event === "pre_tool_use") return await preToolUse(r.tool_name, r.file_path);
         if (r.event === "stop") {
           stopsOpen++;
           try {
@@ -202,7 +222,7 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
           }
         }
       } catch {
-        // A check the host could not run allows the stop.
+        // A check the host could not run allows the stop. The pack checks' refusal does not throw (it is caught above).
       }
       return null;
     },
@@ -267,6 +287,8 @@ export function specFile(spec: AgentRunSpec & { gate_hooks: GateHooks }, socket:
     check_commands: g.check_commands,
     stop_checks: g.stop_checks,
     stop_blocks_used: g.stop_blocks_used,
+    // With on_tool_call pack checks, the script refuses an edit it could not get an answer for.
+    ...(g.on_tool_call ? { fail_closed: true, on_tool_call: g.on_tool_call.checks } : {}),
   };
 }
 

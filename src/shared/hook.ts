@@ -2,10 +2,20 @@
 // note. A hook never approves: it runs only after the guards allowed the action, and its result can only refuse.
 // Each one is `src/<component>/hooks/<name>/<name>.hook.ts`. Off until the owner enables it (§15.2). Pure: no I/O.
 
-export const HOOK_POINTS = ["before_merge", "before_run", "before_delivery"] as const;
+/**
+ * The points a pack check runs at (design 04-pre-push-gates.md, issue #494), all in the implement run: before and
+ * after each agent step, on each Edit or Write the agent asks for, and before the pre-push gates. Pack checks only.
+ */
+export const PACK_CHECK_POINTS = ["before_agent", "on_tool_call", "before_finish", "after_agent"] as const;
+export type PackCheckPoint = (typeof PACK_CHECK_POINTS)[number];
+
+export const HOOK_POINTS = ["before_merge", "before_run", "before_delivery", ...PACK_CHECK_POINTS] as const;
 export type HookPoint = (typeof HOOK_POINTS)[number];
-/** Points no caller runs yet: startup refuses a hook enabled at one. Remove a point here when its caller lands. */
-export const UNCALLED_HOOK_POINTS: readonly HookPoint[] = ["before_delivery"];
+/**
+ * Points no caller runs a `*.hook.ts` at: startup refuses a hook enabled at one. `before_delivery` has no caller
+ * yet (remove it here when its caller lands); the pack check points run pack checks only.
+ */
+export const UNCALLED_HOOK_POINTS: readonly HookPoint[] = ["before_delivery", ...PACK_CHECK_POINTS];
 
 /** What a hook sees: ids only, as on the bus. `at` is the tick time the caller decides at. */
 export interface HookInput {
