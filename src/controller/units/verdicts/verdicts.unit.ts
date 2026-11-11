@@ -7,12 +7,10 @@ import { workItemIdFromBranch } from "../../../core/policy.js";
 import { type Actor, type StateChangeDetail, type VerdictKind, type VerdictSeverity, type VerdictTarget, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import { type ParsedVerdict, parseVerdict, verdictRefusal } from "../../../core/verdict.js";
 import type { Principal } from "../../../interfaces/auth-provider.js";
-import type { Forge } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { MAX_CONFLICT_RETRIES } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { LocalForge } from "../../../impl/forge/local-forge.js";
 
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
@@ -31,12 +29,7 @@ interface ImplicitVerdict {
 
 /** Verdicts: a person's verdict, implicit verdicts (merges, pushes, reverts) and fix-forward links. */
 export class VerdictsUnit {
-  /** Reads change refs out of commit messages and item text: the selected forge, else the local forge (no call). */
-  private readonly links: Pick<Forge, "parseLinks">;
-
-  constructor(private readonly c: Ctx) {
-    this.links = c.k.forge ?? new LocalForge(c.k.cfg.branch_prefix);
-  }
+  constructor(private readonly c: Ctx) {}
 
   /**
    * Stores one implicit verdict (design §4), retrying on version conflicts. Changes no field but the version; a
@@ -141,7 +134,9 @@ export class VerdictsUnit {
    * row changes no field. Dedupe key: (item, reason, reverting commit), checked inside decide so a conflict re-reads.
    */
   async recordReverts(e: BaseCommitEvent): Promise<void> {
-    const links = this.links.parseLinks(e.message);
+    // Change refs are read only through the kernel's link reader; with none, no commit names a change.
+    const links = this.c.k.links?.parseLinks(e.message);
+    if (!links) return;
     const project = this.c.k.project();
     const targets = new Set<WorkItemId>();
     for (const sha of links.reverted_shas) {
@@ -176,7 +171,7 @@ export class VerdictsUnit {
    */
   async linkFixForward(id: WorkItemId, text: string): Promise<void> {
     const project = this.c.k.project();
-    for (const ref of this.links.parseLinks(text).fix_refs) {
+    for (const ref of this.c.k.links?.parseLinks(text).fix_refs ?? []) {
       const original = await this.c.k.reader.getWorkItemByPr(project, ref);
       if (!original || original.id === id) continue;
       const n = prNumber({ change_ref: ref });

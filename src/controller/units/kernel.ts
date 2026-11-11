@@ -178,6 +178,11 @@ export class Kernel {
   readonly byType: ReadonlyMap<SourceType, SourceAdapter>;
   /** Where PRs live, or null when config selects no forge. Fixed at construction. */
   readonly forge: Forge | null;
+  /**
+   * Reads change refs (reverts, fix-forwards) out of commit messages and item text: the selected forge, else the
+   * reader the deps give (compose builds the local forge through the registry), else null: no text names a change.
+   */
+  readonly links: Pick<Forge, "parseLinks"> | null;
   /** The settings in effect: a cache of the config file plus the stored overrides, refreshed each tick. */
   readonly live: LiveSettings;
 
@@ -186,6 +191,7 @@ export class Kernel {
     this.sources = checkSources(d);
     this.byType = new Map(this.sources.map((s) => [s.type, s]));
     this.forge = d.forge ?? null;
+    this.links = this.forge ?? d.links ?? null;
     this.live = d.settings ?? LiveSettings.fixed(d.config);
     const store = d.store;
     // Bound one by one, so a unit holding the reader cannot reach the store's writes through it.
