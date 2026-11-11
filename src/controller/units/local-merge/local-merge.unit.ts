@@ -170,6 +170,8 @@ export class LocalMergeUnit {
       if (closed && (!awaitingMerge(closed) || closed.change_ref !== null)) return `${item.id} is no longer waiting for a merge`;
       throw new Error(`the close of ${item.id} after its local merge did not apply; applied again`);
     }
+    // Its plain task, if `task build` made the item, is done (design 02-tasks); conditional, so a rerun closes nothing more.
+    await this.c.k.d.store.closeLinkedTasks(item.id);
     this.c.k.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: by, base_push: push });
     const how = auto ? " in auto mode" : "";
     const body = [
