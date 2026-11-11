@@ -1,10 +1,11 @@
 {
   "display_information": {
-    "name": "Software Factory",
+    "name": "Gongbang",
+    "background_color": "#1C1C1E",
     "description": "Turns Slack threads into work items and talks through them in the thread."
   },
   "features": {
-    "bot_user": { "display_name": "software-factory", "always_online": true }
+    "bot_user": { "display_name": "gongbang", "always_online": true }
   },
   "oauth_config": {
     "scopes": {
