@@ -14,7 +14,7 @@ import type { Failures, WorkersView } from "../web/src/api.js";
 const mod = async (name: string) => (await import(/* @vite-ignore */ `../web/src/views/${name}.js`)) as Record<string, FunctionComponent>;
 const pages = await mod("pages");
 const WorkersPage = pages.RunnersPage!;
-const FloorPage = pages.ActivityPage!;
+const ActivityPage = pages.ActivityPage!;
 const FailuresPage = (await mod("failures")).FailuresPage!;
 
 const AT = new Date().toISOString();
@@ -108,7 +108,7 @@ describe("Workers page", () => {
 
 describe("Activity", () => {
   it("links the failed count in the last 24 hours to Failures with the 24h window", async () => {
-    show(FloorPage);
+    show(ActivityPage);
     const link = await screen.findByRole("link", { name: "7" });
     expect(link.getAttribute("href")).toBe("/app/failures?window=24h");
   });
