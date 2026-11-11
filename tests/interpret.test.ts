@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { commandFooter } from "../src/core/commands.js";
+import { commandFooter, phaseLabel } from "../src/core/commands.js";
+import { interpret, interpretReply, openItems, parseTaskOfferMarker, taskOfferMarker } from "../src/core/interpret.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
@@ -22,8 +23,8 @@ class ScriptedLLM implements LLMProvider {
 }
 
 type Entry = { item: string; command?: string; args?: string };
-const answer = (kind: string, entries: Entry[] = []): Partial<LLMResponse> => {
-  const parsed = { kind, entries: entries.map((e) => ({ item: e.item, command: e.command ?? "", args: e.args ?? "" })) };
+const answer = (kind: string, entries: Entry[] = [], text?: string): Partial<LLMResponse> => {
+  const parsed = { kind, entries: entries.map((e) => ({ item: e.item, command: e.command ?? "", args: e.args ?? "" })), ...(text === undefined ? {} : { text }) };
   return { text: JSON.stringify(parsed), parsed };
 };
 
@@ -114,7 +115,7 @@ describe("interpreter: plain comments", () => {
     expect(f.source.comments).toHaveLength(0);
   });
 
-  it("the model input holds only the message and the open items (ID, number, title, state); its output is never applied", async () => {
+  it("the model input holds only the message, the open items (ID, number, title, state) and the item's facts; its output is never applied", async () => {
     const f = await setup([answer("commands", NUMBERS.map((n) => ({ item: String(n), command: "approve" })))]);
     const before = await f.snapshot();
     const text = "approve all three";
@@ -169,5 +170,88 @@ describe("interpreter: plain comments", () => {
     const body = f.source.comments[0]!.body;
     expect(body).toContain("did not find a command");
     expect(body).toContain(commandFooter({ phase: "spec_pending", has_pr: false }));
+  });
+});
+
+describe("interpreter: chat answers", () => {
+  it("a thread reply 'how is it going?' gets a chat answer naming the item's state label, not the canned line", async () => {
+    const f = await setup([answer("chat", [], "The spec is written and waits for your approval.")]);
+    await f.controller.handleEvent(plain("how is it going?", "300"));
+    expect(f.source.comments).toHaveLength(1);
+    const c = f.source.comments[0]!;
+    expect(c.marker).toBe("<!-- factory:suggest:300 -->");
+    expect(c.body).toContain("The spec is written and waits for your approval.");
+    expect(c.body).toContain(`**o/r#566** Title 566 is ${phaseLabel("spec_pending")}.`);
+    expect(c.body).not.toContain("did not find a command");
+  });
+
+  it("a chat answer changes no item state: no stage, block or version change, no state change row, no run", async () => {
+    const f = await setup([answer("chat", [], "It is waiting on you.")]);
+    const before = await f.snapshot();
+    await f.controller.handleEvent(plain("how is it going?", "301"));
+    expect(f.source.comments).toHaveLength(1);
+    expect(await f.snapshot()).toEqual(before);
+  });
+
+  it("a chat answer the egress scan flags posts nothing and stores nothing", async () => {
+    const f = await setup([answer("chat", [], `Use ghp_${"a".repeat(36)} to see it.`)]);
+    const before = await f.snapshot();
+    await f.controller.handleEvent(plain("how is it going?", "302"));
+    expect(f.llm.requests).toHaveLength(1);
+    expect(f.source.comments).toHaveLength(0);
+    expect(await f.snapshot()).toEqual(before);
+  });
+
+  it("a failed model call keeps the canned line and the commands for the item's state", async () => {
+    const f = await setup([{ stop_reason: "error" } as Partial<LLMResponse>]);
+    await f.controller.handleEvent(plain("how is it going?", "303"));
+    expect(f.source.comments[0]!.body).toContain("did not find a command");
+  });
+
+  it("interpret returns a chat kind with its text, capped; the request carries the item's state label and block reason", async () => {
+    const f = await setup([answer("chat", [], `  ${"x".repeat(5000)}  `)]);
+    const items = openItems(await f.store.listWorkItems(10));
+    const at = items.find((it) => it.id === f.items[0]!.id)!;
+    const r = await interpret("how is it going?", items, f.llm, { item: at, blocked_reason: "spec_pending" });
+    expect(r.kind).toBe("chat");
+    if (r.kind !== "chat") return;
+    expect(r.item?.id).toBe(at.id);
+    expect(r.text.length).toBeLessThanOrEqual(1500);
+    expect(r.text.startsWith("xxx")).toBe(true);
+    const req = f.llm.requests[0]!;
+    const facts = /posted on this item[^\n]*\n\n```json\n(.*)\n```/.exec(req.messages[0]!.content);
+    expect(JSON.parse(facts![1]!)).toEqual({ id: at.id, number: 566, state: phaseLabel("spec_pending"), blocked_reason: "spec_pending" });
+    expect(req.output_schema).toMatchObject({ required: ["kind", "entries", "text"] });
+    expect(req.system).toMatch(/cannot tell; never guess/);
+    // On an item there is no request or unsure: those are offered for a top-level message only.
+    expect(req.system).not.toContain('`kind: "request"`');
+  });
+
+  it("on an item, a request or unsure answer with text is chat; with none it is none", async () => {
+    const f = await setup([answer("request", [], "That sounds like a new item."), answer("unsure", [], "")]);
+    const items = openItems(await f.store.listWorkItems(10));
+    const at = { item: items[0]!, blocked_reason: null };
+    expect((await interpret("make a new thing", items, f.llm, at)).kind).toBe("chat");
+    expect((await interpret("hmm", items, f.llm, at)).kind).toBe("none");
+  });
+
+  it("top-level: request, unsure with the message for the offer, and chat with no item", async () => {
+    const f = await setup([answer("request"), answer("unsure", [], "I can't tell."), answer("chat", [], "Yes, I read plain words.")]);
+    const items = openItems(await f.store.listWorkItems(10));
+    expect(await interpret("build a Today view", items, f.llm, "top_level")).toEqual({ kind: "request" });
+    const u = await interpret("tasks are slow", items, f.llm, "top_level");
+    expect(u).toEqual({ kind: "unsure", text: "I can't tell.", message: "tasks are slow" });
+    expect(parseTaskOfferMarker(interpretReply(u)!)).toBe("tasks are slow");
+    expect(interpretReply({ kind: "request" })).toBeNull();
+    const c = await interpret("can you read this?", items, f.llm, "top_level");
+    expect(c).toEqual({ kind: "chat", text: "Yes, I read plain words.", item: null });
+    expect(interpretReply(c)).toBe("Yes, I read plain words.");
+    expect(f.llm.requests[0]!.system).toContain('`kind: "request"`');
+  });
+
+  it("the task offer marker carries any text, a closing comment included, and reads back the same", () => {
+    const text = "fix --> this <!-- and `that`\nsecond line ✓";
+    expect(parseTaskOfferMarker(`answer\n${taskOfferMarker(text)}`)).toBe(text);
+    expect(parseTaskOfferMarker("no marker here")).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,8 +14,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ClaudeCodeRunner, buildAgentEnv, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import {
   BRIDGE_SERVER, EGRESS_BLOCKED, LEASE_LOST, NOT_GRANTED, RESULT_CAP_BYTES, RESULT_DIR, RESULT_PREVIEW_BYTES, ToolGate, answerBridgeRequest, bridgeMcpConfig, bridgeScript, harnessToolName,
-  startBridgeHost,
+  packToolHarnessName, startBridgeHost,
 } from "../src/impl/runner/tool-bridge.js";
+import { startPackMcpServer } from "../src/impl/runner/pack-mcp-client.js";
 import { mcpHandler, mcpToolName, serveMcp, socketSender } from "../src/impl/runner/tool-bridge-mcp.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
@@ -449,5 +450,157 @@ describe("a runner that cannot expose tools refuses grants", () => {
     const res = await runner.run(runSpec());
     expect(res.status).toBe("failed");
     expect(res.error).toContain("test.read_note");
+  });
+});
+
+// #596: an approved, granted pack MCP server with no credential is started by the runner from its descriptor's
+// command and args with an empty env; the agent reaches it only through its own bridge entry, so every result passes
+// the gate's egress scan and output cap.
+describe("pack MCP servers", () => {
+  /** A planted credential value: in the worker's own env and nowhere the agent or the server can read it. */
+  const PLANTED = "planted-credential-value-5d1e";
+  /** A tiny stdio MCP server: records its argv, env and pid to its first argument, then serves one tool, `search`. */
+  const SERVER_SCRIPT = `
+import { writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+writeFileSync(process.argv[2], JSON.stringify({ args: process.argv.slice(2), env: process.env, pid: process.pid }));
+const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result }) + "\\n");
+for await (const line of createInterface({ input: process.stdin })) {
+  const m = JSON.parse(line);
+  if (m.id === undefined) continue;
+  if (m.method === "initialize") reply(m.id, { protocolVersion: m.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fake", version: "1" } });
+  else if (m.method === "tools/list") reply(m.id, { tools: [{ name: "search", description: "Searches the docs.", inputSchema: { type: "object" } }] });
+  else if (m.method === "tools/call") {
+    const q = m.params.arguments.q;
+    const text = q === "flag" ? "FLAG-ME" : q === "big" ? "x".repeat(${RESULT_CAP_BYTES}) + "TAIL-ONLY-IN-FILE" : "found " + q;
+    reply(m.id, { content: [{ type: "text", text }] });
+  }
+}
+`;
+  function serverFixture() {
+    const dir = mkdtempSync(join(tmpdir(), "sf-pack-mcp-"));
+    const script = join(dir, "server.mjs");
+    writeFileSync(script, SERVER_SCRIPT);
+    const record = join(dir, "record.json");
+    const server = { name: "docs-search", command: process.execPath, args: [script, record] };
+    const recorded = () => JSON.parse(readFileSync(record, "utf8")) as { args: string[]; env: Record<string, string>; pid: number };
+    return { dir, server, record, recorded };
+  }
+  const alive = (pid: number) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /** A scanner that flags the text FLAG-ME. */
+  const flagging = {
+    scan: async (channel: string, content: string) => (content.includes("FLAG-ME") ? { clean: false, findings: [{ rule: "test_rule", channel }] } : { clean: true }),
+  } as unknown as typeof cleanScanner;
+
+  it.skipIf(!canListen)("is started from its descriptor with an empty env, gets its own bridge entry in --mcp-config, and the argv allows its tools; no credential in the config, argv, agent env or server env", async () => {
+    const f = serverFixture();
+    process.env.SF_TEST_PLANTED_TOKEN = PLANTED;
+    try {
+      const { runner, seen } = recordingRunner({ broker: new FakeNoteBroker() });
+      expect(runner.runs_mcp_servers).toBe(true);
+      const res = await runner.run(runSpec({ tool_grants: [], mcp_servers: [f.server] }));
+      expect(res.status).toBe("completed");
+      const { cmd, env } = seen[0]!;
+      const mcp = cmd[cmd.indexOf("--mcp-config") + 1]!;
+      expect(JSON.parse(mcp)).toEqual({
+        mcpServers: { "pack_docs-search": { type: "stdio", command: process.execPath, args: [bridgeScript(), expect.any(String), "docs-search"], env: {} } },
+      });
+      expect(cmd[cmd.indexOf("--allowedTools") + 1]).toBe(`Read,${packToolHarnessName("docs-search", "search")}`);
+      expect(packToolHarnessName("docs-search", "search")).toBe("mcp__pack_docs-search__search");
+      // The worker started the server from the descriptor, with an empty env, and stopped it when the run ended.
+      const rec = f.recorded();
+      expect(rec.args).toEqual([f.record]);
+      // macOS adds its own __CF_USER_TEXT_ENCODING to every process; nothing else is there.
+      expect(Object.keys(rec.env).filter((k) => k !== "__CF_USER_TEXT_ENCODING")).toEqual([]);
+      expect(alive(rec.pid)).toBe(false);
+      const texts = [cmd.join("\n"), JSON.stringify(env), readFileSync(f.record, "utf8")];
+      for (const text of texts) for (const v of [PLANTED, GITHUB_TOKEN_VALUE]) expect(text).not.toContain(v);
+      expect(Object.keys(env).filter((k) => FORBIDDEN_ENV.test(k))).toEqual(["CLAUDE_CODE_OAUTH_TOKEN"]);
+    } finally {
+      delete process.env.SF_TEST_PLANTED_TOKEN;
+      rmSync(f.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("each result passes the egress scan and the output cap: a flagged result is withheld and an oversize one is capped", async () => {
+    const f = serverFixture();
+    const workdir = mkdtempSync(join(tmpdir(), "sf-cap-"));
+    const server = await startPackMcpServer(f.server, { cwd: f.dir });
+    try {
+      const gate = new ToolGate({ broker: new FakeNoteBroker(), scanner: flagging }, { ...gateSpec({ tool_grants: [] }), sandbox: { workdir } }, [server]);
+      expect(await answerBridgeRequest(gate, { op: "list", server: "docs-search" })).toEqual({
+        tools: [{ name: "search", description: "Searches the docs.", input_schema: { type: "object" } }],
+      });
+      // The pack server's entry lists only its own tools; the broker entry lists none of them.
+      expect(await answerBridgeRequest(gate, { op: "list" })).toEqual({ tools: [] });
+      expect(await gate.callServer("docs-search", "search", { q: "hello" })).toEqual({ ok: true, content: "found hello" });
+      const flagged = await gate.callServer("docs-search", "search", { q: "flag" });
+      expect(flagged).toMatchObject({ ok: false, error_code: EGRESS_BLOCKED });
+      expect(JSON.stringify(flagged)).not.toContain("FLAG-ME");
+      const big = await gate.callServer("docs-search", "search", { q: "big" });
+      const content = (big as { content: { truncated: boolean; path: string; preview: string } }).content;
+      expect(content).toMatchObject({ truncated: true });
+      expect(content.path.startsWith(join(workdir, RESULT_DIR))).toBe(true);
+      expect(readFileSync(content.path, "utf8")).toContain("TAIL-ONLY-IN-FILE");
+      expect(JSON.stringify(big)).not.toContain("TAIL-ONLY-IN-FILE");
+      // A tool or server the run was not given is refused without a call.
+      expect(await gate.callServer("docs-search", "write", {})).toMatchObject({ ok: false, error_code: NOT_GRANTED });
+      expect(await gate.callServer("other", "search", {})).toMatchObject({ ok: false, error_code: NOT_GRANTED });
+      // A lost lease stops the call before the server.
+      const lost = new AbortController();
+      lost.abort();
+      const fenced = new ToolGate({ broker: new FakeNoteBroker(), scanner: flagging }, gateSpec({ tool_grants: [], signal: lost.signal }), [server]);
+      expect(await fenced.callServer("docs-search", "search", { q: "x" })).toMatchObject({ ok: false, error_code: LEASE_LOST });
+    } finally {
+      await server.close();
+      rmSync(f.dir, { recursive: true, force: true });
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!canListen)("the bridge entry of a pack server forwards the agent's MCP calls to the gate under the server's name", async () => {
+    const f = serverFixture();
+    const server = await startPackMcpServer(f.server, { cwd: f.dir });
+    const host = await startBridgeHost(new ToolGate({ broker: new FakeNoteBroker(), scanner: flagging }, gateSpec({ tool_grants: [] }), [server]));
+    try {
+      const handle = mcpHandler(socketSender(host.socket, "docs-search"));
+      expect(await handle({ jsonrpc: "2.0", id: 1, method: "tools/list" })).toMatchObject({ result: { tools: [{ name: "search" }] } });
+      expect(await handle({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "search", arguments: { q: "hi" } } })).toEqual({
+        jsonrpc: "2.0", id: 2, result: { content: [{ type: "text", text: "found hi" }] },
+      });
+      const flagged = await handle({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "search", arguments: { q: "flag" } } });
+      expect(flagged).toMatchObject({ result: { isError: true } });
+      expect(JSON.stringify(flagged)).not.toContain("FLAG-ME");
+    } finally {
+      await host.close();
+      await server.close();
+      rmSync(f.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ClaudeCodeRunner without a broker fails a run granted a pack MCP server, and starts neither claude nor the server", async () => {
+    const f = serverFixture();
+    const { runner, seen } = recordingRunner();
+    expect(runner.runs_mcp_servers).toBe(false);
+    const res = await runner.run(runSpec({ tool_grants: [], mcp_servers: [f.server] }));
+    expect(res.status).toBe("failed");
+    expect(res.error).toContain("docs-search");
+    expect(seen).toEqual([]);
+    expect(existsSync(f.record)).toBe(false);
+    rmSync(f.dir, { recursive: true, force: true });
+  });
+
+  it("a server that does not start fails the run without claude, naming the server only", async () => {
+    const { runner, seen } = recordingRunner({ broker: new FakeNoteBroker() });
+    const res = await runner.run(runSpec({ tool_grants: [], mcp_servers: [{ name: "gone", command: join(tmpdir(), "sf-no-such-command"), args: [] }] }));
+    expect(res).toMatchObject({ status: "failed", error: "pack MCP server gone did not start" });
+    expect(seen).toEqual([]);
   });
 });

@@ -16,6 +16,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
 import { cutNote, escapeSlack, proposalButtons, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
+import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
 import { commentEvent } from "../src/core/comment-event.js";
 import { chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
 import { parseTriage } from "../src/core/outputs.js";
@@ -53,11 +54,13 @@ class SlackAuth implements AuthProvider {
   }
 }
 
-/** Proposes `/approve` on the first open item listed for any plain reply. */
+/** Reads a top-level mention as a work request; proposes `/approve` on the first open item listed for any plain reply. */
 class ApproveLLM implements LLMProvider {
   async complete(req: LLMRequest): Promise<LLMResponse> {
     const id = /"id":"([^"]+)"/.exec(req.messages[0]!.content)?.[1] ?? "";
-    const parsed = { kind: "commands", entries: [{ item: id, command: "approve", args: "" }] };
+    const parsed = req.messages[0]!.content.includes(TOP_LEVEL_FACT)
+      ? { kind: "request", entries: [], text: "" }
+      : { kind: "commands", entries: [{ item: id, command: "approve", args: "" }], text: "" };
     return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
   }
 }

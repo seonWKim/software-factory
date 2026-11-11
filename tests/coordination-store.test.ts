@@ -3,7 +3,7 @@ import { type CoordinationSettings, DEFAULT_COORDINATION, pathWeight } from "../
 import type { RunKind, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
-// One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
+// One contract for the FactoryStore (SQLite only; see helpers/store.ts).
 import { BACKENDS, PROJECT_KEY, human, issue, system, w1, w2 } from "./helpers/store.js";
 
 const LEASE = 60_000;
