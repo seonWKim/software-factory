@@ -11,6 +11,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 | `ARCHITECTURE.md` | Overview for review: every component as a box, every connection labelled by how it talks (call, store queue, outbox/inbox, HTTP, tool RPC, exec, IPC, remote) |
 | `PLAN.md` | Phases (0 decisions, 1 MVP by hand, 2 self-build, 3 autonomy) and open decisions |
 | `docs/design.md` | Index of the living design: one line per topic file in `docs/design/` |
+| `docs/design/09-brand-and-tokens.md` | Dashboard design tokens: `design-system/tokens.json` is the source, `web/src/tokens.css` is generated (`npm run build:tokens`), no hex colours elsewhere in `web/src/` |
 | `SET_UP.md` | One-time setup before using the factory (`npm run setup`) |
 | `docs/setup.md` | Where secrets live (`~/.config/software-factory/.env`, never in the repo) and how to create them |
 | `docs/architecture.md` | Layers, control plane vs agent plane, process flow, horizontal scaling rules |
