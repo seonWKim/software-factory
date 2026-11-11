@@ -9,7 +9,8 @@ import { commandFooter } from "../src/core/commands.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 import { HttpSlackApi, SlackApiError, type FetchFn } from "../src/impl/source/slack-api.js";
 import { slackConfig, slackConfigProblems } from "../src/impl/source/slack-config.js";
-import { footerCommands, renderComment, suggestedCommand, toMrkdwn } from "../src/impl/source/slack-format.js";
+import { footerCommands, renderComment, toMrkdwn } from "../src/impl/source/slack-format.js";
+import { interpretReply } from "../src/core/interpret.js";
 import { SlackSource, type SlackSourceDeps } from "../src/impl/source/slack-source.js";
 import slackPlugin from "../src/impl/source/slack.plugin.js";
 import { REGISTRY } from "../src/plugins.js";
@@ -259,11 +260,13 @@ describe("slack message format", () => {
     expect(JSON.stringify(r.blocks.at(-1))).toContain('"action_id":"sf_cmd:approve"');
   });
 
-  it("a suggestion gets Confirm with the suggested command, and Cancel", () => {
-    const body = "Did you mean `/approve`? Nothing has changed. To apply it, reply with:\n\n```\n/approve ship it\n```";
-    expect(suggestedCommand(body)).toBe("/approve ship it");
-    const actions = renderComment(body, REPO, BOT).blocks.at(-1) as { elements: { action_id: string; value: string }[] };
-    expect(actions.elements.map((e) => [e.action_id, e.value])).toEqual([["sf_confirm", "/approve ship it"], ["sf_cancel", "cancel"]]);
+  it("a proposal is plain text: no Confirm, no Cancel, no buttons at all", () => {
+    const item = { id: "wi_1" as never, number: 566, title: "T", state: { phase: "spec_pending" as const, has_pr: false }, ref: "o/r#566", link: "" };
+    const body = interpretReply({ kind: "commands", proposals: [{ item, command: "approve", args: "ship it" }] })!;
+    const r = renderComment(body, REPO, BOT);
+    expect(r.blocks.every((b) => (b as { type: string }).type === "section")).toBe(true);
+    expect(JSON.stringify(r.blocks)).not.toMatch(/sf_confirm|sf_cancel|"button"/);
+    expect(JSON.stringify(r.blocks)).toContain("/approve ship it");
   });
 
   it("splits a long message into sections Slack accepts", () => {

@@ -8,13 +8,13 @@ import type { Logger } from "../src/core/log.js";
 import type { UserId, WorkItem } from "../src/core/types.js";
 import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import type { LLMProvider, LLMResponse } from "../src/interfaces/llm-provider.js";
+import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { Secret, SecretName } from "../src/interfaces/secret-store.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
-import { ACTION_CANCEL, ACTION_CONFIRM, cutNote, escapeSlack, toMrkdwn } from "../src/impl/source/slack-format.js";
+import { cutNote, escapeSlack, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { commentEvent } from "../src/core/comment-event.js";
 import { chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
@@ -51,10 +51,11 @@ class SlackAuth implements AuthProvider {
   }
 }
 
-/** Suggests `/approve` with high confidence for any plain reply. */
+/** Proposes `/approve` on the first open item listed for any plain reply. */
 class ApproveLLM implements LLMProvider {
-  async complete(): Promise<LLMResponse> {
-    const parsed = { command: "approve", args: "", confidence: 0.95 };
+  async complete(req: LLMRequest): Promise<LLMResponse> {
+    const id = /"id":"([^"]+)"/.exec(req.messages[0]!.content)?.[1] ?? "";
+    const parsed = { kind: "commands", entries: [{ item: id, command: "approve", args: "" }] };
     return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
   }
 }
@@ -515,22 +516,18 @@ describe("slack source: replies, buttons and commands", () => {
     for (const r of replies) expect(r.text).toContain(refusal);
   });
 
-  it("a plain reply gets a suggestion with Confirm and Cancel; Cancel changes nothing, nothing runs before Confirm", async () => {
+  it("a plain reply gets a proposal as plain text, with no Confirm or Cancel; nothing changes until the command is typed", async () => {
     const f = await setup();
     const ts = "1800000014.000100";
     const item = await specPending(f, ts);
     const before = await f.store.getWorkItem(item.id);
     await deliver(f, eventEnvelope(message("1800000014.000200", "looks good to me", { thread_ts: ts })));
-    const suggestion = f.api.thread(ts).find((m) => m.text?.startsWith("Did you mean"))!;
-    expect(FakeSlackApi.buttons(suggestion)).toEqual([ACTION_CONFIRM, ACTION_CANCEL]);
+    const proposal = f.api.thread(ts).find((m) => m.text?.startsWith("The factory read one command"))!;
+    expect(JSON.stringify(proposal.blocks)).toContain("/approve");
+    expect(FakeSlackApi.buttons(proposal)).toEqual([]);
     expect(await f.store.getWorkItem(item.id)).toEqual(before);
 
-    const inbox = (await f.store.listInboxAfter("slack_thread", 0, 100)).length;
-    await deliver(f, press(ts, ACTION_CANCEL, "cancel"));
-    expect(await f.store.getWorkItem(item.id)).toEqual(before);
-    expect(await f.store.listInboxAfter("slack_thread", 0, 100)).toHaveLength(inbox);
-
-    await deliver(f, press(ts, ACTION_CONFIRM, "/approve"));
+    await deliver(f, eventEnvelope(mention("1800000014.000300", "/approve", { thread_ts: ts })));
     expect((await f.store.getWorkItem(item.id))!.stage).toBe("RUNNING");
   });
 
