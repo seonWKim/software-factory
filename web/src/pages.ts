@@ -1,48 +1,66 @@
-import { Activity, CalendarCheck, Database, Factory, HeartPulse, OctagonAlert, type LucideIcon, ListOrdered, ListTodo, ScrollText, Settings, Users } from "lucide-react";
+import { Activity, CalendarCheck, Database, HeartPulse, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
-/** The sidebar's pages, in order. */
+/** Where a page sits in the sidebar: the Tasks group, the Factory group, the collapsed System group, or only the top bar (Settings). */
+export type PageGroup = "tasks" | "factory" | "system" | null;
+
+/** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
 export interface PageDef {
   path: string;
   label: string;
+  key: string;
   icon: LucideIcon;
+  group: PageGroup;
 }
 
+/** The pages, in sidebar order. Literal `path` then `label` per entry: scripts/responsive-check.mjs reads them. */
 export const PAGES: readonly PageDef[] = [
-  { path: "", label: "Floor", icon: Factory },
-  { path: "items", label: "Work items", icon: ListTodo },
-  { path: "tasks", label: "Tasks", icon: CalendarCheck },
-  { path: "workers", label: "Workers", icon: Activity },
-  { path: "queue", label: "Queue", icon: ListOrdered },
-  { path: "health", label: "Health", icon: HeartPulse },
-  { path: "failures", label: "Failures", icon: OctagonAlert },
-  { path: "rules", label: "Rules", icon: ScrollText },
-  { path: "settings", label: "Settings", icon: Settings },
-  { path: "users", label: "Users", icon: Users },
+  { path: "tasks", label: "Tasks", key: "tasks", icon: CalendarCheck, group: "tasks" },
+  { path: "", label: "Needs you", key: "needs", icon: Siren, group: "factory" },
+  { path: "items", label: "Work", key: "work", icon: ListTodo, group: "factory" },
+  { path: "activity", label: "Activity", key: "activity", icon: Activity, group: "factory" },
+  { path: "health", label: "Health", key: "health", icon: HeartPulse, group: "system" },
+  { path: "failures", label: "Failures", key: "failures", icon: OctagonAlert, group: "system" },
+  { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "system" },
+  { path: "runners", label: "Runners", key: "runners", icon: Waypoints, group: "system" },
+  { path: "queue", label: "Queue", key: "queue", icon: ListOrdered, group: "system" },
+  { path: "data", label: "Data", key: "data", icon: Database, group: "system" },
+  { path: "settings", label: "Settings", key: "settings", icon: Settings, group: null },
 ];
 
-/**
- * The sidebar's tools, listed in their own group after the pages: Data, the raw store tables (design §9). A
- * separate group, so the pages' list stays the operator's view and the tools read as debugging aids.
- */
-export const TOOL_PAGES: readonly PageDef[] = [{ path: "data", label: "Data", icon: Database }];
-
-const ALL_PAGES: readonly PageDef[] = [...PAGES, ...TOOL_PAGES];
+export const pagesIn = (group: PageGroup): readonly PageDef[] => PAGES.filter((p) => p.group === group);
 
 export const BASE = "/app/";
 
 /** The Settings page's "Commands from the page" section: what to set when the page's commands are off. */
 export const PAGE_COMMANDS_PATH = `${BASE}settings#page-commands`;
 
-/** Where a location path under /app/ leads: a sidebar page, or one work item (`items/<id>`, under Work items). */
+/** Old page paths and where they lead now (Workers became Runners; the Users page is gone, one owner). */
+const REDIRECTS: Readonly<Record<string, string>> = { workers: "runners", users: "" };
+
+/** The path under /app/ without query, hash or trailing slash. */
+function restOf(pathname: string): string {
+  // A query (`failures?window=24h`) selects within a page and a hash (`#msg-3`) is a place on it; neither changes which page.
+  return pathname.startsWith(BASE) ? pathname.slice(BASE.length).split(/[?#]/)[0]!.replace(/\/+$/, "") : "";
+}
+
+/** The new location of an old page path (`/app/workers` → `/app/runners`), or null when it is not an old one. */
+export function redirectFor(pathname: string): string | null {
+  const to = REDIRECTS[restOf(pathname)];
+  return to === undefined ? null : BASE + to;
+}
+
+const WORK = PAGES.find((p) => p.path === "items")!;
+const NEEDS_YOU = PAGES.find((p) => p.path === "")!;
+
+/** Where a location path under /app/ leads: a sidebar page, or one work item (`items/<id>`, under Work). */
 export interface Route {
   page: PageDef;
   itemId: string | null;
 }
 
-/** The route for a location path under /app/; unknown paths show the Floor. */
+/** The route for a location path under /app/; an old path leads where it moved to, an unknown one to Needs you. */
 export function routeFor(pathname: string): Route {
-  // A query (`failures?window=24h`) selects within a page and a hash (`#msg-3`) is a place on it; neither changes which page.
-  const rest = pathname.startsWith(BASE) ? pathname.slice(BASE.length).split(/[?#]/)[0]!.replace(/\/+$/, "") : "";
+  const rest = REDIRECTS[restOf(pathname)] ?? restOf(pathname);
   const m = /^items\/([^/]+)$/.exec(rest);
   if (m) {
     let id: string | null = null;
@@ -51,9 +69,9 @@ export function routeFor(pathname: string): Route {
     } catch {
       id = null;
     }
-    if (id) return { page: PAGES[1]!, itemId: id };
+    if (id) return { page: WORK, itemId: id };
   }
-  return { page: ALL_PAGES.find((p) => p.path === rest) ?? PAGES[0]!, itemId: null };
+  return { page: PAGES.find((p) => p.path === rest) ?? NEEDS_YOU, itemId: null };
 }
 
 export const itemPath = (id: string) => `${BASE}items/${encodeURIComponent(id)}`;

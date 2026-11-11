@@ -143,7 +143,7 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
       {running.map((r) => {
         const it = items.get(r.work_item_id);
         return (
-          <Tr key={r.id}>
+          <Tr key={r.id} data-key={r.id}>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
@@ -166,7 +166,7 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
       {shown.map((q) => {
         const it = items.get(q.work_item_id);
         return (
-          <Tr key={q.id}>
+          <Tr key={q.id} data-key={q.id}>
             <Td className="tabular-nums">{q.position}</Td>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
             <Td>{q.kind}</Td>
