@@ -1,7 +1,7 @@
 // The quick-add box: a frameless window with one text field and the parsed fields as chips, opened by the
 // quick-add shortcut. Enter posts the words once (taskPoster, through this main process); Esc, or clicking
 // elsewhere, closes it and posts nothing. The window is made hidden at start, so the shortcut only shows it.
-import { fieldChips } from "../common/tasks-client.js";
+import { fieldChips } from "./tasks-client.js";
 import { panelPreferences, panelWindow, showFocused } from "./panel.js";
 
 /** The channels between the box's page (panel-preload.cjs) and this module. */

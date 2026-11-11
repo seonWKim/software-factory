@@ -1,6 +1,5 @@
 import type { AppShell } from "../../../src/interfaces/app-shell.js";
 import type { AppDataPaths, ShellConfig, ShellFs } from "./app-data.js";
-import type { QuickAddShortcut } from "./shortcut.js";
 import type { Fetch } from "./status.js";
 import type { Spawn, Supervisor } from "./supervisor.js";
 import type { Timers } from "./timers.js";
@@ -13,11 +12,7 @@ export declare function runShell(o: {
   fetch: Fetch;
   defaultCheckout: string;
   makeShell: (config: ShellConfig) => AppShell;
-  /** What the quick-add shortcut does: open the box. Default: nothing. */
-  openQuickAdd?: () => void;
-  /** Tells the person a message (a refused shortcut); it is also logged. Default: logged only. */
-  notify?: (message: string) => void;
   /** Whether a pid names a live process; default `process.kill(pid, 0)` (attach.js). */
   alive?: (pid: unknown) => boolean;
   timers?: Timers;
-}): Promise<{ paths: AppDataPaths; config: ShellConfig; shell: AppShell; supervisor: Supervisor; shortcut: QuickAddShortcut; attached: boolean }>;
+}): Promise<{ paths: AppDataPaths; config: ShellConfig; shell: AppShell; supervisor: Supervisor; attached: boolean }>;

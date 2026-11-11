@@ -1,5 +1,5 @@
 import type { QuickAddResult } from "../../../src/core/quick-add.js";
-import type { PostTask } from "../common/tasks-client.js";
+import type { PostTask } from "./tasks-client.js";
 export declare const BOX: { preview: string; key: string; opened: string };
 export declare function boxOptions(preload: string): Record<string, unknown>;
 export declare function createQuickAdd(

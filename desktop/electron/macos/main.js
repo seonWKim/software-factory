@@ -9,13 +9,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import electron from "electron";
 import pkg from "../../package.json" with { type: "json" };
-import { appDataPaths } from "../common/app-data.js";
+import { appDataPaths, saveQuickAddShortcut } from "../common/app-data.js";
 import { runShell } from "../common/run-shell.js";
 import { dashboardUrl } from "../common/status.js";
-import { taskPoster } from "../common/tasks-client.js";
+import { taskPoster } from "./tasks-client.js";
 import { createMacosShell } from "./app-shell.js";
 import { createQuickAdd } from "./quick-add.js";
 import { createSettingsView } from "./settings-view.js";
+import { quickAddShortcut } from "./shortcut.js";
 
 const { app, dialog } = electron;
 const here = dirname(fileURLToPath(import.meta.url));
@@ -49,7 +50,7 @@ if (!app.requestSingleInstanceLock()) {
     try {
       let quickAdd = null;
       let settingsView = null;
-      const { shell, config, shortcut } = await runShell({
+      const { shell, config, paths } = await runShell({
         home,
         fs,
         spawn,
@@ -67,8 +68,17 @@ if (!app.requestSingleInstanceLock()) {
               { label: "Quick-add shortcut…", click: () => settingsView?.open() },
             ],
           }),
-        openQuickAdd: () => quickAdd?.open(),
-        notify: (message) => void dialog.showMessageBox({ type: "warning", message: "Quick-add shortcut", detail: message }),
+      });
+      // A refused shortcut is told and logged; the shell runs on with none held.
+      const shortcut = quickAddShortcut({
+        shell,
+        accelerator: config.app.quick_add_shortcut,
+        onPress: () => quickAdd?.open(),
+        notify: (message) => {
+          fs.appendFileSync(paths.log, `[shell] ${message}\n`);
+          void dialog.showMessageBox({ type: "warning", message: "Quick-add shortcut", detail: message });
+        },
+        save: (accelerator) => saveQuickAddShortcut(paths, fs, accelerator),
       });
       quickAdd = createQuickAdd(electron, {
         pageUrl: page("quick-add.html"),

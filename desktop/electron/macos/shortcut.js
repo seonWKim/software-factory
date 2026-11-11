@@ -1,5 +1,5 @@
-// The quick-add box's system-wide shortcut over AppShell's registerShortcut and unregisterShortcut: registered at
-// start from `app.quick_add_shortcut`, and changed from the shell's settings view. A refused shortcut (another app
+// The quick-add box's system-wide shortcut over AppShell's registerShortcut and unregisterShortcut: registered by
+// main.js once the shell runs, from `app.quick_add_shortcut`, and changed from the shell's settings view. A refused shortcut (another app
 // holds it, or it is not valid) never stops the shell: the person gets a message and the previous one stays.
 
 /** The message for a refused shortcut, naming the one that stays (or how to pick one when none is held). */

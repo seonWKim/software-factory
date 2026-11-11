@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { type ShellFs, appDataPaths, loadShellConfig, saveQuickAddShortcut } from "../../desktop/electron/common/app-data.js";
 import { pidAlive, supervisorStatusFile } from "../../desktop/electron/common/attach.js";
 import { runShell } from "../../desktop/electron/common/run-shell.js";
+import { quickAddShortcut } from "../../desktop/electron/macos/shortcut.js";
 import { FakeAppShell, fakeSpawn, flush } from "./fakes.js";
 
 const fakeHome = (): string => mkdtempSync(join(tmpdir(), "sf-desktop-home-"));
@@ -82,8 +83,6 @@ describe("runShell", () => {
     const rec = recordingFs();
     const sp = fakeSpawn();
     const shells: FakeAppShell[] = [];
-    const told: string[] = [];
-    let opened = 0;
     const fetch = async () => {
       if (!dashboardUp && sp.calls.length === 0) throw new Error("ECONNREFUSED");
       return { ok: true, json: async () => ({ factory: { state: "running" }, needs_you: 7 }) };
@@ -101,10 +100,8 @@ describe("runShell", () => {
         shells.push(new FakeAppShell(true, new Set(taken)));
         return shells[0]!;
       },
-      openQuickAdd: () => void opened++,
-      notify: (m) => told.push(m),
     });
-    return { ...r, ...rec, ...sp, shell: shells[0]!, told, opened: () => opened };
+    return { ...r, ...rec, ...sp, shell: shells[0]! };
   }
 
   /** A checkout whose supervisor status file names `pid` under `key`. */
@@ -126,24 +123,39 @@ describe("runShell", () => {
     expect(shell.status.needsYou).toBe(7);
   });
 
-  it("a config with no app.quick_add_shortcut key registers Alt+Space and starts as usual", async () => {
-    const { shell, calls, config, shortcut, told, opened } = await run({ config: { checkout: "/src/software-factory", ui_port: 4310 } });
-    expect(config.app.quick_add_shortcut).toBe("Alt+Space");
-    expect(shortcut.current()).toBe("Alt+Space");
-    expect(told).toEqual([]);
-    expect(calls).toHaveLength(1);
-    expect(shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
-    shell.shortcuts.get("Alt+Space")!();
-    expect(opened()).toBe(1);
+  /** The quick-add shortcut on a started shell, as main.js registers it. */
+  function startShortcut(r: Awaited<ReturnType<typeof run>>) {
+    const told: string[] = [];
+    let opened = 0;
+    const shortcut = quickAddShortcut({
+      shell: r.shell,
+      accelerator: r.config.app.quick_add_shortcut,
+      onPress: () => void opened++,
+      notify: (m) => told.push(m),
+      save: (a) => saveQuickAddShortcut(r.paths, r.fs, a),
+    });
+    return { shortcut, told, opened: () => opened };
+  }
+
+  it("a config with no app.quick_add_shortcut key uses Alt+Space and starts as usual", async () => {
+    const r = await run({ config: { checkout: "/src/software-factory", ui_port: 4310 } });
+    expect(r.config.app.quick_add_shortcut).toBe("Alt+Space");
+    expect(r.calls).toHaveLength(1);
+    expect(r.shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
+    const s = startShortcut(r);
+    expect(s.shortcut.current()).toBe("Alt+Space");
+    expect(s.told).toEqual([]);
+    r.shell.shortcuts.get("Alt+Space")!();
+    expect(s.opened()).toBe(1);
   });
 
-  it("a refused shortcut at start is told and logged, and the shell starts all the same", async () => {
-    const { shell, calls, shortcut, told, paths } = await run({ taken: ["Alt+Space"] });
-    expect(shortcut.current()).toBeNull();
-    expect(told).toEqual([expect.stringContaining("Alt+Space could not be registered")]);
-    expect(readFileSync(paths.log, "utf8")).toContain("Alt+Space could not be registered");
-    expect(calls).toHaveLength(1);
-    expect(shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
+  it("a refused shortcut at start is told, and the shell runs on with none held", async () => {
+    const r = await run({ taken: ["Alt+Space"] });
+    const s = startShortcut(r);
+    expect(s.shortcut.current()).toBeNull();
+    expect(s.told).toEqual([expect.stringContaining("Alt+Space could not be registered")]);
+    expect(r.calls).toHaveLength(1);
+    expect(r.shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
   });
 
   it("writes only its app data folder, reads only the checkout's status file, never the secrets file", async () => {
