@@ -6,20 +6,21 @@ import { build, loadConfig } from "../src/compose.js";
 import { type FactoryConfig, GRANT_RUN_KINDS, toolGrantsConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { LiveSettings } from "../src/core/settings.js";
-import type { WorkerId } from "../src/core/types.js";
+import type { WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ClaudeCodeRunner } from "../src/impl/runner/claude-code-runner.js";
 import { type AgentRunner, TOOLS_NOT_EXPOSED } from "../src/interfaces/agent-runner.js";
-import type { ToolBroker } from "../src/interfaces/tool-broker.js";
+import type { ToolBroker, ToolCallContext } from "../src/interfaces/tool-broker.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeNoteBroker, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup,
   issueRef, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
-import { newStore } from "./helpers/store.js";
+import { issue, newStore, system } from "./helpers/store.js";
 
 // #164: `tool_grants` in factory.config.json grants read-only broker tools to a run kind. Checked at startup, when
 // the broker is built (its tools come from its plugin); absent, every run gets an empty grant list.
@@ -98,6 +99,12 @@ describe("tool_grants at startup", () => {
     });
   }
 
+  it("fails on github.preflight, the removed old name, naming forge.preflight", async () => {
+    await expect(startWith({ implement: ["github.preflight"] }, "github")).rejects.toThrow(
+      /tool_grants\.implement grants "github\.preflight", which the github broker does not list; valid read-only tools of the github broker: forge\.preflight/,
+    );
+  });
+
   it("fails on a key that is not a run kind, listing the run kinds", async () => {
     await expect(startWith({ triager: ["test.read_note"] })).rejects.toThrow(
       'tool_grants key "triager" is not a run kind; run kinds: triage, implement, review, update, resolve, manual',
@@ -150,6 +157,33 @@ describe("the GitHub broker's read_only flags", () => {
     const flags = Object.fromEntries(new FakeBroker().allTools().map((t) => [t.name, t.read_only]));
     expect(flags).toEqual({ "git.store_branch": false, "forge.preflight": true });
     expect(new FakeBroker().listTools(["forge.preflight"]).map((t) => t.name)).toEqual(["forge.preflight"]);
+  });
+});
+
+describe("the old github.* tool names", () => {
+  /** A broker call context of a claimed run, so the lease check passes and the call reaches the tool switch. */
+  async function claimed() {
+    const { store } = await newStore(new FakeClock());
+    const { item } = await store.createWorkItem(issue(1), system, { enqueue: { kind: "implement", idempotency_key: "k" } });
+    const run = (await store.claimRun({ worker_id: "w" as WorkerId, kinds: ["implement"], lease_ms: 60_000 }))!;
+    const ctx: ToolCallContext = { run_id: run.id, work_item_id: item.id as WorkItemId, lease_token: run.lease!.token };
+    return { store, ctx };
+  }
+
+  it("each broker answers a github.* name with unknown_tool and calls nothing", async () => {
+    const { store, ctx } = await claimed();
+    const requests: string[] = [];
+    const client = { request: async (method: string, path: string) => requests.push(`${method} ${path}`) } as never;
+    const github = new GitHubToolBroker({ client, store, scanner: cleanScanner, clock: new FakeClock(), repo: { owner: "o", name: "r" }, branchPrefix: "factory/" });
+    const local = new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: "factory/", repoPath: tmpdir() });
+    const args = { branch: "factory/wi_x", base_ref: "main" };
+    for (const broker of [github, local]) {
+      for (const name of ["github.preflight", "github.push", "github.comment"]) {
+        expect(await broker.call(ctx, name, args)).toEqual({ ok: false, error_code: "unknown_tool", message: name });
+      }
+      expect(broker.allTools().map((t) => t.name).filter((n) => n.startsWith("github."))).toEqual([]);
+    }
+    expect(requests).toEqual([]);
   });
 });
 
