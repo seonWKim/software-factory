@@ -717,4 +717,18 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX IF NOT EXISTS base_pushes_pending ON base_pushes (finished_at, next_attempt_at);
   `,
+  // 42: per-merge evaluations (design 06-measurement). One row per merge, keyed by (work_item_id, merge_sha), inserted
+  // by the merge's own transition only when none is stored. No backfill: merges before this migration get no row.
+  `
+  CREATE TABLE IF NOT EXISTS controller_merge_evaluations (
+    work_item_id  TEXT NOT NULL,
+    merge_sha     TEXT NOT NULL,
+    tier          INTEGER,
+    merged_by     TEXT NOT NULL,
+    token_cost    INTEGER NOT NULL,
+    merged_at     TEXT NOT NULL,
+    PRIMARY KEY (work_item_id, merge_sha)
+  );
+  CREATE INDEX IF NOT EXISTS controller_merge_evaluations_at ON controller_merge_evaluations (merged_at);
+  `,
 ];

@@ -128,6 +128,7 @@ import {
 import * as filed from "./filed-patterns.js";
 import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords } from "./retention.js";
 import * as signals from "./signals.js";
+import * as evaluations from "./merge-evaluations.js";
 
 /**
  * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -306,6 +307,7 @@ export class SqlFactoryStore implements FactoryStore {
     if (current.stage !== "CLOSED" && item.stage === "CLOSED" && outcome) {
       await tx.run("UPDATE controller_budget_checkpoints SET outcome = ? WHERE work_item_id = ? AND outcome IS NULL", [outcome, input.id]);
     }
+    await evaluations.onMergeTransition(tx, current, item, input.actor.id, now); // a merge stores its evaluation once (design §6)
     // A closed item (its PR merged or closed: the merge path's transition) holds nothing from this commit on, so
     // the queued runs' decisions that name it go too; the next claim records what holds them now (design §5).
     // An approval stays: it is the human's, for that run.
@@ -409,6 +411,7 @@ export class SqlFactoryStore implements FactoryStore {
   listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> {
     return signals.listRunsFinishedSince(this.db, q);
   }
+  listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
 
   // Budget checkpoints
 

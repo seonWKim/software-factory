@@ -472,6 +472,16 @@ CREATE TABLE controller_merge_checks (
     checked_at    TEXT NOT NULL
   );
 
+CREATE TABLE controller_merge_evaluations (
+    work_item_id  TEXT NOT NULL,
+    merge_sha     TEXT NOT NULL,
+    tier          INTEGER,
+    merged_by     TEXT NOT NULL,
+    token_cost    INTEGER NOT NULL,
+    merged_at     TEXT NOT NULL,
+    PRIMARY KEY (work_item_id, merge_sha)
+  );
+
 CREATE TABLE controller_merge_queue_entries (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,
     entry_id      TEXT NOT NULL UNIQUE,
@@ -1519,6 +1529,8 @@ CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
 
 CREATE INDEX controller_inbox_expiry ON controller_inbox (expires_at);
+
+CREATE INDEX controller_merge_evaluations_at ON controller_merge_evaluations (merged_at);
 
 CREATE INDEX controller_merge_queue_entries_item ON controller_merge_queue_entries (work_item_id, state);
 
