@@ -74,9 +74,14 @@ export function refsOf(text: string): number[] {
   return out;
 }
 
-/** True when the decision is a deadlock claim of the item's current run: its sentence is shown, the run goes on. */
+/** True when the decision is a deadlock claim of the item's current run: it waits on the holder (Blocked by another task); the run goes on. */
 export function deadlocked(decision: WhyInput["decision"], run: { id: string } | null): boolean {
   return decision?.decision === "deadlock" && run !== null && decision.run_id === run.id;
+}
+
+/** True when the decision is an unapproved `held` claim of the item's current run: a coordination hold. */
+export function heldBy(decision: WhyInput["decision"], run: { id: string } | null): boolean {
+  return decision?.decision === "held" && !decision.approved_by && run !== null && decision.run_id === run.id;
 }
 
 const FAILED = /^run_failed:|^max_attempts$|^max_restart$|^repeated_failure$/;
@@ -154,9 +159,7 @@ export function whyWaiting(x: WhyInput): Why {
   if (i.blocked_on === "dependency") return dependency(i.blocked_reason);
   if (i.blocked_on === "upstream" || i.blocked_on === "ci" || x.phases.waiting_on > 0) return phase(i, x.phases);
   const d = x.decision;
-  if (run && d && d.run_id === run.id && d.decision === "held" && !d.approved_by) {
-    return why("held", `Held behind ${d.holder_ref}, ${HOLDER[d.holder_kind]}`, "other_item");
-  }
+  if (heldBy(d, run)) return why("held", `Held behind ${d!.holder_ref}, ${HOLDER[d!.holder_kind]}`, "other_item");
   if (run && x.not_before) return why("not_before", `Retry waits until ${when(x.not_before)}`, "factory");
   if (run) return why("queued", run.position ? `Queued at position ${run.position}` : `Queued ${run.kind}`, "factory");
   return why("idle", "Nothing moves it: no run is queued", "human");

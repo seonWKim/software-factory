@@ -12,12 +12,21 @@ interface Harness {
   menuText(): string;
   closeWindow(): void;
   exited(): boolean;
+  /** Another app takes `accelerator`. */
+  take(accelerator: string): void;
+  /** The person presses `accelerator`. */
+  press(accelerator: string): void;
+  shortcuts(): string[];
 }
 
 const harnesses: Record<string, () => Harness> = {
   fake: () => {
-    const shell = new FakeAppShell();
+    const taken = new Set<string>();
+    const shell = new FakeAppShell(true, taken);
     return {
+      take: (a) => taken.add(a),
+      press: (a) => shell.shortcuts.get(a)?.(),
+      shortcuts: () => [...shell.shortcuts.keys()],
       shell,
       windows: () => shell.windows,
       windowVisible: () => shell.visible,
@@ -30,6 +39,9 @@ const harnesses: Record<string, () => Harness> = {
     const m = electronMock();
     const shell = createMacosShell(m.electron, { preload: "/app/preload.cjs" });
     return {
+      take: (a) => m.globalShortcut.taken.add(a),
+      press: (a) => m.globalShortcut.press(a),
+      shortcuts: () => [...m.globalShortcut.registered.keys()],
       shell,
       windows: () => m.windows.map((w) => w.loads[0]!),
       windowVisible: () => m.windows.some((w) => w.visible && !w.destroyed),
@@ -71,6 +83,26 @@ for (const [name, make] of Object.entries(harnesses)) {
       await flush();
       expect(drains).toBe(0);
       expect(h.exited()).toBe(false);
+    });
+
+    it("registers a shortcut that runs its handler, and releases it", () => {
+      const h = make();
+      let presses = 0;
+      expect(h.shell.registerShortcut("Alt+Space", () => void presses++)).toBe(true);
+      h.press("Alt+Space");
+      expect(presses).toBe(1);
+      h.shell.unregisterShortcut("Alt+Space");
+      h.press("Alt+Space");
+      expect(presses).toBe(1);
+      expect(h.shortcuts()).toEqual([]);
+      h.shell.unregisterShortcut("Alt+Space");
+    });
+
+    it("refuses a shortcut another app holds, registering nothing", () => {
+      const h = make();
+      h.take("Command+Space");
+      expect(h.shell.registerShortcut("Command+Space", () => {})).toBe(false);
+      expect(h.shortcuts()).toEqual([]);
     });
 
     it("quit runs the drain once and exits only after it finished", async () => {
