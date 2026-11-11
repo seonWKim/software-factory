@@ -357,9 +357,9 @@ Install:
 
 Use:
 
-- The app starts the factory (`dist/main.js dev`) as its own child, so do not also run `npm run factory -- dev` for the same checkout. If the factory stops, the app starts it again after 5 seconds. Its output goes to `~/Library/Application Support/software-factory/state/supervisor.log`.
+- If the factory already runs for that checkout (`npm run factory -- dev` in a terminal), the app attaches to it: it shows its dashboard and count, starts no second factory, and its Quit leaves that factory running. Otherwise the app starts the factory (`dist/main.js dev`) as its own child and starts it again 5 seconds after it stops. The log is `~/Library/Application Support/software-factory/state/supervisor.log`; its first line says `attached` when the app did not start the factory.
 - Closing the window keeps the factory and the menu bar item running; click the Dock icon or choose "Open dashboard" in the menu bar to see it again.
-- Cmd+Q, or Quit in the menu bar, drains the factory (in-flight work stops as on Ctrl-C) and waits up to 60 seconds before it stops the factory hard.
+- Cmd+Q, or Quit in the menu bar, drains the factory the app started (in-flight work stops as on Ctrl-C) and waits up to 60 seconds before it stops the factory hard.
 - Its settings are in `~/Library/Application Support/software-factory/config.json`, written on first start: `checkout` (the factory checkout to run), `ui_port` (set it when `factory.config.json` sets another `ui.port`) and `keep_running_when_closed` (`false` makes closing the window quit). Quit and start the app again after a change.
 - The app never reads the secret file: the factory it starts does, as from a terminal.
 - Known limit: an app started from Finder or `open` gets macOS's short `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`), not your shell's. If the log says the factory cannot find `claude` or another tool, that is why; a later change passes the login shell's `PATH`.

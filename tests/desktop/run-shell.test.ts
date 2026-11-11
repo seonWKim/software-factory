@@ -1,11 +1,14 @@
 // The shell's app data folder and its wiring, with a fake home folder: the paths, the config and its default
-// checkout, SF_HOME for the child, and every file the shell touches inside its own folder (never a secrets file).
+// checkout, SF_HOME for the child, every file the shell touches (its own folder and the checkout's supervisor status
+// file, never a secrets file), and attaching to a supervisor that already runs for the checkout.
 import * as nodeFs from "node:fs";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { type ShellFs, appDataPaths, loadShellConfig } from "../../desktop/electron/common/app-data.js";
+import { pidAlive, supervisorStatusFile } from "../../desktop/electron/common/attach.js";
 import { runShell } from "../../desktop/electron/common/run-shell.js";
 import { FakeAppShell, fakeSpawn, flush } from "./fakes.js";
 
@@ -52,7 +55,11 @@ describe("app data folder", () => {
 });
 
 describe("runShell", () => {
-  function run() {
+  /**
+   * One shell over a fake home. The dashboard answers only once a supervisor runs: `dashboardUp` (someone else's
+   * supervisor) or after the shell spawned its own. `alivePids` are the pids the fake `process.kill(pid, 0)` finds.
+   */
+  async function run({ checkout = "/src/software-factory", dashboardUp = false, alivePids = [] as number[] } = {}) {
     const home = fakeHome();
     // A secrets file where the factory keeps one: the shell must never open it.
     mkdirSync(join(home, ".config", "software-factory"), { recursive: true });
@@ -60,15 +67,19 @@ describe("runShell", () => {
     const rec = recordingFs();
     const sp = fakeSpawn();
     const shells: FakeAppShell[] = [];
-    const fetch = async () => ({ ok: true, json: async () => ({ factory: { state: "running" }, needs_you: 7 }) });
-    const r = runShell({
+    const fetch = async () => {
+      if (!dashboardUp && sp.calls.length === 0) throw new Error("ECONNREFUSED");
+      return { ok: true, json: async () => ({ factory: { state: "running" }, needs_you: 7 }) };
+    };
+    const r = await runShell({
       home,
       fs: rec.fs,
       spawn: sp.spawn,
       execPath: "/App/Electron",
       env: { PATH: "/usr/bin" },
       fetch,
-      defaultCheckout: "/src/software-factory",
+      defaultCheckout: checkout,
+      alive: (pid) => alivePids.includes(pid as number),
       makeShell: () => {
         shells.push(new FakeAppShell());
         return shells[0]!;
@@ -77,8 +88,17 @@ describe("runShell", () => {
     return { ...r, ...rec, ...sp, shell: shells[0]! };
   }
 
+  /** A checkout whose supervisor status file names `pid` under `key`. */
+  function checkoutWithStatus(pid: number, key = "supervisor_pid"): string {
+    const checkout = mkdtempSync(join(tmpdir(), "sf-desktop-checkout-"));
+    mkdirSync(join(checkout, ".factory"));
+    writeFileSync(supervisorStatusFile(checkout), JSON.stringify({ state: "running", [key]: pid }));
+    return checkout;
+  }
+
   it("starts the supervisor from the checkout with SF_HOME, opens the dashboard and shows the count", async () => {
-    const { calls, shell, paths } = run();
+    const { calls, shell, paths, attached } = await run();
+    expect(attached).toBe(false);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.args.slice(-2)).toEqual(["/src/software-factory/dist/main.js", "dev"]);
     expect(calls[0]!.options).toMatchObject({ cwd: "/src/software-factory", env: { SF_HOME: paths.dir } });
@@ -87,14 +107,67 @@ describe("runShell", () => {
     expect(shell.status.needsYou).toBe(7);
   });
 
-  it("touches only its app data folder, never the secrets file", async () => {
-    const { touched, paths, shell, calls } = run();
+  it("writes only its app data folder, reads only the checkout's status file, never the secrets file", async () => {
+    const { touched, paths, shell, calls } = await run();
     shell.quit();
     calls[0]!.child.exit(0);
     await flush();
     expect(shell.exited).toBe(true);
     expect(touched.length).toBeGreaterThan(0);
-    expect(touched.filter((p) => p !== paths.dir && !p.startsWith(`${paths.dir}/`))).toEqual([]);
+    const outside = touched.filter((p) => p !== paths.dir && !p.startsWith(`${paths.dir}/`));
+    expect(outside).toEqual([supervisorStatusFile("/src/software-factory")]);
     expect(touched.some((p) => p.includes(".env"))).toBe(false);
+  });
+
+  it("attaches to a live supervisor named in the checkout's status file: no second supervisor, Quit leaves it running", async () => {
+    const { calls, shell, attached, paths } = await run({ checkout: checkoutWithStatus(4242), alivePids: [4242], dashboardUp: true });
+    expect(attached).toBe(true);
+    expect(calls).toHaveLength(0);
+    expect(shell.windows).toEqual(["http://127.0.0.1:4310/app/"]);
+    await flush();
+    expect(shell.status.needsYou).toBe(7);
+    expect(readFileSync(paths.log, "utf8")).toContain("attached, not starting a supervisor: supervisor_pid 4242 is alive");
+    shell.quit();
+    await flush();
+    expect(shell.exited).toBe(true);
+  });
+
+  it("attaches to the none updater's supervisor, whose status file names only child_pid", async () => {
+    const { calls, attached } = await run({ checkout: checkoutWithStatus(5151, "child_pid"), alivePids: [5151] });
+    expect(attached).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("attaches when only the dashboard answers (a supervisor with another state folder)", async () => {
+    const { calls, attached } = await run({ dashboardUp: true });
+    expect(attached).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("starts its own supervisor when the status file names a dead pid and the dashboard does not answer", async () => {
+    const { calls, attached } = await run({ checkout: checkoutWithStatus(4242), alivePids: [] });
+    expect(attached).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+});
+
+describe("pidAlive", () => {
+  const throwing = (code: string) => () => {
+    throw Object.assign(new Error(code), { code });
+  };
+  it("is alive when signal 0 succeeds or is refused (EPERM: another user's process), dead on ESRCH or no pid", () => {
+    expect(pidAlive(10, () => true)).toBe(true);
+    expect(pidAlive(10, throwing("EPERM"))).toBe(true);
+    expect(pidAlive(10, throwing("ESRCH"))).toBe(false);
+    expect(pidAlive(undefined, () => true)).toBe(false);
+    expect(pidAlive(0, () => true)).toBe(false);
+  });
+});
+
+describe("macOS main file", () => {
+  it("has no top-level await: Electron holds 'ready' until the ESM entry has loaded, so one hangs the app", () => {
+    const main = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../desktop/electron/macos/main.js"), "utf8");
+    // Top-level statements sit at indentation 0, or 2 inside the single-instance if/else.
+    expect(main.split("\n").filter((line) => /^ {0,2}(?:const .*= )?await\b/.test(line))).toEqual([]);
   });
 });
