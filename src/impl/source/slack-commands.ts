@@ -1,5 +1,5 @@
 import { type ChatCommand, type CommandWho, type TableCommand, chatCliArgv, cliUsageOf } from "../../core/command-table.js";
-import { chatHelpReply, commandSpec, commandState } from "../../core/commands.js";
+import { chatForm, chatHelpReply, commandSpec, commandState } from "../../core/commands.js";
 import { type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../../core/local-cli.js";
 import type { UserId, WorkItem } from "../../core/types.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
@@ -72,7 +72,7 @@ export async function runChatCommand(d: ChatDeps, cmd: ChatCommand, ctx: ChatCon
   if (cmd.kind === "help") return { markdown: chatHelpReply(await mayOf(d.store, user), ctx.item ? commandState(ctx.item) : null) };
   const c = cmd.entry;
   if (c.edge) return { markdown: edgeRefusal(c) };
-  if (c.item && ctx.item === null) return { markdown: `\`${c.chat}\` works only in a work item's thread: post it there, after a mention of the bot.` };
+  if (c.item && ctx.item === null) return { markdown: `\`${chatForm(c.chat)}\` works only in a work item's thread: post it there, after a mention of the bot.` };
   const argv = chatCliArgv(cmd, ctx.item?.id ?? null);
   const whole = ["factory", argv.word, ...argv.args].join(" ");
   if (c.group === "settings") {

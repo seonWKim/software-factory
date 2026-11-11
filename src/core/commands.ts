@@ -475,10 +475,10 @@ export const CHAT_BOT = "@software-factory";
 /**
  * The chat `help` reply: only the commands the sender may run in that place. `may` says whether the sender's role
  * allows an action; `state` is the item's when asked in its thread, else null. Outside an item's thread: the
- * reads, the request that starts work, and `/link`. In an item's thread: the reads, `merge` when it applies, and
- * the item's commands that apply now, each line the same text as the issue footer and `/help` give for that state
- * (issue #528). Writes refused in chat (`edge`) are never listed. When `/approve` is listed, a last line says that
- * `approve` with no slash works too after the mention (BARE_COMMANDS).
+ * reads, the request that starts work, and `/link` (there a bare `link` would be a request). In an item's thread: the
+ * reads, `merge` when it applies, and the item's commands that apply now, each line the issue footer's text for that
+ * state (issue #528) shown without its `/` (chatForm, issue #541), as typed after the mention there. Writes refused in
+ * chat (`edge`) are never listed.
  */
 export function chatHelpReply(may: (w: CommandWho) => boolean, state: CommandState | null): string {
   const lines: string[] = [];
@@ -489,28 +489,34 @@ export function chatHelpReply(may: (w: CommandWho) => boolean, state: CommandSta
     lines.push(`- \`${c.chat}\`: ${c.does}.`);
   }
   const now = state !== null && may("approve_spec") ? commandsFor(state).filter((c) => c.name !== "help") : [];
-  lines.push(...now.map(line));
+  lines.push(...now.map((c) => chatForm(line(c))));
   if (state === null) lines.push(line(commandSpec("link")));
   lines.push(`- \`help\`: ${commandSpec("help").description}.`);
   const where = state === null ? "here" : "in this item's thread";
-  const out = [`Commands you can run ${where} (mention the bot first, e.g. \`${CHAT_BOT} /help\`):`, ...lines];
-  if (now.some((c) => c.name === "approve")) {
-    out.push("", `After the mention, \`approve\` with no slash works too: \`${CHAT_BOT} approve\` is \`${CHAT_BOT} /approve\`.`);
-  }
-  return out.join("\n");
+  return [`Commands you can run ${where} (mention the bot first, e.g. \`${CHAT_BOT} help\`):`, ...lines].join("\n");
 }
 
 /**
- * Item commands a chat source reads without their `/` after a mention, in an item's thread only (issue #528):
- * outside one, the same words are a request in plain words.
+ * Commands a chat source reads without their `/` after a mention, in an item's thread only (issues #528, #541): every
+ * command but `help`, which is read bare anywhere. Outside an item's thread the same words are a request in plain words.
  */
-export const BARE_COMMANDS: readonly CommandName[] = ["approve"];
+export const THREAD_BARE_COMMANDS: readonly CommandName[] = COMMANDS.map((c) => c.name).filter((n) => n !== "help");
 
-/** `text` with its `/` added when it starts with a bare command word (BARE_COMMANDS), else null. */
-export function withSlash(text: string): string | null {
+/**
+ * `text` with its `/` added when it starts with one of the bare command words `names`, else null. The default, `approve`
+ * alone, is issue #528's first bare word; the Slack source passes THREAD_BARE_COMMANDS.
+ */
+export function withSlash(text: string, names: readonly CommandName[] = ["approve"]): string | null {
   const t = text.trim();
   const m = /^([A-Za-z]+)(?=$|[\s.,:;!?])/.exec(t);
-  return m && BARE_COMMANDS.includes(m[1]!.toLowerCase() as CommandName) ? `/${t}` : null;
+  return m && names.includes(m[1]!.toLowerCase() as CommandName) ? `/${t}` : null;
+}
+
+const SLASHED = new RegExp(`(^|[\\s\`(])/(${COMMANDS.map((c) => c.name).join("|")})(?![A-Za-z])`, "g");
+
+/** `s` with every command it names shown without its `/`, as typed after a mention in a chat thread (issue #541). */
+export function chatForm(s: string): string {
+  return s.replace(SLASHED, "$1$2");
 }
 
 /*
