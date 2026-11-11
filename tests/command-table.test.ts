@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { COMMAND_TABLE, type TableCommand, chatCliArgv, chatCommandListMarkdown, cliUsageOf, parseChatCommand } from "../src/core/command-table.js";
-import { type CommandPhase, chatHelpReply, commandState } from "../src/core/commands.js";
+import { type CommandPhase, THREAD_BARE_COMMANDS, chatForm, chatHelpReply, commandState, parseComment, parseLink, withSlash } from "../src/core/commands.js";
 import { CLI_TOP_WORDS, parseLocalCliArgs } from "../src/core/local-cli.js";
 import { SETTINGS_TOP_WORDS, parseModeArgs, parseSettingsArgs } from "../src/settings-cmd.js";
 import { APP_COMMANDS } from "../src/ui/commands.js";
@@ -59,7 +59,8 @@ describe("the command table", () => {
     const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
     expect(setup).toContain(chatCommandListMarkdown());
     const listed = setup.split("\n").filter((l) => l.startsWith("- `@bot ")).map((l) => /^- `@bot ([^`]+)`/.exec(l)![1]);
-    expect(listed).toEqual(COMMAND_TABLE.map((c) => c.chat));
+    expect(listed).toEqual(COMMAND_TABLE.map((c) => c.chat.replace(/^\//, "")));
+    expect(listed.filter((l) => l!.startsWith("/"))).toEqual([]);
   });
 });
 
@@ -73,9 +74,33 @@ describe("parseChatCommand", () => {
     expect(parseChatCommand("/help")).toEqual({ kind: "help" });
   });
 
-  it("an item command needs its `/` and keeps its text, the lines below included", () => {
+  it("an item command keeps its text, the lines below included; in an item's thread its bare word is read with its `/`", () => {
     expect(parseChatCommand("/approve ship it\nand the docs")).toMatchObject({ kind: "command", entry: { name: "approve" }, text: "ship it\nand the docs" });
+    // In an item's thread (the Slack source adds the `/`): the same command, with the same text, as the slash form.
+    const inThread = (t: string) => withSlash(t, THREAD_BARE_COMMANDS) ?? t;
+    for (const t of ["approve ship it", "Approve, but fix the tests", "retry", "revise narrower\nscope", "reject duplicate emails", "resolve keep ours", "merge"]) {
+      expect(parseChatCommand(inThread(t)), t).toEqual(parseChatCommand(`/${t}`));
+      expect(parseChatCommand(inThread(t)), t).toMatchObject({ kind: "command" });
+    }
+    // The commands the table lacks are read by the comment parser, and `link` by its own, the same way.
+    for (const t of ["budget 50000", "verdict accept none fine", "standing accept spec-t1"]) {
+      expect(parseComment(inThread(t)), t).toEqual(parseComment(`/${t}`));
+      expect(parseComment(inThread(t)), t).toMatchObject({ kind: "command" });
+    }
+    expect(parseLink(inThread("link abc123"))).toBe("abc123");
+    // `help` is read bare anywhere, never given a slash; other words are not commands.
+    for (const t of ["help me with the parser", "approved it", "please approve", "/approve"]) expect(withSlash(t, THREAD_BARE_COMMANDS), t).toBeNull();
+    // Outside an item's thread nothing adds the slash: a bare item command is a request in plain words.
     expect(parseChatCommand("approve ship it")).toBeNull();
+    expect(parseChatCommand("reject duplicate emails")).toBeNull();
+  });
+
+  it("chatForm shows every command without its `/`, and leaves other text alone", () => {
+    expect(chatForm("- `/approve +paths <path>...` and `/verdict accept` alone; a `/revise` or `/reject`")).toBe(
+      "- `approve +paths <path>...` and `verdict accept` alone; a `revise` or `reject`",
+    );
+    expect(chatForm("/help")).toBe("help");
+    expect(chatForm("src/approve.ts and `factory link-code <user_id>` and /unknown")).toBe("src/approve.ts and `factory link-code <user_id>` and /unknown");
   });
 
   it("plain words that only start like a command are a request", () => {
@@ -101,17 +126,20 @@ describe("chat help", () => {
   it("outside an item's thread: the reads and the request, no item command and no write refused in chat", () => {
     const r = chatHelpReply(all, null);
     for (const f of ["`list`", "`show <id>`", "`users list`", "`settings list`", "`<request in plain words>`", "`help`"]) expect(r).toContain(f);
-    for (const f of ["/approve", "`merge`", "settings set", "users add", "`mode"]) expect(r).not.toContain(f);
+    for (const f of ["approve", "`merge`", "settings set", "users add", "`mode"]) expect(r).not.toContain(f);
+    expect(r).toContain("e.g. `@software-factory help`");
   });
 
   it("in an item's thread: the item commands that apply in its state, for a sender whose role allows them", () => {
     const r = chatHelpReply(all, at("spec_pending"));
-    expect(r).toContain("`/approve [notes]`");
-    expect(r).toContain("`/revise <feedback>`");
+    expect(r).toContain("`approve [notes]`");
+    expect(r).toContain("`revise <feedback>`");
+    // No slash form anywhere in the reply: the usages, the descriptions and the example.
+    expect(r).not.toMatch(/(^|[\s`(])\/[a-z]/);
     expect(r).not.toContain("`merge`");
     expect(r).not.toContain("<request in plain words>");
     expect(chatHelpReply(all, at("merge_pending"))).toContain("`merge`");
-    expect(chatHelpReply(reader, at("spec_pending"))).not.toContain("/approve");
+    expect(chatHelpReply(reader, at("spec_pending"))).not.toContain("approve");
     expect(chatHelpReply(reader, at("spec_pending"))).toContain("`list`");
   });
 });

@@ -419,20 +419,20 @@ One-time Slack app setup, details in [`docs/slack-setup.md`](docs/slack-setup.md
 
 Known gaps (2026-11-09; issues #479–#486): people's Slack replies are not shown on the item page, `/revise` on a PR is refused from Slack, commands get no 👀 reaction, and private channels (`G…`) do not work yet.
 
-In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention (`@software-factory /revise <feedback>`) or use the buttons.
+In Slack, a message that starts with `/` is taken by Slack itself, so type commands after a mention, with no slash (`@software-factory revise <feedback>`), or use the buttons.
 
 The factory's commands in Slack, from the same command table as the CLI (`@bot` is the mention of the bot). Each runs as the factory user the Slack account is linked to, with that user's stored role; an unlinked account gets one reply saying so, and only `/link` and `help` are answered for it. `list`, `show`, `users list` and `settings` reads reply with what the CLI prints, cut to Slack's limits with a note naming the CLI command that prints the whole text and, for `show <id>`, a link to the item's source. Item commands and `merge` store the CLI's command row, and the controller answers in the item's thread. `help` lists only the commands you may run where you ask it. A mention with any other words is a request in plain words: outside an item's thread it starts a work item, in an item's thread the factory suggests a command.
 
-In Slack a command follows a mention of the bot, so type `@software-factory /approve` (a leading `/` with no mention is taken by Slack itself). In an item's thread, `@software-factory approve` with no slash works too; outside one, the same words start a work item. `@software-factory /help` (or `help`) answers in the mention's thread: outside an item's thread with how to start work and `/link <code>`, in an item's thread with the commands that apply now, in the same words as `/help` on GitHub.
+In Slack a command follows a mention of the bot, in the item's thread and with no slash: `@software-factory approve`, `@software-factory revise <feedback>`, and so for every command (`retry`, `reject`, `resolve`, `budget`, `merge`, `verdict`, `standing`, `link`). The slash form after a mention (`@software-factory /approve`) still works. Outside an item's thread, a mention that starts with a command word and no slash is a request and starts a work item; there `link` keeps its slash (`@software-factory /link <code>`). A reply in an item's thread with no mention still needs the slash. `@software-factory help` answers in the mention's thread: outside an item's thread with how to start work and `/link <code>`, in an item's thread with the commands that apply now, in the same words as `/help` on GitHub but without the slash.
 
 - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
 - `@bot list`: as `factory task list`. Who: anyone.
 - `@bot show <id>`: as `factory task show <id>`. Who: anyone.
-- `@bot /approve [notes]`: as `factory approve <id> [notes]`, in the item's thread. Who: the owner and approvers.
-- `@bot /retry [text]`: as `factory retry <id> [text]`, in the item's thread. Who: the owner and approvers.
-- `@bot /revise <feedback>`: as `factory revise <id> <feedback>`, in the item's thread. Who: the owner and approvers.
-- `@bot /reject <reason>`: as `factory reject <id> <reason>`, in the item's thread. Who: the owner and approvers.
-- `@bot /resolve [notes]`: as `factory resolve <id> [notes]`, in the item's thread. Who: the owner and approvers.
+- `@bot approve [notes]`: as `factory approve <id> [notes]`, in the item's thread. Who: the owner and approvers.
+- `@bot retry [text]`: as `factory retry <id> [text]`, in the item's thread. Who: the owner and approvers.
+- `@bot revise <feedback>`: as `factory revise <id> <feedback>`, in the item's thread. Who: the owner and approvers.
+- `@bot reject <reason>`: as `factory reject <id> <reason>`, in the item's thread. Who: the owner and approvers.
+- `@bot resolve [notes]`: as `factory resolve <id> [notes]`, in the item's thread. Who: the owner and approvers.
 - `@bot merge`: as `factory merge <id>`, in the item's thread. Who: the owner and approvers (approve_merge).
 - `@bot users list`: as `factory users list`. Who: anyone.
 - `@bot users add <user_id> --role approver|requester`: as `factory users add <user_id> --role approver|requester`; refused in chat until #479, so use the CLI. Who: the local owner.

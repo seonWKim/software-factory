@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { type ChatCommand, parseChatCommand } from "../../core/command-table.js";
-import { parseComment, parseLink, withSlash } from "../../core/commands.js";
+import { THREAD_BARE_COMMANDS, parseComment, parseLink, withSlash } from "../../core/commands.js";
 import type { Logger } from "../../core/log.js";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItem } from "../../core/types.js";
@@ -107,7 +107,8 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * configured channels count, never the bot's own messages, edits, joins or other subtypes. A mention of the bot
  * starts a work item from its thread (`slack:<team>:<channel>:<thread ts>`); a mention followed by a command, a
  * reply in an item's thread and a button press are the same events a GitHub comment gives; a reply in any other
- * thread is not stored. After a mention in an item's thread, `approve` with no slash is `/approve`. A person's reply in an
+ * thread is not stored. After a mention in an item's thread, a command word with no slash is that command (`revise x`
+ * is `/revise x`, issue #541); outside one, the same words are a request. A person's reply in an
  * item's thread, a command too, is also kept on the item's thread, as the GitHub source keeps a comment, before its event is returned. A factory command from the command table (`list`, `show <id>`, `/approve` in an item's
  * thread, ...) is run here as the linked factory user (slack-commands.ts): what it stores is stored before any Slack
  * call, then its reply is posted; a failed post leaves the envelope unacked, so Slack sends it again and the keyed row
@@ -210,14 +211,15 @@ export class SlackSource implements StreamSource {
     // app_mention: a chat command (the command table's forms, src/core/command-table.ts) runs as the linked user;
     // `/link` or another command after the mention is that command; else a request from the thread. In an item's
     // thread the reply is kept first, whatever it is; the mention that starts an item (the thread root) is not.
-    // There a bare `approve` is `/approve` (BARE_COMMANDS, issue #528); outside one it is a request in plain words.
+    // There a command word with no slash is that command (THREAD_BARE_COMMANDS, issues #528 and #541), read as if
+    // typed with it; outside one it is a request in plain words.
     const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
     if (item && inThread) await this.keep(item, ts, user, said);
-    const typed = (item && inThread ? withSlash(said) : null) ?? said;
-    const chat = parseLink(said) === null ? parseChatCommand(typed) : null;
+    const typed = (item && inThread ? withSlash(said, THREAD_BARE_COMMANDS) : null) ?? said;
+    const chat = parseLink(typed) === null ? parseChatCommand(typed) : null;
     if (chat) return this.chat(chat, source, user, event_id, item);
-    if (parseLink(said) !== null || parseComment(said) !== null) {
-      const e = commentEvent(source, ts, who, said);
+    if (parseLink(typed) !== null || parseComment(typed) !== null) {
+      const e = commentEvent(source, ts, who, typed);
       return e ? { event: e, key } : null;
     }
     if (inThread && item) {
