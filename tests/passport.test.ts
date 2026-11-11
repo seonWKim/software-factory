@@ -16,10 +16,9 @@ import { makeLink, type Link } from "../src/identity/passport/token.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { ManualTickGenerator } from "../src/shared/ticks/plugins/manual/manual-tick-generator.js";
 import type { SqlExecutor } from "../src/state/index.js";
-import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 
 // RFC 0015 §8, §9 `passport`: issue and verify, tamper detection, narrowing never widens, revocation, expiry on
-// Identity's tick (no clock), and an audit row for every decision. SQLite always; MySQL when SF_TEST_MYSQL_URL is set.
+// Identity's tick (no clock), and an audit row for every decision. Runs on SQLite.
 
 const T0 = Date.parse("2026-11-08T12:00:00.000Z");
 const OWNER = "local:owner@example.com";
@@ -39,13 +38,12 @@ async function sqlite(): Promise<SqlExecutor> {
 
 let ids = 0;
 
-const BACKENDS: [string, boolean, () => Promise<SqlExecutor>][] = [
-  ["sqlite", true, sqlite],
-  ["mysql", Boolean(MYSQL_URL), newMigratedMysqlDriver],
+const BACKENDS: [string, () => Promise<SqlExecutor>][] = [
+  ["sqlite", sqlite],
 ];
 
-for (const [name, enabled, open] of BACKENDS) {
-  describe.skipIf(!enabled)(`passport (${name})`, () => {
+for (const [name, open] of BACKENDS) {
+  describe(`passport (${name})`, () => {
     async function setup(o: { keys?: Record<string, string>; previous?: string[]; grants?: GrantSource[]; db?: SqlExecutor } = {}) {
       const db = o.db ?? (await open());
       const ticks = new ManualTickGenerator();

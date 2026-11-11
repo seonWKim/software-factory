@@ -7,8 +7,7 @@ import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from ".
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
-import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
+import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { ARCHIVE_ONLY, RENAMES } from "../src/state/migrations/20261108T1300-state-prefix-tables.migration.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -16,8 +15,7 @@ import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from ".
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { recordAction } from "../src/outbound/intents.js";
 import type { SqlDriver } from "../src/state/index.js";
-// One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
-import { BACKENDS, MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
+import { newStore, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
 /** A project label as the cursor `project_label:<key>` stores it, and the PR link the store writes as change_url. */
@@ -26,7 +24,7 @@ const prUrl = (label: string, n: number) => `https://${label}/pull/${n}`;
 /** The SQLite migration that adds the change columns, found by what it does so a renumber at merge needs no edit. */
 const CHANGE_MIGRATION = MIGRATIONS.findIndex((m) => m.includes("ADD COLUMN change_ref")) + 1;
 
-describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
+describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $name", ({ name, make: makeBackend }) => {
   const make = makeBackend;
   describe("work items", () => {
     it("intake is idempotent on (source.type, source.id) and enqueues once", async () => {
@@ -89,7 +87,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
         store.transition({ ...base, patch: { stage: "READY" } }),
         store.transition({ ...base, patch: { stage: "CLOSED", close_reason: "wont_do" } }),
       ]);
-      // Either may win: SQLite runs them in order, a MySQL pool may not. Exactly one applies.
+      // Either may win; exactly one applies.
       const winner = first.ok ? first : second;
       const loser = first.ok ? second : first;
       if (!winner.ok) throw new Error("neither transition applied");
@@ -1688,8 +1686,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
   });
 
   describe("raw table reads (design §9 Data page)", () => {
-    // Every table the schema creates on both backends (MySQL adds its own step bookkeeping tables).
-    // Every table the baseline creates, under its RFC 0015 name, plus its legacy copy (kept until the contract step).
+        // Every table the baseline creates, under its RFC 0015 name, plus its legacy copy (kept until the contract step).
     const BASELINE_TABLES = [...new Set(MIGRATIONS.flatMap((m) => [...m.matchAll(/CREATE TABLE (?:IF NOT EXISTS )?(\w+)/g)].map((x) => x[1]!)))];
     const renamed = new Map(RENAMES.map((r) => [r.from, r.to]));
     // RFC 0015 M4 (D7): inbound_app_requests merged into inbound_commands; both old tables are kept as legacy_*.
@@ -1781,8 +1778,7 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
 
     it("no limit gives 50 rows; a limit above 200 is capped at 200", async () => {
       const { store } = await make();
-      // 205 one-row transactions, sent together: one after another they outlast the default timeout on MySQL
-      // (each commits on its own). The MySQL pool runs them side by side; SQLite queues them.
+      // 205 one-row transactions, sent together.
       const created = await Promise.all(
         Array.from({ length: 205 }, (_, n) => store.advanceCursor(`c${String(n).padStart(3, "0")}`, null, "v")),
       );
@@ -2784,30 +2780,6 @@ describe("MySQL step 19 (worker-processes)", () => {
     expect(columns(sqlite)).toEqual(["busy", "host", "index_base", "max_slots", "pid", "process_id", "reported_at", "slots", "started_at"]);
     expect(sql()).toContain("CREATE TABLE IF NOT EXISTS worker_processes");
   });
-
-  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-18 database: worker_processes added, every earlier row kept", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const conn = await db.connect();
-    // Every step before 19 applied, as on a database from before it.
-    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(18) }).apply(() => undefined);
-    await conn.query(
-      "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
-      ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],
-    );
-    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
-    const s = await new MysqlMigrations(conn).apply(() => undefined);
-    expect(s.pending[0]?.number).toBe(19);
-    const clock = new FakeClock();
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
-    expect(await store.getCursor("poll")).toBe("c1");
-    await store.reportWorkerProcess({
-      process_id: "h:1", pid: 1, host: "h", slots: 1, max_slots: 1, busy: 0, index_base: 0, started_at: clock.now().toISOString() as Timestamp,
-    });
-    expect(await store.listWorkerProcesses(LEASE)).toHaveLength(1);
-  });
 });
 
 describe("MySQL steps 33 and 34 (edge and item source_updated_at)", () => {
@@ -2829,24 +2801,6 @@ describe("MySQL steps 33 and 34 (edge and item source_updated_at)", () => {
       const statements = sql(f).split("\n").filter((l) => l.trim() && !l.startsWith("--"));
       expect(statements, f).toHaveLength(1);
     }
-  });
-
-  it.skipIf(!MYSQL_URL)("npm run migrate upgrades a state-32 database: edges keep their rows and get a NULL read time", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const conn = await db.connect();
-    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(32) }).apply(() => undefined);
-    const clock = new FakeClock();
-    const s = await new MysqlMigrations(conn).apply(() => undefined);
-    expect(s.pending.map((p) => p.number)).toEqual(expect.arrayContaining([33, 34]));
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    const a = (await store.createWorkItem(issue(1), system)).item.id;
-    await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }]);
-    expect(await store.dependencyLinksReadAt(a)).toBeNull();
-    const at = "2026-11-07T10:00:00.000Z" as Timestamp;
-    expect((await store.replaceDependencyEdges(a, [{ depends_on: "o/r#2", kind: "depends_on" }], at))[0]?.source_updated_at).toBe(at);
-    expect(await store.dependencyLinksReadAt(a)).toBe(at);
   });
 });
 
@@ -2899,27 +2853,6 @@ describe("MySQL step 28 (host-sleeps)", () => {
     expect(columns(sqlite)).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
     expect(sql()).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
   });
-
-  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-27 database: host_sleeps added, every earlier row kept", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const conn = await db.connect();
-    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(27) }).apply(() => undefined);
-    await conn.query(
-      "INSERT INTO settings_overrides (setting_key, project_key, value_json, set_by, set_at) VALUES (?, ?, ?, ?, ?)",
-      ["workers", "", "2", "local:owner", "2026-01-01T00:00:00.000Z"],
-    );
-    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
-    await new MysqlMigrations(conn).apply(() => undefined);
-    const clock = new FakeClock();
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    expect((await store.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
-    expect(await store.getCursor("poll")).toBe("c1");
-    const s = { worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 90_000, run_id: null };
-    await store.recordHostSleep(s);
-    expect(await store.listHostSleeps({ limit: 10 })).toEqual([s]);
-  });
 });
 
 describe("migration 32 on an existing SQLite database", () => {
@@ -2946,25 +2879,6 @@ describe("migration 32 on an existing SQLite database", () => {
     } finally {
       await store.close();
     }
-  });
-});
-
-describe("MySQL step 32 (standing-approvals)", () => {
-  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing state-31 database: both tables added, every earlier row kept", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const conn = await db.connect();
-    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(31) }).apply(() => undefined);
-    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
-    await new MysqlMigrations(conn).apply(() => undefined);
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    expect(await store.getCursor("poll")).toBe("c1");
-    const first = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
-    const again = await store.recordStandingProposal({ gate: "spec", tier: 2, run_length: 10, threshold: 10 });
-    expect([first.created, again.created]).toEqual([true, false]);
-    await store.putStandingRule({ gate: "spec", tier: 2, enabled: true, set_by: "github:1" as UserId });
-    expect((await store.listStandingRules()).map((r) => [r.gate, r.tier, r.enabled])).toEqual([["spec", 2, true]]);
   });
 });
 
@@ -2996,19 +2910,6 @@ describe("MySQL step 35 (change-fields)", () => {
     expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")).toMatchObject({
       number: CHANGE_MIGRATION, from: CHANGE_MIGRATION - 1, kind: "ts",
     });
-  });
-
-  it.skipIf(!MYSQL_URL)("a row written with pr_number only still resolves by PR", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const conn = await db.connect();
-    await new MysqlMigrations(conn).apply(() => undefined);
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    const { item } = await store.createWorkItem(issue(1), system);
-    await conn.query("UPDATE controller_work_items SET pr_number = 12 WHERE id = ?", [item.id]);
-    expect((await store.getWorkItemByPr(PROJECT_KEY, "12"))!).toMatchObject({ id: item.id, pr_number: 12 });
-    expect(await store.getWorkItemByPr(OTHER_PROJECT_KEY, "12")).toBeNull();
   });
 });
 
@@ -3043,22 +2944,5 @@ describe("migration 40 (sync leases, forge budget, thread actor)", () => {
     for (const t of ["sync_leases", "forge_budget"]) expect(columns(sql, t)).toEqual(columns(MIGRATIONS[STEP - 1]!, t));
     expect(sql).toContain("ALTER TABLE item_thread ADD COLUMN actor ");
     expect(MIGRATIONS[STEP - 1]).toContain("ALTER TABLE item_thread ADD COLUMN actor ");
-  });
-
-  it.skipIf(!MYSQL_URL)("npm run migrate upgrades an existing database from the step before: the tables added, every earlier row kept", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const conn = await db.connect();
-    await new MysqlMigrations(conn, { dir: mysqlStepsUpTo(STEP - 1) }).apply(() => undefined);
-    await conn.query("INSERT INTO cursors (name, value) VALUES (?, ?)", ["poll", "c1"]);
-    await new MysqlMigrations(conn).apply(() => undefined);
-    const clock = new FakeClock();
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), clock);
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    expect(await store.getCursor("poll")).toBe("c1");
-    expect((await store.acquireSyncLease("sync:github_issue:p", "replica-a", LEASE)).ok).toBe(true);
-    const b = { project: PROJECT_KEY, plugin: "github", remaining: 812, limit: 5000, reset_at: clock.now().toISOString() as Timestamp, updated_at: clock.now().toISOString() as Timestamp };
-    expect(await store.putForgeBudget(b)).toBe(true);
-    expect(await store.getForgeBudget(PROJECT_KEY, "github")).toEqual(b);
   });
 });

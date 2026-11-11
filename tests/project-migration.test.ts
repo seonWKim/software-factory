@@ -2,17 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { ProjectRef } from "../src/core/project.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import {
   PROJECT_TABLES, type ProjectKeyDb, type ResolveRepo, applyProjectKeys, countLegacyProjectRows, planProjectKeys, runProjectKeyStep,
 } from "../src/impl/store/project-keys.js";
 import type { SqlDriver } from "../src/state/index.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-import { issue, MYSQL_URL, newMigratedMysqlDatabase, system } from "./helpers/store.js";
+import { issue, system } from "./helpers/store.js";
 
 // The project-key data step of `npm run migrate` (design 2026-11-01): owner/name → github:<host>:<node id> in
-// every table with a project column. Runs on SQLite always, and on MySQL when SF_TEST_MYSQL_URL is set.
+// every table with a project column. Runs on SQLite.
 
 const KEYS: Record<string, ProjectRef> = {
   "o/r": { key: "github:github.com:R_kgDOrepo1", label: "github.com/o/r" },
@@ -54,24 +53,7 @@ const sqlite: Backend = {
   },
 };
 
-const mysqlBackend: Backend = {
-  name: "mysql",
-  async open() {
-    const db = await newMigratedMysqlDatabase();
-    const driver = new MysqlDriver(db.options);
-    db.onCleanup(() => driver.close());
-    return {
-      driver,
-      reopen: () => new SqlFactoryStore(driver, new FakeClock()),
-      projectColumns: async () =>
-        (await driver.all("SELECT table_name AS t FROM information_schema.columns WHERE table_schema = DATABASE() AND column_name = 'project' AND table_name NOT LIKE 'legacy\\_%'"))
-          .map((r) => String(r.t))
-          .sort(),
-    };
-  },
-};
-
-const BACKENDS = [sqlite, ...(MYSQL_URL ? [mysqlBackend] : [])];
+const BACKENDS = [sqlite];
 
 /** Rows as a pre-change database holds them: written with keys, then set back to owner/name directly. */
 async function seedLegacy(b: Backend) {

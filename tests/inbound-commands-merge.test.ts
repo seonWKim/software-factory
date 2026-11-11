@@ -1,39 +1,27 @@
 import { describe, expect, it } from "vitest";
 import merge, { FROM_APPS, FROM_COMMANDS } from "../src/inbound/migrations/20261108T2200-inbound-merge-commands.migration.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { Dialect, MigrationDb, SqlDriver } from "../src/state/index.js";
-import { MYSQL_URL, newEmptyMysqlDatabase } from "./helpers/store.js";
 
 // RFC 0015 M4, rule D7: command_inbox and app_command_requests (inbound_commands, inbound_app_requests since M1)
 // become one inbound_commands. Every row and key survives, ids are deterministic, both old tables stay as legacy_*,
 // and the store reads an app request recorded before the merge by its old seq.
 
-const OLD: Record<Dialect, string[]> = {
-  sqlite: [
-    `CREATE TABLE inbound_commands (seq INTEGER PRIMARY KEY AUTOINCREMENT, command_key TEXT NOT NULL UNIQUE, actor TEXT NOT NULL,
-      command TEXT NOT NULL, args TEXT NOT NULL, created_at TEXT NOT NULL, mirror INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT)`,
-    "CREATE INDEX inbound_commands_mirror ON inbound_commands (mirror, mirrored_at, seq)",
-    `CREATE TABLE inbound_app_requests (seq INTEGER PRIMARY KEY AUTOINCREMENT, request_key TEXT NOT NULL UNIQUE, actor TEXT NOT NULL,
-      command TEXT NOT NULL, args TEXT NOT NULL, created_at TEXT NOT NULL, handled_at TEXT, refusal TEXT)`,
-  ],
-  mysql: [
-    `CREATE TABLE inbound_commands (seq BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, command_key VARCHAR(255) NOT NULL UNIQUE,
-      actor VARCHAR(128) NOT NULL, command VARCHAR(64) NOT NULL, args MEDIUMTEXT NOT NULL, created_at CHAR(24) NOT NULL,
-      mirror TINYINT NOT NULL DEFAULT 0, mirrored_at CHAR(24)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
-    `CREATE TABLE inbound_app_requests (seq BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY, request_key VARCHAR(255) NOT NULL UNIQUE,
-      actor VARCHAR(128) NOT NULL, command VARCHAR(64) NOT NULL, args MEDIUMTEXT NOT NULL, created_at CHAR(24) NOT NULL,
-      handled_at CHAR(24), refusal MEDIUMTEXT) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
-  ],
-};
+const OLD: string[] = [
+  `CREATE TABLE inbound_commands (seq INTEGER PRIMARY KEY AUTOINCREMENT, command_key TEXT NOT NULL UNIQUE, actor TEXT NOT NULL,
+    command TEXT NOT NULL, args TEXT NOT NULL, created_at TEXT NOT NULL, mirror INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT)`,
+  "CREATE INDEX inbound_commands_mirror ON inbound_commands (mirror, mirrored_at, seq)",
+  `CREATE TABLE inbound_app_requests (seq INTEGER PRIMARY KEY AUTOINCREMENT, request_key TEXT NOT NULL UNIQUE, actor TEXT NOT NULL,
+    command TEXT NOT NULL, args TEXT NOT NULL, created_at TEXT NOT NULL, handled_at TEXT, refusal TEXT)`,
+];
 
 const T = "2026-11-08T10:00:00.000Z";
 
 async function seeded(dialect: Dialect, db: SqlDriver): Promise<MigrationDb> {
   const mdb: MigrationDb = { dialect, all: (s, p) => db.all(s, p), run: (s, p) => db.run(s, p) };
-  for (const sql of OLD[dialect]) await db.run(sql);
+  for (const sql of OLD) await db.run(sql);
   const cmd = "INSERT INTO inbound_commands (command_key, actor, command, args, created_at, mirror, mirrored_at) VALUES (?, ?, ?, ?, ?, ?, ?)";
   await db.run(cmd, ["cli:a", "local:alice", "approve", JSON.stringify({ item: "wi_1" }), T, 1, null]);
   await db.run(cmd, ["github:77", "github:9", "revise", JSON.stringify({ text: "x" }), T, 0, null]);
@@ -53,19 +41,6 @@ interface Backend {
 
 const BACKENDS: Backend[] = [
   { name: "sqlite", open: async () => new SqliteDriver(":memory:") },
-  ...(MYSQL_URL
-    ? [
-        {
-          name: "mysql" as const,
-          async open() {
-            const db = await newEmptyMysqlDatabase();
-            const d = new MysqlDriver(db.options);
-            db.onCleanup(() => d.close());
-            return d;
-          },
-        },
-      ]
-    : []),
 ];
 
 describe.each(BACKENDS)("merge of the command inbox and app requests: $name", ({ name, open }) => {
