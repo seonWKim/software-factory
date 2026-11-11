@@ -3,7 +3,6 @@
 // of what it read), and the kernel commits the decision: the hold's comment, then the conditional write (RFC 0015 §7).
 
 import { BUDGET_CHECKPOINT, DEFAULT_BUDGET_MIN_SAMPLE, checkpointComment, currentBudget, overBudget, suggestBudget, tierBudget } from "../../../core/budget.js";
-import { prNumber } from "../../../core/change-ref.js";
 import {
   RECURRING_FAILURE, type Actor, type RunInput, type RunKind, type StateChange, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch,
 } from "../../../core/types.js";
@@ -225,7 +224,7 @@ function budgetHold(it: WorkItem, d: NonNullable<Decision>, loaded: BudgetLoaded
   const comment = threadEntry(it, it.source, checkpointComment({
     tier,
     stage: next.stage,
-    pr_number: prNumber(next),
+    change_ref: next.change_ref,
     runs: over.runs,
     tokens: next.token_cost,
     budget,

@@ -2,7 +2,6 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
-import { prNumber } from "../../../core/change-ref.js";
 import {
   CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
   latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
@@ -265,7 +264,8 @@ export class CommandsUnit {
       return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
     }
     const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
-    const detail = { ...f.key, ...(local ? {} : { pr_number: prNumber(f) }) };
+    // The detail names the PR by its string ref, like the item (design 02-work-item); a local item has none.
+    const detail = { ...f.key, ...(local ? {} : { change_ref: f.change_ref }) };
     const limit = this.c.k.cfg.max_loops;
     if (it.loop_count + 1 >= limit) {
       const patch = { blocked_on: "human" as const, blocked_reason: "max_loops" };
