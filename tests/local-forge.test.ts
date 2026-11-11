@@ -1,5 +1,6 @@
 // The local forge (docs/plugins/forge.md): change refs are branch names with no link, it makes no read, write or
-// outbound call, and with no forge selected the verdict unit reads revert and fix-forward links through it.
+// outbound call, and with no forge selected the kernel reads revert and fix-forward links through it (compose
+// builds it through the registry and gives it as the controller's `links`).
 
 import { describe, expect, it } from "vitest";
 import type { WorkItem } from "../src/core/types.js";
@@ -68,12 +69,12 @@ describe("LocalForge: no reads, no writes, no outbound call", () => {
   });
 });
 
-async function setup(forge: LocalForge | null) {
+async function setup(forge: LocalForge | null, links?: LocalForge) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = new FakeSource();
   const controller = new ControllerRole({
-    store, source, ...(forge ? { forge } : {}), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner,
+    store, source, ...(forge ? { forge } : {}), ...(links ? { links } : {}), auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner,
   });
   /** A factory item waiting for its merge, its change named by its branch, with no change link. */
   const inReview = async (n: number): Promise<WorkItem> => {
@@ -106,7 +107,8 @@ describe("a local-forge flow", () => {
   });
 
   it("with no forge selected, links are read through the local forge: a branch-named revert and fix-forward, never #N", async () => {
-    const f = await setup(null);
+    const f = await setup(null, new LocalForge(config.branch_prefix));
+    expect(f.controller.kernel.forge).toBeNull();
     const orig = await f.inReview(1);
     const branch = orig.change_ref!;
     await f.controller.handleEvent({ kind: "change_merged", change_ref: branch, head_branch: branch, merge_sha: SHA, merger: alice });

@@ -56,6 +56,11 @@ export interface ControllerDeps {
    * comment or status then goes to the item's own source.
    */
   forge?: Forge | null;
+  /**
+   * Reads change refs (reverts, fix-forwards) when no forge is selected: compose gives the local forge, built through
+   * the registry but not selected (docs/plugins/forge.md). Ignored when `forge` is given: the forge reads its own.
+   */
+  links?: Pick<Forge, "parseLinks">;
   /** Authorizes commands from the forge (and every origin with no plugin of its own). */
   auth: AuthProvider;
   /**

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { build, loadConfig, localProject, selectsGitHub } from "../src/compose.js";
 import { readStoredProject } from "../src/core/project-labels.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
+import { LocalForge } from "../src/impl/forge/local-forge.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { runProcess } from "../src/impl/process/run-process.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
@@ -96,6 +97,10 @@ describe("build() with no GitHub plugin selected", () => {
       // #350's stored key: what the CLI's `task create` and the next start read.
       expect(await readStoredProject(built.store, { owner, name })).toEqual(built.project);
       await built.controller.tickIntake();
+      // No forge selected: none is the forge, and links are read through the local forge the registry builds.
+      expect(loaded.plugins.forge).toBeUndefined();
+      expect(built.controller.kernel.forge).toBeNull();
+      expect(built.controller.kernel.links).toBeInstanceOf(LocalForge);
     } finally {
       await built.close();
     }
@@ -105,6 +110,26 @@ describe("build() with no GitHub plugin selected", () => {
     await again.close();
     expect(lookups).toEqual([]);
     expect(seen.credentials).toBe(0);
+  });
+});
+
+describe("build() with a GitHub config", () => {
+  it("reads links through the github forge the kernel holds, and builds no local forge", async () => {
+    const { registry } = recordingRegistry();
+    let localForges = 0;
+    const counting = withPlugin(registry, "forge", "local", (c) => (localForges++, REGISTRY.forge.plugins.local!(c)));
+    const github = { ...SOLO, auth: "github", plugins: { ...SOLO.plugins, source: ["github-issues"], broker: "github" } };
+    const loaded = await loadConfig(root(github), { registry: counting });
+    const repoLookup = { repoIdentity: async (r: { owner: string; name: string }) => ({ node_id: "R_1", ...r, host: "github.com" }) };
+    const built = await build(loaded, { clock: new FakeClock(), repoLookup });
+    try {
+      expect(loaded.plugins.forge).toBe("github");
+      expect(built.controller.kernel.forge).not.toBeNull();
+      expect(built.controller.kernel.links).toBe(built.controller.kernel.forge);
+      expect(localForges).toBe(0);
+    } finally {
+      await built.close();
+    }
   });
 });
 

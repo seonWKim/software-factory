@@ -791,8 +791,9 @@ export async function build(
   for (const name of selectedSources(sel)) {
     sources.push(await createPlugin(registry, "source", name, { ...base, github, store, secrets, scanner, log: sourceLog, clock }));
   }
-  // PR events, PR facts, PR comments and PR status (issue #273); null when config selects no forge.
+  // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links only.
   const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
+  const links = forge ?? (await createPlugin(registry, "forge", "local", { ...base, github }));
   // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
   const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
   const authPlugin = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
@@ -861,8 +862,7 @@ export async function build(
   const controller = new ControllerRole({
     identity,
     store,
-    sources,
-    forge,
+    sources, forge, links,
     auth, local_auth, ...(slack_auth ? { slack_auth } : {}),
     service_auth: controllerServiceAuth(identity.passports),
     outbound_auth: outboundServiceAuth(identity.passports),
