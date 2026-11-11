@@ -433,7 +433,9 @@ export async function loadConfig(
   // broker's secrets (#592). A guard from any pack fails, and so does a project pack's plugin or tool on a shared store (mysql).
   const sharedStore = store.type === "mysql";
   const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
-  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
+  const plugins = withForgeDefault(
+    packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
+  );
   const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
@@ -1006,7 +1008,9 @@ export const DEFAULT_UI_PORT = 4310;
 export function uiPort(ui: FileConfig["ui"]): number {
   const port = ui?.port;
   if (port === undefined) return DEFAULT_UI_PORT;
-  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("ui.port must be an integer from 1 to 65535");
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("ui.port must be an integer from 1 to 65535");
+  }
   return port;
 }
 

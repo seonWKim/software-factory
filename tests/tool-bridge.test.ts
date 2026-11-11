@@ -266,7 +266,7 @@ describe("the output cap on granted tool results", () => {
   /** A note whose JSON result is over the cap, ending in a marker that only the full text holds. */
   const BIG = `${"n".repeat(RESULT_CAP_BYTES)}TAIL-ONLY-IN-FILE`;
 
-  it("writes a result over the cap to a file in the run folder; the agent gets its path and first 2 KB, never the full text", async () => {
+  it("caps a granted tool that is not a pack tool: a result over the cap goes to a file in the run folder; the agent gets its path and first 2 KB, never the full text", async () => {
     const workdir = mkdtempSync(join(tmpdir(), "sf-cap-"));
     const gate = new ToolGate({ broker: new FakeNoteBroker({ big: BIG }), scanner: cleanScanner }, { ...gateSpec(), sandbox: { workdir } });
     const r = await gate.call("test.read_note", { key: "big" });
@@ -286,6 +286,21 @@ describe("the output cap on granted tool results", () => {
     const again = await gate.call("test.read_note", { key: "big" });
     expect((again as { content: { path: string } }).content.path).not.toBe(content.path);
     expect(readdirSync(join(workdir, RESULT_DIR)).filter((f) => f.endsWith(".txt"))).toHaveLength(2);
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  it("cuts the 2 KB preview on a character boundary when the boundary falls inside a multibyte character", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "sf-cap-"));
+    const head = `{"key":"mb","note":"`;
+    // ASCII up to one byte before the preview's end, then 3-byte characters: the first one spans the boundary.
+    const note = `${"a".repeat(RESULT_PREVIEW_BYTES - head.length - 1)}${"€".repeat(RESULT_CAP_BYTES)}`;
+    const gate = new ToolGate({ broker: new FakeNoteBroker({ mb: note }), scanner: cleanScanner }, { ...gateSpec(), sandbox: { workdir } });
+    const r = await gate.call("test.read_note", { key: "mb" });
+    const { preview, path } = (r as { content: { preview: string; path: string } }).content;
+    expect(preview).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(preview, "utf8")).toBe(RESULT_PREVIEW_BYTES - 1);
+    expect(preview).toBe(JSON.stringify({ key: "mb", note }).slice(0, RESULT_PREVIEW_BYTES - 1));
+    expect(readFileSync(path, "utf8")).toBe(JSON.stringify({ key: "mb", note }));
     rmSync(workdir, { recursive: true, force: true });
   });
 

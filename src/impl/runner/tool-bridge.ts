@@ -86,14 +86,17 @@ export class ToolGate {
 
   /**
    * The output cap, after the egress scan: content whose text is over RESULT_CAP_BYTES is written whole to a file
-   * in the run folder, and the agent gets `{ truncated, path, bytes, preview }`, the preview its first 2 KB. With
+   * in the run folder, and the agent gets `{ truncated, path, bytes, preview }`, the preview its first 2 KB cut on a character boundary. With
    * no run folder, `path` is null and the rest of the text is dropped.
    */
   private async cap(name: string, content: unknown): Promise<ToolResult> {
     const text = typeof content === "string" ? content : JSON.stringify(content);
     const bytes = Buffer.from(text ?? "", "utf8");
     if (bytes.length <= RESULT_CAP_BYTES) return { ok: true, content };
-    const preview = bytes.subarray(0, RESULT_PREVIEW_BYTES).toString("utf8");
+    // Back off to a character's first byte, so the preview never ends in half a multibyte UTF-8 character.
+    let end = RESULT_PREVIEW_BYTES;
+    while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+    const preview = bytes.subarray(0, end).toString("utf8");
     const workdir = this.spec.sandbox?.workdir;
     let path: string | null = null;
     if (workdir !== undefined) {

@@ -1,5 +1,5 @@
 // G2 for pack tools (design 11-packs, issue #592). compose wraps the selected broker (and the local items' broker) in
-// this one, with the pack layers' tools (src/packs/pack-tools.ts). A pack tool's grant is `pack:tool:<name>`; its
+// this one, with the pack layers' tools (src/impl/broker/pack-tools.ts). A pack tool's grant is `pack:tool:<name>`; its
 // call runs here, in the worker, never in the agent's sandbox. Every call checks, in order: the run's lease, then the store's approval of
 // the entry's current description (`approvedEntry`, a read only, so a retried call checks again and writes nothing),
 // then that the approved description is the one this implementation runs. Only then is the credential read from the
