@@ -1727,6 +1727,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       "outbound_outbox",
       "outbound_requests",
       "runtime_hook_decisions",
+      "runtime_learned_settings", // learned settings (issue #497): src/runtime/migrations/20261111T1400-runtime-learned-settings
+      "runtime_learned_setting_changes",
     ];
 
     it("lists every table of the schema with its row count, columns, primary key and order", async () => {
@@ -2135,6 +2137,52 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       const { store } = await make();
       for (const v of ["1", "2", "3"]) await store.setSettingOverride({ key: "workers", project: "", value: v, actor });
       expect((await store.listSettingChanges(2)).map((c) => c.new_value)).toEqual(["3", "2"]);
+    });
+  });
+
+  describe("learned settings (20261111T1400-runtime-learned-settings)", () => {
+    const at = "2026-03-05T00:00:00.000Z" as Timestamp;
+    const learn = (expected: string | null, value: string, window_end = at) =>
+      ({ project: PROJECT_KEY, key: "max_diff_lines", expected, value, evidence_run_ids: ["r1", "r2", "r3"] as RunId[], window_end, actor: "system:improver" });
+
+    it("set stores the value with one audit row; get and list read it back", async () => {
+      const { store, clock } = await make();
+      expect(await store.getLearnedSetting(PROJECT_KEY, "max_diff_lines")).toBeNull();
+      expect(await store.listLearnedSettings()).toEqual([]);
+      const change = await store.setLearnedSetting(learn(null, "4000"));
+      expect(change).toMatchObject({
+        project: PROJECT_KEY, key: "max_diff_lines", old_value: null, new_value: "4000", evidence_run_ids: ["r1", "r2", "r3"], window_end: at,
+        actor: "system:improver", at: clock.now().toISOString(),
+      });
+      const row = { project: PROJECT_KEY, key: "max_diff_lines", value: "4000", updated_at: clock.now().toISOString() };
+      expect(await store.getLearnedSetting(PROJECT_KEY, "max_diff_lines")).toEqual(row);
+      await store.setLearnedSetting({ ...learn(null, "7"), project: OTHER_PROJECT_KEY });
+      const listed = await store.listLearnedSettings();
+      expect(listed).toContainEqual(row);
+      expect(listed.map((r) => r.project)).toEqual([PROJECT_KEY, OTHER_PROJECT_KEY].sort());
+    });
+
+    it("writes nothing when the stored value is not the expected one, or the window already has a row", async () => {
+      const { store } = await make();
+      await store.setLearnedSetting(learn(null, "4000"));
+      expect(await store.setLearnedSetting(learn(null, "3000", "2026-03-06T00:00:00.000Z" as Timestamp))).toBeNull();
+      expect(await store.setLearnedSetting(learn("4000", "3200"))).toBeNull();
+      expect(await store.listLearnedSettingChanges(10)).toHaveLength(1);
+      const next = await store.setLearnedSetting(learn("4000", "3200", "2026-03-06T00:00:00.000Z" as Timestamp));
+      expect(next).toMatchObject({ old_value: "4000", new_value: "3200" });
+      expect((await store.getLearnedSetting(PROJECT_KEY, "max_diff_lines"))?.value).toBe("3200");
+      expect((await store.listLearnedSettingChanges(10)).map((c) => c.new_value)).toEqual(["3200", "4000"]);
+    });
+
+    it("reset deletes the value with one audit row; reset with none writes nothing", async () => {
+      const { store } = await make();
+      expect(await store.resetLearnedSetting({ key: "max_diff_lines", project: PROJECT_KEY, actor: "local:owner" })).toBeNull();
+      await store.setLearnedSetting(learn(null, "4000"));
+      expect(await store.resetLearnedSetting({ key: "max_diff_lines", project: PROJECT_KEY, actor: "local:owner" })).toMatchObject({
+        old_value: "4000", new_value: null, evidence_run_ids: [], window_end: null, actor: "local:owner",
+      });
+      expect(await store.getLearnedSetting(PROJECT_KEY, "max_diff_lines")).toBeNull();
+      expect((await store.listLearnedSettingChanges(10)).map((c) => c.new_value)).toEqual([null, "4000"]);
     });
   });
 
