@@ -8,7 +8,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { crc32, deflateSync } from "node:zlib";
+import { crc32, deflateSync, inflateSync } from "node:zlib";
 
 /** The PNG sizes, in px. */
 export const SIZES = [16, 32, 64, 128, 256, 512, 1024];
@@ -196,6 +196,31 @@ export function encodePng(rgba, size) {
     chunk("IDAT", deflateSync(raw, { level: 9 })),
     chunk("IEND", Buffer.alloc(0)),
   ]);
+}
+
+/**
+ * A PNG written by encodePng back to `{ width, height, rgba }`. Compare pixels, not file bytes: deflate's output
+ * differs between zlib builds (macOS vs Linux) for the same image.
+ */
+export function decodePng(png) {
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  if (png[24] !== 8 || png[25] !== 6) throw new Error("decodePng reads only 8-bit RGBA");
+  const idat = [];
+  for (let at = 8; at < png.length; ) {
+    const len = png.readUInt32BE(at);
+    if (png.toString("ascii", at + 4, at + 8) === "IDAT") idat.push(png.subarray(at + 8, at + 8 + len));
+    at += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const row = width * 4 + 1;
+  if (raw.length !== row * height) throw new Error("decodePng: pixel data does not match the size");
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    if (raw[y * row] !== 0) throw new Error("decodePng reads only unfiltered rows");
+    raw.copy(rgba, y * width * 4, y * row + 1, (y + 1) * row);
+  }
+  return { width, height, rgba };
 }
 
 /** The PNG file name of one size. */
