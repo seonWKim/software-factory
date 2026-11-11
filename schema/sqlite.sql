@@ -1344,6 +1344,26 @@ CREATE TABLE runtime_hook_decisions (
     at           TEXT NOT NULL
   );
 
+CREATE TABLE runtime_learned_setting_changes (
+    seq               INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_key       TEXT NOT NULL,
+    setting_key       TEXT NOT NULL,
+    old_value         TEXT,
+    new_value         TEXT,
+    evidence_run_ids  TEXT NOT NULL,
+    window_end        TEXT,
+    actor             TEXT NOT NULL,
+    at                TEXT NOT NULL
+  );
+
+CREATE TABLE runtime_learned_settings (
+    project_key  TEXT NOT NULL,
+    setting_key  TEXT NOT NULL,
+    value_json   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    PRIMARY KEY (project_key, setting_key)
+  );
+
 CREATE TABLE runtime_schema_migrations (
     id            TEXT PRIMARY KEY,
     component     TEXT NOT NULL,
@@ -1625,6 +1645,8 @@ CREATE INDEX runs_work_item ON "legacy_runs" (work_item_id);
 CREATE INDEX runtime_child_restarts_at ON runtime_child_restarts (at);
 
 CREATE INDEX runtime_hook_decisions_subject ON runtime_hook_decisions (subject, seq);
+
+CREATE UNIQUE INDEX runtime_learned_setting_changes_window ON runtime_learned_setting_changes (project_key, setting_key, window_end);
 
 CREATE INDEX source_inbox_seq ON "legacy_source_inbox" (source_type, seq);
 

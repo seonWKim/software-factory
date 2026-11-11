@@ -1,7 +1,7 @@
-// The improve run (design §7, issues #306, #307, #308): a daily look back at failed runs. No agent: the failed
-// runs of a window are grouped by error code and normalized detail; each group of two or more runs gets one plain
-// model call (no tools) for a draft cause and fix; one report is stored. After the run, the controller files each
-// new group as an item (fileReport) or comments its new runs on the open item filed for it before.
+// The improve run (design §7, issues #306, #307, #308): a daily look back at failed runs, no agent. The project's failed
+// runs in a window are grouped by error code and normalized detail; each group of 2+ runs gets one plain model call (no
+// tools) for a draft; one report is stored for the learner (learnFromReport); the controller files its groups (fileReport).
+export { learnFromReport } from "./learned-settings.js";
 
 import { cyrb53 } from "./hash.js";
 import { PROTECTED_PATHS } from "./standing.js";
@@ -149,10 +149,9 @@ export async function pendingImprove(store: Pick<FactoryStore, "getWorkItemBySou
 }
 
 /**
- * The trigger step (design §7): reads the project's failed runs that finished since its last improve run was
- * queued (all of them before the first), applies improveTriggerDue, and queues one improve run with
- * triggerImproveKey when it is due. Nothing while an improve run is queued or running. Store state only: two
- * replicas on one store read the same last run and write the same key, so the store keeps one run.
+ * The trigger step (design §7): reads the project's failed runs finished since its last improve run was queued (all
+ * before the first), applies improveTriggerDue, and queues one run with triggerImproveKey when due; none while one is
+ * queued or running. Store state only: two replicas read the same last run and write the same key, so one run is kept.
  */
 export async function triggerImprove(
   d: { store: TriggerStore; clock: Clock },
@@ -163,16 +162,18 @@ export async function triggerImprove(
   const last = improves.at(-1) ?? null;
   const now = d.clock.now();
   const finished = await d.store.listRunsFinishedBetween(last?.created_at ?? (new Date(0).toISOString() as Timestamp), now.toISOString() as Timestamp);
-  const projects = new Map<WorkItemId, string | null>();
-  const mine: Run[] = [];
-  for (const r of finished.filter(reviewable)) {
-    if (!projects.has(r.work_item_id)) projects.set(r.work_item_id, (await d.store.getWorkItem(r.work_item_id))?.project ?? null);
-    if (projects.get(r.work_item_id) === project) mine.push(r);
-  }
+  const mine = await ofProject(d.store, finished.filter(reviewable), project);
   const why = improveTriggerDue(mine, now);
   if (!why) return null;
   const since = last?.created_at ?? mine.map((r) => r.finished_at!).sort()[0]!;
   return { ...(await enqueueImprove(d, project, { after: last?.id ?? null, since })), why };
+}
+
+/** The runs of `project`'s work items, in order: one item read per work item (design §7, reports are per project). */
+async function ofProject(store: Pick<FactoryStore, "getWorkItem">, runs: readonly Run[], project: string): Promise<Run[]> {
+  const projects = new Map<WorkItemId, string | null>();
+  for (const r of runs) if (!projects.has(r.work_item_id)) projects.set(r.work_item_id, (await store.getWorkItem(r.work_item_id))?.project ?? null);
+  return runs.filter((r) => projects.get(r.work_item_id) === project);
 }
 
 /**
@@ -287,7 +288,7 @@ export function parseDraft(v: unknown): { cause: string; fix: string; touches: s
 
 /** What the draft step needs; without `llm` or `prompt` no model is asked and groups carry no draft. */
 export interface ImproveDeps {
-  store: Pick<FactoryStore, "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport">;
+  store: Pick<FactoryStore, "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem">;
   storage: SharedStorage;
   scanner: EgressScanner;
   llm?: LLMProvider;
@@ -297,16 +298,15 @@ export interface ImproveDeps {
 }
 
 /**
- * The improve run's work: the failed runs finished inside its window, grouped, each group drafted, stored as its
- * one report. A run with no window in its input (none should have one) reports the 24 hours before it was
- * queued. Safe to run twice: a run whose report exists returns it with no model call, and the report is keyed by
- * the run, so a retry keeps the first.
+ * The improve run's work: the failed runs of the item's project finished inside its window, grouped, each group
+ * drafted, stored as its one report. A run with no window in its input reports the 24 hours before it was queued.
+ * Safe to run twice: a run whose report exists returns it with no model call; the report is keyed by the run.
  */
 export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, "project">): Promise<ImproveReport> {
   const existing = await d.store.getImproveReport(run.id);
   if (existing) return existing;
   const window = run.input?.improve ?? manualWindow(new Date(run.created_at));
-  const runs = await d.store.listRunsFinishedBetween(window.window_start, window.window_end);
+  const runs = await ofProject(d.store, await d.store.listRunsFinishedBetween(window.window_start, window.window_end), item.project);
   const { groups, patterns } = groupFailures(runs);
   const itemOf = new Map(runs.map((r) => [r.id, r.work_item_id]));
   const llm = d.llm;

@@ -12,6 +12,7 @@ import type { LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
 import type { MergeEvaluation } from "../core/merge-evaluation.js";
+import type { LearnedSettingsStore } from "../core/learned-settings.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -343,7 +344,7 @@ export interface SchemaVersion {
   latest: number;
 }
 
-export interface FactoryStore {
+export interface FactoryStore extends LearnedSettingsStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -777,8 +778,7 @@ export interface FactoryStore {
   /** Removes a non-owner user's row. */
   removeLocalUser(user_id: UserId): Promise<"removed" | "missing" | "owner">;
 
-  // Runtime settings overrides (design 2026-11-03, "Settings change at runtime"). The store keeps rows as they
-  // are given; checking a key or value is the caller's job (src/core/settings.ts).
+  // Runtime settings overrides (design 2026-11-03): rows as given; the caller checks keys and values (core/settings.ts).
 
   /** Every stored override, ordered by key, then project. Read-only. */
   listSettingOverrides(): Promise<SettingOverride[]>;

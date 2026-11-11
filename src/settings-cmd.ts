@@ -7,6 +7,7 @@ import { type ProjectRef, rekeyProjectSettings } from "./core/project.js";
 import { readProjectLabel } from "./core/project-labels.js";
 import {
   APPROVE_MERGE_KEYS,
+  GATE_SETTABLE_KEYS,
   MODES,
   PROJECT_SETTABLE_KEYS,
   SETTABLE_KEYS,
@@ -32,7 +33,8 @@ export const SETTINGS_TOP_WORDS = topWords(["settings"]);
 export const SETTINGS_USAGE = `usage: npm run factory -- settings <action>
 ${SETTINGS_COMMANDS.map((c) => `  ${cliUsageOf(c).slice("settings ".length).padEnd(42)}  ${c.does}`).join("\n")}
 --project: only for ${PROJECT_SETTABLE_KEYS.join(", ")}, and only with the configured repo's owner/name.
-${APPROVE_MERGE_KEYS.join(" and ")}, and a set or reset that loosens a tighten-only key: only with approve_merge on the project.`;
+${APPROVE_MERGE_KEYS.join(" and ")}, and a set or reset that loosens a tighten-only key: only with approve_merge on the project.
+reset <key> --project <owner/name> --learned: clear the value the improve run learned; only with approve_merge.`;
 
 export const MODE_USAGE = `usage: npm run factory -- ${cliUsageOf(MODE_COMMAND)}
   ${MODE_COMMAND.does}: needs approve_merge on the project, and writes one audit row`;
@@ -48,7 +50,7 @@ export function parseModeArgs(args: readonly string[]): SettingsAction | { error
 export type SettingsAction =
   | { action: "list" }
   | { action: "set"; key: string; value: string; project?: string }
-  | { action: "reset"; key: string; project?: string }
+  | { action: "reset"; key: string; project?: string; learned?: true }
   | { action: "history"; limit: number };
 
 const DEFAULT_HISTORY = 50;
@@ -60,7 +62,8 @@ export function parseSettingsArgs(args: readonly string[]): SettingsAction | { e
   const flags: Record<string, string> = {};
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
-    if (a === "--project" || a === "--limit") {
+    if (a === "--learned") flags[a] = "";
+    else if (a === "--project" || a === "--limit") {
       const v = rest[i + 1];
       if (v === undefined) return { error: `${a} needs a value` };
       flags[a] = v;
@@ -78,8 +81,10 @@ export function parseSettingsArgs(args: readonly string[]): SettingsAction | { e
       return { action, key: free[0]!, value: free[1]!, ...project };
     }
     case "reset":
-      if (free.length !== 1 || extra(["--project"])) return { error: "reset needs <key>" };
-      return { action, key: free[0]!, ...project };
+      if (free.length !== 1 || extra(["--project", "--learned"])) return { error: "reset needs <key>" };
+      if (flags["--learned"] === undefined) return { action, key: free[0]!, ...project };
+      if (flags["--project"] === undefined) return { error: "reset --learned needs --project <owner/name>: a learned value is per project" };
+      return { action, key: free[0]!, ...project, learned: true };
     case "history": {
       const raw = flags["--limit"];
       if (free.length > 0 || extra(["--limit"])) return { error: "history takes only --limit <n>" };
@@ -92,7 +97,7 @@ export function parseSettingsArgs(args: readonly string[]): SettingsAction | { e
 }
 
 export interface SettingsDeps {
-  store: Pick<FactoryStore, "listSettingOverrides" | "setSettingOverride" | "resetSettingOverride" | "listSettingChanges" | "getCursor">;
+  store: Pick<FactoryStore, "listSettingOverrides" | "setSettingOverride" | "resetSettingOverride" | "listSettingChanges" | "getCursor" | "resetLearnedSetting">;
   /** The config file's settings (compose.ts settingsBase): project blocks keyed by `owner/name`, as the file writes them. */
   base: SettingsBase;
   /** The configured repo. `--project` must be its `owner/name`. */
@@ -103,7 +108,7 @@ export interface SettingsDeps {
   actor: string;
   /**
    * Whether `actor` holds `approve_merge` on the configured project (design 08-settings): asked before a set or reset
-   * of `mode` or `auto_merge_max_tier`, and before one that loosens a tighten-only key; the refusal, or null. Solo: the local owner holds it with no setup. Absent: no check.
+   * of `mode` or `auto_merge_max_tier`, before one that loosens a tighten-only key, and before a reset of a learned value; the refusal, or null. Solo: the local owner holds it with no setup. Absent: no check.
    */
   mayApproveMerge?(): Promise<string | null>;
 }
@@ -123,7 +128,7 @@ export async function runSettings(deps: SettingsDeps, a: SettingsAction): Promis
       return history(deps, a.limit);
     case "set":
     case "reset":
-      return change(deps, a);
+      return a.action === "reset" && a.learned ? resetLearned(deps, a.key, a.project!) : change(deps, a);
   }
 }
 
@@ -164,11 +169,9 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   let ref: ProjectRef | undefined;
   if (a.project !== undefined) {
     if (!isProjectSettableKey(key)) return fail(`--project applies only to ${PROJECT_SETTABLE_KEYS.join(", ")}; ${key} is global`);
-    const ownerName = `${deps.repo.owner}/${deps.repo.name}`;
-    if (a.project !== ownerName) {
-      return fail(`project ${JSON.stringify(a.project)} does not match the configured repo's ID ${JSON.stringify(ownerName)} (repo.owner/repo.name)`);
-    }
-    ref = await deps.resolveProject();
+    const resolved = await projectRef(deps, a.project);
+    if ("ok" in resolved) return resolved;
+    ref = resolved;
   }
   const project = ref?.key ?? "";
 
@@ -234,6 +237,30 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
       `applies at ${(await loadSettingCatalog()).describe(key).applies}, with no restart`,
     ],
   };
+}
+
+/** The configured repo's ProjectRef for `--project`, or the refusal when it names another repo. */
+async function projectRef(deps: SettingsDeps, project: string): Promise<ProjectRef | SettingsResult> {
+  const ownerName = `${deps.repo.owner}/${deps.repo.name}`;
+  if (project !== ownerName) {
+    return fail(`project ${JSON.stringify(project)} does not match the configured repo's ID ${JSON.stringify(ownerName)} (repo.owner/repo.name)`);
+  }
+  return deps.resolveProject();
+}
+
+/**
+ * `settings reset <key> --project <owner/name> --learned` (design 08-settings): clears the value the daily improve run
+ * learned. Clearing it loosens the gate, so it always needs approve_merge; a refusal writes nothing. One audit row.
+ */
+async function resetLearned(deps: SettingsDeps, key: string, project: string): Promise<SettingsResult> {
+  if (!(GATE_SETTABLE_KEYS as readonly string[]).includes(key)) return fail(`--learned applies only to ${GATE_SETTABLE_KEYS.join(", ")}`);
+  const ref = await projectRef(deps, project);
+  if ("ok" in ref) return ref;
+  const refused = await deps.mayApproveMerge?.();
+  if (refused) return fail(`resetting the learned ${key} for ${ref.label} loosens it and needs approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+  const change = await deps.store.resetLearnedSetting({ key, project: ref.key, actor: deps.actor });
+  if (!change) return fail(`${key} has no learned value for ${ref.label}; nothing to reset`);
+  return { ok: true, lines: [`${key} for ${ref.label}: learned value ${change.old_value ?? ""} cleared; the project override, else the global value, applies`] };
 }
 
 async function list(deps: SettingsDeps): Promise<SettingsResult> {
