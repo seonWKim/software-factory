@@ -52,6 +52,7 @@ import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { AuditedAuthProvider, PluginIdentityProvider, controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
+import { type PackTool, packToolBrokers, withPackTools } from "./impl/broker/pack-tools.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
 import { RunPassports } from "./worker/passports/run-passports.js";
 import type { RepoRef } from "./impl/github/github-client.js";
@@ -320,8 +321,9 @@ export interface Loaded {
   plugins: Selection;
   /** Where plugin names resolve: the built-in REGISTRY (unless a test passes another) plus the packs' plugins. */
   registry: Registry;
-  /** The pack layers that are on, in order (design 11-packs.md): where prompts, skills and pack plugins came from. */
+  /** The pack layers that are on, in order (design 11-packs.md): where prompts, skills, pack plugins and pack_tools (#592) came from. */
   packs: readonly Pack[];
+  pack_tools: readonly PackTool[];
   /** The checked `permissions.grants`: grant plugin names, in config order. */
   grants: readonly string[];
   /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
@@ -427,13 +429,12 @@ export async function loadConfig(
   // The pack layers (design 11-packs.md): base (the code root), org (`packs.org`), project (`.factory/` in the
   // repo's main checkout) and learned (under the state dir). A missing layer is off.
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
-  // Their plugins join a copy of the registry for this load only; REGISTRY never changes. A guard from any pack
-  // fails, and so does a project pack's plugin on a shared store (mysql), naming the file.
+  // Their plugins join a copy of the registry for this load only (REGISTRY never changes), their tools' credentials as the selected
+  // broker's secrets (#592). A guard from any pack fails, and so does a project pack's plugin or tool on a shared store (mysql).
   const sharedStore = store.type === "mysql";
-  const registry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
-  const plugins = withForgeDefault(
-    registry, selectPlugins(registry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
-  );
+  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
+  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
+  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
   if (!local) await checkGitHubSettings(file.github);
@@ -504,7 +505,7 @@ export async function loadConfig(
   // Each prompt through the pack layers, placeholders filled after the merge (design 11-packs.md). A required
   // prompt no layer has fails startup; owner-defaults is appended to triage.
   const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain));
-  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, grants, stats, models, model_by };
+  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, pack_tools, grants, stats, models, model_by };
 }
 
 /**
@@ -818,9 +819,10 @@ export async function build(
   const tool_grants = toolGrantsConfig(loaded.file.tool_grants, broker, sel.broker);
   // Local items take the local broker and sandbox, by their source type, never the selected forge's (design 05-sources).
   const unguardedLocal = await p.localRoute({ broker, sandbox }, brokerDeps);
-  // G2 with run passports: every broker the worker pool or an agent's granted tools reach checks the run passport.
+  // G2 with run passports and pack tool approvals (#592): every broker the worker pool or an agent's granted tools reach checks both.
+  const packTools = packToolBrokers(loaded.pack_tools, tool_grants, { db: storeSql(store), store, secrets, autoApproveReadOnly: loaded.config.packs_auto_approve_read_only === true });
   const passports = new RunPassports(identity.passports);
-  const guard = (b: ToolBroker): ToolBroker => new PassportToolBroker(b, { checker: identity.passports, passportOf: (run) => passports.passportOf(run) });
+  const guard = (b: ToolBroker): ToolBroker => new PassportToolBroker(packTools(b), { checker: identity.passports, passportOf: (run) => passports.passportOf(run) });
   const local = { ...unguardedLocal, broker: guard(unguardedLocal.broker) };
   const guarded = guard(broker);
   const runner = await p.runner(sandbox, secrets, { broker: guarded, scanner });
@@ -1004,9 +1006,7 @@ export const DEFAULT_UI_PORT = 4310;
 export function uiPort(ui: FileConfig["ui"]): number {
   const port = ui?.port;
   if (port === undefined) return DEFAULT_UI_PORT;
-  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("ui.port must be an integer from 1 to 65535");
-  }
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error("ui.port must be an integer from 1 to 65535");
   return port;
 }
 

@@ -32,11 +32,14 @@ import { loadSettingCatalog } from "../src/runtime/index.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { writePackApproval } from "../src/ui/packs-api.js";
 import { Worker } from "../src/worker/index.js";
-import { PACK_CREDENTIAL_IN_RESULT, PACK_NOT_APPROVED, type PackTool, PackToolBroker } from "../src/impl/broker/pack-tool-broker.js";
-import { ToolGate, bridgeMcpConfig } from "../src/impl/runner/tool-bridge.js";
+import { PACK_CREDENTIAL_IN_RESULT, PACK_NOT_APPROVED, PackToolBroker } from "../src/impl/broker/pack-tool-broker.js";
+import type { PackTool } from "../src/impl/broker/pack-tools.js";
+import { RESULT_CAP_BYTES, RESULT_DIR, RESULT_PREVIEW_BYTES, ToolGate, bridgeMcpConfig } from "../src/impl/runner/tool-bridge.js";
+import type { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
+import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import { buildAgentEnv } from "../src/impl/runner/claude-code-runner.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
+import { type Secret, type SecretName, type SecretStore, secretName } from "../src/interfaces/secret-store.js";
 import type { Run, RunId, UserId, WorkItemId, WorkerId } from "../src/core/types.js";
 import { ScriptedLLM, ScriptedRunner } from "./helpers/scripted-runner.js";
 
@@ -547,12 +550,12 @@ describe("packs: approvals, the pin and the grant check", () => {
     const now = () => clock.now().toISOString();
     const entries = new PackEntriesStore(store.db, now);
     const approvals = new PackApprovalsStore(store.db, now);
-    /** Stores `descriptor` as a pending tool, as `pack add` would; returns its description_hash. */
-    const add = async (descriptor: Record<string, unknown>) => {
+    /** Stores `descriptor` as a pending tool (or `kind`), as `pack add` would; returns its description_hash. */
+    const add = async (descriptor: Record<string, unknown>, kind: "tool" | "mcp_server" = "tool") => {
       const canonical = canonicalJson(descriptor as never);
       const description_hash = createHash("sha256").update(canonical).digest("hex");
       const credential_name = typeof descriptor.credential === "string" ? descriptor.credential : null;
-      await entries.insert({ kind: "tool", name: String(descriptor.name), description_hash, descriptor: canonical, credential_name, added_by: ME });
+      await entries.insert({ kind, name: String(descriptor.name), description_hash, descriptor: canonical, credential_name, added_by: ME });
       clock.advance(1000);
       return description_hash;
     };
@@ -565,7 +568,7 @@ describe("packs: approvals, the pin and the grant check", () => {
   /** One triage run of an item through a Worker with `grants` for triage; the run as stored, and the fake runner and broker. */
   async function runWith(s: Awaited<ReturnType<typeof open>>, grants: readonly string[], extra: Partial<FactoryConfig> = {}) {
     const { item } = await s.store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: `t-${grants.join()}` } });
-    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }) });
+    const runner = Object.assign(new FakeRunner({ triage: () => ({ output: triageSpec }) }), { exposes_tools: true });
     const broker = new FakeBroker();
     const worker = new Worker({
       id: "w1" as WorkerId, store: s.store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(), clock: s.clock,
@@ -576,24 +579,33 @@ describe("packs: approvals, the pin and the grant check", () => {
     return { run: run!, runner, broker };
   }
 
-  it("a granted but unapproved entry is refused, an approved but ungranted one is never listed, and both is not_started", async () => {
+  it("a granted but unapproved entry is refused, an approved but ungranted one is never listed, and both joins the broker tools", async () => {
     const s = await open();
     const hash = await s.add(READER);
     expect(await s.check(["test.read_note", GRANT])).toEqual({ broker: ["test.read_note"], refused: [{ grant: GRANT, reason: "not_approved" }] });
     expect(await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" })).toMatchObject({ ok: true, ref: { description_hash: hash } });
     expect(await s.check(["test.read_note"])).toEqual({ broker: ["test.read_note"], refused: [] });
-    expect(await s.check([GRANT])).toEqual({ broker: [], refused: [{ grant: GRANT, reason: "not_started" }] });
+    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], refused: [] });
     expect(await s.check(["pack:tool:missing"])).toEqual({ broker: [], refused: [{ grant: "pack:tool:missing", reason: "no_entry" }] });
   });
 
-  it("a run that passes both checks is refused with not_started: no agent, no process, no tool call", async () => {
+  it("an approved, granted tool reaches the agent's tool grants", async () => {
     const s = await open();
     await s.add(READER);
     await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
+    const { runner } = await runWith(s, ["test.read_note", GRANT]);
+    expect(runner.specs.map((spec) => spec.tool_grants)).toEqual([["test.read_note", GRANT]]);
+  });
+
+  it("an MCP server that passes both checks is refused with not_started: no agent, no process, no tool call", async () => {
+    const s = await open();
+    const SERVER = "pack:mcp_server:docs-reader";
+    await s.add(READER, "mcp_server");
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-reader" });
     const starters = [childProcess.spawn, childProcess.spawnSync, childProcess.exec, childProcess.execSync, childProcess.execFile, childProcess.execFileSync, childProcess.fork];
     for (const f of starters) vi.mocked(f).mockClear();
-    const { run, runner, broker } = await runWith(s, [GRANT]);
-    expect(run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${GRANT} not_started` });
+    const { run, runner, broker } = await runWith(s, [SERVER]);
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${SERVER} not_started` });
     expect(runner.specs).toEqual([]);
     expect(starters.map((f) => vi.mocked(f).mock.calls.length)).toEqual(starters.map(() => 0));
     expect([broker.calls, broker.preflights, broker.stores]).toEqual([[], [], []]);
@@ -603,7 +615,7 @@ describe("packs: approvals, the pin and the grant check", () => {
     const s = await open();
     const first = await s.add(READER);
     await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
-    expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_started" }]);
+    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], refused: [] });
     const second = await s.add({ ...READER, description: "Reads and edits the team docs." });
     expect(second).not.toBe(first);
     expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
@@ -614,7 +626,7 @@ describe("packs: approvals, the pin and the grant check", () => {
     await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader", hash: first.slice(0, 12) });
     expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
     await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
-    expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_started" }]);
+    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], refused: [] });
   });
 
   it("the setting packs.auto_approve_read_only is a review-only worker boolean, default false, and off unless the config says true", async () => {
@@ -633,12 +645,11 @@ describe("packs: approvals, the pin and the grant check", () => {
     await s.add({ name: "writer", description: "Writes docs." });
     await s.add({ name: "not-read-only", description: "Reads docs.", read_only: "true" });
     const grants = [GRANT, "pack:tool:issue-tracker", "pack:tool:writer", "pack:tool:not-read-only"];
-    expect((await s.check(grants, true)).refused.map((r) => r.reason)).toEqual(["not_started", "not_approved", "not_approved", "not_approved"]);
+    expect(await s.check(grants, true)).toEqual({ broker: [GRANT], refused: grants.slice(1).map((grant) => ({ grant, reason: "not_approved" })) });
     // Off (the default): none is auto-approved, and no row was written either way.
     expect((await s.check(grants, false)).refused.map((r) => r.reason)).toEqual(["not_approved", "not_approved", "not_approved", "not_approved"]);
     expect(await s.rows()).toEqual([]);
-    const { run } = await runWith(s, [GRANT], { packs_auto_approve_read_only: true });
-    expect(run.outcome).toMatchObject({ status: "failed", detail: `pack tools refused: ${GRANT} not_started` });
+    expect((await runWith(s, [GRANT], { packs_auto_approve_read_only: true })).runner.specs.map((spec) => spec.tool_grants)).toEqual([[GRANT]]);
   });
 
   it("an approve or revoke goes through AuthProvider.authorize with approve_tool and writes one row with the user ID and hash; a refused one writes nothing", async () => {
@@ -771,7 +782,7 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     /** The tool's call function: records each call, and the credential it was given. */
     const reached: { args: unknown; credential: string | null }[] = [];
     const tool: PackTool = {
-      name: NAME, description_hash, description: DESCRIPTOR.description, input_schema: { type: "object" }, read_only: true,
+      name: NAME, description_hash, description: DESCRIPTOR.description, input_schema: { type: "object" }, read_only: true, credential_name: secretName("TRACKER_TOKEN"),
       async call(args, credential) {
         reached.push({ args, credential: credential?.reveal() ?? null });
         return { ok: true, content: opts.echo ? { auth: credential?.reveal() } : { issues: ["#1 open"] } };
@@ -807,12 +818,12 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     await s.approvals.record(s.ref, "approve", ME);
     const other = new PackToolBroker(new FakeBroker(), {
       db: s.store.db, store: { getRun: async () => null }, secrets: s.secrets, autoApproveReadOnly: false,
-      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, call: async () => ({ ok: true, content: 1 }) }],
+      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, credential_name: null, call: async () => ({ ok: true, content: 1 }) }],
     });
     expect(await other.call(s.ctx, GRANT, {})).toMatchObject({ ok: false, error_code: "lease_lost" });
     const stale = new PackToolBroker(new FakeBroker(), {
       db: s.store.db, store: { getRun: async () => ({ id: "run_p", work_item_id: "wi_p", status: "running", lease: { token: 3 } }) as unknown as Run }, secrets: s.secrets, autoApproveReadOnly: false,
-      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, call: async () => { throw new Error("reached"); } }],
+      tools: [{ name: NAME, description_hash: "0".repeat(64), description: "x", input_schema: {}, read_only: true, credential_name: null, call: async () => { throw new Error("reached"); } }],
     });
     expect(await stale.call(s.ctx, GRANT, {})).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
     expect(s.reached).toEqual([]);
@@ -858,5 +869,91 @@ describe("packs: the pack tool broker (approval before the call, no credential t
     expect(seen.join("\n")).toContain(PACK_CREDENTIAL_IN_RESULT);
     expect(seen.join("\n")).toContain("#1 open");
     for (const text of [...seen, ...logged]) expect(text).not.toContain(CREDENTIAL);
+  });
+
+  /** A project pack with the tracker's descriptor and its module; the module records each call on globalThis. */
+  function composedFixture(config: Record<string, unknown>, descriptor: Record<string, unknown> = DESCRIPTOR) {
+    const f = fixture(config);
+    write(join(f.codeRoot, "secrets", ".env"), `GITHUB_TOKEN=gh\nTRACKER_TOKEN=${CREDENTIAL}\n`);
+    write(join(f.project, "tools", "tracker.json"), JSON.stringify(descriptor));
+    write(join(f.project, "tools", "tracker.tool.js"), [
+      "export default async function (args, credential) {",
+      "  (globalThis.__sfPackToolCalls ??= []).push({ args, credential: credential ? credential.reveal() : null });",
+      `  return { ok: true, content: { issues: ["#1 open"], ...(args && args.big ? { body: "b".repeat(${RESULT_CAP_BYTES}) + "TAIL-ONLY-IN-FILE" } : {}) } };`,
+      "}",
+      "",
+    ].join("\n"));
+    return f;
+  }
+
+  it("a composed factory serves a pack layer's tool: refused until approved, capped, and its credential reaches only the tool", async () => {
+    const calls: { args: unknown; credential: string | null }[] = [];
+    (globalThis as { __sfPackToolCalls?: unknown }).__sfPackToolCalls = calls;
+    const logged: string[] = [];
+    for (const m of ["log", "info", "warn", "error"] as const) vi.spyOn(console, m).mockImplementation((...a: unknown[]) => void logged.push(a.map(String).join(" ")));
+    const f = composedFixture({ tool_grants: { triage: [GRANT] } });
+    const loaded = await load(f.codeRoot);
+    // The credential is the selected broker's secret: the SecretStore loads it, and setup lists it.
+    expect(loaded.registry.broker.secrets[loaded.plugins.broker]!.map((d) => d.name)).toContain("TRACKER_TOKEN");
+    const built = await build(loaded, { clock: new FakeClock(new Date("2026-11-11T18:00:00.000Z")), repoLookup: fakeRepoLookup });
+    try {
+      const d = (built.worker as unknown as { d: WorkerDeps }).d;
+      const broker = (d.broker as PassportToolBroker).inner;
+      expect(broker).toBeInstanceOf(PackToolBroker);
+      expect((d.local!.broker as PassportToolBroker).inner).toBeInstanceOf(PackToolBroker);
+      expect(broker.listTools([GRANT]).map((t) => t.name)).toEqual([GRANT]);
+      const db = storeSql(built.store);
+      const now = () => built.clock.now().toISOString();
+      const [added] = await addPack({ path: f.project, store: new PackEntriesStore(db, now), scanner: cleanScanner, added_by: ME });
+      expect(added).toMatchObject({ outcome: "stored", name: NAME });
+      await built.store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: "t1" } });
+      const run = (await built.store.claimRun({ worker_id: "w1" as WorkerId, kinds: ["triage"], lease_ms: 60_000 }))!;
+      const spec: AgentRunSpec = {
+        run_id: run.id, work_item_id: run.work_item_id, role: "triage", sandbox: { id: "s", workdir: temp("sf-pack-composed-run-") },
+        system_prompt: loaded.prompts.triage, prompt: "Look up the tracker.", tools: [], tool_grants: [GRANT], lease_token: run.lease!.token,
+        env_allowlist: { SF_WORKER_INDEX: "0" }, deny_paths: [], writable_paths: [], model_class: "cheap", timeout_ms: 30_000, signal: new AbortController().signal,
+      };
+      const gate = new ToolGate({ broker, scanner: cleanScanner }, spec);
+      // Stored but not approved: refused twice, the tool's call function never reached, nothing written.
+      expect(await gate.call(GRANT, { q: "a" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+      expect(await gate.call(GRANT, { q: "a" })).toMatchObject({ ok: false, error_code: PACK_NOT_APPROVED });
+      expect(calls).toEqual([]);
+      expect(await db.all("SELECT * FROM ext_packs_approvals")).toEqual([]);
+      await new PackApprovalsStore(db, now).record({ kind: "tool", name: NAME, description_hash: (added as { description_hash: string }).description_hash }, "approve", ME);
+      const small = await gate.call(GRANT, { q: "a" });
+      expect(small).toEqual({ ok: true, content: { issues: ["#1 open"] } });
+      expect(calls).toEqual([{ args: { q: "a" }, credential: CREDENTIAL }]);
+      // Over the cap: the full text is in a file in the run folder; the agent gets its path and first 2 KB only.
+      const big = await gate.call(GRANT, { big: true });
+      const content = (big as { content: { path: string; preview: string } }).content;
+      expect(content.path.startsWith(join(spec.sandbox.workdir, RESULT_DIR))).toBe(true);
+      expect(readFileSync(content.path, "utf8")).toContain("TAIL-ONLY-IN-FILE");
+      expect(Buffer.byteLength(content.preview)).toBe(RESULT_PREVIEW_BYTES);
+      expect(JSON.stringify(big)).not.toContain("TAIL-ONLY-IN-FILE");
+      // The credential grep: agent env, MCP config, prompts, results, logs and every store row.
+      const tables = await db.all("SELECT name FROM sqlite_master WHERE type = 'table'");
+      const rows = await Promise.all(tables.map((t) => db.all(`SELECT * FROM "${String(t.name)}"`)));
+      const seen = [
+        JSON.stringify(buildAgentEnv(spec, { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "oauth-x" }, { home: "/h", claudeConfigDir: "/c", path: "/usr/bin" })),
+        JSON.stringify(bridgeMcpConfig("/tmp/sf-tools-x/s")), JSON.stringify(loaded.prompts), spec.system_prompt, spec.prompt,
+        JSON.stringify(gate.list()), JSON.stringify([small, big]), JSON.stringify(rows), ...logged,
+      ];
+      expect(JSON.stringify(rows)).toContain(NAME);
+      for (const text of seen) expect(text).not.toContain(CREDENTIAL);
+    } finally {
+      await built.close();
+      vi.restoreAllMocks();
+      delete (globalThis as { __sfPackToolCalls?: unknown }).__sfPackToolCalls;
+    }
+  });
+
+  it("startup refuses a pack tool grant with no tool module or a tool that is not read-only, and a module with no descriptor", async () => {
+    const missing = fixture({ tool_grants: { triage: ["pack:tool:nope"] } });
+    await expect(build(await load(missing.codeRoot), { clock: new FakeClock(), repoLookup: fakeRepoLookup })).rejects.toThrow(/grants pack:tool:nope, but no pack layer has a tools\/\*\.tool\.js/);
+    const writer = composedFixture({ tool_grants: { triage: [GRANT] } }, { ...DESCRIPTOR, read_only: false });
+    await expect(build(await load(writer.codeRoot), { clock: new FakeClock(), repoLookup: fakeRepoLookup })).rejects.toThrow(/grants pack:tool:issue-tracker, which is not read-only/);
+    const lone = fixture();
+    write(join(lone.project, "tools", "lone.tool.js"), "export default async () => ({ ok: true, content: 1 });\n");
+    expect((await loadError(lone.codeRoot)).message).toContain(`pack tool ${join(lone.project, "tools", "lone.tool.js")}: needs its descriptor`);
   });
 });

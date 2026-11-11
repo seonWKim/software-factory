@@ -1,5 +1,6 @@
-// G2 for pack tools (design 11-packs, issue #592). A pack tool's grant is `pack:tool:<name>`; its call runs here, in
-// the worker, never in the agent's sandbox. Every call checks, in order: the run's lease, then the store's approval of
+// G2 for pack tools (design 11-packs, issue #592). compose wraps the selected broker (and the local items' broker) in
+// this one, with the pack layers' tools (src/packs/pack-tools.ts). A pack tool's grant is `pack:tool:<name>`; its
+// call runs here, in the worker, never in the agent's sandbox. Every call checks, in order: the run's lease, then the store's approval of
 // the entry's current description (`approvedEntry`, a read only, so a retried call checks again and writes nothing),
 // then that the approved description is the one this implementation runs. Only then is the credential read from the
 // SecretStore and the tool's call function reached. A refusal never reaches it. Any other tool name goes to `inner`.
@@ -9,21 +10,9 @@ import { type Secret, type SecretStore, secretName } from "../../interfaces/secr
 import type { ToolBroker, ToolCallContext, ToolDescriptor, ToolResult } from "../../interfaces/tool-broker.js";
 import { packGrantName } from "../../packs/pack-approvals.store.js";
 import { approvedEntry } from "../../packs/pack-grants.js";
+import type { PackTool } from "./pack-tools.js";
 import type { SqlDriver } from "../../state/index.js";
 import { grantedTools, leaseLost } from "./tool-broker-shared.js";
-
-/** One pack tool's implementation, as the worker holds it. */
-export interface PackTool {
-  /** The entry's name; the tool is listed and granted as `pack:tool:<name>`. */
-  readonly name: string;
-  /** The description_hash of the descriptor this implementation runs: it runs only while that one is approved and current. */
-  readonly description_hash: string;
-  readonly description: string;
-  readonly input_schema: Record<string, unknown>;
-  readonly read_only: boolean;
-  /** The call function. Gets the entry's credential here, in the worker, and nowhere else. */
-  call(args: unknown, credential: Secret | null): Promise<ToolResult>;
-}
 
 /** The error codes a pack tool call returns when the broker, not the tool, answers. */
 export const PACK_NOT_APPROVED = "not_approved";
