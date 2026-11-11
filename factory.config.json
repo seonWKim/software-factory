@@ -6,6 +6,9 @@
     "install_command": ["npm", "ci"], "test_command": ["npm", "test"],
     "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]]
   },
+  "toolchain": {
+    "warm_command": ["sh", "-c", "npm ci && if [ -f node_modules/electron/install.js ]; then node node_modules/electron/install.js; fi"]
+  },
   "intake_label": "factory",
   "branch_prefix": "factory/",
   "dials": { "spec_gate_min_tier": 1, "auto_merge_max_tier": 0 },
