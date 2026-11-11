@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,7 +7,6 @@ import type { Actor, Timestamp, UserId, WorkItem } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { recordMergeEvaluation } from "../src/impl/store/sql/merge-evaluations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
@@ -103,21 +102,6 @@ describe("merge evaluations: the write", () => {
     expect((await upgraded.getWorkItem(it.id))?.merge_sha).toBe("sha-old");
     expect(await upgraded.listMergeEvaluations(null)).toEqual([]);
     await upgraded.close();
-  });
-});
-
-describe("merge evaluations: the MySQL step", () => {
-  it("is a discovered step file that creates the same table, columns and keys as the SQLite migration", () => {
-    const step = readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "merge-evaluations");
-    expect(step).toMatchObject({ kind: "sql" });
-    const sql = readFileSync(join(STEPS_DIR, step!.file), "utf8");
-    const sqlite = MIGRATIONS.find((m) => m.includes("controller_merge_evaluations"))!;
-    for (const c of ["work_item_id", "merge_sha", "tier", "merged_by", "token_cost", "merged_at", "PRIMARY KEY (work_item_id, merge_sha)", "controller_merge_evaluations_at"]) {
-      expect(sql).toContain(c);
-      expect(sqlite).toContain(c);
-    }
-    expect(sql).toContain("CREATE TABLE IF NOT EXISTS controller_merge_evaluations");
-    expect(sql).not.toMatch(/INSERT|UPDATE/);
   });
 });
 

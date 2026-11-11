@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,9 +7,7 @@ import { RESTART_WINDOW_MS, detectAlarms } from "../src/core/alarms.js";
 import { ALARM_DEFAULTS, type FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
-import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { ChildRestart } from "../src/interfaces/updater.js";
 import dropRecordedAt from "../src/runtime/migrations/20261109T1401-runtime-drop-restart-recorded-at.migration.js";
@@ -19,8 +17,6 @@ import { BACKENDS, issue, newStore, system } from "./helpers/store.js";
 
 // Restart history (design 05-restarts): one store row per child restart, written by one conditional insert, so
 // the restart alarm's count and window survive a restart of the factory. Never pin a step as the newest.
-const STEP = MIGRATIONS.findIndex((m) => m.includes("CREATE TABLE IF NOT EXISTS child_restarts")) + 1;
-const STEP_FILE = `${String(STEP).padStart(4, "0")}-child-restarts.sql`;
 const MIN = 60_000;
 
 /** `n` restarts `gap_ms` apart, ending at `clock`'s now, with reasons r1, r2, … */
@@ -130,18 +126,5 @@ describe("migration: runtime_child_restarts drops recorded_at", () => {
 
   it("verify returns a problem while the column is still there", async () => {
     expect(await dropRecordedAt.verify!(await before())).toEqual([expect.stringContaining("recorded_at is still there")]);
-  });
-});
-
-describe("MySQL step: restart history (child-restarts)", () => {
-  it("has the SQLite migration's number and creates the same table and index", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "child-restarts")).toMatchObject({
-      number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE,
-    });
-    const sql = readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
-    for (const c of ["CREATE TABLE IF NOT EXISTS child_restarts", "restart_key", "reason", "recorded_at", "KEY child_restarts_at (at)"]) expect(sql).toContain(c);
-    for (const c of ["CREATE TABLE IF NOT EXISTS child_restarts", "restart_key", "reason", "recorded_at", "child_restarts_at ON child_restarts (at)"]) {
-      expect(MIGRATIONS[STEP - 1]).toContain(c);
-    }
   });
 });

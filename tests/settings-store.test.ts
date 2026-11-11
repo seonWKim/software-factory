@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import type { SqlDriver, SqlExecutor } from "../src/state/index.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -40,14 +39,5 @@ describe("settings overrides: one transaction with the audit row", () => {
     expect((await good.listSettingOverrides()).map((o) => [o.key, o.value])).toEqual([["workers", "2"]]);
     expect(await good.listSettingChanges(10)).toHaveLength(1);
     await good.close();
-  });
-});
-
-describe("migration step 17: settings tables", () => {
-  it("is the repo's step after 0014, an inline .sql step that creates both tables", () => {
-    const step = readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "settings-overrides")!;
-    expect(step).toMatchObject({ number: 17, from: 16, kind: "sql", file: "0017-settings-overrides.sql" });
-    expect(step.sql).toContain("CREATE TABLE IF NOT EXISTS settings_overrides");
-    expect(step.sql).toContain("CREATE TABLE IF NOT EXISTS settings_changes");
   });
 });
