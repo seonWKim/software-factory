@@ -1,6 +1,6 @@
 // The local merge check (design §5 Merge check, issue #248): for each item waiting for a human merge, git computes
-// whether its PR branch still merges cleanly into the newest base, in the factory repo's object store, never in a
-// checkout. The result is stored per item (one latest row), so every replica and the dashboard read the same one.
+// whether its branch (a PR's, or a local item's when the sandbox reads local refs) still merges cleanly into the
+// newest base, in the factory repo's object store, never in a checkout. The result is stored per item (one latest row), so every replica and the dashboard read the same one.
 // The dashboard only reads that row; nothing here runs on a request.
 
 import type { Clock } from "../interfaces/clock.js";
@@ -52,7 +52,7 @@ export class MergeChecker {
 
   /**
    * One step over `items` (the caller passes only ready-to-merge factory items). Calls `onConflict` before it
-   * stores a new conflict, so a crash in between checks again next time instead of losing the update run.
+   * stores a new conflict, so a crash in between checks again next time instead of losing the update or resolve run.
    */
   async step(items: readonly WorkItem[], t: MergeCheckTarget, onConflict: OnConflict): Promise<void> {
     if (items.length === 0) return;

@@ -46,7 +46,7 @@ export function renderResolvePrompt(
   notes: string,
 ): string {
   const lines = [
-    `# Resolve merge conflicts: work item ${item.id}, PR #${item.change_ref ?? "?"}`,
+    `# Resolve merge conflicts: work item ${item.id}, ${item.change_ref === null ? "local branch" : `PR #${item.change_ref}`}`,
     "",
     `Source: ${item.source.link}`,
     "",

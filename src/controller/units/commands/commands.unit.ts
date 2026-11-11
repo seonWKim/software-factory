@@ -67,16 +67,16 @@ function awaitingSpec(it: WorkItem): boolean {
   return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions" || splitFilingFailed(it));
 }
 /**
- * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
- * run asked for a human (agent_needs_human, decided 2026-11-07). Starts a resolve
+ * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, on a local item waiting for
+ * a merge whose branch conflicts (`localConflict`, 2026-11-12), or one whose resolve run asked for a human. Starts a resolve
  * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
  * /resolve would otherwise be a silent no-op. The notes (scanned and capped, the `+paths` line split off) go on
  * the run for the worker; they are untrusted. A `+paths` widens allowed_paths in the same transition (`w`).
  */
-function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, note: string | null, w: Widening): Decision | Refusal {
+function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, localConflict: boolean, note: string | null, w: Widening): Decision | Refusal {
   // Also the answer to a resolve run that asked for a human (agent_needs_human): the reply is its notes.
   const asked = resolveAsked && it.blocked_on === "human" && it.blocked_reason === AGENT_NEEDS_HUMAN;
-  if (!conflictPending(it) && !asked) {
+  if (!conflictPending(it) && !asked && !localConflict) {
     return {
       refuse: `the item is not waiting on a merge conflict (it is ${phaseLabel(commandPhase(it))}); ` +
         `\`/resolve\` applies only when the ${phaseLabel("merge_conflict")}`,
@@ -537,7 +537,7 @@ export class CommandsUnit {
     paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
     if (e.kind === "resolve_requested") {
-      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
+      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", await this.c.unit("local-merge").conflicting(it), note, this.widen(it, paths));
     }
     // On the PR, in a Slack thread with a PR, or on a local item with no PR at the merge wait (its local branch, issue #563).
     const asFeedback = e.kind === "revise_requested" && (it.source.type === "slack_thread" ? appliesOnPr : appliesLocally)(commandSpec("revise"), commandState(it));

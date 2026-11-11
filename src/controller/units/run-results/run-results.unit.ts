@@ -350,7 +350,7 @@ export class RunResultsUnit {
           if (auto) {
             const counts = await this.conflictCountsOf(it, 0);
             await this.c.unit("outbox").prComment(it, `auto-resolved:${run.id}`, [
-              `The factory resolved the merge conflict on PR #${it.change_ref} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and pushed the merge. A fresh review runs next.`,
+              `The factory resolved the merge conflict on ${this.c.unit("local-merge").changeName(it)} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and ${it.change_ref === null ? "committed" : "pushed"} the merge. A fresh review runs next.`,
               "",
               conflictCountsLine(counts),
             ].join("\n"));
@@ -393,7 +393,7 @@ export class RunResultsUnit {
               return review ? this.c.unit("checks-gate").checkGate(it, review, {}, run.id) : ack("update_up_to_date");
             }
             case "conflict":
-              return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
+              return this.autoResolve(it, typeof data.base_sha === "string" ? data.base_sha : "", { run_id: run.id }, run.id);
             case "tests_failed":
               // The worker's PR comment names the failure; this one offers the command that applies now.
               await this.c.unit("outbox").prComment(it, `update-tests-failed:${run.id}`, [
@@ -763,35 +763,35 @@ export class RunResultsUnit {
   }
 
   /**
-   * An update run found a conflict (design §5 Merge conflict, decision changed 2026-11-02): under the limit of
-   * AUTO_RESOLVE_LIMIT automatic resolve runs per base commit, the item goes to RUNNING and a resolve run is
-   * enqueued in the same transition, keyed on (item, base commit, attempt). At the limit, or with no base
-   * commit to key on, it waits for a person on merge_conflict_pending, as before. The ack fences the update run,
-   * so applying it twice enqueues one resolve run.
+   * A conflict to resolve with no person (design §5 Merge conflict): an update run's (`ack_run`, 2026-11-02) or a local
+   * item's (local-merge's startLocalResolve, no run to ack, 2026-11-12). Under AUTO_RESOLVE_LIMIT automatic resolve runs
+   * per base commit, the item goes to RUNNING and a resolve run is enqueued in the same transition, keyed on (item, base
+   * commit, attempt). At the limit, or with no base commit to key on, it waits for a person on merge_conflict_pending.
+   * The ack (a local item: leaving merge_pending) fences a second apply, so applying it twice enqueues one resolve run.
    */
-  async autoResolve(it: WorkItem, run: Run, baseSha: string): Promise<Decision> {
+  async autoResolve(it: WorkItem, baseSha: string, cause: StateChangeDetail, ack_run: Run["id"] | null): Promise<Decision> {
     const keys = (await this.c.k.reader.listRuns(it.id)).filter((r) => r.kind === "resolve").map((r) => r.idempotency_key);
     const done = baseSha ? autoResolveAttempts(keys, it.id, baseSha) : AUTO_RESOLVE_LIMIT;
     const attempt = nextAutoResolveAttempt(done);
-    const detail = { run_id: run.id, base_sha: baseSha || null, auto_resolve_attempts: done };
+    const detail = { ...cause, base_sha: baseSha || null, auto_resolve_attempts: done };
     if (attempt === null) {
       const counts = await this.conflictCountsOf(it, 1);
-      await this.c.unit("outbox").prComment(it, `auto-resolve-limit:${run.id}`, [
-        `PR #${it.change_ref} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was pushed.`,
+      await this.c.unit("outbox").prComment(it, `auto-resolve-limit:${ack_run ?? `${it.id}:${baseSha}`}`, [
+        `${this.c.unit("local-merge").changeName(it, true)} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was ${it.change_ref === null ? "committed" : "pushed"}.`,
         "Comment `/resolve [notes]` to try again, or resolve it by hand.",
         "",
         conflictCountsLine(counts),
         "",
         footerAfter(it, CONFLICT_PATCH),
       ].join("\n"));
-      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
+      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ...(ack_run === null ? {} : { ack_run }) };
     }
     return {
       patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
       actor: SYSTEM,
       reason: "auto_resolve_started",
       detail: { ...detail, attempt },
-      ack_run: run.id,
+      ...(ack_run === null ? {} : { ack_run }),
       enqueue: { kind: "resolve", idempotency_key: autoResolveKey(it.id, baseSha, attempt), input: { notes: "" } },
     };
   }
@@ -833,7 +833,7 @@ export class RunResultsUnit {
         ? `The automatic resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
         : `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
       "",
-      `Nothing was pushed; PR #${it.change_ref} is unchanged and still has the merge conflict.`,
+      `Nothing was ${it.change_ref === null ? "committed" : "pushed"}; ${this.c.unit("local-merge").changeName(it)} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
       "",
