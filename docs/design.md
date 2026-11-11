@@ -67,3 +67,6 @@ the `05-*` files.
 
 ## 11. Signal ledger
 - [11-signal-ledger.md](design/11-signal-ledger.md): the `controller_signals` table, its discovered signal sources, tags, idempotency and backfill.
+
+## 12. Notification channels
+- [12-notification-channels.md](design/12-notification-channels.md): the per-person channel picker (single or several), per-channel outbox rows, optional vendor capabilities on source adapters, local first; design only, not built.
