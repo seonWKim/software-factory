@@ -9,7 +9,7 @@ import { LINK_CODE_MAX_FAILURES, LINK_CODE_TTL_MS } from "../src/interfaces/fact
 import { newStore } from "./helpers/store.js";
 import { FakeSource, cleanScanner, config, issueRef, recordingLog } from "./helpers/fakes.js";
 
-// Identity links and one-time link codes (design 2026-11-01, issue #107). The store cases that MySQL must also
+// Identity links and one-time link codes (design 2026-11-01, issue #107). The store cases that every store must also
 // pass are in tests/store-contract.test.ts ("identity links").
 
 const USER = "github:1" as UserId;
