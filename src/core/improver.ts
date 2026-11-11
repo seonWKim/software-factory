@@ -2,8 +2,10 @@
 // runs in a window are grouped by error code and normalized detail; each group of 2+ runs gets one plain model call (no
 // tools) for a draft; one report is stored for the learner (learnFromReport); the controller files its groups (fileReport).
 export { learnFromReport } from "./learned-settings.js";
+export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, scoreRun, scorerFor } from "./scorer.js";
 
 import { cyrb53 } from "./hash.js";
+import { parseJson } from "./scorer.js";
 import { PROTECTED_PATHS } from "./standing.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { Clock } from "../interfaces/clock.js";
@@ -104,13 +106,15 @@ export async function enqueueImprove(
   return d.store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key, input: { improve } });
 }
 
-/** Unreviewed failures of one run kind that queue an improve run (design §7): a burst worth a report now. */
+/** Unreviewed failed runs in the last TRIGGER_WINDOW_MS that queue an improve run (design §7): a burst worth a report now. */
 export const TRIGGER_FAILURES = 10;
+/** The window the failure count looks back over (design §7, issue #514). */
+export const TRIGGER_WINDOW_MS = DAY_MS;
 /** An unreviewed failure this old queues an improve run (design §7): a lone failure is not left unseen for long. */
 export const TRIGGER_AGE_MS = 3 * DAY_MS;
 
-/** Why the trigger fires: a run kind with TRIGGER_FAILURES failures, or a failure older than TRIGGER_AGE_MS. */
-export type TriggerReason = { reason: "count"; kind: Run["kind"]; failures: number } | { reason: "age"; oldest: Timestamp };
+/** Why the trigger fires: TRIGGER_FAILURES failures in the last TRIGGER_WINDOW_MS, or a failure older than TRIGGER_AGE_MS. */
+export type TriggerReason = { reason: "count"; failures: number } | { reason: "age"; oldest: Timestamp };
 
 /** A failed run an improve report counts: the same runs groupFailures groups. */
 function reviewable(r: Run): boolean {
@@ -119,16 +123,14 @@ function reviewable(r: Run): boolean {
 
 /**
  * The trigger rule (design §7), pure: given the project's unreviewed runs (finished since its last improve run
- * was queued), whether an improve run is due. Counts the failed runs per run kind (the role) against
- * TRIGGER_FAILURES, then the oldest failure's age against TRIGGER_AGE_MS. Null: nothing is due.
+ * was queued), whether an improve run is due. Counts the failed runs of any kind that finished in the last
+ * TRIGGER_WINDOW_MS against TRIGGER_FAILURES, then the oldest failure's age against TRIGGER_AGE_MS. Null: not due.
  */
 export function improveTriggerDue(runs: readonly Run[], now: Date): TriggerReason | null {
-  const failed = runs.filter(reviewable);
-  const perKind = new Map<Run["kind"], number>();
-  for (const r of failed) perKind.set(r.kind, (perKind.get(r.kind) ?? 0) + 1);
-  const burst = [...perKind].filter(([, n]) => n >= TRIGGER_FAILURES).sort((a, b) => b[1] - a[1] || cmp(a[0], b[0]))[0];
-  if (burst) return { reason: "count", kind: burst[0], failures: burst[1] };
-  const oldest = failed.map((r) => r.finished_at).filter((t): t is Timestamp => t !== null).sort()[0];
+  const finished = runs.filter(reviewable).map((r) => r.finished_at).filter((t): t is Timestamp => t !== null).sort();
+  const failures = finished.filter((t) => now.getTime() - Date.parse(t) <= TRIGGER_WINDOW_MS).length;
+  if (failures >= TRIGGER_FAILURES) return { reason: "count", failures };
+  const oldest = finished[0];
   return oldest !== undefined && now.getTime() - Date.parse(oldest) > TRIGGER_AGE_MS ? { reason: "age", oldest } : null;
 }
 
@@ -151,7 +153,8 @@ export async function pendingImprove(store: Pick<FactoryStore, "getWorkItemBySou
 /**
  * The trigger step (design §7): reads the project's failed runs finished since its last improve run was queued (all
  * before the first), applies improveTriggerDue, and queues one run with triggerImproveKey when due; none while one is
- * queued or running. Store state only: two replicas read the same last run and write the same key, so one run is kept.
+ * queued or running. Its dedupe is store state: two replicas read the same last run and write the same key, and
+ * enqueueRun's conditional insert on that unique key keeps one run. `factory improve` queues through enqueueImprove too.
  */
 export async function triggerImprove(
   d: { store: TriggerStore; clock: Clock },
@@ -377,14 +380,6 @@ async function draft(d: ImproveDeps, llm: LLMProvider, system: string, g: Failur
   const scan = await d.scanner.scan("log", JSON.stringify(out));
   if (!scan.clean) return { status: "withheld", rules: [...new Set(scan.findings.map((f) => f.rule))], touches_prompts_or_gate, needs_person: out.needs_person };
   return { status: "drafted", ...out, touches_prompts_or_gate };
-}
-
-function parseJson(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
 }
 
 /** The user message: the group's code, its normalized detail and counts, then the scanned tails as untrusted text. */
