@@ -1,4 +1,4 @@
-// `npm run build`: builds dist/ (server and migrations) and web/dist/ (the app) without ever taking them away from a
+// `npm run build`: builds dist/ (the server) and web/dist/ (the app) without ever taking them away from a
 // running process (docs/design/08-self-update.md, "Build in place"). Each build compiles into its own empty staging
 // folders beside the targets (`dist.build-<pid>-<n>`, `web/dist.build-<pid>-<n>`, same depth so source map paths
 // stay right), then swaps each in with two renames under a short lock: the old folder moves aside, the staged one
