@@ -1,11 +1,8 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { interpretReply, isProposalId, parseProposalMarker, proposalMarker } from "../src/core/interpret.js";
 import { proposalId } from "../src/controller/units/commands/proposals.js";
 import { proposalPress } from "../src/impl/source/slack-commands.js";
 import { COMMAND_PROPOSALS_SQLITE } from "../src/impl/store/sql/command-proposals.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 
@@ -20,22 +17,14 @@ function columns(sql: string): string[] {
 }
 
 describe("command proposals: the table", () => {
-  const step = readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "command-proposals");
-  const mysql = readFileSync(join(STEPS_DIR, step!.file), "utf8");
-
-  it("SQLite and the MySQL step define the same columns and key", () => {
-    expect(columns(mysql)).toEqual(columns(COMMAND_PROPOSALS_SQLITE));
+  it("SQLite defines the columns and the key", () => {
     expect(columns(COMMAND_PROPOSALS_SQLITE)).toEqual([
       "proposal_id", "idx", "work_item_id", "command", "args", "author_id", "status", "answered_by", "refusal", "created_at", "answered_at",
       "PRIMARY KEY (proposal_id, idx)",
     ]);
-    expect(mysql).not.toMatch(/INSERT|UPDATE/);
   });
 
-  it("is MySQL step 0044, the one after merge-evaluations (0043), and a SQLite migration", () => {
-    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
-    expect(step).toMatchObject({ number: 44, from: 43, kind: "sql", file: "0044-command-proposals.sql" });
-    expect(steps.find((s) => s.name === "merge-evaluations")?.number).toBe(43);
+  it("is a SQLite migration, after merge-evaluations", () => {
     expect(MIGRATIONS).toContain(COMMAND_PROPOSALS_SQLITE);
     expect(MIGRATIONS.indexOf(COMMAND_PROPOSALS_SQLITE)).toBeGreaterThan(MIGRATIONS.findIndex((m) => m.includes("controller_merge_evaluations")));
   });

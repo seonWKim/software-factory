@@ -62,8 +62,19 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     prints: "the new work item's ID", chat: "<request in plain words>", chat_args: "request", item: false, edge: false,
   },
   {
-    name: "task list", args: "", who: "anyone", group: "task", does: "List local work items",
-    prints: "one line per local work item: ID, title, stage and blocked reason", chat: "list", chat_args: "none", item: false, edge: false,
+    name: "task add", args: "<words>", who: "submit_work", group: "task",
+    does: "Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, " +
+      "`HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title",
+    prints: "the task: ID, title, due, priority, list and recurrence", chat: "task add <words>", chat_args: "any", item: false, edge: false,
+  },
+  {
+    name: "task done", args: "<task_id>", who: "submit_work", group: "task",
+    does: "Complete a plain task; a recurring one gets its next occurrence once, however often it is completed",
+    prints: "that it is done (or already was), and the next occurrence", chat: "task done <task_id>", chat_args: "id", item: false, edge: false,
+  },
+  {
+    name: "task list", args: "", who: "anyone", group: "task", does: "List local work items, then open plain tasks",
+    prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task", chat: "list", chat_args: "none", item: false, edge: false,
   },
   {
     name: "task show", args: "<id>", who: "anyone", group: "task", does: "Show one work item",

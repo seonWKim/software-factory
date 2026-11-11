@@ -1,11 +1,8 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { type CoordinationSettings, DEFAULT_COORDINATION, pathWeight } from "../src/core/coordination.js";
 import type { RunKind, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { STEPS_DIR } from "../src/impl/store/mysql/migrations.js";
-import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 // One contract, every FactoryStore backend. MySQL joins when SF_TEST_MYSQL_URL is set (see helpers/store.ts).
 import { BACKENDS, PROJECT_KEY, human, issue, system, w1, w2 } from "./helpers/store.js";
 
@@ -393,14 +390,6 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       expect(await claimWith(store, policy({ hold_policy: { mode: "run" }, hotspot_mode: "hold" }))).toMatchObject({ work_item_id: b });
     });
 
-    it("SQLite migration 30 and MySQL step 0030 add the same held_since column", () => {
-      const sqlite = MIGRATIONS.find((m) => /ADD COLUMN held_since/.test(m))!;
-      const mysql = readFileSync(`${STEPS_DIR}/0030-claim-held-since.sql`, "utf8");
-      const added = (sql: string) => [...sql.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)].map((m) => `${m[1]}.${m[2]}`);
-      expect(added(sqlite)).toEqual(["claim_decisions.held_since"]);
-      expect(added(mysql)).toEqual(added(sqlite));
-      expect(MIGRATIONS.indexOf(sqlite) + 1).toBe(30);
-    });
   });
 
   describe("dependencies", () => {

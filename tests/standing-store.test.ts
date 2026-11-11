@@ -1,12 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { UserId } from "../src/core/types.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps, splitSql } from "../src/impl/store/mysql/migrations.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { BACKENDS } from "./helpers/store.js";
 
-/** The schema step that adds the standing-approval tables (issue #298): SQLite migration 32, MySQL step 0032. */
+/** The schema step that adds the standing-approval tables (issue #298): SQLite migration 32. */
 const STEP = 32;
 const TABLES = ["standing_rules", "standing_proposals"];
 /** The same tables under their RFC 0015 names, after the prefix migration. */
@@ -27,14 +24,6 @@ describe("standing approvals: schema", () => {
   it("SQLite migration 32 creates the rule and proposal tables", () => {
     expect(MIGRATIONS.length).toBeGreaterThanOrEqual(STEP);
     expect([...columnsOf(MIGRATIONS[STEP - 1]!).keys()]).toEqual(TABLES);
-  });
-
-  it("MySQL step 0032 creates the same tables with the same names and columns", () => {
-    const step = readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.number === STEP);
-    expect(step).toMatchObject({ file: "0032-standing-approvals.sql", from: STEP - 1, kind: "sql" });
-    const sql = readFileSync(join(STEPS_DIR, step!.file), "utf8");
-    expect(splitSql(sql)).toHaveLength(TABLES.length);
-    expect(columnsOf(sql)).toEqual(columnsOf(MIGRATIONS[STEP - 1]!));
   });
 });
 

@@ -5,10 +5,13 @@ import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
 import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
+import { parseQuickAdd } from "./quick-add.js";
+import { type TaskFields, taskLine } from "./tasks.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
- * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
+ * creates a local work item with its triage run queued; `task add` stores a plain task from quick-add words and `task
+ * done` completes one (design 02-tasks: no work item, no triage); `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
@@ -77,6 +80,8 @@ export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
 
 export type CliAction =
   | { action: "create"; title: string; bodyFile: string }
+  | { action: "add"; task: TaskFields }
+  | { action: "done"; id: string }
   | { action: "list" }
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
@@ -109,6 +114,11 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
   if (word === "task") {
     const [sub, ...rest] = args;
     if (sub === "list") return rest.length === 0 ? { action: "list" } : bad("task list takes no arguments");
+    if (sub === "add") {
+      const parsed = parseQuickAdd(rest.join(" "));
+      return parsed.ok ? { action: "add", task: parsed.task } : bad(`task add: ${parsed.reason}`);
+    }
+    if (sub === "done") return rest.length === 1 && rest[0] ? { action: "done", id: rest[0] } : bad("task done needs one task ID");
     if (sub === "show") return rest.length === 1 && rest[0] ? { action: "show", id: rest[0] as WorkItemId } : bad("task show needs one work item ID");
     if (sub === "create") {
       const flags: Record<string, string> = {};
@@ -163,7 +173,7 @@ export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
-    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser"
+    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -171,7 +181,7 @@ export interface LocalCliDeps {
   project: () => Promise<string | null>;
   /** Reads a body file. */
   read: (path: string) => Promise<string>;
-  /** A new random ID: a local item's source ID, a command's idempotency key. */
+  /** A new random ID: a local item's source ID, a task's ID, a command's idempotency key. */
   newId: () => string;
   /** Display names by user ID (Identity's identity_profiles), looked up only to show; absent: IDs only. */
   displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
@@ -189,7 +199,7 @@ export interface CliResult {
   lines: string[];
 }
 
-/** The most items `task list` reads. */
+/** The most items, and the most open tasks, `task list` reads. */
 export const TASK_LIST_LIMIT = 200;
 
 export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliResult> {
@@ -214,10 +224,23 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       );
       return { code: 0, lines: [item.id] };
     }
+    case "add": {
+      await claim();
+      const task = await d.store.addTask({ ...a.task, id: `tk_${d.newId()}`, created_by: user });
+      return { code: 0, lines: [taskLine(task)] };
+    }
+    case "done": {
+      const r = await d.store.completeTask(a.id);
+      if (!r.ok) return fail(`no task ${a.id}`);
+      const done = r.completed ? `done ${a.id}` : `${a.id} was already done`;
+      return { code: 0, lines: [done, ...(r.next ? [`next: ${taskLine(r.next)}`] : [])] };
+    }
     case "list": {
       const items = (await d.store.listWorkItems(TASK_LIST_LIMIT)).filter((i) => i.source.type === "local");
-      if (items.length === 0) return { code: 0, lines: ["no local work items"] };
-      return { code: 0, lines: items.map((i) => [i.id, i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t")) };
+      const tasks = await d.store.listTasks(TASK_LIST_LIMIT);
+      const lines = items.length === 0 ? ["no local work items"] : items.map((i) => [i.id, i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t"));
+      // Plain tasks in their own section after the work items (design 02-tasks), only when there are any.
+      return { code: 0, lines: tasks.length === 0 ? lines : [...lines, "", "Tasks", ...tasks.map(taskLine)] };
     }
     case "show": {
       const item = await d.store.getWorkItem(a.id);

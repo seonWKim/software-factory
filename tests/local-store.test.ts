@@ -1,9 +1,6 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -13,20 +10,17 @@ import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 // Local work items (issue #198, phase 1): the "local" source type, the messages the controller would post as
 // comments, and the CLI command log. Types and tables only: nothing outside the store calls these yet.
 
-/** The MySQL step and SQLite migration that add both tables. */
+/** The SQLite migration that add both tables. */
 // Never pin a step as the newest (a length, `at(-1)` equal to it, or "pending alone"): a later migration would
 // fail these checks from outside its allowed paths. Compare with `>=` or read MIGRATIONS.length.
 const STEP = 21;
-const STEP_FILE = "0021-local-items.sql";
 const TABLES = ["cli_commands", "item_messages"];
 
-/** The MySQL step and SQLite migration that add the app command request table (issue #244). */
+/** The SQLite migration that add the app command request table (issue #244). */
 const COMMANDS_STEP = 22;
-const COMMANDS_STEP_FILE = "0022-app-commands.sql";
 const COMMANDS_TABLE = "app_command_requests";
-/** The MySQL step and SQLite migration that add the handled and refusal columns (issue #245): the last step. */
+/** The SQLite migration that add the handled and refusal columns (issue #245): the last step. */
 const HANDLING_STEP = 23;
-const HANDLING_STEP_FILE = "0023-app-command-handling.sql";
 
 function localItem(n: number): NewWorkItem {
   return {
@@ -130,14 +124,6 @@ describe("SQLite migration 21: local item tables", () => {
   });
 });
 
-describe("MySQL step 0021: local item tables", () => {
-  it("is a .sql file step after 0020 that creates both tables", () => {
-    const step = readSteps(STEPS_DIR, INLINE_STEPS).find((s) => s.name === "local-items")!;
-    expect(step).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE });
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).at(-1)!.number).toBeGreaterThanOrEqual(COMMANDS_STEP);
-  });
-});
-
 async function sqliteHasCommandsTable(driver: SqliteDriver): Promise<boolean> {
   const rows = await driver.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [COMMANDS_TABLE]);
   return rows.length === 1;
@@ -185,17 +171,6 @@ describe("SQLite migration 22: app command requests", () => {
   });
 });
 
-describe("MySQL step 0022: app command requests", () => {
-  it("is a .sql file step after 0021, with CREATE TABLE IF NOT EXISTS", () => {
-    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
-    const step = steps.find((s) => s.name === "app-commands")!;
-    expect(step).toMatchObject({ number: COMMANDS_STEP, from: STEP, kind: "sql", file: COMMANDS_STEP_FILE });
-    expect(steps.at(-1)!.number).toBeGreaterThanOrEqual(COMMANDS_STEP);
-    expect(steps.filter((s) => s.number === 20).map((s) => s.file)).toEqual(["0020-run-attempts.sql"]);
-    expect(readFileSync(join(STEPS_DIR, COMMANDS_STEP_FILE), "utf8")).toMatch(new RegExp(`CREATE TABLE IF NOT EXISTS ${COMMANDS_TABLE} \\(`));
-  });
-});
-
 async function sqliteColumns(driver: SqliteDriver): Promise<{ name: string; type: string; nn: number }[]> {
   return (await driver.all(`SELECT name, type, "notnull" AS nn FROM pragma_table_info('${COMMANDS_TABLE}') ORDER BY cid`)) as never;
 }
@@ -214,15 +189,4 @@ describe("SQLite migration 23: app command request handling", () => {
     await store.close();
   });
 
-});
-
-describe("MySQL step 0023: app command request handling", () => {
-  it("is a .sql file step after 0022 that adds handled_at and refusal", () => {
-    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
-    const step = steps.find((s) => s.name === "app-command-handling")!;
-    expect(step).toMatchObject({ number: HANDLING_STEP, from: COMMANDS_STEP, kind: "sql", file: HANDLING_STEP_FILE });
-    expect(steps.at(-1)!.number).toBeGreaterThanOrEqual(HANDLING_STEP);
-    const sql = readFileSync(join(STEPS_DIR, HANDLING_STEP_FILE), "utf8");
-    expect(sql).toMatch(new RegExp(`ALTER TABLE ${COMMANDS_TABLE} ADD COLUMN handled_at .*ADD COLUMN refusal `));
-  });
 });

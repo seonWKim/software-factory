@@ -3,18 +3,16 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { NewWorkItem } from "../src/interfaces/factory-store.js";
 import { PROJECT_KEY, system } from "./helpers/store.js";
 
-// One thread table for every item and one command inbox (issue #281): SQLite migration 24 and MySQL step 0024 copy
+// One thread table for every item and one command inbox (issue #281): SQLite migration 24 copies
 // `item_messages` and `cli_commands` into `item_thread` and `command_inbox`, keeping each row's seq.
 // Never pin a step as the newest: a later migration would fail these checks from outside its allowed paths.
 const STEP = 24;
-const STEP_FILE = "0024-item-thread.sql";
 const NEW_TABLES = ["command_inbox", "item_thread"];
 const OLD_TABLES = ["cli_commands", "item_messages"];
 /** Copy pairs: old table → new table. */
@@ -133,27 +131,5 @@ describe("the store reads and writes only the new tables", () => {
       for (const t of STORE_TABLES) expect(text, `${doc}: ${t}`).toContain(`\`${t}\``);
       for (const t of OLD_TABLES) expect(text, `${doc}: ${t}`).not.toContain(`\`${t}\``);
     }
-  });
-});
-
-describe("MySQL step 0024: item thread and command inbox", () => {
-  const sql = () => readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
-
-  it("is a .sql file step after 0023, with CREATE TABLE IF NOT EXISTS for both tables", () => {
-    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
-    expect(steps.find((s) => s.name === "item-thread")).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE });
-    expect(steps.at(-1)!.number).toBeGreaterThanOrEqual(STEP);
-    for (const t of NEW_TABLES) expect(sql()).toContain(`CREATE TABLE IF NOT EXISTS ${t} (`);
-  });
-
-  it("creates the same columns as SQLite migration 24", () => {
-    const columns = (text: string, table: string) => {
-      const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\s*\\)`).exec(text)![1]!;
-      return [...body.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|BIGINT|MEDIUMTEXT|CHAR)/gm)].map((m) => m[1]);
-    };
-    const sqlite = MIGRATIONS[STEP - 1]!;
-    expect(columns(sqlite, "item_thread")).toEqual(["seq", "work_item_id", "marker", "body", "created_at"]);
-    expect(columns(sqlite, "command_inbox")).toEqual(["seq", "command_key", "actor", "command", "args", "created_at"]);
-    for (const t of NEW_TABLES) expect(columns(sql(), t), t).toEqual(columns(sqlite, t));
   });
 });

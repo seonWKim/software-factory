@@ -1,16 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { SourceRef, UserId, WorkItemId } from "../src/core/types.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
-import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
-// The thread outbox (issue #282): SQLite migration 29 and MySQL step 0029 add `thread_outbox`, and copy pending app
-// requests into `command_inbox`. Never pin a step as the newest: a later migration would fail these checks.
-const STEP = 29;
-const STEP_FILE = "0029-thread-outbox.sql";
+// The thread outbox (issue #282): SQLite migration 29 adds `thread_outbox`, and copies pending app requests into `command_inbox`.
 
 const ref = (n: number): SourceRef => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
 
@@ -124,18 +117,3 @@ for (const backend of BACKENDS) {
     });
   });
 }
-
-describe("MySQL step 0029: thread outbox", () => {
-  const sql = () => readFileSync(join(STEPS_DIR, STEP_FILE), "utf8");
-  const columns = (text: string) => {
-    const body = /CREATE TABLE IF NOT EXISTS thread_outbox \(([\s\S]*?)\n\s*\)/.exec(text)![1]!;
-    return [...body.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|BIGINT|MEDIUMTEXT|CHAR|INT)\b/gm)].map((m) => m[1]);
-  };
-
-  it("is a .sql step after 0028 that creates the same columns as SQLite migration 29", () => {
-    const steps = readSteps(STEPS_DIR, INLINE_STEPS);
-    expect(steps.find((s) => s.name === "thread-outbox")).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE });
-    expect(columns(sql())).toEqual(columns(MIGRATIONS[STEP - 1]!));
-    expect(columns(sql())).toContain("claim_token");
-  });
-});

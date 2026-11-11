@@ -109,6 +109,14 @@ describe("parseReview: finding kinds and unverified checks", () => {
   });
 });
 
+describe("parseImplement: no structured answer", () => {
+  it("names what came back instead of the fields it lacks", () => {
+    expect(parseImplement(null)).toEqual({ ok: false, error: "no structured answer: the agent ended without one" });
+    expect(parseImplement("I could not finish.")).toEqual({ ok: false, error: "no structured answer: the agent ended with plain text instead" });
+    expect(parseImplement([])).toEqual({ ok: false, error: "no structured answer: the answer is an array, not an object" });
+  });
+});
+
 describe("parseImplement: spec_conflict", () => {
   it("keeps a non-empty reason, trimmed", () => {
     expect(parseImplement({ summary: "s", next_steps: "n", spec_conflict: "  needs docs/x.md  " })).toMatchObject({
@@ -121,6 +129,13 @@ describe("parseImplement: spec_conflict", () => {
     expect(parseImplement({ summary: "s", next_steps: "n" })).toEqual(plain);
     expect(parseImplement({ summary: "s", next_steps: "n", spec_conflict: "" })).toEqual(plain);
     expect(parseImplement({ summary: "s", next_steps: "n", spec_conflict: "   " })).toEqual(plain);
+  });
+
+  it("a spec_conflict without summary and next_steps is a conflict, not invalid output", () => {
+    // The answer four implement runs of one item gave: rejected as "summary/next_steps", so no spec revision started.
+    expect(parseImplement({ spec_conflict: "needs web/x.tsx" })).toEqual({
+      ok: true, value: { summary: "", next_steps: "", missing: [], deviations: [], spec_conflict: "needs web/x.tsx" },
+    });
   });
 
   it("rejects a spec_conflict that is not a string", () => {
