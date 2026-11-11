@@ -4,7 +4,7 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { commandFooter, commandState, retryPathsReply } from "../../../core/commands.js";
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
-import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
+import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, branchFor, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
@@ -16,7 +16,7 @@ import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem,
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
-import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
+import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, awaitingMerge, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -350,7 +350,7 @@ export class RunResultsUnit {
           if (auto) {
             const counts = await this.conflictCountsOf(it, 0);
             await this.c.unit("outbox").prComment(it, `auto-resolved:${run.id}`, [
-              `The factory resolved the merge conflict on PR #${it.change_ref} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and pushed the merge. A fresh review runs next.`,
+              `The factory resolved the merge conflict on ${this.changeName(it)} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and ${it.change_ref === null ? "committed" : "pushed"} the merge. A fresh review runs next.`,
               "",
               conflictCountsLine(counts),
             ].join("\n"));
@@ -393,7 +393,7 @@ export class RunResultsUnit {
               return review ? this.c.unit("checks-gate").checkGate(it, review, {}, run.id) : ack("update_up_to_date");
             }
             case "conflict":
-              return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
+              return this.autoResolve(it, typeof data.base_sha === "string" ? data.base_sha : "", { run_id: run.id }, run.id);
             case "tests_failed":
               // The worker's PR comment names the failure; this one offers the command that applies now.
               await this.c.unit("outbox").prComment(it, `update-tests-failed:${run.id}`, [
@@ -763,37 +763,56 @@ export class RunResultsUnit {
   }
 
   /**
-   * An update run found a conflict (design §5 Merge conflict, decision changed 2026-11-02): under the limit of
-   * AUTO_RESOLVE_LIMIT automatic resolve runs per base commit, the item goes to RUNNING and a resolve run is
-   * enqueued in the same transition, keyed on (item, base commit, attempt). At the limit, or with no base
-   * commit to key on, it waits for a person on merge_conflict_pending, as before. The ack fences the update run,
-   * so applying it twice enqueues one resolve run.
+   * A conflict to resolve with no person (design §5 Merge conflict): an update run's (`ack_run`, decision changed
+   * 2026-11-02), or a local item's found by the merge check or `factory merge` (no run to acknowledge, decision
+   * changed 2026-11-12). Under the limit of AUTO_RESOLVE_LIMIT automatic resolve runs per base commit, the item goes
+   * to RUNNING and a resolve run is enqueued in the same transition, keyed on (item, base commit, attempt). At the
+   * limit, or with no base commit to key on, it waits for a person on merge_conflict_pending, with one comment. The
+   * update run's ack fences a second apply; a local item no longer waits for a merge once it is applied.
    */
-  async autoResolve(it: WorkItem, run: Run, baseSha: string): Promise<Decision> {
+  async autoResolve(it: WorkItem, baseSha: string, cause: StateChangeDetail, ack_run: Run["id"] | null): Promise<Decision> {
     const keys = (await this.c.k.reader.listRuns(it.id)).filter((r) => r.kind === "resolve").map((r) => r.idempotency_key);
     const done = baseSha ? autoResolveAttempts(keys, it.id, baseSha) : AUTO_RESOLVE_LIMIT;
     const attempt = nextAutoResolveAttempt(done);
-    const detail = { run_id: run.id, base_sha: baseSha || null, auto_resolve_attempts: done };
+    const detail = { ...cause, base_sha: baseSha || null, auto_resolve_attempts: done };
+    const ack = ack_run === null ? {} : { ack_run };
     if (attempt === null) {
       const counts = await this.conflictCountsOf(it, 1);
-      await this.c.unit("outbox").prComment(it, `auto-resolve-limit:${run.id}`, [
-        `PR #${it.change_ref} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was pushed.`,
+      await this.c.unit("outbox").prComment(it, `auto-resolve-limit:${ack_run ?? `${it.id}:${baseSha}`}`, [
+        `${this.changeName(it, true)} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was ${it.change_ref === null ? "committed" : "pushed"}.`,
         "Comment `/resolve [notes]` to try again, or resolve it by hand.",
         "",
         conflictCountsLine(counts),
         "",
         footerAfter(it, CONFLICT_PATCH),
       ].join("\n"));
-      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
+      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ...ack };
     }
     return {
       patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
       actor: SYSTEM,
       reason: "auto_resolve_started",
       detail: { ...detail, attempt },
-      ack_run: run.id,
+      ...ack,
       enqueue: { kind: "resolve", idempotency_key: autoResolveKey(it.id, baseSha, attempt), input: { notes: "" } },
     };
+  }
+
+  /**
+   * A local item's branch conflicts with the local base at `baseSha` (design §5 Merge conflict, decision changed
+   * 2026-11-12): the merge check or `factory merge` found it. No update run (the resolve run merges the base and runs
+   * the gates itself): the automatic resolve starts at once, as after a PR's update run. Only an item still waiting
+   * for a merge with no PR changes, so a second call changes nothing.
+   */
+  async startLocalResolve(id: WorkItemId, baseSha: string, cause: string): Promise<void> {
+    await this.c.unit("transitions").decide(id, (it) =>
+      awaitingMerge(it) && it.change_ref === null ? this.autoResolve(it, baseSha, { cause }, null) : null);
+  }
+
+  /** The change a conflict comment names: the PR, or a local item's branch. */
+  private changeName(it: WorkItem, start = false): string {
+    if (it.change_ref !== null) return `PR #${it.change_ref}`;
+    return `${start ? "The" : "the"} local branch \`${branchFor(it, this.c.k.cfg.branch_prefix)}\``;
   }
 
   /**
@@ -833,7 +852,7 @@ export class RunResultsUnit {
         ? `The automatic resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
         : `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
       "",
-      `Nothing was pushed; PR #${it.change_ref} is unchanged and still has the merge conflict.`,
+      `Nothing was ${it.change_ref === null ? "committed" : "pushed"}; ${this.changeName(it)} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
       "",
