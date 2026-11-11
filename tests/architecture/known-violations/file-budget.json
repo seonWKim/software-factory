@@ -2,7 +2,7 @@
   "compose.ts": 1397,
   "controller/units/commands/commands.unit.ts": 739,
   "controller/units/run-results/run-results.unit.ts": 1162,
-  "core/settings.ts": 777,
+  "core/settings.ts": 775,
   "core/types.ts": 737,
   "golden.ts": 690,
   "impl/github/github-issue-source.ts": 720,
@@ -10,7 +10,7 @@
   "impl/store/sql/sql-factory-store.ts": 2976,
   "impl/store/sqlite/schema.ts": 735,
   "impl/updater/git-worktree.ts": 912,
-  "interfaces/factory-store.ts": 1355,
+  "interfaces/factory-store.ts": 1353,
   "ui/api.ts": 638,
   "worker/runner.ts": 1133,
   "worker/runs/implement/implement.run.ts": 1123

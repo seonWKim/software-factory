@@ -4,6 +4,7 @@ import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordi
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
 import { parseMessageStyle, withMessageStyle } from "./message-style.js";
+import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, quietHoursSetting } from "./notifications.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
 import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
@@ -156,13 +157,8 @@ export function loosening<K extends ProjectSettingKey>(key: K, value: ProjectSet
 
 // Load-time parsing and checks. Each throws an Error naming the config path.
 
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-function isTier(n: unknown): n is Tier {
-  return typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 5;
-}
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const isTier = (n: unknown): n is Tier => typeof n === "number" && Number.isInteger(n) && n >= 1 && n <= 5;
 
 /** `at` is the key's config path ("max_attempts", "defaults.floors", `projects["o/n"].budgets`). */
 export function parseSetting<K extends ProjectSettingKey>(key: K, value: unknown, at: string): ProjectSettings[K] {
@@ -241,9 +237,7 @@ export function settingsLayers(raw: Record<string, unknown>, configuredProject: 
   return { defaults, projects };
 }
 
-function set<K extends ProjectSettingKey>(o: Partial<ProjectSettings>, k: K, v: ProjectSettings[K]): void {
-  o[k] = v;
-}
+function set<K extends ProjectSettingKey>(o: Partial<ProjectSettings>, k: K, v: ProjectSettings[K]): void { o[k] = v; }
 
 // Runtime overrides (design 2026-11-03, "Settings change at runtime"). `factory settings set` stores an override
 // in the store; every process reads the overrides through resolveSettings, the one function that gives a
@@ -266,7 +260,7 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
-  "message_style",
+  "message_style", "notice_kinds", "quiet_hours",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -322,6 +316,7 @@ export interface SettableValues {
   mode: Mode;
   auto_merge_max_tier: number;
   message_style: string;
+  notice_kinds: NoticeKind[]; quiet_hours: string;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -349,6 +344,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
+  notice_kinds: [...NOTICE_KINDS], quiet_hours: "",
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -440,6 +436,8 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return value as SettableValues[K];
     case "message_style":
       return parseMessageStyle(value) as SettableValues[K];
+    case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
+    case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
