@@ -28,7 +28,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
@@ -1144,6 +1144,8 @@ export interface SessionParts {
   clock: Clock; store: FactoryStore; scanner: EgressScanner; sandbox: Sandbox; broker: ToolBroker; auth: AuthProvider; github: GitHubApi; config: FactoryConfig;
   /** The local items' broker and sandbox, as the worker pool's (Plugins.localRoute). */
   local: LocalRoute;
+  /** The learned settings layer (08-settings), as the controller's and the worker pool's: a session's gates read it as a run's do. */
+  learned: LearnedSettingsSource;
   close(): Promise<void>;
 }
 
@@ -1165,9 +1167,11 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const { project, refreshed } = await projectAtStartup(loaded, { forge }, { store, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
   const config = resolvedConfig(loaded.config, project);
   shareGitHubBudget(loaded, github, store, config);
-  const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, log: new ConsoleLogger(clock, "settings") });
+  const log = new ConsoleLogger(clock, "settings");
+  const learned = new StoredLearnedSettings(store, log);
+  const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, learned, log });
   await settings.refresh();
-  return { clock, store, scanner, sandbox, broker, local, auth, github, config: settings.config(), close: () => refreshed.then(() => store.close()) };
+  return { clock, store, scanner, sandbox, broker, local, auth, github, learned, config: settings.config(), close: () => refreshed.then(() => store.close()) };
 }
 
 /**
