@@ -13,6 +13,7 @@ Plugins:
 - `sqlite`: `SqlFactoryStore` over `SqliteDriver`, file at `<state_dir>/db/factory.db`. One machine. Selected by the checked-in config, and used when there is no `store` block.
   - Enable: `"store": { "type": "sqlite" }`. Secrets: none. Applies additive migrations when opened; `npm run migrate` applies the breaking ones and the data steps, and `npm run migrate -- --contract` the contract ones.
 - `mysql`: deprecated and refused (phase 1 of #576, issue #590). A config with `"store": { "type": "mysql", … }` fails at startup with one line naming `"store": { "type": "sqlite" }`. Setup, `npm run migrate` and teardown have no MySQL path, and no `MYSQL_*` key is read from the secret file. The plugin and `MysqlDriver` stay, selected by nothing, until a later phase removes them; an existing MySQL database is not copied.
+  - Secrets: `MYSQL_PASSWORD` (still declared by the plugin; nothing reads it while `mysql` is refused).
 
 Switch back / disable: none. A store cannot be disabled: the factory has no state without one.
 
