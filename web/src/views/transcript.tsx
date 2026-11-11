@@ -113,7 +113,7 @@ export function StepView({ step }: { step: TranscriptStep }) {
       <p className="mb-1 flex flex-wrap items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
         <span className="font-medium">{KIND_LABEL[step.kind]}</span>
         {step.tool && <Badge>{step.tool}</Badge>}
-        {step.is_error && <Badge level="needs_human">error</Badge>}
+        {step.is_error && <Badge level="needs_you">error</Badge>}
         {step.truncated && <span>(cut to fit one page)</span>}
       </p>
       {body}

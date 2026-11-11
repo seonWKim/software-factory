@@ -6,6 +6,7 @@ import { commandFooter, commandState, retryPathsReply } from "../../../core/comm
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
+import { dependencyStop } from "./dependency-stop.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
@@ -926,12 +927,11 @@ export class RunResultsUnit {
   }
 
   /**
-   * An implement, review or resolve run that returned needs_human (issue #167, decided 2026-11-07). The
-   * worker pushed nothing. The item keeps its stage and blocks on a human with `agent_needs_human`; nothing is
-   * queued. One comment, keyed on the run, gives the agent's reason and question (left out if the egress scan
-   * flags them) and the command footer. The run's tokens are added as for any finished run; the ack fences it.
+   * An implement, review or resolve run that returned needs_human (issue #167): nothing pushed or queued, blocked on `agent_needs_human`, one comment (keyed on
+   * the run) with the reason and question unless the scan flags them, and the footer. An implement stop on an open dependency waits instead (dependency-stop.ts).
    */
   async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
+    const waits = await dependencyStop(this.c, it, run, ask, tokens); if (waits) return waits;
     const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
     const footer = commandFooter(commandState({ ...it, ...patch }, run.kind));
     const answer = run.kind === "resolve"
