@@ -4,7 +4,7 @@
 
 import { CHILD_ERROR_MESSAGE } from "./interfaces/updater.js";
 import { CODE_ROOT_ENV, cliConfig, loadConfig } from "./compose.js";
-import { loadCommands } from "./cli/index.js";
+import { loadCommands, resolveCommand } from "./cli/index.js";
 import { SUPERVISED_ENV } from "./supervisor.js";
 
 const HEADER = `factory [--config <path>] <command>
@@ -18,14 +18,15 @@ async function main(argv: readonly string[]): Promise<number> {
   const { args: [cmd, ...args], configFile } = cliConfig(argv, process.env, process.cwd());
   const commands = await loadCommands();
   const usage = `${HEADER}\n${[...new Set(commands.values())].map((c) => c.usage).join("\n")}`;
-  const command = cmd === undefined ? undefined : commands.get(cmd);
-  if (!command) {
+  // An unknown first word is the sentence form, `factory "<words>"` (resolveCommand).
+  const found = resolveCommand(commands, cmd, args);
+  if (!found) {
     console.log(usage);
     return cmd ? 1 : 0;
   }
   // The supervisor sets the code root (its runtime copy) for its child; the cwd stays the main checkout.
   const load = () => loadConfig(process.cwd(), { codeRoot: process.env[CODE_ROOT_ENV], configFile });
-  return command.run(args, { name: cmd!, load, usage });
+  return found.command.run(found.args, { name: found.name, load, usage });
 }
 
 main(process.argv.slice(2)).then(

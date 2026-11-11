@@ -11,8 +11,22 @@ import type { CommandName } from "./commands.js";
 /** Who may run a command: anyone, the holder of an action's role, or the local owner. */
 export type CommandWho = "anyone" | "submit_work" | "approve_spec" | "approve_merge" | "owner";
 
-/** The CLI handler that runs it: local tasks, item commands, local users, or settings and the mode. */
-export type CommandGroup = "task" | "item" | "users" | "settings";
+/**
+ * The CLI handler that runs it: local tasks, item commands, local users, settings and the mode, or (`sentence`) the
+ * plain-words reader, which `factory` runs for any first word no handler claims (src/main.ts).
+ */
+export type CommandGroup = "task" | "item" | "users" | "settings" | "sentence";
+
+/** The sentence form's name: `factory "<words>"`, a command in the owner's own words (design 04-gate-commands). */
+export const SENTENCE_FORM = '"<words>"';
+
+/**
+ * The dashboard's app commands beside the item commands (design 09-dashboard-app): the command box's sentence, read by
+ * the controller's plain-words reader, and a stored proposal's Cancel. A proposal's Confirm all is `proposal_confirm`,
+ * the confirm command row's own name (CONFIRM_COMMAND).
+ */
+export const SENTENCE_APP_COMMAND = "sentence";
+export const CANCEL_APP_COMMAND = "proposal_cancel";
 
 /**
  * What the chat form takes after its words: nothing, one ID, free text (notes, feedback, a reason), any words
@@ -90,6 +104,19 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     name: "merge", args: "<id>", who: "approve_merge", group: "item",
     does: "Merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself)",
     prints: ITEM_PRINTS, chat: "merge", chat_args: "none", item: true, edge: false,
+  },
+  {
+    name: SENTENCE_FORM, args: "", who: "approve_spec", group: "sentence",
+    does: "Read a command in your own words with the plain-words reader; in chat, a reply with no mention in an item's thread the factory owns. " +
+      "Nothing changes: each proposed command is stored as pending until it is confirmed",
+    prints: "each proposed command as its typed line, with the proposal ID to confirm", chat: "<command in your own words>", chat_args: "request",
+    item: false, edge: false,
+  },
+  {
+    name: "confirm", args: "<proposal-id>", who: "approve_spec", group: "item",
+    does: "Confirm a stored proposal: the controller applies each of its pending commands once, through the typed command's path and check, as you",
+    prints: "the stored command's number, or that nothing is pending; the controller answers a refusal in the item's thread", chat: "confirm <proposal-id>",
+    chat_args: "id", item: false, edge: false,
   },
   {
     name: "users list", args: "", who: "anyone", group: "users", does: "List local users",

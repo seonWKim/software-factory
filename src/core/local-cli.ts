@@ -5,6 +5,7 @@ import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
 import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
+import { CONFIRM_COMMAND, isProposalId } from "./interpret.js";
 import { parseQuickAdd } from "./quick-add.js";
 import { type TaskFields, taskLine } from "./tasks.js";
 
@@ -15,7 +16,8 @@ import { type TaskFields, taskLine } from "./tasks.js";
  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
- * issue #523). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
+ * issue #523). `confirm <proposal-id>` appends one `proposal_confirm` row for a stored proposal with a pending command
+ * (design 04-gate-commands, the CLI sentence form). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
  * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
  * answers (design 05-sources, CLI intake); a verdict is not mirrored. Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
@@ -67,11 +69,14 @@ export function isCliCommandKey(key: string): boolean {
 }
 const USER_ID = /^[a-z]+:\S+$/;
 
-/** The top-level words `factory` hands to this module: the table's task, item and users commands. */
+/** The top-level words `factory` hands to this module: the table's task, item (with `confirm`) and users commands. */
 export const CLI_TOP_WORDS = topWords(["task", "item", "users"]);
 
 /** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
 export const HELP_WORD = "help";
+
+/** `factory confirm <proposal-id>`: confirms every pending command of a stored proposal. */
+export const CONFIRM_WORD = "confirm";
 
 const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict"] as const;
 
@@ -86,6 +91,7 @@ export type CliAction =
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
+  | { action: "confirm"; proposal: string }
   | { action: "users_list" }
   | { action: "users_add"; user: UserId; role: Exclude<LocalRole, "owner"> }
   | { action: "users_remove"; user: UserId };
@@ -149,6 +155,9 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (args.length > 1) return bad("help takes at most one work item ID");
     return { action: "help", id: (args[0] as WorkItemId | undefined) ?? null };
   }
+  if (word === CONFIRM_WORD) {
+    return args.length === 1 && isProposalId(args[0]!) ? { action: "confirm", proposal: args[0]! } : bad("confirm needs one proposal ID, as `factory \"<words>\"` printed it");
+  }
   if (word === MERGE_COMMAND) {
     const [id, ...rest] = args;
     if (!id || rest.length > 0) return bad("merge needs one work item ID");
@@ -173,7 +182,7 @@ export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
-    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask"
+    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask" | "listCommandProposals"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -268,6 +277,22 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
         code: 0,
         lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
       };
+    }
+    case "confirm": {
+      const rows = await d.store.listCommandProposals(a.proposal);
+      if (rows.length === 0) return fail(`no proposal ${a.proposal}`);
+      const pending = rows.filter((r) => r.status === "pending");
+      if (pending.length === 0) {
+        return { code: 0, lines: [`nothing was applied: every command of ${a.proposal} was already applied or answered`, ...rows.map((r) => `  ${r.work_item_id}\t/${r.command}${r.args ? ` ${r.args}` : ""}\t${r.status}`)] };
+      }
+      await claim();
+      // The controller's confirm path (src/controller/units/commands/proposals.ts) claims and applies each pending row,
+      // and answers a refusal in the thread of the first pending command's item.
+      const passport_id = await d.passport?.();
+      const args = { item: pending[0]!.work_item_id, proposal: a.proposal };
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args, ...(passport_id ? { passport_id } : {}) });
+      const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
+      return { code: 0, lines: [`stored \`factory confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
