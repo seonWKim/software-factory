@@ -29,6 +29,14 @@ export interface TargetDeps {
   readonly repo: string;
   /** The factory repo's merge and base push (RFC 0015 M8, the `local` target); null when this process has none. */
   readonly git?: LocalGit | null;
+  /** The owner's tacit ledger (issue #570, a TacitLedger); absent or not enabled: no capture is delivered here. */
+  readonly tacit?: TacitCapture | null;
+}
+
+/** What the tacit target needs of the owner's ledger: whether there is one, and its capture. */
+export interface TacitCapture {
+  readonly enabled: boolean;
+  capture(p: { session: string; proposal: string; pushback: string }): Promise<void>;
 }
 
 /**
@@ -63,6 +71,8 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
     case "merge":
     case "push_base":
       throw new Error(`a ${row.action} goes through the local target`);
+    case "tacit_capture":
+      throw new Error("a tacit_capture goes through the tacit target");
   }
 }
 

@@ -24,7 +24,7 @@ import type { Run, SourceType, WorkItemId } from "../../core/types.js";
 import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
-  GIT_TARGET, LOCAL_GIT_HOST, OUTBOUND, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, localGit, policyFor, recordAction,
+  GIT_TARGET, LOCAL_GIT_HOST, OUTBOUND, TACIT_TARGET, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, localGit, policyFor, recordAction,
 } from "../../outbound/index.js";
 import { envelope, newMessageId, type Envelope } from "../../shared/envelope.js";
 import { TimeBasedTicks } from "../../shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -463,11 +463,13 @@ export class ControllerRole implements Decisions {
     });
     const own = d.git_host && !d.git_host.flush_all ? [`${GIT_TARGET}:${d.git_host.id}`, `${GIT_TARGET}:${LOCAL_GIT_HOST}`] : [GIT_TARGET];
     const pushes = this.kernel.forge?.pushBranch || git ? own : [];
+    // The owner's ledger (issue #570): its captures are flushed by the process that holds the plugin.
+    const ledger = d.tacit?.enabled ? [TACIT_TARGET] : [];
     const outbound = new Outbound({
       db,
       bus: outboundBus,
       store: d.store,
-      targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge, repo: this.kernel.cfg.repo.path, git }),
+      targets: buildTargets({ byType: this.kernel.byType, forge: this.kernel.forge, repo: this.kernel.cfg.repo.path, git, tacit: d.tacit ?? null }),
       ...(d.outbound_auth ? { authorize: d.outbound_auth } : {}),
       scanner: d.scanner,
       log: d.log,
@@ -476,7 +478,7 @@ export class ControllerRole implements Decisions {
         return { lease_ms: c.lease_ms, retry_base_ms: c.retry_base_ms, retry_max_ms: c.retry_max_ms, project_key: c.project.key };
       },
       canSend,
-      kinds: () => [...[...new Set([...this.kernel.byType.keys(), ...(this.kernel.forge ? [SYNCED] : [])])].filter(canSend), ...pushes],
+      kinds: () => [...[...new Set([...this.kernel.byType.keys(), ...(this.kernel.forge ? [SYNCED] : [])])].filter(canSend), ...pushes, ...ledger],
       fenceFor: (type) => sync.fenceFor(type),
       fenceRefused: (fence) => sync.fenceRefused(fence),
     });
