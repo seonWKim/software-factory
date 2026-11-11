@@ -181,7 +181,12 @@ export async function gateAnswerer(o: GateHooksOptions, signal: AbortSignal): Pr
       const r = await g.on_tool_call.run([tool, path], budget).catch((err: unknown) => ({
         check: g.on_tool_call!.checks.join(", "), reason: `pack_check_error: ${err instanceof Error ? err.message : String(err)}`,
       }));
-      if (r) return { output: denyOutput(packRefusal(r.check, r.reason)), block: { hook: "pre_tool_use", check: `pack:${r.check}` } };
+      if (r) {
+        // The check's output goes through the egress scanner first, as a failing check's tail does (G5).
+        const clean = o.scanner ? (await o.scanner.scan("log", r.reason).catch(() => ({ clean: false }))).clean : false;
+        const why = clean ? r.reason : "(its output is withheld: the factory's leak scanner flagged it)";
+        return { output: denyOutput(packRefusal(r.check, why)), block: { hook: "pre_tool_use", check: `pack:${r.check}` } };
+      }
     }
     if (editCovered(path, workdirs, g.allowed_paths)) return null;
     return { output: denyOutput(pathRefusal(g.allowed_paths)), block: { hook: "pre_tool_use", check: "allowed_paths" } };

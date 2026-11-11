@@ -587,6 +587,7 @@ const CHECK_SCRIPT = `import { relative } from "node:path";
 const [mode, allowed, tool, file] = process.argv.slice(2);
 if (mode === "crash") process.kill(process.pid, "SIGKILL");
 else if (mode === "hang") setInterval(() => {}, 1000);
+else if (mode === "leak") { console.error("found " + allowed); process.exit(1); }
 else if (mode === "args") { console.log(JSON.stringify(process.argv.slice(2))); process.exit(0); }
 else if (mode === "scope") {
   const rel = relative(process.cwd(), file);
@@ -665,6 +666,17 @@ for (const mode of MODES) describe(`gate hooks: on_tool_call pack checks (${mode
       expect(refusal, m).toContain(why);
       expect(existsSync(join(f.workdir, "src", "a.ts")), m).toBe(false);
     }
+  });
+
+  it("a refusal reason the egress scanner flags is withheld from the agent", async () => {
+    const f = packSetup("leak", TOKEN);
+    let refusal: string | null = null;
+    f.sandbox.agent = async (a) => {
+      refusal = await a.write("Edit", join(a.workdir, "src", "a.ts"));
+    };
+    await drive(f, mode);
+    expect(refusal).toContain("The pack check scope-check refused this edit: (its output is withheld");
+    expect(refusal).not.toContain(TOKEN);
   });
 
   it("a pass approves nothing: the allowed_paths check still refuses, and an edit inside both goes ahead", async () => {
