@@ -2018,6 +2018,42 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  describe("posted comment reads (issue #524): by comment ID, and in a time window", () => {
+    const DAY = 24 * 60 * 60 * 1000;
+    const post = (store: FactoryStore, source_id: string, marker: string, comment_id: string) =>
+      store.recordPostedComment({ source_id, marker, comment_id, url: `https://github.com/${source_id.replace("#", "/pull/")}#issuecomment-${comment_id}`, body: "b" });
+
+    it("lists the posted records of one comment ID, oldest first; failed-only rows are left out", async () => {
+      const { store, clock } = await make();
+      await post(store, "slack:T1:C1:1.1", "m1", "2.2");
+      clock.advance(1000);
+      await post(store, "slack:T1:C1:1.1", "slack:done:2.2:", "2.2");
+      await post(store, "slack:T1:C1:1.1", "m3", "3.3");
+      await store.recordCommentFailure("slack:T1:C1:1.1", "m4", 1, 1000);
+      const rows = await store.listPostedCommentsById("2.2");
+      expect(rows.map((r) => [r.marker, r.source_id])).toEqual([["m1", "slack:T1:C1:1.1"], ["slack:done:2.2:", "slack:T1:C1:1.1"]]);
+      expect(await store.listPostedCommentsById("9.9")).toEqual([]);
+      expect(await store.listPostedCommentsById("")).toEqual([]);
+    });
+
+    it("lists the comments posted on one source prefix within the window, oldest first", async () => {
+      const { store, clock } = await make();
+      await post(store, "o/r#1", "old", "10");
+      clock.advance(DAY);
+      await post(store, "o/r#2", "recent", "11");
+      await post(store, "x/y#2", "other repo", "12");
+      // A repository whose name starts like ours is not ours.
+      await post(store, "o/r2#3", "prefix lookalike", "13");
+      await store.recordCommentFailure("o/r#4", "failed", 1, 1000);
+      clock.advance(DAY);
+      await post(store, "o/r#5", "newest", "14");
+      expect((await store.listPostedComments("o/r#", 7 * DAY)).map((r) => r.marker)).toEqual(["old", "recent", "newest"]);
+      // Older than the window: left out.
+      expect((await store.listPostedComments("o/r#", DAY + 1)).map((r) => r.marker)).toEqual(["recent", "newest"]);
+      expect(await store.listPostedComments("z/z#", 7 * DAY)).toEqual([]);
+    });
+  });
+
   describe("base pushes (RFC 0015 M8): the item's newest push_base action, as the status page reads it", () => {
     it("pending with its batch's failed tries, then pushed or a conflict once delivered; none when the merge stored none", async () => {
       const { store, clock } = await make();

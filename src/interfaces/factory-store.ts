@@ -15,6 +15,7 @@ import type { MergeEvaluation } from "../core/merge-evaluation.js";
 import type { LearnedSettingsStore } from "../core/learned-settings.js";
 import type { CommandProposalStore } from "../core/interpret.js";
 import type { TaskStore } from "../core/tasks.js";
+import type { PostedCommentReads } from "../core/reaction-verdict.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -344,7 +345,7 @@ export interface SchemaVersion {
   latest: number;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -860,9 +861,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 
-  // Sync source records (design §5, call budget): the comments a source posted and the status labels it
-  // wrote, shared by every replica, so a restart or another replica needs no thread or label read to know them.
-  // Keyed by the item's source id. Only a sync source with this need writes them, so a setup without it writes no rows.
+  // Sync source records (design §5, call budget; their reads by comment ID and time window: PostedCommentReads): the comments a source
+  // posted and the labels it wrote, shared by every replica, so none needs a thread or label read to know them. Keyed by source id; only a sync source writes them.
 
   /**
    * The comment with `marker` on `source_id`, or a row of failed posts only (`comment_id` null). `same_body`

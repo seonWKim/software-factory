@@ -438,7 +438,7 @@ Off by default; nothing changes until you turn it on. Once on, mentioning the bo
 
 One-time Slack app setup, details in [`docs/slack-setup.md`](docs/slack-setup.md) (mostly `scripts/slack-app.sh create|tokens|check`):
 
-1. **The app, from the manifest** ([`slack/manifest.json`](slack/manifest.json)): Socket Mode on (no public URL or open port), interactivity on (for the buttons), bot scopes `app_mentions:read`, `channels:history`, `chat:write`, `im:write`, `reactions:write`, events `app_mention` and `message.channels`.
+1. **The app, from the manifest** ([`slack/manifest.json`](slack/manifest.json)): Socket Mode on (no public URL or open port), interactivity on (for the buttons), bot scopes `app_mentions:read`, `channels:history`, `groups:history`, `chat:write`, `im:write`, `reactions:read`, `reactions:write`, events `app_mention`, `message.channels`, `message.groups` and `reaction_added` (a 👍 or 👎 on a factory message is a verdict). An app installed before `reactions:read` and `reaction_added` were added must be updated from the manifest and reinstalled to get them.
 2. **The tokens go in the secret file** (`~/.config/software-factory/.env`, never in the repository), through `scripts/slack-app.sh tokens`:
    - `SLACK_BOT_TOKEN` (`xoxb-…`, OAuth & Permissions page): reads threads and posts in them.
    - `SLACK_APP_TOKEN` (`xapp-…`, Basic Information → App-Level Tokens, scope `connections:write`): opens the Socket Mode connection.

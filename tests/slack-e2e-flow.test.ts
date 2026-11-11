@@ -180,6 +180,28 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     expect(verdict?.actor).toEqual({ kind: "user", id: OWNER });
   });
 
+  it("a 👍 on the factory's review message stores accept for the PR head; a 👎 on the spec asks for the severity once", async () => {
+    const f = await slackFactory();
+    await linked(f);
+    await f.deliver(eventEnvelope(mention(ROOT, "please add a scope gate")));
+    await f.deliver(eventEnvelope(mention("1800000001.000200", "/approve", { thread_ts: ROOT })));
+    const review = f.api.thread(ROOT).find((m) => m.text?.startsWith("*Factory review"))!;
+    const spec = f.api.thread(ROOT).find((m) => m.text?.startsWith("*Factory spec"))!;
+    const reacted = (ts: string, emoji: string) =>
+      eventEnvelope({ type: "reaction_added", user: "U0ALICE", reaction: emoji, item: { type: "message", channel: CHANNEL, ts }, item_user: BOT, event_ts: "1800000900.000100" });
+    const before = f.api.thread(ROOT).length;
+    await f.deliver(reacted(review.ts, "+1"));
+    const it0 = await item(f);
+    expect((await f.store.listVerdicts(it0.id)).map((v) => [v.verdict, v.severity, v.target, v.pr_head])).toEqual([["accept", "none", "issue", it0.last_head_sha]]);
+    expect(f.api.thread(ROOT)).toHaveLength(before);
+
+    await f.deliver(reacted(spec.ts, "-1"));
+    await f.deliver(reacted(spec.ts, "-1"));
+    expect(f.api.thread(ROOT).filter((m) => m.text?.includes("/verdict changes"))).toHaveLength(1);
+    expect(await f.store.listVerdicts(it0.id)).toHaveLength(1);
+    expect(f.log.lines.filter((l) => l.level === "error")).toEqual([]);
+  });
+
   it("a planted secret in a run's output never reaches Slack: the worker's egress guard fails the run first", async () => {
     const f = await slackFactory();
     f.runner.script.triage = () => ({ output: { ...triageSpec, problem: `Add a CI scope gate using ${PLANTED}` } });
