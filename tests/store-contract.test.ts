@@ -2026,9 +2026,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     const post = (store: FactoryStore, source_id: string, marker: string, comment_id: string) =>
       store.recordPostedComment({ source_id, marker, comment_id, url: `https://github.com/${source_id.replace("#", "/pull/")}#issuecomment-${comment_id}`, body: "b" });
 
-    it("lists the posted records of one comment ID, oldest first, with their post time; failed-only rows are left out", async () => {
+    it("lists the posted records of one comment ID, oldest first; failed-only rows are left out", async () => {
       const { store, clock } = await make();
-      const t0 = clock.now().toISOString();
       await post(store, "slack:T1:C1:1.1", "m1", "2.2");
       clock.advance(1000);
       await post(store, "slack:T1:C1:1.1", "slack:done:2.2:", "2.2");
@@ -2036,9 +2035,8 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
       await store.recordCommentFailure("slack:T1:C1:1.1", "m4", 1, 1000);
       const rows = await store.listPostedCommentsById("2.2");
       expect(rows.map((r) => [r.marker, r.source_id])).toEqual([["m1", "slack:T1:C1:1.1"], ["slack:done:2.2:", "slack:T1:C1:1.1"]]);
-      expect(rows[0]!.posted_at).toBe(t0);
       expect(await store.listPostedCommentsById("9.9")).toEqual([]);
-      expect((await store.getPostedComment("slack:T1:C1:1.1", "m4", ""))!.posted_at).toBeNull();
+      expect(await store.listPostedCommentsById("")).toEqual([]);
     });
 
     it("lists the comments posted on one source prefix within the window, oldest first", async () => {

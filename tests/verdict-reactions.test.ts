@@ -3,14 +3,16 @@
 
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { REACTION_WINDOW_MS, SEVERITY_FOLLOW_UP, followUpKey, inReactionWindow, reactionKey, reactionOutcome, verdictReaction } from "../src/core/reaction-verdict.js";
+import { REACTION_WINDOW_MS, inReactionWindow, reactionKey, reactionVerdict, verdictReaction } from "../src/core/reaction-verdict.js";
+import { SEVERITY_FOLLOW_UP } from "../src/controller/units/verdicts/verdicts.unit.js";
 import type { UserId, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import type { SourceEvent, SourceRef } from "../src/interfaces/source-adapter.js";
+import type { SourceEvent } from "../src/interfaces/source-adapter.js";
+import type { SourceRef } from "../src/core/types.js";
 import { FakeSource, cleanScanner, config, issueRef, recordingLog, silent } from "./helpers/fakes.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 import { CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope } from "./helpers/slack.js";
@@ -40,12 +42,11 @@ describe("reaction → verdict mapping (src/core/reaction-verdict.ts)", () => {
     for (const e of ["eyes", "heart", "laugh", "rocket", "", "+10"]) expect(verdictReaction(e)).toBeNull();
   });
 
-  it("👍 is accept with severity none; 👎 asks for the severity with fixed text", () => {
-    expect(reactionOutcome("+1")).toEqual({ kind: "record", verdict: { verdict: "accept", severity: "none", reason: null } });
-    expect(reactionOutcome("-1")).toEqual({ kind: "ask", body: SEVERITY_FOLLOW_UP });
+  it("👍 is accept with severity none; 👎 stores nothing at once (it asks for the severity)", () => {
+    expect(reactionVerdict("+1")).toEqual({ verdict: "accept", severity: "none", reason: null });
+    expect(reactionVerdict("-1")).toBeNull();
     expect(SEVERITY_FOLLOW_UP).toContain("/verdict changes <severity> <reason>");
     expect(reactionKey("77")).toBe("reaction:77");
-    expect(followUpKey(reactionKey("77"))).toBe("severity-reaction:77");
   });
 
   it("reads a reaction up to 7 days after the message", () => {
@@ -59,7 +60,7 @@ describe("reaction → verdict mapping (src/core/reaction-verdict.ts)", () => {
 const PR = 42;
 const COMMENT = "900";
 const REACTIONS = `/repos/o/r/issues/comments/${COMMENT}/reactions`;
-const FOLLOW_UP = (reaction_id: number) => `<!-- factory:${followUpKey(reactionKey(String(reaction_id)))} -->`;
+const FOLLOW_UP = (reaction_id: number) => `<!-- factory:severity-reaction:${reaction_id} -->`;
 const person = (id: number, login: string) => ({ id, login, type: "User" });
 const reaction = (id: number, content: string, user: { id: number; login: string; type: string } | null = person(1, "alice")) => ({ id, content, user });
 
@@ -233,7 +234,7 @@ describe("GitHub: reactions on the factory's PR comments", () => {
     const events = await g.tick();
     expect(events).toEqual([{
       kind: "verdict_submitted", target: { kind: "pr", change_ref: "42" }, comment_id: "reaction:320",
-      approver: { provider: "github", subject: "1", login: "alice" }, reaction: "+1",
+      approver: { provider: "github", subject: "1", login: "alice" }, reaction: "+1", verdict: { verdict: "accept", severity: "none", reason: null },
     }]);
     // The next poll's cursor holds the reaction's mark: the same reaction is not delivered again.
     expect(await g.tick()).toEqual([]);

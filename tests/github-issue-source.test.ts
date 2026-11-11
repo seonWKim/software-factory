@@ -811,7 +811,7 @@ describe("GitHubIssueSource: reactions on the factory's PR comments (issue #524)
     ]);
     expect(first.events.filter((e) => e.kind === "verdict_submitted")).toEqual([{
       kind: "verdict_submitted", target: { kind: "pr", change_ref: "42" }, comment_id: "reaction:1",
-      approver: { provider: "github", subject: "1", login: "alice" }, reaction: "+1",
+      approver: { provider: "github", subject: "1", login: "alice" }, reaction: "+1", verdict: { verdict: "accept", severity: "none", reason: null },
     }]);
 
     f.gh.state.calls = [];

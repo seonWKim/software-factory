@@ -4,7 +4,7 @@ import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { incompleteLabel } from "../../core/pr-body.js";
 import { workItemIdFromBranch } from "../../core/policy.js";
-import { REACTION_WINDOW_MS, reactionKey, verdictReaction } from "../../core/reaction-verdict.js";
+import { type ListedReaction, REACTION_WINDOW_MS, changeComments, newReactionEvents } from "../../core/reaction-verdict.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
 import type { Logger } from "../../core/log.js";
 import type { DependencyState, SourceRef, WorkItemId } from "../../core/types.js";
@@ -78,12 +78,6 @@ interface GhPullHead {
   number: number;
   head: { ref: string };
 }
-/** A reaction as the comment reactions list returns it; `user` is null for a deleted account. */
-interface GhReaction {
-  id: number;
-  content: string;
-  user: GhUser | null;
-}
 interface GhCommit {
   sha: string;
   commit: { message: string; committer: { date: string } | null };
@@ -121,11 +115,7 @@ interface Cursor {
    * catch-up allowance (GitHubClient.takeCatchUp), and the cursor stops at the last one read. Absent: caught up.
    */
   closed_catch_up?: boolean;
-  /**
-   * Per factory PR comment whose reactions were read (issue #524), the highest reaction id already delivered.
-   * Only comments still in the 7-day window are kept. Absent: none read yet.
-   */
-  reactions?: Record<string, number>;
+  reactions?: Record<string, number> | undefined; // Per factory PR comment of the last 7 days, its highest reaction id delivered.
 }
 
 /** What the GitHub forge's poll needs beyond the client: the Clock the starting point comes from, `github.history_since`, a log. */
@@ -280,10 +270,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     // In comment-id order, so the commands of one poll are applied in the order they were written (issue #284).
     read.sort((a, b) => a.cm.id - b.cm.id);
     for (const r of read) events.push(...(await this.recordComment(r)));
-
-    const marks = await this.readReactions(c.reactions ?? {}, events);
-    if (marks && Object.keys(marks).length > 0) next.reactions = marks;
-    else delete next.reactions;
+    next.reactions = this.store && !this.client.lowBudget() ? await this.readReactions(this.store, c.reactions ?? {}, events) : c.reactions;
 
     // Commits on the base branch, for revert tracking (design §6). Newest first; delivered oldest first.
     // Under the budget threshold the cursor stays put, so the next poll reads them. With no cursor yet (a first
@@ -314,41 +301,16 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     return { events, next_cursor: JSON.stringify(next) };
   }
 
-  /**
-   * 👍 and 👎 on the factory's PR comments (design §4, issue #524): the comments the store records as posted on a PR
-   * of this repository in the last 7 days, each read with one GET of its reactions per poll (a conditional request:
-   * an unchanged list is a 304, not counted against the rate limit). Each new 👍 or 👎 by a person, above the
-   * comment's mark, becomes one `verdict_submitted` reaction event on the PR. Other emoji, the bot's own 👀 and other
-   * bots are passed over. Returns the new marks; null with no store (no records to read). Under `lowBudget()` nothing
-   * is read and the marks are kept. A comment that is gone (404) is skipped.
-   */
-  private async readReactions(seen: Record<string, number>, events: SourceEvent[]): Promise<Record<string, number> | null> {
-    if (!this.store) return null;
-    if (this.client.lowBudget()) return seen;
-    const base = `/repos/${this.repo.owner}/${this.repo.name}`;
+  /** 👍/👎 on the factory's PR comments of the last 7 days (issue #524, design 05-sources): one conditional GET each per poll. */
+  private async readReactions(store: FactoryStore, seen: Record<string, number>, events: SourceEvent[]): Promise<Record<string, number> | undefined> {
     const marks: Record<string, number> = {};
-    for (const posted of await this.store.listPostedComments(`${this.repo.owner}/${this.repo.name}#`, REACTION_WINDOW_MS)) {
-      const pr = /\/pull\/(\d+)(?:#|$)/.exec(posted.url ?? "")?.[1];
-      const id = posted.comment_id;
-      if (!pr || id === null || id in marks) continue;
-      let reactions: GhReaction[];
-      try {
-        reactions = await this.client.list<GhReaction>(`${base}/issues/comments/${encodeURIComponent(id)}/reactions`, 1);
-      } catch (err) {
-        if (err instanceof GitHubError && err.status === 404) continue;
-        throw err;
-      }
-      const mark = seen[id] ?? 0;
-      marks[id] = mark;
-      for (const r of [...reactions].sort((a, b) => a.id - b.id)) {
-        if (r.id <= mark) continue;
-        marks[id] = r.id;
-        const reaction = verdictReaction(r.content);
-        if (reaction === null || r.user === null || r.user.type === "Bot") continue;
-        events.push({ kind: "verdict_submitted", target: { kind: "pr", change_ref: pr }, comment_id: reactionKey(String(r.id)), approver: identity(r.user), reaction });
-      }
+    for (const { comment_id, change_ref } of changeComments(await store.listPostedComments(`${this.repo.owner}/${this.repo.name}#`, REACTION_WINDOW_MS))) {
+      const list = await this.optionalList<ListedReaction>(`/repos/${this.repo.owner}/${this.repo.name}/issues/comments/${encodeURIComponent(comment_id)}/reactions`);
+      const r = newReactionEvents(list, seen[comment_id] ?? 0, { kind: "pr", change_ref }, identity);
+      marks[comment_id] = r.mark;
+      events.push(...r.events);
     }
-    return marks;
+    return Object.keys(marks).length > 0 ? marks : undefined;
   }
 
   /**
@@ -370,7 +332,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
       if (target.kind === "pr") pr = { change_ref: target.change_ref, head_branch: target.head_branch };
     } else if (onPr && parsed.kind === "command" && (parsed.name === "revise" || parsed.name === "resolve")) {
       // `/revise`: any PR of this repository (factory or adopted); `/resolve`: factory PRs only.
-      pr = parsed.name === "revise" ? await this.pullHead(base, n) : await this.factoryPull(base, n);
+      pr = await this.pullHead(base, n, parsed.name === "resolve");
       if (!pr) return null;
     }
     const command = githubCommand({
@@ -414,27 +376,13 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   }
 
   /**
-   * The PR's number and head branch if it is a factory PR; null for another PR or one that is gone (404), so
-   * a stray comment cannot wedge the poll. Other errors are thrown and the poll is retried.
+   * The PR's number and head branch (with `factoryOnly`, only on a factory branch); null for another PR or one that is
+   * gone (404), so a stray comment cannot wedge the poll. Other errors are thrown and the poll is retried.
    */
-  private async factoryPull(base: string, n: number): Promise<CommandPr | null> {
+  private async pullHead(base: string, n: number, factoryOnly: boolean): Promise<CommandPr | null> {
     try {
       const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
-      return p.head.ref.startsWith(this.branchPrefix) ? { change_ref: String(p.number), head_branch: p.head.ref } : null;
-    } catch (err) {
-      if (err instanceof GitHubError && err.status === 404) return null;
-      throw err;
-    }
-  }
-
-  /**
-   * The PR's number and head branch, whatever the branch; null for one that is gone (404). Other errors are
-   * thrown and the poll is retried.
-   */
-  private async pullHead(base: string, n: number): Promise<CommandPr | null> {
-    try {
-      const p = await this.client.request<GhPullHead>("GET", `${base}/pulls/${n}`);
-      return { change_ref: String(p.number), head_branch: p.head.ref };
+      return !factoryOnly || p.head.ref.startsWith(this.branchPrefix) ? { change_ref: String(p.number), head_branch: p.head.ref } : null;
     } catch (err) {
       if (err instanceof GitHubError && err.status === 404) return null;
       throw err;
@@ -682,9 +630,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const issue = await this.client.request<Pick<GhIssue, "pull_request">>("GET", `${base}/issues/${number}`);
     if (!issue.pull_request) return { kind: "issue", source: this.ref(number) };
-    const pull = await this.client.request<GhPullHead>("GET", `${base}/pulls/${number}`);
-    if (!pull.head.ref.startsWith(this.branchPrefix)) return null;
-    return { kind: "pr", change_ref: String(number), head_branch: pull.head.ref };
+    const pr = await this.pullHead(base, number, true);
+    return pr && { kind: "pr", ...pr };
   }
 
   private ref(number: number): SourceRef {

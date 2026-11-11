@@ -14,6 +14,7 @@ import type { StatsRecord } from "../core/stats.js";
 import type { MergeEvaluation } from "../core/merge-evaluation.js";
 import type { LearnedSettingsStore } from "../core/learned-settings.js";
 import type { CommandProposalStore } from "../core/interpret.js";
+import type { PostedCommentReads } from "../core/reaction-verdict.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -344,7 +345,7 @@ export interface SchemaVersion {
   latest: number;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, PostedCommentReads {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -860,9 +861,8 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** The latest results of the given items (those with one), in no set order. Read-only. */
   listMergeChecks(work_item_ids: readonly WorkItemId[]): Promise<MergeCheck[]>;
 
-  // Sync source records (design §5, call budget): the comments a source posted and the status labels it
-  // wrote, shared by every replica, so a restart or another replica needs no thread or label read to know them.
-  // Keyed by the item's source id. Only a sync source with this need writes them, so a setup without it writes no rows.
+  // Sync source records (design §5, call budget; their reads by comment ID and time window: PostedCommentReads): the comments a source
+  // posted and the labels it wrote, shared by every replica, so none needs a thread or label read to know them. Keyed by source id; only a sync source writes them.
 
   /**
    * The comment with `marker` on `source_id`, or a row of failed posts only (`comment_id` null). `same_body`
@@ -875,16 +875,6 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    * posted keeps its first record, so a second call changes nothing.
    */
   recordPostedComment(input: NewPostedComment): Promise<void>;
-  /**
-   * The posted records whose comment ID is `comment_id`, oldest first (a Slack message's ts can be recorded under
-   * more than one marker, e.g. its button update). Rows of failed posts only are never returned. Read-only.
-   */
-  listPostedCommentsById(comment_id: string): Promise<PostedComment[]>;
-  /**
-   * The comments posted on sources whose id starts with `source_prefix` (e.g. `owner/name#`) in the last
-   * `within_ms` by the store clock, oldest first. Rows of failed posts only are never returned. Read-only.
-   */
-  listPostedComments(source_prefix: string, within_ms: number): Promise<PostedComment[]>;
   /**
    * Records failed post number `attempts`; the next may be tried `delay_ms` after the store clock's now.
    * Conditional: only when the stored count is `attempts - 1` (no row counts as 0), so two replicas recording the
@@ -1091,8 +1081,6 @@ export interface PostedComment {
   attempts: number;
   /** When the next post may be tried; null with no failures. */
   next_attempt_at: Timestamp | null;
-  /** When it was posted (recorded); null on a row of failed posts only. */
-  posted_at: Timestamp | null;
 }
 
 export interface NewItemMessage {

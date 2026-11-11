@@ -118,6 +118,7 @@ import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords 
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
+import * as posted from "./posted-comments.js";
 
 /**
  * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -1936,7 +1937,7 @@ export class SqlFactoryStore implements FactoryStore {
   ): Promise<(PostedComment & { same_body: boolean; waiting: boolean }) | null> {
     const [row] = await this.db.all("SELECT * FROM outbound_deliveries WHERE source_id = ? AND marker = ?", [source_id, marker]);
     if (!row) return null;
-    const c = rowToPostedComment(row);
+    const c = posted.rowToPostedComment(row);
     return { ...c, same_body: c.body_hash === bodyHash(body), waiting: c.next_attempt_at !== null && c.next_attempt_at > this.now() };
   }
 
@@ -1956,20 +1957,15 @@ export class SqlFactoryStore implements FactoryStore {
     if (!(await this.insertOnce(this.db, sql, [...values, now, c.source_id, c.marker]))) await update();
   }
 
-  async listPostedCommentsById(comment_id: string): Promise<PostedComment[]> {
-    const rows = await this.db.all(
-      "SELECT * FROM outbound_deliveries WHERE comment_id = ? ORDER BY created_at, updated_at, marker", [comment_id],
-    );
-    return rows.map(rowToPostedComment);
+  // Their reads for reactions (issue #524), and the row mapper, live in posted-comments.ts.
+
+  listPostedCommentsById(comment_id: string): Promise<PostedComment[]> {
+    return posted.listPostedCommentsById(this.db, comment_id);
   }
 
-  async listPostedComments(source_prefix: string, within_ms: number): Promise<PostedComment[]> {
-    const rows = await this.db.all(
-      `SELECT * FROM outbound_deliveries WHERE comment_id IS NOT NULL AND updated_at >= ? AND SUBSTR(source_id, 1, ?) = ?
-       ORDER BY updated_at, source_id, marker`,
-      [this.after(-within_ms), source_prefix.length, source_prefix],
-    );
-    return rows.map(rowToPostedComment);
+  /** Posted at or after the store clock's now minus `within_ms`. */
+  listPostedComments(source_prefix: string, within_ms: number): Promise<PostedComment[]> {
+    return posted.listPostedComments(this.db, source_prefix, this.after(-within_ms));
   }
 
   async recordCommentFailure(source_id: string, marker: string, attempts: number, delay_ms: number): Promise<boolean> {
@@ -2860,20 +2856,6 @@ function abandonedAttempt(row: Row, outcome: AbandonedAttempt["outcome"]): Aband
 /** A posted comment's body is stored only as this hash: enough to tell that a repeat post changed it. */
 function bodyHash(body: string): string {
   return createHash("sha256").update(body).digest("hex");
-}
-
-function rowToPostedComment(row: Row): PostedComment {
-  return {
-    source_id: row.source_id as string,
-    marker: row.marker as string,
-    comment_id: (row.comment_id as string | null) ?? null,
-    url: (row.url as string | null) ?? null,
-    body_hash: (row.body_hash as string | null) ?? null,
-    attempts: Number(row.attempts),
-    next_attempt_at: (row.next_attempt_at as Timestamp | null) ?? null,
-    // A posted row's updated_at is its post time: recordPostedComment never updates a row that has a comment.
-    posted_at: row.comment_id == null ? null : (row.updated_at as Timestamp),
-  };
 }
 
 function rowToLabelState(row: Row): LabelState {

@@ -4,7 +4,6 @@
 import { prNumber } from "../../../core/change-ref.js";
 import { LOCAL_SOURCE } from "../../../core/local-merge.js";
 import { workItemIdFromBranch } from "../../../core/policy.js";
-import { followUpKey, reactionOutcome } from "../../../core/reaction-verdict.js";
 import { type Actor, type StateChangeDetail, type VerdictKind, type VerdictSeverity, type VerdictTarget, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import { type ParsedVerdict, parseVerdict, verdictRefusal } from "../../../core/verdict.js";
 import type { Principal } from "../../../interfaces/auth-provider.js";
@@ -18,6 +17,13 @@ type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted"; args: string }>;
 /** A 👍 or 👎 on a factory message (issue #524). */
 type ReactionEvent = Extract<SourceEvent, { kind: "verdict_submitted"; reaction: string }>;
+/**
+ * The one reply a 👎 gets (design §4, issue #524): fixed text that quotes nothing the person wrote. Their `/verdict
+ * changes` reply is what stores the verdict; a 👎 with no reply stores nothing.
+ */
+export const SEVERITY_FOLLOW_UP =
+  "Thanks for the 👎. To record it as a verdict, reply `/verdict changes <severity> <reason>`, with severity one of " +
+  "`none`, `minor`, `major` or `critical`. Nothing is stored until you reply.";
 /** Records reverts and fix-forwards (design §6). */
 const LINKS: Actor = { kind: "system", id: "system:links" };
 /** What an implicit verdict says (design §4): its kind and severity, its reason and its event key. */
@@ -80,7 +86,7 @@ export class VerdictsUnit {
   }
 
   /**
-   * A 👍 or 👎 by a person on a factory message (design §4, issue #524), mapped by reactionOutcome. Only a linked
+   * A 👍 or 👎 by a person on a factory message (design §4, issue #524), mapped by the source (reactionVerdict). Only a linked
    * user with `record_verdict` counts; anyone else gets nothing stored and no reply. 👍 stores `accept`/`none` through
    * recordVerdict under the reaction's key; 👎 gets one follow-up asking for the severity, keyed on the reaction, on
    * the PR or in the item's thread (the person's `/verdict changes` reply stores the verdict). An item that takes no
@@ -96,9 +102,8 @@ export class VerdictsUnit {
       this.c.k.d.log.info("reaction ignored", { work_item_id: item.id, reason: principal.refuse });
       return;
     }
-    const out = reactionOutcome(e.reaction);
-    if (out.kind === "record") {
-      const refusal = await this.recordVerdict(item.id, { comment_id: e.comment_id, target: e.target.kind }, principal, out.verdict);
+    if (e.verdict !== null) {
+      const refusal = await this.recordVerdict(item.id, { comment_id: e.comment_id, target: e.target.kind }, principal, e.verdict);
       if (refusal !== null) this.c.k.d.log.info("reaction verdict not stored", { work_item_id: item.id, reason: refusal });
       return;
     }
@@ -107,8 +112,9 @@ export class VerdictsUnit {
       this.c.k.d.log.info("reaction follow-up not posted", { work_item_id: item.id, reason: closed });
       return;
     }
-    if (e.target.kind === "pr") await this.c.unit("outbox").prComment(item, followUpKey(e.comment_id), out.body);
-    else await this.c.unit("outbox").comment(item, followUpKey(e.comment_id), out.body);
+    const key = `severity-${e.comment_id}`;
+    if (e.target.kind === "pr") await this.c.unit("outbox").prComment(item, key, SEVERITY_FOLLOW_UP);
+    else await this.c.unit("outbox").comment(item, key, SEVERITY_FOLLOW_UP);
   }
 
   /** The work item a verdict names: by issue, or by the PR's head branch when that PR is the item's. */

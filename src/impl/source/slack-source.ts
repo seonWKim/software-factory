@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { type ChatCommand, parseChatCommand } from "../../core/command-table.js";
 import { type CommandName, THREAD_BARE_COMMANDS, commandFooter, commandState, parseComment, parseLink, withSlash } from "../../core/commands.js";
 import type { Logger } from "../../core/log.js";
-import { inReactionWindow, reactionKey, verdictReaction } from "../../core/reaction-verdict.js";
+import { inReactionWindow, reactionEvent, verdictReaction } from "../../core/reaction-verdict.js";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItem } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
@@ -267,13 +267,8 @@ export class SlackSource implements StreamSource {
     if (!thread) return null;
     const source = threadRef(thread);
     if (!(await this.d.store.getWorkItemBySource("slack_thread", source.id))) return null;
-    return {
-      event: {
-        kind: "verdict_submitted", target: { kind: "issue", source }, comment_id: reactionKey(`slack:${channel}:${ts}:${user}:${reaction}`),
-        approver: { provider: "slack", subject: user }, reaction,
-      },
-      key: `event:${event_id}`,
-    };
+    const event = reactionEvent({ kind: "issue", source }, `slack:${channel}:${ts}:${user}:${reaction}`, { provider: "slack", subject: user }, reaction);
+    return { event, key: `event:${event_id}` };
   }
 
   /**
