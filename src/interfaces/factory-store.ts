@@ -14,6 +14,7 @@ import type { StatsRecord } from "../core/stats.js";
 import type { MergeEvaluation } from "../core/merge-evaluation.js";
 import type { LearnedSettingsStore } from "../core/learned-settings.js";
 import type { CommandProposalStore } from "../core/interpret.js";
+import type { TaskStore } from "../core/tasks.js";
 
 // Contract for every implementation (SQLite now, Postgres later):
 // - Each method is one transaction. A method either fully applies or changes nothing.
@@ -35,8 +36,7 @@ export interface NewWorkItem {
   adopted?: AdoptedPr;
   /**
    * The item starts held (design 2026-11-01, split specs): `NEW` with this blocker instead of `blocked_on:
-   * none`. A later phase of a split waits here until the phase before it closes as completed. Ignored with
-   * `adopted`.
+   * none`. A later phase of a split waits here until the phase before it closes as completed. Ignored with `adopted`.
    */
   hold?: { blocked_on: "upstream"; blocked_reason: string };
   /** A phase of a split spec (design 2026-11-01): its parent and its place in merge order (1-based). */
@@ -344,7 +344,7 @@ export interface SchemaVersion {
   latest: number;
 }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore {
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes

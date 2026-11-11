@@ -677,6 +677,23 @@ CREATE TABLE `controller_state_changes` (
   CONSTRAINT `controller_state_changes_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `controller_tasks` (
+  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `title` text COLLATE utf8mb4_bin NOT NULL,
+  `list` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `priority` tinyint DEFAULT NULL,
+  `due_date` char(10) COLLATE utf8mb4_bin DEFAULT NULL,
+  `due_time` char(5) COLLATE utf8mb4_bin DEFAULT NULL,
+  `recurrence` varchar(16) COLLATE utf8mb4_bin DEFAULT NULL,
+  `created_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `done_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `parent_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `controller_tasks_parent` (`parent_id`),
+  KEY `controller_tasks_open` (`done_at`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `controller_unreviewed_merges` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
