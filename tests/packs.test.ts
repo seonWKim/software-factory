@@ -27,7 +27,7 @@ import { PR_ONLY_KEYS } from "../src/core/settings.js";
 import { ROLE_ACTIONS as IDENTITY_ROLE_ACTIONS } from "../src/identity/index.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval } from "../src/packs/pack-approvals.store.js";
-import { PACK_TOOL_REFUSED, checkPackGrants } from "../src/packs/pack-grants.js";
+import { PACK_TOOL_REFUSED, checkPackGrants, packMcpServer } from "../src/packs/pack-grants.js";
 import { loadSettingCatalog } from "../src/runtime/index.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { writePackApproval } from "../src/ui/packs-api.js";
@@ -37,8 +37,8 @@ import type { PackTool } from "../src/impl/broker/pack-tools.js";
 import { RESULT_CAP_BYTES, RESULT_DIR, RESULT_PREVIEW_BYTES, ToolGate, bridgeMcpConfig } from "../src/impl/runner/tool-bridge.js";
 import type { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
-import { buildAgentEnv } from "../src/impl/runner/claude-code-runner.js";
-import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
+import { buildAgentEnv, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
+import type { AgentRunSpec, AgentRunner } from "../src/interfaces/agent-runner.js";
 import { type Secret, type SecretName, type SecretStore, secretName } from "../src/interfaces/secret-store.js";
 import type { Run, RunId, UserId, WorkItemId, WorkerId } from "../src/core/types.js";
 import { ScriptedLLM, ScriptedRunner } from "./helpers/scripted-runner.js";
@@ -565,10 +565,20 @@ describe("packs: approvals, the pin and the grant check", () => {
     return { clock, store, entries, approvals, add, change, rows, check };
   }
 
-  /** One triage run of an item through a Worker with `grants` for triage; the run as stored, and the fake runner and broker. */
-  async function runWith(s: Awaited<ReturnType<typeof open>>, grants: readonly string[], extra: Partial<FactoryConfig> = {}) {
-    const { item } = await s.store.createWorkItem(issue(1), system, { enqueue: { kind: "triage", idempotency_key: `t-${grants.join()}` } });
-    const runner = Object.assign(new FakeRunner({ triage: () => ({ output: triageSpec }) }), { exposes_tools: true });
+  let items = 0;
+  /**
+   * One triage run of a new item through a Worker with `grants` for triage; the run as stored, and the fake runner and
+   * broker. `caps`: what the runner can do (default: expose tools, run pack MCP servers).
+   */
+  async function runWith(
+    s: Awaited<ReturnType<typeof open>>,
+    grants: readonly string[],
+    extra: Partial<FactoryConfig> = {},
+    caps: Pick<AgentRunner, "exposes_tools" | "runs_mcp_servers"> = { exposes_tools: true, runs_mcp_servers: true },
+  ) {
+    items += 1;
+    const { item } = await s.store.createWorkItem(issue(items), system, { enqueue: { kind: "triage", idempotency_key: `t-${items}` } });
+    const runner = Object.assign(new FakeRunner({ triage: () => ({ output: triageSpec }) }), caps);
     const broker = new FakeBroker();
     const worker = new Worker({
       id: "w1" as WorkerId, store: s.store, sandbox: new FakeSandbox(), runner, broker, storage: new MemoryStorage(), clock: s.clock,
@@ -582,11 +592,11 @@ describe("packs: approvals, the pin and the grant check", () => {
   it("a granted but unapproved entry is refused, an approved but ungranted one is never listed, and both joins the broker tools", async () => {
     const s = await open();
     const hash = await s.add(READER);
-    expect(await s.check(["test.read_note", GRANT])).toEqual({ broker: ["test.read_note"], refused: [{ grant: GRANT, reason: "not_approved" }] });
+    expect(await s.check(["test.read_note", GRANT])).toEqual({ broker: ["test.read_note"], mcp_servers: [], refused: [{ grant: GRANT, reason: "not_approved" }] });
     expect(await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" })).toMatchObject({ ok: true, ref: { description_hash: hash } });
-    expect(await s.check(["test.read_note"])).toEqual({ broker: ["test.read_note"], refused: [] });
-    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], refused: [] });
-    expect(await s.check(["pack:tool:missing"])).toEqual({ broker: [], refused: [{ grant: "pack:tool:missing", reason: "no_entry" }] });
+    expect(await s.check(["test.read_note"])).toEqual({ broker: ["test.read_note"], mcp_servers: [], refused: [] });
+    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], mcp_servers: [], refused: [] });
+    expect(await s.check(["pack:tool:missing"])).toEqual({ broker: [], mcp_servers: [], refused: [{ grant: "pack:tool:missing", reason: "no_entry" }] });
   });
 
   it("an approved, granted tool reaches the agent's tool grants", async () => {
@@ -597,25 +607,96 @@ describe("packs: approvals, the pin and the grant check", () => {
     expect(runner.specs.map((spec) => spec.tool_grants)).toEqual([["test.read_note", GRANT]]);
   });
 
-  it("an MCP server that passes both checks is refused with not_started: no agent, no process, no tool call", async () => {
-    const s = await open();
-    const SERVER = "pack:mcp_server:docs-reader";
-    await s.add(READER, "mcp_server");
-    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-reader" });
-    const starters = [childProcess.spawn, childProcess.spawnSync, childProcess.exec, childProcess.execSync, childProcess.execFile, childProcess.execFileSync, childProcess.fork];
+  /** A stdio MCP server with no credential, as a pack's `mcp_servers/<file>.json` holds it. */
+  const DOCS = { name: "docs-search", description: "Searches the team docs.", command: "node", args: ["server.js", "--read-only"] };
+  const DOCS_GRANT = "pack:mcp_server:docs-search";
+  const starters = [childProcess.spawn, childProcess.spawnSync, childProcess.exec, childProcess.execSync, childProcess.execFile, childProcess.execFileSync, childProcess.fork];
+  const startsCounted = () => {
     for (const f of starters) vi.mocked(f).mockClear();
-    const { run, runner, broker } = await runWith(s, [SERVER]);
-    expect(run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${SERVER} not_started` });
+    return () => starters.map((f) => vi.mocked(f).mock.calls.length);
+  };
+
+  it("an approved, granted MCP server with no credential reaches the agent's spec as its descriptor's command and args", async () => {
+    const s = await open();
+    await s.add(DOCS, "mcp_server");
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-search" });
+    expect(await s.check([DOCS_GRANT])).toEqual({ broker: [], mcp_servers: [{ name: "docs-search", command: "node", args: ["server.js", "--read-only"] }], refused: [] });
+    const { run, runner } = await runWith(s, ["test.read_note", DOCS_GRANT]);
+    expect(run.outcome).toMatchObject({ status: "succeeded" });
+    expect(runner.specs.map((spec) => [spec.tool_grants, spec.mcp_servers])).toEqual([[["test.read_note"], [{ name: "docs-search", command: "node", args: ["server.js", "--read-only"] }]]]);
+  });
+
+  it("an approved MCP server no run kind grants is in no spec and no --mcp-config", async () => {
+    const s = await open();
+    await s.add(DOCS, "mcp_server");
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-search" });
+    for (const grants of [[], ["test.read_note"]]) {
+      const { runner } = await runWith(s, grants);
+      const [spec] = runner.specs;
+      expect(spec?.mcp_servers).toEqual([]);
+      const args = buildClaudeArgs(spec!, "haiku");
+      expect(args.join(" ")).not.toContain("docs-search");
+      expect(args).not.toContain("--mcp-config");
+    }
+  });
+
+  it("an approved MCP server that names a credential is refused with not_started: no agent, no process, no tool call", async () => {
+    const s = await open();
+    await s.add({ ...DOCS, credential: "DOCS_TOKEN" }, "mcp_server");
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-search" });
+    const starts = startsCounted();
+    const { run, runner, broker } = await runWith(s, [DOCS_GRANT]);
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${DOCS_GRANT} not_started` });
     expect(runner.specs).toEqual([]);
-    expect(starters.map((f) => vi.mocked(f).mock.calls.length)).toEqual(starters.map(() => 0));
+    expect(starts()).toEqual(starters.map(() => 0));
     expect([broker.calls, broker.preflights, broker.stores]).toEqual([[], [], []]);
+  });
+
+  it("only a stdio descriptor with a command and string args, and no credential, starts", () => {
+    const entry = (descriptor: Record<string, unknown>, credential_name: string | null = null) => packMcpServer({ name: "d", credential_name, descriptor: descriptor as never });
+    expect(entry({ command: "node" })).toEqual({ name: "d", command: "node", args: [] });
+    expect(entry({ type: "stdio", command: "node", args: ["a"], env: { X: "1" } })).toEqual({ name: "d", command: "node", args: ["a"] });
+    for (const bad of [{}, { command: "" }, { command: "node", args: [1] }, { command: "node", args: "a" }, { type: "http", command: "node" }, { type: "sse", url: "https://x" }]) {
+      expect(entry(bad)).toBeNull();
+    }
+    expect(entry({ command: "node" }, "DOCS_TOKEN")).toBeNull();
+  });
+
+  it("a runner that cannot run MCP servers refuses a granted, approved one with not_started before its agent starts", async () => {
+    const s = await open();
+    await s.add(DOCS, "mcp_server");
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-search" });
+    const starts = startsCounted();
+    const { run, runner } = await runWith(s, [DOCS_GRANT], {}, { exposes_tools: true });
+    expect(run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${DOCS_GRANT} not_started` });
+    expect(runner.specs).toEqual([]);
+    expect(starts()).toEqual(starters.map(() => 0));
+  });
+
+  it("an MCP server whose description changed is refused for the next run with not_approved until the owner approves the new hash", async () => {
+    const s = await open();
+    const first = await s.add(DOCS, "mcp_server");
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-search" });
+    expect((await runWith(s, [DOCS_GRANT])).run.outcome).toMatchObject({ status: "succeeded" });
+    const second = await s.add({ ...DOCS, description: "Searches and edits the team docs." }, "mcp_server");
+    expect(second).not.toBe(first);
+    const next = await runWith(s, [DOCS_GRANT]);
+    expect(next.run.outcome).toMatchObject({ status: "failed", error_code: PACK_TOOL_REFUSED, detail: `pack tools refused: ${DOCS_GRANT} not_approved` });
+    expect(next.runner.specs).toEqual([]);
+    // Approving the old hash again changes nothing; the run after that is still refused.
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-search", hash: first.slice(0, 12) });
+    expect((await runWith(s, [DOCS_GRANT])).run.outcome).toMatchObject({ status: "failed", detail: `pack tools refused: ${DOCS_GRANT} not_approved` });
+    await s.change(new FakeToolAuth(true), { action: "approve", kind: "mcp_server", name: "docs-search" });
+    const after = await runWith(s, [DOCS_GRANT]);
+    expect(after.run.outcome).toMatchObject({ status: "succeeded" });
+    expect(after.runner.specs.map((spec) => spec.mcp_servers?.map((m) => m.name))).toEqual([["docs-search"]]);
   });
 
   it("a changed description turns the name off until the owner approves the new hash; the next run is refused", async () => {
     const s = await open();
     const first = await s.add(READER);
     await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
-    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], refused: [] });
+    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], mcp_servers: [], refused: [] });
     const second = await s.add({ ...READER, description: "Reads and edits the team docs." });
     expect(second).not.toBe(first);
     expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
@@ -626,7 +707,7 @@ describe("packs: approvals, the pin and the grant check", () => {
     await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader", hash: first.slice(0, 12) });
     expect((await s.check([GRANT])).refused).toEqual([{ grant: GRANT, reason: "not_approved" }]);
     await s.change(new FakeToolAuth(true), { action: "approve", kind: "tool", name: "docs-reader" });
-    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], refused: [] });
+    expect(await s.check([GRANT])).toEqual({ broker: [GRANT], mcp_servers: [], refused: [] });
   });
 
   it("the setting packs.auto_approve_read_only is a review-only worker boolean, default false, and off unless the config says true", async () => {
@@ -645,7 +726,7 @@ describe("packs: approvals, the pin and the grant check", () => {
     await s.add({ name: "writer", description: "Writes docs." });
     await s.add({ name: "not-read-only", description: "Reads docs.", read_only: "true" });
     const grants = [GRANT, "pack:tool:issue-tracker", "pack:tool:writer", "pack:tool:not-read-only"];
-    expect(await s.check(grants, true)).toEqual({ broker: [GRANT], refused: grants.slice(1).map((grant) => ({ grant, reason: "not_approved" })) });
+    expect(await s.check(grants, true)).toEqual({ broker: [GRANT], mcp_servers: [], refused: grants.slice(1).map((grant) => ({ grant, reason: "not_approved" })) });
     // Off (the default): none is auto-approved, and no row was written either way.
     expect((await s.check(grants, false)).refused.map((r) => r.reason)).toEqual(["not_approved", "not_approved", "not_approved", "not_approved"]);
     expect(await s.rows()).toEqual([]);
