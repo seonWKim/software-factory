@@ -5,7 +5,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { TacitEntry, TacitLedger, TacitPushback } from "../../interfaces/tacit-ledger.js";
+import type { TacitEntry, TacitLedger, TacitPushback, TacitVerdictNote } from "../../interfaces/tacit-ledger.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 import { NoTacitLedger } from "./no-tacit-ledger.js";
 
@@ -47,8 +47,8 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     return parsed as TacitEntry[];
   }
 
-  async verdict(id: string, verdict: string): Promise<void> {
-    await this.run("evolve", ["verdict", "--agent", TACIT_AGENT], JSON.stringify({ id, verdict }));
+  async verdict(id: string, verdict: string, note?: TacitVerdictNote): Promise<void> {
+    await this.run("evolve", ["verdict", "--agent", TACIT_AGENT], JSON.stringify({ id, verdict, ...note }));
   }
 
   /** Runs `<home>/bin/<cli> <args>` with `stdin`; its stdout, or a throw on a non-zero exit or the timeout. */
