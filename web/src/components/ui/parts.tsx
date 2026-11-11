@@ -111,11 +111,12 @@ const LEVEL_TONE: Record<string, string> = {
   blocked_by_task: "bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:text-zinc-200",
 };
 
+/** A status pill: one word or a few, coloured by the level. */
 export function Badge({ level, children }: { level?: string | undefined; children: ReactNode }) {
   return (
     <span
       className={cn(
-        "inline-block rounded px-1.5 py-0.5 text-xs font-medium whitespace-nowrap",
+        "inline-block rounded-full px-2 py-0.5 text-xs font-medium whitespace-nowrap",
         (level && LEVEL_TONE[level]) ?? "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
       )}
     >

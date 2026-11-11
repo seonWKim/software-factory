@@ -8,10 +8,10 @@ import type { ItemRow } from "../api.js";
 import { Badge } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { SourceLink, WhyText } from "./common.js";
+import { SourceLink, WhyText, WorkerName } from "./common.js";
 
 /** Browser storage keys: the chosen view, and the expanded rows (a list of item ids; absent: the default). */
 export const VIEW_KEY = "sf.items.view";
@@ -132,8 +132,8 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
   const run = it.run;
   return (
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-zinc-600 dark:text-zinc-400")}>
-      <SourceLink source={it.source} className="shrink-0" />
-      <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? it.source.id}</Link>
+      <SourceLink source={it.source} itemId={it.id} className="shrink-0" />
+      <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortSource(it.source.id)}</Link>
       <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
       {waits && (
         waits.id ? (
@@ -155,7 +155,7 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
       <span className="text-xs whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-400">{ago(it.updated_at, now)}</span>
       <span className="flex basis-full flex-wrap gap-x-2 text-xs text-zinc-600 sm:basis-auto sm:text-sm dark:text-zinc-400">
         {it.why && <WhyText why={it.why} />}
-        {run?.worker_id && <span className="font-mono" data-worker>{run.worker_id}</span>}
+        {run?.worker_id && <WorkerName id={run.worker_id} />}
       </span>
     </div>
   );

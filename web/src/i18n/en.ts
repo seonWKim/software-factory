@@ -24,6 +24,22 @@ export const en = {
   "topbar.themeSystem": "System",
   "topbar.themeLight": "Light",
   "topbar.themeDark": "Dark",
+  "floor.alarms": "Open alarms: {count}.",
+  "floor.alarmsLink": "See them on Failures",
+  "floor.deadlocks": "Started past a deadlock: {count}. Their runs go on; a person checks the overlap.",
+  "floor.deadlocksLink": "See them in Work items",
+  "decide.title": "What you need to decide",
+  "decide.severity": "Severity",
+  "decide.cli": "From a terminal:",
+  "ids.summary": "IDs",
+  "ids.item": "Item",
+  "ids.source": "Source",
+  "copy.label": "Copy {what}",
+  "copy.button": "Copy",
+  "copy.done": "Copied",
+  "person.you": "you",
+  "person.other": "a person",
+  "person.factory": "the factory",
 } as const;
 
 export type MessageKey = keyof typeof en;

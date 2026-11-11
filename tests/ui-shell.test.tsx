@@ -366,7 +366,10 @@ describe("unreviewed merges", () => {
     expect(rows.map((r) => r.children[0]!.textContent)).toEqual(["#9", "#8"]);
     expect(rows[0]!.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/pull/9");
     expect(rows[1]!.querySelector("a")).toBeNull();
-    expect(rows[0]!.children[1]!.textContent).toBe("github:7");
+    // A person shows by name ("a person"; "you" for the viewer), the ID behind it in a details element.
+    const by = rows[0]!.children[1]!.querySelector("details")!;
+    expect(by.querySelector("summary")!.textContent).toBe("a person");
+    expect(by.textContent).toContain("github:7");
     expect(rows[0]!.children[2]!.textContent).toBe("abcdef1");
   });
 });
@@ -395,9 +398,9 @@ describe("ItemsTable columns and links (issue #240)", () => {
     expect(item.textContent).toBe("Title 1");
   });
 
-  it("shows the item id as the link text when there is no title", () => {
+  it("shows the item's short number, never its ID, as the link text when there is no title", () => {
     const a = cells(itemsTable([trow(2, { title: null })], GH))[0]!.querySelector("a")!;
-    expect(a.textContent).toBe("wi_2");
+    expect(a.textContent).toBe("#2");
     expect(a.getAttribute("href")).toBe("/app/items/wi_2");
   });
 
@@ -594,7 +597,10 @@ describe("item commands", () => {
 
   it("with commands on the page says who it acts as and where that came from", () => {
     mountCommands(undefined, [], SESSION);
-    expect(screen.getByText("Acting as local:me (from environment)")).toBeTruthy();
+    const actor = document.querySelector("[data-commands-actor]")!;
+    expect(actor.querySelector("summary")!.textContent).toBe("you");
+    expect(actor.querySelector("details")!.textContent).toContain("local:me");
+    expect(actor.textContent).toMatch(/^Acting as you.*\(from environment\)$/);
   });
 
   it("with commands off every button is disabled and the page says so", () => {
@@ -716,13 +722,13 @@ describe("open alarms in Needs you and the why sentence (design 09-status-page)"
     await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS + 10)));
   }
 
-  it("the Floor's Needs you lists an open alarm with where to look, and drops it once it is resolved", () =>
+  it("the Floor's Needs you shows the open alarms as one line linking to Failures, and drops it once resolved", () =>
     withAlarm(async () => {
       mount();
       const list = await screen.findByRole("list", { name: "System actions" });
       const li = list.querySelector('[data-action="alarm"]') as HTMLElement;
-      expect(li.textContent).toContain(action.text);
-      expect(li.querySelector("code")!.textContent).toBe(action.command);
+      expect(li.textContent).toContain("Open alarms: 1.");
+      expect(within(li).getByRole("link").getAttribute("href")).toBe("/app/failures");
       const needs = screen.getByRole("table", { name: "Needs you" });
       expect(within(needs).getByText(ALARM, { exact: false }).textContent).toBe(alarmed.text);
       await resolve();
@@ -855,7 +861,8 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
 
   it("the Why column shows the need's reason, not the badges, and no command to type", () => {
     const need = { reason: "failed: diff_too_large" };
-    render(<ItemsTable items={[row(1, "needs_human", "Failed one", { blocked_on: "human", badges: ["failed"], need }) as unknown as ItemRow]} now={NOW} label="Needs you" empty="none" />);
+    const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", badges: ["failed"], need };
+    render(<ItemsTable items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} now={NOW} label="Needs you" empty="none" />);
     const cell = document.querySelector("[data-need]")!.closest("td")!;
     expect(cell.textContent).toBe("failed: diff_too_large");
   });

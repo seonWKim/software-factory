@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { API, type FailureGroup, type Failures, useApi } from "../api.js";
+import { useMemo, useState } from "react";
+import { API, type FailureGroup, type Failures, type Items, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
@@ -7,7 +7,7 @@ import { cn } from "../lib/cn.js";
 import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { useNow } from "./common.js";
+import { WorkerName, useNow } from "./common.js";
 
 const WINDOWS = ["24h", "7d"] as const;
 type Window = (typeof WINDOWS)[number];
@@ -20,7 +20,7 @@ const initialWindow = (): Window => {
 };
 
 /** One error code: its count, last seen and items affected; expanded, the runs behind it. */
-function Group({ group, now }: { group: FailureGroup; now: number }) {
+function Group({ group, now, titles }: { group: FailureGroup; now: number; titles: ReadonlyMap<string, string> }) {
   const [open, setOpen] = useState(false);
   return (
     <li className="rounded-md border border-zinc-200 dark:border-zinc-800" data-testid="failure-group">
@@ -41,10 +41,10 @@ function Group({ group, now }: { group: FailureGroup; now: number }) {
           <Table label={`Runs failed with ${group.code}`} head={["Item", "Attempt", "Detail", "Worker", "When"]}>
             {group.runs.map((r) => (
               <Tr key={r.id}>
-                <Td><Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link></Td>
+                <Td><Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{titles.get(r.work_item_id) ?? r.work_item_id}</Link></Td>
                 <Td className="tabular-nums">{r.attempt}</Td>
                 <Td className="max-w-md text-xs break-words">{r.detail || "–"}</Td>
-                <Td className="font-mono text-xs">{r.worker ?? "–"}</Td>
+                <Td><WorkerName id={r.worker} /></Td>
                 <Td className="tabular-nums whitespace-nowrap">{ago(r.finished_at, now)} ago</Td>
               </Tr>
             ))}
@@ -60,6 +60,9 @@ export function FailuresPage() {
   const now = useNow();
   const [win, setWin] = useState<Window>(initialWindow);
   const q = useApi<Failures>(API.failures(win));
+  // Items show by title; an item the list does not hold keeps its ID.
+  const items = useApi<Items>(API.items);
+  const titles = useMemo(() => new Map((items.data?.items ?? []).flatMap((i) => (i.title ? [[i.id, i.title] as const] : []))), [items.data]);
   return (
     <>
       <div role="group" aria-label="Window" className="mb-4 flex gap-2">
@@ -80,7 +83,7 @@ export function FailuresPage() {
               </p>
             )}
             <ul aria-label="Failure groups" className="space-y-2">
-              {q.data.groups.map((g) => <Group key={g.code} group={g} now={now} />)}
+              {q.data.groups.map((g) => <Group key={g.code} group={g} now={now} titles={titles} />)}
             </ul>
           </>
         )}

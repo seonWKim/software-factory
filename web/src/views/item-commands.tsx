@@ -1,13 +1,16 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type RefObject, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { CopyText } from "../components/ui/copy.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { Section } from "../components/ui/parts.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
+import { shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { PAGE_COMMANDS_PATH } from "../pages.js";
+import { PersonName } from "./common.js";
 import {
   ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approveNote, approvePhase, chosenAnswers, field, initialChoices, textButton, type CommandDialogProps,
 } from "./item-decisions.js";
@@ -24,6 +27,9 @@ import {
 // A waiting spec (issue #526) shows its In short above Commands and its decisions as questions above the note box;
 // approve in an approve phase (the spec gate, the floor block, the Rule of Two) goes through a confirm step first;
 // approve sends the answers as `N: <answer>` lines.
+// All of it sits in one "What you need to decide" box at the top of the item page (design 09-dashboard-app): the
+// reason, In short, the decisions with their defaults, the buttons that apply now (the one the state asks for is the
+// primary button) and the same command for a terminal, naming the item's short number.
 
 /** Commands sent from their own dialog, not with the note box. */
 const FORMS = ["reject", "revise"];
@@ -112,7 +118,28 @@ function useCommandSend(id: string) {
   return { session, on: !!token && session.data?.commands_enabled === true, busy, local, send };
 }
 
-export function ItemCommands({ id, commands, replies }: { id: string; commands: readonly ItemCommand[]; replies: readonly CommandReply[] }) {
+/** The command the state asks for: the first of approve, retry and resolve the viewer may send. */
+const primaryOf = (commands: readonly ItemCommand[]) => commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
+
+/**
+ * `factory <command> <short number>` for a terminal: the item's short number on the page, the full command (with the
+ * item's ID, which the CLI takes) behind the Copy button.
+ */
+function CliHint({ command, id, short }: { command: string; id: string; short: string }) {
+  return (
+    <p data-cli-hint className="mt-3 flex flex-wrap items-baseline gap-x-2 text-xs text-zinc-600 dark:text-zinc-400">
+      <span>{t("decide.cli")}</span>
+      <CopyText value={`factory ${command} ${id}`} what="command">{`factory ${command} ${short}`}</CopyText>
+    </p>
+  );
+}
+
+/**
+ * The item page's decide box: `reason` (the why sentence) first; with commands that apply now, "What you need to
+ * decide" with In short, the decisions, the note box and the buttons; else the reason and one line saying no
+ * command applies.
+ */
+export function ItemCommands({ id, commands, replies, reason = null }: { id: string; commands: readonly ItemCommand[]; replies: readonly CommandReply[]; reason?: ReactNode }) {
   const { session, on: enabled, busy, local, send: post } = useCommandSend(id);
   const [note, setNote] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -132,18 +159,18 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   // Nothing the page can send now (a running item): say so once, with no note box or buttons that could only be refused.
   if (commands.length === 0 && !showMerge) {
     return (
-      <>
+      <div className="mt-2">
+        {reason}
         <InShort spec={data?.spec} />
-        <Section title="Commands">
-          <p data-commands-none className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
-            No command applies now; the factory continues on its own. Commands show here when the item waits for you.
-          </p>
-        </Section>
-      </>
+        <p data-commands-none className="mt-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          No command applies now; the factory continues on its own. Commands show here when the item waits for you.
+        </p>
+      </div>
     );
   }
   const off = session.isError || session.data?.commands_enabled === false;
   const usesNote = commands.some((c) => c.allowed && !FORMS.includes(c.name));
+  const primary = primaryOf(commands);
 
   /** Sends `command` with `text` (a form's) or, without it, the note box's. */
   const send = async (command: string, text?: string) => {
@@ -155,11 +182,17 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   };
 
   return (
-    <>
+    <section
+      aria-label={t("decide.title")}
+      data-decide
+      className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-zinc-900 dark:border-amber-800 dark:bg-amber-950 dark:text-zinc-100"
+    >
+      <h2 className="mb-1 text-balance text-sm font-semibold">{t("decide.title")}</h2>
+      {reason}
       <InShort spec={data?.spec} />
-      <Section title="Commands">
+      <section aria-label="Commands" className="mt-3">
         {off && (
-          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+          <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-zinc-700 dark:text-zinc-300">
             Commands are off: this server is not on loopback, so it needs ui.user_id.{" "}
             <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
               Settings
@@ -168,8 +201,8 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
           </p>
         )}
         {enabled && session.data?.actor && (
-          <p data-commands-actor className="mb-2 text-xs text-pretty text-zinc-600 dark:text-zinc-400">
-            Acting as {session.data.actor} (from {session.data.actor_source === "config" ? "config" : "environment"})
+          <p data-commands-actor className="mb-2 text-xs text-pretty text-zinc-700 dark:text-zinc-300">
+            Acting as <PersonName id={session.data.actor} viewer={session.data.actor} /> (from {session.data.actor_source === "config" ? "config" : "environment"})
           </p>
         )}
         <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
@@ -208,8 +241,8 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             return (
               <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
                 <Button
-                  variant="outline"
-                  className={textButton}
+                  variant={c === primary ? "primary" : "outline"}
+                  className={cn(textButton, "capitalize")}
                   disabled={disabled || confirming === c.name}
                   title={`${c.usage}: ${c.description}`}
                   {...(hasForm ? { "aria-haspopup": "dialog" as const } : {})}
@@ -243,6 +276,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             </li>
           )}
         </ul>
+        {primary && detail && <CliHint command={primary.name} id={id} short={shortSource(detail.source.id)} />}
         {(open === "reject" || open === "revise") && (
           <CommandDialog
             command={open}
@@ -255,8 +289,8 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             onClose={() => setOpen(null)}
           />
         )}
-      </Section>
-    </>
+      </section>
+    </section>
   );
 }
 
@@ -275,19 +309,21 @@ function VerdictButtons({ title, disabled, reason, onSend }: { title: string; di
   const [severity, setSeverity] = useState<VerdictSeverityChoice>("none");
   return (
     <span data-verdict className="inline-flex flex-wrap items-center gap-2">
-      <select
-        aria-label="Verdict severity"
-        value={severity}
-        disabled={disabled}
-        onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}
-        className="h-8 rounded-md border border-zinc-300 bg-white px-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-      >
-        {SEVERITIES.map((s) => (
-          <option key={s} value={s}>
-            {s}
-          </option>
-        ))}
-      </select>
+      <label className="inline-flex items-center gap-1 text-sm">
+        {t("decide.severity")}
+        <select
+          value={severity}
+          disabled={disabled}
+          onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}
+          className="h-8 rounded-md border border-zinc-300 bg-white px-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        >
+          {SEVERITIES.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+      </label>
       {VERDICTS.map(([kind, label]) => (
         <Button
           key={kind}
@@ -373,7 +409,7 @@ export function NeedCommands({ id, commands, pr }: { id: string; commands: reado
   const { on, busy, local, send: post } = useCommandSend(id);
   const [open, setOpen] = useState<"reject" | "revise" | "verdict" | null>(null);
   const moreButton = useRef<HTMLButtonElement>(null);
-  const primary = commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
+  const primary = primaryOf(commands);
   const others = commands.filter((c) => c !== primary);
   const send = async (command: string, note: string) => {
     if (!(await post(command, note))) return;

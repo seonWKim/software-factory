@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Why, mergeCheckLabel, showsMerge } from "../api.js";
+import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
+import { IdDetails } from "../components/ui/copy.js";
 import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
+import { LEVEL_LABELS, ago, isHttpUrl, isWorkerId, shortSource, stateAndNext, until, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { MergeButton, NeedCommands } from "./item-commands.js";
@@ -18,9 +20,39 @@ export function useNow(): number {
   return now;
 }
 
-/** An item's title (or its source id) linking to its page, with the source link beside it. */
-/** The item's source id in short form (`#192`, `30331a68`), linked to the source; the full id shows on hover. */
-export function SourceLink({ source, className }: { source: { id: string; link: string }; className?: string }) {
+/** The viewer: the factory user the page's commands act as (the session's actor), null while unknown. */
+export function useViewer(): string | null {
+  return useApi<Session>(API.session, false).data?.actor ?? null;
+}
+
+/** A worker as "worker N" (its slot number), the full ID behind it (decision 3 of the readable-names change). */
+export function WorkerName({ id }: { id: string | null | undefined }) {
+  if (!id) return <>–</>;
+  return <IdDetails label={workerName(id)} id={id} what="worker ID" />;
+}
+
+/**
+ * A person or process by ID: the factory, a worker ("worker N"), "you" when it is the viewer (the owner, on a
+ * one-owner factory), else the stored display name or "a person"; the full ID behind it.
+ */
+export function PersonName({ id, name, viewer }: { id: string | null; name?: string | null | undefined; viewer: string | null }) {
+  if (!id || id === "system") return <>{t("person.factory")}</>;
+  if (isWorkerId(id)) return <WorkerName id={id} />;
+  return <IdDetails label={id === viewer ? t("person.you") : (name || t("person.other"))} id={id} what="user ID" />;
+}
+
+/**
+ * The item's source id in short form (`#192`, `30331a68`), linked to the source; the full id shows on hover. With
+ * `itemId`, a source with no web address (a local item's `local:` link) links to the item's page instead.
+ */
+export function SourceLink({ source, className, itemId }: { source: { id: string; link: string }; className?: string; itemId?: string }) {
+  if (itemId !== undefined && !isHttpUrl(source.link)) {
+    return (
+      <Link href={itemPath(itemId)} title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", LINK_CLASS, className)}>
+        {shortSource(source.id)}
+      </Link>
+    );
+  }
   return (
     <a href={source.link} target="_blank" rel="noreferrer" title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", LINK_CLASS, className)}>
       {shortSource(source.id)}
@@ -28,6 +60,7 @@ export function SourceLink({ source, className }: { source: { id: string; link: 
   );
 }
 
+/** An item's title (or its source id) linking to its page, with the source link beside it. */
 export function ItemTitle({ id, title, source }: { id: string; title: string | null; source: { id: string; link: string } }) {
   return (
     <span className="flex min-w-0 items-baseline gap-2">
@@ -71,10 +104,12 @@ export function WhyText({ why }: { why: Why }) {
  * A Needs-you row's reason (the same words as the classic page). It links to the item page at the factory's newest
  * thread entry, when the item has one. The row's command buttons (NeedCommands) come after it.
  */
-function NeedText({ id, need }: { id: string; need: NonNullable<ItemRow["need"]> }) {
+function NeedText({ it, need }: { it: ItemRow; need: NonNullable<ItemRow["need"]> }) {
+  // No stored reason: the item's state and what moves it next, never "no reason".
+  const reason = it.blocked_reason === null ? stateAndNext(it.stage, it.commands) : need.reason;
   return (
     <span data-need>
-      {need.anchor ? <Link href={`${itemPath(id)}#${need.anchor}`} className={LINK_CLASS}>{need.reason}</Link> : need.reason}
+      {need.anchor ? <Link href={`${itemPath(it.id)}#${need.anchor}`} className={LINK_CLASS}>{reason}</Link> : reason}
     </span>
   );
 }
@@ -103,7 +138,7 @@ export function ItemsTable({ items, now, label, empty, plugins, actions = false 
         <Tr key={it.id} data-key={it.id}>
           <Td className="max-w-md">
             <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
-              {it.title ?? it.id}
+              {it.title ?? shortSource(it.source.id)}
             </Link>
           </Td>
           <Td>
@@ -111,7 +146,7 @@ export function ItemsTable({ items, now, label, empty, plugins, actions = false 
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
           <Td className="text-zinc-600 dark:text-zinc-400">
-            {it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
+            {it.need ? <NeedText it={it} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
             {actions && (it.commands?.length ?? 0) > 0 && (
               <span className="ml-2">
                 <NeedCommands id={it.id} commands={it.commands!} pr={it.change_ref} />
@@ -147,7 +182,7 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
-            <Td className="font-mono text-xs">{r.owner ?? "–"}</Td>
+            <Td><WorkerName id={r.owner} /></Td>
             <Td className="tabular-nums">{ago(r.started_at, now)}</Td>
             <Td className="tabular-nums">{ago(r.heartbeat_at, now)} ago</Td>
           </Tr>

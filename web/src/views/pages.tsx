@@ -5,16 +5,18 @@ import {
   type UnreviewedMerges, type WorkerProcess, type WorkersView, postResume, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { CopyText } from "../components/ui/copy.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, shortRev, tokens } from "../lib/format.js";
+import { t } from "../i18n/index.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, QueueTable, RunningTable, SourceLink, WhyText, useNow } from "./common.js";
+import { ItemsTable, MergeCheckNote, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
-import { SystemActions } from "./system-banner.js";
+import { FloorNotes } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
 import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, summaryCounts, useExpanded } from "./tree.js";
@@ -153,7 +155,7 @@ export function ClaimPauses({ now }: { now: number }) {
   );
 }
 
-/** The factory floor: what needs the operator, what runs, what waits; then the numbers. */
+/** The factory floor: what needs the operator first, then what runs and what waits; then the numbers. */
 export function FloorPage() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
@@ -162,19 +164,24 @@ export function FloorPage() {
   const queue = useApi<{ queue: QueueRow[] }>(API.queue);
   const pauses = useApi<PausesView>(API.pauses);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
-  const needs = (items.data?.items ?? []).filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level));
+  const rows = items.data?.items ?? [];
+  // One row per item that waits on the operator; an item started past a deadlock goes on by itself (decision 1).
+  const needs = rows.filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level) && i.why?.code !== "deadlock");
+  const deadlocks = rows.filter((i) => i.why?.code === "deadlock").length;
   const o = overview.data;
   const actions = o?.system_actions ?? [];
+  // Every open alarm is one line, so it counts once.
+  const notes = actions.filter((a) => a.code !== "alarm").length + (actions.some((a) => a.code === "alarm") ? 1 : 0);
   return (
     <>
       <FactoryBanner factory={o?.factory} now={now} pauses={pauses.data?.pauses} />
-      <ClaimPauses now={now} />
-      <Section title="Needs you" count={items.data ? needs.length + actions.length : undefined}>
-        <SystemActions actions={actions} />
+      <Section title="Needs you" count={items.data ? needs.length + notes : undefined}>
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
           <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} actions empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
         )}
+        <FloorNotes actions={actions} deadlocks={deadlocks} />
       </Section>
+      <ClaimPauses now={now} />
       <Section title="Running now" count={runs.data?.runs.filter((r) => r.status === "running").length}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Section>
@@ -334,6 +341,7 @@ export function ItemsPage() {
 export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
+  const viewer = useViewer();
   if (q.isError) return <ErrorNote error={q.error} />;
   if (!q.data) return <Loading rows={6} />;
   const { item, runs, timeline } = q.data;
@@ -344,27 +352,35 @@ export function ItemPage({ id }: { id: string }) {
   ];
   entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const transcripts = q.data.transcripts ?? {};
+  const short = shortSource(item.source.id);
+  const level = detailLevel(item);
   return (
     <>
-      <p className="mb-1 text-sm">
+      <nav aria-label="Breadcrumb" className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>Work items</Link>
         <span className="text-zinc-500"> / </span>
-        <SourceLink source={item.source} className="inline-block align-bottom" />
-      </p>
-      <h2 className="text-balance text-base font-semibold break-words">{item.title ?? item.source.id}</h2>
-      {item.why && (
-        <p data-testid="why" className="mt-2 text-sm text-pretty break-words">
-          <WhyText why={item.why} />
-        </p>
-      )}
+        <Link href={itemPath(item.id)} aria-current="page" className={cn("tabular-nums", LINK_CLASS)}>{short}</Link>
+      </nav>
+      <h2 className="text-balance text-base font-semibold break-words">{item.title ?? short}</h2>
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           Phase {item.phase ?? "?"} of <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>its split parent</Link>
         </p>
       )}
+      <ItemCommands
+        id={item.id}
+        commands={q.data.commands ?? []}
+        replies={q.data.replies ?? []}
+        reason={item.why ? (
+          <p data-testid="why" className="text-sm text-pretty break-words">
+            <WhyText why={item.why} />
+          </p>
+        ) : null}
+      />
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {([
-          ["Stage", item.stage + (item.close_reason ? ` (${item.close_reason})` : "")],
+          ["State", <Badge level={level}>{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</Badge>],
+          ["Source", isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
           ["Tier", item.tier ?? "–"],
           ["PR", item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
           ["Spec comment", item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text="spec comment" /> : "–"],
@@ -379,7 +395,15 @@ export function ItemPage({ id }: { id: string }) {
           </div>
         ))}
       </dl>
-      <ItemCommands id={item.id} commands={q.data.commands ?? []} replies={q.data.replies ?? []} />
+      <details data-ids className="mt-2 text-sm">
+        <summary className="cursor-pointer text-zinc-600 dark:text-zinc-400">{t("ids.summary")}</summary>
+        <dl className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1">
+          <dt className="text-xs text-zinc-600 dark:text-zinc-400">{t("ids.item")}</dt>
+          <dd className="min-w-0"><CopyText value={item.id} what="item ID" /></dd>
+          <dt className="text-xs text-zinc-600 dark:text-zinc-400">{t("ids.source")}</dt>
+          <dd className="min-w-0"><CopyText value={item.source.id} what="source ID" /></dd>
+        </dl>
+      </details>
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
@@ -412,7 +436,7 @@ export function ItemPage({ id }: { id: string }) {
                 <Td className="max-w-md min-w-40 text-xs break-words text-zinc-700 dark:text-zinc-300">
                   {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
                 </Td>
-                <Td className="font-mono text-xs whitespace-nowrap">{r.attempts?.at(-1)?.worker_id ?? "–"}</Td>
+                <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
                 <Td className="tabular-nums whitespace-nowrap">{r.started_at ? `${ago(r.started_at, now)} ago` : "–"}</Td>
                 <Td className="tabular-nums">{r.started_at && r.finished_at ? ago(r.started_at, Date.parse(r.finished_at)) : "–"}</Td>
                 <Td className="tabular-nums">{tokens(r.tokens)}</Td>
@@ -434,11 +458,12 @@ export function ItemPage({ id }: { id: string }) {
                 <span className="w-12 shrink-0 text-right text-zinc-500 tabular-nums">{ago(e.h.woke_at, now)}</span>
                 <span className="min-w-0">
                   <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
-                  <span className="text-zinc-500"> on {e.h.worker_id}</span>
+                  <span className="text-zinc-500"> on </span>
+                  <WorkerName id={e.h.worker_id} />
                 </span>
               </li>
             );
-            return <TimelineRow key={e.t.version} entry={e.t} now={now} />;
+            return <TimelineRow key={e.t.version} entry={e.t} now={now} viewer={viewer} />;
           })}
         </ol>
       </Section>
@@ -506,7 +531,7 @@ function specMarkdown(v: unknown): string {
   return shortValue(v);
 }
 
-function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
+function TimelineRow({ entry: t, now, viewer }: { entry: TimelineEntry; now: number; viewer: string | null }) {
   const [open, setOpen] = useState(false);
   const changes = Object.entries(t.changes);
   const short = changes.filter(([f]) => !(f in SPEC_FIELDS));
@@ -516,7 +541,8 @@ function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
       <span className="w-12 shrink-0 text-right text-zinc-500 tabular-nums">{ago(t.at, now)}</span>
       <div className="min-w-0 flex-1 break-words">
         <span className="font-medium">{t.reason ?? "change"}</span>
-        <span className="text-zinc-500"> by {t.actor.kind === "system" ? "the factory" : (t.actor.id ?? t.actor.kind)}</span>
+        <span className="text-zinc-500"> by </span>
+        <PersonName id={t.actor.kind === "system" ? null : t.actor.id} name={t.actor.name} viewer={viewer} />
         {short.length > 0 && (
           <span className="text-zinc-600 dark:text-zinc-400">
             {" "}— {short.map(([f, c]) => `${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`).join(", ")}
@@ -564,7 +590,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
             <li key={r.id} className="flex flex-wrap gap-x-3">
               <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{items.get(r.work_item_id)?.title || r.work_item_id}</Link>
               <span>{r.kind}</span>
-              <span className="font-mono">{r.worker_id}</span>
+              <WorkerName id={r.worker_id} />
               <span className="tabular-nums">{ago(r.started_at, now)}</span>
             </li>
           ))}
@@ -644,6 +670,7 @@ export function HealthPage() {
   // Each read runs the checks: every 30 s, not every 3 s.
   const health = useApi<Health>(API.health, 30_000);
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
+  const viewer = useViewer();
   if (health.isError) return <ErrorNote error={health.error} />;
   if (!health.data) return <Loading rows={6} />;
   const order = ["fail", "warn", "ok"];
@@ -673,7 +700,7 @@ export function HealthPage() {
               <li key={`${h.worker_id}:${h.woke_at}`} className="flex items-baseline gap-3" data-testid="host-sleep">
                 <span className="font-medium">{sleptText(h.gap_ms)}</span>
                 <span className="tabular-nums text-zinc-600 dark:text-zinc-400">{h.woke_at.slice(0, 16).replace("T", " ")} UTC ({ago(h.woke_at, now)} ago)</span>
-                <span className="min-w-0 font-mono text-xs break-words text-zinc-500">{h.worker_id}</span>
+                <span className="min-w-0 text-zinc-500"><WorkerName id={h.worker_id} /></span>
               </li>
             ))}
           </ul>
@@ -690,7 +717,7 @@ export function HealthPage() {
                   <Td className="tabular-nums">
                     {m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`}
                   </Td>
-                  <Td className="text-xs break-words">{m.merged_by}</Td>
+                  <Td className="text-xs break-words">{m.merged_by && m.merged_by !== "unknown" ? <PersonName id={m.merged_by} viewer={viewer} /> : "unknown"}</Td>
                   <Td className="font-mono text-xs">{m.merge_sha}</Td>
                   <Td className="tabular-nums whitespace-nowrap">{ago(m.recorded_at, now)} ago</Td>
                 </Tr>
