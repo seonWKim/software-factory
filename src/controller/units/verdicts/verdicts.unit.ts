@@ -1,16 +1,18 @@
 // Verdicts: a person's verdict, implicit verdicts (merges, pushes, reverts) and fix-forward links.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { parseFixReferences, parseRevert } from "../../../core/links.js";
+import { prNumber } from "../../../core/change-ref.js";
 import { LOCAL_SOURCE } from "../../../core/local-merge.js";
 import { workItemIdFromBranch } from "../../../core/policy.js";
 import { type Actor, type StateChangeDetail, type VerdictKind, type VerdictSeverity, type VerdictTarget, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import { type ParsedVerdict, parseVerdict } from "../../../core/verdict.js";
 import type { Principal } from "../../../interfaces/auth-provider.js";
+import type { Forge } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { MAX_CONFLICT_RETRIES } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { LocalForge } from "../../../impl/forge/local-forge.js";
 
 type BaseCommitEvent = Extract<SourceEvent, { kind: "base_commit" }>;
 type VerdictEvent = Extract<SourceEvent, { kind: "verdict_submitted" }>;
@@ -29,7 +31,12 @@ interface ImplicitVerdict {
 
 /** Verdicts: a person's verdict, implicit verdicts (merges, pushes, reverts) and fix-forward links. */
 export class VerdictsUnit {
-  constructor(private readonly c: Ctx) {}
+  /** Reads change refs out of commit messages and item text: the selected forge, else the local forge (no call). */
+  private readonly links: Pick<Forge, "parseLinks">;
+
+  constructor(private readonly c: Ctx) {
+    this.links = c.k.forge ?? new LocalForge(c.k.cfg.branch_prefix);
+  }
 
   /**
    * Stores one implicit verdict (design §4), retrying on version conflicts. Changes no field but the version; a
@@ -132,22 +139,22 @@ export class VerdictsUnit {
 
   /**
    * A base-branch commit that reverts a factory merge: one `reverted` row on each original item it names,
-   * by merge sha (`This reverts commit <sha>`) or by PR number (a `Revert ...` subject). The row changes no
-   * field. Dedupe key: (item, reason, reverting commit), checked inside decide so a conflict re-reads.
+   * by merge sha (`This reverts commit <sha>`) or by change ref (a `Revert ...` subject, in the forge's form). The
+   * row changes no field. Dedupe key: (item, reason, reverting commit), checked inside decide so a conflict re-reads.
    */
   async recordReverts(e: BaseCommitEvent): Promise<void> {
-    const refs = parseRevert(e.message);
+    const links = this.links.parseLinks(e.message);
     const project = this.c.k.project();
     const targets = new Set<WorkItemId>();
-    for (const sha of refs.shas) {
+    for (const sha of links.reverted_shas) {
       const it = await this.c.k.reader.getWorkItemByMergeSha(project, sha);
       if (it) targets.add(it.id);
     }
-    for (const n of refs.pr_numbers) {
-      const it = await this.c.k.reader.getWorkItemByPr(project, String(n));
+    for (const ref of links.reverted_refs) {
+      const it = await this.c.k.reader.getWorkItemByPr(project, ref);
       if (it) targets.add(it.id);
     }
-    const detail = { reverting_commit: e.sha, reverting_pr: refs.reverting_pr };
+    const detail = { reverting_commit: e.sha, reverting_pr: refDetail(links.reverting_ref) };
     for (const id of targets) {
       await this.c.unit("transitions").decide(id, async (it) =>
         (await this.hasDetail(it.id, "reverted", "reverting_commit", e.sha))
@@ -165,22 +172,25 @@ export class VerdictsUnit {
   }
 
   /**
-   * A new item that says `Fixes #N` or `Follow-up to #N`, where N is a factory PR: the first such N becomes
-   * its `fixes_pr`, and the item with PR N gets one `fixed_forward` row. Numbers that are not factory PRs
-   * are ignored. Both steps are no-ops when already done.
+   * A new item that says `Fixes <ref>` or `Follow-up to <ref>`, where ref is a factory change (in the forge's form):
+   * the first such change links. A numbered one becomes its `fixes_pr`, and the item with that change gets one
+   * `fixed_forward` row. Refs that are not factory changes are ignored. Both steps are no-ops when already done.
    */
   async linkFixForward(id: WorkItemId, text: string): Promise<void> {
     const project = this.c.k.project();
-    for (const n of parseFixReferences(text)) {
-      const original = await this.c.k.reader.getWorkItemByPr(project, String(n));
+    for (const ref of this.links.parseLinks(text).fix_refs) {
+      const original = await this.c.k.reader.getWorkItemByPr(project, ref);
       if (!original || original.id === id) continue;
-      await this.c.unit("transitions").decide(id, (it) =>
-        it.fixes_pr !== null
-          ? null
-          : { patch: { fixes_pr: n }, actor: LINKS, reason: "fixes_pr_linked", detail: { original_work_item_id: original.id } },
-      );
-      // An earlier delivery may have linked another PR first; record the forward link only for the one kept.
-      if ((await this.c.k.reader.getWorkItem(id))?.fixes_pr !== n) return;
+      const n = prNumber({ change_ref: ref });
+      if (n !== null) {
+        await this.c.unit("transitions").decide(id, (it) =>
+          it.fixes_pr !== null
+            ? null
+            : { patch: { fixes_pr: n }, actor: LINKS, reason: "fixes_pr_linked", detail: { original_work_item_id: original.id } },
+        );
+        // An earlier delivery may have linked another change first; record the forward link only for the one kept.
+        if ((await this.c.k.reader.getWorkItem(id))?.fixes_pr !== n) return;
+      }
       await this.c.unit("transitions").decide(original.id, async (it) =>
         (await this.hasDetail(it.id, "fixed_forward", "fix_work_item_id", id))
           ? null
@@ -193,6 +203,11 @@ export class VerdictsUnit {
   async hasDetail(id: WorkItemId, reason: string, key: string, value: StateChangeDetail[string]): Promise<boolean> {
     return (await this.c.k.reader.listStateChanges(id)).some((c) => c.reason === reason && c.detail?.[key] === value);
   }
+}
+
+/** A change ref in a state-change detail: a numbered change as its number (as before change refs), else the ref. */
+function refDetail(ref: string | null): string | number | null {
+  return ref === null ? null : (prNumber({ change_ref: ref }) ?? ref);
 }
 
 declare module "../../router/unit.js" {

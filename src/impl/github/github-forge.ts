@@ -2,7 +2,8 @@ import type { WorkStatus } from "../../core/status-label.js";
 import type { PrCheckResult, SourceRef } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import { FORGE_AUTH, GITHUB_RATE_LIMITED, NETWORK_UNAVAILABLE, githubRateLimitMessage, networkDetail, unreachableHost } from "../../core/policy.js";
-import type { BasePushInput, BranchPushInput, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment, PrMergeMethod, PrMergeResult } from "../../interfaces/forge.js";
+import { fixReferences, isRevertSubject, revertedShas, subjectOf, unique } from "../../core/links.js";
+import type { BasePushInput, BranchPushInput, ChangeLinks, ClosePrInput, Forge, OpenPrInput, ForgeEvent, ForgePollResult, PrChecks, PrLineComment, PrMergeMethod, PrMergeResult } from "../../interfaces/forge.js";
 import type { GitHubApi, GitHubCredentials } from "../../interfaces/github-credentials.js";
 import { factoryGit, factoryRemoteUrl } from "../broker/trusted-git.js";
 import { GitHubError, GitHubRateLimitError, type RepoRef, issueNumberFromSourceId } from "../github/github-client.js";
@@ -100,6 +101,49 @@ const PASSING_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
 /** Closed-PR pages read past a cursor or back to `github.history_since`, 100 each, newest-updated first. */
 const CLOSED_PULL_PAGES = 5;
 
+/** What a base-branch commit message says it reverts, in GitHub's forms (design §6). */
+export interface RevertRefs {
+  /** Shas from `This reverts commit <sha>` anywhere in the message. */
+  shas: string[];
+  /** Candidate original PR numbers: `#N` in a subject that starts with `Revert`, minus the reverting PR. */
+  pr_numbers: number[];
+  /** The squash-merge suffix `(#M)` at the end of the subject: the PR that did the revert. */
+  reverting_pr: number | null;
+}
+
+/** A PR named as `#N`: the change-ref pattern GitHub's links use. */
+const PR_REF = /#(\d+)\b/;
+
+/** What a base-branch commit message says it reverts: `This reverts commit <sha>`, and `#N` in a `Revert` subject. */
+export function parseRevert(message: string): RevertRefs {
+  const shas = revertedShas(message);
+  const subject = subjectOf(message);
+  const isRevert = isRevertSubject(subject);
+  const suffix = /\(#(\d+)\)\s*$/.exec(subject);
+  // Only a revert has a reverting PR: a revert subject, or any subject over a `This reverts commit` body.
+  const reverting_pr = suffix && (isRevert || shas.length > 0) ? Number(suffix[1]) : null;
+  if (!isRevert) return { shas, pr_numbers: [], reverting_pr };
+  const named = suffix ? subject.slice(0, suffix.index) : subject;
+  const pr_numbers = unique([...named.matchAll(new RegExp(PR_REF.source, "g"))].map((m) => Number(m[1])));
+  return { shas, pr_numbers, reverting_pr };
+}
+
+/** PR numbers named by `Fixes #N` or `Follow-up to #N` (also `Follow up to`), in order of first mention. */
+export function parseFixReferences(text: string): number[] {
+  return fixReferences(text, PR_REF).map(Number);
+}
+
+/** GitHub's links as change refs: each PR number as text, the form `change_ref` takes. */
+export function githubLinks(message: string): ChangeLinks {
+  const r = parseRevert(message);
+  return {
+    reverted_shas: r.shas,
+    reverted_refs: r.pr_numbers.map(String),
+    reverting_ref: r.reverting_pr === null ? null : String(r.reverting_pr),
+    fix_refs: parseFixReferences(message).map(String),
+  };
+}
+
 /**
  * The GitHub forge (issue #273): every PR read the factory makes, and its PR comments and PR labels. Those two go
  * through `issues`, the GitHub source's store-backed post and label paths, so a PR comment or label is recorded
@@ -131,6 +175,10 @@ export class GitHubForge implements Forge {
 
   private get base(): string {
     return `/repos/${this.repo.owner}/${this.repo.name}`;
+  }
+
+  parseLinks(message: string): ChangeLinks {
+    return githubLinks(message);
   }
 
   /** The configured repo's key from its node ID and its label from its current path: one repository read. */

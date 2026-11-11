@@ -14,7 +14,7 @@ import type { SharedStorage } from "../../src/interfaces/shared-storage.js";
 import type {
   PollResult, PollSource, PushedEvent, SourceCloseReason, SourceEvent, StreamSource, SubIssueInput,
 } from "../../src/interfaces/source-adapter.js";
-import type { BranchPushInput, ClosePrInput, Forge, ForgeEvent, ForgePollResult, OpenPrInput, PrChecks, PrMergeMethod, PrMergeResult } from "../../src/interfaces/forge.js";
+import type { BranchPushInput, ChangeLinks, ClosePrInput, Forge, ForgeEvent, ForgePollResult, OpenPrInput, PrChecks, PrMergeMethod, PrMergeResult } from "../../src/interfaces/forge.js";
 import type { FactoryStore } from "../../src/interfaces/factory-store.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
 import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
@@ -25,6 +25,7 @@ import { NoKeepAwake } from "../../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { EgressScanner } from "../../src/interfaces/egress-scanner.js";
 import { GitHubClient, GitHubError } from "../../src/impl/github/github-client.js";
+import { githubLinks } from "../../src/impl/github/github-forge.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials } from "../../src/interfaces/github-credentials.js";
 import { newStore } from "./store.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../../src/interfaces/tool-broker.js";
@@ -289,6 +290,10 @@ export class FakeForge implements Forge {
     const events = this.queue;
     this.queue = [];
     return { events, next_cursor: String(Number(cursor ?? "0") + 1) };
+  }
+  /** Its PRs are GitHub-numbered, so its links read GitHub's forms. */
+  parseLinks(message: string): ChangeLinks {
+    return githubLinks(message);
   }
   prRef(pr_number: number): SourceRef {
     return { type: "github_issue", id: `o/r#${pr_number}`, link: `https://github.com/o/r/pull/${pr_number}` };
