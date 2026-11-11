@@ -1,19 +1,20 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { Dialog, StatusToast } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { PAGE_COMMANDS_PATH } from "../pages.js";
 import {
-  ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectForm, ReviseForm, approveNote, approvePhase, chosenAnswers, initialChoices, textButton,
+  ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approveNote, approvePhase, chosenAnswers, field, initialChoices, textButton, type CommandDialogProps,
 } from "./item-decisions.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
 // in its order: the commands that apply now. One the viewer's grants do not allow (`allowed` false, issue #453) is
-// disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject and revise open their own forms (issue #527): reject asks why and confirms what closes,
+// disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject and revise open a dialog (issue #527): reject asks why and confirms what closes,
 // revise takes a comment per spec section. Verdict (issue #523) is three buttons, Accept, Changes and Reject, with a
 // severity choice; a click sends `<kind> <severity> <reason>` (verdictNote), the reason the note box's text. Every
 // other command carries the note box's text when it has any (tokens for budget, the approve note). A send
@@ -24,10 +25,12 @@ import {
 // approve in an approve phase (the spec gate, the floor block, the Rule of Two) goes through a confirm step first;
 // approve sends the answers as `N: <answer>` lines.
 
-/** Commands sent from their own form, not with the note box. */
+/** Commands sent from their own dialog, not with the note box. */
 const FORMS = ["reject", "revise"];
-/** In Needs you, which has no note box, verdict has its own text form too (issue #513). */
+/** In Needs you, which has no note box, verdict has its own dialog too (issue #513). */
 const NEED_FORMS = [...FORMS, "verdict"];
+/** The commands a Needs-you row shows as its one primary button: what the state asks for. */
+const PRIMARY = ["approve", "retry", "resolve"];
 
 /** The verdict as typed after `/verdict`, the placeholder of its text form. */
 export const VERDICT_PLACEHOLDER = "accept|changes|reject <none|minor|major|critical> <reason>";
@@ -114,6 +117,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
   const [note, setNote] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
   const [open, setOpen] = useState<string | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
   const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
   // The page's own item query (same key and options), read here for its `merge` and its waiting spec.
   const data = useApi<ItemDetail>(API.item(id)).data;
@@ -188,7 +192,6 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             const outcome = c.allowed ? commandOutcome(replies, c.name, local[c.name]) : notAllowed(c);
             const hasForm = FORMS.includes(c.name);
             const confirms = c.name === "approve" && phase !== null;
-            const close = () => setOpen(null);
             if (c.name === "verdict") {
               return (
                 <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
@@ -209,8 +212,13 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
                   className={textButton}
                   disabled={disabled || confirming === c.name}
                   title={`${c.usage}: ${c.description}`}
-                  {...(hasForm ? { "aria-expanded": open === c.name } : {})}
-                  onClick={() => (hasForm ? setOpen(open === c.name ? null : c.name) : confirms ? setConfirming(c.name) : void send(c.name))}
+                  {...(hasForm ? { "aria-haspopup": "dialog" as const } : {})}
+                  onClick={(e) => {
+                    opener.current = e.currentTarget;
+                    if (hasForm) setOpen(c.name);
+                    else if (confirms) setConfirming(c.name);
+                    else void send(c.name);
+                  }}
                 >
                   {c.name}
                 </Button>
@@ -226,10 +234,6 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
                   </>
                 )}
                 <OutcomeText outcome={outcome} />
-                {open === c.name && c.name === "reject" && (
-                  <RejectForm pr={detail?.change_ref ?? null} disabled={disabled} onSend={(t) => void send("reject", t)} onCancel={close} />
-                )}
-                {open === c.name && c.name === "revise" && <ReviseForm disabled={disabled} onSend={(t) => void send("revise", t)} onCancel={close} />}
               </li>
             );
           })}
@@ -239,9 +243,28 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             </li>
           )}
         </ul>
+        {(open === "reject" || open === "revise") && (
+          <CommandDialog
+            command={open}
+            id={id}
+            pr={detail?.change_ref ?? null}
+            busy={busy || !enabled}
+            error={local[open] && "error" in local[open] ? local[open].error : null}
+            returnFocusTo={opener}
+            onSend={(t) => void send(open, t)}
+            onClose={() => setOpen(null)}
+          />
+        )}
       </Section>
     </>
   );
+}
+
+/** The dialog for `command` (reject, revise or verdict), the same on the Floor and the item page. */
+function CommandDialog({ command, pr, ...props }: CommandDialogProps & { command: "reject" | "revise" | "verdict"; pr: string | null }) {
+  if (command === "reject") return <RejectDialog pr={pr} {...props} />;
+  if (command === "revise") return <ReviseDialog {...props} />;
+  return <VerdictDialog {...props} />;
 }
 
 /**
@@ -311,70 +334,168 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
 }
 
 /**
- * A Needs-you row's verdict form (issue #513): one line, as typed after `/verdict`, sent as the item page's note box
- * sends it. The controller parses it; a malformed one is refused with the usage line, shown beside the button.
+ * A Needs-you row's verdict dialog (issue #513): one line, as typed after `/verdict`, sent as the item page's note box
+ * sends it; Enter sends it. The controller parses it; a malformed one is refused with the usage line.
  */
-export function VerdictForm({ disabled, onSend, onCancel }: { disabled: boolean; onSend: (note: string) => void; onCancel: () => void }) {
+function VerdictDialog({ id, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps) {
   const [text, setText] = useState("");
   return (
-    <span role="group" aria-label="Record a verdict" data-verdict-form className="inline-flex flex-wrap items-center gap-2">
+    <Dialog
+      title={`Record a verdict on ${id}`}
+      consequence="The verdict is recorded on this item; the factory applies it on its next tick."
+      confirmLabel="Send verdict"
+      confirmDisabled={busy || text.trim() === ""}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => onSend(text.trim())}
+      onClose={onClose}
+    >
       <input
         aria-label="Verdict"
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={VERDICT_PLACEHOLDER}
-        className={cn(
-          "h-8 w-full max-w-md min-w-0 rounded-md border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900",
-          "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
-        )}
+        className={cn(field, "w-full min-w-0")}
       />
-      <Button variant="outline" className={textButton} disabled={disabled || text.trim() === ""} onClick={() => onSend(text.trim())}>
-        Send verdict
-      </Button>
-      <Button variant="outline" className={textButton} onClick={onCancel}>
-        Cancel
-      </Button>
-    </span>
+    </Dialog>
   );
 }
 
 /**
- * A Needs-you row's command buttons (design §9, issues #453, #513): one per entry of the row's `commands` (the item
- * API's, each allowed or not for the viewer). Approve, retry and resolve send at once; reject and revise open the item
- * page's forms first, and reject confirms what it closes; verdict opens its one-line form. One the viewer may not send
- * is disabled with its reason beside it. A send re-reads the list, so the row moves on; a failed send shows its error.
+ * A Needs-you row's commands (design §9, issues #453, #513): at most one primary button, the command the state asks
+ * for (approve, retry or resolve, the first the viewer may send), and one "⋯" menu with every other command of the
+ * row's `commands`. One the viewer may not send stays in the menu, disabled, with its reason. Reject, revise and
+ * verdict open a dialog (outside the row, so the row never grows); the others send at once. A send re-reads the list,
+ * so the row moves on; a failed send shows its error in the row, a sent one in a short status message.
  */
 export function NeedCommands({ id, commands, pr }: { id: string; commands: readonly ItemCommand[]; pr: string | null }) {
   const { on, busy, local, send: post } = useCommandSend(id);
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<"reject" | "revise" | "verdict" | null>(null);
+  const [sent, setSent] = useState<string | null>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const primary = commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
+  const others = commands.filter((c) => c !== primary);
   const send = async (command: string, note: string) => {
-    if (await post(command, note)) setOpen(null);
+    if (!(await post(command, note))) return;
+    setOpen(null);
+    setSent(command);
   };
-  const close = () => setOpen(null);
+  useEffect(() => {
+    if (sent === null) return;
+    const t = setTimeout(() => setSent(null), 4000);
+    return () => clearTimeout(t);
+  }, [sent]);
+  const failed = commands.flatMap((c) => {
+    const l = local[c.name];
+    return l && "error" in l ? [l.error] : [];
+  });
   return (
     <span data-need-commands className="inline-flex flex-wrap items-center gap-2">
-      {commands.map((c) => {
-        const disabled = !on || busy || !c.allowed;
-        const hasForm = NEED_FORMS.includes(c.name);
-        return (
-          <span key={c.name} data-command={c.name} className="inline-flex flex-wrap items-center gap-2">
-            <Button
-              variant="outline"
-              className={textButton}
-              disabled={disabled}
-              title={`${c.usage}: ${c.description}`}
-              {...(hasForm ? { "aria-expanded": open === c.name } : {})}
-              onClick={() => (hasForm ? setOpen(open === c.name ? null : c.name) : void send(c.name, ""))}
-            >
-              {c.name}
-            </Button>
-            <OutcomeText outcome={c.allowed ? commandOutcome([], c.name, local[c.name]) : notAllowed(c)} />
-            {open === c.name && c.name === "reject" && <RejectForm pr={pr} disabled={disabled} onSend={(t) => void send("reject", t)} onCancel={close} />}
-            {open === c.name && c.name === "revise" && <ReviseForm disabled={disabled} onSend={(t) => void send("revise", t)} onCancel={close} />}
-            {open === c.name && c.name === "verdict" && <VerdictForm disabled={disabled} onSend={(t) => void send("verdict", t)} onCancel={close} />}
-          </span>
-        );
-      })}
+      {primary && (
+        <span data-command={primary.name} className="inline-flex">
+          <Button variant="outline" className={textButton} disabled={!on || busy} title={`${primary.usage}: ${primary.description}`} onClick={() => void send(primary.name, "")}>
+            {primary.name}
+          </Button>
+        </span>
+      )}
+      {others.length > 0 && (
+        <MoreMenu
+          buttonRef={moreButton}
+          commands={others}
+          disabled={!on || busy}
+          onPick={(name) => (NEED_FORMS.includes(name) ? setOpen(name as "reject" | "revise" | "verdict") : void send(name, ""))}
+        />
+      )}
+      {failed.map((text) => (
+        <OutcomeText key={text} outcome={{ tone: "error", text }} />
+      ))}
+      {sent !== null && <StatusToast>Command sent: {sent}</StatusToast>}
+      {open !== null && (
+        <CommandDialog
+          command={open}
+          id={id}
+          pr={pr}
+          busy={!on || busy}
+          error={local[open] && "error" in local[open] ? local[open].error : null}
+          returnFocusTo={moreButton}
+          onSend={(t) => void send(open, t)}
+          onClose={() => setOpen(null)}
+        />
+      )}
+    </span>
+  );
+}
+
+/** The "⋯" menu: the row's other commands, each disabled with its reason when the viewer may not send it. */
+function MoreMenu({
+  buttonRef, commands, disabled, onPick,
+}: { buttonRef: RefObject<HTMLButtonElement | null>; commands: readonly ItemCommand[]; disabled: boolean; onPick: (name: string) => void }) {
+  const [shown, setShown] = useState(false);
+  const wrap = useRef<HTMLSpanElement>(null);
+  const uid = useId();
+  useEffect(() => {
+    if (!shown) return;
+    const away = (e: Event) => {
+      if (e.type === "keydown" ? (e as KeyboardEvent).key === "Escape" : !wrap.current?.contains(e.target as Node)) setShown(false);
+    };
+    document.addEventListener("pointerdown", away);
+    document.addEventListener("keydown", away);
+    return () => {
+      document.removeEventListener("pointerdown", away);
+      document.removeEventListener("keydown", away);
+    };
+  }, [shown]);
+  return (
+    <span ref={wrap} className="relative inline-flex">
+      <button
+        ref={buttonRef}
+        type="button"
+        className={cn(
+          "inline-flex items-center justify-center rounded-md border border-zinc-300 text-sm font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800",
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600",
+          textButton,
+        )}
+        aria-label="More commands"
+        aria-haspopup="menu"
+        aria-expanded={shown}
+        onClick={() => setShown(!shown)}
+      >
+        ⋯
+      </button>
+      {shown && (
+        <ul
+          role="menu"
+          className="absolute top-full right-0 z-20 mt-1 w-max max-w-[calc(100vw-2rem)] rounded-md border border-zinc-300 bg-white p-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        >
+          {commands.map((c) => {
+            const off = disabled || !c.allowed;
+            const why = !c.allowed ? plainRefusal(c.reason ?? "not allowed") : null;
+            return (
+              <li key={c.name} role="none" data-command={c.name}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={off}
+                  title={why ?? `${c.usage}: ${c.description}`}
+                  aria-describedby={why ? `${uid}-why-${c.name}` : undefined}
+                  className="block w-full rounded px-2 py-1 text-left hover:bg-zinc-100 disabled:opacity-50 dark:hover:bg-zinc-800"
+                  onClick={() => {
+                    setShown(false);
+                    onPick(c.name);
+                  }}
+                >
+                  {c.name}
+                </button>
+                {why && (
+                  <span id={`${uid}-why-${c.name}`} className="block max-w-xs px-2 pb-1 text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">
+                    {why}
+                  </span>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </span>
   );
 }

@@ -10,7 +10,7 @@ import { Markdown } from "../web/src/components/ui/markdown.js";
 // the spec triage wrote sits behind "spec written (show)" and renders as markdown, never as escaped JSON; the
 // spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and ID. A waiting spec
 // (issue #526) shows In short above Commands, its decisions as questions, and a confirm step before approve; Reject
-// and Revise have their own forms (issue #527).
+// and Revise open a dialog (issue #527).
 
 const AT = "2026-11-07T00:00:00.000Z";
 const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
@@ -274,7 +274,13 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
   });
 });
 
-describe("item page: the Reject and Revise forms (issue #527)", () => {
+beforeEach(() => {
+  // jsdom has no showModal: open and close by the attribute.
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
+});
+
+describe("item page: the Reject and Revise dialogs (issue #527)", () => {
   const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
   let posts: { url: string; body: unknown }[];
 
@@ -302,12 +308,12 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     }));
   }
 
-  /** Clicks `name` once it is enabled; returns its form. */
+  /** Clicks `name` once it is enabled; returns its dialog. */
   async function open(name: "reject" | "revise") {
     const button = (await screen.findByRole("button", { name })) as HTMLButtonElement;
     await waitFor(() => expect(button.disabled).toBe(false));
     fireEvent.click(button);
-    return screen.getByRole("group", { name: name === "reject" ? "Why reject?" : "Revise the spec" });
+    return screen.getByRole("dialog", { name: name === "reject" ? "Reject wi_r" : "Revise wi_r" });
   }
 
   it("Reject opens a Why? form with four reasons and a text box; the reason and the text are sent as the reject note", async () => {
@@ -332,7 +338,7 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     let form = await open("reject");
     fireEvent.change(within(form).getByRole("textbox", { name: "Reject details" }), { target: { value: "covered by #12" } });
     fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("group", { name: "Why reject?" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(posts).toEqual([]);
     form = await open("reject");
     fireEvent.change(within(form).getByRole("textbox", { name: "Reject details" }), { target: { value: "covered by #12" } });
@@ -344,12 +350,12 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     serve();
     mount("/app/items/wi_r");
     let form = await open("reject");
-    expect(form.querySelector("[data-reject-closes]")!.textContent).toBe("Rejecting closes this item.");
+    expect(form.querySelector("[data-dialog-consequence]")!.textContent).toBe("Rejecting closes this item.");
     cleanup();
     serve({ change_ref: "42", change_url: "https://github.com/o/r/pull/42" });
     mount("/app/items/wi_r");
     form = await open("reject");
-    expect(form.querySelector("[data-reject-closes]")!.textContent).toBe("Rejecting closes this item and its PR #42, without a merge.");
+    expect(form.querySelector("[data-dialog-consequence]")!.textContent).toBe("Rejecting closes this item and its PR #42, without a merge.");
   });
 
   it("after a Reject is sent, its outcome shows next to the Reject button", async () => {
@@ -360,7 +366,7 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Confirm reject" }));
     const row = document.querySelector<HTMLElement>('[data-command="reject"]')!;
     await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
-    expect(screen.queryByRole("group", { name: "Why reject?" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("Revise shows the spec sections, each with an optional comment box, and sends one revise with only the commented sections", async () => {

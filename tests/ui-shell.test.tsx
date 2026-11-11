@@ -83,6 +83,9 @@ class MemoryStorage {
 }
 
 beforeEach(() => {
+  // jsdom has no showModal: open and close by the attribute.
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
   fetched = [];
   posts = [];
   postAnswer = { status: 202, body: { request_id: "app:x", seq: 9, command: "approve", work_item_id: "wi_1" } };
@@ -372,7 +375,7 @@ describe("Running now and Queue", () => {
   });
 });
 
-// ---- Item commands (issue #228): a button per command, the note box, the reject and revise forms (issue #527), the outcome ----
+// ---- Item commands (issue #228): a button per command, the note box, the reject and revise dialogs (issue #527), the outcome ----
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: `${name} it`, allowed: true, reason: null as string | null });
 const reply = (seq: number, command: string, handled: boolean, refusal: string | null = null) =>
   ({ seq, command, created_at: AT, handled_at: handled ? AT : null, refusal });
@@ -421,18 +424,17 @@ describe("item commands", () => {
     }
   });
 
-  it("revise and reject open their own forms, not the note box; the note box stays for the other commands", async () => {
+  it("revise and reject open a dialog, not the note box; the note box stays for the other commands", async () => {
     mountCommands();
     expect(screen.getByRole("textbox", { name: "Note" })).toBeTruthy();
     typeNote("tighten the tests");
-    expect(button("revise").getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(button("revise"));
-    expect(button("revise").getAttribute("aria-expanded")).toBe("true");
-    const form = screen.getByRole("group", { name: "Revise the spec" });
-    expect((within(form).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    const dialog = screen.getByRole("dialog", { name: "Revise wi_1" });
+    expect((within(dialog).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     fireEvent.click(button("reject"));
-    expect(screen.getByRole("group", { name: "Why reject?" })).toBeTruthy();
-    expect(screen.queryByRole("group", { name: "Revise the spec" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Reject wi_1" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Revise wi_1" })).toBeNull();
     await settle();
     expect(posts).toEqual([]);
     cleanup();
@@ -469,7 +471,7 @@ describe("item commands", () => {
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("Cancel"));
-    expect(screen.queryByRole("button", { name: "Confirm reject" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("reject"));
@@ -795,16 +797,32 @@ describe("Needs-you command buttons (issue #453)", () => {
     );
   }
 
-  it("one button per command of the row, in its order; Work items has none", () => {
+  const menu = () => screen.getByRole("button", { name: "More commands" });
+  const pick = (name: string) => {
+    fireEvent.click(menu());
+    fireEvent.click(screen.getByRole("menuitem", { name }));
+  };
+
+  it("one primary button and one ⋯ menu per row, holding the other commands; Work items has none", () => {
     mountNeeds(["approve", "reject", "revise"].map(cmd));
-    expect([...document.querySelectorAll("[data-need-commands] [data-command] > button")].map((b) => b.textContent)).toEqual(["approve", "reject", "revise"]);
+    expect([...document.querySelectorAll("[data-need-commands] > [data-command] > button")].map((b) => b.textContent)).toEqual(["approve"]);
+    expect(document.querySelectorAll("[data-need-commands] > span > button, [data-need-commands] > button")).toHaveLength(2);
+    expect(screen.queryByRole("menuitem")).toBeNull();
+    fireEvent.click(menu());
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["reject", "revise"]);
+    cleanup();
+    mountNeeds([cmd("retry"), cmd("reject")]);
+    expect(rowOf("retry").textContent).toBe("retry");
+    cleanup();
+    mountNeeds([cmd("reject")]);
+    expect(document.querySelector("[data-need-commands] [data-command] > button:not([role])")).toBeNull();
     cleanup();
     const it = row(1, "needs_approval", "Spec waiting", { need: { reason: "spec ready" }, commands: [cmd("approve")] });
     render(<ItemsTable items={[it as unknown as ItemRow]} now={Date.parse(AT)} label="Work items" empty="none" />);
     expect(document.querySelector("[data-need-commands]")).toBeNull();
   });
 
-  it("approve, retry and resolve send at once, with no note", async () => {
+  it("approve, retry and resolve send at once, with no note; the row shows no sent text, a status message does", async () => {
     for (const name of ["approve", "retry", "resolve"]) {
       posts = [];
       mountNeeds([cmd(name)]);
@@ -812,47 +830,78 @@ describe("Needs-you command buttons (issue #453)", () => {
       await settle();
       expect(posts.map((p) => [p.url, p.body]), name).toEqual([["/api/v1/items/wi_1/commands", { command: name }]]);
       expect(posts[0]!.headers["x-csrf-token"]).toBe("tok-123");
-      expect(within(rowOf(name)).getByRole("status").textContent).toBe("sent");
+      expect(document.querySelector("tr")!.textContent).not.toContain("sent");
+      expect(screen.getByRole("status").textContent).toBe(`Command sent: ${name}`);
       cleanup();
     }
   });
 
-  it("reject opens the Why? form and asks to confirm, naming the PR it closes; nothing is sent before the confirm", async () => {
+  it("opening reject, revise or verdict leaves the row's children as they were; the dialog sits outside the row", () => {
+    mountNeeds(["approve", "reject", "revise", "verdict"].map(cmd));
+    const tr = document.querySelector("tr")!;
+    const before = [...tr.querySelectorAll("*")];
+    for (const [name, title] of [["reject", "Reject wi_1"], ["revise", "Revise wi_1"], ["verdict", "Record a verdict on wi_1"]] as const) {
+      pick(name);
+      const dialog = screen.getByRole("dialog", { name: title });
+      expect(tr.contains(dialog), name).toBe(false);
+      expect([...tr.querySelectorAll("*")], name).toEqual(before);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    }
+  });
+
+  it("reject opens the dialog and asks to confirm, naming the PR it closes; nothing is sent before the confirm", async () => {
     mountNeeds(["approve", "reject"].map(cmd), { change_ref: "42" });
-    fireEvent.click(button("reject"));
-    const form = screen.getByRole("group", { name: "Why reject?" });
-    expect(form.textContent).toContain("Rejecting closes this item and its PR #42, without a merge.");
-    fireEvent.click(within(form).getByRole("radio", { name: "duplicate" }));
+    pick("reject");
+    const dialog = screen.getByRole("dialog", { name: "Reject wi_1" });
+    expect(dialog.textContent).toContain("Rejecting closes this item and its PR #42, without a merge.");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "duplicate" }));
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("Confirm reject"));
     await settle();
     expect(posts.map((p) => p.body)).toEqual([{ command: "reject", note: "duplicate" }]);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("revise opens its note fields and sends only once a section has text; Cancel sends nothing", async () => {
-    mountNeeds([cmd("revise")]);
-    fireEvent.click(button("revise"));
-    const form = screen.getByRole("group", { name: "Revise the spec" });
-    expect((within(form).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    mountNeeds([cmd("approve"), cmd("revise")]);
+    pick("revise");
+    const dialog = screen.getByRole("dialog", { name: "Revise wi_1" });
+    expect((within(dialog).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await settle();
     expect(posts).toEqual([]);
-    fireEvent.click(button("revise"));
+    pick("revise");
     fireEvent.change(screen.getByRole("textbox", { name: "Comment on Problem" }), { target: { value: "narrower" } });
     fireEvent.click(button("Send revise"));
     await settle();
     expect(posts.map((p) => p.body)).toEqual([{ command: "revise", note: "### Problem\nnarrower" }]);
   });
 
-  it("a command the viewer may not send is disabled, with its reason beside it in plain text", async () => {
+  it("verdict opens a one-line dialog; Send verdict sends what was typed", async () => {
+    mountNeeds([cmd("approve"), cmd("verdict")]);
+    pick("verdict");
+    expect((button("Send verdict")).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Verdict" }), { target: { value: " accept none ok " } });
+    fireEvent.click(button("Send verdict"));
+    await settle();
+    expect(posts.map((p) => p.body)).toEqual([{ command: "verdict", note: "accept none ok" }]);
+  });
+
+  it("a command the viewer may not send stays in the menu, disabled, with its reason in plain text", async () => {
     mountNeeds(["approve", "reject"].map((n) => ({ ...cmd(n), allowed: false, reason: NO_ROLE })));
+    // Nothing allowed is primary, so approve is in the menu too.
+    expect(document.querySelectorAll("[data-need-commands] [data-command] > button:not([role])")).toHaveLength(0);
+    fireEvent.click(menu());
     for (const name of ["approve", "reject"]) {
-      expect(button(name).disabled, name).toBe(true);
-      expect(rowOf(name).textContent).toContain("local:me has no role that allows it (no_role)");
-      expect(rowOf(name).textContent).not.toContain("`");
+      const item = screen.getByRole("menuitem", { name }) as HTMLButtonElement;
+      expect(item.disabled, name).toBe(true);
+      const li = item.closest("li")!;
+      expect(li.textContent).toContain("local:me has no role that allows it (no_role)");
+      expect(li.textContent).not.toContain("`");
     }
-    fireEvent.click(button("approve"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "approve" }));
     await settle();
     expect(posts).toEqual([]);
   });
