@@ -7,8 +7,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
-// The pause part of the FactoryStore contract (design §5 Pause), on every backend. MySQL joins when
-// SF_TEST_MYSQL_URL is set (see helpers/store.ts).
+// The pause part of the FactoryStore contract (design §5 Pause), on SQLite (the only backend).
 import { BACKENDS, issue, system } from "./helpers/store.js";
 
 const LEASE = 60_000;
