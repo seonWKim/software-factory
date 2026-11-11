@@ -16,9 +16,10 @@ import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
 import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
 import {
   PROJECT_SETTABLE_KEYS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettableKey,
-  type GlobalSettableKey, type LearnedRecord, type LearnedSettingsSource, type SettableValues, type SettingsBase, type SettingSource,
+  type GlobalSettableKey, type LearnedSettingsSource, type SettableValues, type SettingsBase, type SettingSource,
   effectiveSetting, isGateSettableKey, isProjectSettableKey, resolveSettings, settingsFor,
 } from "../core/settings.js";
+import type { RunId, Timestamp } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { loadSettingCatalog } from "../runtime/index.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
@@ -112,7 +113,7 @@ export async function learnedWithRecords(
 ): Promise<{ rows: LearnedSetting[]; source: LearnedSettingsSource }> {
   const rows = await store.listLearnedSettings();
   const changes = rows.length === 0 ? [] : await store.listLearnedSettingChanges(LEARNED_SCAN);
-  const records = new Map<string, LearnedRecord>();
+  const records = new Map<string, { evidence_run_ids: RunId[]; set_at: Timestamp }>();
   for (const r of rows) {
     const wrote = changes.find((c) => c.project === r.project && c.key === r.key && c.new_value === r.value);
     records.set(JSON.stringify([r.project, r.key]), { evidence_run_ids: wrote?.evidence_run_ids ?? [], set_at: r.updated_at });

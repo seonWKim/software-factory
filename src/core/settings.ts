@@ -60,19 +60,11 @@ export interface SettingsLayers {
   projects: Readonly<Record<string, Partial<ProjectSettings>>>;
 }
 
-/** Why a learned value is there: the failed runs it was learned from and when it was set. What the Settings page shows. */
-export interface LearnedRecord {
-  evidence_run_ids: RunId[];
-  set_at: Timestamp;
-}
-
-/**
- * The learned layer (src/core/learned-settings.ts), written by the daily improve run. A learned value looser than the project override, else the global value, is ignored.
- */
+/** The learned layer (src/core/learned-settings.ts), written by the daily improve run. A learned value looser than the project override, else the global value, is ignored. */
 export interface LearnedSettingsSource {
   get<K extends ProjectSettingKey>(project: string, key: K): ProjectSettings[K] | undefined;
-  /** The learned value's evidence and set time. Absent, or undefined for a key: the source keeps none (the gates need only `get`). */
-  record?(project: string, key: ProjectSettingKey): LearnedRecord | undefined;
+  /** Why a learned value is there, for the Settings page: the failed runs it was learned from and when it was set. Absent: the source keeps none (the gates need only `get`). */
+  record?(project: string, key: ProjectSettingKey): { evidence_run_ids: RunId[]; set_at: Timestamp } | undefined;
 }
 
 export type EffectiveSetting<K extends ProjectSettingKey> = { value: ProjectSettings[K]; layer: SettingLayer };

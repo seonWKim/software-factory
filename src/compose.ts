@@ -1139,13 +1139,10 @@ export async function approveMergeCheck(loaded: Loaded, store: FactoryStore, use
   };
 }
 
-/** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. */
+/** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. `local` and `learned` as the worker pool's (Plugins.localRoute; 08-settings). */
 export interface SessionParts {
   clock: Clock; store: FactoryStore; scanner: EgressScanner; sandbox: Sandbox; broker: ToolBroker; auth: AuthProvider; github: GitHubApi; config: FactoryConfig;
-  /** The local items' broker and sandbox, as the worker pool's (Plugins.localRoute). */
-  local: LocalRoute;
-  /** The learned settings layer (08-settings), as the controller's and the worker pool's: a session's gates read it as a run's do. */
-  learned: LearnedSettingsSource;
+  local: LocalRoute; learned: LearnedSettingsSource;
   close(): Promise<void>;
 }
 
@@ -1167,8 +1164,7 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const { project, refreshed } = await projectAtStartup(loaded, { forge }, { store, repo: base.repo, clock, log: new ConsoleLogger(clock, "startup") });
   const config = resolvedConfig(loaded.config, project);
   shareGitHubBudget(loaded, github, store, config);
-  const log = new ConsoleLogger(clock, "settings");
-  const learned = new StoredLearnedSettings(store, log);
+  const log = new ConsoleLogger(clock, "settings"), learned = new StoredLearnedSettings(store, log);
   const settings = new LiveSettings({ config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, learned, log });
   await settings.refresh();
   return { clock, store, scanner, sandbox, broker, local, auth, github, learned, config: settings.config(), close: () => refreshed.then(() => store.close()) };
