@@ -360,7 +360,7 @@ function QuietHours({ row, token }: { row: SettingRow; token: string }) {
   return (
     <div className="flex max-w-md flex-col gap-1 text-sm">
       <span className="font-medium">Quiet hours</span>
-      <p className="text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+      <p className="text-xs text-pretty text-text-2">
         Local time, e.g. 22:00-07:00; empty is off. Notices inside it wait, then come as one summary.
       </p>
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
@@ -381,7 +381,7 @@ function NoticesSection({ view }: { view: SettingsView }) {
   if (!kinds && !quiet) return null;
   return (
     <Section title="Notices">
-      <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+      <p className="mb-2 text-sm text-pretty text-text-2">
         The macOS app shows a notice when an item starts waiting on you. Changes apply on the next notifications pass.
       </p>
       <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
@@ -403,7 +403,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
       </Td>
       <Td className="min-w-56">
         {NOTICE_KEYS.has(row.key) ? (
-          <p className="text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+          <p className="text-xs text-pretty text-text-2">
             <span className="font-mono break-words">{row.value}</span> · edit under Notices
           </p>
         ) : (
