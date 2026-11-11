@@ -119,7 +119,6 @@ export function build(root) {
   const stagedWeb = stagingPath(webDist);
   try {
     run([tsc, "-p", join(root, "tsconfig.json"), "--outDir", stagedDist], root);
-    run([tsc, "-p", join(root, "tsconfig.migrations.json"), "--outDir", stagedDist], root);
     run([vite, ...viteBuildArgs(root, stagedWeb)], root);
     withLock(root, () => {
       swapIn(stagedDist, dist);
