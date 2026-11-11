@@ -9,7 +9,7 @@ Methods: `openWindow`, `setStatus`, `onQuit`, `quit`, and (2026-11-12) `register
 Implementations:
 
 - `macos`: `createMacosShell` in `desktop/electron/macos/app-shell.js`, started by `desktop/electron/macos/main.js` (the only file that imports `electron`).
-  - Enable: `npm run build:desktop:macos`, then open `desktop/out/Software Factory.app` (`SET_UP.md`, "macOS app"). Secrets: none; the shell never opens the secret file.
+  - Enable: `npm run build:desktop:macos`, then open `desktop/out/Gongbang.app` (`SET_UP.md`, "macOS app"). The app's name is `productName` in `desktop/package.json`; the window, menu bar (`Gb <n>`), Quit item and error dialog take it from there. Secrets: none; the shell never opens the secret file.
   - Settings: `~/Library/Application Support/software-factory/config.json`, written with its defaults on first start: `checkout` (the factory checkout to run, default the folder the app was built from), `ui_port` (default 4310; match `ui.port` in `factory.config.json`), `keep_running_when_closed` (default true: closing the window hides it and the factory keeps running), `app.quick_add_shortcut` (default `Alt+Space`: the quick-add box's shortcut; a missing key takes the default, and the menu bar's "Quick-add shortcut…" changes it). The shortcut methods use Electron's `globalShortcut`; every shortcut is released on quit.
   - Switch back: quit the app (it drains the factory) and run `npm run factory -- dev` in a terminal.
 
@@ -17,4 +17,5 @@ Electron must be in `node_modules` to build the app (`electron`, pinned in `devD
 
 ## History
 
+- 2026-11-12: the app was "Software Factory.app" and its menu bar said `SF <n>`. Renamed Gongbang (`docs/design/09-desktop-app.md`).
 - 2026-11-12: the interface had no shortcut methods (open the window, show the status, set the drain, quit). The quick-add box (`docs/design/09-desktop-app.md`) added `registerShortcut` and `unregisterShortcut`.
