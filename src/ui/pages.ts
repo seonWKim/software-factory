@@ -19,6 +19,7 @@ import { type HealthMonitor, improveSection } from "./health.js";
 import { runNowButton } from "./improve-api.js";
 import type { PauseDeps } from "./pause-api.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
+import { mergesSection } from "./merge-digest.js";
 import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import type { UiSettings } from "./settings-api.js";
@@ -139,7 +140,7 @@ export async function renderIndex(d: PauseDeps, f: Filters, self = "/", healthRe
   const rows = await listRows({ store: d.store, w: c.w, now: c.now, lease_ms: d.lease_ms }, f);
   const sections = [
     // What the operator acts on first (design §9): the process, what runs and waits, the ranked list, health.
-    // Totals and cost are background and go last.
+    // Totals, merges and cost are background and go last.
     await factorySection(c),
     await alarmsSection(c),
     githubBudgetSection(await readGitHubBudget(d.store, c.now)),
@@ -151,6 +152,7 @@ export async function renderIndex(d: PauseDeps, f: Filters, self = "/", healthRe
     await d.health.section(d.scanner, { refresh: healthRefresh, runNow: await runNowButton(d) }),
     await improveSection(await d.store.getLatestImproveReport(), d.scanner),
     await totalsSection(c),
+    await mergesSection(d.store, c.w, c.now),
     await costSection(c),
   ];
   const body =
