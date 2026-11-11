@@ -48,6 +48,9 @@ export function canonicalJson(value: Json): string {
 
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
+/** A descriptor's description_hash: the SHA-256 of its canonical JSON, what an approval is keyed by. */
+export const descriptionHash = (descriptor: Json): string => sha256(canonicalJson(descriptor));
+
 export class PackEntriesStore {
   constructor(
     private readonly db: SqlDriver,

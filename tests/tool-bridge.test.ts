@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { ClaudeCodeRunner, buildAgentEnv, buildClaudeArgs } from "../src/impl/runner/claude-code-runner.js";
 import {
-  BRIDGE_SERVER, EGRESS_BLOCKED, LEASE_LOST, NOT_GRANTED, ToolGate, answerBridgeRequest, bridgeMcpConfig, bridgeScript, harnessToolName,
+  BRIDGE_SERVER, EGRESS_BLOCKED, LEASE_LOST, NOT_GRANTED, RESULT_CAP_BYTES, RESULT_DIR, RESULT_PREVIEW_BYTES, ToolGate, answerBridgeRequest, bridgeMcpConfig, bridgeScript, harnessToolName,
   startBridgeHost,
 } from "../src/impl/runner/tool-bridge.js";
 import { mcpHandler, mcpToolName, serveMcp, socketSender } from "../src/impl/runner/tool-bridge-mcp.js";
@@ -261,6 +261,73 @@ class TwoSecrets implements SecretStore {
     return Object.values(this.values);
   }
 }
+
+describe("the output cap on granted tool results", () => {
+  /** A note whose JSON result is over the cap, ending in a marker that only the full text holds. */
+  const BIG = `${"n".repeat(RESULT_CAP_BYTES)}TAIL-ONLY-IN-FILE`;
+
+  it("caps a granted tool that is not a pack tool: a result over the cap goes to a file in the run folder; the agent gets its path and first 2 KB, never the full text", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "sf-cap-"));
+    const gate = new ToolGate({ broker: new FakeNoteBroker({ big: BIG }), scanner: cleanScanner }, { ...gateSpec(), sandbox: { workdir } });
+    const r = await gate.call("test.read_note", { key: "big" });
+    if (!r.ok) throw new Error("expected a result");
+    const full = JSON.stringify({ key: "big", note: BIG });
+    const content = r.content as { truncated: boolean; path: string; bytes: number; preview: string };
+    expect(content).toMatchObject({ truncated: true, bytes: full.length, preview: full.slice(0, RESULT_PREVIEW_BYTES) });
+    expect(content.path.startsWith(join(workdir, RESULT_DIR))).toBe(true);
+    expect(readFileSync(content.path, "utf8")).toBe(full);
+    // What goes back to the agent is the preview and the path, not the full text.
+    const sent = JSON.stringify(r);
+    expect(sent).not.toContain("TAIL-ONLY-IN-FILE");
+    expect(sent.length).toBeLessThan(RESULT_PREVIEW_BYTES + 1024);
+    // The folder ignores itself, so a capped result is never committed with the run's change.
+    expect(readFileSync(join(workdir, RESULT_DIR, ".gitignore"), "utf8")).toBe("*\n");
+    // A second capped call gets its own file.
+    const again = await gate.call("test.read_note", { key: "big" });
+    expect((again as { content: { path: string } }).content.path).not.toBe(content.path);
+    expect(readdirSync(join(workdir, RESULT_DIR)).filter((f) => f.endsWith(".txt"))).toHaveLength(2);
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  it("cuts the 2 KB preview on a character boundary when the boundary falls inside a multibyte character", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "sf-cap-"));
+    const head = `{"key":"mb","note":"`;
+    // ASCII up to one byte before the preview's end, then 3-byte characters: the first one spans the boundary.
+    const note = `${"a".repeat(RESULT_PREVIEW_BYTES - head.length - 1)}${"€".repeat(RESULT_CAP_BYTES)}`;
+    const gate = new ToolGate({ broker: new FakeNoteBroker({ mb: note }), scanner: cleanScanner }, { ...gateSpec(), sandbox: { workdir } });
+    const r = await gate.call("test.read_note", { key: "mb" });
+    const { preview, path } = (r as { content: { preview: string; path: string } }).content;
+    expect(preview).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(preview, "utf8")).toBe(RESULT_PREVIEW_BYTES - 1);
+    expect(preview).toBe(JSON.stringify({ key: "mb", note }).slice(0, RESULT_PREVIEW_BYTES - 1));
+    expect(readFileSync(path, "utf8")).toBe(JSON.stringify({ key: "mb", note }));
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  it("returns a result at or under the cap unchanged and writes no file", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "sf-cap-"));
+    const gate = new ToolGate({ broker: new FakeNoteBroker({ a: "small" }), scanner: cleanScanner }, { ...gateSpec(), sandbox: { workdir } });
+    expect(await gate.call("test.read_note", { key: "a" })).toEqual({ ok: true, content: { key: "a", note: "small" } });
+    expect(existsSync(join(workdir, RESULT_DIR))).toBe(false);
+    rmSync(workdir, { recursive: true, force: true });
+  });
+
+  it("with no run folder, a result over the cap is cut to its preview with no path", async () => {
+    const gate = new ToolGate({ broker: new FakeNoteBroker({ big: BIG }), scanner: cleanScanner }, gateSpec());
+    const r = await gate.call("test.read_note", { key: "big" });
+    expect(r).toMatchObject({ ok: true, content: { truncated: true, path: null } });
+    expect(JSON.stringify(r)).not.toContain("TAIL-ONLY-IN-FILE");
+  });
+
+  it("scans the full result before the cap: a flagged result is withheld and no file is written", async () => {
+    const workdir = mkdtempSync(join(tmpdir(), "sf-cap-"));
+    const flagging = { scan: async () => ({ clean: false, findings: [{ rule: "test_rule" }] }) } as unknown as typeof cleanScanner;
+    const gate = new ToolGate({ broker: new FakeNoteBroker({ big: BIG }), scanner: flagging }, { ...gateSpec(), sandbox: { workdir } });
+    expect(await gate.call("test.read_note", { key: "big" })).toMatchObject({ ok: false, error_code: EGRESS_BLOCKED });
+    expect(existsSync(join(workdir, RESULT_DIR))).toBe(false);
+    rmSync(workdir, { recursive: true, force: true });
+  });
+});
 
 function runSpec(over: Partial<AgentRunSpec> = {}): AgentRunSpec {
   return {
