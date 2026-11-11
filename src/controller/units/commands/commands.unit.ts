@@ -223,14 +223,14 @@ export class CommandsUnit {
     if (!item || item.stage === "CLOSED") return;
     const principal = await this.c.unit("auth").authorize(e.reviewer, "approve_spec", item.id);
     if ("refuse" in principal) {
-      this.c.k.d.log.info("review ignored", { work_item_id: item.id, pr_number: prNumber(e), reason: principal.refuse });
+      this.c.k.d.log.info("review ignored", { work_item_id: item.id, change_ref: e.change_ref, reason: principal.refuse });
       return;
     }
     const actor: Actor = { kind: "user", id: principal.user_id };
     const refusal = await this.c.unit("transitions").decide(item.id, (it) =>
       this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, change_ref: e.change_ref, key: { review_id: e.review_id } }));
     if (refusal === null) return;
-    this.c.k.d.log.info("review refused", { work_item_id: item.id, pr_number: prNumber(e), reason: refusal });
+    this.c.k.d.log.info("review refused", { work_item_id: item.id, change_ref: e.change_ref, reason: refusal });
     await this.c.unit("outbox").post(item, e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
   }
 

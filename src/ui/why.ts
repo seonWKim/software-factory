@@ -3,7 +3,7 @@
 // phases. Pure: no store, no clock, no I/O. The caller reads the inputs (list.ts) and passes the sentence
 // through the Withholder before it leaves (api.ts); `refs` are the same-repo issue numbers the sentence names.
 //
-// Precedence, first match wins: closed, blocked on a person or the budget, a deadlock claim, running, a claim
+// Precedence, first match wins: closed, blocked on a person or the budget, running, a claim
 // pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a retry's not_before, the
 // queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
 // sentence (withAlarms), whichever rule gave it.
@@ -74,7 +74,7 @@ export function refsOf(text: string): number[] {
   return out;
 }
 
-/** True when the decision is a deadlock claim of the item's current run: it waits on the holder (Blocked by another task). */
+/** True when the decision is a deadlock claim of the item's current run: it waits on the holder (Blocked by another task); the run goes on. */
 export function deadlocked(decision: WhyInput["decision"], run: { id: string } | null): boolean {
   return decision?.decision === "deadlock" && run !== null && decision.run_id === run.id;
 }
@@ -151,7 +151,7 @@ export function whyWaiting(x: WhyInput): Why {
   if (i.stage === "CLOSED") return why("closed", i.close_reason ? `Closed: ${i.close_reason.replace(/_/g, " ")}` : "Closed", "none");
   if (i.blocked_on === "human" || i.blocked_on === "budget") return human(i);
   if (deadlocked(x.decision, run)) {
-    return why("deadlock", `Started past a deadlock with ${x.decision!.holder_ref}: a person checks the overlap`, "human");
+    return why("deadlock", `Started past a deadlock with ${x.decision!.holder_ref}: a person checks the overlap`, "factory");
   }
   if (run?.status === "running") return why("running", `Running ${run.kind}`, "factory");
   const paused = run ? pause(x.pauses, run.kind) : null;

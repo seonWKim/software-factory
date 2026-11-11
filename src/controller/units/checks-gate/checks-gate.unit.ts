@@ -164,14 +164,14 @@ export class ChecksGateUnit {
   /** The PR's checks, from the forge whatever source the item came from; no forge counts as passed, a forge error as pending (logged). */
   async readChecks(it: WorkItem): Promise<PrChecks> {
     const forge = this.c.k.reader.forge;
-    const pr_number = prNumber(it);
-    if (!forge || pr_number === null) return { state: "passed" };
+    const pr = prNumber(it);
+    if (!forge || pr === null) return { state: "passed" };
     try {
-      return await forge.prChecks(pr_number);
+      return await forge.prChecks(pr);
     } catch (err) {
       this.c.k.d.log.warn("reading PR checks failed", {
         work_item_id: it.id,
-        pr_number,
+        change_ref: it.change_ref,
         error: errorText(err),
       });
       return { state: "pending" };
@@ -183,16 +183,16 @@ export class ChecksGateUnit {
    * checks of MAX_CHECK_NAME_CHARS. No forge: no checks ran (an empty list). A read error: null (logged), so the
    * prompt says the results could not be read; the review still runs.
    */
-  async reviewInput(pr_number: number | null, work_item_id: WorkItemId | null): Promise<RunInput> {
+  async reviewInput(pr: number | null, work_item_id: WorkItemId | null): Promise<RunInput> {
     const forge = this.c.k.reader.forge;
-    if (!forge || pr_number === null) return { ci_checks: [] };
+    if (!forge || pr === null) return { ci_checks: [] };
     try {
-      const results = await forge.prCheckResults(pr_number);
+      const results = await forge.prCheckResults(pr);
       return { ci_checks: results.slice(0, MAX_CHECK_NAMES).map((r) => ({ name: r.name.slice(0, MAX_CHECK_NAME_CHARS), result: r.result })) };
     } catch (err) {
       this.c.k.d.log.warn("reading PR check results failed", {
         ...(work_item_id ? { work_item_id } : {}),
-        pr_number,
+        change_ref: String(pr),
         error: errorText(err),
       });
       return { ci_checks: null };

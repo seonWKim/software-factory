@@ -258,7 +258,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     pending: status.pending ?? [],
   };
   // System actions (design §9 Status page): store reads and in-process values only, no forge call.
-  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
+  const actions = await systemActions({ store: s, factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
   const system_actions = [];
   for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
   const token = c.d.lastChecks?.tokenDays() ?? null;
@@ -304,8 +304,8 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
     const sha = await c.text(m.merge_sha);
     out.push({
       project: await c.text(label),
-      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the number): text only.
-      change_ref: String(m.pr_number),
+      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the ref): text only.
+      change_ref: m.change_ref,
       change_url: null,
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),

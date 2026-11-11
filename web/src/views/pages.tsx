@@ -165,14 +165,11 @@ export function FloorPage() {
   const needs = (items.data?.items ?? []).filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level));
   const o = overview.data;
   const actions = o?.system_actions ?? [];
-  // A deadlocked item is a system action and a row of the table: counted once.
-  const ids = new Set(needs.map((i) => i.id));
-  const extra = actions.filter((a) => a.work_item_id === null || !ids.has(a.work_item_id)).length;
   return (
     <>
       <FactoryBanner factory={o?.factory} now={now} pauses={pauses.data?.pauses} />
       <ClaimPauses now={now} />
-      <Section title="Needs you" count={items.data ? needs.length + extra : undefined}>
+      <Section title="Needs you" count={items.data ? needs.length + actions.length : undefined}>
         <SystemActions actions={actions} />
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
           <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} actions empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
