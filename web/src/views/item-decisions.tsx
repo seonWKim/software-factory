@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { SpecDecision, WaitingSpec } from "../api.js";
-import { Button } from "../components/ui/button.js";
+import type { RefObject } from "react";
+import { Dialog } from "../components/ui/dialog.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Section } from "../components/ui/parts.js";
 import { cn } from "../lib/cn.js";
@@ -9,9 +10,9 @@ import { cn } from "../lib/cn.js";
 // as questions to answer before `approve`. A decision with options is a radio group with the default selected and
 // a `write my own` choice with a text field; one with none is a text field prefilled with the default. The answers
 // go out with the approve as `N: <answer>` lines (the controller's parser, src/shared/command-notes.ts), and the
-// confirm step names what is approved and what happens next. Reject and revise have their own forms (issue #527):
-// reject asks why (a reason and a free text) and says what closes; revise takes one optional comment per spec
-// section and sends only the commented ones, each under a `### <Section>` heading.
+// confirm step names what is approved and what happens next. Reject and revise open a dialog (issue #527, shared
+// by the Floor and the item page): reject asks why (a reason and a free text) and says what closes; revise takes one
+// optional comment per spec section and sends only the commented ones, each under a `### <Section>` heading.
 
 /** One decision's answer on the page: an option picked, or the text written (`own`). */
 export interface DecisionChoice {
@@ -70,10 +71,10 @@ const PHASES: Record<ApprovePhase, { what: string; next: string }> = {
   rule_of_two: { what: "the run held for a person by the Rule of Two", next: "The held run starts." },
 };
 
-/** A text button's size, for the command buttons and the forms' own. */
+/** A text button's size, for the command buttons. */
 export const textButton = "h-8 w-auto px-2";
 
-const field =
+export const field =
   "rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900 " +
   "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600";
 
@@ -168,7 +169,15 @@ export function ApproveConfirm({ phase, answers, note }: { phase: ApprovePhase; 
   );
 }
 
-const form = "w-full max-w-xl rounded-md border border-zinc-300 p-2 text-sm dark:border-zinc-700";
+/** What every command dialog takes: the item, whether a send is in flight, the failed send's error, and the focus target. */
+export interface CommandDialogProps {
+  id: string;
+  busy: boolean;
+  error: string | null;
+  returnFocusTo: RefObject<HTMLElement | null>;
+  onSend: (note: string) => void;
+  onClose: () => void;
+}
 
 /** Why a spec is rejected: one of these, and any free text. */
 export const REJECT_REASONS = ["not needed", "wrong approach", "duplicate", "too big; split it"] as const;
@@ -178,15 +187,23 @@ export function rejectNote(reason: string | null, text: string): string {
   return [reason ?? "", text.trim()].filter(Boolean).join("\n");
 }
 
-/** The reject form: why (a reason and a free text), what closes (the item, and its PR when it has one), confirm or cancel. */
-export function RejectForm({
-  pr, disabled, onSend, onCancel,
-}: { pr: string | null; disabled: boolean; onSend: (note: string) => void; onCancel: () => void }) {
+/** The reject dialog: why (a reason and a free text), what closes (the item, and its PR when it has one), confirm or cancel. */
+export function RejectDialog({ id, pr, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps & { pr: string | null }) {
   const [reason, setReason] = useState<string | null>(null);
   const [text, setText] = useState("");
   const note = rejectNote(reason, text);
   return (
-    <div role="group" aria-label="Why reject?" data-reject-form className={form}>
+    <Dialog
+      title={`Reject ${id}`}
+      consequence={`Rejecting closes this item${pr === null ? "" : ` and its PR #${pr}, without a merge`}.`}
+      confirmLabel="Confirm reject"
+      confirmDisabled={busy || note === ""}
+      danger
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => onSend(note)}
+      onClose={onClose}
+    >
       <fieldset className="min-w-0">
         <legend className="text-sm font-medium">Why?</legend>
         <div role="radiogroup" aria-label="Reason" className="mt-1 space-y-1">
@@ -204,20 +221,9 @@ export function RejectForm({
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Say more (optional when a reason is chosen)"
-        className={cn(field, "mt-2 w-full")}
+        className={cn(field, "w-full")}
       />
-      <p data-reject-closes className="mt-1 text-pretty">
-        Rejecting closes this item{pr === null ? "" : ` and its PR #${pr}, without a merge`}.
-      </p>
-      <div className="mt-2 flex flex-wrap gap-2">
-        <Button variant="outline" className={textButton} disabled={disabled || note === ""} onClick={() => onSend(note)}>
-          Confirm reject
-        </Button>
-        <Button variant="outline" className={textButton} onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -232,17 +238,23 @@ export function reviseNote(comments: readonly string[]): string {
   }).join("\n\n");
 }
 
-/** The revise form: one optional comment per spec section, sent as one revise once any section has a comment. */
-export function ReviseForm({ disabled, onSend, onCancel }: { disabled: boolean; onSend: (note: string) => void; onCancel: () => void }) {
+/** The revise dialog: one optional comment per spec section, sent as one revise once any section has a comment. */
+export function ReviseDialog({ id, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps) {
   const [comments, setComments] = useState<string[]>(() => SPEC_SECTIONS.map(() => ""));
   const note = reviseNote(comments);
   return (
-    <div role="group" aria-label="Revise the spec" data-revise-form className={form}>
-      <p className="text-xs text-pretty text-zinc-600 dark:text-zinc-400">
-        Comment on the sections to change; triage writes a new spec from your comments. A section left empty is not sent.
-      </p>
+    <Dialog
+      title={`Revise ${id}`}
+      consequence="Triage writes a new spec from your comments. A section left empty is not sent."
+      confirmLabel="Send revise"
+      confirmDisabled={busy || note === ""}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => onSend(note)}
+      onClose={onClose}
+    >
       {SPEC_SECTIONS.map((s, i) => (
-        <div key={s} data-revise-section={s} className="mt-2">
+        <div key={s} data-revise-section={s}>
           <span className="text-sm font-medium">{s}</span>
           <textarea
             aria-label={`Comment on ${s}`}
@@ -254,14 +266,6 @@ export function ReviseForm({ disabled, onSend, onCancel }: { disabled: boolean; 
           />
         </div>
       ))}
-      <div className="mt-2 flex flex-wrap gap-2">
-        <Button variant="outline" className={textButton} disabled={disabled || note === ""} onClick={() => onSend(note)}>
-          Send revise
-        </Button>
-        <Button variant="outline" className={textButton} onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </div>
+    </Dialog>
   );
 }
