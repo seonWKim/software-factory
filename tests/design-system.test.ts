@@ -80,10 +80,11 @@ describe("the Gongbang mark in the dashboard", () => {
     const icons = (await import(pathToFileURL(join(ROOT, "scripts", "build-icons.mjs")).href as string)) as {
       parseSvg: (text: string) => unknown;
       render: (svg: unknown, size: number) => Buffer;
-      encodePng: (rgba: Buffer, size: number) => Buffer;
+      decodePng: (png: Buffer) => { width: number; height: number; rgba: Buffer };
     };
-    const favicon = readFileSync(join(ROOT, "web", "public", "favicon.png"));
-    expect(favicon.equals(icons.encodePng(icons.render(icons.parseSvg(svg), 16), 16))).toBe(true);
+    const favicon = icons.decodePng(readFileSync(join(ROOT, "web", "public", "favicon.png")));
+    expect([favicon.width, favicon.height]).toEqual([16, 16]);
+    expect(favicon.rgba.equals(icons.render(icons.parseSvg(svg), 16))).toBe(true);
     const html = readFileSync(join(ROOT, "web", "index.html"), "utf8");
     expect(html).toMatch(/<link rel="icon" type="image\/png" sizes="16x16" href="\/favicon\.png" \/>/);
     expect(html).toContain("<title>Gongbang</title>");
