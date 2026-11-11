@@ -32,10 +32,10 @@ export interface AuthProvider {
   displayName?(identity: ExternalIdentity): Promise<string | null>;
 }
 
-export type Action = "submit_work" | "approve_spec" | "approve_merge" | "record_verdict" | "use_tool";
-export const ACTIONS: readonly Action[] = ["submit_work", "approve_spec", "approve_merge", "record_verdict", "use_tool"];
+export type Action = "submit_work" | "approve_spec" | "approve_merge" | "record_verdict" | "use_tool" | "approve_tool";
+export const ACTIONS: readonly Action[] = ["submit_work", "approve_spec", "approve_merge", "record_verdict", "use_tool", "approve_tool"];
 
-/** owner: every action (the solo default). The other two are the legacy roles. */
+/** owner: every action (the solo default), `approve_tool` (pack tools, design 11-packs) only here. The other two are the legacy roles. */
 export type Role = "owner" | "approver" | "requester";
 
 export const ROLE_ACTIONS: Readonly<Record<Role, readonly Action[]>> = {

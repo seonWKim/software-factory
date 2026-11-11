@@ -32,8 +32,16 @@ export const ROLE_ACTIONS: Readonly<Record<Role, readonly AuthAction[]>> = {
  */
 const OPEN_ACTIONS: readonly AuthAction[] = ["submit_work"];
 
+/**
+ * Actions only the owner may take, whatever the grants give (design 08-permissions, One owner): approving a pack
+ * tool (design 11-packs). The owner is the store's local owner (solo: the first local identity, through
+ * LocalUsersGrant; never `local:anonymous`).
+ */
+const OWNER_ACTIONS: readonly AuthAction[] = ["approve_tool"];
+
 export interface AuthorizeDeps {
-  store: Pick<FactoryStore, "getWorkItem" | "listLinks">;
+  /** `getLocalUser` answers the owner check; a store without it has no owner. */
+  store: Pick<FactoryStore, "getWorkItem" | "listLinks"> & Partial<Pick<FactoryStore, "getLocalUser">>;
   /** The selected grant sources (`permissions.grants`), in config order. */
   grants: readonly GrantSource[];
 }
@@ -41,19 +49,27 @@ export interface AuthorizeDeps {
 /**
  * The one authorize check. Any deny refuses (`denied`). Otherwise the action is allowed when any grant gives
  * a role that includes it; local grants are asked first and the first role that covers the action stops the
- * search, so a remote API is not called for a user a local grant already covers. Else `no_role`.
+ * search, so a remote API is not called for a user a local grant already covers. Else `no_role`. An owner action
+ * is allowed only to the owner (`not_owner`).
  */
 export async function authorize(d: AuthorizeDeps, user_id: UserId, action: AuthAction, resource: AuthResource): Promise<AuthDecision> {
   const project = await projectOf(d, resource);
   const subject: GrantSubject = { user_id, accounts: await accountsOf(d, user_id) };
   for (const g of d.grants) if (await g.denies(subject, project)) return { allow: false, reason: "denied" };
   if (OPEN_ACTIONS.includes(action)) return { allow: true };
+  if (OWNER_ACTIONS.includes(action)) return (await isOwner(d, subject, project)) ? { allow: true } : { allow: false, reason: "not_owner" };
   const ordered = [...d.grants.filter((g) => !g.remote), ...d.grants.filter((g) => g.remote)];
   for (const g of ordered) {
     const roles = await g.roles(subject, project);
     if (roles.some((r) => ROLE_ACTIONS[r].includes(action))) return { allow: true };
   }
   return { allow: false, reason: "no_role" };
+}
+
+async function isOwner(d: AuthorizeDeps, subject: GrantSubject, project: string | null): Promise<boolean> {
+  // The local grants first, as for any action: LocalUsersGrant makes a solo setup's first identity the owner.
+  for (const g of d.grants) if (!g.remote) await g.roles(subject, project);
+  return (await d.store.getLocalUser?.(subject.user_id))?.role === "owner";
 }
 
 async function projectOf(d: AuthorizeDeps, resource: AuthResource): Promise<string | null> {

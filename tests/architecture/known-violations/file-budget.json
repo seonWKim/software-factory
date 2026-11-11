@@ -1,5 +1,5 @@
 {
-  "compose.ts": 1389,
+  "compose.ts": 1397,
   "controller/units/commands/commands.unit.ts": 739,
   "controller/units/run-results/run-results.unit.ts": 1162,
   "core/settings.ts": 777,
@@ -12,6 +12,6 @@
   "impl/updater/git-worktree.ts": 912,
   "interfaces/factory-store.ts": 1355,
   "ui/api.ts": 638,
-  "worker/runner.ts": 1130,
+  "worker/runner.ts": 1133,
   "worker/runs/implement/implement.run.ts": 1123
 }

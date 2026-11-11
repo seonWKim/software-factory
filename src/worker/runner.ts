@@ -6,6 +6,7 @@ import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-ti
 import type { HookDescriptor } from "../shared/hook.js";
 import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
+import { PACK_TOOL_REFUSED, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
@@ -827,7 +828,9 @@ export class Worker {
       ? { id: opts.resume ?? globalThis.crypto.randomUUID(), resume: Boolean(opts.resume) }
       : null;
     // The run kind's read-only broker tools from `tool_grants` (checked at startup); none when config grants none.
-    const tool_grants = [...grantsFor(this.cfg.tool_grants, run.kind)];
+    // A granted pack entry needs its approval too, and none starts yet (design 11-packs): the run fails before its agent.
+    const { broker: tool_grants, refused } = await checkPackGrants(storeSql(this.d.store), grantsFor(this.cfg.tool_grants, run.kind), this.cfg.packs_auto_approve_read_only === true);
+    if (refused.length > 0) throw new RunFailure(PACK_TOOL_REFUSED, packRefusalMessage(refused));
     if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
     }

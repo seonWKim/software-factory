@@ -69,7 +69,7 @@ import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
-import { type Pack, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
+import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 
 /**
@@ -225,9 +225,10 @@ export interface FileConfig {
   toolchain?: unknown;
   /**
    * Packs (design 11-packs.md): `order`, the layers in order (absent: base, org, project, learned; base first,
-   * learned last) and `org`, the org pack's folder (absent: no org layer). Checked by packsProblems. A reviewed key.
+   * learned last), `org`, the org pack's folder (absent: no org layer), and `auto_approve_read_only` (absent: false).
+   * Checked by packsProblems. A reviewed key.
    */
-  packs?: { order?: unknown; org?: unknown };
+  packs?: { order?: unknown; org?: unknown; auto_approve_read_only?: unknown };
 }
 
 export { CODE_ROOT_ENV, CONFIG_ENV, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
@@ -469,6 +470,7 @@ export async function loadConfig(
     outbound_batching: batchingPolicies(file.outbound?.batching),
     merge_queue_depth: mergeQueueDepth(file),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
+    ...(autoApproveReadOnly(file.packs) ? { packs_auto_approve_read_only: true } : {}),
     workers,
     max_workers,
     deny_paths: [
@@ -1112,6 +1114,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
     principal: async () => (await auth.resolve({ provider: "local", subject: opts.identity.user.replace(/^local:/, "") }))?.user_id ?? cliUser,
     authorize: (user_id) => onProject(user_id, "approve_spec"),
+    auth, // approve_tool for the pack approvals route (design 11-packs)
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
@@ -1124,15 +1127,20 @@ function refusalOf(d: AuthDecision): string | null {
   return d.allow ? null : d.reason;
 }
 
+/** The local auth plugin over the local grants, with no forge call: how a CLI command is authorized (solo: the owner). */
+export async function localAuth(loaded: Loaded, store: FactoryStore): Promise<AuthProvider> {
+  const base = { ...new Plugins(loaded).base, github: NO_FORGE };
+  const grants = (await createGrants(GRANTS, loaded.grants, base)).filter((g) => !g.remote);
+  return createPlugin(loaded.registry, "auth", selectedLocalAuth(loaded.plugins), { ...base, store, grants });
+}
+
 /**
  * The approve_merge check of `factory settings` and `factory mode` for `mode`, `auto_merge_max_tier` and a loosening change (design
  * 08-settings): `user` on the configured project, through the local auth plugin over the local grants, with no forge
  * call. Solo: the first local identity is the owner and holds it with no setup. The refusal, or null.
  */
 export async function approveMergeCheck(loaded: Loaded, store: FactoryStore, user: UserId): Promise<() => Promise<string | null>> {
-  const base = new Plugins(loaded).base;
-  const grants = (await createGrants(GRANTS, loaded.grants, { ...base, github: NO_FORGE })).filter((g) => !g.remote);
-  const auth = await createPlugin(loaded.registry, "auth", selectedLocalAuth(loaded.plugins), { ...base, github: NO_FORGE, store, grants });
+  const auth = await localAuth(loaded, store);
   const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
   return async () => {
     const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);

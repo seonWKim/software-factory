@@ -32,6 +32,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `model_by` | worker | runtime | global | free |  | `{"triage":"cheap","implement":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"review":"standard","resolve":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"retry_up":true}` | Which model class each run kind uses per tier, and whether a retry goes one class up. |
 | `models` | worker | runtime | global | free |  | `{"cheap":"haiku","standard":"sonnet","strong":"opus"}` | The model name used for each model class: cheap, standard and strong. |
 | `outbound.batching` | outbound | review | global | free |  | `{}` | Per destination kind or `*`: batching mode (auto, commit, fixed), debounce, max_wait, max_messages. |
+| `packs.auto_approve_read_only` | worker | review | global | tighten-only |  | `false` | Whether a read-only pack tool with no credential is approved without the owner's approval. |
 | `permissions` | identity | review | global | tighten-only | dial |  | Which grant sources decide who may act on the factory, and their settings. |
 | `phases_auto_approve` | controller | runtime | global | tighten-only |  | `false` | Whether a phase spec of an approved split needs no approval of its own. |
 | `plugins` | runtime | review | global | free |  |  | Which named implementation the factory uses for each interface. |

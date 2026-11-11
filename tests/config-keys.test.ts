@@ -200,7 +200,7 @@ describe("config keys: packs (design 11-packs.md)", () => {
   });
 
   it("an unknown key inside packs names its path; a bad order or org names its key", async () => {
-    expect((await loadError({ ...SQLITE, packs: { ordr: [] } })).message).toContain('unknown config key "ordr" at packs.ordr; valid packs keys: order, org; did you mean "order"?');
+    expect((await loadError({ ...SQLITE, packs: { ordr: [] } })).message).toContain('unknown config key "ordr" at packs.ordr; valid packs keys: order, org, auto_approve_read_only; did you mean "order"?');
     expect((await loadError({ ...SQLITE, packs: { order: ["base", "org", "learned"] } })).message).toContain('packs.order leaves out the layer "project"');
     expect((await loadError({ ...SQLITE, packs: { org: "" } })).message).toContain("packs.org must be a non-empty path");
     expect((await loadError({ ...SQLITE, packs: "org" })).message).toContain("packs must be an object");
