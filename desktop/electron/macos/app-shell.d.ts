@@ -9,7 +9,7 @@ export interface WindowOptions {
 }
 export declare function windowOptions(preload: string): WindowOptions;
 /** The Electron main-process modules the shell uses; tests pass a mock. */
-export type ElectronLike = Record<"app" | "BrowserWindow" | "Menu" | "Tray" | "nativeImage" | "globalShortcut", unknown>;
+export type ElectronLike = Record<"app" | "BrowserWindow" | "Menu" | "Tray" | "nativeImage" | "globalShortcut" | "Notification", unknown>;
 export interface MenuEntry {
   label: string;
   click: () => void;
