@@ -1,12 +1,13 @@
 // Wires one desktop shell: reads its config from the app data folder, starts the supervisor from the chosen
-// checkout (or attaches to one already running there), opens the dashboard, keeps the menu bar status fresh and
-// drains the supervisor it started on Quit. Every effect comes in as an argument, so a test runs it with fakes.
+// checkout (or attaches to one already running there), opens the dashboard, keeps the menu bar status fresh, shows
+// each new owner notice on the same tick, and drains the supervisor it started on Quit. Every effect comes in as an argument, so a test runs it with fakes.
 // The shell writes only its app data folder; of the checkout it reads only the supervisor's status file
 // (attach.js), and it never reads a secrets file.
 import { appDataPaths, loadShellConfig } from "./app-data.js";
 import { liveSupervisor, pidAlive } from "./attach.js";
 import { DRAIN_TIMEOUT_MS } from "./quit-drain.js";
-import { dashboardUrl, overviewUrl, pollStatus } from "./status.js";
+import { noticePoller, noticesUrl } from "./notices.js";
+import { UNREACHABLE, dashboardUrl, overviewUrl, pollStatus } from "./status.js";
 import { startSupervisor, supervisorCommand } from "./supervisor.js";
 
 /** The supervisor of an attached shell: it belongs to someone else, so Quit leaves it running. */
@@ -35,8 +36,22 @@ export async function runShell({ home, fs, spawn, execPath, env, fetch, defaultC
       onExit: (code, signal) => fs.appendFileSync(paths.log, `[shell] supervisor exited (code ${code}, signal ${signal})\n`),
     });
   }
-  shell.openWindow(dashboardUrl(config.ui_port));
-  const stopStatus = pollStatus({ fetch, url: overview, onStatus: (s) => shell.setStatus(s), timers });
+  const dashboard = dashboardUrl(config.ui_port);
+  shell.openWindow(dashboard);
+  const pollNotices = noticePoller({
+    fetch,
+    url: noticesUrl(config.ui_port),
+    dashboard,
+    fs,
+    file: paths.notices,
+    notify: (title, body, target) => shell.notify(title, body, target),
+  });
+  const onStatus = (s) => {
+    shell.setStatus(s);
+    // Notices ride the status tick, only while the dashboard answers.
+    if (s !== UNREACHABLE) void pollNotices();
+  };
+  const stopStatus = pollStatus({ fetch, url: overview, onStatus, timers });
   shell.onQuit(async () => {
     stopStatus();
     await supervisor.stop(DRAIN_TIMEOUT_MS);

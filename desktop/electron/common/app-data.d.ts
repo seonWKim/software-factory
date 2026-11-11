@@ -7,6 +7,7 @@ export interface AppDataPaths {
   readonly state: string;
   readonly log: string;
   readonly chromium: string;
+  readonly notices: string;
 }
 export interface ShellConfig {
   readonly checkout: string;

@@ -35,7 +35,7 @@ describe("app data folder", () => {
     expect(p.dir).toBe("/Users/someone/Library/Application Support/software-factory");
     expect(p.config).toBe(`${p.dir}/config.json`);
     expect(p.state).toBe(`${p.dir}/state`);
-    for (const path of [p.log, p.chromium]) expect(path.startsWith(`${p.state}/`)).toBe(true);
+    for (const path of [p.log, p.chromium, p.notices]) expect(path.startsWith(`${p.state}/`)).toBe(true);
   });
 
   it("writes the default config on first start: the checkout the app was built from, port 4310, keep running, Alt+Space", () => {

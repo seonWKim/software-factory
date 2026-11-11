@@ -6,9 +6,19 @@ import type { AppShell, ShellStatus } from "../../src/interfaces/app-shell.js";
 import { menuTitle } from "../../desktop/electron/common/status.js";
 import type { ElectronLike } from "../../desktop/electron/macos/app-shell.js";
 
+/** A notice the shell showed. */
+export interface ShownNotice {
+  readonly title: string;
+  readonly body: string;
+  readonly target: string;
+}
+
 /** The AppShell fake: records what the shell would show. */
 export class FakeAppShell implements AppShell {
   readonly windows: string[] = [];
+  /** Every URL the window loaded, in order. */
+  readonly loads: string[] = [];
+  readonly notices: ShownNotice[] = [];
   visible = false;
   status: ShellStatus = { state: "starting", needsYou: null };
   exited = false;
@@ -24,7 +34,10 @@ export class FakeAppShell implements AppShell {
   ) {}
 
   openWindow(url: string): void {
-    if (this.windows.length === 0) this.windows.push(url);
+    if (this.windows.length === 0) {
+      this.windows.push(url);
+      this.loads.push(url);
+    }
     this.visible = true;
   }
   setStatus(status: ShellStatus): void {
@@ -45,6 +58,17 @@ export class FakeAppShell implements AppShell {
   }
   unregisterShortcut(accelerator: string): void {
     this.shortcuts.delete(accelerator);
+  }
+  notify(title: string, body: string, target: string): void {
+    this.notices.push({ title, body, target });
+  }
+  /** The person clicks the `n`th notice shown: as the macOS shell, only a target under the dashboard URL loads. */
+  clickNotice(n: number): void {
+    const target = this.notices[n]!.target;
+    const dashboard = this.windows[0];
+    if (dashboard === undefined || !URL.canParse(target) || !new URL(target).href.startsWith(dashboard)) return;
+    this.loads.push(target);
+    this.visible = true;
   }
   menuText(): string {
     return menuTitle(this.status);
@@ -206,9 +230,30 @@ export class MockIpcMain {
   }
 }
 
-/** Electron's app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut and ipcMain, as far as the macOS shell uses them. */
+/** Electron's Notification: records its options and whether it was shown; `click()` is the person clicking it. */
+export class MockNotification extends EventEmitter {
+  shown = false;
+  constructor(readonly options: { title: string; body: string }) {
+    super();
+  }
+  show(): void {
+    this.shown = true;
+  }
+  click(): void {
+    this.emit("click");
+  }
+}
+
+/** Electron's app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut, Notification and ipcMain, as far as the macOS shell uses them. */
 export function electronMock() {
   const windows: MockWindow[] = [];
+  const notifications: MockNotification[] = [];
+  class Notification extends MockNotification {
+    constructor(options: { title: string; body: string }) {
+      super(options);
+      notifications.push(this);
+    }
+  }
   const tray = { title: "", tooltip: "", menu: [] as MenuItem[], made: 0 };
   const app = new MockApp();
   const state = app;
@@ -241,9 +286,10 @@ export function electronMock() {
     Menu: { buildFromTemplate: (t: MenuItem[]) => t },
     nativeImage: { createEmpty: () => ({}) },
     globalShortcut,
+    Notification,
   };
   const menuItem = (label: string): MenuItem => tray.menu.find((i) => i.label === label)!;
-  return { electron: { ...electron, ipcMain }, app, windows, tray, state, menuItem, globalShortcut, ipcMain, exited: () => state.exitCode !== null };
+  return { electron: { ...electron, ipcMain }, app, windows, notifications, tray, state, menuItem, globalShortcut, ipcMain, exited: () => state.exitCode !== null };
 }
 
 /** Lets pending promise callbacks run. */

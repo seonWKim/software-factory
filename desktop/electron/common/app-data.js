@@ -12,7 +12,15 @@ export const DEFAULT_QUICK_ADD_SHORTCUT = "Alt+Space";
 export function appDataPaths(home) {
   const dir = join(home, "Library", "Application Support", "software-factory");
   const state = join(dir, "state");
-  return { dir, config: join(dir, "config.json"), state, log: join(state, "supervisor.log"), chromium: join(state, "chromium") };
+  return {
+    dir,
+    config: join(dir, "config.json"),
+    state,
+    log: join(state, "supervisor.log"),
+    chromium: join(state, "chromium"),
+    // The owner notices this shell has shown (notices.js).
+    notices: join(state, "notices-shown.json"),
+  };
 }
 
 /**

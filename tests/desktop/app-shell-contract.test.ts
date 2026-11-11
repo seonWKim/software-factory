@@ -17,6 +17,12 @@ interface Harness {
   /** The person presses `accelerator`. */
   press(accelerator: string): void;
   shortcuts(): string[];
+  /** The notices shown, as title and body. */
+  shown(): { title: string; body: string }[];
+  /** The person clicks the `n`th notice shown. */
+  clickNotice(n: number): void;
+  /** Every URL any window loaded, in order. */
+  loads(): string[];
 }
 
 const harnesses: Record<string, () => Harness> = {
@@ -33,6 +39,9 @@ const harnesses: Record<string, () => Harness> = {
       menuText: () => shell.menuText(),
       closeWindow: () => shell.closeWindow(),
       exited: () => shell.exited,
+      shown: () => shell.notices.map(({ title, body }) => ({ title, body })),
+      clickNotice: (n) => shell.clickNotice(n),
+      loads: () => shell.loads,
     };
   },
   macos: () => {
@@ -48,6 +57,9 @@ const harnesses: Record<string, () => Harness> = {
       menuText: () => m.tray.title,
       closeWindow: () => m.windows.at(-1)!.close(),
       exited: m.exited,
+      shown: () => m.notifications.filter((n) => n.shown).map((n) => n.options),
+      clickNotice: (n) => m.notifications[n]!.click(),
+      loads: () => m.windows.flatMap((w) => w.loads),
     };
   },
 };
@@ -103,6 +115,35 @@ for (const [name, make] of Object.entries(harnesses)) {
       h.take("Command+Space");
       expect(h.shell.registerShortcut("Command+Space", () => {})).toBe(false);
       expect(h.shortcuts()).toEqual([]);
+    });
+
+    it("notify shows a notice with the title and body", () => {
+      const h = make();
+      h.shell.openWindow(DASHBOARD);
+      h.shell.notify("Gongbang", "A spec waits for you", `${DASHBOARD}items/wi_1`);
+      expect(h.shown()).toEqual([{ title: "Gongbang", body: "A spec waits for you" }]);
+    });
+
+    it("a click on a notice shows the window and loads its target", () => {
+      const h = make();
+      h.shell.openWindow(DASHBOARD);
+      h.closeWindow();
+      h.shell.notify("Gongbang", "A merge waits for you", `${DASHBOARD}items/wi_2`);
+      h.clickNotice(0);
+      expect(h.windowVisible()).toBe(true);
+      expect(h.loads()).toEqual([DASHBOARD, `${DASHBOARD}items/wi_2`]);
+    });
+
+    it("a click on a notice whose target is outside the dashboard's /app/ URL loads nothing", () => {
+      const h = make();
+      h.shell.openWindow(DASHBOARD);
+      h.closeWindow();
+      for (const target of ["https://example.com/app/", "http://127.0.0.1:4310/api/v1/notices", "http://127.0.0.1:4311/app/", `${DASHBOARD}../api/v1/notices`, "not a url"]) {
+        h.shell.notify("Gongbang", "An item needs you", target);
+      }
+      for (let n = 0; n < 5; n++) h.clickNotice(n);
+      expect(h.windowVisible()).toBe(false);
+      expect(h.loads()).toEqual([DASHBOARD]);
     });
 
     it("quit runs the drain once and exits only after it finished", async () => {

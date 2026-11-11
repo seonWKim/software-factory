@@ -8,7 +8,7 @@ import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, 
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
-import { autoApprovedFooter, renderSpec } from "../../../core/spec-comment.js";
+import { autoApprovedFooter, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { suggestedSplit } from "../../../core/split.js";
@@ -182,6 +182,7 @@ export class RunResultsUnit {
             tier,
             token_cost: tokens,
           };
+          const missing = droppedValues(spec, it.issue_text), held = missing.length > 0; // dropped request values: no approval without /approve below
           // Each approval below without a person's reply: the spec comment with its note, no answer block and `footer`, RUNNING, the implement run queued.
           const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }, footer = footerAfter(it, { stage: "RUNNING" })): Promise<Decision> => {
             const patch = { ...fields, stage: "RUNNING" as const };
@@ -210,7 +211,7 @@ export class RunResultsUnit {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          if (!spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
+          if (!held && !spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
             const next = { ...it, ...fields };
             return {
               patch: { ...fields, stage: "RUNNING" },
@@ -221,7 +222,7 @@ export class RunResultsUnit {
             };
           }
           // The factory's fix for a recurring failure runs without a person (design §7); a gate-path change still waits for a person's merge.
-          const fix = spec.phases ? null : await this.c.unit("improve").fixPattern(it);
+          const fix = spec.phases || held ? null : await this.c.unit("improve").fixPattern(it);
           if (fix) {
             const gate = gatePathTouched(spec.allowed_paths);
             return approved([
@@ -230,7 +231,7 @@ export class RunResultsUnit {
             ], { actor: SYSTEM, reason: FIX_SPEC_APPROVED, detail: { pattern_key: fix.pattern_key } });
           }
           // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
-          const rule = spec.phases ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
+          const rule = spec.phases || held ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
           if (rule) {
             const id = ruleId(rule.gate, rule.tier);
             return approved([
@@ -243,7 +244,7 @@ export class RunResultsUnit {
             });
           }
           // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
-          const auto = spec.phases ? null : await this.c.unit("local-merge").autoMode(it.project);
+          const auto = spec.phases || held ? null : await this.c.unit("local-merge").autoMode(it.project);
           // Auto mode approves under the controller's service passport (RFC 0015 §8).
           const refusal = auto
             ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) })
@@ -257,14 +258,13 @@ export class RunResultsUnit {
             }, autoApprovedFooter(commandState({ ...it, stage: "RUNNING" }), tier, this.c.k.d.clock.now().toISOString()));
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
-          const waits = auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
+          const waits = held ? heldNote(missing) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
           const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footerAfter(it, patch)}`), "spec_comment_url");
+            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footerAfter(it, patch)}`, { missing }), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
-            reason: "triaged",
-            ack_run: run.id,
+            reason: "triaged", ack_run: run.id,
           };
         }
         case "implement": {
