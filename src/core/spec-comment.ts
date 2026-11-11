@@ -1,3 +1,4 @@
+import { type CommandState, commandFooter } from "./commands.js";
 import type { AddedPath } from "./companions.js";
 import { MAX_DECISIONS, type TriageOutput, type TriagePhase } from "./outputs.js";
 import { inShortParagraphs } from "./pr-body.js";
@@ -47,6 +48,17 @@ function splitSection(spec: TriageOutput, phases: TriagePhase[]): string[] {
     );
   });
   return out;
+}
+
+/** `2026-11-11 10:00 UTC` from an ISO time (issue #586); the text as is when it is not one. */
+export const utcMinute = (iso: string): string => (/^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : iso);
+
+/**
+ * The footer of a spec auto mode approved (issue #586): a line naming the approval, its tier and its time, then the
+ * commands for `s`, the state after the approval. `/approve` is never listed, so no source offers it on this spec.
+ */
+export function autoApprovedFooter(s: CommandState, tier: Tier, at: string): string {
+  return [`Approved automatically (auto mode, tier ${tier}) at ${utcMinute(at)}.`, "", commandFooter(s, ["approve"])].join("\n");
 }
 
 /** Done criteria shown before the rest fold into a `<details>` block (issue #229). */

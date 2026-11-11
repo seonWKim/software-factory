@@ -17,9 +17,9 @@ import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/
 import { cutNote, escapeSlack, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { commentEvent } from "../src/core/comment-event.js";
-import { autoApprovedFooter, chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting, utcMinute } from "../src/core/commands.js";
+import { chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
 import { parseTriage } from "../src/core/outputs.js";
-import { renderSpec } from "../src/core/spec-comment.js";
+import { autoApprovedFooter, renderSpec, utcMinute } from "../src/core/spec-comment.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { plainRefusal } from "../web/src/api.js";

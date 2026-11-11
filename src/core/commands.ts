@@ -306,53 +306,15 @@ const prLine = (c: CommandSpec): string => `- \`${c.usage}\`: ${c.pr_description
 /**
  * The commands that apply now, then a note when none of them changes the state. Ends every waiting comment.
  * When a command applies on the item's PR with its PR meaning, a block naming it comes first; the list and
- * the note after it are about replies on the comment's own issue.
+ * the note after it are about replies on the comment's own issue. `except`: commands left out (#586).
  */
-export function commandFooter(s: CommandState): string {
-  return footerOf(s, commandsFor(s));
-}
-
-function footerOf(s: CommandState, cmds: readonly CommandSpec[]): string {
+export function commandFooter(s: CommandState, except: readonly CommandName[] = []): string {
+  const cmds = commandsFor(s).filter((c) => !except.includes(c.name));
   const onPr = prCommandsFor(s);
   const out = onPr.length ? ["On the change, you can reply with:", ...onPr.map(prLine), ""] : [];
   out.push("Commands you can reply with now:", ...cmds.map(line));
   if (!cmds.some((c) => c.changes_state)) out.push("No command changes this item's state now.");
   return out.join("\n");
-}
-
-/** `2026-11-11 10:00 UTC` from an ISO time; the text as is when it is not one. */
-export function utcMinute(iso: string): string {
-  return /^\d{4}-\d\d-\d\dT\d\d:\d\d/.test(iso) ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : iso;
-}
-
-/**
- * The footer of a spec auto mode approved (issue #586): a line naming the approval, its tier and its time, then the
- * commands for `s`, the state after the approval. `/approve` is never listed, so no source offers it on this spec.
- */
-export function autoApprovedFooter(s: CommandState, tier: number, at: string): string {
-  return [`Approved automatically (auto mode, tier ${tier}) at ${utcMinute(at)}.`, "", footerOf(s, commandsFor(s).filter((c) => c.name !== "approve"))].join("\n");
-}
-
-/**
- * Whether a button for `name` (pressed, or shown on an earlier message) still means something for `it` (issue #586):
- * the item's phase is one the command applies in. The phase only: a run held for coordination cost is in no field,
- * so an Approve from the spec is stale once the item is implementing.
- */
-export function buttonApplies(name: CommandName, it: ItemState): boolean {
-  return commandSpec(name).phases.includes(commandPhase(it));
-}
-
-/** The last change of an item as a Done line names it: its reason, its actor ID and its time. */
-export type DoneChange = { reason: string; actor: { id: string }; at: string };
-
-/**
- * What already happened to `it`, in plain words with no error wording (issue #586): `Done: <reason> by <actor ID> at
- * <time>. The item is now <phase>.` Ends an earlier Slack message whose buttons no longer apply, and the reply to a
- * stale button press.
- */
-export function doneLine(last: DoneChange | null, it: ItemState): string {
-  const what = last ? `${last.reason.replace(/_/g, " ")} by ${last.actor.id} at ${utcMinute(last.at)}` : "the item moved on";
-  return `Done: ${what}. The item is now ${phaseLabel(commandPhase(it))}.`;
 }
 
 /** The reply to an unknown command word (as typed, letters only). */

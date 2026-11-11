@@ -1,4 +1,6 @@
-import { COMMANDS, type CommandName } from "../../core/commands.js";
+import { COMMANDS, type CommandName, commandPhase, commandSpec, phaseLabel } from "../../core/commands.js";
+import { utcMinute } from "../../core/spec-comment.js";
+import type { StateChange, WorkItem } from "../../core/types.js";
 import type { RepoRef } from "../github/github-client.js";
 
 // How a control-plane comment (GitHub Markdown) becomes a Slack thread message (issue #109): mrkdwn text in
@@ -39,6 +41,25 @@ export function footerCommands(body: string): CommandName[] {
     if (spec && BUTTON_COMMANDS.includes(spec.name) && !out.includes(spec.name)) out.push(spec.name);
   }
   return out;
+}
+
+/**
+ * Whether a button for `name` (pressed, or shown on an earlier message) still means something for `it` (issue #586):
+ * the item's phase is one the command applies in. The phase only: a run held for coordination cost is in no field,
+ * so an Approve from the spec is stale once the item is implementing.
+ */
+export function buttonApplies(name: CommandName, it: WorkItem): boolean {
+  return commandSpec(name).phases.includes(commandPhase(it));
+}
+
+/**
+ * What already happened to `it`, in plain words with no error wording (issue #586): `Done: <reason> by <actor ID> at
+ * <time>. The item is now <phase>.`, from its last state change. Ends an earlier message whose buttons no longer
+ * apply, and the reply to a stale button press.
+ */
+export function doneLine(last: Pick<StateChange, "reason" | "actor" | "at"> | null, it: WorkItem): string {
+  const what = last ? `${last.reason.replace(/_/g, " ")} by ${last.actor.id} at ${utcMinute(last.at)}` : "the item moved on";
+  return `Done: ${what}. The item is now ${phaseLabel(commandPhase(it))}.`;
 }
 
 /** `&`, `<` and `>` as Slack wants them in text. */

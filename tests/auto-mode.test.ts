@@ -9,7 +9,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { IMPROVER } from "../src/core/improver.js";
 import { AUTO_ACTOR } from "../src/core/policy.js";
-import { utcMinute } from "../src/core/commands.js";
+import { utcMinute } from "../src/core/spec-comment.js";
 import { footerCommands } from "../src/impl/source/slack-format.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";

@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { type ChatCommand, parseChatCommand } from "../../core/command-table.js";
-import {
-  type CommandName, THREAD_BARE_COMMANDS, buttonApplies, commandFooter, commandState, doneLine, parseComment, parseLink, withSlash,
-} from "../../core/commands.js";
+import { type CommandName, THREAD_BARE_COMMANDS, commandFooter, commandState, parseComment, parseLink, withSlash } from "../../core/commands.js";
 import type { Logger } from "../../core/log.js";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { SourceRef, WorkItem } from "../../core/types.js";
@@ -14,7 +12,7 @@ import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi, type SlackMessage } from "./slack-api.js";
 import { commentEvent } from "../../core/comment-event.js";
 import {
-  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
+  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, BUTTON_COMMANDS, buttonApplies, doneLine, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
 } from "./slack-format.js";
 import { type ChatAnswer, type ChatDeps, type ChatStore, runChatCommand } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";

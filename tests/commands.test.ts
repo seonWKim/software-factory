@@ -3,8 +3,9 @@ import { beforeAll, describe, expect, it } from "vitest";
 import {
   COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, appliesOnPr, approveRefusal, chatHelpReply, commandFooter, commandPhase, commandSpec,
   commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, refusalText, retryPathsReply,
-  unknownCommandReply, withSlash, autoApprovedFooter, utcMinute,
+  unknownCommandReply, withSlash,
 } from "../src/core/commands.js";
+import { autoApprovedFooter, utcMinute } from "../src/core/spec-comment.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { COMMAND_TABLE, cliHelpLine, cliUsageOf } from "../src/core/command-table.js";
 import type { SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
@@ -747,7 +748,7 @@ describe("the footer of a spec auto mode approved (issue #586)", () => {
 
   it("names the approval with its tier and time, then the commands after it, and never lists /approve", () => {
     for (const patch of [{ stage: "RUNNING" }, { stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" }] as const) {
-      const s = commandState({ stage: "NEW", blocked_on: "none", blocked_reason: null, change_ref: null, ...patch });
+      const s = commandState({ blocked_on: "none", blocked_reason: null, change_ref: null, ...patch });
       const footer = autoApprovedFooter(s, 2, AT);
       expect(footer.split("\n")[0]).toBe("Approved automatically (auto mode, tier 2) at 2026-11-11 10:04 UTC.");
       expect(footer).toContain("Commands you can reply with now:");
