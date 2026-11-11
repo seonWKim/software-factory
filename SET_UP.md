@@ -373,14 +373,14 @@ With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve fro
 
 ## macOS app
 
-A Mac app that runs the factory for you: a window on the dashboard, `SF <n>` in the menu bar (`n`: how many items need you, refreshed every 15 seconds), and a Quit that lets the factory finish what it is doing. Unsigned, macOS only. Decisions: [`docs/design/09-desktop-app.md`](docs/design/09-desktop-app.md).
+Gongbang, a Mac app that runs the factory for you: a window on the dashboard, `Gb <n>` in the menu bar (`n`: how many items need you, refreshed every 15 seconds), and a Quit that lets the factory finish what it is doing. Unsigned, macOS only. Decisions: [`docs/design/09-desktop-app.md`](docs/design/09-desktop-app.md).
 
 Install:
 
 1. Finish `npm run setup` in this checkout, and build it once: `npm run build`.
-2. Build the app: `npm run build:desktop:macos`. It copies Electron from `node_modules/electron/dist` into `desktop/out/Software Factory.app`. If it says `node_modules/electron/dist` is missing, install the project's dependencies (`npm install`) and run it again; the script itself never installs anything.
-3. Optional: drag `desktop/out/Software Factory.app` to `/Applications`. The app runs the checkout it was built from, wherever the app itself is.
-4. Start it: `open "desktop/out/Software Factory.app"`. The app is not signed: the first time, macOS may refuse to open it; right-click it in Finder, choose Open, and confirm.
+2. Build the app: `npm run build:desktop:macos`. It copies Electron from `node_modules/electron/dist` into `desktop/out/Gongbang.app`, with the Gongbang icon (built from `design-system/icon.svg`; `npm run build:icons -- <folder>` writes the PNG sizes alone). If it says `node_modules/electron/dist` is missing, install the project's dependencies (`npm install`) and run it again; the script itself never installs anything.
+3. Optional: drag `desktop/out/Gongbang.app` to `/Applications`; an older `Software Factory.app` there can go to the Trash. The app runs the checkout it was built from, wherever the app itself is.
+4. Start it: `open desktop/out/Gongbang.app`. The app is not signed: the first time, macOS may refuse to open it; right-click it in Finder, choose Open, and confirm.
 
 Use:
 

@@ -142,6 +142,17 @@ describe("app shell", () => {
     expect(fetched.every((u) => u.startsWith("/api/v1/"))).toBe(true);
   });
 
+  it("the sidebar top shows the mark and the wordmark Gongbang", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
+    const brand = sidebar.querySelector("p")!;
+    expect(brand.textContent).toBe("Gongbang");
+    const mark = within(brand).getByTestId("brand-mark");
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(mark.querySelector("path")!.getAttribute("fill-rule")).toBe("evenodd");
+  });
+
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
     mount();
     await screen.findByText("Needs you (4)");
@@ -784,14 +795,14 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
   it("the tab title leads with the Needs you count, and has no prefix at 0", async () => {
     mount();
     await screen.findByText("Needs you (4)");
-    await vi.waitFor(() => expect(document.title).toBe("(4) Floor · software-factory"));
+    await vi.waitFor(() => expect(document.title).toBe("(4) Floor · Gongbang"));
     cleanup();
     const before = overview.needs_you;
     overview.needs_you = 0;
     try {
       mount();
       await screen.findByText("Needs you (0)");
-      await vi.waitFor(() => expect(document.title).toBe("Floor · software-factory"));
+      await vi.waitFor(() => expect(document.title).toBe("Floor · Gongbang"));
     } finally {
       overview.needs_you = before;
     }

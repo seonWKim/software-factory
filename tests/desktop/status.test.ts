@@ -1,7 +1,7 @@
 // The menu bar count: needs_you from /api/v1/overview, read every 15 seconds.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ShellStatus } from "../../src/interfaces/app-shell.js";
-import { STATUS_INTERVAL_MS, UNREACHABLE, overviewUrl, pollStatus, statusFromOverview } from "../../desktop/electron/common/status.js";
+import { STATUS_INTERVAL_MS, UNREACHABLE, menuTitle, overviewUrl, pollStatus, statusFromOverview } from "../../desktop/electron/common/status.js";
 import { FakeAppShell } from "./fakes.js";
 
 beforeEach(() => {
@@ -29,7 +29,7 @@ describe("menu bar status", () => {
     const stop = pollStatus({ fetch: api.fetch, url: overviewUrl(4310), onStatus: (s) => shell.setStatus(s) });
     await vi.advanceTimersByTimeAsync(0);
     expect(shell.status).toEqual({ state: "running", needsYou: 2 });
-    expect(shell.menuText()).toBe("SF 2");
+    expect(shell.menuText()).toBe("Gb 2");
     needs = 5;
     await vi.advanceTimersByTimeAsync(STATUS_INTERVAL_MS - 1);
     expect(shell.status.needsYou).toBe(2);
@@ -54,5 +54,10 @@ describe("menu bar status", () => {
     expect(statusFromOverview({ factory: null, needs_you: 0 })).toEqual({ state: "stopped", needsYou: 0 });
     expect(statusFromOverview({ needs_you: 1 })).toEqual({ state: "running", needsYou: 1 });
     expect(statusFromOverview({ factory: { state: "updating" } })).toEqual({ state: "updating", needsYou: null });
+  });
+
+  it("the menu bar title is Gb (Gongbang) and the count, or a dash while it is unknown", () => {
+    expect(menuTitle({ state: "running", needsYou: 7 })).toBe("Gb 7");
+    expect(menuTitle(UNREACHABLE)).toBe("Gb –");
   });
 });

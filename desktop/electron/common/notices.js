@@ -3,11 +3,13 @@
 // app data folder, so a restart shows none of them again; the store's delivered_at stays unset. Every effect (fetch,
 // fs, notify) comes in as an argument. A notice's text is its kind and count only: the API carries no free text.
 
+import { PRODUCT_NAME } from "./product.js";
+
 /** The pending notices route. */
 export const noticesUrl = (port) => `http://127.0.0.1:${port}/api/v1/notices`;
 
-/** Every notice's title. */
-export const NOTICE_TITLE = "Software Factory";
+/** Every notice's title: the app's name. */
+export const NOTICE_TITLE = PRODUCT_NAME;
 
 /** One item's notice body by kind; a kind not listed reads as `other`. */
 const BODY = {

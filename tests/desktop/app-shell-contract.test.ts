@@ -120,15 +120,15 @@ for (const [name, make] of Object.entries(harnesses)) {
     it("notify shows a notice with the title and body", () => {
       const h = make();
       h.shell.openWindow(DASHBOARD);
-      h.shell.notify("Software Factory", "A spec waits for you", `${DASHBOARD}items/wi_1`);
-      expect(h.shown()).toEqual([{ title: "Software Factory", body: "A spec waits for you" }]);
+      h.shell.notify("Gongbang", "A spec waits for you", `${DASHBOARD}items/wi_1`);
+      expect(h.shown()).toEqual([{ title: "Gongbang", body: "A spec waits for you" }]);
     });
 
     it("a click on a notice shows the window and loads its target", () => {
       const h = make();
       h.shell.openWindow(DASHBOARD);
       h.closeWindow();
-      h.shell.notify("Software Factory", "A merge waits for you", `${DASHBOARD}items/wi_2`);
+      h.shell.notify("Gongbang", "A merge waits for you", `${DASHBOARD}items/wi_2`);
       h.clickNotice(0);
       expect(h.windowVisible()).toBe(true);
       expect(h.loads()).toEqual([DASHBOARD, `${DASHBOARD}items/wi_2`]);
@@ -139,7 +139,7 @@ for (const [name, make] of Object.entries(harnesses)) {
       h.shell.openWindow(DASHBOARD);
       h.closeWindow();
       for (const target of ["https://example.com/app/", "http://127.0.0.1:4310/api/v1/notices", "http://127.0.0.1:4311/app/", `${DASHBOARD}../api/v1/notices`, "not a url"]) {
-        h.shell.notify("Software Factory", "An item needs you", target);
+        h.shell.notify("Gongbang", "An item needs you", target);
       }
       for (let n = 0; n < 5; n++) h.clickNotice(n);
       expect(h.windowVisible()).toBe(false);

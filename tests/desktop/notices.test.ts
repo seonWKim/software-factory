@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appDataPaths } from "../../desktop/electron/common/app-data.js";
 import { type PendingNotice, NOTICE_TITLE, noticePoller, noticeTarget, noticeText } from "../../desktop/electron/common/notices.js";
+import { PRODUCT_NAME } from "../../desktop/electron/common/product.js";
 import { runShell } from "../../desktop/electron/common/run-shell.js";
 import { STATUS_INTERVAL_MS } from "../../desktop/electron/common/status.js";
 import { FakeAppShell, fakeSpawn } from "./fakes.js";
@@ -140,6 +141,8 @@ describe("noticePoller", () => {
 
   it("a summary shows its count and opens the dashboard root; an item notice opens its item page", () => {
     expect(noticeText(summary)).toEqual({ title: NOTICE_TITLE, body: "3 items waited for you during quiet hours" });
+    // The title is the app's name, so a rename never leaves notices under the old name.
+    expect(NOTICE_TITLE).toBe(PRODUCT_NAME);
     expect(noticeTarget(summary, DASHBOARD)).toBe(DASHBOARD);
     expect(noticeTarget(spec, DASHBOARD)).toBe(`${DASHBOARD}items/wi_1`);
   });
