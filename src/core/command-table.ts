@@ -16,9 +16,11 @@ export type CommandGroup = "task" | "item" | "users" | "settings";
 
 /**
  * What the chat form takes after its words: nothing, one ID, free text (notes, feedback, a reason), any words
- * (checked by the CLI's own parser), or (`request`) the whole mention, in plain words, which is never parsed.
+ * (checked by the CLI's own parser), (`request`) the whole mention, in plain words, which is never parsed, or
+ * (`comment`) a comment command the chat parser leaves to the comment parser (`parseComment`), so a chat source
+ * keeps it on its comment path: `/verdict` in a Slack thread (design 04-gate-commands, verdict command).
  */
-export type ChatArgs = "none" | "id" | "text" | "any" | "request";
+export type ChatArgs = "none" | "id" | "text" | "any" | "request" | "comment";
 
 export interface TableCommand {
   /** The words after `factory`, e.g. `task show`. */
@@ -72,6 +74,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   item("revise", "<feedback>", "Store `/revise` for the item"),
   item("reject", "<reason>", "Store `/reject` for the item"),
   item("resolve", "[notes]", "Store `/resolve` for the item"),
+  { ...item("verdict", "<accept|changes|reject> [<severity> <reason>]", "Store `/verdict` for the item: a verdict on its result, which changes no state"), chat_args: "comment" },
   {
     name: "merge", args: "<id>", who: "approve_merge", group: "item",
     does: "Merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself)",
@@ -169,11 +172,11 @@ function chatWords(c: TableCommand): string[] {
   return out;
 }
 
-const BY_WORDS = COMMAND_TABLE.filter((c) => c.chat_args !== "request").sort((a, b) => chatWords(b).length - chatWords(a).length);
+const BY_WORDS = COMMAND_TABLE.filter((c) => c.chat_args !== "request" && c.chat_args !== "comment").sort((a, b) => chatWords(b).length - chatWords(a).length);
 
 /**
- * The chat command in `text` (the words after a mention), or null when it is none: then it is a request or a comment
- * in plain words. A form's words match whole and in any case; a form shown with `/` needs it, any other takes an
+ * The chat command in `text` (the words after a mention), or null when it is none: then it is a request, a comment
+ * in plain words, or a `comment` form's command, which the comment parser reads. A form's words match whole and in any case; a form shown with `/` needs it, any other takes an
  * optional one. Its arguments must fit: `none` takes nothing more, `id` one word, `text` and `any` the rest. So
  * "list the open bugs" is a request, not `list`. `help` alone is help.
  */

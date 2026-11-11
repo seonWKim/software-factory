@@ -9,14 +9,14 @@ import { CLI_TOP_WORDS, parseLocalCliArgs } from "../src/core/local-cli.js";
 import { SETTINGS_TOP_WORDS, parseModeArgs, parseSettingsArgs } from "../src/settings-cmd.js";
 import { APP_COMMANDS } from "../src/ui/commands.js";
 
-/** A form with each placeholder filled: `<id>` an ID, a choice its first option, `[...]` dropped. */
+/** A form with each placeholder filled: `<id>` an ID, a choice (`a|b` or `<a|b>`) its first option, `[...]` dropped. */
 function example(form: string): string {
   const fill: Record<string, string> = { "<id>": "wi_1", "<user_id>": "local:dev@example.com", "<key>": "max_loops", "<value>": "3" };
   return form
     .replace(/\[[^\]]*\]/g, "")
     .split(/\s+/)
     .filter((w) => w !== "")
-    .map((w) => fill[w] ?? (w.includes("|") ? w.split("|")[0]! : w.startsWith("<") ? "words" : w))
+    .map((w) => fill[w] ?? (w.includes("|") ? w.replace(/^<|>$/g, "").split("|")[0]! : w.startsWith("<") ? "words" : w))
     .join(" ");
 }
 
@@ -33,17 +33,28 @@ describe("the command table", () => {
     for (const c of COMMAND_TABLE) expect({ name: c.name, r: cliParse(c) }).not.toMatchObject({ r: { error: expect.anything() } });
   });
 
-  it("every entry has a chat form the chat parser reads back as that entry; a request is never parsed", () => {
+  it("every entry has a chat form the chat parser reads back as that entry; a request is never parsed; a comment form is the comment parser's", () => {
     for (const c of COMMAND_TABLE) {
       expect(c.chat, c.name).not.toBe("");
       const parsed = parseChatCommand(example(c.chat));
       if (c.chat_args === "request") expect(parsed, c.name).toBeNull();
-      else expect(parsed?.kind === "command" ? parsed.entry.name : null, c.name).toBe(c.name);
+      else if (c.chat_args === "comment") {
+        expect(parsed, c.name).toBeNull();
+        expect(parseComment(example(c.chat)), c.name).toMatchObject({ kind: "command", name: c.name });
+      } else expect(parsed?.kind === "command" ? parsed.entry.name : null, c.name).toBe(c.name);
     }
   });
 
+  it("`verdict` is a table entry whose chat form stays on the comment path, also bare in an item's thread", () => {
+    const entry = COMMAND_TABLE.find((c) => c.name === "verdict");
+    expect(entry).toMatchObject({ group: "item", item: true, who: "approve_spec", chat_args: "comment" });
+    const inThread = withSlash("verdict accept none fine", THREAD_BARE_COMMANDS)!;
+    expect(parseChatCommand(inThread)).toBeNull();
+    expect(parseComment(inThread)).toEqual({ kind: "command", name: "verdict", text: "accept none fine" });
+  });
+
   it("a chat command stands for the CLI argv of the same command, the item ID coming from the thread", () => {
-    for (const c of COMMAND_TABLE.filter((x) => x.chat_args !== "request" && !x.edge)) {
+    for (const c of COMMAND_TABLE.filter((x) => x.chat_args !== "request" && x.chat_args !== "comment" && !x.edge)) {
       const parsed = parseChatCommand(example(c.chat));
       if (parsed?.kind !== "command") throw new Error(c.name);
       const { word, args } = chatCliArgv(parsed, c.item ? "wi_1" : null);
@@ -82,7 +93,7 @@ describe("parseChatCommand", () => {
       expect(parseChatCommand(inThread(t)), t).toEqual(parseChatCommand(`/${t}`));
       expect(parseChatCommand(inThread(t)), t).toMatchObject({ kind: "command" });
     }
-    // The commands the table lacks are read by the comment parser, and `link` by its own, the same way.
+    // The commands the table lacks, and its comment forms (`verdict`), are read by the comment parser, and `link` by its own, the same way.
     for (const t of ["budget 50000", "verdict accept none fine", "standing accept spec-t1"]) {
       expect(parseComment(inThread(t)), t).toEqual(parseComment(`/${t}`));
       expect(parseComment(inThread(t)), t).toMatchObject({ kind: "command" });
