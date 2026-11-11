@@ -9,7 +9,10 @@ import type { RepoRef } from "../github/github-client.js";
 /** Commands that take no text get a button; the others (reject, revise, verdict) stay typed. */
 export const BUTTON_COMMANDS: readonly CommandName[] = ["approve", "retry", "resolve", "budget", "help"];
 
-/** Button action IDs: a command button, and the two buttons under a suggested command. */
+/**
+ * Button action IDs: a command button, and Confirm and Cancel. No message gets Confirm or Cancel any more (proposals
+ * are plain text, design §4, issue #583); the source still reads a press on a message posted before.
+ */
 export const ACTION_COMMAND = "sf_cmd";
 export const ACTION_CONFIRM = "sf_confirm";
 export const ACTION_CANCEL = "sf_cancel";
@@ -17,8 +20,6 @@ export const ACTION_CANCEL = "sf_cancel";
 const FOOTER_HEADING = "Commands you can reply with now:";
 const SECTION_MAX = 3000;
 const MAX_SECTIONS = 45;
-/** Slack's limit on a button value. A suggestion longer than this gets no Confirm button. */
-const VALUE_MAX = 2000;
 
 export interface SlackRendered {
   text: string;
@@ -38,13 +39,6 @@ export function footerCommands(body: string): CommandName[] {
     if (spec && BUTTON_COMMANDS.includes(spec.name) && !out.includes(spec.name)) out.push(spec.name);
   }
   return out;
-}
-
-/** The typed command a suggestion reply names (`Did you mean …? … reply with:` and a fenced block), else null. */
-export function suggestedCommand(body: string): string | null {
-  if (!/^Did you mean `\/[a-z]+`\?/.test(body.trim())) return null;
-  const m = /^(`{3,})\n([\s\S]*?)\n\1\s*$/m.exec(body);
-  return m ? m[2]! : null;
 }
 
 /** `&`, `<` and `>` as Slack wants them in text. */
@@ -144,25 +138,19 @@ const LABELS: Record<string, string> = { approve: "Approve", retry: "Retry", res
 /**
  * The Slack message for one comment: mrkdwn sections, a line on typing commands in Slack (a leading `/` would be
  * taken by Slack itself, so a command follows a mention, with no slash: `approve`, `revise <feedback>`, `help`; issue
- * #541), and an actions block with the command buttons, or Confirm and Cancel under a suggestion.
+ * #541), and an actions block with the command buttons. A proposed command (design §4) is plain text, with no buttons.
  */
 export function renderComment(body: string, repo: RepoRef, botUserId: string): SlackRendered {
   let text = toMrkdwn(body, repo);
   const cmds = footerCommands(body);
-  const suggestion = suggestedCommand(body);
-  if (cmds.length > 0 || suggestion !== null || body.includes(FOOTER_HEADING)) {
+  if (cmds.length > 0 || body.includes(FOOTER_HEADING)) {
     text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> approve or <@${botUserId}> revise &lt;feedback&gt; ` +
       `(<@${botUserId}> help lists them), or use the buttons._`;
   }
   let sections = chunks(text);
   if (sections.length > MAX_SECTIONS) sections = [...sections.slice(0, MAX_SECTIONS), "_(message cut: too long for Slack)_"];
   const blocks: unknown[] = sections.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } }));
-  const buttons: unknown[] = [];
-  if (suggestion !== null && suggestion.length <= VALUE_MAX) {
-    buttons.push(button("Confirm", ACTION_CONFIRM, suggestion, "primary"), button("Cancel", ACTION_CANCEL, "cancel"));
-  } else {
-    for (const c of cmds) buttons.push(button(LABELS[c] ?? c, `${ACTION_COMMAND}:${c}`, `/${c}`, c === "approve" ? "primary" : undefined));
-  }
+  const buttons = cmds.map((c) => button(LABELS[c] ?? c, `${ACTION_COMMAND}:${c}`, `/${c}`, c === "approve" ? "primary" : undefined));
   if (buttons.length > 0) blocks.push({ type: "actions", elements: buttons });
   return { text: sections[0] ?? "", blocks };
 }
