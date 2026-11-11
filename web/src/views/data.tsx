@@ -15,8 +15,8 @@ import { itemPath } from "../pages.js";
 /** Cells longer than this are cut on display. */
 export const CELL_MAX = 300;
 
-const tab = "rounded-md border px-2 py-1 text-xs";
-const tabOff = "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800";
+const tab = "rounded-control border px-2 py-1 text-xs";
+const tabOff = "border-border-strong hover:bg-surface-2";
 
 export function DataPage() {
   const tables = useManualApi<DataTables>(API.dataTables);
@@ -44,12 +44,12 @@ export function DataPage() {
                     aria-pressed={t.name === table}
                     onClick={() => choose(t.name)}
                     className={cn(
-                      "flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800",
-                      t.name === table && "bg-zinc-100 font-medium dark:bg-zinc-800",
+                      "flex w-full items-baseline gap-2 rounded-control px-2 py-1 text-left hover:bg-surface-2",
+                      t.name === table && "bg-surface-2 font-medium",
                     )}
                   >
                     <span className="min-w-0 truncate font-mono text-xs">{t.name}</span>
-                    <span className="ml-auto text-xs text-zinc-500 tabular-nums">{t.rows}</span>
+                    <span className="ml-auto text-xs text-text-3 tabular-nums">{t.rows}</span>
                   </button>
                 </li>
               ))}
@@ -78,11 +78,11 @@ function AutonomyLine() {
     <p className="text-sm" data-testid="data-autonomy">
       <span className="font-medium">Autonomy:</span>{" "}
       {a.autonomy === null ? (
-        <span className="text-zinc-500">not enough data</span>
+        <span className="text-text-3">not enough data</span>
       ) : (
         <span className="tabular-nums">
           {a.autonomy.toFixed(2)}{" "}
-          <span className="text-zinc-500">
+          <span className="text-text-3">
             ({a.merged - a.with_push} of {a.merged} merged factory items with no person's push)
           </span>
         </span>
@@ -125,7 +125,7 @@ function TableRows({
     <section aria-label={`Table ${d.table}`}>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="font-mono text-sm font-semibold">{d.table}</h2>
-        <span className="text-sm text-zinc-500 tabular-nums" data-testid="data-range">
+        <span className="text-sm text-text-3 tabular-nums" data-testid="data-range">
           {first}–{last} of {d.total}
         </span>
         <FilterForm columns={d.columns.filter((c) => !d.hidden.includes(c))} filter={filter} setFilter={setFilter} />
@@ -133,7 +133,7 @@ function TableRows({
           <button type="button" className={cn(tab, tabOff)} disabled={d.page <= 1} onClick={() => setPage(d.page - 1)}>
             Previous
           </button>
-          <span className="text-xs text-zinc-500 tabular-nums">
+          <span className="text-xs text-text-3 tabular-nums">
             Page {d.page} of {pages}
           </span>
           <button type="button" className={cn(tab, tabOff)} disabled={d.page >= pages} onClick={() => setPage(d.page + 1)}>
@@ -144,21 +144,21 @@ function TableRows({
       {d.rows.length === 0 ? (
         <Empty>{filter ? "No row matches this filter." : "This table is empty."}</Empty>
       ) : (
-        <div className="max-h-[75vh] overflow-auto rounded-md border border-zinc-200 dark:border-zinc-800">
+        <div className="max-h-[75vh] overflow-auto rounded-control border border-border">
           <table aria-label={d.table} className="text-left text-xs">
             <thead>
               <tr>
-                <th scope="col" className="sticky top-0 z-10 bg-zinc-50 px-2 py-2 dark:bg-zinc-900">
+                <th scope="col" className="sticky top-0 z-10 bg-bg px-2 py-2">
                   <span className="sr-only">Copy</span>
                 </th>
                 {d.columns.map((c) => (
-                  <th key={c} scope="col" className="sticky top-0 z-10 bg-zinc-50 px-2 py-2 font-mono font-medium whitespace-nowrap text-zinc-600 dark:bg-zinc-900 dark:text-zinc-400">
+                  <th key={c} scope="col" className="sticky top-0 z-10 bg-bg px-2 py-2 font-mono font-medium whitespace-nowrap text-text-2">
                     {c}
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-zinc-200 dark:divide-zinc-800">
+            <tbody className="divide-y divide-border">
               {d.rows.map((row, i) => (
                 <tr key={i}>
                   <td className="px-2 py-1 align-top">
@@ -167,7 +167,7 @@ function TableRows({
                       aria-label="Copy row as JSON"
                       title={copied === i ? "Copied" : "Copy row as JSON"}
                       onClick={() => copy(i, row)}
-                      className="rounded p-1 text-zinc-500 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                      className="rounded-control p-1 text-text-3 hover:bg-surface-2"
                     >
                       <Copy aria-hidden className="size-3.5" />
                     </button>
@@ -210,7 +210,7 @@ function FilterForm({
   };
   return (
     <form role="search" aria-label="Filter rows" onSubmit={submit} className="flex items-center gap-1">
-      <select aria-label="Filter column" value={column} onChange={(e) => setColumn(e.target.value)} className="rounded-md border border-zinc-300 bg-transparent px-1 py-1 font-mono text-xs dark:border-zinc-700">
+      <select aria-label="Filter column" value={column} onChange={(e) => setColumn(e.target.value)} className="rounded-control border border-border-strong bg-transparent px-1 py-1 font-mono text-xs">
         {columns.map((c) => (
           <option key={c} value={c}>{c}</option>
         ))}
@@ -220,7 +220,7 @@ function FilterForm({
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="equals…"
-        className="w-40 rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-xs dark:border-zinc-700"
+        className="w-40 rounded-control border border-border-strong bg-transparent px-2 py-1 text-xs"
       />
       <button type="submit" className={cn(tab, tabOff)}>Filter</button>
       {filter && (
@@ -232,9 +232,9 @@ function FilterForm({
 
 /** One cell: NULL muted, markers emphasised, item and run ids linked, long text cut with "Show all". */
 function CellView({ value, runItems, open, onOpen }: { value: DataCell; runItems: Record<string, string>; open: boolean; onOpen: () => void }) {
-  if (value === null) return <span className="text-zinc-400">NULL</span>;
+  if (value === null) return <span className="text-text-3">NULL</span>;
   if (typeof value === "number") return <span className="tabular-nums">{value}</span>;
-  if (value === "[hidden]" || value.startsWith("[withheld: ")) return <em className="text-amber-700 dark:text-amber-400">{value}</em>;
+  if (value === "[hidden]" || value.startsWith("[withheld: ")) return <em className="text-pill-warn-fg">{value}</em>;
   if (/^wi_[A-Za-z0-9]+$/.test(value)) return <Link href={itemPath(value)} className={LINK_CLASS}>{value}</Link>;
   const owner = /^run_[A-Za-z0-9]+$/.test(value) ? runItems[value] : undefined;
   if (owner) return <Link href={itemPath(owner)} title={`Run of ${owner}`} className={LINK_CLASS}>{value}</Link>;
