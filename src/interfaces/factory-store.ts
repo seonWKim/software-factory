@@ -45,7 +45,7 @@ export interface NewWorkItem {
 }
 
 export interface AdoptedPr {
-  /** The PR number as text; the store writes pr_number and change_url from it. */
+  /** The PR number as text; the store mirrors it into its legacy PR column and writes change_url from it. */
   change_ref: string;
   head_branch: string;
   /** The PR's head at adoption: recorded as last_head_sha, so only later pushes count as a person's. */
@@ -81,7 +81,7 @@ export type RecordPrHeadResult =
 
 export interface NewUnreviewedMerge {
   project: string;
-  /** The PR number as text; the store writes the pr_number column from it. */
+  /** The PR number as text; the store mirrors it into its legacy PR column. */
   change_ref: string;
   merge_sha: string;
   merger_id: UserId | null;
@@ -369,7 +369,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   getWorkItemBySource(type: SourceType, sourceId: string): Promise<WorkItem | null>;
   /**
    * The item in `project` whose PR (factory or adopted) has this change_ref (oldest if several). A row with
-   * change_ref NULL (written by an older controller) is found by its pr_number column.
+   * change_ref NULL (written by an older controller) is found by its legacy PR column.
    */
   getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null>;
   /** The item in `project` whose PR merged as this commit (oldest if several). */
@@ -668,7 +668,7 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   // Unreviewed merges (design 2026-11-01)
 
-  /** Idempotent on (project, pr_number): a second call returns the first row with created false. */
+  /** Idempotent on (project, change_ref): a second call returns the first row with created false. */
   recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }>;
   /** Newest first. Read-only. */
   listUnreviewedMerges(limit: number): Promise<UnreviewedMerge[]>;
@@ -1045,11 +1045,11 @@ export interface TablePage {
   offset: number;
 }
 
-/** Where a status label goes: the item's own issue, or its PR. */
-export type LabelTarget = "issue" | `pr:${number}`;
+/** Where a status label goes: the item's own issue, or its PR by change_ref (`pr:34`). */
+export type LabelTarget = "issue" | `pr:${string}`;
 
-export function labelTarget(pr_number: number | null): LabelTarget {
-  return pr_number === null ? "issue" : `pr:${pr_number}`;
+export function labelTarget(change_ref: string | null): LabelTarget {
+  return change_ref === null ? "issue" : `pr:${change_ref}`;
 }
 
 /** The status label last written on one target of one item. */

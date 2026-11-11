@@ -69,8 +69,8 @@ export class OutboxUnit {
    * no forge, it goes to the item's own source.
    */
   async prComment(it: WorkItem, key: string, body: string): Promise<void> {
-    const pr_number = prNumber(it);
-    const pr = pr_number === null ? null : this.c.k.prRef(pr_number);
+    const n = prNumber(it);
+    const pr = n === null ? null : this.c.k.prRef(n);
     if (pr === null) {
       await this.comment(it, key, body);
       return;
@@ -93,11 +93,10 @@ export class OutboxUnit {
    * thread entries before actions and outbound sends a destination's batches one at a time in intent order, so a
    * status is never posted before the spec of its transition is delivered (issue #586).
    */
-  async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
+  async showStatus(it: WorkItem, current: (change_ref: string | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);
     if (!current(null)) await this.setStatus(it.source, status, null);
-    const pr = prNumber(it);
-    if (pr !== null && it.origin !== "adopted" && !current(pr)) await this.setStatus(it.source, status, it.change_ref);
+    if (prNumber(it) !== null && it.origin !== "adopted" && !current(it.change_ref)) await this.setStatus(it.source, status, it.change_ref);
   }
 
   /**

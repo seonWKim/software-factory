@@ -345,6 +345,7 @@ export function rowToUnreviewedMerge(r: Row): UnreviewedMerge {
   return {
     id: r.id as UnreviewedMergeId,
     project: r.project as string,
+    change_ref: (r.change_ref as string | null | undefined) ?? String(r.pr_number),
     pr_number: Number(r.pr_number),
     merge_sha: r.merge_sha as string,
     merger_id: (r.merger_id as UserId | null | undefined) ?? null,

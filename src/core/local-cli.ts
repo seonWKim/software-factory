@@ -292,7 +292,7 @@ async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
     `  blocked_reason: ${item.blocked_reason ?? "-"}`,
     `  close_reason: ${item.close_reason ?? "-"}`,
     `  tier: ${item.tier ?? "-"}`,
-    `  pr_number: ${item.change_ref ?? "-"}`,
+    `  change_ref: ${item.change_ref ?? "-"}`,
     `  version: ${item.version}`,
     "",
     "Spec",
