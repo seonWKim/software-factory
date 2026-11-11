@@ -1200,7 +1200,7 @@ describe("ui api: why an item waits (issue #310)", () => {
     return { ...s, decide };
   }
   const whyOn = async (d: UiDeps, id: string) => {
-    const list = await json<{ items: { id: string; level: string; why: WhyBody }[] }>(d, "/api/v1/items");
+    const list = await json<{ items: { id: string; level: string; badges: string[]; why: WhyBody }[] }>(d, "/api/v1/items");
     const queue = await json<{ queue: { work_item_id: string; why: WhyBody | null }[] }>(d, "/api/v1/queue");
     const item = await json<{ item: { why: WhyBody } }>(d, `/api/v1/items/${encodeURIComponent(id)}`);
     return { row: list.items.find((i) => i.id === id)!, queued: queue.queue.find((q) => q.work_item_id === id) ?? null, item: item.item.why };
@@ -1214,6 +1214,8 @@ describe("ui api: why an item waits (issue #310)", () => {
     decide(held, run.id, "held", "pr");
     const w = await whyOn(d, held.id);
     const expected = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item", refs: [92], ref_url: "https://github.com/o/r/issues/" };
+    expect(w.row.level).toBe("blocked_by_task");
+    expect(w.row.badges).toEqual(["waits on #92"]);
     expect(w.row.why).toEqual(expected);
     expect(w.queued!.why).toEqual(expected);
     expect(w.item).toEqual(expected);
@@ -1224,7 +1226,7 @@ describe("ui api: why an item waits (issue #310)", () => {
     const dep = await make(store, 21, "Dependent item");
     await enqueue(store, dep, "implement", "dep:i", { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #12 and #13 to merge" });
     const w = await whyOn(d, dep.id);
-    expect(w.row.level).toBe("waiting_on_issue");
+    expect(w.row.level).toBe("blocked_by_task");
     for (const why of [w.row.why, w.queued!.why!, w.item]) {
       expect(why).toMatchObject({ code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item", refs: [12, 13] });
     }
@@ -1248,7 +1250,7 @@ describe("ui api: why an item waits (issue #310)", () => {
     expect((await whyOn(d, items.queued.id)).queued!.why).toMatchObject({ code: "queued" });
   });
 
-  it("a deadlock claim decision keeps its item running, with the sentence, and out of Needs you and needs_you", async () => {
+  it("a deadlock claim decision puts its item in Blocked by another task, naming the holder, and out of Needs you and needs_you", async () => {
     const { d, store, items, claimed, decide } = await withDecisions();
     const before = (await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you;
     decide(items.running, claimed.id, "deadlock", "waiting");
@@ -1258,7 +1260,8 @@ describe("ui api: why an item waits (issue #310)", () => {
     expect(o.needs_you).toBe(before);
     expect(o.system_actions.map((a) => a.code)).not.toContain("claim_deadlock");
     const w = await whyOn(d, items.running.id);
-    expect(w.row.level).toBe("running");
+    expect(w.row.level).toBe("blocked_by_task");
+    expect(w.row.badges).toEqual(["deadlock with #92"]);
     const why = { code: "deadlock", text: "Started past a deadlock with #92: a person checks the overlap", next_actor: "factory", refs: [92] };
     expect(w.row.why).toMatchObject(why);
     expect(w.item).toMatchObject(why);
@@ -1266,10 +1269,10 @@ describe("ui api: why an item waits (issue #310)", () => {
     expect(needs.items.map((i) => i.id)).not.toContain(items.running.id);
   });
 
-  it("a merge conflict the resolve run gives up on still needs a human", async () => {
+  it("a merge conflict the resolve run gives up on still needs you", async () => {
     const { d, store, items } = await withDecisions();
     await patch(store, items.running, { blocked_on: "human", blocked_reason: "merge_conflict_pending" });
-    expect((await whyOn(d, items.running.id)).row.level).toBe("needs_human");
+    expect((await whyOn(d, items.running.id)).row.level).toBe("needs_you");
   });
 
   it("free text in why passes the Withholder", async () => {
@@ -1322,14 +1325,14 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
   });
 
   type NeedRow = { id: string; level: string; need?: { reason: string }; commands?: { name: string; allowed: boolean; reason: string | null }[] };
-  const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_human: "Needs a human" };
+  const LABELS: Record<string, string> = { ready_to_merge: "Ready to merge", needs_approval: "Needs approval", needs_you: "Needs you", needs_triage: "Needs triage" };
 
   it("each Needs-you reason is its own words, never the State label, and names what to do", async () => {
     const { d, store, items } = await seeded();
     const more: Record<string, WorkItem> = {};
-    for (const [n, reason] of [[20, "run_failed:implement:diff_too_large"], [21, "max_loops"], [22, "merge_conflict_pending"], [23, "something_new"]] as const) {
-      more[reason] = await make(store, n, `Item ${n}`);
-      await patch(store, more[reason]!, { blocked_on: "human", blocked_reason: reason });
+    for (const [n, reason] of [[20, "run_failed:implement:diff_too_large"], [21, "max_loops"], [22, "merge_conflict_pending"], [23, "something_new"], [24, "rule_of_two"], [25, "dependency_closed:#92"], [26, null]] as const) {
+      more[String(reason)] = await make(store, n, `Item ${n}`);
+      await patch(store, more[String(reason)]!, { blocked_on: "human", blocked_reason: reason });
     }
     const rows = (await json<{ items: NeedRow[] }>(d, "/api/v1/items?state=needs")).items;
     const need = (id: string) => rows.find((r) => r.id === id)!.need!;
@@ -1337,9 +1340,12 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     const commands = (id: string) => rows.find((r) => r.id === id)!.commands!.map((c) => c.name);
     expect(commands(items.approve.id)).toEqual(["approve", "reject", "revise"]);
     expect(need(items.merge.id).reason).toBe("merge check running");
+    expect(need(more["null"]!.id).reason).toBe("waiting for a person");
     for (const r of rows) {
       expect(r.need, r.id).toBeDefined();
       expect(r.need!.reason.toLowerCase(), r.id).not.toBe(LABELS[r.level]!.toLowerCase());
+      expect(r.need!.reason.trim(), r.id).not.toBe("");
+      expect(r.need!.reason, r.id).not.toContain("no reason");
     }
     expect(rows.filter((r) => r.need!.reason === "failed: diff_too_large")).toHaveLength(1);
   });
@@ -1588,5 +1594,73 @@ describe("ui api: open alarms in Needs you and the why sentence (design 09-statu
     expect(q.queue.find((x) => x.work_item_id === other.id)!.why!.text).toBe(`Queued at position 1. ${restart}`);
     clock.advance(ALERT_DEDUPE_MS);
     expect(await whyRow(d, other.id)).toBe("Queued at position 1");
+  });
+});
+
+describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
+  const ASK = { reason: "The issue names two different behaviours.", question: "Which of the two should the factory build?" };
+
+  /** The seeded store, with `asks` (item id → run kind) answered by a stored run that asked for a human. */
+  async function withAsks(asks: Map<string, "triage" | "implement">) {
+    return seeded({
+      store: (store) =>
+        new Proxy(store, {
+          get(target, prop, receiver) {
+            if (prop === "listRuns") {
+              return async (id: WorkItemId) => {
+                const kind = asks.get(id);
+                if (!kind) return target.listRuns(id);
+                return [{ id: `run_${id}`, work_item_id: id, kind, status: "succeeded", outcome: { status: "succeeded", summary: "", data: { needs_human: ASK } } }];
+              };
+            }
+            const v = Reflect.get(target, prop, receiver) as unknown;
+            return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+          },
+        }),
+    });
+  }
+
+  it("a triage run's ask is in Needs triage with the question and an Answer link; an implement ask stays in Needs you", async () => {
+    const asks = new Map<string, "triage" | "implement">();
+    const { d, store } = await withAsks(asks);
+    const triage = await make(store, 40, "Unclear issue");
+    await patch(store, triage, { blocked_on: "human", blocked_reason: "agent_needs_human", failure_comment_url: "https://github.com/o/r/issues/40#c1" });
+    const impl = await make(store, 41, "Implement asks");
+    await patch(store, impl, { stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human" });
+    asks.set(triage.id, "triage");
+    asks.set(impl.id, "implement");
+    const rows = (await json<{ items: { id: string; level: string; badges: string[]; need?: { reason: string } }[] }>(d, "/api/v1/items?state=needs")).items;
+    const row = (id: string) => rows.find((r) => r.id === id)!;
+    expect(row(triage.id)).toMatchObject({ level: "needs_triage", badges: ["triage asks"], need: { reason: ASK.question } });
+    expect(row(impl.id)).toMatchObject({ level: "needs_you", need: { reason: ASK.question } });
+    // The classic page shows the question and an Answer link to the ask.
+    const page = (await get(d, "/classic")).body;
+    expect(page).toContain(`${ASK.question} · <a href="https://github.com/o/r/issues/40#c1"`);
+    expect(page).toContain(">Answer</a>");
+  });
+
+  it("the overview's needs_you counts Needs you and Needs triage items plus system actions, nothing from Blocked by another task", async () => {
+    const { d, store } = await seeded();
+    const count = async () => (await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you;
+    const before = await count();
+    const dep = await make(store, 50, "Waits on a dependency");
+    await enqueue(store, dep, "implement", "dep50:i", { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #12 to merge" });
+    const phase = await make(store, 51, "Waits on a phase");
+    await patch(store, phase, { blocked_on: "upstream", blocked_reason: "phase_hold" });
+    expect(await count()).toBe(before);
+    const budget = await make(store, 52, "Budget check");
+    await patch(store, budget, { blocked_on: "budget", blocked_reason: "budget_checkpoint" });
+    const triage = await make(store, 53, "Triage asks");
+    await patch(store, triage, { blocked_on: "human", blocked_reason: "agent_needs_human" });
+    expect(await count()).toBe(before + 2);
+    const needs = (await json<{ items: { id: string; level: string }[] }>(d, "/api/v1/items?state=needs")).items;
+    expect(needs.map((i) => i.id)).toEqual(expect.arrayContaining([budget.id, triage.id]));
+    expect(needs.map((i) => i.id)).not.toContain(dep.id);
+    expect(needs.map((i) => i.id)).not.toContain(phase.id);
+  });
+
+  it("a request with an old level id gets 400", async () => {
+    const { d } = await seeded();
+    for (const old of ["needs_human", "waiting_on_issue"]) expect((await get(d, `/api/v1/items?state=${old}`)).status).toBe(400);
   });
 });

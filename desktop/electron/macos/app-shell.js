@@ -1,4 +1,5 @@
-// The macOS AppShell (src/interfaces/app-shell.ts): one dashboard window, a menu bar item and a Quit that drains.
+// The macOS AppShell (src/interfaces/app-shell.ts): one dashboard window, a menu bar item, system-wide shortcuts
+// (globalShortcut) and a Quit that drains.
 // Electron comes in as an argument; only main.js imports it, so tests pass a mock.
 import { menuTitle } from "../common/status.js";
 
@@ -13,8 +14,9 @@ export const windowOptions = (preload) => ({
 /** How long the window waits before loading the dashboard again after a failed load (the supervisor is starting). */
 export const RELOAD_DELAY_MS = 2_000;
 
-export function createMacosShell(electron, { preload, keepRunningWhenClosed = true, timers = globalThis }) {
-  const { app, BrowserWindow, Menu, Tray, nativeImage } = electron;
+/** `menu`: extra menu bar items, shown above Quit (the quick-add box and its shortcut setting). */
+export function createMacosShell(electron, { preload, keepRunningWhenClosed = true, menu = [], timers = globalThis }) {
+  const { app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut } = electron;
   let url = null;
   let win = null;
   let drain = async () => {};
@@ -58,6 +60,7 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
         { label: `Needs you: ${status.needsYou ?? "–"}`, enabled: false },
         { type: "separator" },
         { label: "Open dashboard", click: show },
+        ...menu.map(({ label, click }) => ({ label, click })),
         { label: "Quit Software Factory", accelerator: "Command+Q", click: quit },
       ]),
     );
@@ -72,6 +75,7 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
       .then(() => drain())
       .finally(() => app.exit(0));
   });
+  app.on("will-quit", () => globalShortcut.unregisterAll());
   app.on("window-all-closed", () => {});
   app.on("activate", show);
   render();
@@ -89,5 +93,20 @@ export function createMacosShell(electron, { preload, keepRunningWhenClosed = tr
       drain = d;
     },
     quit,
+    registerShortcut(accelerator, onPress) {
+      // register throws on a string that is not an accelerator, and answers false when another app holds it.
+      try {
+        return globalShortcut.register(accelerator, onPress) === true;
+      } catch {
+        return false;
+      }
+    },
+    unregisterShortcut(accelerator) {
+      try {
+        if (globalShortcut.isRegistered(accelerator)) globalShortcut.unregister(accelerator);
+      } catch {
+        // Not an accelerator: nothing of ours to release.
+      }
+    },
   };
 }

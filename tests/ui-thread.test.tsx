@@ -34,7 +34,7 @@ let posts: { url: string; body: unknown }[];
 let afterPost: (() => void) | null;
 
 const ROW = {
-  id: "wi_1", source: SRC, title: "Thread item", level: "needs_human", badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human",
+  id: "wi_1", source: SRC, title: "Thread item", level: "needs_you", badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human",
   blocked_reason: "agent_needs_human", close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 3,
   dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "the agent asks a question", anchor: "msg-7" },
 };

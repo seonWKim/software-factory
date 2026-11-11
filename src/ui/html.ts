@@ -85,7 +85,7 @@ form.filters label.check{flex-direction:row;align-items:center;gap:var(--sp1);co
 .banner{border-radius:var(--radius);padding:var(--sp1) var(--sp2);margin:0}
 .banner.ok{background:var(--ok-bg);color:var(--ok-fg)}.banner.warn{background:var(--warn-bg);color:var(--warn-fg)}.banner.bad{background:var(--bad-bg);color:var(--bad-fg)}
 .l-ready_to_merge{background:var(--ok-bg);color:var(--ok-fg)}
-.l-needs_approval,.l-needs_human{background:var(--warn-bg);color:var(--warn-fg)}
+.l-needs_approval,.l-needs_you,.l-needs_triage{background:var(--warn-bg);color:var(--warn-fg)}
 .l-stuck{background:var(--bad-bg);color:var(--bad-fg)}
 .l-running,.l-queued{background:var(--info-bg);color:var(--info-fg)}
 tr.changed{animation:flash 180ms ease-out}
