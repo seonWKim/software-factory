@@ -1,8 +1,9 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { type Loaded, Plugins, resolveProject } from "../../../compose.js";
-import { SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "../../../impl/store/mysql/migrate-command.js";
-import { MysqlDriver } from "../../../impl/store/mysql/mysql-driver.js";
+import { type Loaded, Plugins, type StoreConfig, resolveProject } from "../../../compose.js";
+import { copyToSqlite, mysqlSnapshotReader } from "../../../impl/store/mysql/copy-to-sqlite.js";
+import { type CopyFromMysql, SQLITE_MIGRATE_MESSAGE, migrateCommand, parseMigrateArgs, pendingStepNames } from "../../../impl/store/mysql/migrate-command.js";
+import { MysqlDriver, type MysqlOptions } from "../../../impl/store/mysql/mysql-driver.js";
 import { type ResolveRepo, countLegacyProjectRows, runProjectKeyStep } from "../../../impl/store/project-keys.js";
 import { migrateSqlite, rehearseSqlite, sqlitePendingSteps } from "../../../impl/store/sqlite/rehearse.js";
 import { SqliteDriver } from "../../../impl/store/sqlite/sqlite-driver.js";
@@ -11,17 +12,21 @@ import { secretName } from "../../../interfaces/secret-store.js";
 import { withDrain } from "../../../migrate-drain.js";
 import { ensureDiscoveredTopicTables } from "../../../runtime/index.js";
 import { applyMigrations, type SqlExecutor } from "../../../state/index.js";
+import { livePids } from "../../../teardown.js";
 import { defineCommand } from "../../command.js";
 
 export default defineCommand({
   names: ["migrate"],
-  usage: `  migrate [--status | --dry-run | --rehearse | --contract]
+  usage: `  migrate [--status | --dry-run | --rehearse | --contract | --copy-from-mysql [--dry-run] [--replace]]
                MySQL schema steps (migrations/mysql/), then the project-key data step (owner/name →
                github:<host>:<repo id>, SQLite too): --status lists the state and pending steps,
                --dry-run prints what would run and each row it would change, --rehearse runs them on a
                copy and checks no row was lost, no flag applies them (back up first). The other commands
                refuse to start while steps or owner/name rows remain. --contract drops the legacy_* tables
-               a rename left, 14 days after it, archiving their rows to db/backups first`,
+               a rename left, 14 days after it, archiving their rows to db/backups first. --copy-from-mysql
+               copies every table of the MySQL store into <state_dir>/db/factory.db (only while the factory
+               is stopped; checked per table by row count and primary-key checksum); --dry-run lists the
+               tables and row counts, --replace backs an existing file up to db/backups and replaces it`,
   async run(argv, ctx) {
     const args = [...argv];
     // --json (with --status): one JSON line for the supervisor's check. --no-drain: apply without asking a
@@ -29,11 +34,16 @@ export default defineCommand({
     const json = args.includes("--json");
     const noDrain = args.includes("--no-drain");
     const mode = parseMigrateArgs(args.filter((a) => a !== "--json" && a !== "--no-drain"), process.env);
-    if (typeof mode !== "string" || (json && mode !== "status")) {
-      console.log(typeof mode !== "string" ? mode.error : "--json goes with --status");
+    if (typeof mode === "object" && "error" in mode) {
+      console.log(mode.error);
+      return 1;
+    }
+    if (json && mode !== "status") {
+      console.log("--json goes with --status");
       return 1;
     }
     const loaded = await ctx.load();
+    if (typeof mode === "object") return copyFromMysql(loaded, mode);
     if (json) {
       console.log(JSON.stringify({ pending: await pendingMigrationNames(loaded) }));
       return 0;
@@ -60,13 +70,11 @@ export default defineCommand({
           projectKeys: (driver, m) => runProjectKeyStep(driver, resolveRepo, m, print),
         }, print);
       }
-      const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
-      if (!password) {
-        print("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+      const options = await mysqlOptions(loaded, db);
+      if (!options) {
+        print(NO_PASSWORD);
         return 1;
       }
-      const { host, port, database, user } = db;
-      const options = { host, port, database, user, password: password.reveal() };
       const code = await migrateCommand(options, mode, print, join(loaded.stateDir, "db", "backups"));
       if (code !== 0 || mode === "rehearse") return code;
       // After the schema steps: the data step needs the tables they create.
@@ -90,6 +98,49 @@ export default defineCommand({
   },
 });
 
+const NO_PASSWORD = "MYSQL_PASSWORD missing from the secret file (run: npm run setup)";
+
+/** The connection options of the configured MySQL store, the password from the secret file; null without one. */
+async function mysqlOptions(loaded: Loaded, db: Extract<StoreConfig, { type: "mysql" }>): Promise<MysqlOptions | null> {
+  const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
+  return password ? { host: db.host, port: db.port, database: db.database, user: db.user, password: password.reveal() } : null;
+}
+
+/** `--copy-from-mysql`: the store block names the MySQL store to read; factory.config.json is left as it is. */
+async function copyFromMysql(loaded: Loaded, args: CopyFromMysql): Promise<number> {
+  const print = (line: string) => console.log(line);
+  const db = loaded.store;
+  if (db.type !== "mysql") {
+    print('--copy-from-mysql reads the MySQL store named in factory.config.json, and its "store" block is not mysql');
+    return 1;
+  }
+  const options = await mysqlOptions(loaded, db);
+  if (!options) {
+    print(NO_PASSWORD);
+    return 1;
+  }
+  const clock = await new Plugins(loaded).clock();
+  const read = mysqlSnapshotReader(options);
+  return copyToSqlite(read, {
+    stateDir: loaded.stateDir,
+    dryRun: args.dryRun,
+    replace: args.replace,
+    livePids: () => livePids(loaded.stateDir, pidAlive),
+    schema: (driver) => ensureDiscoveredTopicTables("sqlite", driver),
+    now: () => clock.now(),
+    print,
+  });
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
 /** `--contract`: the contract migrations whose breaking migration is old enough (RFC 0015 §12 D2, D4). */
 async function contract(loaded: Loaded, print: (line: string) => void): Promise<number> {
   const db = loaded.store;
@@ -97,12 +148,12 @@ async function contract(loaded: Loaded, print: (line: string) => void): Promise<
   let driver: SqlExecutor & { close(): Promise<void> };
   if (db.type !== "mysql") driver = new SqliteDriver(join(loaded.stateDir, "db", "factory.db"));
   else {
-    const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
-    if (!password) {
-      print("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
+    const options = await mysqlOptions(loaded, db);
+    if (!options) {
+      print(NO_PASSWORD);
       return 1;
     }
-    driver = new MysqlDriver({ host: db.host, port: db.port, database: db.database, user: db.user, password: password.reveal() });
+    driver = new MysqlDriver(options);
   }
   try {
     const dialect = db.type === "mysql" ? "mysql" : "sqlite";
@@ -135,9 +186,8 @@ async function pendingMigrationNames(loaded: Loaded): Promise<string[]> {
     }
   };
   if (db.type !== "mysql") return sqlitePendingSteps(join(loaded.stateDir, "db", "factory.db"));
-  const password = await (await new Plugins(loaded).secrets()).get(secretName("MYSQL_PASSWORD"));
-  if (!password) throw new Error("MYSQL_PASSWORD missing from the secret file (run: npm run setup)");
-  const options = { host: db.host, port: db.port, database: db.database, user: db.user, password: password.reveal() };
+  const options = await mysqlOptions(loaded, db);
+  if (!options) throw new Error(NO_PASSWORD);
   const schema = await pendingStepNames(options);
   return schema.length > 0 ? schema : legacy(new MysqlDriver(options));
 }
