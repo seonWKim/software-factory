@@ -555,6 +555,17 @@ CREATE TABLE `controller_merge_checks` (
   CONSTRAINT `controller_merge_checks_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `controller_merge_evaluations` (
+  `work_item_id` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `merge_sha` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `tier` tinyint DEFAULT NULL,
+  `merged_by` varchar(128) COLLATE utf8mb4_bin NOT NULL,
+  `token_cost` bigint NOT NULL,
+  `merged_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  PRIMARY KEY (`work_item_id`,`merge_sha`),
+  KEY `controller_merge_evaluations_at` (`merged_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `controller_merge_queue_entries` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `entry_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
