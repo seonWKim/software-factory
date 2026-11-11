@@ -35,8 +35,10 @@ const attempts = {
   filter: null, total: 1, page: 1, limit: 50, run_items: { run_a: "wi_7" },
   rows: [{ run_id: "run_a", attempt: 1, lease_token: "[hidden]", worker_id: "host:1:0", error_code: null }],
 };
+const autonomy = { as_of: AT, merged: 4, with_push: 1, autonomy: 0.75 };
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": overview,
+  "/api/v1/data/autonomy": autonomy,
   "/api/v1/data/tables": tables,
   "/api/v1/data/tables/work_items": workItems,
   "/api/v1/data/tables/run_attempts": attempts,
@@ -118,7 +120,7 @@ describe("Data page", () => {
     mount();
     await openTable("work_items");
     const data = client.getQueryCache().findAll().filter((q) => String(q.queryKey[0]).startsWith("/api/v1/data/"));
-    expect(data.length).toBe(2);
+    expect(data.map((q) => q.queryKey[0])).toEqual(expect.arrayContaining(["/api/v1/data/autonomy", "/api/v1/data/tables", "/api/v1/data/tables/work_items"]));
     for (const q of data) expect((q.options as { refetchInterval?: unknown }).refetchInterval).toBeFalsy();
     const before = dataReads().length;
     await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS * 20)));
@@ -126,7 +128,7 @@ describe("Data page", () => {
     expect(dataReads().length).toBe(before);
     fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
-    expect(dataReads().length).toBe(before + 2);
+    expect(dataReads().length).toBe(before + data.length);
   });
 
   it("a wi_ value links to its item, a run_ value to the item that owns the run", async () => {
@@ -175,5 +177,26 @@ describe("Data page", () => {
     await act(async () => void (await vi.advanceTimersByTimeAsync(10)));
     expect(dataReads()).toContain("/api/v1/data/tables/work_items?col=problem&val=it%27s");
     expect((screen.getByRole("button", { name: "Next" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("shows one Autonomy line above the tables, read from /api/v1/data/autonomy", async () => {
+    history.replaceState(null, "", "/app/data");
+    mount();
+    const line = await screen.findByTestId("data-autonomy");
+    expect(line.textContent).toBe("Autonomy: 0.75 (3 of 4 merged factory items with no person's push)");
+    expect(dataReads()).toContain("/api/v1/data/autonomy");
+    const list = await screen.findByRole("navigation", { name: "Tables" });
+    expect(line.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("the Autonomy line reads `not enough data` when no factory item merged", async () => {
+    RESPONSES["/api/v1/data/autonomy"] = { as_of: AT, merged: 0, with_push: 0, autonomy: null };
+    try {
+      history.replaceState(null, "", "/app/data");
+      mount();
+      expect((await screen.findByTestId("data-autonomy")).textContent).toBe("Autonomy: not enough data");
+    } finally {
+      RESPONSES["/api/v1/data/autonomy"] = autonomy;
+    }
   });
 });
