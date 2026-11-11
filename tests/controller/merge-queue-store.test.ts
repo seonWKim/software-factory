@@ -3,7 +3,7 @@ import { MergeQueueStore, queueId } from "../../src/controller/actors/merge-queu
 import type { SqlDriver } from "../../src/state/index.js";
 import { BACKENDS } from "../helpers/store.js";
 
-// The merge queue's snapshots (RFC 0015 M8) on SQLite and MySQL: one queue per project and base, entries in
+// The merge queue's snapshots (RFC 0015 M8) on SQLite: one queue per project and base, entries in
 // order, a replayed entry is the same entry, and every move is conditional on the state it leaves.
 
 const entry = (n: number, item = `wi_${n}`) => ({
