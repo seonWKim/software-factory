@@ -430,6 +430,14 @@ export interface DataTables {
   tables: { name: string; rows: number; columns: string[]; hidden: string[] }[];
 }
 
+/** `/api/v1/data/autonomy`: merged factory items with no person's push (design §6); `autonomy` null with none merged. */
+export interface DataAutonomy {
+  as_of: string;
+  merged: number;
+  with_push: number;
+  autonomy: number | null;
+}
+
 /** A cell as the API returns it: hidden columns are "[hidden]", withheld text "[withheld: <rule>]". */
 export type DataCell = string | number | null;
 
@@ -597,6 +605,7 @@ export const API = {
   standing: "/api/v1/standing",
   users: "/api/v1/users",
   dataTables: "/api/v1/data/tables",
+  dataAutonomy: "/api/v1/data/autonomy",
   dataTable: (name: string, params: URLSearchParams) => {
     const q = params.toString();
     return `/api/v1/data/tables/${encodeURIComponent(name)}${q ? `?${q}` : ""}`;

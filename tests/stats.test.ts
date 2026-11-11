@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { STATS_MIN_SAMPLE_DEFAULT, buildStatsStore, loadConfig, statsConfig } from "../src/compose.js";
 import type { StatsConfig } from "../src/core/config.js";
-import { type StatsRecord, aggregateStats, collectStats, formatStatsText } from "../src/core/stats.js";
+import { type StatsRecord, aggregateAutonomy, aggregateStats, collectAutonomy, collectStats, formatStatsText } from "../src/core/stats.js";
 import type { Tier, UserId, VerdictSeverity, WorkItemId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { human, issue, newStore, system } from "./helpers/store.js";
@@ -23,6 +23,8 @@ interface Seed {
   severities?: VerdictSeverity[];
   /** How many implicit verdicts, each on its own PR head, after the explicit ones. */
   implicit?: number;
+  /** How the item closes when `closed`; default completed (merged). */
+  close_reason?: "completed" | "rejected";
 }
 
 /** One item: tier and token_cost set, then the given reasons as state changes, then verdicts, then closed. */
@@ -54,7 +56,7 @@ async function seed(store: Store, s: Seed): Promise<WorkItemId> {
     if (!r.ok) throw new Error(r.reason);
     version = r.item.version;
   }
-  if (s.closed) await step("merged", { stage: "CLOSED", close_reason: "completed" });
+  if (s.closed) await step("closed", { stage: "CLOSED", close_reason: s.close_reason ?? "completed" });
   return item.id;
 }
 
@@ -205,8 +207,66 @@ describe("factory stats", () => {
       },
     });
     await collectStats(spy, config);
-    expect(calls).toEqual(["listStatsRecords", "listRunsByKind"]);
+    await collectAutonomy(spy);
+    expect(new Set(calls)).toEqual(new Set(["listStatsRecords", "listRunsByKind"]));
     expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe("factory stats: Autonomy (design §6)", () => {
+  const config: StatsConfig = { weights: WEIGHTS, min_sample: 2 };
+
+  it("the share of merged factory items with no push verdict, the same as a hand count, in text and in --json", async () => {
+    const { store } = await newStore();
+    // Hand count: items 1, 2, 4, 6 are merged factory items (5 merged too); 1 and 2 have a push verdict.
+    await seedAll(store);
+    // Not counted: an open item with a push, a rejected item with a push, a rejected item without one.
+    await seed(store, { n: 30, tier: 2, closed: false, token_cost: 0, implicit: 1 });
+    await seed(store, { n: 31, tier: 2, closed: true, close_reason: "rejected", token_cost: 0, implicit: 1 });
+    await seed(store, { n: 32, tier: 2, closed: true, close_reason: "rejected", token_cost: 0 });
+    // An adopted merged item: not a factory item.
+    const { item } = await store.createWorkItem({
+      ...issue(33),
+      adopted: { change_ref: "33", head_branch: "feature/x", head_sha: "h", allowed_paths: ["a"], tier: 1 },
+    }, human);
+    const r = await store.transition({ id: item.id, expected_version: 1, actor: system, reason: "pr_merged", patch: { stage: "CLOSED", close_reason: "completed" } });
+    if (!r.ok) throw new Error(r.reason);
+
+    const merged = 5; // items 1, 2, 4, 5, 6
+    const with_push = 2; // items 1 and 2
+    const report = await collectStats(store, config);
+    expect(report.autonomy).toEqual({ merged, with_push, autonomy: (merged - with_push) / merged });
+    expect(JSON.parse(JSON.stringify(report)).autonomy).toEqual({ merged: 5, with_push: 2, autonomy: 0.6 });
+    expect(await collectAutonomy(store)).toEqual(report.autonomy);
+    const lines = formatStatsText(report).split("\n");
+    const table = lines.findIndex((l) => l.startsWith("untiered"));
+    const at = lines.findIndex((l) => l.startsWith("autonomy:"));
+    expect(at).toBeGreaterThan(table);
+    expect(lines.filter((l) => l.startsWith("autonomy:"))).toEqual(["autonomy: 0.60 (3 of 5 merged factory items with no person's push)"]);
+  });
+
+  it("zero merged factory items: autonomy is null in --json and `not enough data` in text", async () => {
+    const { store } = await newStore();
+    await seed(store, { n: 1, tier: 1, closed: false, token_cost: 0, implicit: 1 });
+    await seed(store, { n: 2, tier: 1, closed: true, close_reason: "rejected", token_cost: 0 });
+    const report = await collectStats(store, config);
+    expect(JSON.parse(JSON.stringify(report)).autonomy).toEqual({ merged: 0, with_push: 0, autonomy: null });
+    expect(formatStatsText(report).split("\n").filter((l) => l.startsWith("autonomy:"))).toEqual(["autonomy: not enough data (no merged factory items)"]);
+    expect(aggregateAutonomy([])).toEqual({ merged: 0, with_push: 0, autonomy: null });
+  });
+
+  it("aggregateAutonomy counts only CLOSED, merged, factory records", () => {
+    const rec = (i: number, over: Partial<StatsRecord>, merged = true): StatsRecord => ({
+      id: `wi_${i}` as WorkItemId, tier: 1, stage: "CLOSED", token_cost: 0, reasons: [], severities: [], ...(merged ? { merged } : {}), ...over,
+    });
+    expect(aggregateAutonomy([
+      rec(1, { pushed: true }),
+      rec(2, {}),
+      rec(3, { origin: "adopted" }),
+      rec(4, { merged: false, pushed: true }),
+      rec(5, { stage: "READY", pushed: true }),
+      rec(6, {}, false),
+    ])).toEqual({ merged: 2, with_push: 1, autonomy: 0.5 });
   });
 });
 

@@ -400,9 +400,9 @@ export interface FactoryStore {
   listVerdicts(id: WorkItemId): Promise<Verdict[]>;
   /**
    * Every work item (any stage, no cap), oldest first, with the reasons of its state changes that are in
-   * `reasons` (in version order), the severities of its explicit verdicts (oldest first) and the count of its
-   * implicit ones. For `factory stats`.
-   * Read-only.
+   * `reasons` (in version order), the severities of its explicit verdicts (oldest first), the count of its
+   * implicit ones, `pushed` (an implicit `changes` verdict is stored) and `merged` (CLOSED with close_reason
+   * completed). For `factory stats` and Autonomy. Read-only.
    */
   listStatsRecords(reasons: readonly string[]): Promise<StatsRecord[]>;
 
