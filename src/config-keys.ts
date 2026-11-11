@@ -100,7 +100,7 @@ export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
 };
 
 /** The setting a refused MySQL store config is told to use instead (design 05-coordination.md, 2026-11-11). */
-export const SQLITE_STORE_SETTING = '"store": { "type": "sqlite" }';
+const SQLITE_STORE_SETTING = '"store": { "type": "sqlite" }';
 
 /** A store of type "mysql" is refused at startup: the factory's store is SQLite. One problem line, naming the setting. */
 function storeProblems(raw: unknown): string[] {
