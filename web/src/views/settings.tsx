@@ -12,7 +12,9 @@ import { ProposalsSection, StandingSection } from "./standing.js";
 // The Settings page (design §8 and §9, issue #236): every settable key with its value, source and when a change
 // applies, an edit control per key and a reset when an override exists, the PR-only keys read-only, and the
 // audit history, and the standing approvals (standing.tsx), whose pending proposals come first. Every key write is POST /api/v1/settings, which runs
-// the same checks as `factory settings`; a refusal is shown next to the field it came from.
+// the same checks as `factory settings`; a refusal is shown next to the field it came from. A per-project gate key
+// also shows the configured project's learned value (design 08-settings) next to its file and override values, with
+// its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
@@ -214,12 +216,14 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   );
 }
 
-function ResetButton({ row, label, token, project }: { row: SettingRow; label: string; token: string; project?: string }) {
+function ResetButton({ row, label, token, project, learned = false }: { row: SettingRow; label: string; token: string; project?: string; learned?: boolean }) {
   const { busy, error, done, write } = useWrite(token);
+  // A learned reset is POST { ..., learned: true }: the server runs `factory settings reset --learned`.
+  const body: SettingsWrite & { learned?: true } = { action: "reset", key: row.key, ...(project === undefined ? {} : { project }), ...(learned ? { learned: true as const } : {}) };
   return (
     <div>
-      <Button variant="outline" className={textButton} disabled={busy} aria-label={`Reset ${label}`} onClick={() => void write({ action: "reset", key: row.key, ...(project === undefined ? {} : { project }) })}>
-        Reset
+      <Button variant="outline" className={textButton} disabled={busy} aria-label={`Reset ${learned ? "learned " : ""}${label}`} onClick={() => void write(body)}>
+        {learned ? "Reset learned" : "Reset"}
       </Button>
       <Outcome error={error} done={done} />
     </div>
@@ -237,8 +241,47 @@ function Description({ text }: { text: string }) {
   return <p className="mt-1 max-w-64 text-xs text-pretty text-zinc-600 dark:text-zinc-400">{text}</p>;
 }
 
+/** A learned value as GET /api/v1/settings returns it; `source` is the layer in force for its project ("learned" while it is). */
+interface LearnedValue {
+  project: string;
+  value: string;
+  source: string;
+  evidence_run_ids: string[];
+  set_at: string;
+}
+
+/** The configured project's learned value of a key: in force or not, its evidence runs and when it was set, and its reset. */
+function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: LearnedValue; view: SettingsView }) {
+  const now = useNow();
+  const label = `${row.key} for ${view.repo}`;
+  const runs = learned.evidence_run_ids;
+  return (
+    <div data-learned className="mt-2 flex flex-wrap items-start gap-2">
+      <div className="min-w-0 text-xs text-zinc-600 dark:text-zinc-400">
+        <p className="text-pretty">
+          learned: <span className="font-mono">{learned.value}</span>{" "}
+          <Badge level={learned.source === "learned" ? "needs_approval" : undefined}>{learned.source === "learned" ? "in force" : `ignored: ${learned.source} is tighter`}</Badge>{" "}
+          <span className="tabular-nums">set {ago(learned.set_at, now)} ago</span>
+        </p>
+        {runs.length > 0 && (
+          <details>
+            <summary className="cursor-pointer">from {runs.length} failed {runs.length === 1 ? "run" : "runs"}</summary>
+            <ul className="mt-1 font-mono break-all">
+              {runs.map((id) => (
+                <li key={id}>{id}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+      </div>
+      <ResetButton row={row} label={label} token={view.csrf_token} project={view.repo} learned />
+    </div>
+  );
+}
+
 function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
+  const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
   return (
     <Tr data-key={row.key}>
       <Td>
@@ -264,6 +307,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
               {own?.source === "override" && <ResetButton row={row} label={`${row.key} for ${view.repo}`} token={view.csrf_token} project={view.repo} />}
             </div>
             <Duration settingKey={row.key} value={own?.value ?? row.value} />
+            {learned && <LearnedLayer row={row} learned={learned} view={view} />}
           </div>
         )}
       </Td>
