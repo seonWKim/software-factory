@@ -1,5 +1,5 @@
 // The Health panel and GET /api/health: one implementation (doctorChecks) behind doctor and the page,
-// a read-only MySQL probe, a 60-second limit with one shared in-flight run, and egress-scanned messages.
+// no store access on the health path, a 60-second limit with one shared in-flight run, and egress-scanned messages.
 
 import { randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Loaded, Plugins, loadConfig } from "../src/compose.js";
-import type { FactoryStore, SchemaVersion } from "../src/interfaces/factory-store.js";
+import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { type Secret, secretName } from "../src/interfaces/secret-store.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -24,7 +24,8 @@ import { BACKENDS } from "./helpers/store.js";
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
-const MYSQL = { type: "mysql", host: "db.invalid", port: 3306, database: "sf", user: "factory" };
+/** A secret the fake GitHub login declares, so the scanner knows its value. */
+const FAKE_GH_KEY = secretName("FAKE_GH_KEY");
 
 afterEach(() => {  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -42,19 +43,14 @@ function section(body: string, id: string): string {
   return body.slice(start, body.indexOf("</section>", start));
 }
 
-/** A store for the health path: only schemaVersion and close work; anything else (migrate, any write) throws. */
-function probeOnlyStore(version: SchemaVersion | Error, calls: string[]): FactoryStore {
+/** A store for the health path: every call is recorded and throws, so a test can show none is made. */
+function untouchedStore(calls: string[]): FactoryStore {
   return new Proxy({} as FactoryStore, {
     get(_t, prop) {
       if (prop === "then") return undefined; // not a thenable
       const name = String(prop);
       return async () => {
         calls.push(name);
-        if (name === "close") return;
-        if (name === "schemaVersion") {
-          if (version instanceof Error) throw version;
-          return version;
-        }
         throw new Error(`store.${name} called on the health path`);
       };
     },
@@ -78,37 +74,42 @@ function stubGitHub(labels: Set<string>): void {
 interface Setup {
   loaded: Loaded;
   storeCalls: string[];
-  mysqlPassword: string;
+  ghKey: string;
 }
 
 /**
- * A throwaway repo root with a MySQL store block, the "mysql" store plugin replaced by `probeOnlyStore`,
- * a fake GitHub login over a stubbed fetch, and a real env-file secret file holding `fileExtra`.
+ * A throwaway repo root with the SQLite store plugin replaced by `untouchedStore`, a fake GitHub login over a
+ * stubbed fetch (its credentials fail with `tokenError` when given), and a real env-file secret file holding `fileExtra`.
  */
-async function setupDoctor(opts: { version?: SchemaVersion | Error; fileExtra?: string; mysqlPassword?: string; labels?: string[] } = {}): Promise<Setup> {
+async function setupDoctor(opts: { tokenError?: Error; fileExtra?: string; ghKey?: string; labels?: string[] } = {}): Promise<Setup> {
   const dir = mkdtempSync(join(tmpdir(), "sf-health-"));
   mkdirSync(join(dir, "prompts"));
   for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
   const plugins = { ...(REAL.plugins as Record<string, unknown>), github_auth: "fake-gh", updater: "none" };
-  writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...REAL, store: MYSQL, plugins, state_dir: "state", worktrees_dir: "wt" }));
+  writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...REAL, plugins, state_dir: "state", worktrees_dir: "wt" }));
 
-  const mysqlPassword = opts.mysqlPassword ?? `pw-${randomBytes(8).toString("hex")}`;
+  const ghKey = opts.ghKey ?? `key-${randomBytes(8).toString("hex")}`;
   const secretsDir = mkdtempSync(join(tmpdir(), "sf-health-secrets-"));
   const file = join(secretsDir, ".env");
-  writeFileSync(file, `CLAUDE_CODE_OAUTH_TOKEN=oauth-${randomBytes(8).toString("hex")}\nMYSQL_PASSWORD=${mysqlPassword}\n${opts.fileExtra ?? ""}`, { mode: 0o600 });
+  writeFileSync(file, `CLAUDE_CODE_OAUTH_TOKEN=oauth-${randomBytes(8).toString("hex")}\n${FAKE_GH_KEY}=${ghKey}\n${opts.fileExtra ?? ""}`, { mode: 0o600 });
   vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", file);
   vi.stubEnv("ANTHROPIC_API_KEY", "");
   // `claude --version` finds nothing: a deterministic FAIL, and no process is started.
   vi.stubEnv("PATH", mkdtempSync(join(tmpdir(), "sf-empty-path-")));
 
   const storeCalls: string[] = [];
-  let registry: Registry = withPlugin(REGISTRY, "store", "mysql", () => probeOnlyStore(opts.version ?? { applied: 8, latest: 8 }, storeCalls), [
-    { name: secretName("MYSQL_PASSWORD"), purpose: "test" },
-  ]);
-  const creds: GitHubCredentials = { token: async () => secret("tok"), grant: () => null };
-  registry = withPlugin(registry, "github_auth", "fake-gh", () => fakeGitHubAccess(creds));
+  let registry: Registry = withPlugin(REGISTRY, "store", "sqlite", () => untouchedStore(storeCalls));
+  const tokenError = opts.tokenError;
+  const creds: GitHubCredentials = {
+    token: async () => {
+      if (tokenError) throw tokenError;
+      return secret("tok");
+    },
+    grant: () => null,
+  };
+  registry = withPlugin(registry, "github_auth", "fake-gh", () => fakeGitHubAccess(creds), [{ name: FAKE_GH_KEY, purpose: "test" }]);
   stubGitHub(new Set(opts.labels ?? ["factory", "sf: triaging"]));
-  return { loaded: await loadConfig(dir, { registry }), storeCalls, mysqlPassword };
+  return { loaded: await loadConfig(dir, { registry }), storeCalls, ghKey };
 }
 
 async function uiFor(loaded: Loaded, clock = new FakeClock()) {
@@ -176,15 +177,13 @@ describe("health: one implementation behind doctor and the page", () => {
     expect(panel).toContain('href="/classic?health=refresh#health"');
     expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>claude CLI: not found<\/td>/);
     expect(panel).toMatch(/<td>warn<\/td><td>GitHub token never expires/);
-    expect(panel).toMatch(/<td>ok<\/td><td>MySQL factory@db\.invalid:3306\/sf reachable, schema up to date<\/td>/);
     expect(panel).not.toMatch(/llm-check/);
   });
 
   it("a failing check shows as FAIL on the panel", async () => {
-    const { loaded } = await setupDoctor({ version: new Error("connect ECONNREFUSED 10.0.0.1:3306"), labels: [] });
+    const { loaded } = await setupDoctor({ labels: [] });
     const { port } = await uiFor(loaded);
     const panel = section((await get(port, "/classic")).body, "health");
-    expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>MySQL factory@db\.invalid:3306\/sf: connect ECONNREFUSED 10\.0\.0\.1:3306<\/td>/);
     expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>label &quot;factory&quot; exists \(run: npm run setup\)<\/td>/);
   });
 
@@ -202,22 +201,13 @@ describe("health: one implementation behind doctor and the page", () => {
   });
 });
 
-describe("health: the MySQL check is read-only", () => {
-  it("reads the schema version and calls no migrate() or write on the store", async () => {
+describe("health: the store is not touched", () => {
+  it("doctor and the health API make no store call: no migrate(), no write, no read", async () => {
     const { loaded, storeCalls } = await setupDoctor();
     const { port } = await uiFor(loaded);
-    const report = JSON.parse((await get(port, "/api/health")).body) as { checks: { status: string; msg: string }[] };
-    expect(report.checks.find((c) => c.msg.startsWith("MySQL"))).toEqual({ status: "ok", msg: "MySQL factory@db.invalid:3306/sf reachable, schema up to date" });
-    expect(storeCalls).toEqual(["schemaVersion", "close"]);
-    expect(storeCalls).not.toContain("migrate");
-  });
-
-  it("a pending schema step is a FAIL naming npm run migrate, and is not migrated", async () => {
-    const { loaded, storeCalls } = await setupDoctor({ version: { applied: 3, latest: 8 } });
-    const c = (await doctorChecks(loaded)).find((x) => x.msg.startsWith("MySQL"))!;
-    expect(checkStatus(c)).toBe("fail");
-    expect(c.msg).toBe("MySQL factory@db.invalid:3306/sf reachable, schema at version 3 of 8 (run: npm run migrate)");
-    expect(storeCalls).toEqual(["schemaVersion", "close"]);
+    await get(port, "/api/health");
+    await doctorChecks(loaded);
+    expect(storeCalls).toEqual([]);
   });
 
   it("SqlFactoryStore.schemaVersion on an unmigrated SQLite file creates nothing", async () => {
@@ -253,11 +243,8 @@ describe("health: messages pass through the Withholder", () => {
   });
 
   it("canary: a secret value in a check's error message is withheld from the API response and the page", async () => {
-    const password = `pw-${randomBytes(12).toString("hex")}`;
-    const { loaded } = await setupDoctor({
-      mysqlPassword: password,
-      version: new Error(`Access denied for user 'factory' using password ${password}`),
-    });
+    const password = `key-${randomBytes(12).toString("hex")}`;
+    const { loaded } = await setupDoctor({ ghKey: password, tokenError: new Error(`bad key ${password}`) });
     // The check itself carries the secret: only the Withholder keeps it off the page.
     expect((await doctorChecks(loaded)).some((c) => c.msg.includes(password))).toBe(true);
 

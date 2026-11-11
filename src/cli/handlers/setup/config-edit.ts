@@ -1,10 +1,9 @@
-// The shared choices `factory setup` writes to factory.config.json (owner decision 2026-11-08): the store and
-// which sync plugins (GitHub, Slack) are on. Pure: it reads and returns the file's text, and changes only the
-// top-level keys a choice touches, leaving every other line as it was written.
+// The shared choices `factory setup` writes to factory.config.json (owner decision 2026-11-08): which sync
+// plugins (GitHub, Slack) are on. Pure: it reads and returns the file's text, and changes only the top-level keys
+// a choice touches, leaving every other line as it was written.
 
 /** What setup asks for the whole team. Per-person choices (the display name) never go to the file. */
 export interface SharedChoices {
-  store: "sqlite" | "mysql";
   github: boolean;
   slack: boolean;
   /** Slack channel IDs (`C…`, `G…`); read only when `slack` is on. */
@@ -13,9 +12,6 @@ export interface SharedChoices {
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 type Obj = { [k: string]: Json };
-
-/** The MySQL block a file without one gets: the local server, the factory's own database and user. */
-export const DEFAULT_MYSQL: Obj = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
 
 const SLACK_CHANNEL = /^[CG][A-Z0-9]{2,}$/;
 
@@ -30,14 +26,13 @@ const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !
 
 /**
  * The choices as the file stands: each step's default. `githubSelected` is the loaded config's answer (any GitHub
- * plugin selected). A file that lists no sources yet gets the solo defaults: SQLite, local only, no Slack.
+ * plugin selected). A file that lists no sources yet gets the solo defaults: local only, no Slack.
  */
 export function currentChoices(raw: Obj, githubSelected: boolean): SharedChoices {
   const plugins = isObj(raw.plugins) ? raw.plugins : {};
   const sources = sourceList(plugins);
   const slack = isObj(raw.slack) && Array.isArray(raw.slack.channels) ? raw.slack.channels.filter((c): c is string => typeof c === "string") : [];
   return {
-    store: isObj(raw.store) && raw.store.type === "mysql" ? "mysql" : "sqlite",
     github: plugins.source === undefined && plugins.sources === undefined ? false : githubSelected,
     slack: sources.includes("slack"),
     slack_channels: slack,
@@ -56,9 +51,6 @@ export function applyChoices(raw: Obj, c: SharedChoices): Map<string, Json | und
   const set = (key: string, value: Json | undefined) => {
     if (JSON.stringify(value) !== JSON.stringify(raw[key])) out.set(key, value);
   };
-
-  if (c.store === "sqlite") set("store", raw.store === undefined ? undefined : { type: "sqlite" });
-  else set("store", isObj(raw.store) && raw.store.type === "mysql" ? raw.store : DEFAULT_MYSQL);
 
   const plugins: Obj = isObj(raw.plugins) ? { ...raw.plugins } : {};
   const kept = sourceList(plugins).filter((s) => s !== "github-issues" && s !== "slack" && s !== "local");

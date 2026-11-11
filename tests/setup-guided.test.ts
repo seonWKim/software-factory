@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultsAsk, terminalAsk } from "../src/cli/handlers/setup/ask.js";
 import {
-  DEFAULT_MYSQL,
   applyChoices,
   configDiffLines,
   currentChoices,
@@ -16,8 +15,6 @@ import {
 } from "../src/cli/handlers/setup/config-edit.js";
 import { registerMe } from "../src/cli/handlers/setup/me.js";
 import { loadConfig } from "../src/compose.js";
-import { secretName } from "../src/interfaces/secret-store.js";
-import { declaredSecretNames } from "../src/plugins.js";
 import { cliIdentity, runLocalCli } from "../src/core/local-cli.js";
 import { ProfileStore } from "../src/identity/index.js";
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
@@ -43,10 +40,10 @@ const changedLines = (a: string, b: string) => {
 };
 
 describe("setup: the shared choices in factory.config.json", () => {
-  it("reads each step's default from the file: the checked-in one is MySQL with GitHub and Slack; a file listing no sources gets the solo defaults", () => {
+  it("reads each step's default from the file: the checked-in one has GitHub and Slack; a file listing no sources gets the solo defaults", () => {
     const raw = JSON.parse(CHECKED_IN);
-    expect(currentChoices(raw, true)).toEqual({ store: "mysql", github: true, slack: true, slack_channels: ["C0CDEHN4HM5"] });
-    expect(currentChoices({ repo: {} }, true)).toEqual({ store: "sqlite", github: false, slack: false, slack_channels: [] });
+    expect(currentChoices(raw, true)).toEqual({ github: true, slack: true, slack_channels: ["C0CDEHN4HM5"] });
+    expect(currentChoices({ repo: {} }, true)).toEqual({ github: false, slack: false, slack_channels: [] });
   });
 
   it("the defaults change nothing, so `--yes` on a set-up file writes nothing", () => {
@@ -57,10 +54,10 @@ describe("setup: the shared choices in factory.config.json", () => {
     expect(editConfigText(CHECKED_IN, changes)).toBe(CHECKED_IN);
   });
 
-  it("local only + SQLite: selects no GitHub plugin, changes only those keys and keeps every other line as written", async () => {
+  it("local only: selects no GitHub plugin, changes only those keys and keeps every other line as written", async () => {
     const raw = JSON.parse(CHECKED_IN);
-    const changes = applyChoices(raw, { store: "sqlite", github: false, slack: false, slack_channels: [] });
-    expect([...changes.keys()].sort()).toEqual(["auth", "permissions", "plugins", "store"]);
+    const changes = applyChoices(raw, { github: false, slack: false, slack_channels: [] });
+    expect([...changes.keys()].sort()).toEqual(["auth", "permissions", "plugins"]);
     const text = editConfigText(CHECKED_IN, changes);
     const edited = JSON.parse(text);
     expect(edited.store).toEqual({ type: "sqlite" });
@@ -69,10 +66,9 @@ describe("setup: the shared choices in factory.config.json", () => {
     expect(edited.permissions).toEqual({ grants: ["static"], static: raw.permissions.static });
     expect(edited.plugins).toMatchObject({ source: ["local"], broker: "local", github_auth: "app", runner: "claude-code" });
     const { removed, added } = changedLines(CHECKED_IN, text);
-    expect(removed.join("\n")).toMatch(/"store"/);
     // The checked-in "permissions" block (its static roles kept) is written back on one line.
-    expect(removed.filter((l) => !/"store"|"auth"|"broker"|"source"|"agent_git_identity"|"permissions"|"grants"|"static"/.test(l))).toEqual([]);
-    expect(added.filter((l) => !/"store"|"auth"|"broker"|"source"|"permissions"|"agent_git_identity"/.test(l))).toEqual([]);
+    expect(removed.filter((l) => !/"auth"|"broker"|"source"|"agent_git_identity"|"permissions"|"grants"|"static"/.test(l))).toEqual([]);
+    expect(added.filter((l) => !/"auth"|"broker"|"source"|"permissions"|"agent_git_identity"/.test(l))).toEqual([]);
     const loaded = await load(text);
     expect(loaded.config.local_only).toBe(true);
     expect(loaded.store).toEqual({ type: "sqlite" });
@@ -83,24 +79,21 @@ describe("setup: the shared choices in factory.config.json", () => {
     expect(diff).toContain('+ "permissions": { "grants": ["static"], "static": { "roles": { "github:69591622": { "*": ["approver"] } } } }');
   });
 
-  it("SQLite with GitHub and Slack kept: only store changes, written as sqlite, and MYSQL_PASSWORD is no longer declared", async () => {
-    const raw = JSON.parse(CHECKED_IN);
-    const changes = applyChoices(raw, { ...currentChoices(raw, true), store: "sqlite" });
-    expect([...changes.keys()]).toEqual(["store"]);
-    const loaded = await load(editConfigText(CHECKED_IN, changes));
-    expect(loaded.store).toEqual({ type: "sqlite" });
-    expect(loaded.plugins.store).toBe("sqlite");
-    expect(declaredSecretNames(loaded.registry, loaded.plugins).has(secretName("MYSQL_PASSWORD"))).toBe(false);
+  it("no choice touches the store key: setup asks no store question", () => {
+    const raw = { ...JSON.parse(CHECKED_IN), store: { type: "mysql" } };
+    for (const github of [true, false]) {
+      expect(applyChoices(raw, { github, slack: false, slack_channels: [] }).has("store")).toBe(false);
+    }
   });
 
   it("turning GitHub and Slack back on from local only round-trips to a config that loads", async () => {
-    const local = editConfigText(CHECKED_IN, applyChoices(JSON.parse(CHECKED_IN), { store: "sqlite", github: false, slack: false, slack_channels: [] }));
+    const local = editConfigText(CHECKED_IN, applyChoices(JSON.parse(CHECKED_IN), { github: false, slack: false, slack_channels: [] }));
     const raw = JSON.parse(local);
-    expect(currentChoices(raw, false)).toMatchObject({ github: false, store: "sqlite" });
-    const changes = applyChoices(raw, { store: "mysql", github: true, slack: true, slack_channels: ["C0123456789"] });
+    expect(currentChoices(raw, false)).toMatchObject({ github: false });
+    const changes = applyChoices(raw, { github: true, slack: true, slack_channels: ["C0123456789"] });
     const text = editConfigText(local, changes);
     const edited = JSON.parse(text);
-    expect(edited.store).toEqual(DEFAULT_MYSQL);
+    expect(edited.store).toEqual({ type: "sqlite" });
     expect(edited.auth).toBe("github");
     expect(edited.plugins.source).toEqual(["github-issues", "local", "slack"]);
     expect(edited.plugins.broker).toBe("github");

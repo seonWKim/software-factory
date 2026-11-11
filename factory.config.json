@@ -1,6 +1,6 @@
 {
   "env": "local",
-  "store": { "type": "mysql", "host": "localhost", "port": 3306, "database": "software_factory", "user": "factory" },
+  "store": { "type": "sqlite" },
   "repo": {
     "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main",
     "install_command": ["npm", "ci"], "test_command": ["npm", "test"],

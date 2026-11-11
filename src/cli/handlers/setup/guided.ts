@@ -1,7 +1,7 @@
 // The guided `factory setup` (owner decision 2026-11-08; one step frame and a progress record since issue #501).
 // Every step runs through `runStep` (src/setup.ts): a title, one line on why, its questions with their defaults
 // (Enter takes one; `--yes` takes every default without reading the terminal), then a ✓ or ✗ line. The shared
-// choices (store, sync plugins) go to factory.config.json after a diff and a question; the mode and the auto-merge
+// choices (the sync plugins) go to factory.config.json after a diff and a question; the mode and the auto-merge
 // tier are runtime settings, set through `factory settings`. After each finished step its name goes to the
 // progress record, so the next run offers to continue from the step that did not finish. `--me` only registers
 // the person.
@@ -22,11 +22,9 @@ import {
   type StepResult,
   canaryStep,
   checksStep,
-  mysqlPasswordKept,
   neededSecrets,
   openBrowser,
   pluginSetupStep,
-  provisionDatabase,
   runStep,
   secretFileStep,
   secretsToPrompt,
@@ -145,20 +143,6 @@ async function writeChoices(
 
 const currentOf = (s: SetupState, raw: Record<string, never>) => currentChoices(raw, s.loaded.config.local_only !== true);
 
-const storeStep: SetupStep<GuidedState> = {
-  name: "store",
-  title: "Store",
-  why: "sqlite: one machine, no server. mysql: a shared database for a team and several replicas.",
-  async run(s, io) {
-    const config = await readConfig(s.loaded);
-    const current = currentOf(s, config.raw);
-    const store = await io.ask.choose("   Store", ["sqlite", "mysql"] as const, current.store);
-    // Only the store key: the sync plugins are the next step's.
-    const changes = new Map([...applyChoices(config.raw, { ...current, store })].filter(([k]) => k === "store"));
-    return writeChoices(s, io, config, changes, `store: ${store}`);
-  },
-};
-
 const pluginsStep: SetupStep<GuidedState> = {
   name: "plugins",
   title: "Plugins",
@@ -181,7 +165,7 @@ const pluginsStep: SetupStep<GuidedState> = {
     if (slack && !slackOn) io.print("   Slack stays off: no channel ID given");
     // The answer counts even when the diff is declined: GitHub off means no GitHub secret is asked or checked.
     s.github = github;
-    const changes = applyChoices(config.raw, { store: current.store, github, slack: slackOn, slack_channels: channels });
+    const changes = applyChoices(config.raw, { github, slack: slackOn, slack_channels: channels });
     return writeChoices(s, io, config, changes, `GitHub ${github ? "on" : "off"}, Slack ${slackOn ? "on" : "off"}`);
   },
 };
@@ -225,8 +209,7 @@ export const secretsStep: SetupStep<SetupState> = {
     let missing = await secretsToPrompt(declared, await new Plugins(loaded).secrets(), rotate);
     if (missing.length === 0) {
       if (!(await io.ask.yesNo("   Every needed secret is set. Replace one?", false))) return { ok: true, line: "every needed secret is set" };
-      // MYSQL_PASSWORD is the Database step's (`--rotate-mysql`).
-      const options = declared.map((d) => d.name).filter((n) => n !== "MYSQL_PASSWORD");
+      const options = declared.map((d) => d.name);
       if (options.length === 0) return { ok: true, line: "nothing to replace" };
       const name = await io.ask.choose("   Which one", options, options[0]!);
       missing = declared.filter((d) => d.name === name).slice(0, 1);
@@ -257,25 +240,15 @@ export const secretsStep: SetupStep<SetupState> = {
 const databaseStep: SetupStep<GuidedState> = {
   name: "database",
   title: "Database",
-  why: "Where the factory keeps its work. MySQL gets its own database and user, with a generated password you never see.",
+  why: "Where the factory keeps its work: a SQLite file on this machine, no server.",
   async run(s, io) {
-    const db = s.loaded.store;
-    if (db.type === "mysql") {
-      const stored = await mysqlPasswordKept(s);
-      const create = stored
-        ? !(await io.ask.yesNo("   Keep the factory's MySQL user and its stored password?", true))
-        : await io.ask.yesNo(`   Create database ${db.database} and user ${db.user}@localhost now?`, true);
-      if (!stored && !create) return { ok: false, stop: true, line: "no MySQL database: the factory needs one (run npm run setup again)" };
-      if (create && !(await provisionDatabase(s.loaded, io.ask.interactive, io.print))) {
-        return { ok: false, stop: true, line: "could not create the MySQL database and user: fix the MySQL login, then run npm run setup again" };
-      }
-    } else if (!(await io.ask.yesNo(`   Create or update the SQLite store under ${join(s.loaded.stateDir, "db")}?`, true))) {
+    if (!(await io.ask.yesNo(`   Create or update the SQLite store under ${join(s.loaded.stateDir, "db")}?`, true))) {
       return { ok: false, stop: true, line: "no store: the factory needs one (run npm run setup again)" };
     }
     const store = await openStore(s.loaded, io.print);
-    if (!store) return { ok: false, stop: true, line: "the store is not ready: fix the line above (MySQL: npm run migrate), then run npm run setup again" };
+    if (!store) return { ok: false, stop: true, line: "the store is not ready: fix the line above, then run npm run setup again" };
     await store.close();
-    return { ok: true, line: db.type === "mysql" ? `MySQL ${db.user}@${db.host}:${db.port}/${db.database} ready` : "SQLite store ready" };
+    return { ok: true, line: "SQLite store ready" };
   },
 };
 
@@ -326,7 +299,6 @@ const modeStep: SetupStep<GuidedState> = {
 
 /** Every step of `npm run setup`, in order. A step's number is its place here, so it is the same on every run. */
 export const SETUP_STEPS: readonly SetupStep<GuidedState>[] = [
-  storeStep,
   pluginsStep,
   secretFileStep,
   secretsStep,

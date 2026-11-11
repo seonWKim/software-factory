@@ -94,11 +94,22 @@ type MissingTopLevel = Exclude<keyof FileConfig, (typeof TOP_LEVEL_KEYS)[number]
 const _allTopLevelListed: [MissingTopLevel] extends [never] ? true : false = true;
 void _allTopLevelListed;
 
-/** Store keys per store.type. A type not listed here (an invalid one) skips the store key check. */
+/** Store keys per store.type. A type not listed here (mysql, or an invalid one) skips the store key check. */
 export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
   sqlite: ["type"],
-  mysql: ["type", "host", "port", "database", "user"],
 };
+
+/** The setting a refused MySQL store config is told to use instead (design 05-coordination.md, 2026-11-11). */
+const SQLITE_STORE_SETTING = '"store": { "type": "sqlite" }';
+
+/** A store of type "mysql" is refused at startup: the factory's store is SQLite. One problem line, naming the setting. */
+function storeProblems(raw: unknown): string[] {
+  if (!isObject(raw) || !isObject(raw.store) || raw.store.type !== "mysql") return [];
+  return [
+    `store type "mysql" is no longer supported: the factory's store is SQLite; set ${SQLITE_STORE_SETTING} in factory.config.json ` +
+      "(an existing MySQL database is not copied; docs/design/05-coordination.md)",
+  ];
+}
 
 export const REPO_KEYS = ["owner", "name", "path", "base_branch", "install_command", "test_command", "check_commands"] as const satisfies readonly (keyof FileConfig["repo"])[];
 export const DIALS_KEYS = ["spec_gate_min_tier", "auto_merge_max_tier"] as const satisfies readonly (keyof FileConfig["dials"])[];
@@ -223,9 +234,10 @@ export function checkConfigKeys(raw: unknown): void {
   // The coordination values too (design §5, 2026-11-03): a zero or non-numeric threshold fails at load.
   // The openai_compatible block's values too: base_url and the three model names.
   // The path_companions entries too (design 04-triage.md): each bad entry names its index.
-  // The packs order and org path too (design 11-packs.md).
+  // The packs order and org path too (design 11-packs.md). A MySQL store too (design 05-coordination.md).
   const problems = [
     ...unknownConfigKeys(raw),
+    ...storeProblems(raw),
     ...coordinationProblems(raw),
     ...openaiCompatibleProblems(raw),
     ...slackConfigProblems(raw),

@@ -90,7 +90,7 @@ function fixture(config: Record<string, unknown> = {}, repo = temp("sf-packs-rep
   for (const p of ["implement", "review"]) write(join(codeRoot, "prompts", `${p}.md`), `${p} base\n`);
   const file = { ...SQLITE, repo: { ...(REAL.repo as object), path: repo }, state_dir: "state", worktrees_dir: "wt", ...config };
   write(join(codeRoot, "factory.config.json"), JSON.stringify(file));
-  write(join(codeRoot, "secrets", ".env"), "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n");
+  write(join(codeRoot, "secrets", ".env"), "GITHUB_TOKEN=gh\n");
   vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(codeRoot, "secrets", ".env"));
   return { codeRoot, repo, project: join(repo, PROJECT_PACK_DIR), learned: join(codeRoot, "state", LEARNED_PACK_DIR) };
 }
@@ -243,31 +243,13 @@ describe("packs: plugins", () => {
     }
   }
 
-  it("on a shared store a project pack's plugin is refused, naming the file; an org pack's plugin is allowed", async () => {
-    const mysql = { store: { type: "mysql", host: "localhost", port: 3306, database: "sf", user: "factory" } };
-    const f = fixture(mysql);
+  it('a mysql store is refused at startup, naming "store": { "type": "sqlite" }, before any pack plugin loads', async () => {
+    const f = fixture({ store: { type: "mysql", host: "localhost", port: 3306, database: "sf", user: "factory" } });
     const file = join(f.project, "plugins", "pack-awake.plugin.js");
     write(file, awakePlugin("pack-awake-project"));
     const err = await loadError(f.codeRoot);
-    expect(err.message).toContain(file);
-    expect(err.message).toContain("shared store");
-
-    const org = temp("sf-packs-org-");
-    write(join(org, "plugins", "org-awake.plugin.js"), awakePlugin("org-awake"));
-    const g = fixture({ ...mysql, packs: { org }, plugins: { ...SQLITE.plugins, awake: "org-awake" } });
-    expect((await load(g.codeRoot)).plugins.awake).toBe("org-awake");
-  });
-
-  it("packs is a reviewed key: on a shared store an external config's packs.org is ignored for the checked-in one", async () => {
-    const mysql = { store: { type: "mysql", host: "localhost", port: 3306, database: "sf", user: "factory" } };
-    const own = temp("sf-packs-own-org-");
-    write(join(own, "plugins", "own-awake.plugin.js"), awakePlugin("own-awake"));
-    const f = fixture(mysql);
-    const external = join(temp("sf-packs-ext-"), "factory.config.json");
-    write(external, JSON.stringify({ ...JSON.parse(readFileSync(join(f.codeRoot, "factory.config.json"), "utf8")), packs: { org: own } }));
-    const loaded = await loadConfig(f.codeRoot, { configFile: external });
-    expect(loaded.packs.map((p) => p.layer)).toEqual(["base"]);
-    expect(Object.keys(loaded.registry.awake.plugins)).not.toContain("own-awake");
+    expect(err.message).toContain('"store": { "type": "sqlite" }');
+    expect(err.message).not.toContain(file);
   });
 
   it("a pack plugin that claims a default, or a name its kind has, fails startup naming the file", async () => {

@@ -28,7 +28,7 @@ function root(config: Record<string, unknown>): string {
   for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
   writeFileSync(join(dir, "factory.config.json"), JSON.stringify(config));
   mkdirSync(join(dir, "secrets"));
-  writeFileSync(join(dir, "secrets", ".env"), "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n");
+  writeFileSync(join(dir, "secrets", ".env"), "GITHUB_TOKEN=gh\n");
   vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", join(dir, "secrets", ".env"));
   return dir;
 }
@@ -60,12 +60,22 @@ describe("config keys: unknown keys fail at load", () => {
     expect(err.message).toContain('did you mean "plugins"?');
   });
 
-  it('a mysql store with "hots" names store.hots, lists the store keys and suggests "host"', async () => {
-    const store = { ...(REAL.store as object), hots: "db" };
-    const err = await loadError({ ...REAL, store });
-    expect(err.message).toContain("store.hots");
-    for (const k of STORE_KEYS.mysql!) expect(err.message).toContain(k);
-    expect(err.message).toContain('did you mean "host"?');
+  it('a sqlite store with "tpye" names store.tpye, lists the store keys and suggests "type"', async () => {
+    const err = await loadError({ ...REAL, store: { type: "sqlite", tpye: "x" } });
+    expect(err.message).toContain("store.tpye");
+    for (const k of STORE_KEYS.sqlite!) expect(err.message).toContain(k);
+    expect(err.message).toContain('did you mean "type"?');
+  });
+
+  it('a mysql store fails at startup with one problem line that names "store": { "type": "sqlite" }', async () => {
+    const mysql = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
+    const err = (await loadError({ ...REAL, store: mysql })) as ConfigKeyError;
+    expect(err).toBeInstanceOf(ConfigKeyError);
+    expect(err.problems).toHaveLength(1);
+    expect(err.problems[0]).toContain('"store": { "type": "sqlite" }');
+    expect(err.problems[0]).toContain("mysql");
+    // The mysql keys are not reported as unknown on top of the refusal.
+    expect(err.message).not.toContain("store.host");
   });
 
   it("an unknown key inside a floors entry names the path with the index", async () => {
@@ -117,7 +127,7 @@ describe("config keys: unknown keys fail at load", () => {
   it("the checked-in factory.config.json loads", async () => {
     const loaded = await loadConfig(root(REAL));
     expect(loaded.file).toEqual(REAL);
-    expect(loaded.store.type).toBe("mysql");
+    expect(loaded.store).toEqual({ type: "sqlite" });
     expect(loaded.config.repo.owner).toBe("seonWKim");
   });
 });

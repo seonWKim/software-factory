@@ -274,7 +274,7 @@ async function makePlan(loaded: Loaded, o: TeardownOptions, d: TeardownDeps): Pr
 
   if (existsSync(stateDir)) {
     plan.state = { dir: stateDir, entries: (await readdir(stateDir)).sort() };
-    if (loaded.store.type !== "mysql" && existsSync(join(stateDir, "db"))) plan.saveDb = join(stateDir, "db");
+    if (existsSync(join(stateDir, "db"))) plan.saveDb = join(stateDir, "db");
   }
 
   const checkedOut = new Set(remaining.map((w) => w.branch).filter((b): b is string => b !== null));
@@ -335,11 +335,7 @@ function printPlan(loaded: Loaded, plan: Plan, d: TeardownDeps): void {
 }
 
 function printManual(loaded: Loaded, o: TeardownOptions, d: TeardownDeps): void {
-  const db = loaded.store;
   d.print("Not touched by teardown (remove by hand if you mean to):");
-  if (db.type === "mysql") {
-    d.print(`  MySQL database ${db.database} on ${db.host}:${db.port}: the shared store was not touched; other replicas keep using it. Drop it by hand (mysql -u root -p, then DROP DATABASE ${db.database}; DROP USER '${db.user}'@'localhost';).`);
-  } else d.print("  MySQL: not selected (this machine used SQLite).");
   d.print(`  ${loaded.configFile}: setup's edits stay; undo them with git (git checkout -- ${loaded.configFile}).`);
   if (!o.secrets) d.print(`  ${loaded.secretsFile}: the secret file stays (run teardown --secrets, or delete it by hand).`);
   d.print(`  ${join(dirname(loaded.secretsFile), "github-app.pem")}: the GitHub App key, if you made one: delete it by hand.`);

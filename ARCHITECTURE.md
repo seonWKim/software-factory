@@ -48,7 +48,7 @@ graph LR
     REPO[("Factory repo (git)<br/>local base, item branches,<br/>staging refs, .factory/versions/rev")]
   end
 
-  STORE[("Store: MySQL or SQLite<br/>component tables + bus tables")]
+  STORE[("Store: SQLite<br/>component tables + bus tables")]
   STG[("SharedStorage<br/>transcripts, bundles")]
   GH(["GitHub"])
   SL(["Slack"])
@@ -88,7 +88,7 @@ graph LR
 - **UI server** (`src/ui/`): reads the store; its writes are app command requests (rows in `inbound_commands`, applied by the controller like any command), settings (through the same `runSettings` as the CLI), pause resumes and standing rules, each audited.
 - **CLI** (`src/main.ts` finds each command in `src/cli/handlers/<command>/<command>.command.ts`; `--config <path>` or `FACTORY_CONFIG`, the flag winning, picks the config file, made absolute once and passed on to a supervisor's children; a command's return value is the exit code; no command prints the usage and exits 0, an unknown command prints it and exits 1, and an uncaught error prints its message to stderr and exits 1, a supervised child first telling the supervisor why): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `inbound_commands` rows carrying the actor's passport, for any item, local or GitHub.
 
-Solo default: one `factory dev` process tree on one machine, SQLite or MySQL, every schedule of every component in one process, no replica id. Enterprise setting: several replicas on one MySQL store, each with a replica id; leases, claim tokens and conditional updates keep each message, run, batch and landing with one holder, and `npm run migrate` creates every discovered topic's tables so the runtime MySQL user needs no DDL.
+Solo default: one `factory dev` process tree on one machine, SQLite, every schedule of every component in one process, no replica id. Several worker processes of the same owner share that SQLite file; leases, claim tokens and conditional updates keep each message, run, batch and landing with one holder. A config that selects a `mysql` store fails at startup (decision 2026-11-11, `docs/design/05-coordination.md`).
 
 ## 2. Components and interfaces
 
@@ -134,7 +134,7 @@ graph TB
   end
 
   subgraph INFRA["Infrastructure plugins"]
-    STO["FactoryStore (legacy)<br/><b>mysql</b>, sqlite"]
+    STO["FactoryStore (legacy)<br/><b>sqlite</b>"]
     EB["EventBus<br/><b>sql</b>"]
     TK["TickGenerator<br/><b>time-based</b>, manual"]
     ENG["ExecutionEngine<br/><b>journal</b>"]
@@ -208,7 +208,7 @@ graph TB
 |---|---|---|
 | `SourceAdapter` | Brings work items and comment commands in; outbound writes thread messages, labels and closes back through it. Polled or streamed; a list, one adapter per source type | GitHub REST poll with conditional GETs and cursors (sync lease holder only); Slack Socket Mode under a listener lease and the Web API; local: store rows only |
 | `Forge` | Optional. Where PRs live: PR events and checks (read), and outbound's `pushBranch`, `openPr`, `closePr`, `setPrStatus`, `postPrComment`, `pushBase`. Derived from `github-issues` when `plugins.forge` is left out; none selected = local only. The factory never merges a PR itself | GitHub REST; `git push` from the factory repo with the token only in the child's env |
-| `FactoryStore` | Legacy. Items, runs, leases, state changes, thread, commands, settings, pauses, alerts; shrinks as components take their tables | SQL (MySQL for many nodes, SQLite for one machine and tests) |
+| `FactoryStore` | Legacy. Items, runs, leases, state changes, thread, commands, settings, pauses, alerts; shrinks as components take their tables | SQLite (`mysql` is refused at startup) |
 | `EventBus` | The bus (`plugins.bus`) | SQL in the store's database (`sql`) |
 | `TickGenerator` | Every schedule of every component (`plugins.ticks`) | none |
 | `ExecutionEngine` | Journaled steps of a run (`plugins.engine`) | `worker_run_steps` |

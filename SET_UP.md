@@ -23,7 +23,7 @@ If a run stops (you press Ctrl-C, a check fails, the database is not ready), the
 
 - `npm run setup -- --yes` takes every default without reading the terminal (for scripts). A missing secret is reported on the Secrets step's `✗` line, not asked: paste it later with a plain `npm run setup` in a terminal.
 - `npm run setup -- --me` only registers you (your ID and display name). For a second person on a shared store: it changes neither `factory.config.json` nor the secret file.
-- `npm run setup -- --rotate-github` (or `--rotate-claude`, `--rotate-mysql`) replaces a stored credential.
+- `npm run setup -- --rotate-github` (or `--rotate-claude`) replaces a stored credential.
 
 ## Start over: pull → teardown → setup
 
@@ -38,19 +38,20 @@ make setup
 
 `make teardown` runs `npm run factory -- teardown`. It refuses while the factory runs on this machine; `ARGS=--stop` drains it first (in-flight runs finish), then continues. It removes the state folder (`.factory/`; a SQLite store is copied first to `~/.config/software-factory/backups/teardown-<time>/`, and the path is printed), the factory's run folders and version copies in `.worktrees/` and `.factory/versions/`, its `factory/*` branches already merged into the base branch, and its `refs/factory/*` refs. It keeps and lists everything else: your own folders in `.worktrees/`, a run folder or worktree with uncommitted changes, unmerged branches, branches checked out somewhere. Nothing is forced. A second run says there is nothing to delete.
 
-It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`, which asks again and removes only the factory's own entries), GitHub issues or pull requests, the GitHub App, the Slack app or a MySQL database; it prints where to remove each by hand. On a shared MySQL store it resets only this machine (its worktrees, agent configs, host id, passport key): the shared store and other replicas keep working. Decisions: [`docs/design/08-teardown.md`](docs/design/08-teardown.md).
+It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`, which asks again and removes only the factory's own entries), GitHub issues or pull requests, the GitHub App, or the Slack app; it prints where to remove each by hand. Decisions: [`docs/design/08-teardown.md`](docs/design/08-teardown.md).
 
 ## Move a MySQL store to SQLite: copy, then switch
 
-The `mysql` store is deprecated ([`docs/plugins/factory-store.md`](docs/plugins/factory-store.md)). While `factory.config.json` still selects `mysql`, copy its data first, then switch:
+The `mysql` store is deprecated and refused at startup ([`docs/plugins/factory-store.md`](docs/plugins/factory-store.md)). To keep the data of a MySQL store: stop the factory, run the copy, then switch the config. The copy takes the MySQL connection from its own flags, never from `factory.config.json`: `--mysql-host` (default `localhost`), `--mysql-port` (`3306`), `--mysql-database` (`software_factory`) and `--mysql-user` (`factory`). The password is `MYSQL_PASSWORD` in the secret file; this one command reads it, as a named exception, and goes away with the `mysql` plugin.
 
 ```bash
 npm run migrate -- --copy-from-mysql --dry-run   # lists each table and its row count; writes nothing, may run while the factory runs
 npm run migrate -- --copy-from-mysql             # stop the factory first: it refuses and names the pids while one runs
+npm run migrate -- --copy-from-mysql --mysql-host db.internal --mysql-port 3307   # another server than the defaults
 ```
 
 1. **Copy.** It reads MySQL with SELECT only, inside one consistent snapshot, and copies every table into `<state_dir>/db/factory.db`, row by row in primary-key order and in batches, at the latest SQLite schema. It skips only `schema_state` and `schema_migrations`; `legacy_*` tables are copied too. A MySQL table the SQLite schema lacks makes it refuse and list the table, writing no file. It builds into a temporary file beside `factory.db` and checks each table (row count and a checksum over the primary-key columns); on a mismatch it deletes the new file and names the table. If `factory.db` already holds data, it refuses; with `--replace` the old file (and its `-wal`/`-shm` files) moves to `<state_dir>/db/backups/factory-<time>.db` first, and the path is printed. MySQL is never changed.
-2. **Switch.** The copy prints the change to make and the next step; it does not edit `factory.config.json`. Set `"store": { "type": "sqlite" }` there, run `npm run migrate`, then start the factory.
+2. **Switch.** The copy prints the change to make and the next step; it does not edit `factory.config.json`. Make sure it has `"store": { "type": "sqlite" }`, run `npm run migrate`, then start the factory.
 
 The copy is removed with the `mysql` plugin in its follow-up removal.
 
@@ -59,7 +60,6 @@ The copy is removed with the `mysql` plugin in its follow-up removal.
 - Node.js 22.13 or newer, and git
 - Claude Code installed (`claude --version`)
 - A Claude Pro / Max / Team / Enterprise plan
-- For a MySQL store: MySQL 8+ running locally, and an admin login that the `mysql` client can use (`~/.my.cnf`, or it asks for the root password). For SQLite, answer `sqlite` at setup's Store step and skip this
 - With GitHub sync on: write access to the GitHub repository the factory works on (set in `factory.config.json`, default `seonWKim/software-factory`)
 - `ANTHROPIC_API_KEY` **not** set in your shell. If it is, it overrides the subscription token: `unset ANTHROPIC_API_KEY`
 
@@ -67,16 +67,15 @@ The copy is removed with the `mysql` plugin in its follow-up removal.
 
 | Step | Automated | You do |
 |---|---|---|
-| 1. Store | Asks `sqlite` (one machine, no server) or `mysql` (a shared database for a team). Shows a change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes | Press Enter for the default (`sqlite` on a new file) |
-| 2. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`store`, `plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
-| 3. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository, with an empty line for each secret the selected plugins need | Press Enter |
-| 4. Secrets | Lists the secrets the selected plugins need, then asks for each missing one with hidden input and writes it to the secret file. The model credential is `CLAUDE_CODE_OAUTH_TOKEN`; with GitHub on, `GITHUB_APP_ID` (App) or `GITHUB_TOKEN` (token, with the settings below); with Slack on, its two tokens. `MYSQL_PASSWORD` is the Database step's. With nothing missing it asks whether to replace one | For the model credential, run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once). Paste each at its prompt |
-| 5. Database | SQLite: creates or updates the store under the state folder. MySQL: creates the `software_factory` database and the factory's own MySQL user with a generated password, written to the secret file | Type the MySQL root password if the `mysql` client asks. On a new MySQL database, run `npm run migrate` when the step says so, then `npm run setup` again (it continues here) |
-| 6. You | Asks your display name (prefilled from git `user.name`) and stores it once against your ID; makes you the local owner if there is none yet | Type your name or press Enter. Your ID stays `cli_user`, else `local:<git user.email>`, else `local:<OS user>` |
-| 7. Mode | Asks `manual` or `auto` and `auto_merge_max_tier` (0 to 3; 0 merges nothing) and sets a changed one through `factory settings set`. Runtime settings, not file keys | Press Enter to keep the current ones |
-| 8. Setup of the selected plugins | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create. Nothing to do with GitHub off | Press Enter |
-| 9. Checks | Runs the `doctor` checks and marks each `✓`, `!` (warning) or `✗`: file permissions, credentials present, `ANTHROPIC_API_KEY` not set, claude CLI, database connection, push access, intake label; warns on a token that never expires and on each missing status label. Each `✗` line says how to fix it | Fix any `✗` line and rerun: setup continues from this step |
-| 10. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
+| 1. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
+| 2. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository, with an empty line for each secret the selected plugins need | Press Enter |
+| 3. Secrets | Lists the secrets the selected plugins need, then asks for each missing one with hidden input and writes it to the secret file. The model credential is `CLAUDE_CODE_OAUTH_TOKEN`; with GitHub on, `GITHUB_APP_ID` (App) or `GITHUB_TOKEN` (token, with the settings below); with Slack on, its two tokens. With nothing missing it asks whether to replace one | For the model credential, run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once). Paste each at its prompt |
+| 4. Database | Creates or updates the SQLite store under the state folder (the only store: a `mysql` store in `factory.config.json` fails at startup with a line naming `"store": { "type": "sqlite" }`) | Press Enter |
+| 5. You | Asks your display name (prefilled from git `user.name`) and stores it once against your ID; makes you the local owner if there is none yet | Type your name or press Enter. Your ID stays `cli_user`, else `local:<git user.email>`, else `local:<OS user>` |
+| 6. Mode | Asks `manual` or `auto` and `auto_merge_max_tier` (0 to 3; 0 merges nothing) and sets a changed one through `factory settings set`. Runtime settings, not file keys | Press Enter to keep the current ones |
+| 7. Setup of the selected plugins | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create. Nothing to do with GitHub off | Press Enter |
+| 8. Checks | Runs the `doctor` checks and marks each `✓`, `!` (warning) or `✗`: file permissions, credentials present, `ANTHROPIC_API_KEY` not set, claude CLI, push access, intake label; warns on a token that never expires and on each missing status label. Each `✗` line says how to fix it | Fix any `✗` line and rerun: setup continues from this step |
+| 9. Canary | Asks, then runs a real agent told to find a planted fake secret. It must not find it | Answer `Y`. If it fails, **do not run the factory**: revoke the GitHub token |
 
 Tokens never appear on screen, in shell history, in command arguments, or in the repository. Only the factory's own tools read the secret file; agents can't (guards G1–G6, `docs/architecture.md` §5).
 
@@ -302,7 +301,7 @@ The checked-in config declares both store schemas (SQLite and MySQL) and both do
 
 ### CI and branch protection
 
-`.github/workflows/test.yml` runs on every pull request and every push to `main`. Job `test`: `npm ci`, `npm run typecheck`, `npm test`. Job `test-mysql`: starts a `mysql:8` service and runs `npm test` with `SF_TEST_MYSQL_URL` set, so the MySQL store tests run too. No secret is needed.
+`.github/workflows/test.yml` runs on every pull request and every push to `main`. Job `test`: `npm ci`, `npm run typecheck`, `npm test`. No secret is needed. There is no MySQL job: the store is SQLite (`docs/design/05-coordination.md`).
 
 The factory waits for a PR's checks before it posts "A human merge is required": while any check runs, the item stays in review (`blocked_on: ci`, `checks_pending`) and the factory looks again every `poll_interval_ms`; a failed check sends the item back to implement; when every check passed it moves to `merge_pending`. A PR with no checks at all counts as passed.
 
@@ -310,12 +309,12 @@ Once, after the workflow has run at least once on GitHub, make the `test` check 
 
 1. GitHub → the repository → Settings → Branches (or Rules → Rulesets) → Add branch protection rule for `main`.
 2. Turn on **Require status checks to pass before merging** and **Require branches to be up to date before merging**.
-3. In the search box, add the status check `test` (and `test-mysql` if you want the MySQL tests required too).
+3. In the search box, add the status check `test`.
 4. Save.
 
 ### Checks before push
 
-Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL tests skip themselves before push and the PR body says so; CI's `test-mysql` job still runs them after the PR exists.
+Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so; CI has no MySQL job, so they run only where a test database is selected (below).
 
 ### Local test MySQL
 
@@ -334,7 +333,7 @@ To run the MySQL tests before push too, give the factory a test-only MySQL user 
    | Grant | Needed by | Without it |
    |---|---|---|
    | `ALL` on ``sf\_test\_%``.* (the grant above) | every MySQL test: each makes and drops its own `sf_test_*` database | the MySQL tests fail |
-   | Global `CREATE USER` with `GRANT OPTION` (an admin such as CI's `root`; never give it to `sf_test`) | only "dev, worker, controller, status, ui and golden add exit non-zero…" in `tests/mysql-migrations.test.ts`, which makes a throwaway `sf_e2e_*` user | the test checks first, creates nothing and skips, with a message naming `CREATE USER`, the test user and this file; CI's `test-mysql` job (root) still runs it |
+   | Global `CREATE USER` with `GRANT OPTION` (an admin such as CI's `root`; never give it to `sf_test`) | only "dev, worker, controller, status, ui and golden add exit non-zero…" in `tests/mysql-migrations.test.ts`, which makes a throwaway `sf_e2e_*` user | the test checks first, creates nothing and skips, with a message naming `CREATE USER`, the test user and this file |
 
 2. Put its admin URL in the secret file, outside the repository (`~/.config/software-factory/.env`, mode 600; never in `factory.config.json` or any file in the repository):
 
@@ -348,7 +347,6 @@ To run the MySQL tests before push too, give the factory a test-only MySQL user 
 
 What it exposes: the check commands run code the agent wrote, with `SF_TEST_MYSQL_URL` in their environment, so that code can read this user's password while the checks run. That is why the user gets only the grants above. A run that crashes before it finishes can leave an `sf_test_*` database behind; nothing sweeps them yet. List them with `SHOW DATABASES LIKE 'sf\_test\_%';` and drop them by hand.
 
-For `npm run test:mysql` on your own machine, the same URL can go in `.factory/test-mysql.url` (ignored by git).
 
 ## Run the factory on your project
 
@@ -389,11 +387,10 @@ Use:
 | Check that the configured LLM provider answers (two small real calls) | `npm run factory -- llm-check` (or `doctor --llm`) |
 | GitHub token expired or about to | `npm run setup -- --rotate-github` |
 | Claude token replaced | `npm run setup -- --rotate-claude` |
-| New MySQL password for the factory user | `npm run setup -- --rotate-mysql` |
-| MySQL: after setup creates the database, and after an update that adds a file in `migrations/mysql/` (the factory refuses to start until then; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. It drains only `factory dev`: stop any `factory controller` or `factory worker` you started yourself before you migrate, so no old process writes meanwhile. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
-| MySQL: see the schema state and the pending steps | `npm run migrate -- --status` |
-| MySQL: see what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
-| MySQL: copy the store into SQLite before switching to `sqlite` (factory stopped; see [Move a MySQL store to SQLite](#move-a-mysql-store-to-sqlite-copy-then-switch)) | `npm run migrate -- --copy-from-mysql` (`--dry-run` lists, `--replace` backs up an existing file) |
+| After an update that adds a breaking migration or a data step (`npm run migrate -- --status` lists them; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. It drains only `factory dev`: stop any `factory controller` or `factory worker` you started yourself before you migrate, so no old process writes meanwhile. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
+| See the pending breaking migrations and data steps | `npm run migrate -- --status` |
+| See what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
+| Move a MySQL store's data into SQLite (stop the factory, copy, then switch the config; see [Move a MySQL store to SQLite](#move-a-mysql-store-to-sqlite-copy-then-switch)) | `npm run migrate -- --copy-from-mysql` (`--dry-run` lists, `--replace` backs up an existing file, `--mysql-host`/`--mysql-port`/`--mysql-database`/`--mysql-user` name the server) |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
 | File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
@@ -402,7 +399,7 @@ Use:
 
 ### Status page
 
-`npm run factory -- dev` serves the factory app at <http://127.0.0.1:4310/> (under the checked-in `git-worktree` updater it runs the page as a child and swaps it on each new revision; with `plugins.updater: none`, start it yourself with `npm run factory -- ui`). It redirects to `/app/`; the port is `ui.port` in `factory.config.json`. Pages: Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue, Health, Failures, Settings (the mode switch and runtime settings), Users (user IDs and roles, the local owner only) and Data. The older server-rendered page described below is at <http://127.0.0.1:4310/classic>. The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. Each item page lists the commands that apply to it now and a Merge button once its review passed (a local change through the merge queue, a PR at its reviewed head). It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (the MySQL password, and known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
+`npm run factory -- dev` serves the factory app at <http://127.0.0.1:4310/> (under the checked-in `git-worktree` updater it runs the page as a child and swaps it on each new revision; with `plugins.updater: none`, start it yourself with `npm run factory -- ui`). It redirects to `/app/`; the port is `ui.port` in `factory.config.json`. Pages: Floor (what needs you, what runs, the queue), Work items with a page per item, Workers, Queue, Health, Failures, Settings (the mode switch and runtime settings), Users (user IDs and roles, the local owner only) and Data. The older server-rendered page described below is at <http://127.0.0.1:4310/classic>. The top shows what the factory process is doing, what runs now, the queue and any paused runs. Then comes one list of work items, most urgent first, each with a short reason badge; items that wait for you also say what to do next (a link to the exact comment or PR and the command to type there). Health, totals and cost come last; `/items/<id>` shows one item's timeline and runs. It updates itself every 5 seconds without losing your scroll, open details or search text, pauses while the tab is hidden, and has a Refresh link when JavaScript is off. Each item page lists the commands that apply to it now and a Merge button once its review passed (a local change through the merge queue, a PR at its reviewed head). It listens on 127.0.0.1 only and answers only requests whose Host is `127.0.0.1` or `localhost`. It starts no controller or worker, so run it beside `npm run factory -- dev`. It reads the secret file like the other commands (known secret values for the egress scan); a field that looks like a secret shows `[withheld: <rule>]` instead of its text, and search can't find it.
 
 **Commands from the page.** The page sends item commands as the same user the CLI uses on this machine (`cli_user`, else your git `user.email`, else your OS login), with no setup; the item page shows "Acting as <user>". To act as another user, set `ui.user_id` in `factory.config.json` to a factory user ID (the ID the factory knows you by, e.g. `github:<numeric id>`; never a display name), and restart `npm run factory -- ui`:
 

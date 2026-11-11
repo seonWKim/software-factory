@@ -26,7 +26,6 @@ import { EnvFileSecretStore } from "../src/impl/secrets/env-file-secret-store.js
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
@@ -73,7 +72,7 @@ type Ctor = abstract new (...args: never[]) => unknown;
  * are covered by the property tests over every discovered descriptor, so a new plugin edits no test here.
  */
 const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
-  store: { mysql: SqlFactoryStore },
+  store: { sqlite: SqlFactoryStore },
   sandbox: { noop: NoOpSandbox },
   runner: { "claude-code": ClaudeCodeRunner },
   llm: { "claude-cli": ClaudeCliLLMProvider },
@@ -126,7 +125,7 @@ function pathWithFakeCaffeinate(): string {
 }
 
 /** A throwaway repo root with its own config, prompts, state dir and secret file. */
-function root(config: Record<string, unknown>, secrets = "MYSQL_PASSWORD=pw\nGITHUB_TOKEN=gh\n"): string {
+function root(config: Record<string, unknown>, secrets = "GITHUB_TOKEN=gh\n"): string {
   const dir = mkdtempSync(join(tmpdir(), "sf-plugins-"));
   mkdirSync(join(dir, "prompts"));
   for (const p of ["triage", "implement", "review", "resolve"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
@@ -178,7 +177,7 @@ describe("plugin registry: defaults", () => {
     vi.stubEnv("PATH", pathWithFakeCaffeinate());
     const loaded = await loadConfig(root(withoutPlugins()), { platform: "darwin" });
     expect(loaded.plugins).toEqual({
-      store: "mysql",
+      store: "sqlite",
       sandbox: "noop",
       runner: "claude-code",
       llm: "claude-cli",
@@ -210,7 +209,7 @@ describe("plugin registry: defaults", () => {
       if (kind === "github_auth") expect((x as unknown as GitHubAccess).api).toBeInstanceOf(GitHubClient);
       const made = kind === "github_auth" ? (x as unknown as GitHubAccess).credentials : x;
       expect(made, `${kind}=${name}`).toBeInstanceOf(EXPECTED[kind][name]);
-      if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(MysqlDriver);
+      if (kind === "store") expect((x as unknown as { db: unknown }).db).toBeInstanceOf(SqliteDriver);
       await closeIfStore(kind, x);
     }
     await (ctx.store as FactoryStore).close();
@@ -524,13 +523,6 @@ describe("plugin registry: existing config keys keep working", () => {
   it("no store block still means sqlite", async () => {
     const { store: _, ...rest } = REAL;
     expect((await loadConfig(root(rest))).plugins.store).toBe("sqlite");
-  });
-
-  it("MYSQL_* settings in the secret file override the store block", async () => {
-    const loaded = await loadConfig(
-      root(REAL, "MYSQL_HOST=db.internal\nMYSQL_PORT=3307\nMYSQL_DATABASE=sf_other\nMYSQL_USER=sf_user\nMYSQL_PASSWORD=pw\n"),
-    );
-    expect(loaded.store).toEqual({ type: "mysql", host: "db.internal", port: 3307, database: "sf_other", user: "sf_user" });
   });
 
   it("local commands get the local auth plugin whatever auth selects for GitHub; the per-origin form names both", async () => {
