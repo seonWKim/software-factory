@@ -7,7 +7,7 @@ import {
   runLocalCli,
 } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
-import { COMMAND_TABLE, cliUsageOf } from "../src/core/command-table.js";
+import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
 import { helpReply, itemCommandState, refusalText, specNotWaiting } from "../src/core/commands.js";
 import { VERDICT_USAGE } from "../src/core/verdict.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
@@ -91,9 +91,12 @@ describe("parseLocalCliArgs", () => {
     }
   });
 
-  it("the top-level words are the first word of every task, item and users command in the command table", () => {
-    const local = COMMAND_TABLE.filter((c) => c.group !== "settings");
+  it("the top-level words are the first word of every task, item and users command in the command table, `confirm` among them", () => {
+    // The settings handler takes its own words; the sentence form takes any word no handler claims (src/main.ts).
+    const local = COMMAND_TABLE.filter((c) => c.group !== "settings" && c.group !== "sentence");
     expect([...new Set(local.map((c) => c.name.split(" ")[0]))]).toEqual([...CLI_TOP_WORDS]);
+    expect(CLI_TOP_WORDS).toContain("confirm");
+    expect(CLI_TOP_WORDS).not.toContain(SENTENCE_FORM);
   });
 });
 

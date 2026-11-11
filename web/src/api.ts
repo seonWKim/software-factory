@@ -251,6 +251,8 @@ export interface ItemDetail {
   spec?: WaitingSpec | null;
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
+  /** The item's pending proposals (src/ui/commands.ts itemProposals), oldest first. */
+  proposals?: ProposalView[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
 }
@@ -339,6 +341,13 @@ export interface ItemCommand {
   allowed: boolean;
   /** Why not, in the controller's refusal words; null when allowed. */
   reason: string | null;
+}
+
+/** A stored proposal with its pending commands, each as its typed line and the item it is for. */
+export interface ProposalView {
+  id: string;
+  created_at: string;
+  commands: { index: number; work_item_id: string; line: string }[];
 }
 
 /** One app command request: `handled_at` null while the controller has not applied or refused it. */
@@ -653,10 +662,14 @@ export async function postSettings(token: string, body: SettingsWrite): Promise<
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
-/** POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text. 202 → the request's seq. */
-export async function postCommand(token: string, id: string, command: string, note: string): Promise<CommandResult> {
+/**
+ * POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text; a proposal's Confirm all or
+ * Cancel sends `{ command, proposal }` instead. 202 → the request's seq.
+ */
+export async function postCommand(token: string, id: string, command: string, note: string, proposal?: string): Promise<CommandResult> {
   const text = note.trim();
-  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, text ? { command, note: text } : { command });
+  const body = proposal !== undefined ? { command, proposal } : text ? { command, note: text } : { command };
+  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, body);
   if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
