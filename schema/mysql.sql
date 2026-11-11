@@ -448,6 +448,21 @@ CREATE TABLE `controller_claim_decisions` (
   CONSTRAINT `controller_claim_decisions_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `controller_command_proposals` (
+  `proposal_id` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `idx` int NOT NULL,
+  `work_item_id` varchar(64) COLLATE utf8mb4_bin NOT NULL,
+  `command` varchar(32) COLLATE utf8mb4_bin NOT NULL,
+  `args` text COLLATE utf8mb4_bin NOT NULL,
+  `author_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `status` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `answered_by` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
+  `refusal` text COLLATE utf8mb4_bin,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `answered_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  PRIMARY KEY (`proposal_id`,`idx`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `controller_dependency_edges` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `work_item_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,

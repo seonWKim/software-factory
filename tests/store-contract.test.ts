@@ -2546,6 +2546,42 @@ describe.each(BACKENDS)("FactoryStore contract: $name", ({ name, make: makeBacke
     });
   });
 
+  describe("command proposals (SQLite 43, MySQL 0044)", () => {
+    const row = (idx: number, over: Partial<{ proposal_id: string; args: string }> = {}) => ({
+      proposal_id: over.proposal_id ?? "prop_a", idx, work_item_id: "wi_1" as WorkItemId, command: "approve" as const,
+      args: over.args ?? "", author_id: "slack:U0ALICE",
+    });
+
+    it("stores one pending row per (proposal, index); the same rows again write nothing new", async () => {
+      const { store, clock } = await make();
+      expect(await store.recordCommandProposals([row(0, { args: "ship it" }), row(1)])).toBe(2);
+      expect(await store.recordCommandProposals([row(0, { args: "changed" }), row(1)])).toBe(0);
+      expect(await store.listCommandProposals("prop_a")).toEqual([
+        { ...row(0, { args: "ship it" }), status: "pending", answered_by: null, refusal: null, created_at: clock.now().toISOString(), answered_at: null },
+        { ...row(1), status: "pending", answered_by: null, refusal: null, created_at: clock.now().toISOString(), answered_at: null },
+      ]);
+      // A new index of the same proposal, and another proposal, are stored beside them.
+      expect(await store.recordCommandProposals([row(1), row(2), row(0, { proposal_id: "prop_b" })])).toBe(2);
+      expect((await store.listCommandProposals("prop_a")).map((r) => r.idx)).toEqual([0, 1, 2]);
+      expect(await store.listCommandProposals("prop_none")).toEqual([]);
+    });
+
+    it("an answer is conditional on the stored status: a second claim of a row changes nothing", async () => {
+      const { store, clock } = await make();
+      await store.recordCommandProposals([row(0), row(1)]);
+      clock.advance(1000);
+      const claim = { proposal_id: "prop_a", idx: 0, from: "pending" as const, to: "applied" as const, answered_by: "github:1" };
+      expect(await store.answerCommandProposal(claim)).toBe(true);
+      expect(await store.answerCommandProposal({ ...claim, answered_by: "github:2" })).toBe(false);
+      expect(await store.answerCommandProposal({ ...claim, from: "applied", to: "refused", refusal: "the item is closed" })).toBe(true);
+      expect(await store.answerCommandProposal({ ...claim, idx: 1, to: "cancelled" })).toBe(true);
+      expect((await store.listCommandProposals("prop_a")).map((r) => [r.idx, r.status, r.answered_by, r.refusal, r.answered_at])).toEqual([
+        [0, "refused", "github:1", "the item is closed", clock.now().toISOString()],
+        [1, "cancelled", "github:1", null, clock.now().toISOString()],
+      ]);
+    });
+  });
+
   describe("app command requests (migration 23)", () => {
     const owner = "github:1" as UserId;
     const req = (key: string, over: { command?: string; args?: Record<string, unknown> } = {}) => ({
