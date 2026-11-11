@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +7,6 @@ import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from ".
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
-import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { ARCHIVE_ONLY, RENAMES } from "../src/state/migrations/20261108T1300-state-prefix-tables.migration.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
@@ -2579,7 +2578,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
-  describe("command proposals (SQLite 43, MySQL 0044)", () => {
+  describe("command proposals (SQLite 43)", () => {
     const row = (idx: number, over: Partial<{ proposal_id: string; args: string }> = {}) => ({
       proposal_id: over.proposal_id ?? "prop_a", idx, work_item_id: "wi_1" as WorkItemId, command: "approve" as const,
       args: over.args ?? "", author_id: "slack:U0ALICE",
@@ -2799,47 +2798,6 @@ describe("migration 19 on an existing SQLite database", () => {
   });
 });
 
-describe("MySQL step 19 (worker-processes)", () => {
-  const file = "0019-worker-processes.sql";
-  const sql = () => readFileSync(join(STEPS_DIR, file), "utf8");
-
-  it("is the repo's step after 18, a .sql file", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "worker-processes")).toMatchObject({ number: 19, from: 18, kind: "sql", file });
-  });
-
-  it("creates the same columns as SQLite migration 19, idempotently (IF NOT EXISTS)", () => {
-    const columns = (text: string) =>
-      [...text.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|CHAR)/gm)].map((m) => m[1]).sort();
-    const sqlite = MIGRATIONS[18]!;
-    expect(sqlite).toContain("CREATE TABLE worker_processes");
-    expect(columns(sql())).toEqual(columns(sqlite));
-    expect(columns(sqlite)).toEqual(["busy", "host", "index_base", "max_slots", "pid", "process_id", "reported_at", "slots", "started_at"]);
-    expect(sql()).toContain("CREATE TABLE IF NOT EXISTS worker_processes");
-  });
-});
-
-describe("MySQL steps 33 and 34 (edge and item source_updated_at)", () => {
-  const steps = () => readSteps(STEPS_DIR, INLINE_STEPS);
-  const sql = (file: string) => readFileSync(join(STEPS_DIR, file), "utf8");
-
-  it("are the repo's steps after 32, in order, .sql files", () => {
-    expect(steps().find((st) => st.name === "edge-source-updated-at")).toMatchObject({ number: 33, from: 32, kind: "sql" });
-    expect(steps().find((st) => st.name === "item-edges-source-updated-at")).toMatchObject({ number: 34, from: 33, kind: "sql" });
-  });
-
-  it("add the same columns as SQLite migrations 33 and 34, each in one ALTER (safe to rerun after a failure)", () => {
-    const added = (text: string) => [...text.matchAll(/ALTER TABLE (\w+) ADD COLUMN (\w+)/g)].map((m) => `${m[1]}.${m[2]}`);
-    expect(added(MIGRATIONS[32]!)).toEqual(["dependency_edges.source_updated_at"]);
-    expect(added(MIGRATIONS[33]!)).toEqual(["work_items.edges_source_updated_at"]);
-    expect(added(sql("0033-edge-source-updated-at.sql"))).toEqual(added(MIGRATIONS[32]!));
-    expect(added(sql("0034-item-edges-source-updated-at.sql"))).toEqual(added(MIGRATIONS[33]!));
-    for (const f of ["0033-edge-source-updated-at.sql", "0034-item-edges-source-updated-at.sql"]) {
-      const statements = sql(f).split("\n").filter((l) => l.trim() && !l.startsWith("--"));
-      expect(statements, f).toHaveLength(1);
-    }
-  });
-});
-
 describe("migration 28 on an existing SQLite database", () => {
   it("adds host_sleeps and keeps every earlier row", async () => {
     const dir = mkdtempSync(join(tmpdir(), "sf-mig28-"));
@@ -2869,25 +2827,6 @@ describe("migration 28 on an existing SQLite database", () => {
     } finally {
       await store.close();
     }
-  });
-});
-
-describe("MySQL step 28 (host-sleeps)", () => {
-  const file = "0028-host-sleeps.sql";
-  const sql = () => readFileSync(join(STEPS_DIR, file), "utf8");
-
-  it("is the repo's step after 27, a .sql file", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "host-sleeps")).toMatchObject({ number: 28, from: 27, kind: "sql", file });
-  });
-
-  it("creates the same columns as SQLite migration 28, idempotently (IF NOT EXISTS)", () => {
-    const columns = (text: string) =>
-      [...text.matchAll(/^\s+([a-z_]+)\s+(?:TEXT|INTEGER|VARCHAR|INT|BIGINT|CHAR)/gm)].map((m) => m[1]).sort();
-    const sqlite = MIGRATIONS[27]!;
-    expect(sqlite).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
-    expect(columns(sql())).toEqual(columns(sqlite));
-    expect(columns(sqlite)).toEqual(["gap_ms", "run_id", "woke_at", "worker_id"]);
-    expect(sql()).toContain("CREATE TABLE IF NOT EXISTS host_sleeps");
   });
 });
 
@@ -2941,22 +2880,9 @@ describe("migration 35 (change fields) on an existing SQLite database", () => {
 
 });
 
-describe("MySQL step 35 (change-fields)", () => {
-  it("is a .ts data step right after the SQLite migration's starting state", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "change-fields")).toMatchObject({
-      number: CHANGE_MIGRATION, from: CHANGE_MIGRATION - 1, kind: "ts",
-    });
-  });
-});
-
 describe("migration 40 (sync leases, forge budget, thread actor)", () => {
   /** Found by what it creates, so a renumber at merge needs no edit. */
   const STEP = MIGRATIONS.findIndex((m) => m.includes("CREATE TABLE IF NOT EXISTS sync_leases")) + 1;
-  const file = "0040-sync-lease.sql";
-  const columns = (text: string, table: string) => {
-    const body = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\s*\\)`).exec(text)![1]!;
-    return [...body.matchAll(/^\s+`?([a-z_]+)`?\s+(?:TEXT|INTEGER|VARCHAR|INT|BIGINT|CHAR)/gm)].map((m) => m[1]).sort();
-  };
 
   it("SQLite: adds both tables and the actor column to an existing database, keeping its thread entries", async () => {
     expect(STEP).toBeGreaterThan(0);
@@ -2974,11 +2900,4 @@ describe("migration 40 (sync leases, forge budget, thread actor)", () => {
     raw.close();
   });
 
-  it("MySQL: one step right after the one before it, with the same tables and columns as the SQLite migration", () => {
-    expect(readSteps(STEPS_DIR, INLINE_STEPS).find((st) => st.name === "sync-lease")).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file });
-    const sql = readFileSync(join(STEPS_DIR, file), "utf8");
-    for (const t of ["sync_leases", "forge_budget"]) expect(columns(sql, t)).toEqual(columns(MIGRATIONS[STEP - 1]!, t));
-    expect(sql).toContain("ALTER TABLE item_thread ADD COLUMN actor ");
-    expect(MIGRATIONS[STEP - 1]).toContain("ALTER TABLE item_thread ADD COLUMN actor ");
-  });
 });
