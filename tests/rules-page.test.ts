@@ -32,6 +32,9 @@ const HOST = "127.0.0.1:4310";
 const ORIGIN = `http://${HOST}`;
 const OWNER = "local:owner@example.com" as UserId;
 const OTHER = "local:other@example.com" as UserId;
+// Each stub CLI call starts a node process (about half a second on a loaded CI runner), and a test makes up to four,
+// beside a store and a run: more than the 5 s default leaves, as in the other tests that start processes.
+const SPAWNS = { timeout: 30_000 };
 
 /**
  * A temp agents home whose `bin/tacit list` prints the entries of `<root>/ledger.json` in the asked state, and whose
@@ -132,7 +135,7 @@ async function nextRunPrompt(tacit: TacitLedger): Promise<string> {
   return runner.specs[0]!.prompt;
 }
 
-describe("Rules page: GET /api/v1/rules", () => {
+describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
   it("lists each pending entry's kind, evidence lines and rule draft, read through TacitLedger.list", async () => {
     const s = stubHome([...PENDING, { id: "old", state: "promoted", rule_draft: "x" }]);
     const v = await (await page(s.ledger)).get();
@@ -167,7 +170,7 @@ describe("Rules page: GET /api/v1/rules", () => {
   });
 });
 
-describe("Rules page: POST /api/v1/rules/verdict", () => {
+describe("Rules page: POST /api/v1/rules/verdict", SPAWNS, () => {
   it("promote, reject and hold reach the fake home's CLI through TacitLedger.verdict with the reason and the owner's user ID", async () => {
     const s = stubHome(PENDING);
     const p = await page(s.ledger);
@@ -203,7 +206,7 @@ describe("Rules page: POST /api/v1/rules/verdict", () => {
   });
 });
 
-describe("learned rules in the prompt", () => {
+describe("learned rules in the prompt", SPAWNS, () => {
   it("a rule promoted through the page appears in the next run's prompt under its own heading, in the owner's wording", async () => {
     const s = stubHome(PENDING);
     expect(await nextRunPrompt(s.ledger)).not.toContain("## Learned rules");
