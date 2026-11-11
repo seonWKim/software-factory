@@ -123,8 +123,7 @@ async function implement(
       const out = parseImplement(result.output);
       if (!out.ok) throw new RunFailure("invalid_output", out.error, false, { output_tail: tail(result.transcript) });
       await w.distrustAgentGit(handle, dirs);
-      // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with
-      // the run folder; none is kept on a wip branch.
+      // The agent asked for a human (data, not a failure): no sync, no gates, no push, no PR. Its commits go with the run folder; none is kept on a wip branch.
       if (out.value.needs_human) return { needs_human: out.value.needs_human };
       // A criterion the spec does not let it meet (issue #222): the run fails with the reason before any commit
       // count, sync or push, and the controller starts a spec revision. Its commits go with the run folder.
@@ -162,10 +161,13 @@ async function implement(
   const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
   const passing = [...conflicts, ...renumbered.filter((r) => isCovered(r.from, item.allowed_paths)).map((r) => r.to)];
   const fix: FixContext = { gitDir, dirs, model, start, baseSha: sync.baseSha };
-  const beforeChecks = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
+  let beforeFix: string | null = null; // HEAD before the first before_finish fix step, so its commits are counted
   // before_finish pack checks (design §4, issue #494): a refusal sends the agent back up to the check's retries, then
   // fails the run; a pass skips nothing: the gates, the checks and the gates again on a fix all still run below.
-  const packFixed = await w.packChecks("before_finish", run, item, handle, signal, (r) => fixStep(w, run, item, handle, signal, fix, r));
+  const packFixed = await w.packChecks("before_finish", run, item, handle, signal, async (r) => {
+    beforeFix ??= (await w.git(handle, ["rev-parse", "HEAD"])).trim();
+    await fixStep(w, run, item, handle, signal, fix, r);
+  });
   const prePush = await prePushGates(w, run, item, handle, sync.baseSha, passing);
   let floor = prePush.floor;
   const paths = prePush.paths;
@@ -187,6 +189,7 @@ async function implement(
   };
   // The pre-push checks (design §4, decided 2026-11-03): after sync and the gates, before any handoff row or push.
   let checked: { results: CheckResult[]; fixed: boolean };
+  const beforeChecks = beforeFix ?? (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   // The fix steps' commits (the pack checks' and the checks') count like the implementer's (handoff rows include them too).
   const countFixCommits = async () => {
     work.commits += Number((await w.git(handle, ["rev-list", "--count", `${beforeChecks}..HEAD`])).trim()) || 0;
@@ -377,8 +380,7 @@ async function keepStopped(
 }
 
 /**
- * Commits the worktree's changes (tracked and untracked, not ignored) as one WIP commit, with trusted git calls
- * after the agent stopped. True when there were any.
+ * Commits the worktree's changes (tracked and untracked, not ignored) as one WIP commit, with trusted git calls after the agent stopped. True when there were any.
  */
 async function commitWorktree(w: Worker, handle: SandboxHandle, message: string): Promise<boolean> {
   const dirty = (await w.git(handle, ["status", "--porcelain", "-z", "--untracked-files=all"])) !== "";
@@ -513,8 +515,7 @@ async function checkoutClean(w: Worker, handle: SandboxHandle, branch: string, h
 /**
  * A push or PR failure after the agent step (design §5 Restarts): keeps the commits on the forge before the run
  * fails, so the retry needs no agent. A run that resumed from a wip branch names it again and pushes nothing. A
- * failed wip push is only logged: the run fails with its original code, without a wip ref, and is retried as
- * before (a new agent run). Returns the failure to throw.
+ * failed wip push is only logged: the run fails with its original code, without a wip ref, and is retried as before (a new agent run). Returns the failure to throw.
  */
 async function keepWip(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, handle: SandboxHandle, err: unknown, wip: WipRef, resumed: boolean): Promise<RunFailure> {
   const failure = err instanceof RunFailure
@@ -546,8 +547,7 @@ async function keepWip(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
  * (decision changed 2026-11-02): the worker puts the branch back on the implementer's last commit, merges
  * again and runs the resolve prompt, under the same checks. Both failing: `merge_conflict` (nothing pushed,
  * an issue comment). Returns the merged-in base SHA, the one every pre-push check diffs against, and the
- * conflicting files, which the scope gate lets through.
- * Git hooks are off for the merge and the commit: the agent's writable git dir could have planted one.
+ * conflicting files, which the scope gate lets through. Git hooks are off for the merge and the commit: the agent's writable git dir could have planted one.
  */
 async function syncBase(
   w: Worker,
