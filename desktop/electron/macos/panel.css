@@ -1,0 +1,88 @@
+/* The shell's panels follow macOS: system colours and font only, light and dark, no colour values of their own. */
+:root {
+  color-scheme: light dark;
+  font: 13px -apple-system, system-ui, sans-serif;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: Canvas;
+  color: CanvasText;
+}
+.box {
+  height: 100vh;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  -webkit-app-region: drag;
+}
+.box input {
+  -webkit-app-region: no-drag;
+  width: 100%;
+  font-size: 20px;
+  padding: 6px 2px;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: CanvasText;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chips li {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid GrayText;
+  color: CanvasText;
+  font-size: 12px;
+}
+.note {
+  margin: 0;
+  min-height: 1.2em;
+  color: GrayText;
+  font-size: 12px;
+}
+.note.error {
+  color: CanvasText;
+  font-weight: 600;
+}
+.settings {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings h1 {
+  margin: 0;
+  font-size: 15px;
+}
+.settings input {
+  font-size: 15px;
+  padding: 6px 8px;
+  border: 1px solid GrayText;
+  border-radius: 6px;
+  background: Field;
+  color: FieldText;
+}
+.settings input:focus {
+  outline: 2px solid AccentColor;
+  outline-offset: 1px;
+}
+.settings .row {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.settings button {
+  font: inherit;
+  padding: 4px 14px;
+}

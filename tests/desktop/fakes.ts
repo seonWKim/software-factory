@@ -1,4 +1,5 @@
-// Fakes for the desktop shell's tests: an AppShell, a child process and Electron's main-process modules.
+// Fakes for the desktop shell's tests: an AppShell, a child process and Electron's main-process modules (with
+// globalShortcut and ipcMain).
 // Nothing here starts Electron or a real process.
 import { EventEmitter } from "node:events";
 import type { AppShell, ShellStatus } from "../../src/interfaces/app-shell.js";
@@ -11,10 +12,16 @@ export class FakeAppShell implements AppShell {
   visible = false;
   status: ShellStatus = { state: "starting", needsYou: null };
   exited = false;
+  /** The registered shortcuts and what each runs. */
+  readonly shortcuts = new Map<string, () => void>();
   private drain: () => Promise<void> = async () => {};
   private quitting = false;
 
-  constructor(private readonly keepRunningWhenClosed = true) {}
+  /** `taken`: accelerators another app holds, which registerShortcut refuses. */
+  constructor(
+    private readonly keepRunningWhenClosed = true,
+    readonly taken: ReadonlySet<string> = new Set(),
+  ) {}
 
   openWindow(url: string): void {
     if (this.windows.length === 0) this.windows.push(url);
@@ -30,6 +37,14 @@ export class FakeAppShell implements AppShell {
     if (this.quitting) return;
     this.quitting = true;
     void this.drain().finally(() => (this.exited = true));
+  }
+  registerShortcut(accelerator: string, onPress: () => void): boolean {
+    if (this.taken.has(accelerator) || this.shortcuts.has(accelerator)) return false;
+    this.shortcuts.set(accelerator, onPress);
+    return true;
+  }
+  unregisterShortcut(accelerator: string): void {
+    this.shortcuts.delete(accelerator);
   }
   menuText(): string {
     return menuTitle(this.status);
@@ -73,16 +88,24 @@ class Ev {
 
 export class MockWindow extends EventEmitter {
   readonly loads: string[] = [];
-  visible = true;
+  visible: boolean;
+  focused = false;
   destroyed = false;
   openHandler: (() => { action: string }) | null = null;
+  /** The channels sent to the page, in order. */
+  readonly sent: string[] = [];
   readonly webContents = Object.assign(new EventEmitter(), {
     setWindowOpenHandler: (h: () => { action: string }) => {
       this.openHandler = h;
     },
+    send: (channel: string) => {
+      this.sent.push(channel);
+    },
   });
   constructor(readonly options: Record<string, unknown>) {
     super();
+    // As Electron: a window shows on creation unless its options say `show: false`.
+    this.visible = options.show !== false;
   }
   loadURL(url: string): Promise<void> {
     this.loads.push(url);
@@ -93,8 +116,19 @@ export class MockWindow extends EventEmitter {
   }
   hide(): void {
     this.visible = false;
+    this.focused = false;
   }
-  focus(): void {}
+  focus(): void {
+    this.focused = true;
+  }
+  isVisible(): boolean {
+    return this.visible;
+  }
+  /** The window loses the keyboard (the person clicks elsewhere). */
+  blur(): void {
+    this.focused = false;
+    this.emit("blur");
+  }
   isDestroyed(): boolean {
     return this.destroyed;
   }
@@ -131,12 +165,55 @@ export class MockApp extends EventEmitter {
 
 type MenuItem = { label?: string; click?: () => void; accelerator?: string };
 
-/** Electron's app, BrowserWindow, Menu, Tray and nativeImage, as far as the macOS shell uses them. */
+/** Electron's globalShortcut: `taken` holds accelerators another app owns; a string with no key is not an accelerator. */
+export class MockGlobalShortcut {
+  readonly registered = new Map<string, () => void>();
+  readonly taken = new Set<string>();
+  register(accelerator: string, onPress: () => void): boolean {
+    if (!/^(?:[A-Za-z]+\+)*[A-Za-z0-9]+$/.test(accelerator)) throw new Error(`Error processing argument: ${accelerator} is not an accelerator`);
+    if (this.taken.has(accelerator) || this.registered.has(accelerator)) return false;
+    this.registered.set(accelerator, onPress);
+    return true;
+  }
+  isRegistered(accelerator: string): boolean {
+    return this.registered.has(accelerator);
+  }
+  unregister(accelerator: string): void {
+    this.registered.delete(accelerator);
+  }
+  unregisterAll(): void {
+    this.registered.clear();
+  }
+  /** The person presses `accelerator`. */
+  press(accelerator: string): void {
+    this.registered.get(accelerator)?.();
+  }
+}
+
+type Handler = (e: { sender: unknown }, ...args: unknown[]) => unknown;
+
+/** Electron's ipcMain: `invoke` calls a handler as a page's ipcRenderer.invoke would, from `sender`. */
+export class MockIpcMain {
+  readonly handlers = new Map<string, Handler>();
+  handle(channel: string, fn: Handler): void {
+    if (this.handlers.has(channel)) throw new Error(`a second handler for ${channel}`);
+    this.handlers.set(channel, fn);
+  }
+  invoke(channel: string, sender: unknown, ...args: unknown[]): Promise<unknown> {
+    const fn = this.handlers.get(channel);
+    if (!fn) return Promise.reject(new Error(`no handler for ${channel}`));
+    return Promise.resolve(fn({ sender }, ...args));
+  }
+}
+
+/** Electron's app, BrowserWindow, Menu, Tray, nativeImage, globalShortcut and ipcMain, as far as the macOS shell uses them. */
 export function electronMock() {
   const windows: MockWindow[] = [];
   const tray = { title: "", tooltip: "", menu: [] as MenuItem[], made: 0 };
   const app = new MockApp();
   const state = app;
+  const globalShortcut = new MockGlobalShortcut();
+  const ipcMain = new MockIpcMain();
   class BrowserWindow extends MockWindow {
     constructor(options: Record<string, unknown>) {
       super(options);
@@ -163,9 +240,10 @@ export function electronMock() {
     Tray,
     Menu: { buildFromTemplate: (t: MenuItem[]) => t },
     nativeImage: { createEmpty: () => ({}) },
+    globalShortcut,
   };
   const menuItem = (label: string): MenuItem => tray.menu.find((i) => i.label === label)!;
-  return { electron, app, windows, tray, state, menuItem, exited: () => state.exitCode !== null };
+  return { electron: { ...electron, ipcMain }, app, windows, tray, state, menuItem, globalShortcut, ipcMain, exited: () => state.exitCode !== null };
 }
 
 /** Lets pending promise callbacks run. */

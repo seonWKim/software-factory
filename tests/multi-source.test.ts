@@ -131,7 +131,7 @@ describe("multi-source controller: per-item routing", () => {
     await f.controller.tickIntake();
     await finishAll(f, "implement", { pr_number: 42 });
 
-    expect((await f.store.getWorkItem(slItem.id))!.pr_number).toBe(42);
+    expect((await f.store.getWorkItem(slItem.id))!.change_ref).toBe("42");
     expect(f.sl.statusCalls.filter((c) => c.change_ref !== null)).toEqual([]);
     expect(f.forge.statusCalls.filter((c) => c.source.id === slackRef(1).id)).toEqual([
       { source: slackRef(1), status: "in_review", pr_number: 42 },

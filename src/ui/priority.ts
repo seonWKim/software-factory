@@ -1,17 +1,19 @@
 // Ranking for the status page (design §9). Pure: no store, no clock, no I/O. Every open work item lands in
-// exactly one of eight levels, in the order below; within a level, more dependents first, then the oldest
+// exactly one of nine levels, in the order below; within a level, more dependents first, then the oldest
 // wait, then the higher tier. Badge texts are fixed words and numbers, never free text from the store.
 
+import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
 import type { BlockedOn, CloseReason, RunKind, Stage, Tier } from "../core/types.js";
 
 export const LEVELS = [
   "ready_to_merge",
   "needs_approval",
-  "needs_human",
+  "needs_you",
+  "needs_triage",
   "stuck",
   "running",
   "queued",
-  "waiting_on_issue",
+  "blocked_by_task",
   "closed",
 ] as const;
 export type Level = (typeof LEVELS)[number];
@@ -19,16 +21,17 @@ export type Level = (typeof LEVELS)[number];
 export const LEVEL_LABELS: Record<Level, string> = {
   ready_to_merge: "Ready to merge",
   needs_approval: "Needs approval",
-  needs_human: "Needs a human",
+  needs_you: "Needs you",
+  needs_triage: "Needs triage",
   stuck: "Stuck",
   running: "Running",
   queued: "Queued",
-  waiting_on_issue: "Waiting on another issue",
+  blocked_by_task: "Blocked by another task",
   closed: "Closed",
 };
 
-/** The levels that wait for a person: "Needs you". */
-export const NEEDS_YOU: readonly Level[] = ["ready_to_merge", "needs_approval", "needs_human"];
+/** The levels that wait for a person ("Needs you" and "Needs triage"); never "Blocked by another task". */
+export const NEEDS_YOU: readonly Level[] = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage"];
 
 /** What the ranking reads about one item. The caller fills it from the store (plus dependency data, later). */
 export interface PriorityInput {
@@ -48,8 +51,17 @@ export interface PriorityInput {
   dependents: number;
   /** Open items this one waits on: a split phase's previous phase, a split parent's open phases. */
   waiting_on: number;
-  /** The issue number this item waits on, when it is exactly one (a held phase's previous phase, one dependency). */
+  /**
+   * The issue number this item waits on, when it is exactly one (a held phase's previous phase, one dependency, the
+   * holder of a coordination hold or a deadlock claim).
+   */
   waiting_on_number?: number | null;
+  /** The latest claim decision on the item's current run is a deadlock (why.ts `deadlocked`). */
+  deadlock?: boolean;
+  /** The item's queued run is held by an unapproved `held` claim decision (why.ts `heldBy`): a coordination hold. */
+  held?: boolean;
+  /** The kind of the run behind an `agent_needs_human` block (core/policy.ts `blockingRunKind`), else null. */
+  asked_by?: RunKind | null;
 }
 
 export interface Ranked<T extends PriorityInput> {
@@ -71,22 +83,34 @@ function staleRun(i: PriorityInput, now: number, lease_ms: number): boolean {
 }
 
 /**
- * The item's level. A running run past its lease is stuck; an open item that waits on nothing (no open item it
- * waits on, not blocked on another item, a person or the budget) and has no queued or running run is stuck too
- * (nothing moves it). An item blocked on `upstream` or `dependency` waits on another item, so it is never stuck;
- * a dependency blocker waits even while its run is queued (issue #310).
+ * The item's level. A person's block: a triage run's ask is "Needs triage", every other one (and the budget check)
+ * "Needs you". Another item's block (a deadlock claim, a dependency hold, a coordination hold, a phase or upstream
+ * hold) is "Blocked by another task", never stuck; a dependency or coordination hold waits even while its run is
+ * queued (issue #310). A running run past its lease is stuck; an open item that waits on nothing and has no queued
+ * or running run is stuck too (nothing moves it).
  */
 export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
   if (i.stage === "CLOSED") return "closed";
   if (i.blocked_on === "human" && i.blocked_reason === "merge_pending") return "ready_to_merge";
   if (i.blocked_on === "human" && i.blocked_reason === "spec_pending") return "needs_approval";
-  if (i.blocked_on === "human" || i.blocked_on === "budget") return "needs_human";
+  if (i.blocked_on === "human" && i.blocked_reason === AGENT_NEEDS_HUMAN && i.asked_by === "triage") return "needs_triage";
+  if (i.blocked_on === "human" || i.blocked_on === "budget") return "needs_you";
+  if (i.deadlock) return "blocked_by_task";
   if (staleRun(i, now.getTime(), lease_ms)) return "stuck";
   if (i.run?.status === "running") return "running";
-  if (i.blocked_on === "dependency") return "waiting_on_issue";
+  if (i.blocked_on === "dependency" || i.held) return "blocked_by_task";
   if (i.run?.status === "queued") return "queued";
-  if (i.waiting_on > 0 || i.blocked_on === "upstream") return "waiting_on_issue";
+  if (i.waiting_on > 0 || i.blocked_on === "upstream") return "blocked_by_task";
   return "stuck";
+}
+
+/** The other item a blocked item waits on, in fixed words and numbers. */
+function blockedBadge(i: PriorityInput): string {
+  const n = i.waiting_on_number;
+  if (i.deadlock) return n ? `deadlock with #${n}` : "deadlock";
+  if (n) return `waits on #${n}`;
+  if (i.waiting_on > 0) return `waits on ${i.waiting_on} ${i.waiting_on === 1 ? "issue" : "issues"}`;
+  return i.held ? "held by another task" : "waits on another issue";
 }
 
 function humanBadge(i: PriorityInput): string {
@@ -107,8 +131,11 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
     case "needs_approval":
       main = "needs approval";
       break;
-    case "needs_human":
+    case "needs_you":
       main = humanBadge(i);
+      break;
+    case "needs_triage":
+      main = "triage asks";
       break;
     case "stuck": {
       const from = staleRun(i, now.getTime(), lease_ms) ? i.run!.heartbeat_at : i.since;
@@ -121,12 +148,8 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
     case "queued":
       main = i.run!.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
       break;
-    case "waiting_on_issue":
-      main = i.waiting_on_number
-        ? `waits on #${i.waiting_on_number}`
-        : i.waiting_on > 0
-          ? `waits on ${i.waiting_on} ${i.waiting_on === 1 ? "issue" : "issues"}`
-          : "waits on another issue";
+    case "blocked_by_task":
+      main = blockedBadge(i);
       break;
     case "closed":
       main = i.close_reason ? `closed: ${i.close_reason.replace(/_/g, " ")}` : "closed";

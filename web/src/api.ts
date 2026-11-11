@@ -388,7 +388,8 @@ export interface SettingRow {
   key: string;
   /** What the key controls, from the settings core module. */
   description: string;
-  kind: "number" | "boolean" | "models" | "json" | "mode";
+  /** `text`: free text (message_style), shown as plain text and sent back as a JSON string. */
+  kind: "number" | "boolean" | "models" | "json" | "mode" | "text";
   value: string;
   source: "override" | "file" | "default";
   file_value: string | null;

@@ -214,8 +214,8 @@ export function FloorPage() {
   );
 }
 
-const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_human", "stuck", "running", "queued", "waiting_on_issue", "closed"] as const;
-const FILTER_LABELS: Record<string, string> = { needs: "Needs you", held: "Held", ...LEVEL_LABELS };
+const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
+const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: "Needs you", held: "Held" };
 
 /** The saved view: the tree unless the browser chose the list. */
 function savedView(): View {
@@ -408,7 +408,7 @@ export function ItemPage({ id }: { id: string }) {
                   {r.kind} <code className="font-mono text-xs break-all text-zinc-600 dark:text-zinc-400">{r.id}</code>
                 </Td>
                 <Td className="tabular-nums">attempt {r.attempt}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "needs_human" : undefined}>{r.status}</Badge></Td>
+                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{r.status}</Badge></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-zinc-700 dark:text-zinc-300">
                   {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
                 </Td>
@@ -623,7 +623,7 @@ export function QueuePage() {
   );
 }
 
-const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "needs_human" };
+const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "stuck" };
 
 function CheckList({ checks }: { checks: Health["checks"] }) {
   if (checks.length === 0) return null;

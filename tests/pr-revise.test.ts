@@ -90,7 +90,7 @@ describe("/revise on a factory PR", () => {
     expect(queued[0]!.input).toEqual({ notes: "rename the flag to --dry-run\nand keep the old one as an alias" });
     const change = (await f.store.listStateChanges(f.it.id)).at(-1)!;
     expect(change).toMatchObject({ reason: "pr_revise_requested", actor: { kind: "user", id: "github:1" } });
-    expect(change.detail).toMatchObject({ comment_id: "900", pr_number: PR });
+    expect(change.detail).toMatchObject({ comment_id: "900", change_ref: String(PR) });
     expect(f.refusals()).toEqual([]);
     // 👀 on the PR comment.
     expect(f.source.reactions).toContainEqual({ source: issueRef(PR), comment_id: "900" });
@@ -253,7 +253,7 @@ describe("a 'Request changes' review on a factory PR", () => {
     expect(queued[0]!.idempotency_key).toBe(`${f.it.id}:implement:l1:r0`);
     const change = (await f.store.listStateChanges(f.it.id)).at(-1)!;
     expect(change).toMatchObject({ reason: "pr_changes_requested", actor: { kind: "user", id: "github:1" } });
-    expect(change.detail).toMatchObject({ review_id: "5001", pr_number: PR });
+    expect(change.detail).toMatchObject({ review_id: "5001", change_ref: String(PR) });
 
     await f.step();
     const prompt = implementPrompts(f).at(-1)!;
@@ -430,7 +430,7 @@ describe("/revise in a Slack thread (issue #481)", () => {
     const change = (await f.store.listStateChanges(f.it.id)).find((c) => c.reason === "pr_revise_requested")!;
     expect(change.changes.stage).toEqual({ from: "REVIEW", to: "RUNNING" });
     expect(change.changes.loop_count).toEqual({ from: 0, to: 1 });
-    expect(change.detail).toMatchObject({ pr_number: PR, feedback: "rename the flag to --dry-run" });
+    expect(change.detail).toMatchObject({ change_ref: String(PR), feedback: "rename the flag to --dry-run" });
     expect(f.refusals()).toEqual([]);
   });
 

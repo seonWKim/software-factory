@@ -14,7 +14,7 @@ import { type ItemDetail, type ItemRow, type MergeCheckView, type MergeReadiness
 // @ts-expect-error -- see above
 import { ItemsTable } from "../web/src/views/common.js";
 // @ts-expect-error -- see above
-import { NeedCommands, VERDICT_PLACEHOLDER, VerdictForm } from "../web/src/views/item-commands.js";
+import { NeedCommands, VERDICT_PLACEHOLDER } from "../web/src/views/item-commands.js";
 // @ts-expect-error -- see above
 import { ItemPage } from "../web/src/views/pages.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -266,7 +266,7 @@ describe("ui app: merge check labels", () => {
 
 // The item page's command buttons (design §9, issue #228), rendered to static markup in the node environment.
 describe("ui app: item commands markup", () => {
-  it("the item page has a button per command, in order; revise and reject open their own forms, the note box is for the rest", () => {
+  it("the item page has a button per command, in order; revise and reject open a dialog, the note box is for the rest", () => {
     const AT = "2026-11-07T00:00:00.000Z";
     const names = ["approve", "revise", "reject"];
     const detail: ItemDetail = {
@@ -290,16 +290,15 @@ describe("ui app: item commands markup", () => {
     // The note box is for approve's note; it no longer names reject or revise.
     expect(html).toMatch(/<textarea aria-label="Note"/);
     expect(html).not.toContain("Reason for reject");
-    // Revise and reject are enabled buttons that open their forms (closed until pressed); approve sends.
+    // Revise and reject are enabled buttons that open a dialog (none until pressed); approve sends.
     const tag = (n: string) => html.match(new RegExp(`<li data-command="${n}"[^>]*><button[^>]*>`))![0];
     for (const n of ["revise", "reject"]) {
       expect(tag(n)).not.toContain(" disabled=\"\"");
-      expect(tag(n)).toContain('aria-expanded="false"');
+      expect(tag(n)).toContain('aria-haspopup="dialog"');
     }
     expect(tag("approve")).not.toContain(" disabled=\"\"");
-    expect(tag("approve")).not.toContain("aria-expanded");
-    expect(html).not.toContain("data-reject-form");
-    expect(html).not.toContain("data-revise-form");
+    expect(tag("approve")).not.toContain("aria-haspopup");
+    expect(html).not.toContain("<dialog");
   });
 });
 
@@ -389,8 +388,8 @@ describe("ui app: the Merge button", () => {
   });
 });
 
-// Needs you's verdict control (issue #513): a button that opens a one-line form, as reject and revise open theirs.
-describe("ui app: the Needs-you verdict control", () => {
+// Needs you's commands (issues #453, #513): one primary button and a ⋯ menu; verdict opens a dialog, as reject and revise do.
+describe("ui app: the Needs-you commands and the verdict control", () => {
   const AT = "2026-11-07T00:00:00.000Z";
   const client = () => {
     const c = new QueryClient();
@@ -398,17 +397,26 @@ describe("ui app: the Needs-you verdict control", () => {
     return c;
   };
   const VERDICT = { name: "verdict", usage: "/verdict accept|changes|reject <severity> <reason>", description: "Record a verdict", allowed: true, reason: null };
+  const APPROVE = { name: "approve", usage: "/approve", description: "Approve", allowed: true, reason: null };
+  const render = (commands: unknown[]) =>
+    renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedCommands, { id: "wi_1", commands: commands as never, pr: "42" })));
 
-  it("the verdict button opens a form (aria-expanded) instead of sending at once", () => {
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedCommands, { id: "wi_1", commands: [VERDICT], pr: "42" })));
-    expect(html).toMatch(/<span data-command="verdict"[^>]*><button[^>]*aria-expanded="false"[^>]*>verdict<\/button>/);
+  it("a row shows its primary button and one ⋯ menu, no inline form and no dialog", () => {
+    const html = render([APPROVE, VERDICT]);
+    expect(html).toMatch(/<span data-command="approve"[^>]*><button[^>]*>approve<\/button>/);
+    expect(html).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"[^>]*>⋯<\/button>/);
+    expect(html).not.toContain("verdict</button>");
+    expect(html).not.toContain("<dialog");
+    expect(html).not.toContain("data-verdict-form");
   });
 
-  it("the form takes the verdict as typed after /verdict; Send stays disabled while it is blank", () => {
-    const html = renderToStaticMarkup(createElement(VerdictForm, { disabled: false, onSend: () => {}, onCancel: () => {} }));
-    expect(html).toContain(`placeholder="${(VERDICT_PLACEHOLDER as string).replace(/</g, "&lt;").replace(/>/g, "&gt;")}"`);
+  it("a row with no primary command has only the menu", () => {
+    const html = render([VERDICT]);
+    expect(html).not.toContain("data-command=");
+    expect(html).toContain('aria-label="More commands"');
+  });
+
+  it("the verdict dialog's placeholder is the verdict as typed after /verdict", () => {
     expect(VERDICT_PLACEHOLDER).toBe(VERDICT.usage.replace("/verdict ", "").replace("<severity>", "<none|minor|major|critical>"));
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Send verdict<\/button>/);
-    expect(html).toContain(">Cancel</button>");
   });
 });

@@ -4,13 +4,14 @@
 
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
+import { blockingRunKind } from "../core/policy.js";
 import { PHASE_HOLD, PHASES_OPEN } from "../core/split.js";
 import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
 import { alarmText, alarmsFor, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
 import { esc } from "./html.js";
 import { type PriorityInput, rank } from "./priority.js";
-import { type ClaimPauses, type Why, refsOf, whyWaiting, withAlarms } from "./why.js";
+import { type ClaimPauses, type Why, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
 
 /** Most rows any list or section reads from the store. */
@@ -80,6 +81,8 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       run: run ? { kind: run.kind, status: run.status as "queued" | "running", heartbeat_at: run.updated_at, paused_at: run.paused_at } : null,
       dependents: 0,
       ...waiting,
+      ...holdOf(decision, run, waiting.waiting_on_number),
+      asked_by: blockingRunKind(it.blocked_reason, runs) ?? null,
       conflicts: conflictCounts(runs, changes),
       decision,
       alarms,
@@ -223,4 +226,15 @@ export function whyOf(
 export async function readPhases(store: FactoryStore, items: readonly WorkItem[]): Promise<WorkItem[]> {
   if (!items.some((it) => it.blocked_on === "upstream")) return [];
   return (await store.listWorkItemsWhere({ exclude_closed: true, limit: LIST_LIMIT })).filter((it) => it.parent_id !== null);
+}
+
+/**
+ * A claim decision's hold on the item's current run: `deadlock` and `held` (a coordination hold), and the holder's
+ * issue number as the number the item waits on when the item names none of its own.
+ */
+function holdOf(decision: ClaimDecision | null, run: Run | null, waiting_on_number: number | null): { deadlock: boolean; held: boolean; waiting_on_number: number | null } {
+  const deadlock = deadlocked(decision, run);
+  const held = heldBy(decision, run);
+  const holder = deadlock || held ? (refsOf(decision!.holder_ref)[0] ?? null) : null;
+  return { deadlock, held, waiting_on_number: waiting_on_number ?? holder };
 }

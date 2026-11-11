@@ -123,7 +123,7 @@ export class Worker {
 
   /**
    * The system prompt and tools of a run role (`src/worker/roles/<role>.role.ts`): the prompt file it names under
-   * prompts/, and its tools by name. Every agent step takes them from here. A role with no prompt, or whose prompt file is missing, fails the run (`prompt_missing`).
+   * prompts/ (then the owner's live `message_style`, design 04-agents), and its tools by name. Every agent step takes them from here. A role with no prompt, or whose prompt file is missing, fails the run (`prompt_missing`).
    */
   async roleSpec(name: string): Promise<{ system_prompt: string; tools: ToolSpec[] }> {
     this.rolesReady ??= loadRoles();
@@ -131,7 +131,7 @@ export class Worker {
     if (!role?.prompt) throw new RunFailure("prompt_missing", `run role "${name}" names no prompt`);
     const system_prompt = this.d.prompts[role.prompt.replace(/\.md$/, "") as keyof Prompts];
     if (!system_prompt) throw new RunFailure("prompt_missing", `prompts/${role.prompt} is missing`);
-    return { system_prompt, tools: toolsNamed(role.tools) };
+    return { system_prompt: this.live.styled(system_prompt), tools: toolsNamed(role.tools) };
   }
 
   /**

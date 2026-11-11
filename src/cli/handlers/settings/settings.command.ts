@@ -15,7 +15,7 @@ export default defineCommand({
                max_restart, retry_base_ms, retry_max_ms, max_diff_lines, max_diff_files, run_timeout_ms, models,
                model_by, poll_interval_ms, tick_ms, heartbeat_ms, lease_ms, workers, phases_auto_approve, hold_policy,
                alarm_repeat_count, alarm_window_minutes, alarm_restart_count, standing_approvals.threshold, mode,
-               auto_merge_max_tier. No restart. Every set and reset is audited; PR-only keys (plugins, repo, store,
+               auto_merge_max_tier, message_style (a JSON string, at most 1000 characters, egress-scanned). No restart. Every set and reset is audited; PR-only keys (plugins, repo, store,
                floors, dials, auth, guards) are refused. mode, auto_merge_max_tier and a change that loosens a
                tighten-only key need approve_merge.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only) and mode
@@ -37,6 +37,9 @@ export default defineCommand({
     await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
     const store = await buildStatsStore(loaded);
     try {
+      // The configured egress scanner (G5): a message_style it flags is refused before anything is stored.
+      const plugins = new Plugins(loaded);
+      const scanner = await plugins.scanner(await plugins.secrets());
       // Refuses on MySQL while schema steps are pending, as the other commands do.
       await store.migrate();
       const { owner, name } = loaded.config.repo;
@@ -56,6 +59,7 @@ export default defineCommand({
           // An ID, never a display name: the CLI identity (issue #318), the one the approve_merge check asks about.
           actor: identity.user,
           mayApproveMerge: await approveMergeCheck(loaded, store, identity.user),
+          scanner,
         },
         action,
       );

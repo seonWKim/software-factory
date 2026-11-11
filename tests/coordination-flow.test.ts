@@ -640,7 +640,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     const f = await pipeline();
     const it = await f.submit();
     await f.step();
-    expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(await f.item(it)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     f.broker.calls.length = 0; // in place: the fake forge logs outbound's writes to this array
     const unmergeable = async () => {
       f.forge.queue.push({ kind: "change_unmergeable", change_ref: "42", head_branch: `factory/${it.id}`, head_sha: "h1", base_sha: "b1" });
@@ -777,7 +777,7 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     const scope = g.log.findIndex((l, i) => i > written && l.startsWith("git diff --name-only"));
     expect(scope).toBeGreaterThan(written);
     expect(g.log.indexOf("npm test", written)).toBeGreaterThan(written);
-    expect(await f.item(it)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(await f.item(it)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     expect(await f.store.conflictCounts(PROJECT_KEY)).toEqual(new Map());
   });
 

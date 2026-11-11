@@ -132,6 +132,8 @@ describe("GET /api/v1/settings", () => {
     expect(row("model_by")).toMatchObject({ kind: "json" });
     // An object setting is edited as JSON text, never in a number input.
     expect(row("hold_policy")).toMatchObject({ kind: "json", value: JSON.stringify({ mode: "hold" }) });
+    // Free text, edited as text and sent back as a JSON string; empty by default.
+    expect(row("message_style")).toMatchObject({ kind: "text", value: '""', source: "default", project_settable: false });
     expect(v.repo).toBe("o/r");
     expect(v.project).toBe("github.com/o/r");
     // The project key is never shown.
@@ -222,6 +224,23 @@ describe("POST /api/v1/settings", () => {
     expect(JSON.parse(r.body)).toEqual({ error: cliR.lines[0] });
     expect(cliR.lines[0]).toContain("heartbeat_ms must be well under lease_ms");
     await nothingStored(store);
+  });
+
+  it("message_style: a set is stored with the actor in history; over 1000 characters or a value the scanner flags is refused (422), as on the CLI, and nothing is stored", async () => {
+    const { d, store, settings } = await setup();
+    for (const value of [JSON.stringify("y".repeat(1001)), JSON.stringify(`Sign off with ${SECRET}`)]) {
+      const cliR = await runSettings({ ...cli(settings, store), scanner: d.scanner }, { action: "set", key: "message_style", value });
+      expect(cliR.ok).toBe(false);
+      const r = await post(d, { action: "set", key: "message_style", value });
+      expect(r.status).toBe(422);
+      expect(JSON.parse(r.body)).toEqual({ error: cliR.lines[0] });
+      expect(r.body).not.toContain(SECRET);
+      await nothingStored(store);
+    }
+    const ok = await post(d, { action: "set", key: "message_style", value: JSON.stringify("Plain words.") });
+    expect(ok.status).toBe(200);
+    expect(await store.listSettingChanges(50)).toEqual([expect.objectContaining({ key: "message_style", new_value: '"Plain words."', actor: ACTOR })]);
+    expect((await view(d)).keys.find((k: { key: string }) => k.key === "message_style")).toMatchObject({ value: '"Plain words."', source: "override" });
   });
 
   it("refuses a PR-only key and a guard with the CLI's message and stores nothing", async () => {

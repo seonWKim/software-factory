@@ -2,7 +2,6 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
-import { prNumber } from "../../../core/change-ref.js";
 import {
   CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
   latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
@@ -265,7 +264,8 @@ export class CommandsUnit {
       return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
     }
     const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
-    const detail = { ...f.key, ...(local ? {} : { pr_number: prNumber(f) }) };
+    // The detail names the PR by its string ref, like the item (design 02-work-item); a local item has none.
+    const detail = { ...f.key, ...(local ? {} : { change_ref: f.change_ref }) };
     const limit = this.c.k.cfg.max_loops;
     if (it.loop_count + 1 >= limit) {
       const patch = { blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -492,7 +492,7 @@ export class CommandsUnit {
     const text = body.trim();
     if (!llm || text === "" || text.length > INTERPRET_MAX_CHARS || !(await scanClean(this.c, where, "message", [text]))) return "unread";
     const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
-    const result = await interpret(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level");
+    const result = await interpret(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level", this.c.k.live.values().message_style);
     if (!(await scanClean(this.c, where, "answer", interpretTexts(result)))) return "blocked";
     return { kind: result.kind, body: interpretReply(result, on ? await storeProposals(this.c, on.item, on.e, result) : null) };
   }
