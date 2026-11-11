@@ -10,8 +10,8 @@ import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../com
 // a POST /api/v1/users with the CSRF token through the CLI's own `users` actions; anyone else sees the list
 // read-only with the reason. The owner's row has no controls. A table at sm and up, cards below.
 
-const muted = "text-xs text-pretty text-zinc-600 dark:text-zinc-400";
-const field = "h-8 rounded-md border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900";
+const muted = "text-xs text-pretty text-text-2";
+const field = "h-8 rounded-control border border-border-strong bg-surface px-2 text-sm";
 const ROLES = ["approver", "requester"] as const;
 
 /** One write and its refusal, kept beside where it was made until the next try. */
@@ -41,7 +41,7 @@ function useUsersWrite(token: string) {
 }
 
 function Refusal({ error }: { error: string | null }) {
-  return error ? <p role="alert" className="mt-1 text-xs text-pretty break-words text-red-700 dark:text-red-300">{error}</p> : null;
+  return error ? <p role="alert" className="mt-1 text-xs text-pretty break-words text-pill-bad-fg">{error}</p> : null;
 }
 
 /** Change and Remove for one local user that is not the owner. */
@@ -126,7 +126,7 @@ export function UsersPage() {
       </Section>
       <Section title="Users" count={v.users.length}>
         {v.read_only_reason !== null && (
-          <p role="note" className="mb-2 rounded-md bg-amber-50 px-3 py-2 text-sm text-pretty break-words text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+          <p role="note" className="mb-2 rounded-control bg-pill-warn-bg px-3 py-2 text-sm text-pretty break-words text-pill-warn-fg">
             Read-only: {v.read_only_reason}.
           </p>
         )}

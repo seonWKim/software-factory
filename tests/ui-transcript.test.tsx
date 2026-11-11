@@ -174,7 +174,7 @@ describe("transcript view", () => {
     expect(result.textContent).toContain("export const DEFAULTS");
 
     expect(steps[7]!.getAttribute("data-error")).toBe("true");
-    expect(steps[7]!.className).toMatch(/bg-red-50/);
+    expect(steps[7]!.className).toMatch(/pill-bad/);
     expect(steps[9]!.getAttribute("data-error")).toBe("true");
     expect(steps[2]!.getAttribute("data-error")).toBeNull();
   });

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AUTO_RESOLVE_LIMIT, autoResolveAttempts, autoResolveKey, nextAutoResolveAttempt, parseAutoResolveKey, runKey, scopeViolations,
 } from "../src/core/policy.js";
-import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine, resolveScopeViolations } from "../src/core/resolve.js";
+import { MERGE_CONFLICT_PENDING, conflictCounts, conflictCountsLine, renderResolvePrompt, resolveScopeViolations } from "../src/core/resolve.js";
 import type { Run, StateChange } from "../src/core/types.js";
 
 // Pure rules of automatic conflict resolution (design §5 Merge conflict, decided 2026-11-02).
@@ -117,5 +117,17 @@ describe("resolve prompt fixed rules", () => {
   it("keeps both sides' entries in lists and tables", () => {
     expect(prompt).toMatch(/keep both sides' entries/i);
     expect(prompt).toMatch(/lists and tables/i);
+  });
+});
+
+describe("resolve prompt", () => {
+  const item = {
+    id: "wi_1" as never, problem: "p", done_criteria: ["d"], scope: "s", allowed_paths: ["src/"],
+    source: { type: "local" as const, id: "local-1", link: "" },
+  };
+
+  it("names the PR, or a local item's branch when it has none", () => {
+    expect(renderResolvePrompt({ ...item, change_ref: "42" }, "origin/main", [], "").split("\n")[0]).toBe("# Resolve merge conflicts: work item wi_1, PR #42");
+    expect(renderResolvePrompt({ ...item, change_ref: null }, "origin/main", [], "").split("\n")[0]).toBe("# Resolve merge conflicts: work item wi_1, local branch");
   });
 });

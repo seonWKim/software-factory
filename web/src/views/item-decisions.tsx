@@ -75,8 +75,8 @@ const PHASES: Record<ApprovePhase, { what: string; next: string }> = {
 export const textButton = "h-8 w-auto px-2";
 
 export const field =
-  "rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900 " +
-  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600";
+  "rounded-control border border-border-strong bg-surface px-2 py-1 text-sm " +
+  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus";
 
 /** The waiting spec's In short, above Commands. */
 export function InShort({ spec }: { spec: WaitingSpec | null | undefined }) {
@@ -97,7 +97,7 @@ export function DecisionsPanel({
   if (decisions.length === 0) return null;
   return (
     <div data-decisions className="mb-3 space-y-3">
-      <p className="text-xs text-pretty text-zinc-600 dark:text-zinc-400">
+      <p className="text-xs text-pretty text-text-2">
         Decisions for you: each answer goes with approve. The default is selected; change any you disagree with.
       </p>
       {decisions.map((d, i) => {
@@ -107,16 +107,16 @@ export function DecisionsPanel({
           <fieldset key={i} data-decision={i + 1} className="min-w-0 max-w-xl">
             <legend className="text-sm font-medium text-pretty break-words">
               {label}
-              {d.owner_only && <span className="ml-1 text-xs text-zinc-600 dark:text-zinc-400">(owner only)</span>}
+              {d.owner_only && <span className="ml-1 text-xs text-text-2">(owner only)</span>}
             </legend>
-            {d.reason && <p className="text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{d.reason}</p>}
+            {d.reason && <p className="text-xs text-pretty break-words text-text-2">{d.reason}</p>}
             {d.options.length > 0 ? (
               <div role="radiogroup" aria-label={label} className="mt-1 space-y-1">
                 {d.options.map((o) => (
                   <label key={o} className="flex items-center gap-2 text-sm break-words">
                     <input type="radio" name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })} />
                     {o}
-                    {o === d.default && <span className="text-xs text-zinc-600 dark:text-zinc-400">(default)</span>}
+                    {o === d.default && <span className="text-xs text-text-2">(default)</span>}
                   </label>
                 ))}
                 <label className="flex flex-wrap items-center gap-2 text-sm">
@@ -152,7 +152,7 @@ export function DecisionsPanel({
 export function ApproveConfirm({ phase, answers, note }: { phase: ApprovePhase; answers: readonly ChosenAnswer[]; note: string }) {
   const p = PHASES[phase];
   return (
-    <div role="group" aria-label="Confirm approve" data-approve-confirm={phase} className="w-full max-w-xl rounded-md border border-zinc-300 p-2 text-sm dark:border-zinc-700">
+    <div role="group" aria-label="Confirm approve" data-approve-confirm={phase} className="w-full max-w-xl rounded-control border border-border-strong p-2 text-sm">
       <p className="text-pretty">You approve {p.what}.</p>
       {answers.length > 0 && (
         <ul className="mt-1 list-disc pl-5" data-confirm-answers>
@@ -163,7 +163,7 @@ export function ApproveConfirm({ phase, answers, note }: { phase: ApprovePhase; 
           ))}
         </ul>
       )}
-      {note.trim() !== "" && <p className="mt-1 break-words text-zinc-600 dark:text-zinc-400">With your note to the implementer and the reviewer.</p>}
+      {note.trim() !== "" && <p className="mt-1 break-words text-text-2">With your note to the implementer and the reviewer.</p>}
       <p className="mt-1 text-pretty" data-confirm-next>Next: {p.next}</p>
     </div>
   );

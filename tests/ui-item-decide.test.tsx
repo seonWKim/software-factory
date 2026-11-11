@@ -95,8 +95,8 @@ describe("item page: What you need to decide", () => {
     // The buttons read Approve, Revise and Reject; approve, the one the state asks for, is the one primary button.
     const buttons = ["approve", "revise", "reject"].map((n) => within(decide).getByRole("button", { name: n }));
     for (const b of buttons) expect(b.className.split(" ")).toContain("capitalize");
-    expect(buttons[0]!.className).toContain("bg-zinc-900");
-    expect(buttons.slice(1).map((b) => b.className.includes("bg-zinc-900"))).toEqual([false, false]);
+    expect(buttons[0]!.className).toContain("bg-text-1");
+    expect(buttons.slice(1).map((b) => b.className.includes("bg-text-1"))).toEqual([false, false]);
   });
 
   it("has no control without an accessible name", async () => {

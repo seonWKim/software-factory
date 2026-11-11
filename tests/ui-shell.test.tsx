@@ -9,7 +9,7 @@ import { API, type Items, type ItemRow, useApi } from "../web/src/api.js";
 import { STATUS_MS } from "../web/src/components/ui/dialog.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
-import { THEME_KEY, paintChoice } from "../web/src/theme.js";
+import { THEME_KEY, paintChoice, storedChoice } from "../web/src/theme.js";
 import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
 import { RevisionBanner } from "../web/src/views/system-banner.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
@@ -246,10 +246,29 @@ describe("app shell", () => {
     expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
   });
 
-  it("the banner link token has a dark variant and is used by the revision banner", () => {
-    expect(BANNER_LINK_CLASS).toMatch(/dark:text-/);
+  it("the banner link takes the banner's own text token and is used by the revision banner", () => {
+    expect(BANNER_LINK_CLASS).toMatch(/(?<![\w-])text-current(?![\w-])/);
     render(<RevisionBanner server="a" web="b" />);
     expect(screen.getByText("reload").className).toBe(BANNER_LINK_CLASS);
+    expect(screen.getByTestId("revision-banner").className).toMatch(/(?<![\w-])text-pill-warn-fg(?![\w-])/);
+  });
+
+  it("keeps the stored choice ahead of the system preference", () => {
+    stubScheme(true);
+    localStorage.setItem(THEME_KEY, "light");
+    expect(storedChoice()).toBe("light");
+    paintChoice(storedChoice()); // what web/src/main.tsx does at startup
+    mount();
+    expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    cleanup();
+    stubScheme(false);
+    localStorage.setItem(THEME_KEY, "dark");
+    expect(storedChoice()).toBe("dark");
+    paintChoice(storedChoice());
+    mount();
+    expect(screen.getByRole("radio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 });
 

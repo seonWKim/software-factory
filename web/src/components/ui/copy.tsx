@@ -5,7 +5,7 @@ import { cn } from "../../lib/cn.js";
 // Raw IDs (design 09-dashboard-app, readable names): a page shows a name ("worker 3", "you", the item's title) and
 // keeps the full ID one step away, in a details element or a copy element, never in running text.
 
-const SMALL = "rounded border border-zinc-300 px-1 text-xs font-sans text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800";
+const SMALL = "rounded-control border border-border-strong px-1 text-xs font-sans text-text-2 hover:bg-surface-2";
 
 /** A Copy button: writes `value` to the clipboard and says so for a moment. `what` names it ("Copy item ID"). */
 export function CopyButton({ value, what }: { value: string; what: string }) {
