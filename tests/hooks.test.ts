@@ -2,7 +2,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { HOOK_PATH, SqlHookAudit, type HookDecision, loadHooks, runHooks } from "../src/runtime/index.js";
-import { type HookDescriptor, type HookInput, type Timer, defineHook } from "../src/shared/hook.js";
+import { checkEnabledHooks } from "../src/compose.js";
+import { HOOK_POINTS, PACK_CHECK_POINTS, UNCALLED_HOOK_POINTS, type HookDescriptor, type HookInput, type Timer, defineHook } from "../src/shared/hook.js";
 import type { SqlExecutor } from "../src/state/index.js";
 import { MYSQL_URL, newMigratedMysqlDriver } from "./helpers/store.js";
 
@@ -73,6 +74,16 @@ describe("hooks", () => {
     });
     const e = await runHooks({ input: INPUT, hooks: [broken], enabled: new Set(["g-throw"]), guard: ALLOW, timer: NEVER });
     expect(e).toMatchObject({ allowed: false, reason: "hook g-throw: hook_error: boom" });
+  });
+
+  it("include the four pack check points, where only pack checks run: a *.hook.ts enabled at one fails startup", async () => {
+    for (const p of ["before_agent", "on_tool_call", "before_finish", "after_agent"] as const) {
+      expect(PACK_CHECK_POINTS).toContain(p);
+      expect(HOOK_POINTS).toContain(p);
+      expect(UNCALLED_HOOK_POINTS).toContain(p);
+      const h = defineHook({ name: "h", point: p, budget_ms: 10, run: async () => ({ kind: "pass" }) });
+      await expect(checkEnabledHooks(["h"], [h])).rejects.toThrow(`h (${p}): that point is not wired yet`);
+    }
   });
 
   it("clip a long reason to 200 characters", async () => {

@@ -12,7 +12,7 @@ import { commandEvent, commandIdentity, syncedCommand } from "../../../core/comm
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
-import { SUGGEST_MAX_CHARS, formatSuggestion, suggestCommand } from "../../../core/suggest.js";
+import { INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretArgs, interpretReply, openItems } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
@@ -456,10 +456,12 @@ export class CommandsUnit {
   }
 
   /**
-   * A plain-language comment on a work item (design §4): at most one reply, keyed on the comment id, that
-   * names a suggested command or lists the commands for the item's state. Changes no state: the person
-   * confirms by typing the command. In order: the work item, the commenter's write permission (no LLM call
-   * and no reply without it), the length and open-item filters, the model call, validation, the egress scan.
+   * A plain-language comment on a work item (design §4, issue #583): at most one reply, keyed on the comment id,
+   * that proposes commands for any open item as typed lines, answers a read, asks one question, or lists the
+   * commands for the item's state. Changes no state, and the model's answer is never applied: the person types a
+   * proposed line. In order: the work item, the commenter's permission (no model call and no reply without it), the
+   * length and open-item filters, the egress scan of the message, the model call, the egress scan of each argument.
+   * A scan finding stores nothing and posts nothing.
    */
   async handlePlainComment(e: PlainCommentEvent): Promise<void> {
     const code = parseLink(e.body);
@@ -471,32 +473,30 @@ export class CommandsUnit {
     const principal = await this.c.unit("auth").authorize(e.author, "approve_spec", item.id);
     if ("refuse" in principal) return;
     const text = e.body.trim();
-    if (text === "" || text.length > SUGGEST_MAX_CHARS || item.stage === "CLOSED") return;
-    const state = await this.stateOf(item);
-    const suggestion = await suggestCommand(text, state, llm);
-    let body: string;
-    if (suggestion === null) {
-      body = ["The factory did not find a command in your comment, so nothing changed.", "", commandFooter(state)].join("\n");
-    } else {
-      const scan = suggestion.args ? await this.c.k.d.scanner.scan("comment", suggestion.args) : { clean: true as const };
-      if (!scan.clean) {
-        const rules = scan.findings.map((f) => f.rule).join(",");
-        this.c.k.d.log.warn("suggestion blocked by the egress scan", { work_item_id: item.id, command: suggestion.command, rules });
-        body = ["The factory could not suggest a command for your comment, so nothing changed.", "", commandFooter(state)].join("\n");
-      } else {
-        const typed = formatSuggestion(suggestion);
-        const fence = "`".repeat(Math.max(3, ...[...typed.matchAll(/`+/g)].map((m) => m[0].length + 1)));
-        body = [
-          `Did you mean \`/${suggestion.command}\`? Nothing has changed. To apply it, reply with:`,
-          "",
-          fence,
-          typed,
-          fence,
-        ].join("\n");
-      }
-    }
-    this.c.k.d.log.info("plain comment answered", { work_item_id: item.id, suggested: suggestion?.command ?? null });
+    if (text === "" || text.length > INTERPRET_MAX_CHARS || item.stage === "CLOSED") return;
+    if (!(await this.scanClean(item.id, "message", [text]))) return;
+    const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
+    const result = await interpret(text, items, llm);
+    if (!(await this.scanClean(item.id, "proposal", interpretArgs(result)))) return;
+    const body = interpretReply(result)
+      ?? ["The factory did not find a command in your comment, so nothing changed.", "", commandFooter(await this.stateOf(item))].join("\n");
+    this.c.k.d.log.info("plain comment answered", { work_item_id: item.id, kind: result.kind });
     await this.c.unit("outbox").post(item, item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+  }
+
+  /**
+   * Whether every text of a plain comment's `what` (the message, or the proposed arguments) passes the egress scan.
+   * A finding is logged with its rules, never its text.
+   */
+  private async scanClean(work_item_id: WorkItemId, what: "message" | "proposal", texts: readonly string[]): Promise<boolean> {
+    for (const t of texts) {
+      const scan = await this.c.k.d.scanner.scan("comment", t);
+      if (scan.clean) continue;
+      const rules = scan.findings.map((f) => f.rule).join(",");
+      this.c.k.d.log.warn(`plain comment ${what} blocked by the egress scan`, { work_item_id, rules });
+      return false;
+    }
+    return true;
   }
 
   /**

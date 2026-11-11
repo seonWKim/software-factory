@@ -93,12 +93,55 @@ export interface GateHooks {
   stop_checks: number;
   /** Stop blocks earlier steps of this run already used. */
   stop_blocks_used: number;
+  /**
+   * The enabled `on_tool_call` pack checks (design §4, issue #494), bound to the run. A runner that supports them
+   * (`supports_tool_hooks`) runs them on each Edit or Write before the allowed_paths check, with the tool name and
+   * file path after each check's argv, never the file content. A refusal, a crash or a timeout refuses the edit;
+   * a pass approves nothing (the path check still runs). Absent: none enabled.
+   */
+  on_tool_call?: PackGate;
+}
+
+/** The points a pack check runs at; the same list as PACK_CHECK_POINTS in src/shared/hook.ts. */
+export type PackCheckPoint = "before_agent" | "on_tool_call" | "before_finish" | "after_agent";
+
+/** A pack check that refused: its name, why (untrusted text: its output's last lines, or its crash or timeout), and its `retries`. */
+export interface PackRefusal {
+  check: string;
+  reason: string;
+  retries: number;
+}
+
+/**
+ * The enabled pack checks of one point, bound to one run: its sandbox and the worker's tool env, never a credential.
+ * Holds no secret value.
+ */
+export interface PackGate {
+  /** The checks' names, in the order they run. */
+  readonly checks: readonly string[];
+  /**
+   * Runs each check in order, `args` after its argv; the first refusal stops the rest and is audited. A crash or a
+   * timeout is a refusal, and so is an abort before every check ran. Null: no objection, which approves nothing.
+   */
+  run(args: readonly string[], signal: AbortSignal): Promise<PackRefusal | null>;
+  /**
+   * `before_finish` (decision 2 of issue #494): runs the checks; each refusal sends the agent back through `fix`
+   * and runs them again, until none objects (null) or one check refused more times than its `retries` (that
+   * refusal: the run fails). The counts live in this call only, in the run's process memory.
+   */
+  untilPassed(fix: (r: PackRefusal) => Promise<void>, signal: AbortSignal): Promise<PackRefusal | null>;
+}
+
+/** The enabled pack checks of a factory (the names in `hooks`), loaded at startup. */
+export interface PackChecks {
+  /** The checks at `point`, bound to one run; null when none is enabled there. */
+  at(point: PackCheckPoint, run: { subject: string; project_id: string; sandbox: SandboxHandle; env: Readonly<Record<string, string>> }): PackGate | null;
 }
 
 /** One time a gate hook sent the agent back: which hook, the check that failed, and its attempt number in the run. */
 export interface GateBlock {
   hook: "pre_tool_use" | "stop";
-  /** `allowed_paths`, `no_commits`, `diff_too_large`, or the failing check command. */
+  /** `allowed_paths`, `no_commits`, `diff_too_large`, the failing check command, or `pack:<name>` (an on_tool_call pack check). */
   check: string;
   attempt: number;
 }
@@ -173,6 +216,11 @@ export interface AgentRunner {
    * with an error naming the granted tools, rather than ignore them.
    */
   readonly exposes_tools?: boolean;
+  /**
+   * Whether this runner runs `GateHooks.on_tool_call` on each Edit or Write (design §4, issue #494). Absent: false,
+   * and startup refuses an enabled `on_tool_call` pack check, naming the check and the point.
+   */
+  readonly supports_tool_hooks?: boolean;
   /**
    * Whether session `id` is stored on this host and readable, so `--resume` can continue it. Absent: sessions
    * are never resumed (a paused run starts a new session from its WIP commit and handoff).
