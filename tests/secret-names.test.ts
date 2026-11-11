@@ -101,27 +101,20 @@ describe("registry: each plugin declares its secrets", () => {
 });
 
 describe("the secret set is the union of the selected plugins' declarations", () => {
-  it("checked-in config: the model credential, GITHUB_APP_ID, MYSQL_PASSWORD and the two Slack tokens", async () => {
+  it("checked-in config: the model credential, GITHUB_APP_ID and the two Slack tokens", async () => {
     const loaded = await loadConfig(root(REAL, ""), { platform: "linux" });
     expect(sorted(declaredSecretNames(loaded.registry, loaded.plugins))).toEqual([
       "ANTHROPIC_API_KEY",
       "CLAUDE_CODE_OAUTH_TOKEN",
       "GITHUB_APP_ID",
-      "MYSQL_PASSWORD",
       "SLACK_APP_TOKEN",
       "SLACK_BOT_TOKEN",
     ]);
   });
 
-  it("switching store.type from mysql to sqlite removes MYSQL_PASSWORD, with no code edit", async () => {
+  it("a SQLite store declares no MYSQL_PASSWORD: a value left in an old secret file is neither read nor scanned", async () => {
     const file = "MYSQL_PASSWORD=mysql-pw-value\nGITHUB_APP_ID=gh-value\n";
-    const mysql = await loadConfig(root(REAL, file), { platform: "linux" });
-    expect(declaredSecretNames(mysql.registry, mysql.plugins).has(n("MYSQL_PASSWORD"))).toBe(true);
-    const mysqlSecrets = await new Plugins(mysql).secrets();
-    expect((await mysqlSecrets.get(n("MYSQL_PASSWORD")))?.reveal()).toBe("mysql-pw-value");
-    expect(await mysqlSecrets.valuesForScan()).toContain("mysql-pw-value");
-
-    const sqlite = await loadConfig(root({ ...REAL, store: { type: "sqlite" } }, file), { platform: "linux" });
+    const sqlite = await loadConfig(root(REAL, file), { platform: "linux" });
     expect(declaredSecretNames(sqlite.registry, sqlite.plugins).has(n("MYSQL_PASSWORD"))).toBe(false);
     const sqliteSecrets = await new Plugins(sqlite).secrets();
     expect(await sqliteSecrets.get(n("MYSQL_PASSWORD"))).toBeNull();
@@ -157,16 +150,14 @@ describe("env-file store: only declared names", () => {
     expect(await secrets.valuesForScan()).toContain("gh-value");
   });
 
-  it("a plain setting such as MYSQL_HOST is not returned by get and not in valuesForScan", async () => {
+  it("MYSQL_* keys left in an old secret file are not read: the store stays SQLite, nothing is returned or scanned", async () => {
     const loaded = await loadConfig(root(REAL, FILE), { platform: "linux" });
-    expect(loaded.store).toMatchObject({ type: "mysql", host: "db.internal" }); // still read as a setting
+    expect(loaded.store).toEqual({ type: "sqlite" });
     const secrets = await new Plugins(loaded).secrets();
-    expect(await secrets.get(n("MYSQL_HOST"))).toBeNull();
-    expect(await secrets.get(n("MYSQL_USER"))).toBeNull();
+    for (const k of ["MYSQL_HOST", "MYSQL_USER", "MYSQL_PASSWORD"]) expect(await secrets.get(n(k))).toBeNull();
     const scan = await secrets.valuesForScan();
     expect(scan).not.toContain("db.internal");
-    expect(scan).not.toContain("factory");
-    expect(scan).toContain("mysql-pw-value");
+    expect(scan).not.toContain("mysql-pw-value");
   });
 
   it("with no declared names it loads nothing", async () => {
@@ -265,8 +256,6 @@ describe("doctor and setup follow the declared secrets", () => {
       "CLAUDE_CODE_OAUTH_TOKEN",
       "SLACK_BOT_TOKEN",
     ]);
-    // MYSQL_PASSWORD is never asked: the Database step generates it.
-    expect((await secretsToPrompt([{ name: n("MYSQL_PASSWORD"), purpose: "db" }], new MapSecrets({}), [])).map((d) => d.name)).toEqual([]);
   });
 
   it("setup adds every declared name the secret file lacks, empty, keeping values", async () => {

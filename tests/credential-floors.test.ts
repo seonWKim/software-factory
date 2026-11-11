@@ -29,7 +29,6 @@ const EXEMPT: Record<string, string> = {
   "src/impl/source/slack-api.ts": "follow-up: reads the Slack bot and app tokens",
   "src/impl/store/mysql/mysql.plugin.ts": "follow-up: reads MYSQL_PASSWORD",
   "src/impl/test-database/mysql-local.plugin.ts": "follow-up: reads TEST_MYSQL_URL",
-  "src/cli/handlers/migrate/migrate.command.ts": "follow-up: reads MYSQL_PASSWORD for npm run migrate (moved from src/main.ts)",
   "src/cli/handlers/setup/setup.command.ts": "follow-up: names the secrets to rotate (moved from src/main.ts)",
   "src/setup.ts": "follow-up: writes and checks secrets during setup",
 };

@@ -1,7 +1,7 @@
 // The project-key data step (design 2026-11-01, "Projects are keyed by the forge's repository ID"): rewrites
 // every legacy `owner/name` project value to its key, `github:<host>:<repo node id>`, in every table that has
-// a project column, and stores each project's label. Run by `npm run migrate` on SQLite and MySQL alike, over
-// plain SQL (SqlExecutor), so one code path serves both.
+// a project column, and stores each project's label. Run by `npm run migrate` over plain SQL
+// (SqlExecutor).
 //
 // Rules: every distinct `owner/name` is resolved through GitHub before anything is written; if one cannot
 // be resolved the step stops with an error naming it and writes nothing. A key never contains '/', and an

@@ -8,7 +8,7 @@ export default defineCommand({
   usage: `  teardown [--dry-run] [--yes] [--stop] [--secrets]
                undoes setup on this machine: removes the state folder (a SQLite store is copied out first), the
                factory's clean worktrees, its merged branches and refs/factory/* refs; keeps and lists the rest.
-               Asks you to type "teardown" first. Never touches a MySQL database, GitHub, Slack or the config file.
+               Asks you to type "teardown" first. Never touches GitHub, Slack or the config file.
                --dry-run  print what would go, change nothing
                --yes      do not ask (the --secrets question is still asked)
                --stop     drain and stop a factory running on this machine first, instead of refusing

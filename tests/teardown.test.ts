@@ -146,7 +146,7 @@ describe("teardown: round trip", () => {
     const saved = out.find((l) => l.startsWith("saved the SQLite store: "))!.slice("saved the SQLite store: ".length);
     expect(saved.startsWith(m.saveDir)).toBe(true);
     expect(existsSync(saved)).toBe(true);
-    expect(out.join("\n")).toContain("MySQL: not selected");
+    expect(out.join("\n")).not.toMatch(/MySQL|DROP DATABASE/);
 
     const again = deps(m);
     expect(await teardown(m.loaded, OPTS, again.d)).toBe(0);
@@ -265,19 +265,7 @@ describe("teardown: a factory running on this machine", () => {
   });
 });
 
-describe("teardown: shared store and secrets", () => {
-  it("on a MySQL store: never saves or touches the database, and says the shared store was not touched", async () => {
-    const m = await machine({ ...SOLO, store: REAL.store });
-    hostId(m.stateDir);
-    const { d, out } = deps(m);
-    expect(await teardown(m.loaded, OPTS, d)).toBe(0);
-    const text = out.join("\n");
-    expect(text).toContain("the shared store was not touched");
-    expect(text).not.toContain("saved the");
-    expect(existsSync(m.saveDir)).toBe(false);
-    expect(existsSync(m.stateDir)).toBe(false);
-  });
-
+describe("teardown: config and secrets", () => {
   it("keeps the config and the secret file and prints where to remove the rest by hand", async () => {
     const m = await machine();
     await setup(m);
@@ -286,9 +274,11 @@ describe("teardown: shared store and secrets", () => {
     expect(existsSync(join(m.dir, "factory.config.json"))).toBe(true);
     expect(existsSync(m.secretsFile)).toBe(true);
     const text = out.join("\n");
-    for (const where of [m.secretsFile, "factory.config.json", "https://github.com/settings/apps", "https://api.slack.com/apps", "issues", "MySQL"]) {
+    for (const where of [m.secretsFile, "factory.config.json", "https://github.com/settings/apps", "https://api.slack.com/apps", "issues"]) {
       expect(text).toContain(where);
     }
+    // The store is SQLite (design 05-coordination.md): no MySQL drop instructions.
+    expect(text).not.toMatch(/MySQL database|DROP DATABASE|DROP USER/);
   });
 
   it("--secrets asks again, then removes only the factory's entries; other lines stay and the file keeps mode 600", async () => {

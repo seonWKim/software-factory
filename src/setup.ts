@@ -1,8 +1,6 @@
 // `factory setup` and `factory doctor`. Operator-side commands: they run in the operator's process and are
 // the only code that writes the secret file. No secret value is ever printed or passed as an argument.
 
-import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type Loaded, Plugins } from "./compose.js";
@@ -13,15 +11,12 @@ import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubError } from "./impl/github/github-client.js";
 import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
-import type { SchemaVersion } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
-import { type SecretName, type SecretStore, secretName } from "./interfaces/secret-store.js";
+import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import { type SecretDeclaration, declaredSecrets, selectedSetups } from "./plugins.js";
 import type { Ask } from "./cli/handlers/setup/ask.js";
 
 export const MAX_TOKEN_DAYS = 30;
-
-const MYSQL_PASSWORD = secretName("MYSQL_PASSWORD");
 
 /**
  * The secrets setup asks for and doctor checks: what the selected plugins declare, less the `github_auth` plugin's
@@ -77,9 +72,8 @@ export function checksExitCode(checks: readonly Check[]): number {
 
 /**
  * The health checks, the one implementation behind both `doctor` and the status page's Health panel.
- * Read-only: writes nothing to the store (the MySQL check reads the schema state, it never migrates),
- * makes no model call, and never puts a secret value in a message itself. Messages may carry error text
- * from MySQL or GitHub, so a surface that shows them to anyone but the operator's terminal must
+ * Read-only: writes nothing to the store, makes no model call, and never puts a secret value in a message
+ * itself. Messages may carry error text from GitHub, so a surface that shows them to anyone but the operator's terminal must
  * egress-scan them first (the status page does).
  */
 export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = {}): Promise<Check[]> {
@@ -108,28 +102,6 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = 
 
   const claude = await runProcess(["claude", "--version"], { cwd: loaded.root, env: baseEnv() }).catch(() => null);
   checks.push({ ok: claude?.exit_code === 0, msg: `claude CLI: ${claude?.stdout.trim() || "not found"}`, fix: "install Claude Code and put `claude` on PATH" });
-
-  const db = loaded.store;
-  // A missing MYSQL_PASSWORD is already a FAIL above.
-  if (db.type === "mysql" && (await secrets.get(MYSQL_PASSWORD))) {
-    const where = `MySQL ${db.user}@${db.host}:${db.port}/${db.database}`;
-    try {
-      const store = await plugins.store(secrets, await plugins.clock());
-      let v: SchemaVersion;
-      try {
-        v = await store.schemaVersion();
-      } finally {
-        await store.close();
-      }
-      // A pending step is a FAIL: the factory refuses to start until `npm run migrate` ran (design §9 Health).
-      // MySQL's schemaVersion() usually throws "… run `npm run migrate`" instead, a FAIL line from the catch below.
-      if (v.applied === v.latest) add(true, `${where} reachable, schema up to date`);
-      else if (v.applied < v.latest) add(false, `${where} reachable, schema at version ${v.applied} of ${v.latest} (run: npm run migrate)`);
-      else add(false, `${where} reachable, schema version ${v.applied} is newer than this code knows (${v.latest}): update the factory`, true);
-    } catch (err) {
-      checks.push(storeErrorCheck(where, err));
-    }
-  }
 
   // No GitHub plugin selected (design 05-sources, Local startup): nothing on GitHub to check, no credential read.
   if (!github) return checks;
@@ -173,17 +145,6 @@ export async function doctorChecks(loaded: Loaded, opts: { github?: boolean } = 
   }
   checks.push(...(await statusLabelChecks(client, repo, loaded.config.status_label_prefix)));
   return checks;
-}
-
-/**
- * The FAIL for a MySQL store doctor could not read. A pending schema error already ends in its fix (run `npm run
- * migrate`), and doctor's line for it is pinned to end there, so only other errors get the connection fix.
- */
-export function storeErrorCheck(where: string, err: unknown): Check {
-  const text = err instanceof Error ? err.message.slice(0, 120) : "error";
-  const msg = `${where}: ${text}`;
-  if (text.includes("npm run migrate")) return { ok: false, msg };
-  return { ok: false, msg, fix: "start MySQL and check the MYSQL_* settings in the secret file, or run: npm run setup" };
 }
 
 /**
@@ -306,7 +267,7 @@ export async function secretChecks(declared: readonly SecretDeclaration[], secre
 /**
  * The declared secrets setup's Secrets step asks for: each one missing from the file or named in `rotate`. A `oneOf`
  * group is asked once, for its first member (CLAUDE_CODE_OAUTH_TOKEN for the model credential), and only when no
- * member is set or one is rotated. MYSQL_PASSWORD is never asked: the Database step generates it.
+ * member is set or one is rotated.
  */
 export async function secretsToPrompt(
   declared: readonly SecretDeclaration[],
@@ -316,7 +277,6 @@ export async function secretsToPrompt(
   const out: SecretDeclaration[] = [];
   const groups = new Set<string>();
   for (const d of declared) {
-    if (d.name === MYSQL_PASSWORD) continue;
     if (d.oneOf === undefined) {
       if (rotate.includes(d.name) || (await secrets.get(d.name)) === null) out.push(d);
       continue;
@@ -470,7 +430,6 @@ export const checksStep: SetupStep<SetupState> = {
     for (const c of checks) io.print(`   ${markedLine(c)}`);
     const failed = checks.filter((c) => checkStatus(c) === "fail").length;
     if (failed === 0) return { ok: true, line: "every check passed" };
-    if (loaded.store.type === "mysql") io.print("   A new or upgraded MySQL database needs `npm run migrate` once (back it up first).");
     return { ok: false, stop: true, line: `${failed} check(s) failed: fix the ✗ lines, then run npm run setup again (it continues from here)` };
   },
 };
@@ -488,52 +447,6 @@ export const canaryStep: SetupStep<SetupState> = {
       : { ok: false, stop: true, line: "Canary FAILED: do not run the factory. Revoke the GitHub token and report the output above." };
   },
 };
-
-/** MySQL: the factory's own password is in the secret file and not named in `--rotate-mysql`. */
-export async function mysqlPasswordKept({ loaded, rotate }: SetupState): Promise<boolean> {
-  return !rotate.includes(MYSQL_PASSWORD) && (await (await new Plugins(loaded).secrets()).get(MYSQL_PASSWORD)) !== null;
-}
-
-/**
- * MySQL only: creates the database and the factory's own user with a generated password, which goes
- * straight to the secret file. The admin login is the mysql client's (~/.my.cnf, else it asks for the
- * root password itself), so the factory never sees an admin credential. SQL goes over stdin, never argv.
- */
-export async function provisionDatabase(loaded: Loaded, interactive: boolean, print: (line: string) => void): Promise<boolean> {
-  const db = loaded.store;
-  if (db.type !== "mysql") return true;
-  // Upper, lower, digit and symbol: passes MySQL's validate_password MEDIUM policy.
-  const password = `Sf-${randomBytes(18).toString("hex")}-Q7`;
-  const account = `'${db.user}'@'localhost'`;
-  const sql = [
-    `CREATE DATABASE IF NOT EXISTS \`${db.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;`,
-    `CREATE USER IF NOT EXISTS ${account} IDENTIFIED BY '${password}';`,
-    `ALTER USER ${account} IDENTIFIED BY '${password}';`,
-    `GRANT ALL PRIVILEGES ON \`${db.database}\`.* TO ${account};`,
-  ].join("\n");
-  print(`   Creating database ${db.database} and user ${db.user}@localhost (generated password, never shown).`);
-  const server = ["--host", db.host, "--port", String(db.port)];
-  if (!(await mysqlClient(server, sql, true))) {
-    if (!interactive) {
-      print("   ~/.my.cnf did not log in as an admin; under --yes the root password is not asked. Run `npm run setup` in a terminal.");
-      return false;
-    }
-    print("   ~/.my.cnf did not log in as an admin. The mysql client asks for the MySQL root password:");
-    if (!(await mysqlClient(["-u", "root", "-p", ...server], sql, false))) return false;
-  }
-  await setSecret(loaded.secretsFile, MYSQL_PASSWORD, password);
-  return true;
-}
-
-/** Runs the mysql client with `sql` on stdin. A password prompt (-p) reads the terminal, not stdin. */
-function mysqlClient(args: string[], sql: string, quiet: boolean): Promise<boolean> {
-  return new Promise((resolve) => {
-    const p = spawn("mysql", args, { stdio: ["pipe", "ignore", quiet ? "ignore" : "inherit"] });
-    p.on("error", () => resolve(false));
-    p.on("close", (code) => resolve(code === 0));
-    p.stdin.end(sql);
-  });
-}
 
 /**
  * Creates the secret file from the template, then appends, empty, any template key and any `declared`

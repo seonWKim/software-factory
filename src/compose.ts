@@ -64,7 +64,7 @@ import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
-import { defaultSecretsFile, readEnvSettings } from "./impl/secrets/env-file-secret-store.js";
+import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import {
   type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
@@ -72,7 +72,10 @@ import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 
-/** SQLite: one machine. MySQL: any number of controllers and workers on any hosts (architecture §4). */
+/**
+ * The store is SQLite (design 05-coordination.md, 2026-11-11): a config with type "mysql" fails at startup
+ * (checkConfigKeys). The mysql variant stays only while the MySQL driver and plugin do.
+ */
 export type StoreConfig =
   | { type: "sqlite" }
   | { type: "mysql"; host: string; port: number; database: string; user: string };
@@ -415,7 +418,7 @@ export async function loadConfig(
   const stats = statsConfig(file.stats);
   const models = parseModels(file.models);
   const model_by = parseModelBy(file.model_by);
-  const baseStore = file.store ?? { type: "sqlite" };
+  const store = file.store ?? { type: "sqlite" };
   const stateBase = externalConfig === null ? root : dirname(externalConfig);
   const stateDir = resolve(stateBase, file.state_dir);
   const worktreesDir = resolve(stateBase, file.worktrees_dir);
@@ -425,16 +428,15 @@ export async function loadConfig(
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
   // Their plugins join a copy of the registry for this load only; REGISTRY never changes. A guard from any pack
   // fails, and so does a project pack's plugin on a shared store (mysql), naming the file.
-  const sharedStore = baseStore.type === "mysql";
+  const sharedStore = store.type === "mysql";
   const registry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
   const plugins = withForgeDefault(
-    registry, selectPlugins(registry, { store: baseStore, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
+    registry, selectPlugins(registry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins,
   );
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
   if (!local) await checkGitHubSettings(file.github);
   const secretsFile = defaultSecretsFile();
-  const store = await storeConfig(baseStore, secretsFile);
 
   const home = process.env.HOME ?? "";
   const { check_commands: rawChecks, ...fileRepo } = file.repo;
@@ -1055,7 +1057,7 @@ const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
  * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only
- * because the MySQL store needs MYSQL_PASSWORD and the scanner needs the known secret values; neither reaches
+ * because a store plugin may declare secrets and the scanner needs the known secret values; neither reaches
  * the page. The Settings page finds the configured repo's project key from the stored project label
  * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `identity` is the
  * CLI identity main.ts resolves (cliIdentity); its user is the Settings writer. The CSRF token is made here, per
@@ -1172,7 +1174,7 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
 
 /**
  * The configured store for `factory stats`, and nothing else. Unlike build() and buildUiParts() it never
- * calls migrate(): stats writes nothing, not even a schema change. The secret store is loaded only because the MySQL store needs MYSQL_PASSWORD.
+ * calls migrate(): stats writes nothing, not even a schema change. The secret store is loaded only because a store plugin may declare secrets.
  */
 export async function buildStatsStore(loaded: Loaded): Promise<FactoryStore> {
   const p = new Plugins(loaded);
@@ -1203,26 +1205,6 @@ export function statsConfig(raw: FileConfig["stats"]): StatsConfig {
     throw new Error("stats.min_sample must be an integer ≥ 1");
   }
   return { weights: checked, min_sample };
-}
-
-/** MYSQL_HOST / _PORT / _DATABASE / _USER in the secret file override factory.config.json, per machine. */
-async function storeConfig(base: StoreConfig, secretsFile: string): Promise<StoreConfig> {
-  if (base.type !== "mysql") return base;
-  const env = await readEnvSettings(secretsFile, ["MYSQL_HOST", "MYSQL_PORT", "MYSQL_DATABASE", "MYSQL_USER"]);
-  const s = {
-    ...base,
-    host: env.get("MYSQL_HOST") ?? base.host,
-    port: Number(env.get("MYSQL_PORT") ?? base.port),
-    database: env.get("MYSQL_DATABASE") ?? base.database,
-    user: env.get("MYSQL_USER") ?? base.user,
-  };
-  if (!Number.isInteger(s.port)) throw new Error("MYSQL_PORT must be a number");
-  if (!(isSqlName(s.database) && isSqlName(s.user))) throw new Error("MySQL database and user must match [A-Za-z0-9_]+");
-  return s;
-}
-
-export function isSqlName(s: string): boolean {
-  return /^[A-Za-z0-9_]+$/.test(s);
 }
 
 /** Absent: ["npm", "test"]. Otherwise a non-empty argv of non-empty strings, or startup fails. */

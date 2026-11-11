@@ -21,7 +21,6 @@ import {
   runStep,
   secretFileStep,
   secretsToPrompt,
-  storeErrorCheck,
 } from "../src/setup.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
 
@@ -152,14 +151,16 @@ describe("one step frame", () => {
     }
     // The order setup runs them in.
     const at = (n: string) => names.indexOf(n);
-    const order = ["store", "plugins", "secret-file", "secrets", "database", "you", "mode", "checks", "canary"];
+    const order = ["plugins", "secret-file", "secrets", "database", "you", "mode", "checks", "canary"];
     for (const [a, b] of order.slice(1).map((n, i) => [order[i]!, n] as const)) {
       expect(at(a), `${a} before ${b}`).toBeGreaterThanOrEqual(0);
       expect(at(a), `${a} before ${b}`).toBeLessThan(at(b));
     }
+    // The store is SQLite (design 05-coordination.md): setup asks no store question.
+    expect(names).not.toContain("store");
   });
 
-  it("a solo run under --yes: each step from Store to Mode prints its title, why, a question with its default and a ✓/✗ line", async () => {
+  it("a solo run under --yes: each step from Plugins to Mode prints its title, why, a question with its default and a ✓/✗ line", async () => {
     const s = await state(localOnly("app"), null);
     const { io, out } = defaults();
     const steps = SETUP_STEPS.slice(0, SETUP_STEPS.findIndex((x) => x.name === "mode") + 1);
@@ -171,30 +172,30 @@ describe("one step frame", () => {
       const end = i + 1 < steps.length ? out.indexOf(`${i + 2}. ${steps[i + 1]!.title}`) : out.length;
       const body = out.slice(start + 2, end);
       // defaultsAsk prints each question with the default it took.
-      expect(body.some((l) => /\?? (yes|no|sqlite|mysql|manual|auto|\d)$|\]$/.test(l) || l.includes("display name")), st.name).toBe(true);
+      expect(body.some((l) => /\?? (yes|no|manual|auto|\d)$|\]$/.test(l) || l.includes("display name")), st.name).toBe(true);
       expect(body.filter((l) => /^ {3}[✓✗] /.test(l)), st.name).toHaveLength(1);
     });
   });
 });
 
 describe("secrets: asked when a selected plugin declares them, with hidden input", () => {
-  it("solo (SQLite, no GitHub, no Slack) needs the model credential only; team (MySQL, GitHub, Slack) adds the GitHub App ID, MySQL and Slack", async () => {
+  it("solo (no GitHub, no Slack) needs the model credential only; team (GitHub, Slack) adds the GitHub App ID and Slack, never MYSQL_PASSWORD", async () => {
     const solo = (await state(localOnly("app"))).loaded;
     const soloNeeded = neededSecrets(solo).map((d) => d.name);
     expect(soloNeeded).toEqual(expect.arrayContaining(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]));
     for (const name of [...GITHUB, "MYSQL_PASSWORD", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]) expect(soloNeeded, name).not.toContain(name);
 
     const team = (await state(REAL)).loaded;
-    expect(team.store.type).toBe("mysql");
+    expect(team.store.type).toBe("sqlite");
     const teamNeeded = neededSecrets(team).map((d) => d.name);
-    expect(teamNeeded).toEqual(expect.arrayContaining(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_APP_ID", "MYSQL_PASSWORD", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]));
+    expect(teamNeeded).toEqual(expect.arrayContaining(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_APP_ID", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]));
+    expect(teamNeeded).not.toContain("MYSQL_PASSWORD");
 
-    // Asked: one per model credential group, each other missing one; MYSQL_PASSWORD is the Database step's.
+    // Asked: one per model credential group, each other missing one.
     const asked = async (loaded: typeof solo) => (await secretsToPrompt(neededSecrets(loaded), new MapSecrets({}), [])).map((d) => d.name);
     expect(await asked(solo)).toContain("CLAUDE_CODE_OAUTH_TOKEN");
     expect(await asked(solo)).not.toContain("ANTHROPIC_API_KEY");
     expect(await asked(team)).toEqual(expect.arrayContaining(["CLAUDE_CODE_OAUTH_TOKEN", "GITHUB_APP_ID", "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN"]));
-    expect(await asked(team)).not.toContain("MYSQL_PASSWORD");
   });
 
   it("team: every missing one is asked in this run with hidden input and written to the secret file", async () => {
@@ -346,14 +347,6 @@ describe("check lines say what they check, and a FAIL how to fix it", () => {
     expect(checkLine(c)).toBe("FAIL  claude CLI: not found (fix: install Claude Code and put `claude` on PATH)");
     expect(markedLine(c)).toBe("✗ claude CLI: not found (fix: install Claude Code and put `claude` on PATH)");
     expect(markedLine({ ...c, ok: true, msg: "claude CLI: 2.1.0" })).toBe("✓ claude CLI: 2.1.0");
-  });
-
-  it("a MySQL schema pending FAIL keeps ending in `npm run migrate`; other MySQL errors get the connection fix", () => {
-    const where = "MySQL factory@127.0.0.1:3306/factory";
-    const pending = storeErrorCheck(where, new Error("3 schema steps pending (state none, latest 12): run `npm run migrate`"));
-    expect(checkLine(pending)).toMatch(/^FAIL {2}MySQL .*: \d+ schema steps? pending \(state none, latest \d+\): run `npm run migrate`$/m);
-    const down = storeErrorCheck(where, new Error("connect ECONNREFUSED 127.0.0.1:3306"));
-    expect(checkLine(down)).toBe(`FAIL  ${where}: connect ECONNREFUSED 127.0.0.1:3306 (fix: start MySQL and check the MYSQL_* settings in the secret file, or run: npm run setup)`);
   });
 
   it("every doctor FAIL on a fresh solo setup says how to fix it", async () => {
