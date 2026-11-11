@@ -4,6 +4,8 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { parseVerdict } from "../src/core/verdict.js";
+// TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
+// @ts-expect-error -- see above
 import { verdictNote } from "../web/src/views/item-commands.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { PageAction } from "../src/ui/commands.js";
@@ -508,7 +510,7 @@ describe("verdict from the item page and the item API (issue #523)", () => {
     expect(verdictNote("changes", "major", "  rename it\n")).toBe("changes major rename it");
     for (const kind of ["accept", "changes", "reject"] as const) {
       for (const severity of ["none", "minor", "major", "critical"] as const) {
-        expect(parseVerdict(verdictNote(kind, severity, "why"))).toEqual({ ok: true, value: { verdict: kind, severity, reason: "why" } });
+        expect(parseVerdict(verdictNote(kind, severity, "why") as string)).toEqual({ ok: true, value: { verdict: kind, severity, reason: "why" } });
       }
     }
   });
