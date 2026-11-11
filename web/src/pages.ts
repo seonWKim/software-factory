@@ -1,4 +1,4 @@
-import { Activity, Database, Factory, HeartPulse, OctagonAlert, type LucideIcon, ListOrdered, ListTodo, ScrollText, Settings, Users } from "lucide-react";
+import { Activity, CalendarCheck, Database, Factory, HeartPulse, OctagonAlert, type LucideIcon, ListOrdered, ListTodo, ScrollText, Settings, Users } from "lucide-react";
 
 /** The sidebar's pages, in order. */
 export interface PageDef {
@@ -10,6 +10,7 @@ export interface PageDef {
 export const PAGES: readonly PageDef[] = [
   { path: "", label: "Floor", icon: Factory },
   { path: "items", label: "Work items", icon: ListTodo },
+  { path: "tasks", label: "Tasks", icon: CalendarCheck },
   { path: "workers", label: "Workers", icon: Activity },
   { path: "queue", label: "Queue", icon: ListOrdered },
   { path: "health", label: "Health", icon: HeartPulse },

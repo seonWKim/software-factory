@@ -6,6 +6,7 @@ export const en = {
   "nav.tools": "Tools",
   "page.floor": "Floor",
   "page.items": "Work items",
+  "page.tasks": "Tasks",
   "page.workers": "Workers",
   "page.queue": "Queue",
   "page.health": "Health",

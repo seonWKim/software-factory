@@ -19,6 +19,7 @@ import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
+import { TasksPage } from "./views/tasks.js";
 import { UsersPage } from "./views/users.js";
 
 /** "updated Ns ago", ticking each second; below sm only "Ns" shows, the rest stays for screen readers. */
@@ -36,6 +37,7 @@ function Ago({ at }: { at: number }) {
 const VIEWS: Record<string, () => JSX.Element> = {
   "": FloorPage,
   items: ItemsPage,
+  tasks: TasksPage,
   workers: WorkersPage,
   queue: QueuePage,
   health: HealthPage,
@@ -49,6 +51,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
 const PAGE_KEYS: Record<string, MessageKey> = {
   "": "page.floor",
   items: "page.items",
+  tasks: "page.tasks",
   workers: "page.workers",
   queue: "page.queue",
   health: "page.health",

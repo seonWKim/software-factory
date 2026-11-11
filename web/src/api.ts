@@ -1,8 +1,9 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/users (postUsers) and POST /api/v1/rules/verdict
-// (postRuleVerdict), each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/session, /api/v1/pauses,
-// /api/v1/standing, /api/v1/users or /api/v1/rules) in x-csrf-token.
+// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/users (postUsers), POST /api/v1/rules/verdict
+// (postRuleVerdict) and POST /api/v1/tasks/build (postTaskBuild), each with the per-process CSRF token (from GET
+// /api/v1/settings, /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/users, /api/v1/rules or /api/v1/tasks)
+// in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -557,6 +558,35 @@ export interface RulesView {
 
 export type RuleVerdict = "promote" | "reject" | "hold";
 
+/** One open plain task on the Tasks page (design 02-tasks, issue #607). */
+export interface TaskRow {
+  id: string;
+  title: string;
+  /** A free `#label`, without the `#`. */
+  list: string | null;
+  priority: number | null;
+  /** `YYYY-MM-DD`, or null. */
+  due_date: string | null;
+  due_time: string | null;
+  recurrence: string | null;
+  /** The work item Build this made from it, or null. */
+  work_item_id: string | null;
+}
+
+/**
+ * `/api/v1/tasks`: the open tasks placed by due date at the server's local midnight; `csrf_token` and `can_build` for
+ * Build this (null and false when the page has no commands actor).
+ */
+export interface TasksView {
+  today_date: string;
+  inbox: TaskRow[];
+  today: { overdue: TaskRow[]; due: TaskRow[] };
+  upcoming: { date: string; tasks: TaskRow[] }[];
+  projects: { list: string | null; tasks: TaskRow[] }[];
+  csrf_token: string | null;
+  can_build: boolean;
+}
+
 /** A Users page write: add a user, change one's role, or remove one. */
 export type UsersWrite = { action: "add" | "change"; user_id: string; role: "approver" | "requester" } | { action: "remove"; user_id: string };
 
@@ -639,6 +669,8 @@ export const API = {
   users: "/api/v1/users",
   rules: "/api/v1/rules",
   ruleVerdict: "/api/v1/rules/verdict",
+  tasks: "/api/v1/tasks",
+  taskBuild: "/api/v1/tasks/build",
   dataTables: "/api/v1/data/tables",
   dataAutonomy: "/api/v1/data/autonomy",
   dataTable: (name: string, params: URLSearchParams) => {
@@ -732,6 +764,13 @@ export async function postRuleVerdict(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
   if (r.ok) return { ok: true };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/tasks/build: Build this. The work item's ID; a refusal (409, 503, …) comes back as `{ ok: false, error }`. */
+export async function postTaskBuild(token: string, id: string): Promise<{ ok: true; work_item_id: string } | { ok: false; error: string }> {
+  const r = await postJson<{ work_item_id?: string; error?: string }>(API.taskBuild, token, { id });
+  if (r.ok) return { ok: true, work_item_id: r.value.work_item_id ?? "" };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
