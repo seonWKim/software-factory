@@ -17,6 +17,7 @@ import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
 import type { CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal } from "./core/local-merge.js";
+import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
@@ -848,12 +849,11 @@ export async function build(
   await checkEnabledHooks((config.hooks ?? []).filter((n) => !checks.some((c) => c.name === n)));
   shareGitHubBudget(loaded, github, store, config);
 
-  // Runtime overrides (design 2026-11-03): one cache of file values plus stored overrides, shared by the
-  // controller and the worker pool, refreshed each tick. The file's per-project blocks are keyed by project key.
+  // Runtime overrides (design 2026-11-03) and learned values (08-settings): one cache of file values, stored overrides
+  // and learned values, shared by the controller and the worker pool, refreshed each tick. Project blocks: by project key.
+  const learned = new StoredLearnedSettings(store, new ConsoleLogger(clock, "settings"));
   const settings = new LiveSettings({
-    config,
-    base: { ...settingsBase(loaded), layers: config.settings },
-    source: store,
+    config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, learned,
     log: new ConsoleLogger(clock, "settings"),
   });
   await settings.refresh();
@@ -878,7 +878,7 @@ export async function build(
     replica_id: `${hostname()}:${process.pid}`,
     // The factory repo's git writes under this machine's stable host id; a SQLite store (solo) flushes every host's.
     git_host: gitHost(stateDir, sel.store),
-    settings,
+    settings, learned,
     // The worker pool's sandbox: the controller's local merge check fetches and checks through it (design §5).
     sandbox,
     // The alarm step's restart count (design 05-alarms): this host's supervisor status file.
@@ -918,7 +918,7 @@ export async function build(
     models: { table: loaded.model_by, names: loaded.models },
     awake, capability, guidance: new PackGuidance(loaded.packs), // the packs' rules and learnings (design 07-self-improvement.md)
     testDatabase,
-    settings,
+    settings, learned,
     engines,
     ticks,
     pack_checks: new PackCheckRunner(checks, { sandbox, audit: new SqlHookAudit(storeSql(store)), now: () => clock.now().toISOString() }),

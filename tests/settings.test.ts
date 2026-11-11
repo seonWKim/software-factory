@@ -160,6 +160,18 @@ describe("settings: layer order", () => {
     expect(s.floors.layer).toBe("defaults");
   });
 
+  it("a learned value above the project override is ignored, even when it is under the global value", () => {
+    const learned = new FakeLearned({ [ID]: { max_diff_lines: 400 } });
+    expect(settingsFor(ID, layers({ max_diff_lines: 1000 }, { max_diff_lines: 300 }), learned).max_diff_lines).toEqual({ value: 300, layer: "project" });
+    expect(settingsFor(ID, layers({ max_diff_lines: 1000 }, { max_diff_lines: 500 }), learned).max_diff_lines).toEqual({ value: 400, layer: "learned" });
+  });
+
+  it("a global value lowered below a learned value makes the learned value ignored", () => {
+    const learned = new FakeLearned({ [ID]: { max_diff_lines: 400 } });
+    expect(settingsFor(ID, layers({ max_diff_lines: 1000 }), learned).max_diff_lines).toEqual({ value: 400, layer: "learned" });
+    expect(settingsFor(ID, layers({ max_diff_lines: 350 }), learned).max_diff_lines).toEqual({ value: 350, layer: "defaults" });
+  });
+
   it("settingsFor returns every per-project key with its value and layer", async () => {
     const { config } = await load(withProject({ max_diff_files: 10 }));
     const s = settingsFor(ID, config.settings);

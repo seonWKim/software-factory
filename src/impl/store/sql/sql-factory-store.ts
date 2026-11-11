@@ -126,6 +126,7 @@ import {
   workItemInsert,
 } from "./rows.js";
 import * as filed from "./filed-patterns.js";
+import * as settingsSql from "./settings.js";
 import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords } from "./retention.js";
 import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
@@ -1834,7 +1835,7 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listSettingOverrides(): Promise<SettingOverride[]> {
     const rows = await this.db.all("SELECT * FROM runtime_settings_overrides ORDER BY setting_key, project_key");
-    return rows.map(rowToOverride);
+    return rows.map(settingsSql.rowToOverride);
   }
 
   async setSettingOverride(input: SetSettingInput): Promise<SettingChange> {
@@ -1867,12 +1868,33 @@ export class SqlFactoryStore implements FactoryStore {
 
   async listSettingChanges(limit: number): Promise<SettingChange[]> {
     const rows = await this.db.all(`SELECT * FROM runtime_settings_changes ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`);
-    return rows.map(rowToSettingChange);
+    return rows.map(settingsSql.rowToSettingChange);
+  }
+
+  // Learned settings (design 08-settings): in ./settings.ts, beside the overrides' row mappers.
+  getLearnedSetting(project: string, key: string) {
+    return settingsSql.getLearnedSetting(this.db, project, key);
+  }
+
+  listLearnedSettings() {
+    return settingsSql.listLearnedSettings(this.db);
+  }
+
+  setLearnedSetting(input: Parameters<FactoryStore["setLearnedSetting"]>[0]) {
+    return settingsSql.setLearnedSetting(this.db, input, this.now());
+  }
+
+  resetLearnedSetting(input: ResetSettingInput) {
+    return settingsSql.resetLearnedSetting(this.db, input, this.now());
+  }
+
+  listLearnedSettingChanges(limit: number) {
+    return settingsSql.listLearnedSettingChanges(this.db, limit);
   }
 
   private async selectOverride(tx: SqlExecutor, key: string, project: string): Promise<SettingOverride | null> {
     const [row] = await tx.all(`SELECT * FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?${this.db.dialect.forUpdate}`, [key, project]);
-    return row ? rowToOverride(row) : null;
+    return row ? settingsSql.rowToOverride(row) : null;
   }
 
   private async insertSettingChange(
@@ -1882,7 +1904,7 @@ export class SqlFactoryStore implements FactoryStore {
       key, project, old_value, new_value, actor, at,
     ]);
     const [row] = await tx.all("SELECT * FROM runtime_settings_changes WHERE setting_key = ? AND project_key = ? ORDER BY seq DESC LIMIT 1", [key, project]);
-    return rowToSettingChange(row!);
+    return settingsSql.rowToSettingChange(row!);
   }
 
   // Merge checks (design §5 Merge check, issue #248): one latest row per item, replaced on each check.
@@ -2651,28 +2673,6 @@ const PREFLIGHT_ACCESS_PAUSE: ClaimPauseName = "preflight_access";
 /** A probe pause is in effect while its next probe time is after the last answered probe (none: always). */
 function probeInEffect(probeAt: string | undefined, answeredAt: string | undefined): boolean {
   return probeAt !== undefined && probeAt > (answeredAt ?? "");
-}
-
-function rowToOverride(row: Row): SettingOverride {
-  return {
-    key: String(row.setting_key),
-    project: String(row.project_key),
-    value: String(row.value_json),
-    set_by: String(row.set_by),
-    set_at: String(row.set_at) as Timestamp,
-  };
-}
-
-function rowToSettingChange(row: Row): SettingChange {
-  return {
-    seq: Number(row.seq),
-    key: String(row.setting_key),
-    project: String(row.project_key),
-    old_value: row.old_value === null || row.old_value === undefined ? null : String(row.old_value),
-    new_value: row.new_value === null || row.new_value === undefined ? null : String(row.new_value),
-    actor: String(row.actor),
-    at: String(row.at) as Timestamp,
-  };
 }
 
 function rowToInbox(row: Row): InboxRow {
