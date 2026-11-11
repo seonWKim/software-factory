@@ -72,8 +72,8 @@ function SideLinks({ label, pages, current }: { label: string; pages: readonly P
               title={pageLabel(p)}
               aria-label={pageLabel(p)}
               className={cn(
-                "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-zinc-100 dark:hover:bg-zinc-800",
-                p === current && "bg-zinc-100 font-medium dark:bg-zinc-800",
+                "flex items-center gap-2 rounded-control px-2 py-1.5 text-sm hover:bg-surface-2",
+                p === current && "bg-surface-2 font-medium",
               )}
             >
               <p.icon aria-hidden className="size-4 shrink-0" />
@@ -117,23 +117,23 @@ export function App() {
 
   return (
     <NavProvider value={navigate}>
-      <div className="flex min-h-dvh bg-white font-sans text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
-        <aside aria-label={t("nav.sidebar")} className="w-44 shrink-0 border-r border-zinc-200 p-3 max-sm:w-14 dark:border-zinc-800">
+      <div className="flex min-h-dvh bg-surface font-sans text-text-1">
+        <aside aria-label={t("nav.sidebar")} className="w-44 shrink-0 border-r border-border p-3 max-sm:w-14">
           <p className="mb-4 px-2 text-sm font-semibold max-sm:hidden">{t("app.name")}</p>
           <SideLinks label={t("nav.pages")} pages={PAGES} current={current} />
-          <div className="mt-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
+          <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("nav.tools")} pages={TOOL_PAGES} current={current} />
           </div>
         </aside>
         <div className="flex min-w-0 flex-1 flex-col">
           {/* Wraps instead of widening the page on a narrow screen. */}
-          <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
             <Link
               href={BASE}
               data-testid="needs-you"
               className={cn(
-                "shrink-0 rounded-md px-2 py-1 text-sm font-medium whitespace-nowrap tabular-nums",
-                needs ? "bg-red-100 text-red-900 dark:bg-red-950 dark:text-red-100" : "bg-zinc-100 dark:bg-zinc-800",
+                "shrink-0 rounded-control px-2 py-1 text-sm font-medium whitespace-nowrap tabular-nums",
+                needs ? "bg-pill-bad-bg text-pill-bad-fg" : "bg-surface-2",
               )}
             >
               {t("topbar.needsYou", { count: needs ?? "…" })}
@@ -142,7 +142,7 @@ export function App() {
             <Link href={`${BASE}settings`} className={cn("shrink-0 text-sm whitespace-nowrap", LINK_CLASS)}>
               {t("topbar.settings")}
             </Link>
-            <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-zinc-600 tabular-nums dark:text-zinc-400" aria-live="polite">
+            <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2 tabular-nums" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : <Ago at={overview.dataUpdatedAt} />}
             </span>
             <Button aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>

@@ -32,7 +32,7 @@ describe("design tokens", () => {
   it("index.css imports the tokens and maps the Tailwind names", () => {
     const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
     expect(css).toContain('@import "./tokens.css"');
-    for (const name of ["--color-surface:", "--color-text-2:", "--color-accent:", "--radius-card:"]) {
+    for (const name of ["--color-border:", "--color-surface:", "--color-text-2:", "--color-accent:", "--radius-card:"]) {
       expect(css).toContain(name);
     }
     expect(css).toContain("prefers-reduced-motion: reduce");
@@ -44,6 +44,28 @@ describe("design tokens", () => {
     const hits = files(WEB_SRC)
       .filter((f) => !f.endsWith("tokens.css") && /\.(css|tsx?|html|svg)$/.test(f))
       .filter((f) => hex.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+  });
+
+  it("no file under web/src holds a Tailwind palette colour class", () => {
+    const names = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
+    // utility-(palette)-shade, also after dark:/hover:/focus-visible: prefixes, and the bare white/black colours.
+    const palette = new RegExp(`(?<![\\w-])(?:[a-z-]+-)?(?:${names})-\\d{2,3}\\b|(?<![\\w-])(?:text|bg|border|ring|outline|divide|fill|stroke)-(?:white|black)\\b`);
+    const hits = files(WEB_SRC)
+      .filter((f) => !f.endsWith("tokens.css") && /\.(css|tsx?)$/.test(f))
+      .filter((f) => palette.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+    expect(palette.test("dark:hover:bg-zinc-800")).toBe(true);
+    expect(palette.test("text-blue-700")).toBe(true);
+    expect(palette.test("bg-white")).toBe(true);
+    expect(palette.test("bg-surface text-text-2 border-border")).toBe(false);
+  });
+
+  it("no file under web/src uses a default radius or an arbitrary type size", () => {
+    const bad = /(?<![\w-])rounded(?:-(?:sm|md|lg|xl|2xl|3xl|full))?(?![\w-])|(?<![\w-])text-\[/;
+    const hits = files(WEB_SRC)
+      .filter((f) => /\.tsx?$/.test(f))
+      .filter((f) => bad.test(readFileSync(f, "utf8")));
     expect(hits).toEqual([]);
   });
 });

@@ -7,7 +7,7 @@ import type { SystemAction } from "../api.js";
 export function RevisionBanner({ server, web }: { server: string | null | undefined; web: string | null }) {
   if (!server || !web || server === web) return null;
   return (
-    <p role="alert" data-testid="revision-banner" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-pretty text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100">
+    <p role="alert" data-testid="revision-banner" className="border-b border-pill-warn-fg bg-pill-warn-bg px-4 py-2 text-sm text-pretty text-pill-warn-fg">
       Dashboard out of date: reload / restart <code className="font-mono">factory ui</code>
     </p>
   );
@@ -19,7 +19,7 @@ export function SystemActions({ actions }: { actions: readonly SystemAction[] })
   return (
     <ul aria-label="System actions" className="mb-3 space-y-1">
       {actions.map((a, i) => (
-        <li key={`${a.code}:${i}`} data-action={a.code} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-md bg-red-50 px-3 py-2 text-sm text-red-900 dark:bg-red-950 dark:text-red-100">
+        <li key={`${a.code}:${i}`} data-action={a.code} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-control bg-pill-bad-bg px-3 py-2 text-sm text-pill-bad-fg">
           <span className="min-w-0 text-pretty break-words">{a.text}</span>
           <code className="font-mono text-xs break-all">{a.command}</code>
         </li>

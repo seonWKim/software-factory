@@ -85,7 +85,7 @@ describe("shared link style", () => {
     const page = await mountAt("items/wi_1", "Title 1");
     const source = contentLinks(page.container).find((a) => a.getAttribute("href") === "https://github.com/o/r/issues/1")!;
     expect(source.className).toContain("tabular-nums");
-    expect(source.className).not.toContain("text-zinc-500");
+    expect(source.className).not.toContain("text-text-3");
   });
 
   it("leaves the sidebar links on their own classes", async () => {
@@ -101,31 +101,40 @@ describe("shared link style", () => {
     const last = cells.slice(-2);
     expect(last.map((c) => c.textContent)).toEqual(["–", "#5"]);
     for (const c of last) expect(c.querySelector("a")).toBeNull();
-    expect(last.map((c) => c.innerHTML).join()).not.toContain("blue");
+    expect(last.map((c) => c.innerHTML).join()).not.toContain("accent");
   });
 
 });
 
-describe("no per-call-site blue", () => {
+describe("no per-call-site link colour", () => {
   const walk = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith(".tsx") ? [join(dir, e.name)] : []));
-  it("has no text-blue-* class in web/src/views", () => {
-    for (const f of walk("web/src/views")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-blue-/);
+  it("has no text-accent class in web/src/views", () => {
+    for (const f of walk("web/src/views")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-accent/);
   });
-  it("has the style in link-style.ts alone", () => {
-    expect(LINK_CLASS).toContain("text-blue-");
+  it("has the style in link-style.ts alone, as a token class", () => {
+    expect(LINK_CLASS).toContain("text-accent");
   });
 });
 
 describe("contrast", () => {
-  const lum = (hex: string) => {
-    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-    return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
+  const css = readFileSync("web/src/tokens.css", "utf8");
+  const token = (block: string, name: string) => new RegExp(`${block} \\{[^}]*--${name}: oklch\\(([\\d.]+)% ([\\d.]+) ([\\d.]+)\\)`).exec(css)!.slice(1).map(Number) as [number, number, number];
+  // oklch to linear sRGB (Ottosson), then WCAG relative luminance.
+  const lum = ([l, c, h]: [number, number, number]) => {
+    const a = c * Math.cos((h * Math.PI) / 180), b = c * Math.sin((h * Math.PI) / 180), L = l / 100;
+    const [l_, m_, s_] = [L + 0.3963377774 * a + 0.2158037573 * b, L - 0.1055613458 * a - 0.0638541728 * b, L - 0.0894841775 * a - 1.291485548 * b].map((x) => x ** 3);
+    const [r, g, bl] = [
+      4.0767416621 * l_! - 3.3077115913 * m_! + 0.2309699292 * s_!,
+      -1.2684380046 * l_! + 2.6097574011 * m_! - 0.3413193965 * s_!,
+      -0.0041960863 * l_! - 0.7034186147 * m_! + 1.707614701 * s_!,
+    ].map((x) => Math.min(1, Math.max(0, x)));
+    return 0.2126 * r! + 0.7152 * g! + 0.0722 * bl!;
   };
-  const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+  const ratio = (a: [number, number, number], b: [number, number, number]) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
   it("is at least 4.5:1 in light and dark", () => {
-    expect(ratio("#1d4ed8", "#ffffff")).toBeGreaterThanOrEqual(4.5); // blue-700 on white
-    expect(ratio("#60a5fa", "#18181b")).toBeGreaterThanOrEqual(4.5); // blue-400 on zinc-900
-    expect(ratio("#60a5fa", "#09090b")).toBeGreaterThanOrEqual(4.5); // blue-400 on zinc-950
+    for (const block of [":root", "\\.dark"]) {
+      for (const ground of ["surface", "bg"]) expect(ratio(token(block, "accent"), token(block, ground)), `${block} ${ground}`).toBeGreaterThanOrEqual(4.5);
+    }
   });
 });

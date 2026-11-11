@@ -9,7 +9,7 @@ import { API, type Items, type ItemRow, useApi } from "../web/src/api.js";
 import { STATUS_MS } from "../web/src/components/ui/dialog.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
-import { THEME_KEY } from "../web/src/theme.js";
+import { THEME_KEY, applyTheme, storedTheme } from "../web/src/theme.js";
 import { RevisionBanner } from "../web/src/views/system-banner.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
 
@@ -175,6 +175,25 @@ describe("app shell", () => {
     localStorage.setItem(THEME_KEY, "dark");
     mount();
     expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeTruthy();
+  });
+
+  it("keeps the stored choice ahead of the system preference", () => {
+    const system = (dark: boolean) => vi.stubGlobal("matchMedia", (q: string) => ({ matches: dark && q.includes("dark"), media: q }));
+    system(true);
+    localStorage.setItem(THEME_KEY, "light");
+    expect(storedTheme()).toBe("light");
+    applyTheme(storedTheme()); // what web/src/main.tsx does at startup
+    mount();
+    expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeTruthy();
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    cleanup();
+    system(false);
+    localStorage.setItem(THEME_KEY, "dark");
+    expect(storedTheme()).toBe("dark");
+    applyTheme(storedTheme());
+    mount();
+    expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeTruthy();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 });
 

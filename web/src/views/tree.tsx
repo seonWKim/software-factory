@@ -124,14 +124,14 @@ function waitsFor(it: ItemRow, byNumber: ReadonlyMap<number, ItemRow>): { label:
   return waits && n ? { label: `#${n}`, id: byNumber.get(n)?.id ?? null } : null;
 }
 
-const CHIP = "rounded border border-zinc-300 px-1.5 py-0.5 text-xs whitespace-nowrap dark:border-zinc-700";
+const CHIP = "rounded-control border border-border-strong px-1.5 py-0.5 text-xs whitespace-nowrap";
 
 function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
   const it = node.item;
   const waits = waitsFor(it, byNumber);
   const run = it.run;
   return (
-    <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-zinc-600 dark:text-zinc-400")}>
+    <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
       <SourceLink source={it.source} className="shrink-0" />
       <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? it.source.id}</Link>
       <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
@@ -152,8 +152,8 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
       {it.change_ref !== null && (
         it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>PR #{it.change_ref}</a> : <span className="text-xs tabular-nums">PR #{it.change_ref}</span>
       )}
-      <span className="text-xs whitespace-nowrap tabular-nums text-zinc-600 dark:text-zinc-400">{ago(it.updated_at, now)}</span>
-      <span className="flex basis-full flex-wrap gap-x-2 text-xs text-zinc-600 sm:basis-auto sm:text-sm dark:text-zinc-400">
+      <span className="text-xs whitespace-nowrap tabular-nums text-text-2">{ago(it.updated_at, now)}</span>
+      <span className="flex basis-full flex-wrap gap-x-2 text-xs text-text-2 sm:basis-auto sm:text-sm">
         {it.why && <WhyText why={it.why} />}
         {run?.worker_id && <span className="font-mono" data-worker>{run.worker_id}</span>}
       </span>
@@ -164,12 +164,12 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
 function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
   const { node } = props;
   return (
-    <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-blue-500">
+    <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus">
       <TreeItemContent>
         {({ hasChildItems, isExpanded }) => (
-          <div className="flex items-start gap-1 border-b border-zinc-200 px-1 dark:border-zinc-800" style={{ paddingLeft: "calc(var(--tree-item-level, 1) * 1rem - 1rem)" }}>
+          <div className="flex items-start gap-1 border-b border-border px-1" style={{ paddingLeft: "calc(var(--tree-item-level, 1) * 1rem - 1rem)" }}>
             {hasChildItems ? (
-              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-zinc-600 dark:text-zinc-400" aria-label={isExpanded ? "Collapse" : "Expand"}>
+              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? "Collapse" : "Expand"}>
                 {isExpanded ? "▾" : "▸"}
               </Button>
             ) : (
@@ -226,7 +226,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
       selectionMode="none"
       expandedKeys={expanded}
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}
-      className="rounded-md border border-zinc-200 text-sm dark:border-zinc-800"
+      className="rounded-control border border-border text-sm"
     >
       {nodes.map((n) => <NodeItem key={n.item.id} node={n} now={now} byNumber={byNumber} />)}
     </Tree>

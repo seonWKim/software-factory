@@ -15,7 +15,7 @@ function inline(text: string): ReactNode[] {
   for (const m of text.matchAll(INLINE)) {
     out.push(text.slice(last, m.index));
     const key = m.index;
-    if (m[1] !== undefined) out.push(<code key={key} className="rounded bg-zinc-100 px-1 py-0.5 font-mono text-xs dark:bg-zinc-800">{m[1]}</code>);
+    if (m[1] !== undefined) out.push(<code key={key} className="rounded-control bg-surface-2 px-1 py-0.5 font-mono text-xs">{m[1]}</code>);
     else if (m[2] !== undefined) out.push(<strong key={key}>{m[2]}</strong>);
     else if (isHttpUrl(m[4])) out.push(<a key={key} href={m[4]} target="_blank" rel="noreferrer" className={LINK_CLASS}>{m[3]}</a>);
     else out.push(m[3]);
@@ -91,8 +91,8 @@ const CALLOUTS: readonly [RegExp, Tone][] = [
   [/^decisions for you\b/i, "attention"],
 ];
 const TONE_CLASS: Record<Tone, string> = {
-  summary: "border-blue-500 bg-blue-50 dark:border-blue-400 dark:bg-blue-950/40",
-  attention: "border-amber-500 bg-amber-50 dark:border-amber-400 dark:bg-amber-950/40",
+  summary: "border-accent bg-pill-info-bg",
+  attention: "border-pill-warn-fg bg-pill-warn-bg",
 };
 
 // "AS-IS: … TO-BE: …" in one paragraph shows as two lines, each label in bold.
@@ -112,8 +112,8 @@ function renderBlock(b: Block, n: number): ReactNode {
   switch (b.kind) {
     case "heading": {
       const Tag = HEADING_TAG[b.level - 1]!;
-      const rule = b.level <= 2 ? "border-b border-zinc-200 pb-1 dark:border-zinc-800" : "";
-      return <Tag key={n} className={`${HEADING_SIZE[b.level - 1]} ${rule} font-semibold text-balance text-zinc-900 not-first:mt-5 dark:text-zinc-100`}>{inline(b.text)}</Tag>;
+      const rule = b.level <= 2 ? "border-b border-border pb-1" : "";
+      return <Tag key={n} className={`${HEADING_SIZE[b.level - 1]} ${rule} font-semibold text-balance text-text-1 not-first:mt-5`}>{inline(b.text)}</Tag>;
     }
     case "p":
       return <Paragraph key={n} text={b.text} />;
@@ -121,17 +121,17 @@ function renderBlock(b: Block, n: number): ReactNode {
     case "ol": {
       const Tag = b.kind;
       return (
-        <Tag key={n} className={`${b.kind === "ul" ? "list-disc" : "list-decimal"} space-y-1 pl-5 marker:text-zinc-400 dark:marker:text-zinc-500`}>
+        <Tag key={n} className={`${b.kind === "ul" ? "list-disc" : "list-decimal"} space-y-1 pl-5 marker:text-text-3`}>
           {b.items.map((it, k) => <li key={k} className="pl-1">{inline(it)}</li>)}
         </Tag>
       );
     }
     case "code":
-      return <pre key={n} className="overflow-x-auto rounded-md bg-zinc-100 p-3 font-mono text-xs leading-normal dark:bg-zinc-900"><code>{b.text}</code></pre>;
+      return <pre key={n} className="overflow-x-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-normal"><code>{b.text}</code></pre>;
     case "details":
       return (
-        <details key={n} className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-          <summary className="cursor-pointer font-medium text-zinc-700 dark:text-zinc-300">{inline(b.summary)}</summary>
+        <details key={n} className="rounded-control border border-border px-3 py-2">
+          <summary className="cursor-pointer font-medium text-text-1">{inline(b.summary)}</summary>
           <div className="mt-2 space-y-3">{renderBlocks(b.body)}</div>
         </details>
       );
@@ -150,7 +150,7 @@ function renderBlocks(list: Block[]): ReactNode[] {
     const start = i;
     while (i + 1 < list.length && !(list[i + 1]!.kind === "heading" && (list[i + 1] as { level: number }).level <= b.level)) i++;
     out.push(
-      <div key={start} data-callout={tone} className={`space-y-2 rounded-r-md border-l-4 px-3 py-2 not-first:mt-5 ${TONE_CLASS[tone]}`}>
+      <div key={start} data-callout={tone} className={`space-y-2 rounded-r-control border-l-4 px-3 py-2 not-first:mt-5 ${TONE_CLASS[tone]}`}>
         {list.slice(start, i + 1).map((x, k) => renderBlock(x, start + k))}
       </div>,
     );
