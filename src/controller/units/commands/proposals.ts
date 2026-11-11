@@ -1,6 +1,7 @@
 // Stored command proposals (design 04-gate-commands, issue #584): a plain-language reply's proposals stored once, and
 // the confirm path of a press (Slack's proposal buttons, slack-commands.ts), which stores one `proposal_confirm`
-// command row as the presser's linked factory user. Each pending command it names goes through the typed command's
+// command row as the presser's linked factory user, of `factory confirm <proposal-id>` (the same row as the CLI
+// identity), and of the dashboard's Confirm all (an app request, app-requests.unit.ts). Each pending command it names goes through the typed command's
 // path (CommandsUnit.gateCommand): the same AuthProvider check, note scan and state checks. Imports only the
 // controller's own modules; what needs the legacy core comes in from the commands unit (`ConfirmDeps`). Its store
 // I/O is inline, as the commands unit's is (unit-purity ratchet): the kernel has no proposal write yet.
@@ -14,6 +15,8 @@ type Store = Ctx["k"]["d"]["store"];
 type Proposal = Awaited<ReturnType<Store["listCommandProposals"]>>[number];
 type Item = Parameters<CommandsUnit["gateCommand"]>[0];
 type InboxCommand = Parameters<CommandsUnit["handleInboxCommand"]>[0];
+/** What a confirm reads of its command: a CLI or chat row, or the dashboard's app request (the same fields). */
+export type ConfirmCommand = Pick<InboxCommand, "key" | "actor" | "args" | "passport_id" | "created_at">;
 
 /** The interpretation's shape this file reads: a `commands` answer's proposals. */
 interface Answer {
@@ -54,6 +57,23 @@ function answeredLine(r: Proposal): string {
 }
 
 /**
+ * A dashboard Cancel (an app request): marks each pending row of `proposal` cancelled as `actor` and stores no
+ * command; one reply on `at`'s thread, keyed `key`, says what it did, as Slack's Cancel press answers.
+ */
+export async function cancelProposal(c: Ctx, proposal: string, actor: string, at: Item, key: string): Promise<void> {
+  const store = c.k.d.store;
+  let cancelled = 0;
+  for (const r of await store.listCommandProposals(proposal)) {
+    if (r.status !== "pending") continue;
+    if (await store.answerCommandProposal({ proposal_id: r.proposal_id, idx: r.idx, from: "pending", to: "cancelled", answered_by: actor })) cancelled++;
+  }
+  const body = cancelled > 0
+    ? `Cancelled by \`${actor}\`: the proposed ${cancelled === 1 ? "command was" : "commands were"} not applied, and no command was stored.`
+    : "Nothing to cancel: every command of this proposal was already applied or answered.";
+  await c.unit("outbox").post(at, at.source, body, `<!-- factory:proposal-cancelled:${key} -->`);
+}
+
+/**
  * A confirm press's command row (`args.proposal`, `args.index`; no index: confirm all) on the thread's item `at`.
  * Each pending row it names, in index order, is claimed (pending → applied, conditional, so a second confirm, a
  * redelivery or another replica applies it once) and then applied through the typed path as the row's actor; a
@@ -62,7 +82,7 @@ function answeredLine(r: Proposal): string {
  * what already happened. A stop between the claim and the apply leaves the row applied with nothing applied: the
  * person types the line, which the reply keeps.
  */
-export async function confirmProposal(c: Ctx, cmd: InboxCommand, at: Item, deps: ConfirmDeps): Promise<void> {
+export async function confirmProposal(c: Ctx, cmd: ConfirmCommand, at: Item, deps: ConfirmDeps): Promise<void> {
   const store = c.k.d.store;
   const proposal = typeof cmd.args.proposal === "string" ? cmd.args.proposal : "";
   const index = typeof cmd.args.index === "number" ? cmd.args.index : null;

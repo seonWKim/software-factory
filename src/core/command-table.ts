@@ -190,7 +190,9 @@ export function commandLine(c: TableCommand): string {
  */
 export function chatCommandListMarkdown(): string {
   return COMMAND_TABLE.map((c) => {
-    const where = c.edge ? "; refused in chat until #479, so use the CLI" : c.item ? ", in the item's thread" : "";
+    const where = c.edge ? "; refused in chat until #479, so use the CLI"
+      : c.item ? ", in the item's thread"
+      : c.group === "sentence" ? "; in an item's thread the factory owns, a reply with no mention" : "";
     return `- \`@bot ${c.chat.replace(/^\//, "")}\`: as \`factory ${cliUsageOf(c)}\`${where}. Who: ${WHO[c.who]}.`;
   }).join("\n");
 }

@@ -21,7 +21,7 @@ import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { confirmProposal, storeProposals } from "./proposals.js";
+import { type ConfirmCommand, confirmProposal, storeProposals } from "./proposals.js";
 import { scanClean } from "./scan.js";
 
 type AppSender = { user_id: UserId; passport?: Extract<CommandEvent, { kind: "spec_approved" }>["approver"]["passport"] } | null;
@@ -152,13 +152,21 @@ export class CommandsUnit {
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     if (!item) return;
     // A proposal's confirm press (proposals.ts) and `factory merge <id>` (local items only) skip the comment mapping.
-    if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, commandIdentity(c, localIdentity(c.actor))), say: refusalText });
+    if (c.command === CONFIRM_COMMAND) return this.confirm(c, item);
     if (c.command === MERGE_COMMAND) {
       if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, commandIdentity(c, localIdentity(c.actor)), c.key);
       return;
     }
     const e = commandEvent(c, item.source);
     if (e) await this.c.dispatch(e);
+  }
+
+  /**
+   * A confirm of a stored proposal (proposals.ts) as `cmd`'s actor, checked with its edge passport: a CLI or chat
+   * command row, or the dashboard's app request. Refusals and "nothing applied" are answered on `at`'s thread.
+   */
+  confirm(cmd: ConfirmCommand, at: WorkItem): Promise<void> {
+    return confirmProposal(this.c, cmd, at, { event: (r, s) => proposalEvent(r, s, commandIdentity(cmd, localIdentity(cmd.actor))), say: refusalText });
   }
 
   /**
