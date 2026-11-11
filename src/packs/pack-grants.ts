@@ -4,10 +4,12 @@
 // (an approval row for that description_hash, or the default-off `packs.auto_approve_read_only` for a read-only
 // entry with no credential). An entry the run kind does not grant is never listed. A tool that passes both checks
 // joins the run's broker tools: the pack tool broker (src/impl/broker/pack-tool-broker.ts) serves it and checks the
-// approval again on every call (issue #592). No MCP server starts yet: one that passes both checks is refused, as
-// `not_started`, and the run fails before its agent starts.
+// approval again on every call (issue #592). An MCP server that passes both checks reaches the run as its
+// descriptor's `command` and `args` (issue #596), when it is a stdio server with no credential; any other is refused,
+// as `not_started`, and the run fails before its agent starts.
 
 import { PACK_GRANT } from "../core/config.js";
+import type { PackMcpServer } from "../interfaces/agent-runner.js";
 import type { SqlDriver } from "../state/index.js";
 import { PackApprovalsStore } from "./pack-approvals.store.js";
 import { PackEntriesStore, type PackEntryKind, type StoredEntry } from "./pack-entries.store.js";
@@ -15,7 +17,11 @@ import { PackEntriesStore, type PackEntryKind, type StoredEntry } from "./pack-e
 /** The run's error code when it is granted a pack entry it cannot have. */
 export const PACK_TOOL_REFUSED = "pack_tool_refused";
 
-/** `no_entry`: nothing is stored under the name. `not_approved`: its current description is not approved. `not_started`: an MCP server passes both checks; none starts yet. */
+/**
+ * `no_entry`: nothing is stored under the name. `not_approved`: its current description is not approved.
+ * `not_started`: an approved MCP server the factory does not start: it names a credential, is not a stdio server
+ * with a `command`, or the run's runner cannot run MCP servers.
+ */
 export type PackRefusalReason = "no_entry" | "not_approved" | "not_started";
 
 export interface PackRefusal {
@@ -29,16 +35,30 @@ export function autoApproved(entry: Pick<StoredEntry, "read_only" | "credential_
 }
 
 /**
- * A run kind's grants split in two: the broker tools (with each approved pack tool) and a refusal for each other pack
- * entry it names.
+ * The MCP server an approved descriptor starts: stdio only (`type` absent or `"stdio"`), a non-empty `command`
+ * string and `args` absent or strings; its `env` is never read (the server starts with an empty one). Null for any
+ * other descriptor, and for one that names a credential: no server is handed a factory secret.
+ */
+export function packMcpServer(entry: Pick<StoredEntry, "name" | "credential_name" | "descriptor">): PackMcpServer | null {
+  const { type, command, args = [] } = entry.descriptor;
+  if (entry.credential_name !== null || (type !== undefined && type !== "stdio")) return null;
+  if (typeof command !== "string" || command.trim() === "") return null;
+  if (!Array.isArray(args) || !args.every((a): a is string => typeof a === "string")) return null;
+  return { name: entry.name, command, args };
+}
+
+/**
+ * A run kind's grants split in three: the broker tools (with each approved pack tool), each approved MCP server
+ * the factory starts, and a refusal for each other pack entry it names.
  * Reads the store only (no time, no write).
  */
 export async function checkPackGrants(
   db: SqlDriver,
   grants: readonly string[],
   autoApproveReadOnly: boolean,
-): Promise<{ broker: string[]; refused: PackRefusal[] }> {
+): Promise<{ broker: string[]; mcp_servers: PackMcpServer[]; refused: PackRefusal[] }> {
   const broker: string[] = [];
+  const mcp_servers: PackMcpServer[] = [];
   const refused: PackRefusal[] = [];
   for (const grant of grants) {
     const m = PACK_GRANT.exec(grant);
@@ -50,9 +70,13 @@ export async function checkPackGrants(
     const found = await approvedEntry(db, kind, m[2]!, autoApproveReadOnly);
     if (typeof found === "string") refused.push({ grant, reason: found });
     else if (kind === "tool") broker.push(grant);
-    else refused.push({ grant, reason: "not_started" });
+    else {
+      const server = packMcpServer(found);
+      if (server) mcp_servers.push(server);
+      else refused.push({ grant, reason: "not_started" });
+    }
   }
-  return { broker, refused };
+  return { broker, mcp_servers, refused };
 }
 
 /**
