@@ -61,7 +61,7 @@ graph TB
 
 | Interface | Local implementation (now) | Cloud / enterprise implementation (later) |
 |---|---|---|
-| `FactoryStore` | `SqlFactoryStore` (all store logic, once) over a `SqlDriver`: `MysqlDriver` (default, any number of nodes), `SqliteDriver` (one machine, tests) | `MysqlDriver` on managed MySQL (RDS / Cloud SQL) |
+| `FactoryStore` | `SqlFactoryStore` (all store logic, once) over `SqliteDriver`: one machine, every worker process of the owner (a `mysql` store is refused at startup since 2026-11-11, `docs/design/05-coordination.md`) | none planned |
 | `Sandbox` | `NoOpSandbox`: a clone per run on the host (with no GitHub plugin: the local base branch, no origin fetch) | Docker → gVisor / Kata / Firecracker, hosted sandboxes |
 | `AgentRunner` | `ClaudeCodeRunner`: `claude -p` | API-based runner |
 | `LLMProvider` | Anthropic via the Claude Code CLI (subscription) | Anthropic API, Bedrock, Vertex, company ML gateway |
@@ -208,7 +208,7 @@ graph TB
     W3["worker node M"]
   end
 
-  ST[("FactoryStore: MySQL")]
+  ST[("FactoryStore: SQLite")]
 
   GH --> LB --> CTRL
   CTRL <--> ST
@@ -232,7 +232,7 @@ Scale workers for throughput. Scale controllers for availability.
 | A worker's worktree is disposable. The branch on GitHub plus handoff rows are the truth | A run resumes on any node, not only the one that started it |
 | Shared limits live in the store: LLM concurrency, token budgets, per-repo run caps | N workers can't overrun a provider rate limit or a budget, because they count against the same rows |
 | Webhooks are verified, acknowledged fast, and written to the store before any work | Retries from GitHub are safe; slow processing never times out a webhook |
-| SQLite is local-only. More than one node requires the MySQL `FactoryStore` | SQLite has one writer on one machine; `store` in `factory.config.json` makes the swap a config change |
+| The store is SQLite, on one machine. A config that selects `mysql` fails at startup (decision 2026-11-11, `docs/design/05-coordination.md`) | SQLite has one writer on one machine; the replicas above are processes on that machine, sharing its file |
 
 **Workers per process.** `workers` in `factory.config.json` (an integer of 1 or more, default 1; any other value fails at startup) is how many worker loops one `factory dev` or `factory worker` process runs (`WorkerPool`, `src/worker/pool.ts`). `max_workers` (an integer of at least `workers`; absent: `workers`) is how many slots the process has, so `factory settings set workers <n>` changes the count live up to it (`docs/design/08-settings.md`). Each loop claims through the store on its own, has its own id `<host>:<pid>:<n>` (the lease owner) and gets a fresh worktree per run. The loops share one `KeepAwake`, counted: held when the first run starts, released when the last one ends. A drain stops every loop from claiming; the drain is acknowledged only after every in-flight run is done. Each loop's index n reaches the agent and the run's gate and check commands as `SF_WORKER_INDEX`, so parallel runs on one host can choose their own ports or test database, and its share of the host's CPUs as `SF_TEST_WORKERS` (CPUs over claiming slots, at least 1; `docs/design/05-coordination.md`, Parallel workers). The index is unique only within one process.
 

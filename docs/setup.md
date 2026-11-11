@@ -82,23 +82,6 @@ GitHub gives each App installation (or each token's account) one hourly budget o
 - The share is counted **per process**: replicas of one factory on one App split its share between them (two replicas of a factory with a share of 0.5 at 0.25 each).
 - Once a factory has used its share, optional reads (PR mergeable, review, base-commit and check reads) wait for the reset; the intake lists still run. With no calls left at all, GitHub work waits for the reset (the status page shows the reset time) and local work goes on. Details: [`docs/plugins/github-credentials.md`](plugins/github-credentials.md).
 
-## 4b. MySQL (only with `"store": { "type": "mysql" }`)
-
-Connection settings and the password live together in the secret file. Empty settings fall back to `store` in `factory.config.json`. Only `MYSQL_PASSWORD` is treated as a secret (scanned by G5); the others are plain settings.
-
-```
-MYSQL_HOST=        # default localhost
-MYSQL_PORT=        # default 3306
-MYSQL_DATABASE=    # default software_factory
-MYSQL_USER=        # default factory
-MYSQL_PASSWORD=
-```
-
-- **Your own MySQL user:** fill in all five. Setup won't create anything.
-- **Let setup create one:** leave `MYSQL_PASSWORD` empty. `npm run setup` creates the database and `'factory'@'localhost'` with a generated password and writes it here; you never see it. Rotate with `npm run setup -- --rotate-mysql`.
-
-Workers on other machines will need an account for their hosts and TLS; that comes with the multi-machine step.
-
 ## 5. Check
 
 ```bash
@@ -108,9 +91,9 @@ git -C <repo> status --ignored | grep .env  # nothing: no secret file in the rep
 
 ## 6. Automated
 
-`npm run setup` does steps 2–5 for you (secret file, hidden prompts for the tokens, MySQL database and user, labels, checks, canary). See [`SET_UP.md`](../SET_UP.md) for the steps.
+`npm run setup` does steps 2–5 for you (secret file, hidden prompts for the tokens, the SQLite store, labels, checks, canary). See [`SET_UP.md`](../SET_UP.md) for the steps.
 
-- **Only what the selected plugins declare.** The Secrets step lists the secrets the selected plugins need and asks for each missing one, in the same run, with hidden input: the value goes straight to the secret file and never appears on screen, in shell history or in an argument. With GitHub off it asks for neither `GITHUB_APP_ID` nor `GITHUB_TOKEN`, and the checks report neither as a FAIL, also when you answered no to GitHub but declined to write the config change. `MYSQL_PASSWORD` is never asked: setup generates it.
+- **Only what the selected plugins declare.** The Secrets step lists the secrets the selected plugins need and asks for each missing one, in the same run, with hidden input: the value goes straight to the secret file and never appears on screen, in shell history or in an argument. With GitHub off it asks for neither `GITHUB_APP_ID` nor `GITHUB_TOKEN`, and the checks report neither as a FAIL, also when you answered no to GitHub but declined to write the config change.
 - **`--yes` reads nothing.** Under `npm run setup -- --yes` setup never reads the terminal: each question takes its default, and a missing secret is reported on a `✗` line instead of asked. Paste it later with a plain `npm run setup` in a terminal.
 - **Resume.** After each finished step setup writes `<state_dir>/setup-progress.json` (mode 600): the finished step names and your GitHub answer, never a secret value. A later run asks `Continue from step N?` or `start over`. A setup that finishes with every step `✓` deletes the file.
 - **Check lines.** Every check says what it checks, and every FAIL (`✗` in setup) says how to fix it. `✓ ANTHROPIC_API_KEY not set (good: agents use CLAUDE_CODE_OAUTH_TOKEN)` is the good state; when it is set, the line is a FAIL that says to run `unset ANTHROPIC_API_KEY`.
@@ -121,7 +104,7 @@ The flow to reset a machine is **pull → teardown → setup**: `git pull`, then
 
 - **What it removes.** The state folder (`<state_dir>`, `.factory/` by default), the factory's clean run folders and version copies (`git worktree remove`, then `git worktree prune`), its `factory/*` branches merged into the base branch, and its `refs/factory/*` refs. Every path setup creates is named in one list, `src/setup-paths.ts`; a test fails when setup writes a path that is not on it.
 - **What it keeps.** Your own folders in `<worktrees_dir>`, anything with uncommitted changes, unmerged branches and branches checked out in a worktree: listed, never forced.
-- **The store.** SQLite: `factory.db` is copied to `backups/teardown-<time>/` next to the secret file (outside the repository, where agents cannot read it) before the state folder goes; the path is printed. MySQL: the database is never dropped or altered; teardown says the shared store was not touched.
+- **The store.** SQLite: `factory.db` is copied to `backups/teardown-<time>/` next to the secret file (outside the repository, where agents cannot read it) before the state folder goes; the path is printed.
 - **Secrets.** The secret file stays. `--secrets` asks again, then removes only the factory's named entries (the template's keys and every name a plugin declares); your other lines stay and the file keeps mode 600. `github-app.pem` stays: delete it by hand.
 - **While running.** Teardown refuses while the factory runs on this machine (it reads `<state_dir>/supervisor.json` and the version copies' pid files). `--stop` drains it like `npm run migrate` does, stops it, then continues.
 

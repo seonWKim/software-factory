@@ -9,7 +9,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 
 | Interface | Config key | Default (today) | Guard |
 |---|---|---|---|
-| FactoryStore | `store.type` | `sqlite` if there is no `store` block; the checked-in config uses `mysql` | no |
+| FactoryStore | `store.type` | `sqlite` (the only store; `mysql` is refused at startup) | no |
 | AuthProvider | `auth` (top level) | the checked-in config uses `github` | no |
 | SecretStore | `plugins.secrets` | `env-file` | **yes** |
 | EgressScanner | `plugins.egress` | `pattern` | **yes** |
@@ -27,7 +27,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 
 ```jsonc
 // factory.config.json (the checked-in defaults)
-"store": { "type": "mysql", "host": "localhost", "port": 3306, "database": "software_factory", "user": "factory" },
+"store": { "type": "sqlite" },
 "auth": "github",
 "plugins": {
   "secrets": "env-file", "egress": "pattern", "broker": "github",
@@ -56,7 +56,7 @@ Since 2026-11-07 (issue #336):
 
 - **Config path.** Every command takes `--config <path>` (or `--config=<path>`, before or after the command); `FACTORY_CONFIG` does the same, and the flag wins when both are set. `src/main.ts` parses it once at startup and makes a relative path absolute against the cwd; that absolute path is what the process loads and what the `git-worktree` supervisor passes to each child and each `migrate` call (as `FACTORY_CONFIG`). Neither set: the checked-in `factory.config.json` under the code root (the version folder under `git-worktree`, else the cwd), as before. A missing, unreadable or invalid file stops startup with an error naming the path. `factory doctor` prints one line naming the file in use. Prompts come from the code root, with the pack layers merged on top (design 11-packs.md, since 2026-11-11).
 - **State location.** With an external config, `state_dir` and `worktrees_dir` resolve from the config file's folder. Without one they resolve from the cwd, as before. `repo.path` resolves from the cwd in both cases. A relative `state_dir` or `worktrees_dir` follows the config file's folder, so when the config file sits next to the secrets file, set both to absolute paths outside that folder: startup (and `factory doctor`, as a FAIL line) refuses a `state_dir` or `worktrees_dir` that is a denied path or inside one, since the agents could not read it (issue #471).
-- **Reviewed keys.** Solo (`store.type` `sqlite`): an external config may set any key. On a shared store (`mysql`, the enterprise case) `dials`, `floors` (also `defaults.floors`), `plugins`, `permissions`, `auth`, `toolchain`, `hooks` (since 2026-11-09: a replica's own file could otherwise drop the owner's `before_merge` veto) and `packs` (since 2026-11-11: a replica's own file could otherwise load another org pack's prompts and plugins) come only from the checked-in file under the code root, the one a reviewed PR changes; the external file's values for them are ignored.
+- **Reviewed keys.** An external config may set any key: the store is SQLite (a `mysql` store is refused at startup since 2026-11-11). On a shared store (`mysql`, kept in code until #576 removes it) `dials`, `floors` (also `defaults.floors`), `plugins`, `permissions`, `auth`, `toolchain`, `hooks` (since 2026-11-09: a replica's own file could otherwise drop the owner's `before_merge` veto) and `packs` (since 2026-11-11: a replica's own file could otherwise load another org pack's prompts and plugins) come only from the checked-in file under the code root, the one a reviewed PR changes; the external file's values for them are ignored.
 - **Not supported:** loading config from a URL or a package, or from any other env var; several projects in one process. The secret file stays at `~/.config/software-factory/.env`.
 
 ## The discovered registry
