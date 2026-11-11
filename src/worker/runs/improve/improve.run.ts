@@ -15,7 +15,7 @@ async function improve(w: Worker, run: Run, item: WorkItem, signal: AbortSignal)
   const report = await runImprove(
     {
       store: w.d.store, storage: w.d.storage, scanner: w.d.scanner, signal,
-      ...(metered ? { llm: metered } : {}), ...(w.d.prompts.improve !== undefined ? { prompt: improvePrompts(w.d.prompts.improve).draft } : {}),
+      ...(metered ? { llm: metered } : {}), ...(w.d.prompts.improve !== undefined ? { prompt: w.live.styled(improvePrompts(w.d.prompts.improve).draft) } : {}),
     },
     run,
     item,

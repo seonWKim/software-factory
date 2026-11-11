@@ -28,6 +28,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `max_loops` | controller | runtime | global | tighten-only |  | `3` | Review feedback loops on one change before the work item blocks on a human. |
 | `max_restart` | controller | runtime | global | tighten-only |  | `3` | Infra failures of one step (lease loss, timeout, crash) before it blocks on a human. |
 | `merge_queue.depth` | controller | review | global | free |  | `1` | Merge queue entries checked at once from the head, each on the base plus those ahead (1 to 10). |
+| `message_style` | worker | runtime | global | free |  | `""` | The owner's wording and tone for text the agents write, added after each role's instructions. |
 | `mode` | controller | runtime | project | free | dial (approve_merge) | `"manual"` | Manual waits for a person at every spec and merge; auto approves and merges what it may itself. |
 | `model_by` | worker | runtime | global | free |  | `{"triage":"cheap","implement":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"review":"standard","resolve":{"1":"standard","2":"standard","3":"strong","4":"strong","5":"strong"},"retry_up":true}` | Which model class each run kind uses per tier, and whether a retry goes one class up. |
 | `models` | worker | runtime | global | free |  | `{"cheap":"haiku","standard":"sonnet","strong":"opus"}` | The model name used for each model class: cheap, standard and strong. |
