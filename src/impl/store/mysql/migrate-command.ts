@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import mysql from "mysql2/promise";
 import { fingerprintTables, lostRows, type Row } from "../../../state/index.js";
+import { livePids } from "../../../teardown.js";
+import { type CopyOptions, copyToSqlite, mysqlSnapshotReader } from "./copy-to-sqlite.js";
 import type { MysqlOptions } from "./mysql-driver.js";
 import { type MigrationStatus, MysqlMigrations, mysqlMigrationDb, type Queryable } from "./migrations.js";
 
@@ -17,16 +19,30 @@ export const SQLITE_MIGRATE_MESSAGE =
 export const BACKUP_REMINDER =
   "Back up the database before migrating (e.g. mysqldump --single-transaction <database> > backup.sql), and rehearse first (npm run migrate -- --rehearse). Numbered steps are not reversible.";
 
+/** `--copy-from-mysql [--dry-run] [--replace]`: copy the MySQL store into SQLite (copy-to-sqlite.ts). */
+export interface CopyFromMysql {
+  readonly copy: "from-mysql";
+  readonly dryRun: boolean;
+  readonly replace: boolean;
+}
+
 /**
- * `--status` / `--dry-run` / `--rehearse` as arguments (`npm run migrate -- --status`) or as npm config
- * (`npm run migrate --status` sets npm_config_status).
+ * `--status` / `--dry-run` / `--rehearse` / `--contract` / `--copy-from-mysql` as arguments (`npm run migrate --
+ * --status`) or as npm config (`npm run migrate --status` sets npm_config_status). `--dry-run` and `--replace`
+ * also go with `--copy-from-mysql`.
  */
-export function parseMigrateArgs(args: readonly string[], env: Record<string, string | undefined> = {}): MigrateMode | { error: string } {
-  const flag = (name: string, envName: string) => args.includes(`--${name}`) || env[envName] === "true";
+export function parseMigrateArgs(args: readonly string[], env: Record<string, string | undefined> = {}): MigrateMode | CopyFromMysql | { error: string } {
+  const flag = (name: string) => args.includes(`--${name}`) || env[`npm_config_${name.replaceAll("-", "_")}`] === "true";
   const names = ["status", "dry-run", "rehearse", "contract"] as const;
-  const unknown = args.filter((a) => !names.some((n) => a === `--${n}`));
-  if (unknown.length > 0) return { error: `unknown argument: ${unknown.join(" ")} (use --status, --dry-run, --rehearse or --contract)` };
-  const modes = names.filter((m) => flag(m, `npm_config_${m.replace("-", "_")}`));
+  const known: readonly string[] = [...names, "copy-from-mysql", "replace"];
+  const unknown = args.filter((a) => !known.some((n) => a === `--${n}`));
+  if (unknown.length > 0) return { error: `unknown argument: ${unknown.join(" ")} (use --status, --dry-run, --rehearse, --contract or --copy-from-mysql)` };
+  const modes = names.filter((m) => flag(m));
+  if (flag("copy-from-mysql")) {
+    if (modes.some((m) => m !== "dry-run")) return { error: "--copy-from-mysql goes only with --dry-run and --replace" };
+    return { copy: "from-mysql", dryRun: modes.includes("dry-run"), replace: flag("replace") };
+  }
+  if (flag("replace")) return { error: "--replace goes with --copy-from-mysql" };
   if (modes.length > 1) return { error: "use one of --status, --dry-run, --rehearse and --contract" };
   return modes[0] ?? "apply";
 }
@@ -148,6 +164,20 @@ async function rehearse(opts: MysqlOptions, print: (line: string) => void): Prom
     if (created) await src.query(`DROP DATABASE IF EXISTS \`${copy}\``);
     await src.end();
     await rm(backups, { recursive: true, force: true });
+  }
+}
+
+/** `--copy-from-mysql`: the copy reads `opts` and runs only while no factory process is live (teardown's check). */
+export function copyFromMysqlCommand(opts: MysqlOptions, o: Omit<CopyOptions, "livePids">): Promise<number> {
+  return copyToSqlite(mysqlSnapshotReader(opts), { ...o, livePids: () => livePids(o.stateDir, pidAlive) });
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

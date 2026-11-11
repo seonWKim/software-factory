@@ -40,6 +40,20 @@ make setup
 
 It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`, which asks again and removes only the factory's own entries), GitHub issues or pull requests, the GitHub App, the Slack app or a MySQL database; it prints where to remove each by hand. On a shared MySQL store it resets only this machine (its worktrees, agent configs, host id, passport key): the shared store and other replicas keep working. Decisions: [`docs/design/08-teardown.md`](docs/design/08-teardown.md).
 
+## Move a MySQL store to SQLite: copy, then switch
+
+The `mysql` store is deprecated ([`docs/plugins/factory-store.md`](docs/plugins/factory-store.md)). While `factory.config.json` still selects `mysql`, copy its data first, then switch:
+
+```bash
+npm run migrate -- --copy-from-mysql --dry-run   # lists each table and its row count; writes nothing, may run while the factory runs
+npm run migrate -- --copy-from-mysql             # stop the factory first: it refuses and names the pids while one runs
+```
+
+1. **Copy.** It reads MySQL with SELECT only, inside one consistent snapshot, and copies every table into `<state_dir>/db/factory.db`, row by row in primary-key order and in batches, at the latest SQLite schema. It skips only `schema_state` and `schema_migrations`; `legacy_*` tables are copied too. A MySQL table the SQLite schema lacks makes it refuse and list the table, writing no file. It builds into a temporary file beside `factory.db` and checks each table (row count and a checksum over the primary-key columns); on a mismatch it deletes the new file and names the table. If `factory.db` already holds data, it refuses; with `--replace` the old file (and its `-wal`/`-shm` files) moves to `<state_dir>/db/backups/factory-<time>.db` first, and the path is printed. MySQL is never changed.
+2. **Switch.** The copy prints the change to make and the next step; it does not edit `factory.config.json`. Set `"store": { "type": "sqlite" }` there, run `npm run migrate`, then start the factory.
+
+The copy is removed with the `mysql` plugin in its follow-up removal.
+
 ## Before you start
 
 - Node.js 22.13 or newer, and git
@@ -379,6 +393,7 @@ Use:
 | MySQL: after setup creates the database, and after an update that adds a file in `migrations/mysql/` (the factory refuses to start until then; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. It drains only `factory dev`: stop any `factory controller` or `factory worker` you started yourself before you migrate, so no old process writes meanwhile. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
 | MySQL: see the schema state and the pending steps | `npm run migrate -- --status` |
 | MySQL: see what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
+| MySQL: copy the store into SQLite before switching to `sqlite` (factory stopped; see [Move a MySQL store to SQLite](#move-a-mysql-store-to-sqlite-copy-then-switch)) | `npm run migrate -- --copy-from-mysql` (`--dry-run` lists, `--replace` backs up an existing file) |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
 | File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |

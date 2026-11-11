@@ -47,6 +47,15 @@ describe("npm run migrate: arguments", () => {
     expect(parseMigrateArgs(["--down"])).toEqual({ error: expect.stringContaining("--down") });
   });
 
+  it("--copy-from-mysql, with --dry-run and --replace; --replace alone and other modes with it are refused", () => {
+    expect(parseMigrateArgs(["--copy-from-mysql"])).toEqual({ copy: "from-mysql", dryRun: false, replace: false });
+    expect(parseMigrateArgs(["--copy-from-mysql", "--dry-run"])).toEqual({ copy: "from-mysql", dryRun: true, replace: false });
+    expect(parseMigrateArgs(["--copy-from-mysql", "--replace"])).toEqual({ copy: "from-mysql", dryRun: false, replace: true });
+    expect(parseMigrateArgs([], { npm_config_copy_from_mysql: "true", npm_config_replace: "true" })).toEqual({ copy: "from-mysql", dryRun: false, replace: true });
+    expect(parseMigrateArgs(["--copy-from-mysql", "--rehearse"])).toEqual({ error: expect.stringContaining("--copy-from-mysql") });
+    expect(parseMigrateArgs(["--replace"])).toEqual({ error: expect.stringContaining("--copy-from-mysql") });
+  });
+
   it("the pending message names npm run migrate and fits doctor's 120 characters", () => {
     const msg = pendingMessage({ state: null, latest: 9999, pending: Array.from({ length: 999 }, () => ({ number: 1, label: "", kind: "sql" as const })), refusal: null });
     expect(msg).toContain("npm run migrate");
