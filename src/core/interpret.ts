@@ -1,6 +1,7 @@
 import { issueNumber } from "./change-ref.js";
 import { commentEvent } from "./comment-event.js";
 import { type CommandName, type CommandState, applies, commandSpec, commandState, phaseLabel } from "./commands.js";
+import { withMessageStyle } from "./message-style.js";
 import type { SourceRef, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
@@ -109,11 +110,12 @@ export const TOP_LEVEL_FACT = "The message was posted as a new top-level message
 
 /**
  * The model request for `text` against `items`, posted `at`. The message, the list and the facts of the item it was
- * posted on (its state label and block reason, read-only) each appear once, fenced and labelled untrusted.
+ * posted on (its state label and block reason, read-only) each appear once, fenced and labelled untrusted. `style`: the
+ * owner's `message_style`, after the rules (design 04-agents); empty: the request as it was before the setting.
  */
-export function interpretRequest(text: string, items: readonly OpenItem[], at: MessageAt): LLMRequest {
+export function interpretRequest(text: string, items: readonly OpenItem[], at: MessageAt, style = ""): LLMRequest {
   const top = at === "top_level";
-  const system = [
+  const rules = [
     "You read one short message a person wrote to a software factory and decide what they mean, about the open work items listed with it.",
     "",
     "The commands a person can type on an item are exactly these:",
@@ -136,6 +138,7 @@ export function interpretRequest(text: string, items: readonly OpenItem[], at: M
     "- `text` is an empty string for every kind but `chat` and `unsure`.",
     'Answer only with JSON: {"kind": string, "entries": [{"item": string, "command": string, "args": string}], "text": string}.',
   ].join("\n");
+  const system = withMessageStyle(rules, style);
   const list = JSON.stringify(items.map((it) => ({ id: it.id, number: it.number, title: it.title, state: phaseLabel(it.state.phase) })));
   const listFence = fenceFor(list);
   const fence = fenceFor(text);
@@ -249,10 +252,10 @@ function unique<T>(xs: readonly (T | null)[], key: (x: T) => string): T[] {
  * output, or an answer whose entries all fail the checks. On an item, a `request` or `unsure` answer with text is
  * read as chat (an item's thread is already an item).
  */
-export async function interpret(text: string, items: readonly OpenItem[], llm: LLMProvider, at: MessageAt): Promise<Interpretation> {
+export async function interpret(text: string, items: readonly OpenItem[], llm: LLMProvider, at: MessageAt, style = ""): Promise<Interpretation> {
   let res;
   try {
-    res = await llm.complete(interpretRequest(text, items, at));
+    res = await llm.complete(interpretRequest(text, items, at, style));
   } catch {
     return { kind: "none" };
   }

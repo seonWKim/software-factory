@@ -10,6 +10,7 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import { PACK_TOOL_REFUSED, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
+import { withMessageStyle } from "../core/message-style.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
 import { type CheckRound, checkCommands, commandText, redact, runChecks } from "../core/checks.js";
@@ -124,6 +125,7 @@ export class Worker {
   /**
    * The system prompt and tools of a run role (`src/worker/roles/<role>.role.ts`): the prompt file it names under
    * prompts/, and its tools by name. Every agent step takes them from here. A role with no prompt, or whose prompt file is missing, fails the run (`prompt_missing`).
+   * The owner's `message_style`, read live at each call, follows the role's instructions (design 04-agents); empty: the prompt as it is.
    */
   async roleSpec(name: string): Promise<{ system_prompt: string; tools: ToolSpec[] }> {
     this.rolesReady ??= loadRoles();
@@ -131,7 +133,7 @@ export class Worker {
     if (!role?.prompt) throw new RunFailure("prompt_missing", `run role "${name}" names no prompt`);
     const system_prompt = this.d.prompts[role.prompt.replace(/\.md$/, "") as keyof Prompts];
     if (!system_prompt) throw new RunFailure("prompt_missing", `prompts/${role.prompt} is missing`);
-    return { system_prompt, tools: toolsNamed(role.tools) };
+    return { system_prompt: withMessageStyle(system_prompt, this.live.values().message_style), tools: toolsNamed(role.tools) };
   }
 
   /**

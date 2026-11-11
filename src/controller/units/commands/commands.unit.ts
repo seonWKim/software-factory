@@ -492,7 +492,9 @@ export class CommandsUnit {
     const text = body.trim();
     if (!llm || text === "" || text.length > INTERPRET_MAX_CHARS || !(await scanClean(this.c, where, "message", [text]))) return "unread";
     const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
-    const result = await interpret(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level");
+    // The owner's message_style, read live at each call (design 04-agents): it shapes the chat answer's wording only.
+    const style = this.c.k.live.values().message_style;
+    const result = await interpret(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level", style);
     if (!(await scanClean(this.c, where, "answer", interpretTexts(result)))) return "blocked";
     return { kind: result.kind, body: interpretReply(result, on ? await storeProposals(this.c, on.item, on.e, result) : null) };
   }

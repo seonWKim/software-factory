@@ -11,6 +11,7 @@ import {
   type GateSettableKey,
   MODES,
   PROJECT_SETTABLE_KEYS,
+  SCANNED_SETTABLE_KEYS,
   SETTABLE_KEYS,
   type SettableKey,
   type SettingsBase,
@@ -24,6 +25,7 @@ import {
   workersCap,
 } from "./core/settings.js";
 import { learnedFromRows } from "./core/learned-settings.js";
+import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore, SettingOverride } from "./interfaces/factory-store.js";
 import { loadSettingCatalog } from "./runtime/index.js";
 import { loosens } from "./shared/setting.js";
@@ -115,6 +117,11 @@ export interface SettingsDeps {
    * of `mode` or `auto_merge_max_tier`, before one that loosens a tighten-only key, and before a learned reset that loosens the value in force; the refusal, or null. Solo: the local owner holds it with no setup. Absent: no check.
    */
   mayApproveMerge?(): Promise<string | null>;
+  /**
+   * The configured egress scanner (G5): a set of a free-text key that reaches a model's prompt (SCANNED_SETTABLE_KEYS,
+   * `message_style`) is refused when it flags the value. Absent: such a set is refused, never stored unscanned.
+   */
+  scanner?: EgressScanner;
 }
 
 export interface SettingsResult {
@@ -194,6 +201,10 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
       return fail(err instanceof Error ? err.message : String(err));
     }
     value = JSON.stringify(raw);
+    if (SCANNED_SETTABLE_KEYS.includes(key)) {
+      const refused = await scanRefusal(deps.scanner, key, String(parsed));
+      if (refused) return fail(refused);
+    }
     if (key === "workers") {
       const cap = workersCap(deps.base);
       if ((parsed as number) > cap) {
@@ -241,6 +252,15 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
       `applies at ${(await loadSettingCatalog()).describe(key).applies}, with no restart`,
     ],
   };
+}
+
+/** Why the egress scanner refuses `value` for `key`, naming the rules and never the text; null when it is clean. */
+async function scanRefusal(scanner: EgressScanner | undefined, key: string, value: string): Promise<string | null> {
+  if (!scanner) return `${key} is checked by the egress scanner before it is stored, and none is configured here; nothing stored`;
+  const scan = await scanner.scan("log", value);
+  if (scan.clean) return null;
+  const rules = [...new Set(scan.findings.map((f) => f.rule))].join(", ");
+  return `${key} was flagged by the egress scanner (${rules}); it reaches model prompts, so nothing was stored`;
 }
 
 /** The configured repo's ProjectRef for `--project`, or the refusal when it names another repo. */

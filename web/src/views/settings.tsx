@@ -24,6 +24,19 @@ const input =
   "rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm tabular-nums dark:border-zinc-700 dark:bg-zinc-900 " +
   "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600";
 const textButton = "h-8 w-auto px-2";
+/** message_style (design 04-agents): what it does in one line, and an example. */
+const STYLE_HINT = "Added after each agent's instructions; changes only how replies, specs and summaries read.";
+const STYLE_EXAMPLE = "Example: Short sentences. Plain words, no jargon. Lead with the decision.";
+
+/** A JSON string value as its text; anything else as it is. */
+function stringOf(text: string): string {
+  try {
+    const v: unknown = JSON.parse(text);
+    return typeof v === "string" ? v : text;
+  } catch {
+    return text;
+  }
+}
 
 /** A write and its outcome for one field: the refusal stays next to the field until the next try. */
 function useWrite(token: string) {
@@ -158,6 +171,19 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
           </label>
         ))}
         <Button type="submit" variant="outline" className={textButton} disabled={busy || tiers === null} aria-label={`Save ${label}`}>
+          Save
+        </Button>
+      </form>
+    );
+  } else if (row.kind === "text") {
+    // Free text: shown and edited as plain text, sent as a JSON string, as `factory settings set` takes it.
+    const shown = draft ?? stringOf(value);
+    control = (
+      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+        <p className="max-w-md text-xs text-pretty text-zinc-600 dark:text-zinc-400">{STYLE_HINT}</p>
+        <textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className={cn(input, "w-full min-w-48 text-sm")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <p className="max-w-md text-xs text-pretty text-zinc-600 dark:text-zinc-400">{STYLE_EXAMPLE}</p>
+        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>

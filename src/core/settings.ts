@@ -3,6 +3,7 @@ import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js"
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
+import { MESSAGE_STYLE_MAX_CHARS } from "./message-style.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
 import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
@@ -276,6 +277,7 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode",
   "auto_merge_max_tier",
+  "message_style",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -294,6 +296,9 @@ export type Mode = (typeof MODES)[number];
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
+
+/** Free-text keys that reach a model's prompt: a set runs the egress scanner on the value and refuses a hit (design 04-agents). */
+export const SCANNED_SETTABLE_KEYS: readonly SettableKey[] = ["message_style"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -330,6 +335,7 @@ export interface SettableValues {
   "standing_approvals.threshold": number;
   mode: Mode;
   auto_merge_max_tier: number;
+  message_style: string;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -356,6 +362,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   "standing_approvals.threshold": 10,
   mode: "manual",
   auto_merge_max_tier: 0,
+  message_style: "",
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -443,6 +450,12 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "auto_merge_max_tier":
       if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > AUTO_MERGE_TIER_MAX) {
         throw new Error(`auto_merge_max_tier must be a whole number from 0 to ${AUTO_MERGE_TIER_MAX}; tier 4 and the gate list never merge automatically`);
+      }
+      return value as SettableValues[K];
+    case "message_style":
+      if (typeof value !== "string") throw new Error("message_style must be a JSON string (the text of the style)");
+      if (value.length > MESSAGE_STYLE_MAX_CHARS) {
+        throw new Error(`message_style is ${value.length} characters; at most ${MESSAGE_STYLE_MAX_CHARS} are allowed`);
       }
       return value as SettableValues[K];
     default:
