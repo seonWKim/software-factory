@@ -17,6 +17,7 @@ import { FloorPage, HealthPage, ItemPage, ItemsPage, QueuePage, WorkersPage } fr
 import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
+import { RulesPage } from "./views/rules.js";
 import { UsersPage } from "./views/users.js";
 
 /** "updated Ns ago", ticking each second; below sm only "Ns" shows, the rest stays for screen readers. */
@@ -38,6 +39,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   queue: QueuePage,
   health: HealthPage,
   failures: FailuresPage,
+  rules: RulesPage,
   settings: SettingsPage,
   users: UsersPage,
   data: DataPage,
@@ -50,6 +52,7 @@ const PAGE_KEYS: Record<string, MessageKey> = {
   queue: "page.queue",
   health: "page.health",
   failures: "page.failures",
+  rules: "page.rules",
   settings: "page.settings",
   users: "page.users",
   data: "page.data",

@@ -20,8 +20,7 @@ import { AgentsHomeTacitLedger } from "../src/impl/tacit/agents-home-tacit-ledge
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import type { TacitLedger } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import type { UiPauses } from "../src/ui/pause-api.js";
-import type { RulesDeps } from "../src/ui/rules-api.js";
+import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
@@ -96,7 +95,7 @@ async function page(tacit: TacitLedger | undefined, as: UserId = OWNER) {
   await store.claimLocalOwner(OWNER);
   const log = new MemLog();
   const pauses: UiPauses = { principal: async () => as, authorize: async () => ({ allow: true }), csrfToken: newCsrfToken(), log };
-  const d: RulesDeps = {
+  const d: PauseDeps = {
     store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses,
     ...(tacit ? { tacit } : {}),
   };

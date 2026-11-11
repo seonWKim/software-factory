@@ -61,7 +61,6 @@ import { type RepoLookup, resolveProject } from "./impl/github/forge.plugin.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
-import type { TacitLedger } from "./interfaces/tacit-ledger.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
@@ -841,6 +840,7 @@ export async function build(
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
+  const tacit = await createPlugin(registry, "tacit", sel.tacit, base);
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
 
@@ -865,10 +865,6 @@ export async function build(
   });
   await settings.refresh();
 
-  // The owner's tacit ledger (issues #570, #571): the controller's outbound runs its capture CLI, and each run's
-  // prompt reads the promoted rules through it (LearnedRules). No agent run gets it.
-  const tacit = await createPlugin(registry, "tacit", sel.tacit, base);
-
   const controller = new ControllerRole({
     identity,
     store,
@@ -881,8 +877,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
-    network_probe, bus, ticks,
-    tacit,
+    network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     // The factory repo's git writes under this machine's stable host id; a SQLite store (solo) flushes every host's.
@@ -925,8 +920,7 @@ export async function build(
     // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
-    // The packs' rules and learnings, then the owner's promoted rules from the ledger (design 07-self-improvement.md).
-    awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]),
+    awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
     testDatabase,
     settings, learned,
     engines,
@@ -1056,8 +1050,6 @@ export interface UiParts {
   pauses: UiPauses;
   /** Display names by user id from Identity's identity_profiles (M9), only to show. */
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
-  /** The Rules page (issue #571): the owner's tacit ledger, read with `list` and judged with `verdict` only. */
-  tacit: TacitLedger;
   close(): Promise<void>;
 }
 
@@ -1128,8 +1120,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   const profiles = new ProfileStore(storeSql(store));
   const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
-  const tacit = await createPlugin(loaded.registry, "tacit", loaded.plugins.tacit, p.base);
-  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, close: () => identity.stop().then(() => store.close()) };
+  return { clock, store, scanner, settings, commands, pauses, displayNames, close: () => identity.stop().then(() => store.close()) };
 }
 
 function refusalOf(d: AuthDecision): string | null {

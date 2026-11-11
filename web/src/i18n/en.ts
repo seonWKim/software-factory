@@ -10,6 +10,7 @@ export const en = {
   "page.queue": "Queue",
   "page.health": "Health",
   "page.failures": "Failures",
+  "page.rules": "Rules",
   "page.settings": "Settings",
   "page.users": "Users",
   "page.data": "Data",

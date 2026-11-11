@@ -78,7 +78,7 @@ export default defineCommand({
         // The Users page (GET and POST /api/v1/users): local roles through the CLI's `users` actions, as this machine's CLI identity.
         users,
         // The Rules page (GET /api/v1/rules, POST /api/v1/rules/verdict): the tacit ledger's list and verdict, owner only.
-        tacit: parts.tacit,
+        tacit: await createPlugin(loaded.registry, "tacit", loaded.plugins.tacit, new Plugins(loaded).base),
       },
       uiPort(loaded.file.ui),
     );

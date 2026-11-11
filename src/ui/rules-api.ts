@@ -9,7 +9,6 @@
 import { PENDING_STATE, RULE_VERDICTS, type RuleEntry, type RuleVerdict, ruleEntry } from "../core/learned-rules.js";
 import { errorText } from "../core/log.js";
 import type { UserId } from "../core/types.js";
-import type { TacitLedger } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import { Withholder } from "./withhold.js";
@@ -21,11 +20,8 @@ export const RULE_VERDICT_PATH = "/api/v1/rules/verdict";
 export const MAX_REASON = 1000;
 export const MAX_RULE_TEXT = 2000;
 
-/** The UI's dependencies with the Rules routes. Absent `tacit`: the plugin is `none` for the page. */
-export type RulesDeps = PauseDeps & { tacit?: TacitLedger };
-
 /** The page's user when they may judge rules (the local owner), else why not. */
-async function owner(d: RulesDeps, p: UiPauses): Promise<{ user: UserId } | { error: string }> {
+async function owner(d: PauseDeps, p: UiPauses): Promise<{ user: UserId } | { error: string }> {
   const user = await p.principal();
   if (user === null) return { error: "No factory user acts from this page: link your local account or set cli_user." };
   // The local grants first (as every check): a solo store's first identity becomes its owner there.
@@ -36,7 +32,7 @@ async function owner(d: RulesDeps, p: UiPauses): Promise<{ user: UserId } | { er
 }
 
 /** GET /api/v1/rules. Every ledger text leaves through the Withholder (G5, `ui`). */
-export async function readRules(d: RulesDeps): Promise<ApiResult> {
+export async function readRules(d: PauseDeps): Promise<ApiResult> {
   const tacit = d.tacit;
   if (!tacit?.enabled) return { status: 200, value: { enabled: false, entries: [], error: null, csrf_token: null, judge: null } };
   const who = d.pauses ? await owner(d, d.pauses) : { error: "The page has no owner check: verdicts are off." };
@@ -85,7 +81,7 @@ function parseVerdict(body: unknown): VerdictBody | string {
  * POST /api/v1/rules/verdict with `{ id, verdict, reason, text? }`, after the request guards: 400 for a body that is not
  * one, 409 with no ledger, 403 for anyone but the owner, 502 when the ledger's CLI fails; else 200.
  */
-export async function writeRuleVerdict(d: RulesDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
+export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
   const v = parseVerdict(body);
   if (typeof v === "string") return { status: 400, value: { error: v } };
   if (!d.tacit?.enabled) return { status: 409, value: { error: "No tacit ledger: set plugins.tacit to agents-home and restart `factory ui`." } };

@@ -1,8 +1,8 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume), POST /api/v1/standing (postStanding) and POST /api/v1/users (postUsers), each with the per-process
-// CSRF token (from GET /api/v1/settings, /api/v1/session, /api/v1/pauses, /api/v1/standing or /api/v1/users) in
-// x-csrf-token.
+// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/users (postUsers) and POST /api/v1/rules/verdict
+// (postRuleVerdict), each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/session, /api/v1/pauses,
+// /api/v1/standing, /api/v1/users or /api/v1/rules) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -532,6 +532,31 @@ export interface UsersView {
   users: UserRow[];
 }
 
+/** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
+export interface RuleRow {
+  id: string;
+  /** `pushback`, `class` (a candidate class) or `structure` (a structure proposal). */
+  kind: string;
+  /** The domains the rule is for; empty: every domain. */
+  scope: string[];
+  evidence: string[];
+  rule_draft: string;
+}
+
+/**
+ * `/api/v1/rules`: `enabled` false when the tacit plugin is `none`; `judge` is why the viewer cannot send a verdict,
+ * or null; `error` is a failed ledger read, or null.
+ */
+export interface RulesView {
+  enabled: boolean;
+  entries: RuleRow[];
+  error: string | null;
+  csrf_token: string | null;
+  judge: string | null;
+}
+
+export type RuleVerdict = "promote" | "reject" | "hold";
+
 /** A Users page write: add a user, change one's role, or remove one. */
 export type UsersWrite = { action: "add" | "change"; user_id: string; role: "approver" | "requester" } | { action: "remove"; user_id: string };
 
@@ -612,6 +637,8 @@ export const API = {
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",
   users: "/api/v1/users",
+  rules: "/api/v1/rules",
+  ruleVerdict: "/api/v1/rules/verdict",
   dataTables: "/api/v1/data/tables",
   dataAutonomy: "/api/v1/data/autonomy",
   dataTable: (name: string, params: URLSearchParams) => {
@@ -695,6 +722,16 @@ export async function postStanding(
 export async function postUsers(token: string, body: UsersWrite): Promise<{ ok: true; done: string } | { ok: false; error: string }> {
   const r = await postJson<{ done?: string; error?: string }>(API.users, token, body);
   if (r.ok) return { ok: true, done: r.value.done ?? "" };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote the owner's wording when edited. */
+export async function postRuleVerdict(
+  token: string,
+  body: { id: string; verdict: RuleVerdict; reason: string; text?: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
+  if (r.ok) return { ok: true };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 

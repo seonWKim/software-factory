@@ -33,7 +33,6 @@ import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
 import { Withholder } from "./withhold.js";
-import { type RulesDeps, readRules } from "./rules-api.js";
 import type { MergeCheck } from "../interfaces/factory-store.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -56,8 +55,8 @@ export function isApiPath(pathname: string): boolean {
   return pathname === "/api/v1" || pathname.startsWith("/api/v1/");
 }
 
-/** The API's dependencies: the pause, users and rules routes' and the overview's system actions'. */
-export type ApiDeps = PauseDeps & UsersDeps & SystemDeps & RulesDeps;
+/** The API's dependencies: the pause and users routes' and the overview's system actions'. */
+export type ApiDeps = PauseDeps & UsersDeps & SystemDeps;
 
 /** Answers one GET (or HEAD) under /api/v1. */
 export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
@@ -96,8 +95,6 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return ok(await readStanding(d));
     case "/users":
       return d.users ? ok(await readUsers(d, d.users)) : apiError(404, "Not found.");
-    case "/rules": // the Rules page (issue #571): the ledger's pending entries through TacitLedger.list
-      return readRules(d);
   }
   const t = /^\/data\/tables\/([^/]+)$/.exec(path);
   if (t) {
