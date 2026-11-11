@@ -50,7 +50,9 @@ describe("design tokens", () => {
   it("no file under web/src holds a Tailwind palette colour class", () => {
     const names = "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
     // utility-(palette)-shade, also after dark:/hover:/focus-visible: prefixes, and the bare white/black colours.
-    const palette = new RegExp(`(?<![\\w-])(?:[a-z-]+-)?(?:${names})-\\d{2,3}\\b|(?<![\\w-])(?:text|bg|border|ring|outline|divide|fill|stroke)-(?:white|black)\\b`);
+    const use = "text|bg|border|ring|outline|divide|fill|stroke|from|via|to|decoration|accent|caret|shadow|placeholder|marker";
+    // A CSS variable reference such as bg-(--color-red-700) is not a palette class and is not matched.
+    const palette = new RegExp(`(?<![\\w-])(?:${use})-(?:${names})-\\d{2,3}\\b|(?<![\\w-])(?:${use})-(?:white|black)\\b`);
     const hits = files(WEB_SRC)
       .filter((f) => !f.endsWith("tokens.css") && /\.(css|tsx?)$/.test(f))
       .filter((f) => palette.test(readFileSync(f, "utf8")));
