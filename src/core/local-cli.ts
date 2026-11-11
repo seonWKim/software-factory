@@ -4,16 +4,18 @@ import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
 import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
+import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
- * `retry`, `revise`, `reject` and `resolve` append one row to the CLI command log (`command_inbox`) and change no item
+ * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
- * with its text before any write (issue #528). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
+ * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
+ * issue #523). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
  * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
- * answers (design 05-sources, CLI intake). Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
+ * answers (design 05-sources, CLI intake); a verdict is not mirrored. Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
  * writing command becomes the local owner; `users` lets the owner give others roles. No sync source call.
  */
 
@@ -68,7 +70,7 @@ export const CLI_TOP_WORDS = topWords(["task", "item", "users"]);
 /** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
 export const HELP_WORD = "help";
 
-const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve"] as const;
+const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict"] as const;
 
 /** `merge` is the local merge (src/core/local-merge.ts); the others are the comment commands of the same name. */
 export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
@@ -127,6 +129,10 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     const [id, ...rest] = args;
     if (!id) return bad(`${word} needs a work item ID`);
     const text = rest.join(" ").trim();
+    if (word === "verdict") {
+      const v = parseVerdict(text);
+      if (!v.ok) return bad(v.refuse.includes(VERDICT_USAGE) ? v.refuse : `${v.refuse}; the expected format is ${VERDICT_USAGE}`);
+    }
     return { action: "command", command: word as ItemCommand, id: id as WorkItemId, text };
   }
   if (word === HELP_WORD) {
@@ -223,14 +229,14 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!item) return fail(`no work item ${a.id}`);
       const name = a.command === MERGE_COMMAND ? "factory merge" : `/${a.command}`;
       if (a.command === MERGE_COMMAND && item.source.type !== "local") return fail(`${a.id} is not a local work item: merge its change on the forge instead`);
-      // The controller's phase check, before any write: the same refusal it would post (issue #528).
-      const refused = a.command === "approve" ? approveRefusal(item) : null;
+      // The controller's phase check, before any write: the same refusal it would post (issues #528, #523).
+      const refused = a.command === "approve" ? approveRefusal(item) : a.command === "verdict" ? verdictRefusal(item) : null;
       if (refused !== null) return fail(refusalText(name, refused));
       await claim();
       const args: Record<string, unknown> = { item: item.id, ...(a.text !== "" ? { text: a.text } : {}) };
       // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface, and
-      // a command typed in the item's own thread is already there.
-      const mirror = item.source.type !== "local" && item.source.type !== d.origin;
+      // a command typed in the item's own thread is already there. A verdict changes no state, so it is not mirrored.
+      const mirror = a.command !== "verdict" && item.source.type !== "local" && item.source.type !== d.origin;
       const passport_id = await d.passport?.();
       const { command } = await d.store.appendCliCommand({
         key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}), ...(passport_id ? { passport_id } : {}),

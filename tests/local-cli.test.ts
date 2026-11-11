@@ -9,11 +9,12 @@ import {
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, cliUsageOf } from "../src/core/command-table.js";
 import { helpReply, itemCommandState, refusalText, specNotWaiting } from "../src/core/commands.js";
+import { VERDICT_USAGE } from "../src/core/verdict.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { cleanScanner, config, silent } from "./helpers/fakes.js";
+import { FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // The writer side of local intake (issue #200): CLI commands that create local items, append item commands to
@@ -64,6 +65,8 @@ describe("parseLocalCliArgs", () => {
     expect(parseLocalCliArgs("users", ["list"])).toEqual({ action: "users_list" });
     expect(parseLocalCliArgs("users", ["add", "local:a@b.c", "--role", "approver"])).toEqual({ action: "users_add", user: "local:a@b.c", role: "approver" });
     expect(parseLocalCliArgs("users", ["remove", "local:a@b.c"])).toEqual({ action: "users_remove", user: "local:a@b.c" });
+    expect(parseLocalCliArgs("verdict", ["wi_1", "changes", "major", "rename", "it"])).toEqual({ action: "command", command: "verdict", id: "wi_1", text: "changes major rename it" });
+    expect(parseLocalCliArgs("verdict", ["wi_1", "accept"])).toEqual({ action: "command", command: "verdict", id: "wi_1", text: "accept" });
     expect(parseLocalCliArgs("help", [])).toEqual({ action: "help", id: null });
     expect(parseLocalCliArgs("help", ["wi_1"])).toEqual({ action: "help", id: "wi_1" });
     expect(parseLocalCliArgs("help", ["wi_1", "wi_2"])).toMatchObject({ error: expect.stringContaining("usage:") });
@@ -73,11 +76,18 @@ describe("parseLocalCliArgs", () => {
     for (const [w, a] of [
       ["task", []], ["task", ["create", "--title", "T"]], ["task", ["create", "--body-file", "b"]], ["task", ["create", "--title"]],
       ["task", ["create", "--title", "T", "--body-file", "b", "--label", "x"]], ["task", ["show"]], ["task", ["list", "x"]],
-      ["task", ["frob"]], ["approve", []], ["retry", []], ["resolve", []], ["users", []], ["users", ["add", "alice", "--role", "approver"]],
+      ["task", ["frob"]], ["approve", []], ["retry", []], ["resolve", []], ["verdict", []], ["users", []], ["users", ["add", "alice", "--role", "approver"]],
       ["users", ["add", "local:a", "--role", "owner"]], ["users", ["add", "local:a"]], ["users", ["remove"]], ["users", ["list", "x"]],
     ] as [string, string[]][]) {
       const r = parseLocalCliArgs(w, a);
       expect({ w, a, r }).toMatchObject({ r: { error: expect.stringContaining("usage:") } });
+    }
+  });
+
+  it("a malformed verdict (unknown verdict, unknown severity, missing reason) is an error with the `/verdict` usage line", () => {
+    for (const text of [[], ["lgtm"], ["changes", "huge", "rename", "it"], ["changes", "minor"], ["reject", "major"]]) {
+      const r = parseLocalCliArgs("verdict", ["wi_1", ...text]);
+      expect({ text, r }).toMatchObject({ r: { error: expect.stringContaining(VERDICT_USAGE) } });
     }
   });
 
@@ -202,6 +212,29 @@ describe("approve, retry, revise, reject, resolve", () => {
       expect.objectContaining({ actor: USER, command: "approve", args: { item: gh.id, text: "ship it" }, mirror: true }),
     ]);
     expect((await store.listUnmirroredCliCommands(100)).map((c) => c.args.item)).toEqual([gh.id]);
+  });
+});
+
+describe("verdict on an item of a sync source (issue #523)", () => {
+  it("stores one verdict and posts no mirror comment", async () => {
+    const ME = "local:me@example.com" as UserId;
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const github = new FakeSource();
+    const local = new LocalAuthProvider(store);
+    const controller = new ControllerRole({
+      store, sources: [new LocalSource(store), github], auth: local, local_auth: local, clock, config, log: silent, scanner: cleanScanner,
+      repeated_failure_rule: false,
+    });
+    const gh = (await store.createWorkItem(issue(3), system)).item;
+    await at(store, gh.id, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" });
+    const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "v1" };
+    expect((await runLocalCli(d, { action: "command", command: "verdict", id: gh.id, text: "accept none fine" })).code).toBe(0);
+    expect(await store.listCliCommandsAfter(0, 10)).toEqual([expect.objectContaining({ command: "verdict", args: { item: gh.id, text: "accept none fine" } })]);
+    expect(await store.listUnmirroredCliCommands(10)).toEqual([]);
+    await controller.tickCommands();
+    expect((await store.listVerdicts(gh.id)).map((v) => [v.verdict, v.severity, v.reason, v.target])).toEqual([["accept", "none", "fine", "issue"]]);
+    expect(github.comments).toEqual([]);
   });
 });
 

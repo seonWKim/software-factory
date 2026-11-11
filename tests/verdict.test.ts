@@ -1,7 +1,11 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { WorkItem } from "../src/core/types.js";
-import { parseVerdict } from "../src/core/verdict.js";
+import { type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
+import type { UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
+import { parseVerdict, verdictRefusal } from "../src/core/verdict.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
 import type { AuthAction, Principal } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent, VerdictEventTarget } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -254,5 +258,93 @@ describe("controller: /verdict", () => {
     await f.controller.handleEvent(verdict("changes minor", "521"));
     await refused(f, it0, "521");
     expect(f.source.comments).toHaveLength(1);
+  });
+});
+
+describe("verdictRefusal", () => {
+  it("refuses a closed item that was not merged, saying so when it had a PR; an open or merged item takes a verdict", () => {
+    expect(verdictRefusal({ stage: "CLOSED", merge_sha: null, change_ref: null })).toBe("the work item is closed");
+    expect(verdictRefusal({ stage: "CLOSED", merge_sha: null, change_ref: "42" })).toBe("the work item is closed and its PR was not merged");
+    expect(verdictRefusal({ stage: "CLOSED", merge_sha: "m1", change_ref: "42" })).toBeNull();
+    expect(verdictRefusal({ stage: "REVIEW", merge_sha: null, change_ref: null })).toBeNull();
+  });
+
+  it("is the one place the closed-item text lives: the verdict unit calls it and keeps no copy", () => {
+    const unit = readFileSync(new URL("../src/controller/units/verdicts/verdicts.unit.ts", import.meta.url), "utf8");
+    expect(unit).toContain("verdictRefusal(");
+    expect(unit).not.toContain("the work item is closed");
+  });
+});
+
+describe("factory verdict on a local item (issue #523)", () => {
+  const ME = "local:me@example.com" as UserId;
+  const MERGE_PENDING: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" };
+
+  /** No forge and no account: the local source, the local auth plugin, and the CLI as ME, who becomes the local owner. */
+  async function local() {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const controller = new ControllerRole({
+      store, sources: [new LocalSource(store)], auth: new LocalAuthProvider(store), clock, config, log: silent, scanner: cleanScanner,
+      repeated_failure_rule: false,
+    });
+    let n = 0;
+    const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "b", newId: () => `id${++n}` };
+    /** A local item filed from the CLI, put at `patch`. */
+    const filed = async (patch: WorkItemPatch): Promise<WorkItem> => {
+      const id = (await runLocalCli(d, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
+      const it = (await store.getWorkItem(id))!;
+      const r = await store.transition({ id, expected_version: it.version, actor: system, reason: "test_setup", patch });
+      if (!r.ok) throw new Error("setup");
+      return r.item;
+    };
+    const cli = (id: WorkItemId, text: string) => runLocalCli(d, { action: "command", command: "verdict", id, text });
+    const shape = async (id: WorkItemId) => (await store.listVerdicts(id)).map((v) => ({
+      verdict: v.verdict, severity: v.severity, reason: v.reason, target: v.target, implicit: v.implicit, pr_head: v.pr_head,
+    }));
+    return { store, controller, filed, cli, shape };
+  }
+
+  it("stores one command row; the controller stores the same verdict a `/verdict` comment on the item does, and changes no state", async () => {
+    const f = await local();
+    const byCli = await f.filed(MERGE_PENDING);
+    const byComment = await f.filed(MERGE_PENDING);
+    const before = await f.store.listCliCommandsAfter(0, 100);
+    const r = await f.cli(byCli.id, "changes major rename the flag");
+    expect(r.code).toBe(0);
+    expect(r.lines[0]).toContain(`stored \`/verdict\` for ${byCli.id} as ${ME}`);
+    const rows = (await f.store.listCliCommandsAfter(0, 100)).slice(before.length);
+    expect(rows.map((c) => ({ command: c.command, args: c.args }))).toEqual([{ command: "verdict", args: { item: byCli.id, text: "changes major rename the flag" } }]);
+
+    await f.controller.tickCommands();
+    await f.controller.handleEvent(verdict("changes major rename the flag", "900", { kind: "issue", source: byComment.source }, { provider: "local", subject: "me@example.com" }));
+
+    expect(await f.shape(byCli.id)).toEqual([{ verdict: "changes", severity: "major", reason: "rename the flag", target: "issue", implicit: false, pr_head: null }]);
+    expect(await f.shape(byCli.id)).toEqual(await f.shape(byComment.id));
+    for (const it of [byCli, byComment]) {
+      expect(await f.store.getWorkItem(it.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", version: it.version + 1 });
+    }
+    // A second tick reads no new row: still one verdict.
+    await f.controller.tickCommands();
+    expect(await f.shape(byCli.id)).toHaveLength(1);
+  });
+
+  it("on a closed item it stores nothing and prints the controller's refusal, naming the PR when it had one", async () => {
+    const f = await local();
+    const closed = await f.filed({ stage: "CLOSED", close_reason: "rejected" });
+    const unmerged = await f.filed({ stage: "CLOSED", close_reason: "rejected", change_ref: "42" });
+    const before = await f.store.listCliCommandsAfter(0, 100);
+    expect(await f.cli(closed.id, "accept")).toEqual({ code: 1, lines: ["`/verdict` was not applied: the work item is closed."] });
+    expect(await f.cli(unmerged.id, "accept")).toEqual({ code: 1, lines: ["`/verdict` was not applied: the work item is closed and its PR was not merged."] });
+    expect(await f.store.listCliCommandsAfter(0, 100)).toEqual(before);
+  });
+
+  it("a merged local item still takes one", async () => {
+    const f = await local();
+    const merged = await f.filed({ stage: "CLOSED", close_reason: "completed", merge_sha: "m1" });
+    expect((await f.cli(merged.id, "accept minor nit")).code).toBe(0);
+    await f.controller.tickCommands();
+    expect(await f.shape(merged.id)).toEqual([{ verdict: "accept", severity: "minor", reason: "nit", target: "issue", implicit: false, pr_head: null }]);
+    expect(await f.store.getWorkItem(merged.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
   });
 });

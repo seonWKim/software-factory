@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import { uiCommandsActor } from "../src/compose.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
-import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
+import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
+import { parseVerdict } from "../src/core/verdict.js";
+// TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
+// @ts-expect-error -- see above
+import { verdictNote } from "../web/src/views/item-commands.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { PageAction } from "../src/ui/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -455,5 +459,59 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     expect((await runLocalCli(cli, { action: "command", command: "approve", id: byCli.id, text: "" })).code).toBe(0);
     await h.controller.tickCommands();
     for (const it of [byPage, byCli]) expect((await h.store.getWorkItem(it.id))!.stage).toBe("RUNNING");
+  });
+});
+
+describe("verdict from the item page and the item API (issue #523)", () => {
+  const HOST = "127.0.0.1:4310";
+  const TOKEN = newCsrfToken();
+  const ME = "local:me@example.com" as UserId;
+  const MERGE_PENDING: WorkItemPatch = { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" };
+
+  /** An item of `source` with no PR, put at `patch`. */
+  async function itemOf(h: Awaited<ReturnType<typeof harness>>, source: SourceRef, patch: WorkItemPatch): Promise<WorkItem> {
+    const { item } = await h.store.createWorkItem({ source, requester_id: ME, project: PROJECT_KEY, problem: "p", resources: [] }, { kind: "system", id: "system:test" });
+    const r = await h.store.transition({ id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "setup", patch });
+    if (!r.ok) throw new Error("setup failed");
+    return r.item;
+  }
+  const local = (n: number): SourceRef => ({ type: "local", id: `local-${n}`, link: `local:local-${n}` });
+  const slack = (n: number): SourceRef => ({ type: "slack_thread", id: `T1/C1/${n}.0`, link: `https://slack.example/${n}` });
+  const names = async (h: Awaited<ReturnType<typeof harness>>, it: WorkItem) => {
+    const d: ApiDeps = { store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], h.clock), commands: { actor: ME, source: "environment", token: TOKEN } };
+    const body = JSON.parse((await respond(d, { method: "GET", url: `/api/v1/items/${encodeURIComponent(it.id)}`, host: HOST })).body) as { commands: { name: string }[] };
+    return body.commands.map((c) => c.name);
+  };
+
+  it("the item API lists verdict for a local item with no PR, and not for a GitHub or Slack item with no PR", async () => {
+    const h = await harness({ localAuth: true });
+    expect(await names(h, await itemOf(h, local(1), MERGE_PENDING))).toContain("verdict");
+    expect(await names(h, await itemOf(h, issueRef(2), MERGE_PENDING))).not.toContain("verdict");
+    expect(await names(h, await itemOf(h, slack(3), MERGE_PENDING))).not.toContain("verdict");
+    expect(await names(h, await itemOf(h, local(4), { stage: "CLOSED", close_reason: "rejected" }))).not.toContain("verdict");
+  });
+
+  it("solo, no forge and no account: a verdict app request stores one verdict on a local item with no PR and changes no state", async () => {
+    const h = await harness({ localAuth: true });
+    expect(await h.store.listLocalUsers()).toEqual([]);
+    const it1 = await itemOf(h, local(1), MERGE_PENDING);
+    await h.request("app-v", ME, "verdict", { work_item_id: it1.id, note: verdictNote("changes", "minor", "rename the flag") });
+    await h.controller.tickCommands();
+    expect((await h.store.listVerdicts(it1.id)).map((v) => [v.verdict, v.severity, v.reason, v.target, v.implicit, v.pr_head])).toEqual([
+      ["changes", "minor", "rename the flag", "issue", false, null],
+    ]);
+    expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", version: it1.version + 1 });
+    const [row] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
+    expect(row!.refusal).toBeNull();
+  });
+
+  it("the buttons' note is `<kind> <severity> <reason>`, which the `/verdict` parser reads back", () => {
+    expect(verdictNote("accept", "none", "")).toBe("accept none");
+    expect(verdictNote("changes", "major", "  rename it\n")).toBe("changes major rename it");
+    for (const kind of ["accept", "changes", "reject"] as const) {
+      for (const severity of ["none", "minor", "major", "critical"] as const) {
+        expect(parseVerdict(verdictNote(kind, severity, "why") as string)).toEqual({ ok: true, value: { verdict: kind, severity, reason: "why" } });
+      }
+    }
   });
 });

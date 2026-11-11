@@ -14,8 +14,9 @@ import {
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
 // in its order: the commands that apply now. One the viewer's grants do not allow (`allowed` false, issue #453) is
 // disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject and revise open their own forms (issue #527): reject asks why and confirms what closes,
-// revise takes a comment per spec section. Every other command carries the note box's text when it has any
-// (tokens for budget, `accept|changes|reject <severity> <reason>` for verdict, the approve note). A send
+// revise takes a comment per spec section. Verdict (issue #523) is three buttons, Accept, Changes and Reject, with a
+// severity choice; a click sends `<kind> <severity> <reason>` (verdictNote), the reason the note box's text. Every
+// other command carries the note box's text when it has any (tokens for budget, the approve note). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
 // next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
 // (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
@@ -25,6 +26,17 @@ import {
 
 /** Commands sent from their own form, not with the note box. */
 const FORMS = ["reject", "revise"];
+
+/** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
+const VERDICTS = [["accept", "Accept"], ["changes", "Changes"], ["reject", "Reject"]] as const;
+export type VerdictChoice = (typeof VERDICTS)[number][0];
+const SEVERITIES = ["none", "minor", "major", "critical"] as const;
+export type VerdictSeverityChoice = (typeof SEVERITIES)[number];
+
+/** The note a verdict button sends: `<kind> <severity> <reason>`, the reason left out when empty. */
+export function verdictNote(kind: VerdictChoice, severity: VerdictSeverityChoice, reason: string): string {
+  return [kind, severity, reason.trim()].filter((s) => s !== "").join(" ");
+}
 
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
 export type LocalSend = { seq: number } | { error: string };
@@ -158,7 +170,7 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             rows={3}
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="Tokens for budget, a verdict, or a note"
+            placeholder="Tokens for budget, a verdict's reason, or a note"
             className={cn(
               "mb-2 w-full max-w-xl rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900",
               "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600",
@@ -172,6 +184,19 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             const hasForm = FORMS.includes(c.name);
             const confirms = c.name === "approve" && phase !== null;
             const close = () => setOpen(null);
+            if (c.name === "verdict") {
+              return (
+                <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
+                  <VerdictButtons
+                    title={`${c.usage}: ${c.description}`}
+                    disabled={disabled}
+                    reason={note}
+                    onSend={(text) => void post("verdict", text).then((ok) => ok && setNote(""))}
+                  />
+                  <OutcomeText outcome={outcome} />
+                </li>
+              );
+            }
             return (
               <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
                 <Button
@@ -211,6 +236,44 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
         </ul>
       </Section>
     </>
+  );
+}
+
+/**
+ * The verdict buttons (issue #523): a severity choice, then Accept, Changes and Reject, each sending verdictNote with
+ * `reason` (the note box's text). Changes and reject need a reason, so they wait for one.
+ */
+function VerdictButtons({ title, disabled, reason, onSend }: { title: string; disabled: boolean; reason: string; onSend: (note: string) => void }) {
+  const [severity, setSeverity] = useState<VerdictSeverityChoice>("none");
+  return (
+    <span data-verdict className="inline-flex flex-wrap items-center gap-2">
+      <select
+        aria-label="Verdict severity"
+        value={severity}
+        disabled={disabled}
+        onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}
+        className="h-8 rounded-md border border-zinc-300 bg-white px-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+      >
+        {SEVERITIES.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+      {VERDICTS.map(([kind, label]) => (
+        <Button
+          key={kind}
+          variant="outline"
+          className={textButton}
+          data-verdict-kind={kind}
+          disabled={disabled || (kind !== "accept" && reason.trim() === "")}
+          title={kind === "accept" ? title : `${title} (write the reason in the note box first)`}
+          onClick={() => onSend(verdictNote(kind, severity, reason))}
+        >
+          {label}
+        </Button>
+      ))}
+    </span>
   );
 }
 
