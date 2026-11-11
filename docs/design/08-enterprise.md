@@ -1,5 +1,10 @@
 # 8. Enterprise: interfaces, environments, auth and audit
 
+- **One owner, many workers (new decision, 2026-11-11, owner decision; current).** The decision that changed: **the factory serves one person, its owner**, instead of being built for both a solo developer and an enterprise team of many people. The owner may run many workers (processes, replicas, machines) on one store; identity comes from the environment (git `user.email`, then the OS user, then `anonymous`). Solo and many workers follow the same rule: one owner either way.
+  - **Goes:** every mechanism whose only reason is another person: roles, grants, local users, per-person permissions, linked accounts for several people, shared budgets between people, a team store. Deprecated, each with its removal plan in its topic file: the `mysql` store ([factory-store.md](../plugins/factory-store.md)), the `mysql-local` test database ([test-database.md](../plugins/test-database.md)), the auth plugins `github`, `local` and `none` ([auth-provider.md](../plugins/auth-provider.md)), and the whole GrantSource interface ([grant-source.md](../plugins/grant-source.md)). The roles and local users in [08-permissions.md](08-permissions.md) go with them. The code stays until the follow-up issues remove it (numbers added when filed).
+  - **Stays:** every mechanism whose reason is another process: claims, leases, fencing, conditional updates in the store, idempotent handlers, bus partitions.
+  - **Kept as they are:** the guards G1 to G6 (`docs/architecture.md` §5); the run passport (agents' tool calls are checked against the run's item, branch and tools, [08-permissions.md](08-permissions.md)); the owner's merge for changes to the factory's own gates, prompts, permissions or tools, whatever the tier; per-project settings that may only tighten a gate ([08-settings.md](08-settings.md)); and the GitHub App and token credentials (`GITHUB_APP_ID` or `GITHUB_TOKEN`, held only by tools).
+- **Earlier text, still describing the code until the removals land.** Interfaces with local and cloud backends, environments, tools, auth classes, audit and identity, as below. The parts about several people (auth classes, per-role bot identities, user attributes, access review) are deprecated by the decision above.
 - Every infra layer is an interface with local + cloud backends: store, **sandbox**, secrets, shared storage, search, **auth**, **LLM provider** (`LLMProvider`; first impl: Anthropic, transports: Claude Code CLI on subscription locally → API / company ML gateway; other vendors or self-hosted later) and **agent runner** (`AgentRunner`; first impl: `claude -p`). Local first.
 - Environments labeled by humans: test → DB data may reach the model; prod → blocked at the model interface.
 - Tools/MCP: users can add them; automated credential-leak check + human approval; rules scoped to the tool.
@@ -12,4 +17,4 @@
 
 ## History
 
-No earlier decision is recorded for this topic.
+- **One owner, many workers** (decision changed 2026-11-11, owner decision). Before: every design served a solo developer and an enterprise team (many developers and several replicas on a shared store: per-person identity and permissions, audit, shared budgets), and AuthN/Z was planned around per-person classes, attributes and grants.

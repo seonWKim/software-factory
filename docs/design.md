@@ -44,7 +44,7 @@ the `05-*` files.
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour, and the doc index in the prompt.
 
-## 8. Enterprise
+## 8. Operations
 - [08-plugins.md](design/08-plugins.md): named plugins and the discovered registry, the GitHub login plugin, declared secret names, keep awake.
 - [08-self-update.md](design/08-self-update.md): running from a copy of the base branch, and the start-then-drain update.
 - [08-settings.md](design/08-settings.md): per-project settings resolved in layers that may only tighten a gate, and changing settings at runtime (`factory settings`) with no PR.
