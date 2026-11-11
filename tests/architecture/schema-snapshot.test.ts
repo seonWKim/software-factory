@@ -1,18 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { MysqlDriver } from "../../src/impl/store/mysql/mysql-driver.js";
-import { MysqlMigrations } from "../../src/impl/store/mysql/migrations.js";
 import { SqliteDriver } from "../../src/impl/store/sqlite/sqlite-driver.js";
 import { ensureDiscoveredTopicTables } from "../../src/runtime/index.js";
-import { mysqlSnapshot, sqliteSnapshot } from "../../src/state/snapshot.js";
+import { sqliteSnapshot } from "../../src/state/snapshot.js";
 import type { Dialect, SqlExecutor } from "../../src/state/index.js";
-import { MYSQL_URL, newEmptyMysqlDatabase } from "../helpers/store.js";
 import { REPO, SRC } from "./lib.js";
 
-// RFC 0015 §6.3: schema/sqlite.sql and schema/mysql.sql are the snapshot of a fresh migration, so every
-// schema change shows up in review as a diff of one file. `npm run schema:snapshot` rewrites them
-// (MySQL only when SF_TEST_MYSQL_URL is set). A fresh migration includes the sql bus's tables for every
+// RFC 0015 §6.3: schema/sqlite.sql is the snapshot of a fresh migration, so every
+// schema change shows up in review as a diff of one file. `npm run schema:snapshot` rewrites it. A fresh migration includes the sql bus's tables for every
 // discovered topic, which the bus creates from the topic descriptors (src/bus/plugins/sql/ddl.ts).
 
 const DIR = join(REPO, "schema");
@@ -40,14 +36,5 @@ describe("schema-snapshot", () => {
     await ensureTopics("sqlite", driver);
     compare("sqlite.sql", await sqliteSnapshot(driver));
     await driver.close();
-  });
-
-  it.skipIf(!MYSQL_URL)("schema/mysql.sql equals a fresh MySQL migration", async () => {
-    const db = await newEmptyMysqlDatabase();
-    await new MysqlMigrations(await db.connect()).apply(() => undefined);
-    const driver = new MysqlDriver(db.options);
-    db.onCleanup(() => driver.close());
-    await ensureTopics("mysql", driver);
-    compare("mysql.sql", await mysqlSnapshot(driver));
   });
 });

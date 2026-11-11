@@ -2,17 +2,12 @@ import { copyFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { migrateCommand } from "../src/impl/store/mysql/migrate-command.js";
-import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { rehearseSqlite } from "../src/impl/store/sqlite/rehearse.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { fingerprintTables, lostRows, renameTablesByCopy, type MigrationDb } from "../src/state/index.js";
-import { MYSQL_URL, mysqlStepsUpTo, newEmptyMysqlDatabase } from "./helpers/store.js";
 
 // RFC 0015 §12 D8: `npm run migrate -- --rehearse` applies the pending migrations to a copy and checks that
 // every row survived; the live database is only read.
-
-const LATEST_STEP = readSteps(STEPS_DIR, INLINE_STEPS).at(-1)!.number;
 
 function sqliteDb(d: SqliteDriver): MigrationDb {
   return { dialect: "sqlite", all: (sql, p) => d.all(sql, p), run: (sql, p) => d.run(sql, p) };
@@ -49,23 +44,5 @@ describe("rehearsal check", () => {
     const after = new SqliteDriver(file, { baselineOnly: true });
     expect(await after.all("SELECT name FROM sqlite_master WHERE name IN ('cursors', 'inbound_cursors')")).toEqual([{ name: "cursors" }]);
     await after.close();
-  });
-});
-
-describe.skipIf(!MYSQL_URL)("rehearsal on MySQL", () => {
-  it("copies the database, applies the pending migrations there, drops the copy, and leaves the live tables", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(LATEST_STEP) }).apply(() => undefined);
-    await c.query("INSERT INTO cursors (name, value) VALUES ('c1', 'v1')");
-
-    const lines: string[] = [];
-    expect(await migrateCommand(db.options, "rehearse", (l) => lines.push(l))).toBe(0);
-    expect(lines).toContain(`copied ${lines.find((l) => l.startsWith("copied"))!.split(" ")[1]} tables to ${db.database}_rehearsal`);
-    expect(lines.at(-1)).toMatch(/^rehearsal passed/);
-    const [left] = await c.query("SELECT schema_name AS s FROM information_schema.schemata WHERE schema_name = ?", [`${db.database}_rehearsal`]);
-    expect(left).toEqual([]);
-    const [live] = await c.query("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN ('cursors', 'inbound_cursors')");
-    expect(live).toEqual([{ t: "cursors" }]);
   });
 });

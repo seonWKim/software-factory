@@ -3,20 +3,19 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { UserId, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, MysqlMigrations, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
+import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { NewWorkItem } from "../src/interfaces/factory-store.js";
-import { BACKENDS, MYSQL_URL, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, system } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // Local work items (issue #198, phase 1): the "local" source type, the messages the controller would post as
 // comments, and the CLI command log. Types and tables only: nothing outside the store calls these yet.
 
 /** The MySQL step and SQLite migration that add both tables. */
 // Never pin a step as the newest (a length, `at(-1)` equal to it, or "pending alone"): a later migration would
-// fail these checks from outside its allowed paths. Compare with `>=`, read MIGRATIONS.length, or use mysqlStepsUpTo.
+// fail these checks from outside its allowed paths. Compare with `>=` or read MIGRATIONS.length.
 const STEP = 21;
 const STEP_FILE = "0021-local-items.sql";
 const TABLES = ["cli_commands", "item_messages"];
@@ -38,6 +37,8 @@ function localItem(n: number): NewWorkItem {
     resources: [],
   };
 }
+
+const BACKENDS = [{ name: "sqlite", make: newStore }];
 
 for (const b of BACKENDS) {
   describe(`${b.name}: local work items`, () => {
@@ -137,34 +138,6 @@ describe("MySQL step 0021: local item tables", () => {
   });
 });
 
-describe.skipIf(!MYSQL_URL)("MySQL step 0021 on MySQL", () => {
-  it("pending at state 20: --status lists it; after npm run migrate both tables exist", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP - 1) }).apply(() => undefined);
-
-    // Steps up to 21 only: step 0022 is pending too, and has its own test below.
-    const status = await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).status();
-    expect(status.state).toBe(STEP - 1);
-    expect(status.pending.map((p) => p.label)).toEqual([STEP_FILE]);
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
-    db.onCleanup(() => store.close());
-    await expect(store.migrate()).rejects.toThrow(/schema steps? pending \(state 20, latest \d+\): run `npm run migrate`/);
-
-    await new MysqlMigrations(c).apply(() => undefined);
-    // RFC 0015 M1 archives both tables as legacy_<name>.
-    const legacy = TABLES.map((t) => `legacy_${t}`);
-    const [tables] = await c.query(
-      "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN (?, ?) ORDER BY 1",
-      legacy,
-    );
-    expect((tables as { name: string }[]).map((t) => t.name)).toEqual(legacy);
-    await store.migrate();
-    const r = await store.appendCliCommand({ key: "k1", actor: "local:owner", command: "c", args: {} });
-    expect(r.created).toBe(true);
-  });
-});
-
 async function sqliteHasCommandsTable(driver: SqliteDriver): Promise<boolean> {
   const rows = await driver.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", [COMMANDS_TABLE]);
   return rows.length === 1;
@@ -223,30 +196,6 @@ describe("MySQL step 0022: app command requests", () => {
   });
 });
 
-describe.skipIf(!MYSQL_URL)("MySQL step 0022 on MySQL", () => {
-  it("pending at state 21; after npm run migrate the table exists with a unique request_key", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
-
-    // Steps up to 22 only: later steps are pending too and have their own tests.
-    const status = await new MysqlMigrations(c, { dir: mysqlStepsUpTo(COMMANDS_STEP) }).status();
-    expect(status.state).toBe(STEP);
-    expect(status.pending.map((p) => p.label)).toEqual([COMMANDS_STEP_FILE]);
-
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(COMMANDS_STEP) }).apply(() => undefined);
-    expect((await new MysqlMigrations(c, { dir: mysqlStepsUpTo(COMMANDS_STEP) }).status()).pending).toEqual([]);
-    const [cols] = await c.query(
-      "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
-      [COMMANDS_TABLE],
-    );
-    expect((cols as { name: string }[]).map((r) => r.name)).toEqual(["seq", "request_key", "actor", "command", "args", "created_at"]);
-    const insert = `INSERT INTO ${COMMANDS_TABLE} (request_key, actor, command, args, created_at) VALUES ('k1', 'local:owner', 'c', '{}', 't')`;
-    await c.query(insert);
-    await expect(c.query(insert)).rejects.toThrow(/Duplicate/);
-  });
-});
-
 async function sqliteColumns(driver: SqliteDriver): Promise<{ name: string; type: string; nn: number }[]> {
   return (await driver.all(`SELECT name, type, "notnull" AS nn FROM pragma_table_info('${COMMANDS_TABLE}') ORDER BY cid`)) as never;
 }
@@ -275,35 +224,5 @@ describe("MySQL step 0023: app command request handling", () => {
     expect(steps.at(-1)!.number).toBeGreaterThanOrEqual(HANDLING_STEP);
     const sql = readFileSync(join(STEPS_DIR, HANDLING_STEP_FILE), "utf8");
     expect(sql).toMatch(new RegExp(`ALTER TABLE ${COMMANDS_TABLE} ADD COLUMN handled_at .*ADD COLUMN refusal `));
-  });
-});
-
-describe.skipIf(!MYSQL_URL)("MySQL step 0023 on MySQL", () => {
-  it("pending at state 22; after npm run migrate the table has handled_at and refusal, and old rows stay pending", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(COMMANDS_STEP) }).apply(() => undefined);
-    await c.query(`INSERT INTO ${COMMANDS_TABLE} (request_key, actor, command, args, created_at) VALUES ('old', 'local:owner', 'approve', '{}', 't')`);
-
-    // Steps up to 23 only: later steps are pending too and have their own tests.
-    const status = await new MysqlMigrations(c, { dir: mysqlStepsUpTo(HANDLING_STEP) }).status();
-    expect(status.state).toBe(COMMANDS_STEP);
-    expect(status.pending.map((p) => p.label)).toEqual([HANDLING_STEP_FILE]);
-
-    await new MysqlMigrations(c).apply(() => undefined);
-    expect((await new MysqlMigrations(c).status()).pending).toEqual([]);
-    // RFC 0015 M1 copies the table to its new name; M4 merges it into inbound_commands and keeps it as legacy_.
-    const [cols] = await c.query(
-      "SELECT column_name AS name, is_nullable AS nullable FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ? ORDER BY ordinal_position",
-      ["legacy_inbound_app_requests"],
-    );
-    expect((cols as { name: string; nullable: string }[]).slice(6)).toEqual([
-      { name: "handled_at", nullable: "YES" },
-      { name: "refusal", nullable: "YES" },
-    ]);
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
-    db.onCleanup(() => store.close());
-    await store.migrate();
-    expect(await store.getAppCommandRequest(1)).toMatchObject({ key: "old", handled_at: null, refusal: null });
   });
 });

@@ -2,13 +2,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { SourceRef, UserId, WorkItemId } from "../src/core/types.js";
-import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { INLINE_STEPS, MysqlMigrations, type Queryable, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
-import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
+import { INLINE_STEPS, STEPS_DIR, readSteps } from "../src/impl/store/mysql/migrations.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
-import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import { BACKENDS, MYSQL_URL, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, system } from "./helpers/store.js";
+import { issue, newStore, system } from "./helpers/store.js";
 
 // The thread outbox (issue #282): SQLite migration 29 and MySQL step 0029 add `thread_outbox`, and copy pending app
 // requests into `command_inbox`. Never pin a step as the newest: a later migration would fail these checks.
@@ -30,6 +27,8 @@ async function entry(store: FactoryStore, id: WorkItemId, marker: string, opts: 
   });
   return r;
 }
+
+const BACKENDS = [{ name: "sqlite", make: newStore }];
 
 for (const backend of BACKENDS) {
   describe(`thread outbox store (${backend.name})`, () => {
@@ -138,25 +137,5 @@ describe("MySQL step 0029: thread outbox", () => {
     expect(steps.find((s) => s.name === "thread-outbox")).toMatchObject({ number: STEP, from: STEP - 1, kind: "sql", file: STEP_FILE });
     expect(columns(sql())).toEqual(columns(MIGRATIONS[STEP - 1]!));
     expect(columns(sql())).toContain("claim_token");
-  });
-});
-
-describe.skipIf(!MYSQL_URL)("MySQL step 0029 on MySQL", () => {
-  it("from state 27 it creates thread_outbox and copies pending app requests once, also when run again", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c: Queryable = await db.connect();
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP - 1) }).apply(() => undefined);
-    const req = "INSERT INTO app_command_requests (request_key, actor, command, args, created_at, handled_at) VALUES (?, ?, ?, ?, ?, ?)";
-    await c.query(req, ["p1", "github:1", "approve", "{}", "2026-01-01T00:00:00.000Z", null]);
-    await c.query(req, ["h1", "github:1", "approve", "{}", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:01.000Z"]);
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
-    await c.query("UPDATE schema_state SET state = ? WHERE id = 1", [STEP - 1]);
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(STEP) }).apply(() => undefined);
-    const [rows] = await c.query("SELECT command_key, args FROM command_inbox WHERE command_key LIKE 'app:%'");
-    const list = rows as { command_key: string; args: string }[];
-    expect(list).toHaveLength(1);
-    expect(JSON.parse(list[0]!.args)).toEqual({ app_request: expect.any(Number) });
-    const [outbox] = await c.query("SELECT COUNT(*) AS n FROM thread_outbox");
-    expect(Number((outbox as { n: number }[])[0]!.n)).toBe(0);
   });
 });

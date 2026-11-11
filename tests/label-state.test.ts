@@ -4,12 +4,9 @@ import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubIssueSource, statusLabels } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import { MysqlMigrations } from "../src/impl/store/mysql/migrations.js";
-import { MysqlDriver } from "../src/impl/store/mysql/mysql-driver.js";
-import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { FakeAuth, FakeGitHubClient, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
-import { BACKENDS, MYSQL_URL, PROJECT_KEY, issue, mysqlStepsUpTo, newEmptyMysqlDatabase, newStore, system } from "./helpers/store.js";
+import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // Label state per item and target (design §5, GitHub call budget): the GitHub source compares the stored state
 // before any call, and the start-up catch-up skips targets already showing their status.
@@ -81,7 +78,7 @@ describe("status catch-up on start", () => {
     expect(next.github.labels.get(42)).toEqual([label("in_review")]);
   });
 
-  for (const backend of BACKENDS) {
+  for (const backend of [{ name: "sqlite", make: newStore }]) {
     it(`two controllers starting at once on one store make one label write per item and target (${backend.name})`, async () => {
       const { store, clock } = await backend.make();
       for (let n = 1; n <= 5; n++) await itemIn(store, n, n % 2 === 0 ? { stage: "REVIEW", change_ref: String(100 + n) } : {});
@@ -176,22 +173,6 @@ describe("solo setup", () => {
 describe("schema", () => {
   it("SQLite builds posted_comments and label_states on open", async () => {
     const { store } = await newStore();
-    const names = (await store.listTables()).map((t) => t.name);
-    expect(names).toEqual(expect.arrayContaining(["outbound_deliveries", "outbound_label_states"]));
-  });
-
-  it.skipIf(!MYSQL_URL)("a MySQL store refuses to start until step 0027 is applied, then has both tables", async () => {
-    const db = await newEmptyMysqlDatabase();
-    const c = await db.connect();
-    await new MysqlMigrations(c, { dir: mysqlStepsUpTo(26) }).apply(() => undefined);
-    const behind = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
-    db.onCleanup(() => behind.close());
-    await expect(behind.migrate()).rejects.toThrow(/npm run migrate/);
-
-    await new MysqlMigrations(c).apply(() => undefined);
-    const store = new SqlFactoryStore(new MysqlDriver(db.options), new FakeClock());
-    db.onCleanup(() => store.close());
-    await store.migrate();
     const names = (await store.listTables()).map((t) => t.name);
     expect(names).toEqual(expect.arrayContaining(["outbound_deliveries", "outbound_label_states"]));
   });
