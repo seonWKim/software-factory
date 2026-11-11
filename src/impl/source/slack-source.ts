@@ -152,7 +152,8 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * call, then its reply is posted; a failed post leaves the envelope unacked, so Slack sends it again and the keyed row
  * and the reply's marker make the second run change nothing. People are Slack user
  * IDs (provider `slack`); no display name is read or kept. Dedupe keys: Slack's `event_id`, or for a button press
- * the team, user and `action_ts`. A mention arrives twice (a `message` and an `app_mention` event, two event ids):
+ * the team, user and `action_ts`. A Good, Bad or Feedback press on a result message, and the Feedback modal's submit,
+ * store the message's one verdict here (verdictTap, fromFeedback) and send nothing to the inbox. A mention arrives twice (a `message` and an `app_mention` event, two event ids):
  * only the `app_mention` counts, and intake is idempotent on the source id anyway.
  *
  * Out: every message is egress-scanned first. A blocked message is never posted in any form; the thread gets one
