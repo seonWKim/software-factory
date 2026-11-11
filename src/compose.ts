@@ -430,10 +430,9 @@ export async function loadConfig(
   // repo's main checkout) and learned (under the state dir). A missing layer is off. Their plugins and tools join a registry copy.
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
   const sharedStore = store.type === "mysql";
-  const builtin = opts.registry ?? REGISTRY;
-  const packRegistry = await withPackPlugins(builtin, packPluginFiles(packs, { sharedStore }));
+  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
   const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
-  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore, builtin });
+  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore, builtin: opts.registry ?? REGISTRY });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
   if (!local) await checkGitHubSettings(file.github);
