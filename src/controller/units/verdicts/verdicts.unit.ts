@@ -160,6 +160,8 @@ export class VerdictsUnit {
       } });
       if (r.ok) {
         this.c.k.d.log.info("verdict recorded", { work_item_id: id, verdict: v.verdict, severity: v.severity, version: r.item.version });
+        // A `changes` verdict is the owner's pushback, captured in their ledger (issue #570).
+        if (v.verdict === "changes") await this.c.unit("outbox").captureTacit(r.item, key.comment_id, v.reason ?? "");
         return null;
       }
       if (r.reason !== "version_conflict") return null;

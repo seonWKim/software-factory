@@ -89,6 +89,7 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   bus: { interface: "EventBus", configKey: "plugins.bus", guard: false, optional: false },
   ticks: { interface: "TickGenerator", configKey: "plugins.ticks", guard: false, optional: false },
   engine: { interface: "ExecutionEngine", configKey: "plugins.engine", guard: false, optional: false },
+  tacit: { interface: "TacitLedger", configKey: "plugins.tacit", guard: false, optional: false },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];

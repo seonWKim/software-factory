@@ -22,13 +22,11 @@ export interface FactoryState {
 
 /** What the factory needs from the operator besides a work item (design §9), with the command that clears it. */
 export interface SystemAction {
-  code: "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "alarm" | "revision_mismatch";
+  code: "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
   text: string;
   command: string;
   /** When it ends by itself, else null. */
   until: string | null;
-  /** The item it is about (a deadlock), else null. */
-  work_item_id: string | null;
 }
 
 /** `/api/v1/overview`: the page's numbers. */

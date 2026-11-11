@@ -15,12 +15,20 @@ import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
  * a comment, through the forge), `merge_pr` (a PR merged at its reviewed head, through the forge), `push` (a run's commit from the factory repo to its forge branch) and `pr` (the
  * branch's PR opened or updated), `merge` (a merge queue landing in the factory repo, M8), `push_base` (the local
  * base pushed to its remote after a merge) and `file_sub_issue` (one phase of a split filed under its parent, whose
- * delivered ref names the filed item) retry until delivered.
+ * delivered ref names the filed item) and `tacit_capture` (a pushback captured in the owner's ledger, issue #570) retry
+ * until delivered.
  */
-export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue";
+export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue" | "tacit_capture";
 
 /** The actions whose failure retries their batch with backoff; the rest are best effort. */
-export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue"];
+export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue", "tacit_capture"];
+
+/**
+ * The owner's ledger (issue #570): its captures wait in their own destination order (`tacit:ledger`), so a failing
+ * ledger CLI holds only them, never a source's or the forge's writes.
+ */
+export const TACIT_TARGET = "tacit";
+export const TACIT_LEDGER: SourceRef = { type: TACIT_TARGET, id: "ledger", link: "" };
 
 /**
  * Where a run's push and PR go (RFC 0015 M7): the host whose factory repo holds the commit, and the branch, so
