@@ -19,6 +19,8 @@ const SKIP = new Set(["schema_state", "schema_migrations"]);
 const BATCH = 500;
 const SIDECARS = ["", "-wal", "-shm"] as const;
 const NAME = /^[a-z_][a-z0-9_]*$/;
+/** MySQL's insertion-order column; SQLite keeps the same order in its rowid (the store's dialect.seq). */
+const SEQ = "seq";
 
 /** Runs `fn` over one connection inside one consistent read snapshot of the source. */
 export type SnapshotReader = <T>(fn: (db: MigrationDb) => Promise<T>) => Promise<T>;
@@ -172,9 +174,13 @@ export async function copyToSqlite(read: SnapshotReader, o: CopyOptions): Promis
       return 1;
     }
     const keys = new Map<string, string[]>();
+    // Tables whose insertion order SQLite keeps in its hidden rowid, where MySQL has a `seq` column: the store
+    // breaks ties on it (dialect.seq), so `seq` is copied into rowid, and a SQLite source reads its rowid as `seq`.
+    const rowidSeq = new Set<string>();
     for (const t of tables) {
       const into = schema.get(t)!.columns;
-      const extra = (await tableColumns(src, t)).filter((c) => !into.has(c));
+      if (!into.has(SEQ)) rowidSeq.add(t);
+      const extra = (await tableColumns(src, t)).filter((c) => !into.has(c) && !(c === SEQ && rowidSeq.has(t)));
       if (extra.length > 0) {
         o.print(`refusing: SQLite table ${t} has no column ${extra.join(", ")}; nothing was written`);
         return 1;
@@ -201,13 +207,15 @@ export async function copyToSqlite(read: SnapshotReader, o: CopyOptions): Promis
         await tx.run("PRAGMA defer_foreign_keys = ON");
         for (const t of tables) {
           const key = keys.get(t)!;
+          const seqToRowid = rowidSeq.has(t);
+          const select = src.dialect === "sqlite" && seqToRowid ? `rowid AS ${SEQ}, *` : "*";
           await tx.run(`DELETE FROM ${q(t)}`);
           for (let offset = 0; ; offset += BATCH) {
-            const rows = await src.all(`SELECT * FROM ${q(t)} ORDER BY ${key.map(q).join(", ")} LIMIT ${BATCH} OFFSET ${offset}`);
+            const rows = await src.all(`SELECT ${select} FROM ${q(t)} ORDER BY ${key.map(q).join(", ")} LIMIT ${BATCH} OFFSET ${offset}`);
             for (const row of rows) {
               const cols = Object.keys(row);
               await tx.run(
-                `INSERT INTO ${q(t)} (${cols.map(q).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
+                `INSERT INTO ${q(t)} (${cols.map((c) => q(seqToRowid && c === SEQ ? "rowid" : c)).join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`,
                 cols.map((c) => sqliteValue(row[c])),
               );
             }

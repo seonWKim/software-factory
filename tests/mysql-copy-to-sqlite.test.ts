@@ -122,6 +122,9 @@ describe("npm run migrate -- --copy-from-mysql (a SQLite source, no MySQL needed
     try {
       const compared = await compareAll(sqliteDb(src.driver), sqliteDb(target));
       for (const t of ["controller_work_items", "controller_item_thread", "worker_runs", "runtime_settings_overrides", "identity_user_links", "outbound_intents"]) expect(compared).toContain(t);
+      // Insertion order (the store's tie-break, rowid on SQLite) survives the copy in primary-key order.
+      const order = "SELECT rowid AS r, id FROM controller_work_items ORDER BY rowid";
+      expect(await target.all(order)).toEqual(await src.driver.all(order));
     } finally {
       await target.close();
     }
