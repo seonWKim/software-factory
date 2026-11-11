@@ -1,5 +1,7 @@
 # 9. Status page
 
+**A verdict from Needs you (decision changed 2026-11-11, issue #513; replaces "a Needs-you row offers only the commands that change the item's state, so a waiting item has no verdict there").** A Needs-you row in the app lists `verdict` after its state-changing commands wherever it applies (an open item with a PR, or a local item with or without one), with a one-line text form; sending it stores the same app request as the item page's note box. The server-rendered `/classic` page is unchanged. Details in [09-dashboard-app.md](09-dashboard-app.md).
+
 **Read-only status page (new decision, 2026-11-01).** `npm run factory -- ui` serves two pages from `node:http` on `127.0.0.1:<ui.port>` (`factory.config.json`, default 4310; there is no host option): `/` (Needs you, see below; Running now, highlighted when the last heartbeat is older than `lease_ms`; Queue, oldest first; All work items, `?stage=` filter, CLOSED hidden unless `?closed=1`; Totals: items per stage, runs succeeded and failed and tokens in the last 24 h) and `/items/<id>` (state_changes timeline and runs). No actions (approve, retry, merge stay on GitHub), no login, no remote access.
 - **A surface, not a plugin.** Like the CLI it reads `FactoryStore` and has no plugin interface or `docs/plugins.md` entry. It is built through `Plugins` (store, secrets, scanner), not `build()`, so it runs no controller or worker.
 - **Withhold, not mask.** Free text from the store (titles, blocked reasons, state-change values and reasons, run errors) is egress-scanned before rendering. `EgressScanner.scan` returns rules, not spans, so a field with any finding is replaced whole by `[withheld: <rule>]`. Span-level masking would need a new `EgressScanner` method; that is a separate tier-4 change if wanted.
@@ -22,6 +24,7 @@
 
 ## History
 
+- **A verdict from Needs you** (decision changed 2026-11-11, issue #513). Before: Needs you offered only commands that change the item's state; a verdict was sent from the item page's note box only.
 - **Merges digest** (new decision, 2026-11-11, issue #512). Before: the page had no digest of what the loop merged or what happened after each merge. **Section order** changed with it: Totals and Cost became Totals, Merges and Cost.
 - **Alarms in Needs you and the why-it-waits sentence** (new decision, 2026-11-08). Before: alerts were stored and readable through `listAlerts`, but no view showed them: Needs you, the why-it-waits sentence, the item list and the item page said nothing of an open alarm.
 - **GitHub budget** (new decision, 2026-11-07, issue #340). Before: the page showed no GitHub rate limit, so a factory at 0 calls looked idle or failing.
