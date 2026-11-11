@@ -18,6 +18,8 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { MIGRATIONS } from "../src/impl/store/sqlite/schema.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { failureClass } from "../src/core/policy.js";
+import { PackEntriesStore } from "../src/packs/pack-entries.store.js";
+import { discoverMigrations } from "../src/state/index.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { type Run, type RunUsage, type Timestamp, type WorkItemId, type WorkerId, outcomeTokens } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -278,6 +280,24 @@ describe.skipIf(!MYSQL_URL)("npm run migrate on MySQL", () => {
     const tables = await store.listTables();
     expect(tables.find((t) => t.name === "controller_improve_reports")?.rows).toBe(1);
     expect(tables.find((t) => t.name === "controller_filed_patterns")?.rows).toBe(0);
+  });
+
+  it("20261111T1201 creates ext_packs_entries; a rerun is a no-op and the same entry is stored once", async () => {
+    const db = await newEmptyMysqlDatabase();
+    await new MysqlMigrations(await db.connect()).apply(() => undefined);
+    const driver = new MysqlDriver(db.options);
+    const store = new SqlFactoryStore(driver, new FakeClock());
+    db.onCleanup(() => store.close());
+    await store.migrate();
+    const m = (await discoverMigrations()).find((x) => x.id === "20261111T1201-state-ext-packs-entries")!;
+    await m.up({ dialect: "mysql", run: (sql, p) => driver.run(sql, p), all: (sql, p) => driver.all(sql, p) });
+    const entries = new PackEntriesStore(driver, () => "2026-11-11T12:00:00.000Z");
+    const entry = { kind: "tool", name: "t", description_hash: "a".repeat(64), descriptor: "{}", credential_name: "T_TOKEN", added_by: "local:me" } as const;
+    expect(await entries.insert(entry)).toBe(true);
+    expect(await entries.insert(entry)).toBe(false);
+    expect(await driver.all("SELECT kind, name, credential_name, status, created_at FROM ext_packs_entries")).toEqual([
+      { kind: "tool", name: "t", credential_name: "T_TOKEN", status: "pending", created_at: "2026-11-11T12:00:00.000Z" },
+    ]);
   });
 
   describe("the commands, end to end on the built code", () => {
