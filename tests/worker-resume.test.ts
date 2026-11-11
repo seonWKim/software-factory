@@ -69,7 +69,7 @@ describe("wip branch on a failed last step", () => {
     f.clock.advance(f.config.retry_base_ms);
     await f.step();
     expect(f.agentCalls("implement")).toBe(1);
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     const retry = (await f.runs(it0, "implement"))[1]!;
     expect(retry.outcome).toMatchObject({ status: "succeeded", data: { pr_pending: true, commits: 2 } });
     expect(pushes.at(-1)).toEqual({ branch: `factory/${it0.id}`, head: HEAD });

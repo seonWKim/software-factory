@@ -14,7 +14,9 @@ import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
 
 /**
- * The resolve run (design §5 Merge conflict), started by a human's `/resolve`. In the PR branch's sandbox:
+ * The resolve run (design §5 Merge conflict), started by a human's `/resolve` or automatically. In the PR branch's
+ * sandbox, or a local item's (no PR: the local route, whose `origin/<base>` and `origin/<branch>` are the factory
+ * repo's local base and branch, and whose store commits to the local branch with nothing pushed to a remote):
  * merge origin/<base> with --no-commit and leave the conflicts; stage any MySQL step renumbering (issue #297);
  * snapshot the merged tree; let the agent resolve;
  * snapshot again. The worker never trusts the agent's index, refs or commits: the post-agent snapshot is the
@@ -26,7 +28,7 @@ import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
  * failure throws: nothing is pushed and the controller re-blocks the item.
  */
 async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext, signal: AbortSignal, model: ModelClass, step: RunCall["step"]) {
-  if (item.change_ref === null) throw new RunFailure("no_pr", "work item has no PR");
+  if (item.change_ref === null && !w.route(item).local) throw new RunFailure("no_pr", "work item has no PR");
   // Its role's prompt and tools (src/worker/roles/resolve.role.ts), checked before anything is merged.
   await w.roleSpec("resolve");
   const { repo, branch_prefix } = w.cfg;
@@ -37,7 +39,7 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
     throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
   });
   try {
-    // The sandbox starts a missing branch from base; a resolve must only ever touch the PR's own branch.
+    // The sandbox starts a missing branch from base; a resolve must only ever touch the item's own branch.
     await w.git(handle, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
     // The merge, the agent, the gates and the merge commit are one journaled step whose result carries a bundle of
     // that commit: a run taken over before its push restores the checked commit and runs no agent and no gate again.
@@ -50,7 +52,8 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
     const { conflicts, head, base_sha: baseSha } = done;
     if (!ran) await restoreResolution(w, run, handle, branch, done);
 
-    // Stored and recorded as keyed intents (RFC 0015 M7): outbound pushes it and refreshes the PR body behind it.
+    // Stored and recorded as keyed intents (RFC 0015 M7): outbound pushes it and refreshes the PR body behind it. A
+    // local item's store is the commit on its local branch: no intent, nothing pushed.
     const passed = checkCommands(repo).map((command) => ({ command, ok: true, how: "passed", tail: "" }));
     const push_intent = await w.pushBranch({ run, item, ctx, step }, handle.workdir, branch, head, () =>
       w.prRefresh(item, checkedLines(passed, { fixed: false, skipped: null })));

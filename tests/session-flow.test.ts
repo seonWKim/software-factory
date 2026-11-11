@@ -303,7 +303,7 @@ describe("session finish", () => {
     expect([at("diff --name-only -z --no-renames basesha...HEAD") >= 0, at("diff --numstat -z -M basesha...HEAD") > at("diff --name-only"), h.sandbox.commands]).toEqual([true, true, ["npm test"]]);
     expect([run.status, h.files.files.size]).toEqual(["succeeded", 0]);
     for (let i = 0; i < 2; i++) await h.deliver(); // applied once
-    expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 300, pr_files: ["src/a/x.ts"] });
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", change_ref: "42", token_cost: 300, pr_files: ["src/a/x.ts"] });
     expect((await h.runs(h.it0.id, "review")).map((x) => x.status)).toEqual(["queued"]);
     expect((await h.store.listStateChanges(h.it0.id)).map((c) => c.reason).slice(-2)).toEqual(["session_finished", "pr_delivered"]);
   });
@@ -313,7 +313,7 @@ describe("session finish", () => {
     h.forge.prNumbers.set(`factory/${h.it0.id}`, 43);
     expect((await h.sessions.finish({ tokens: 300 })).ok).toBe(true);
     await h.deliver();
-    expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 43, change_ref: "43", change_url: h.forge.prRef(43).link });
+    expect(await h.item(h.it0.id)).toMatchObject({ stage: "REVIEW", change_ref: "43", change_url: h.forge.prRef(43).link });
   });
 
   it("finish again after a success, or after a refused store, creates no second PR and no second review run", async () => {
@@ -409,7 +409,7 @@ describe("session flow and CLI", () => {
     const it0 = (await h.store.getWorkItemBySource("github_issue", issueRef(7).id))!;
     expect((await h.sessions.finish({ id: it0.id, tokens: 1000 })).ok).toBe(true);
     await h.deliver();
-    expect(await h.item(it0.id)).toMatchObject({ stage: "REVIEW", pr_number: 42, token_cost: 1000 });
+    expect(await h.item(it0.id)).toMatchObject({ stage: "REVIEW", change_ref: "42", token_cost: 1000 });
     expect((await h.runs(it0.id)).map((x) => [x.kind, x.status])).toEqual([["triage", "cancelled"], ["interactive", "succeeded"], ["review", "queued"]]);
     expect((await h.runs(it0.id, "interactive"))[0]).toMatchObject({ actor_id: "github:1", transcript_url: "https://example.com/t" });
   });

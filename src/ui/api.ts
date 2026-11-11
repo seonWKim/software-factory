@@ -14,7 +14,7 @@ import { readProjectLabel } from "../core/project-labels.js";
 import { conflictCounts } from "../core/resolve.js";
 import type { HostSleep, Run, RunAttempt, Stage, StateChange, Timestamp, WorkItem, WorkItemId } from "../core/types.js";
 import { itemAlarms, openAlarms } from "./alarms.js";
-import { actorGrant, itemCommands, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
+import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
@@ -258,7 +258,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     pending: status.pending ?? [],
   };
   // System actions (design §9 Status page): store reads and in-process values only, no forge call.
-  const actions = await systemActions({ store: s, active: [...running, ...queued], factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
+  const actions = await systemActions({ store: s, factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
   const system_actions = [];
   for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
   const token = c.d.lastChecks?.tokenDays() ?? null;
@@ -269,7 +269,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + system_actions.length,
+    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await s.countWorkItemsWhere({ blocked_on: "budget", exclude_closed: true })) + system_actions.length, // never Blocked by another task
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
     github_token_days: token,
@@ -304,8 +304,8 @@ async function unreviewedMerges(c: ApiCtx, params: URLSearchParams): Promise<Api
     const sha = await c.text(m.merge_sha);
     out.push({
       project: await c.text(label),
-      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the number): text only.
-      change_ref: String(m.pr_number),
+      // The store keeps no link for an unreviewed merge yet (UnreviewedMerge carries only the ref): text only.
+      change_ref: m.change_ref,
       change_url: null,
       merge_sha: sha === m.merge_sha ? sha.slice(0, 7) : sha,
       merged_by: m.merger_id === null ? "unknown" : await c.text(m.merger_id),
@@ -462,7 +462,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
     /** The item's thread, oldest first (thread.ts): every body through the Withholder. */
     thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
     commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v)), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the viewer's (#453)
-    replies: await itemReplies(c.d, it.id, (v) => c.text(v)),
+    replies: await itemReplies(c.d, it.id, (v) => c.text(v)), proposals: await itemProposals(c.d, it.id, (v) => c.text(v)), // pending, from the thread's markers
   };
 }
 

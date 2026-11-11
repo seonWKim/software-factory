@@ -1,7 +1,8 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume) and POST /api/v1/standing (postStanding), each with the per-process CSRF token (from GET
-// /api/v1/settings, /api/v1/session, /api/v1/pauses or /api/v1/standing) in x-csrf-token.
+// (postResume), POST /api/v1/standing (postStanding) and POST /api/v1/rules/verdict (postRuleVerdict), each with
+// the per-process CSRF token (from GET /api/v1/settings, /api/v1/session, /api/v1/pauses, /api/v1/standing or
+// /api/v1/rules) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 
@@ -21,13 +22,11 @@ export interface FactoryState {
 
 /** What the factory needs from the operator besides a work item (design §9), with the command that clears it. */
 export interface SystemAction {
-  code: "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "alarm" | "revision_mismatch";
+  code: "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
   text: string;
   command: string;
   /** When it ends by itself, else null. */
   until: string | null;
-  /** The item it is about (a deadlock), else null. */
-  work_item_id: string | null;
 }
 
 /** `/api/v1/overview`: the page's numbers. */
@@ -252,6 +251,8 @@ export interface ItemDetail {
   spec?: WaitingSpec | null;
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
+  /** The item's pending proposals (src/ui/commands.ts itemProposals), oldest first. */
+  proposals?: ProposalView[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
 }
@@ -342,6 +343,13 @@ export interface ItemCommand {
   reason: string | null;
 }
 
+/** A stored proposal with its pending commands, each as its typed line and the item it is for. */
+export interface ProposalView {
+  id: string;
+  created_at: string;
+  commands: { index: number; work_item_id: string; line: string }[];
+}
+
 /** One app command request: `handled_at` null while the controller has not applied or refused it. */
 export interface CommandReply {
   seq: number;
@@ -389,7 +397,8 @@ export interface SettingRow {
   key: string;
   /** What the key controls, from the settings core module. */
   description: string;
-  kind: "number" | "boolean" | "models" | "json" | "mode";
+  /** `text`: free text (message_style), shown as plain text and sent back as a JSON string. */
+  kind: "number" | "boolean" | "models" | "json" | "mode" | "text";
   value: string;
   source: "override" | "file" | "default";
   file_value: string | null;
@@ -500,6 +509,31 @@ export interface StandingView {
   proposals: StandingProposalRow[];
 }
 
+/** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
+export interface RuleRow {
+  id: string;
+  /** `pushback`, `class` (a candidate class) or `structure` (a structure proposal). */
+  kind: string;
+  /** The domains the rule is for; empty: every domain. */
+  scope: string[];
+  evidence: string[];
+  rule_draft: string;
+}
+
+/**
+ * `/api/v1/rules`: `enabled` false when the tacit plugin is `none`; `judge` is why the viewer cannot send a verdict,
+ * or null; `error` is a failed ledger read, or null.
+ */
+export interface RulesView {
+  enabled: boolean;
+  entries: RuleRow[];
+  error: string | null;
+  csrf_token: string | null;
+  judge: string | null;
+}
+
+export type RuleVerdict = "promote" | "reject" | "hold";
+
 declare const __FACTORY_REV__: string | null | undefined;
 
 /** The git revision built into this app (Vite `define`, web/vite.config.ts); null in a test or a build without git. */
@@ -576,6 +610,8 @@ export const API = {
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",
+  rules: "/api/v1/rules",
+  ruleVerdict: "/api/v1/rules/verdict",
   dataTables: "/api/v1/data/tables",
   dataAutonomy: "/api/v1/data/autonomy",
   dataTable: (name: string, params: URLSearchParams) => {
@@ -626,10 +662,14 @@ export async function postSettings(token: string, body: SettingsWrite): Promise<
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
-/** POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text. 202 → the request's seq. */
-export async function postCommand(token: string, id: string, command: string, note: string): Promise<CommandResult> {
+/**
+ * POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text; a proposal's Confirm all or
+ * Cancel sends `{ command, proposal }` instead. 202 → the request's seq.
+ */
+export async function postCommand(token: string, id: string, command: string, note: string, proposal?: string): Promise<CommandResult> {
   const text = note.trim();
-  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, text ? { command, note: text } : { command });
+  const body = proposal !== undefined ? { command, proposal } : text ? { command, note: text } : { command };
+  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, body);
   if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
@@ -648,6 +688,16 @@ export async function postStanding(
 ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
   if (r.ok) return { ok: true, changed: r.value.changed === true };
+  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote the owner's wording when edited. */
+export async function postRuleVerdict(
+  token: string,
+  body: { id: string; verdict: RuleVerdict; reason: string; text?: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
+  if (r.ok) return { ok: true };
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 

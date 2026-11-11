@@ -614,6 +614,18 @@ CREATE TABLE `controller_merge_queues` (
   PRIMARY KEY (`queue_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
 
+CREATE TABLE `controller_notices` (
+  `work_item_id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `wait_key` varchar(191) COLLATE utf8mb4_bin NOT NULL,
+  `kind` varchar(16) COLLATE utf8mb4_bin NOT NULL,
+  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `held_until` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `delivered_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
+  `count` int NOT NULL DEFAULT '1',
+  PRIMARY KEY (`work_item_id`,`wait_key`),
+  KEY `controller_notices_undelivered` (`delivered_at`,`held_until`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+
 CREATE TABLE `controller_outbox` (
   `seq` bigint NOT NULL AUTO_INCREMENT,
   `topic` varchar(191) COLLATE utf8mb4_bin NOT NULL,
@@ -810,6 +822,7 @@ CREATE TABLE `ext_packs_entries` (
   `added_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,
   `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
   `updated_at` char(24) COLLATE utf8mb4_bin NOT NULL,
+  `module_hash` char(64) COLLATE utf8mb4_bin DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `ext_packs_entries_key` (`kind`,`name`,`description_hash`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;

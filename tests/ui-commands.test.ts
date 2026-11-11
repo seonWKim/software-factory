@@ -8,6 +8,8 @@ import { parseVerdict } from "../src/core/verdict.js";
 // @ts-expect-error -- see above
 import { verdictNote } from "../web/src/views/item-commands.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
+import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
+import { parseProposalMarker } from "../src/core/interpret.js";
 import type { PageAction } from "../src/ui/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, respond } from "../src/ui/server.js";
@@ -598,5 +600,130 @@ describe("Needs you: the verdict control (issue #513)", () => {
     expect((await post(d, r.item, { command: "verdict", note: "accept" })).status).toBe(202);
     await h.controller.tickCommands();
     expect(await verdictOf(h, r.item)).toEqual([{ verdict: "accept", severity: "none", reason: null, target: "issue", implicit: false }]);
+  });
+});
+
+describe("the command box and pending proposals (design 09-dashboard-app)", () => {
+  const HOST = "127.0.0.1:4310";
+  const TOKEN = newCsrfToken();
+  const OWNER = "local:owner@example.com" as UserId;
+  const HELPER = "local:helper@example.com" as UserId;
+
+  /** Proposes `/approve ship it` on the first open item for any message; counts its calls. */
+  class ApproveLLM implements LLMProvider {
+    calls = 0;
+    async complete(req: LLMRequest): Promise<LLMResponse> {
+      this.calls++;
+      const id = /"id":"([^"]+)"/.exec(req.messages[0]!.content)?.[1] ?? "";
+      const parsed = { kind: "commands", entries: [{ item: id, command: "approve", args: "ship it" }] };
+      return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
+    }
+  }
+
+  /** The local owner and a requester; the page as `actor`; a controller with a model. */
+  async function setup() {
+    const { store, clock } = await newStore();
+    const source = new FakeSource();
+    const llm = new ApproveLLM();
+    const auth = new LocalAuthProvider(store);
+    const controller = new ControllerRole({ store, source, auth, clock, config, log: silent, scanner: cleanScanner, llm });
+    await store.claimLocalOwner(OWNER);
+    await store.setLocalUserRole(HELPER, "requester", OWNER);
+    const { item } = await store.createWorkItem({ source: issueRef(1), requester_id: OWNER, project: PROJECT_KEY, problem: "p", resources: [] }, { kind: "system", id: "system:test" });
+    const r = await store.transition({ id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "setup", patch: { ...SPEC_PENDING, tier: 2 } });
+    if (!r.ok) throw new Error("setup");
+    const page = (actor: UserId): UiDeps => ({
+      store, scanner: cleanScanner, clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock), commands: { actor, source: "environment", token: TOKEN },
+    });
+    const post = (actor: UserId, body: unknown) =>
+      respond(page(actor), {
+        method: "POST", url: `/api/v1/items/${encodeURIComponent(item.id)}/commands`, host: HOST, origin: `http://${HOST}`,
+        contentType: "application/json", csrfToken: TOKEN, body: JSON.stringify(body),
+      });
+    type Detail = { proposals: { id: string; commands: { index: number; work_item_id: string; line: string }[] }[] };
+    const detail = async (): Promise<Detail> =>
+      JSON.parse((await respond(page(OWNER), { method: "GET", url: `/api/v1/items/${encodeURIComponent(item.id)}`, host: HOST })).body) as Detail;
+    /** A sentence from the box, read by the controller; the proposal its reply names. */
+    const propose = async () => {
+      expect((await post(OWNER, { command: "sentence", note: "looks good, ship it" })).status).toBe(202);
+      await controller.tickCommands();
+      const [p] = (await detail()).proposals;
+      return p!.id;
+    };
+    return { store, source, llm, controller, item: r.item, post, detail, propose };
+  }
+
+  it("the box sends the sentence as one app request: the UI process makes no model call and writes no other state", async () => {
+    const h = await setup();
+    const before = await h.store.getWorkItem(h.item.id);
+    const res = await h.post(OWNER, { command: "sentence", note: "  looks good, ship it  " });
+    expect(res.status).toBe(202);
+    expect(h.llm.calls).toBe(0);
+    expect((await h.store.listAppCommandRequestsForItem(h.item.id, 10)).map((r) => [r.command, r.args])).toEqual([
+      ["sentence", { work_item_id: h.item.id, note: "looks good, ship it" }],
+    ]);
+    expect(await h.store.getWorkItem(h.item.id)).toEqual(before);
+    expect(h.source.comments).toEqual([]);
+    expect((await h.detail()).proposals).toEqual([]);
+  });
+
+  it("the controller reads it once and answers in the item's thread; the item API lists the pending proposal; no state changes", async () => {
+    const h = await setup();
+    const before = await h.store.getWorkItem(h.item.id);
+    const id = await h.propose();
+    await h.controller.tickCommands();
+    expect(h.llm.calls).toBe(1);
+    const replies = h.source.comments.filter((c) => c.marker.startsWith("<!-- factory:suggest:app-"));
+    expect(replies).toHaveLength(1);
+    expect(parseProposalMarker(replies[0]!.body)).toEqual({ id, commands: ["approve"] });
+    expect((await h.detail()).proposals).toEqual([{ id, created_at: expect.any(String), commands: [{ index: 0, work_item_id: h.item.id, line: "/approve ship it" }] }]);
+    expect(await h.store.getWorkItem(h.item.id)).toEqual(before);
+  });
+
+  it("Confirm all sends one app request carrying the proposal ID; the controller applies it once as the page's user", async () => {
+    const h = await setup();
+    const id = await h.propose();
+    expect((await h.post(OWNER, { command: "proposal_confirm", proposal: id })).status).toBe(202);
+    await h.controller.tickCommands();
+    expect((await h.store.getWorkItem(h.item.id))!.stage).toBe("RUNNING");
+    const approved = (await h.store.listStateChanges(h.item.id)).filter((c) => c.reason === "spec_approved");
+    expect(approved.map((c) => [c.actor, c.detail?.note])).toEqual([[{ kind: "user", id: OWNER }, "ship it"]]);
+    expect((await h.store.listCommandProposals(id)).map((r) => [r.status, r.answered_by])).toEqual([["applied", OWNER]]);
+    expect((await h.detail()).proposals).toEqual([]);
+    const [, confirm] = await h.store.listAppCommandRequestsForItem(h.item.id, 10);
+    expect(confirm).toMatchObject({ command: "proposal_confirm", args: { work_item_id: h.item.id, proposal: id }, refusal: null });
+    expect(confirm!.handled_at).not.toBeNull();
+  });
+
+  it("a Confirm all by a user who may not approve marks the row refused with one reply; Cancel marks it cancelled and applies nothing", async () => {
+    const h = await setup();
+    const id = await h.propose();
+    expect((await h.post(HELPER, { command: "proposal_confirm", proposal: id })).status).toBe(202);
+    await h.controller.tickCommands();
+    expect((await h.store.getWorkItem(h.item.id))!.blocked_reason).toBe("spec_pending");
+    expect((await h.store.listCommandProposals(id)).map((r) => [r.status, r.answered_by])).toEqual([["refused", HELPER]]);
+    expect(h.source.comments.filter((c) => c.marker.includes("proposal-refused"))).toHaveLength(1);
+
+    // The refused proposal is no longer pending; a second sentence makes a new one, which the owner cancels.
+    const next = await h.propose();
+    expect(next).not.toBe(id);
+    expect((await h.post(OWNER, { command: "proposal_cancel", proposal: next })).status).toBe(202);
+    await h.controller.tickCommands();
+    expect((await h.store.listCommandProposals(next)).map((r) => [r.status, r.answered_by])).toEqual([["cancelled", OWNER]]);
+    expect(h.source.comments.filter((c) => c.marker.includes("proposal-cancelled"))).toHaveLength(1);
+    expect((await h.store.getWorkItem(h.item.id))!.blocked_reason).toBe("spec_pending");
+    expect((await h.detail()).proposals).toEqual([]);
+  });
+
+  it("refuses a malformed request with 400 and stores nothing", async () => {
+    const h = await setup();
+    for (const body of [
+      { command: "sentence" }, { command: "sentence", note: "  " }, { command: "sentence", note: "x".repeat(1001) },
+      { command: "proposal_confirm" }, { command: "proposal_confirm", proposal: "prop:bad" }, { command: "proposal_cancel", proposal: "prop_a", note: "x" },
+      { command: "approve", proposal: "prop_a" },
+    ]) {
+      expect({ body, status: (await h.post(OWNER, body)).status }).toEqual({ body, status: 400 });
+    }
+    expect(await h.store.listAppCommandRequestsForItem(h.item.id, 10)).toEqual([]);
   });
 });

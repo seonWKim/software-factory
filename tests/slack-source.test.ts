@@ -536,13 +536,39 @@ describe("slack source: replies, buttons and commands", () => {
     expect((await f.store.getWorkItem(item.id))!.stage).toBe("RUNNING");
   });
 
+  it("no mention needed in a thread the factory owns: a plain reply gets one proposal and changes no state; elsewhere a reply is not stored and gets no reply", async () => {
+    let calls = 0;
+    const llm = new ApproveLLM();
+    const counting: LLMProvider = { complete: (req) => (calls++, llm.complete(req)) };
+    const f = await setup({ llm: counting });
+    const ts = "1800000015.000100";
+    const item = await specPending(f, ts);
+    const before = await f.store.getWorkItem(item.id);
+    const startCalls = calls;
+    await deliver(f, eventEnvelope(message("1800000015.000200", "fine by me, go ahead", { thread_ts: ts })));
+    expect(calls).toBe(startCalls + 1);
+    expect(f.api.thread(ts).filter((m) => m.text?.startsWith("The factory read one command"))).toHaveLength(1);
+    expect(await f.store.getWorkItem(item.id)).toEqual(before);
+
+    // A thread with no work item: no inbox row, no thread entry, no model call, no post.
+    const other = "1800000015.000300";
+    const inbox = await f.store.listInboxAfter("slack_thread", 0, 100);
+    const posted = f.api.calls.length;
+    await deliver(f, eventEnvelope(message("1800000015.000400", "fine by me, go ahead", { thread_ts: other })));
+    expect(await f.store.listInboxAfter("slack_thread", 0, 100)).toEqual(inbox);
+    for (const it of await f.store.listWorkItems(10)) expect((await f.store.listItemMessages(it.id)).map((m) => m.marker)).not.toContain("slack:1800000015.000400");
+    expect(calls).toBe(startCalls + 1);
+    expect(f.api.calls.length).toBe(posted);
+    expect(f.api.thread(other)).toEqual([]);
+  });
+
   it("the thread gets a link to the PR once there is one; PR status goes to the forge", async () => {
     const f = await setup();
     const ts = "1800000015.000100";
     const item = await specPending(f, ts);
     await deliver(f, press(ts, "sf_cmd:approve", "/approve"));
     await finishAll(f, "implement", { pr_number: 42 });
-    expect((await f.store.getWorkItem(item.id))!.pr_number).toBe(42);
+    expect((await f.store.getWorkItem(item.id))!.change_ref).toBe("42");
     const status = f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));
     expect(status).toHaveLength(1);
     expect(status[0]!.text).toBe("Status: *in review* · <https://github.com/o/r/pull/42|PR #42>");
@@ -554,11 +580,11 @@ describe("slack source: replies, buttons and commands", () => {
     const f = await setup();
     const ts = "1800000015.000300";
     const item = await specPending(f, ts);
-    // An item whose change_ref names PR 57 and that has no pr_number: the link can only come from change_ref.
+    // An item whose change_ref names PR 57: the link can only come from change_ref.
     const read = f.store.getWorkItemBySource.bind(f.store);
     f.store.getWorkItemBySource = async (type, id) => {
       const it = await read(type, id);
-      return it && { ...it, pr_number: null, change_ref: "57" };
+      return it && { ...it, change_ref: "57" };
     };
     await f.slack.setStatus(item.source, "in_review", null);
     const status = f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));

@@ -1,10 +1,36 @@
 @import "tailwindcss";
+@import "./tokens.css";
 
-/* Dark mode follows the `dark` class on <html>, set by the theme toggle (web/src/theme.ts). */
+/* Dark mode follows the `dark` class on <html>, set from the theme choice (web/src/theme.ts). */
 @custom-variant dark (&:where(.dark, .dark *));
 
 @theme {
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+/* The tokens of design-system/tokens.json (docs/design/09-brand-and-tokens.md); `inline` keeps the var() so .dark switches them. */
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text-1: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-accent: var(--accent);
+  --color-focus: var(--focus);
+  --color-pill-ok-bg: var(--pill-ok-bg);
+  --color-pill-ok-fg: var(--pill-ok-fg);
+  --color-pill-warn-bg: var(--pill-warn-bg);
+  --color-pill-warn-fg: var(--pill-warn-fg);
+  --color-pill-bad-bg: var(--pill-bad-bg);
+  --color-pill-bad-fg: var(--pill-bad-fg);
+  --color-pill-info-bg: var(--pill-info-bg);
+  --color-pill-info-fg: var(--pill-info-fg);
+  --radius-control: var(--r-control);
+  --radius-card: var(--r-card);
+  --radius-pill: var(--r-pill);
 }
 
 /* Nothing moves under prefers-reduced-motion (design §9): state is still shown by words and colour. */

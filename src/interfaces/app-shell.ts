@@ -1,5 +1,5 @@
 // The desktop shell around a running factory: one window on the dashboard, a menu bar item with the factory's
-// state and its needs-you count, and a Quit that drains the factory before the shell exits. The shell is wired
+// state and its needs-you count, a system-wide shortcut (the quick-add box), system notices, and a Quit that drains the factory before the shell exits. The shell is wired
 // directly by its desktop entry, not chosen in factory.config.json (docs/plugins/app-shell.md). First
 // implementation: macOS, in desktop/electron/macos/. Core never calls it.
 
@@ -18,4 +18,16 @@ export interface AppShell {
   onQuit(drain: () => Promise<void>): void;
   /** Quits: runs the drain once, then exits. Closing the window is not a Quit while the shell keeps running when closed. */
   quit(): void;
+  /**
+   * Registers `accelerator` (Electron's syntax, e.g. `Alt+Space`) system-wide; `onPress` runs on each press. False
+   * when the system refuses it (another app holds it, or it is not a valid shortcut); nothing is registered then.
+   */
+  registerShortcut(accelerator: string, onPress: () => void): boolean;
+  /** Releases `accelerator` when this shell registered it; otherwise does nothing. */
+  unregisterShortcut(accelerator: string): void;
+  /**
+   * Shows a system notice with `title` and `body`. A click on it shows the window on `target`; a target outside
+   * the dashboard URL given to openWindow (or before one was given) is refused and loads nothing.
+   */
+  notify(title: string, body: string, target: string): void;
 }

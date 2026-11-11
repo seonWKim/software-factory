@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'" />
+    <title>Quick add</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <main class="box">
+      <input id="words" type="text" autofocus autocomplete="off" spellcheck="false" aria-label="New task" aria-describedby="note"
+        placeholder="Pay rent tomorrow 09:00 !1 #home every month" />
+      <ul class="chips" id="chips" aria-label="Parsed fields"></ul>
+      <p class="note" id="note" role="status"></p>
+    </main>
+    <script src="quick-add-page.js"></script>
+  </body>
+</html>

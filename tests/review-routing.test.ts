@@ -164,7 +164,7 @@ describe("review routing", () => {
       await f.start();
       const it1 = await f.item();
       // The revised spec waits at the gate (tier 2 needs approval in the test config).
-      expect(it1).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", revision_count: 1, loop_count: 0, restart_count: 1, pr_number: 42 });
+      expect(it1).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", revision_count: 1, loop_count: 0, restart_count: 1, change_ref: "42" });
       expect(it1.spec_feedback).toContain("criterion 2 needs src/core/policy.ts");
       if (findings.length === 2) expect(it1.spec_feedback).toContain("off by one");
       const triage = await f.runs("triage");
@@ -183,7 +183,7 @@ describe("review routing", () => {
     await f.start();
     await f.approve();
     const it2 = await f.item();
-    expect(it2).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42, loop_count: 0, revision_count: 1 });
+    expect(it2).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42", loop_count: 0, revision_count: 1 });
     const keys = (await f.runs("implement")).map((r) => r.idempotency_key);
     expect(keys).toEqual([`${it2.id}:implement:l0:r0`, `${it2.id}:implement:l0:r1`]);
     const pushes = f.broker.calls.filter((c) => c.name === "forge.push_branch").map((c) => (c.args as { branch: string }).branch);

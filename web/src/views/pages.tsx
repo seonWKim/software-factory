@@ -36,9 +36,9 @@ function pauseLine(p: PauseRow, now: number): string {
 /** The supervisor banner: what the factory process is doing (the status page's words, shorter). */
 export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryState | null | undefined; now: number; pauses?: readonly PauseRow[] | undefined }) {
   if (factory === undefined) return null;
-  const bad = "bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-100";
-  const warn = "bg-amber-50 text-amber-900 dark:bg-amber-950 dark:text-amber-100";
-  const ok = "bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100";
+  const bad = "bg-pill-bad-bg text-pill-bad-fg";
+  const warn = "bg-pill-warn-bg text-pill-warn-fg";
+  const ok = "bg-pill-ok-bg text-pill-ok-fg";
   let tone = warn;
   let text: string;
   if (factory === null || factory.state === "stopped") {
@@ -87,7 +87,7 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
     }
   }
   return (
-    <p role="status" data-testid="factory-banner" className={cn("mb-4 rounded-md px-3 py-2 text-sm text-pretty", tone)}>
+    <p role="status" data-testid="factory-banner" className={cn("mb-4 rounded-control px-3 py-2 text-sm text-pretty", tone)}>
       {text}
     </p>
   );
@@ -125,8 +125,8 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
   return (
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className="font-mono text-xs">{pause.name}</span>
-      <span className="min-w-0 text-pretty text-zinc-700 dark:text-zinc-300">{PAUSE_LABELS[pause.name] ?? pause.name}</span>
-      <span className="min-w-0 tabular-nums break-words text-zinc-600 dark:text-zinc-400" title={pause.ends_at}>
+      <span className="min-w-0 text-pretty text-text-1">{PAUSE_LABELS[pause.name] ?? pause.name}</span>
+      <span className="min-w-0 tabular-nums break-words text-text-2" title={pause.ends_at}>
         {label} at {pause.ends_at}{ends > now ? ` (in ${ago(new Date(now).toISOString(), ends)})` : ""}
       </span>
       {token !== null && (
@@ -134,7 +134,7 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
           Resume now
         </Button>
       )}
-      {error && <span role="alert" className="text-xs text-pretty break-words text-red-700 dark:text-red-300">{error}</span>}
+      {error && <span role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</span>}
     </li>
   );
 }
@@ -162,14 +162,11 @@ export function NeedsYouPage() {
   const needs = (items.data?.items ?? []).filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level));
   const o = overview.data;
   const actions = o?.system_actions ?? [];
-  // A deadlocked item is a system action and a row of the table: counted once.
-  const ids = new Set(needs.map((i) => i.id));
-  const extra = actions.filter((a) => a.work_item_id === null || !ids.has(a.work_item_id)).length;
   return (
     <>
       <FactoryBanner factory={o?.factory} now={now} pauses={pauses.data?.pauses} />
       <ClaimPauses now={now} />
-      <Section title="Needs you" count={items.data ? needs.length + extra : undefined}>
+      <Section title="Needs you" count={items.data ? needs.length + actions.length : undefined}>
         <SystemActions actions={actions} />
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
           <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} actions empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
@@ -207,8 +204,8 @@ export function ActivityPage() {
               ["Tokens", tokens(o.last_24h.tokens)],
               ["Open items", String(Object.entries(o.stages).filter(([s]) => s !== "CLOSED").reduce((n, [, v]) => n + v, 0))],
             ].map(([k, v, href]) => (
-              <div key={k} className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
-                <dt className="text-xs text-zinc-600 dark:text-zinc-400">{k}</dt>
+              <div key={k} className="rounded-control border border-border px-3 py-2">
+                <dt className="text-xs text-text-2">{k}</dt>
                 <dd className="text-lg font-semibold tabular-nums">
                   {href ? <Link href={href} className={LINK_CLASS}>{v}</Link> : v}
                 </dd>
@@ -221,8 +218,8 @@ export function ActivityPage() {
   );
 }
 
-const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_human", "stuck", "running", "queued", "waiting_on_issue", "closed"] as const;
-const FILTER_LABELS: Record<string, string> = { needs: "Needs you", held: "Held", ...LEVEL_LABELS };
+const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
+const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: "Needs you", held: "Held" };
 
 /** The saved view: the tree unless the browser chose the list. */
 function savedView(): View {
@@ -242,8 +239,8 @@ function rateLimitText(pauses: PausesView | undefined): string {
 
 const buttonClass = (on: boolean) =>
   cn(
-    "rounded-md border px-2 py-1 text-xs tabular-nums",
-    on ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900" : "border-zinc-300 hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800",
+    "rounded-control border px-2 py-1 text-xs tabular-nums",
+    on ? "border-text-1 bg-text-1 text-bg" : "border-border-strong hover:bg-surface-2",
   );
 
 /** The tree's summary line; each count is a button that sets the matching state filter. */
@@ -303,7 +300,7 @@ export function ItemsPage() {
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search by title or issue number"
           aria-label="Search work items"
-          className="w-full max-w-sm rounded-md border border-zinc-300 bg-transparent px-2 py-1 text-sm dark:border-zinc-700"
+          className="w-full max-w-sm rounded-control border border-border-strong bg-transparent px-2 py-1 text-sm"
         />
         <div role="group" aria-label="View" className="flex gap-1.5">
           {(["tree", "list"] as const).map((v) => (
@@ -355,7 +352,7 @@ export function ItemPage({ id }: { id: string }) {
     <>
       <p className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>Work</Link>
-        <span className="text-zinc-500"> / </span>
+        <span className="text-text-3"> / </span>
         <SourceLink source={item.source} className="inline-block align-bottom" />
       </p>
       <h2 className="text-balance text-base font-semibold break-words">{item.title ?? item.source.id}</h2>
@@ -381,7 +378,7 @@ export function ItemPage({ id }: { id: string }) {
           ["Updated", `${ago(item.updated_at, now)} ago`],
         ] as const).map(([k, v]) => (
           <div key={k} className="min-w-0">
-            <dt className="text-xs text-zinc-600 dark:text-zinc-400">{k}</dt>
+            <dt className="text-xs text-text-2">{k}</dt>
             <dd className="truncate tabular-nums">{typeof v === "object" ? v : String(v)}</dd>
           </div>
         ))}
@@ -394,7 +391,7 @@ export function ItemPage({ id }: { id: string }) {
           <p className="text-sm" data-merge-check-detail>
             <MergeCheckNote check={item.merge_check} />
             {item.merge_check.base_sha && item.merge_check.checked_at && (
-              <span className="ml-2 text-zinc-600 dark:text-zinc-400">
+              <span className="ml-2 text-text-2">
                 against base <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, checked {ago(item.merge_check.checked_at, now)} ago
               </span>
             )}
@@ -412,11 +409,11 @@ export function ItemPage({ id }: { id: string }) {
             {[...runs].reverse().map((r) => (
               <Tr key={r.id} data-run={r.id}>
                 <Td className="min-w-40">
-                  {r.kind} <code className="font-mono text-xs break-all text-zinc-600 dark:text-zinc-400">{r.id}</code>
+                  {r.kind} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
                 </Td>
                 <Td className="tabular-nums">attempt {r.attempt}</Td>
-                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "needs_human" : undefined}>{r.status}</Badge></Td>
-                <Td className="max-w-md min-w-40 text-xs break-words text-zinc-700 dark:text-zinc-300">
+                <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{r.status}</Badge></Td>
+                <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
                   {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
                 </Td>
                 <Td className="font-mono text-xs whitespace-nowrap">{r.attempts?.at(-1)?.worker_id ?? "–"}</Td>
@@ -438,10 +435,10 @@ export function ItemPage({ id }: { id: string }) {
           {entries.map((e) => {
             if (e.kind === "sleep") return (
               <li key={`sleep:${e.h.worker_id}:${e.h.woke_at}`} className="flex gap-3" data-testid="host-sleep">
-                <span className="w-12 shrink-0 text-right text-zinc-500 tabular-nums">{ago(e.h.woke_at, now)}</span>
+                <span className="w-12 shrink-0 text-right text-text-3 tabular-nums">{ago(e.h.woke_at, now)}</span>
                 <span className="min-w-0">
                   <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
-                  <span className="text-zinc-500"> on {e.h.worker_id}</span>
+                  <span className="text-text-3"> on {e.h.worker_id}</span>
                 </span>
               </li>
             );
@@ -461,7 +458,7 @@ function Phases({ phases }: { phases: readonly PhaseRow[] }) {
       <ol aria-label="Phases" className="space-y-1 text-sm">
         {phases.map((p) => (
           <li key={p.id} data-phase={p.phase} className="flex min-w-0 items-baseline gap-2">
-            <span className="shrink-0 text-zinc-500 tabular-nums">{p.phase}.</span>
+            <span className="shrink-0 text-text-3 tabular-nums">{p.phase}.</span>
             <Link href={itemPath(p.id)} className={cn("min-w-0 break-words", LINK_CLASS)}>{p.title ?? p.source.id}</Link>
             <Badge>{p.stage}</Badge>
           </li>
@@ -520,12 +517,12 @@ function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
   const spec = changes.filter(([f]) => f in SPEC_FIELDS);
   return (
     <li className="flex gap-3">
-      <span className="w-12 shrink-0 text-right text-zinc-500 tabular-nums">{ago(t.at, now)}</span>
+      <span className="w-12 shrink-0 text-right text-text-3 tabular-nums">{ago(t.at, now)}</span>
       <div className="min-w-0 flex-1 break-words">
         <span className="font-medium">{t.reason ?? "change"}</span>
-        <span className="text-zinc-500"> by {t.actor.kind === "system" ? "the factory" : (t.actor.id ?? t.actor.kind)}</span>
+        <span className="text-text-3"> by {t.actor.kind === "system" ? "the factory" : (t.actor.id ?? t.actor.kind)}</span>
         {short.length > 0 && (
-          <span className="text-zinc-600 dark:text-zinc-400">
+          <span className="text-text-2">
             {" "}— {short.map(([f, c]) => `${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`).join(", ")}
           </span>
         )}
@@ -535,10 +532,10 @@ function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
               spec written ({open ? "hide" : "show"})
             </button>
             {open && (
-              <div data-spec className="mt-2 space-y-3 rounded-md border border-zinc-200 p-3 dark:border-zinc-800">
+              <div data-spec className="mt-2 space-y-3 rounded-control border border-border p-3">
                 {spec.map(([f, c]) => (
                   <div key={f}>
-                    <h3 className="mb-1 text-xs font-semibold text-zinc-600 dark:text-zinc-400">{SPEC_FIELDS[f]}</h3>
+                    <h3 className="mb-1 text-xs font-semibold text-text-2">{SPEC_FIELDS[f]}</h3>
                     <Markdown text={specMarkdown(parseValue(c.to))} />
                   </div>
                 ))}
@@ -555,11 +552,11 @@ function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
 function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<string, ItemRow>; now: number }) {
   const draining = p.slots === 0;
   return (
-    <li data-testid="worker-process" className="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+    <li data-testid="worker-process" className="rounded-control border border-border px-3 py-2">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
         <span className="font-mono text-xs font-semibold">{p.host}</span>
         <span className="tabular-nums">pid {p.pid}</span>
-        <span className="tabular-nums text-zinc-600 dark:text-zinc-400">started {ago(p.started_at, now)} ago</span>
+        <span className="tabular-nums text-text-2">started {ago(p.started_at, now)} ago</span>
         {draining && <Badge level="needs_approval">draining</Badge>}
         <span className="tabular-nums" data-slots>
           {p.busy} busy, {p.idle} idle, {p.slots} slots, max {p.max_slots}
@@ -630,7 +627,7 @@ export function QueuePage() {
   );
 }
 
-const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "needs_human" };
+const HEALTH_TONE: Record<string, string> = { ok: "running", warn: "needs_approval", fail: "stuck" };
 
 function CheckList({ checks }: { checks: Health["checks"] }) {
   if (checks.length === 0) return null;
@@ -666,7 +663,7 @@ export function HealthPage() {
         <CheckList checks={open} />
         {fine.length > 0 && (
           <details data-testid="ok-checks" className="mt-2 text-sm">
-            <summary className="cursor-pointer text-zinc-600 dark:text-zinc-400">{fine.length} ok</summary>
+            <summary className="cursor-pointer text-text-2">{fine.length} ok</summary>
             <CheckList checks={fine} />
           </details>
         )}
@@ -679,8 +676,8 @@ export function HealthPage() {
             {sleeps.map((h) => (
               <li key={`${h.worker_id}:${h.woke_at}`} className="flex items-baseline gap-3" data-testid="host-sleep">
                 <span className="font-medium">{sleptText(h.gap_ms)}</span>
-                <span className="tabular-nums text-zinc-600 dark:text-zinc-400">{h.woke_at.slice(0, 16).replace("T", " ")} UTC ({ago(h.woke_at, now)} ago)</span>
-                <span className="min-w-0 font-mono text-xs break-words text-zinc-500">{h.worker_id}</span>
+                <span className="tabular-nums text-text-2">{h.woke_at.slice(0, 16).replace("T", " ")} UTC ({ago(h.woke_at, now)} ago)</span>
+                <span className="min-w-0 font-mono text-xs break-words text-text-3">{h.worker_id}</span>
               </li>
             ))}
           </ul>

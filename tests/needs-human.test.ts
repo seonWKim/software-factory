@@ -94,7 +94,7 @@ describe("an implement run that returns needs_human", () => {
   it("blocks on a human with agent_needs_human, queues nothing, pushes nothing, opens no PR, and adds its tokens", async () => {
     const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { needs_human: ASK } }) }));
     const it0 = await f.approved(1);
-    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: null });
+    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "human", blocked_reason: "agent_needs_human", change_ref: null });
     expect(await f.queued(it0)).toEqual([]);
     expect(await f.runs(it0, "implement")).toHaveLength(1);
     expect(f.broker.calls.map((c) => c.name)).not.toContain("forge.push_branch");
@@ -145,7 +145,7 @@ describe("an implement run that returns needs_human", () => {
     expect(retried).toMatchObject({ stage: "RUNNING", blocked_on: "none", blocked_reason: null, restart_count: 1 });
     expect((await f.queued(it0)).map((r) => r.kind)).toEqual(["implement"]);
     await f.step();
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "42" });
   });
 
   it("/revise <feedback> starts a new triage with the feedback; /reject <reason> closes the item", async () => {
@@ -185,7 +185,7 @@ describe("a review run that returns needs_human", () => {
       review: () => (ask ? { output: { ...pass.output, needs_human: ASK } } : pass),
     }));
     const it0 = await f.approved(8);
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "agent_needs_human", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "agent_needs_human", change_ref: "42" });
     expect(await f.queued(it0)).toEqual([]);
     expect(f.broker.calls.some((c) => JSON.stringify(c.args).includes("factory:review:"))).toBe(false);
     expect(f.asks()).toHaveLength(1);
@@ -199,6 +199,67 @@ describe("a review run that returns needs_human", () => {
     await f.step();
     expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
     expect(await f.runs(it0, "review")).toHaveLength(2);
+  });
+});
+
+describe("a needs_human stop on an unmerged dependency (design §5 Restarts)", () => {
+  /** A runner whose `role` stores an open edge to `depends_on` on the item, then asks with `reason`. */
+  const askingOn = (f: () => Awaited<ReturnType<typeof factory>>, issue: number, depends_on: string, reason: string) => async () => {
+    const it0 = (await f().store.getWorkItemBySource("github_issue", issueRef(issue).id))!;
+    await f().store.replaceDependencyEdges(it0.id, [{ depends_on, kind: "depends_on" }]);
+    return { reason, question: "Should the factory wait for it?" };
+  };
+
+  it("an implement stop whose reason names an open edge holds on the dependency and queues one implement run that starts once it merges", async () => {
+    let f!: Awaited<ReturnType<typeof factory>>;
+    let calls = 0;
+    const ask = askingOn(() => f, 20, "o/r#9", "This needs the API from #9, which is not merged yet.");
+    f = await factory(new FakeRunner({
+      triage: () => ({ output: triageSpec }),
+      implement: async () => (++calls === 1 ? { output: { needs_human: await ask() } } : done),
+    }));
+    const it0 = await f.approved(20);
+    const stopped = (await f.runs(it0, "implement"))[0]!;
+    expect(await f.item(it0)).toMatchObject({ stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #9 to merge" });
+    expect((await f.store.listStateChanges(it0.id)).at(-1)).toMatchObject({ reason: "dependency_hold", detail: { run_id: stopped.id, run_kind: "implement" } });
+    const queued = await f.queued(it0);
+    expect(queued.map((r) => [r.kind, r.idempotency_key])).toEqual([["implement", `${it0.id}:implement:after-dependency:${stopped.id}`]]);
+    // One comment says what it waits for, with no retry footer.
+    expect(f.asks()).toHaveLength(1);
+    expect(f.asks()[0]!.body).toContain("waiting for #9 to merge");
+    expect(f.asks()[0]!.body).not.toContain("/retry");
+    expect(f.asks()[0]!.body).not.toContain("Commands you can reply with now:");
+
+    // Held while the edge is open: the worker does not start it.
+    await f.step();
+    expect(calls).toBe(1);
+    // The edge merges: coordination releases the hold and the queued run starts by itself.
+    await f.store.setDependencyState(it0.id, "o/r#9", "merged");
+    await f.controller.tickCoordination();
+    expect((await f.item(it0)).blocked_on).toBe("none");
+    await f.step();
+    expect(calls).toBe(2);
+  });
+
+  it("an implement stop whose reason names no open edge, or names #92 against an edge to #9, is recorded as agent_needs_human", async () => {
+    let f!: Awaited<ReturnType<typeof factory>>;
+    const ask = askingOn(() => f, 21, "o/r#9", "This needs the API from #92, which is not merged yet.");
+    f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: async () => ({ output: { needs_human: await ask() } }) }));
+    const it0 = await f.approved(21);
+    expect(await f.item(it0)).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
+    expect(await f.queued(it0)).toEqual([]);
+  });
+
+  it("a review stop is recorded as agent_needs_human even when its reason names an open edge", async () => {
+    let f!: Awaited<ReturnType<typeof factory>>;
+    const ask = askingOn(() => f, 22, "o/r#9", "The change relies on #9, which is not merged yet.");
+    f = await factory(new FakeRunner({
+      triage: () => ({ output: triageSpec }), implement: () => done,
+      review: async () => ({ output: { ...pass.output, needs_human: await ask() } }),
+    }));
+    const it0 = await f.approved(22);
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "agent_needs_human" });
+    expect(await f.queued(it0)).toEqual([]);
   });
 });
 

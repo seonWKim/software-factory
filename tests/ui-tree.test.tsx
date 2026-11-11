@@ -23,24 +23,30 @@ const why = (code: string, text: string, refs: number[] = []) => ({ code, text, 
 const phaseHold = (n: number, prev: number) => why("phase", `Waiting for the previous phase #${prev} to merge`, [prev]);
 
 const ROWS = [
-  row(10, "waiting_on_issue", "Split parent", { why: why("phase", "Waiting for its 3 open phases to merge") }),
+  row(10, "blocked_by_task", "Split parent", { why: why("phase", "Waiting for its 3 open phases to merge") }),
   // Out of phase order on purpose.
-  row(13, "waiting_on_issue", "Phase three", { parent_id: "wi_10", phase: 3, waiting_on_number: 12, why: phaseHold(13, 12) }),
+  row(13, "blocked_by_task", "Phase three", { parent_id: "wi_10", phase: 3, waiting_on_number: 12, why: phaseHold(13, 12) }),
   row(11, "running", "Phase one", {
     parent_id: "wi_10", phase: 1, change_ref: "41", change_url: "https://github.com/o/r/pull/41", why: why("running", "Running"),
     run: { kind: "implement", status: "running", attempt: 1, worker_id: "host:7:0", started_at: AT, position: null },
   }),
-  row(12, "waiting_on_issue", "Phase two", { parent_id: "wi_10", phase: 2, waiting_on_number: 11, why: phaseHold(12, 11) }),
-  row(20, "queued", "Held by coordination", {
+  row(12, "blocked_by_task", "Phase two", { parent_id: "wi_10", phase: 2, waiting_on_number: 11, why: phaseHold(12, 11) }),
+  row(20, "blocked_by_task", "Held by coordination", {
     why: why("held", "Held behind #11, which is running", [11]),
     run: { kind: "implement", status: "queued", attempt: 0, worker_id: null, started_at: null, position: 1 },
     claim: { decision: "held", holder: "#11", holder_id: "wi_11", approved: false, cost: 4, threshold: 2.5 },
   }),
-  row(30, "waiting_on_issue", "Finished split", { why: why("phase", "Waiting for its phases to merge") }),
+  row(30, "blocked_by_task", "Finished split", { why: why("phase", "Waiting for its phases to merge") }),
   row(31, "closed", "Done one", { stage: "CLOSED", parent_id: "wi_30", phase: 1, close_reason: "merged" }),
   row(32, "closed", "Done two", { stage: "CLOSED", parent_id: "wi_30", phase: 2, close_reason: "merged" }),
   row(40, "closed", "Closed alone", { stage: "CLOSED", close_reason: "merged" }),
   row(50, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", why: why("human", "Waiting for approval") }),
+  row(60, "needs_you", "Agent asks", { blocked_on: "human", blocked_reason: "agent_needs_human", why: why("human", "Waiting for a person") }),
+  row(61, "needs_triage", "Triage asks", { stage: "NEW", blocked_on: "human", blocked_reason: "agent_needs_human", why: why("human", "Waiting for a person") }),
+  row(62, "blocked_by_task", "Dependency held", {
+    blocked_on: "dependency", blocked_reason: "waiting for #11 to merge", waiting_on_number: 11, why: why("dependency", "Waiting for #11 to merge", [11]),
+    run: { kind: "implement", status: "queued", attempt: 0, worker_id: null, started_at: null, position: 2 },
+  }),
 ];
 const overview = { as_of: AT, stages: {}, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, unreviewed_merges_7d: 0, plugins: { issues: null } };
 const itemsBody = { as_of: AT, total: ROWS.length, items: ROWS, facets: { allStates: ROWS.length, state: {} } };
@@ -92,7 +98,7 @@ describe("items tree", () => {
 
   it("shows the split parent with its phases in phase order, each item once", async () => {
     const tree = await mount();
-    expect(titles(tree)).toEqual(["Split parent", "Phase one", "Phase two", "Phase three", "Held by coordination", "Finished split", "Spec waiting"]);
+    expect(titles(tree)).toEqual(["Split parent", "Phase one", "Phase two", "Phase three", "Held by coordination", "Finished split", "Spec waiting", "Agent asks", "Triage asks", "Dependency held"]);
     expect(new Set(titles(tree)).size).toBe(titles(tree).length);
   });
 
@@ -130,14 +136,23 @@ describe("items tree", () => {
     await mount();
     const summary = screen.getByTestId("summary");
     expect(within(summary).getByRole("button", { name: "1 running" })).toBeTruthy();
-    expect(within(summary).getByRole("button", { name: "1 queued" })).toBeTruthy();
+    expect(within(summary).getByRole("button", { name: "0 queued" })).toBeTruthy();
     expect(within(summary).getByRole("button", { name: "3 held" })).toBeTruthy();
-    expect(within(summary).getByRole("button", { name: "1 needs you" })).toBeTruthy();
+    expect(within(summary).getByRole("button", { name: "3 needs you" })).toBeTruthy();
     expect(summary.textContent).toContain("rate limit: ok");
     fireEvent.click(within(summary).getByRole("button", { name: "3 held" }));
     await settle();
     expect(titles(screen.getByRole("treegrid", { name: "Work items" }))).toEqual(["Split parent", "Phase two", "Phase three", "Held by coordination"]);
     expect(screen.getByRole("button", { name: /^Held 3/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("the needs filter shows Needs you and Needs triage, nothing from Blocked by another task", async () => {
+    await mount();
+    fireEvent.click(within(screen.getByTestId("summary")).getByRole("button", { name: "3 needs you" }));
+    await settle();
+    const shown = titles(screen.getByRole("treegrid", { name: "Work items" }));
+    expect(shown).toEqual(expect.arrayContaining(["Spec waiting", "Agent asks", "Triage asks"]));
+    for (const t of ["Dependency held", "Held by coordination", "Phase two"]) expect(shown).not.toContain(t);
   });
 
   it("search matches in the tree and keeps the matching item's parent for context", async () => {
@@ -200,14 +215,13 @@ describe("items tree", () => {
     expect(titles(again)).not.toContain("Phase one");
   });
 
-  it("moves the wait reason and worker to a second line at phone width and adds no colours of its own", async () => {
+  it("moves the wait reason and worker to a second line at phone width and uses no animation", async () => {
     const tree = await mount();
     const second = within(rowOf(tree, "Phase one")).getByText("host:7:0").parentElement;
     expect(second.className).toContain("basis-full");
     expect(second.className).toContain("sm:basis-auto");
-    // Only the zinc/blue palette the other pages use, with dark variants; no animation.
+    // Token classes switch themes through CSS variables, so there is no dark: variant; no animation.
     expect(tree.innerHTML).not.toMatch(/animate-|transition/);
-    expect(tree.innerHTML).toContain("dark:");
   });
 
   it("has no axe violations", async () => {

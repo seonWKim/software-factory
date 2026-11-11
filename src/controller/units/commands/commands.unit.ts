@@ -2,7 +2,6 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
-import { prNumber } from "../../../core/change-ref.js";
 import {
   CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
   latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
@@ -10,18 +9,18 @@ import {
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
-import { localIdentity } from "../../../core/local-cli.js";
+import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import type { CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
+import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
 import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
-import { confirmProposal, storeProposals } from "./proposals.js";
+import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
 import { scanClean } from "./scan.js";
 
 type AppSender = { user_id: UserId; passport?: Extract<CommandEvent, { kind: "spec_approved" }>["approver"]["passport"] } | null;
@@ -68,16 +67,16 @@ function awaitingSpec(it: WorkItem): boolean {
   return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions" || splitFilingFailed(it));
 }
 /**
- * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, or on one whose resolve
- * run asked for a human (agent_needs_human, decided 2026-11-07). Starts a resolve
+ * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, on a local item waiting for
+ * a merge whose branch conflicts (`localConflict`, 2026-11-12), or one whose resolve run asked for a human. Starts a resolve
  * run under a new key: restart_count + 1, as /retry does, since the run key is per (loop, restart) and a second
  * /resolve would otherwise be a silent no-op. The notes (scanned and capped, the `+paths` line split off) go on
  * the run for the worker; they are untrusted. A `+paths` widens allowed_paths in the same transition (`w`).
  */
-function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, note: string | null, w: Widening): Decision | Refusal {
+function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAsked: boolean, localConflict: boolean, note: string | null, w: Widening): Decision | Refusal {
   // Also the answer to a resolve run that asked for a human (agent_needs_human): the reply is its notes.
   const asked = resolveAsked && it.blocked_on === "human" && it.blocked_reason === AGENT_NEEDS_HUMAN;
-  if (!conflictPending(it) && !asked) {
+  if (!conflictPending(it) && !asked && !localConflict) {
     return {
       refuse: `the item is not waiting on a merge conflict (it is ${phaseLabel(commandPhase(it))}); ` +
         `\`/resolve\` applies only when the ${phaseLabel("merge_conflict")}`,
@@ -185,18 +184,18 @@ export class CommandsUnit {
     );
   }
 
-  /** A gate command from a comment (`app` null) or an app request (its user and edge passport, checked locally), design §4: `approve_spec`,
-   * the note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close. */
+  /** A gate command from a comment (`app` null) or an app request (its user and edge passport, checked locally), design §4: `approve_spec`, the
+   * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close, the pushback's capture. */
   async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
     const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
-    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id, true, app.passport)
-      : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
+    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id, true, app.passport) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
     if ("refuse" in principal) return principal.refuse;
     const input = await this.commandInput(item.id, e, app === null);
     if ("refuse" in input) return input.refuse;
     const refusal = await this.applyCommand(item.id, e, { kind: "user", id: principal.user_id }, input.note, tag, input.paths);
     if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
+    if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
     return refusal;
   }
 
@@ -223,14 +222,14 @@ export class CommandsUnit {
     if (!item || item.stage === "CLOSED") return;
     const principal = await this.c.unit("auth").authorize(e.reviewer, "approve_spec", item.id);
     if ("refuse" in principal) {
-      this.c.k.d.log.info("review ignored", { work_item_id: item.id, pr_number: prNumber(e), reason: principal.refuse });
+      this.c.k.d.log.info("review ignored", { work_item_id: item.id, change_ref: e.change_ref, reason: principal.refuse });
       return;
     }
     const actor: Actor = { kind: "user", id: principal.user_id };
     const refusal = await this.c.unit("transitions").decide(item.id, (it) =>
       this.prFeedback(it, { text: reviewFeedback(e), actor, reason: PR_CHANGES, change_ref: e.change_ref, key: { review_id: e.review_id } }));
     if (refusal === null) return;
-    this.c.k.d.log.info("review refused", { work_item_id: item.id, pr_number: prNumber(e), reason: refusal });
+    this.c.k.d.log.info("review refused", { work_item_id: item.id, change_ref: e.change_ref, reason: refusal });
     await this.c.unit("outbox").post(item, e.source, `The review's requested changes were not applied: ${refusal}.`, `<!-- factory:refused:review-${e.review_id} -->`);
   }
 
@@ -265,7 +264,8 @@ export class CommandsUnit {
       return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
     }
     const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
-    const detail = { ...f.key, ...(local ? {} : { pr_number: prNumber(f) }) };
+    // The detail names the PR by its string ref, like the item (design 02-work-item); a local item has none.
+    const detail = { ...f.key, ...(local ? {} : { change_ref: f.change_ref }) };
     const limit = this.c.k.cfg.max_loops;
     if (it.loop_count + 1 >= limit) {
       const patch = { blocked_on: "human" as const, blocked_reason: "max_loops" };
@@ -455,12 +455,9 @@ export class CommandsUnit {
   }
 
   /**
-   * A plain-language comment on a work item (design §4, issues #583, #584): at most one reply, keyed on the comment
-   * id, that proposes commands for any open item as typed lines (stored once as pending proposal rows, which Slack shows
-   * as buttons), answers a read, asks one question, or answers in plain words (chat) from the item's state label and
-   * block reason. Only a failed or malformed model answer gets the canned line and the commands for the item's state.
-   * Changes no item state: a proposal applies only when typed or confirmed by a press. In order: the item, the
-   * commenter's permission (no model call and no reply without it), then `readMessage`.
+   * A plain-language comment on a work item (design §4, issues #583, #584): at most one reply, keyed on the comment id
+   * (proposals.ts answerPlain). Changes no item state. In order: the item, the commenter's permission (no model call
+   * and no reply without it), then the answer, whose fallback lists the commands for the item's state.
    */
   async handlePlainComment(e: PlainCommentEvent): Promise<void> {
     const code = parseLink(e.body);
@@ -469,11 +466,14 @@ export class CommandsUnit {
     const item = await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id);
     if (!item || item.stage === "CLOSED") return;
     if ("refuse" in (await this.c.unit("auth").authorize(e.author, "approve_spec", item.id))) return;
-    const read = await this.readMessage(e.body, { work_item_id: item.id }, { item, e });
-    if (typeof read === "string") return;
-    const body = read.body ?? ["The factory did not find a command in your comment, so nothing changed.", "", commandFooter(await this.stateOf(item))].join("\n");
-    this.c.k.d.log.info("plain comment answered", { work_item_id: item.id, kind: read.kind });
-    await this.c.unit("outbox").post(item, item.source, body, `<!-- factory:suggest:${e.comment_id} -->`);
+    await answerPlain(this.c, item, e, async () => commandFooter(await this.stateOf(item)));
+  }
+
+  /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal); undefined for any other app command. */
+  appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
+    const kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
+    const who = commandIdentity(r, localIdentity(r.actor));
+    return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;
   }
 
   /**
@@ -492,7 +492,7 @@ export class CommandsUnit {
     const text = body.trim();
     if (!llm || text === "" || text.length > INTERPRET_MAX_CHARS || !(await scanClean(this.c, where, "message", [text]))) return "unread";
     const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
-    const result = await interpret(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level");
+    const result = await interpret(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level", this.c.k.live.values().message_style);
     if (!(await scanClean(this.c, where, "answer", interpretTexts(result)))) return "blocked";
     return { kind: result.kind, body: interpretReply(result, on ? await storeProposals(this.c, on.item, on.e, result) : null) };
   }
@@ -537,7 +537,7 @@ export class CommandsUnit {
     paths: readonly string[] = [],
   ): Promise<Decision | Refusal> {
     if (e.kind === "resolve_requested") {
-      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", note, this.widen(it, paths));
+      return resolveCommand(e, it, actor, (await this.askedBy(it)) === "resolve", await this.c.unit("local-merge").conflicting(it), note, this.widen(it, paths));
     }
     // On the PR, in a Slack thread with a PR, or on a local item with no PR at the merge wait (its local branch, issue #563).
     const asFeedback = e.kind === "revise_requested" && (it.source.type === "slack_thread" ? appliesOnPr : appliesLocally)(commandSpec("revise"), commandState(it));

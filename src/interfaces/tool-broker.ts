@@ -17,17 +17,6 @@ export const STORE_BRANCH = "git.store_branch";
  */
 export const PREFLIGHT = "forge.preflight";
 
-/**
- * Old tool names, each an alias of its forge-neutral tool (the forge rename): a broker runs an alias as its tool
- * and warns once per process; `tool_grants` refuses an alias, naming the tool to grant instead.
- */
-export const TOOL_ALIASES: Readonly<Record<string, string>> = { "github.preflight": PREFLIGHT };
-
-/** The tool `name` stands for: an alias's forge-neutral name, any other name unchanged. */
-export function forgeToolName(name: string): string {
-  return Object.hasOwn(TOOL_ALIASES, name) ? TOOL_ALIASES[name]! : name;
-}
-
 export interface ToolDescriptor {
   name: string; // e.g. "git.store_branch", "forge.preflight"
   description: string;

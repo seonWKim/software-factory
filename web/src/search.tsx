@@ -39,8 +39,8 @@ function Dialog({ label, onClose, children }: { label: string; onClose: () => vo
     }
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-zinc-950/40 p-4 pt-[10dvh]" onKeyDown={onKey}>
-      <div ref={frame} tabIndex={-1} role="dialog" aria-modal="true" aria-label={label} className="max-h-[80dvh] w-full max-w-md overflow-y-auto rounded-md outline-none border border-zinc-200 bg-white p-3 text-sm shadow-lg dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-text-1/40 p-4 pt-[10dvh]" onKeyDown={onKey}>
+      <div ref={frame} tabIndex={-1} role="dialog" aria-modal="true" aria-label={label} className="max-h-[80dvh] w-full max-w-md overflow-y-auto rounded-control outline-none border border-border bg-surface p-3 text-sm shadow-lg">
         {children}
         <div className="mt-3 text-right">
           <Button variant="outline" className="h-8 w-auto px-3" onClick={onClose}>{t("keys.close")}</Button>
@@ -92,10 +92,10 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
           setAt(0);
         }}
         onKeyDown={onKey}
-        className="h-9 w-full rounded-md border border-zinc-300 bg-white px-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+        className="h-9 w-full rounded-control border border-border-strong bg-surface px-2 text-sm"
       />
       {hits.length === 0 ? (
-        <p className="mt-2 text-zinc-600 dark:text-zinc-400">{t("search.none")}</p>
+        <p className="mt-2 text-text-2">{t("search.none")}</p>
       ) : (
         <ul role="listbox" aria-label={t("search.open")} className="mt-2 space-y-0.5">
           {hits.map((h, i) => (
@@ -103,10 +103,10 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
               <button
                 type="button"
                 onClick={() => go(h)}
-                className={`flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left hover:bg-zinc-100 dark:hover:bg-zinc-800 ${i === at ? "bg-zinc-100 dark:bg-zinc-800" : ""}`}
+                className={`flex w-full items-baseline gap-2 rounded-control px-2 py-1.5 text-left hover:bg-surface-2 ${i === at ? "bg-surface-2" : ""}`}
               >
                 <span className="min-w-0 flex-1 break-words">{h.label}</span>
-                <span className="shrink-0 text-xs text-zinc-600 dark:text-zinc-400">{t(h.group)}</span>
+                <span className="shrink-0 text-xs text-text-2">{t(h.group)}</span>
               </button>
             </li>
           ))}
@@ -124,7 +124,7 @@ export function HelpDialog({ onClose }: { onClose: () => void }) {
       <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1">
         {SHORTCUTS.map((s) => (
           <div key={s.keys} className="contents">
-            <dt><kbd className="rounded border border-zinc-300 px-1.5 font-mono text-xs dark:border-zinc-700">{s.keys}</kbd></dt>
+            <dt><kbd className="rounded-control border border-border-strong px-1.5 font-mono text-xs">{s.keys}</kbd></dt>
             <dd>{t(s.what)}</dd>
           </div>
         ))}

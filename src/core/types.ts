@@ -66,13 +66,10 @@ export interface WorkItem {
   loop_count: number;
   restart_count: number;
   token_cost: number;
-  /** Kept in sync by the store from change_ref, for src/ui and the status pages. The core reads change_ref. */
-  pr_number: number | null;
   /**
-   * The change columns (migration 35): `change_ref` is the PR number as text, the field a patch sets; the core
-   * converts it with prNumber (src/core/change-ref.ts) for a forge call. `change_url` is the PR link: the forge's
-   * open result when a patch gives one, else derived by the store from a forge key's stored label. Null without a
-   * PR. A read of a row an older controller wrote without change_ref returns its pr_number as text.
+   * The change columns (migration 35): `change_ref`, the PR number as text, is the field a patch sets (prNumber converts
+   * it for a forge call). `change_url` is the PR link: the forge's open result, else derived from a forge key's stored
+   * label. Null without a PR.
    */
   change_ref: string | null;
   change_url: string | null;
@@ -128,15 +125,15 @@ export interface WorkItem {
 
 /**
  * Fields a transition may change. id, source, title, issue_text, requester, origin, head_branch,
- * last_head_sha, parent_id, phase, version and timestamps are store-owned. The PR field is `change_ref`: the
- * store writes pr_number from it. `change_url` (the forge's open result) is written only with a new change_ref,
+ * last_head_sha, parent_id, phase, version and timestamps are store-owned. The PR field is `change_ref`.
+ * `change_url` (the forge's open result) is written only with a new change_ref,
  * and never over a stored URL.
  */
 export type WorkItemPatch = Partial<
   Omit<
     WorkItem,
     | "id" | "version" | "source" | "title" | "issue_text" | "requester_id" | "origin" | "head_branch" | "last_head_sha"
-    | "parent_id" | "phase" | "pr_number" | "created_at" | "updated_at"
+    | "parent_id" | "phase" | "created_at" | "updated_at"
   >
 >;
 
@@ -659,13 +656,13 @@ export type UnreviewedMergeId = Brand<string, "UnreviewedMergeId">;
 
 /**
  * A change that merged with no work item (design 2026-11-01): skipped with `factory: skip`, from a fork,
- * never adopted, or merged before the first poll. One row per (project, pr_number).
+ * never adopted, or merged before the first poll. One row per (project, change_ref).
  */
 export interface UnreviewedMerge {
   id: UnreviewedMergeId;
   /** The project key (design 2026-11-01), as on WorkItem. */
   project: string;
-  pr_number: number;
+  change_ref: string;
   merge_sha: string;
   /** The merger's user ID; null when the forge did not name one or it did not resolve to a user. */
   merger_id: UserId | null;

@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
 import { FactoryBanner } from "../web/src/views/pages.js";
 import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
-import type { ItemRow } from "../web/src/api.js";
+import { API, type Items, type ItemRow, useApi } from "../web/src/api.js";
+import { STATUS_MS } from "../web/src/components/ui/dialog.js";
 import { App } from "../web/src/App.js";
 import { POLL_MS } from "../web/src/api.js";
-import { THEME_KEY } from "../web/src/theme.js";
+import { THEME_KEY, paintChoice, storedChoice } from "../web/src/theme.js";
+import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
 import { RevisionBanner } from "../web/src/views/system-banner.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
 
@@ -83,6 +85,9 @@ class MemoryStorage {
 }
 
 beforeEach(() => {
+  // jsdom has no showModal: open and close by the attribute.
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
   fetched = [];
   posts = [];
   postAnswer = { status: 202, body: { request_id: "app:x", seq: 9, command: "approve", work_item_id: "wi_1" } };
@@ -106,6 +111,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // The send confirmation lives on document.body, outside every rendered tree.
+  document.querySelector("[data-toast]")?.remove();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -128,13 +135,24 @@ describe("app shell", () => {
     const factory = screen.getByRole("navigation", { name: "Factory" });
     expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you", "Work", "Activity"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Runners", "Queue", "Data"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Rules", "Runners", "Queue", "Data"]);
     fireEvent.click(within(nav).getByText("Queue"));
     expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
     expect(location.pathname).toBe("/app/queue");
     expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched.every((u) => u.startsWith("/api/v1/"))).toBe(true);
+  });
+
+  it("the sidebar top shows the mark and the wordmark Gongbang", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
+    const brand = sidebar.querySelector("p")!;
+    expect(brand.textContent).toBe("Gongbang");
+    const mark = within(brand).getByTestId("brand-mark");
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(mark.querySelector("path")!.getAttribute("fill-rule")).toBe("evenodd");
   });
 
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
@@ -156,21 +174,114 @@ describe("app shell", () => {
     expect(fetched.length).toBeGreaterThan(whileHidden);
   });
 
-  it("the theme toggle switches light and dark and keeps the choice in browser storage", async () => {
+  /** A matchMedia whose dark state a test can flip; counts the live "change" listeners. */
+  function stubScheme(dark: boolean) {
+    let matches = dark;
+    const listeners = new Set<(e: { matches: boolean }) => void>();
+    vi.stubGlobal("matchMedia", (q: string) => ({
+      get matches() { return q.includes("dark") && matches; },
+      addEventListener: (_: string, l: (e: { matches: boolean }) => void) => void listeners.add(l),
+      removeEventListener: (_: string, l: (e: { matches: boolean }) => void) => void listeners.delete(l),
+    }));
+    return {
+      set(next: boolean) { matches = next; for (const l of [...listeners]) l({ matches: next }); },
+      listeners: () => listeners.size,
+    };
+  }
+  const isDark = () => document.documentElement.classList.contains("dark");
+  const choose = (name: string) => fireEvent.click(within(screen.getByRole("radiogroup", { name: "Theme" })).getByRole("radio", { name }));
+
+  it("offers System, Light and Dark, System by default", async () => {
     mount();
     await screen.findByText("Needs you (4)");
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Switch to dark theme" }));
-    expect(document.documentElement.classList.contains("dark")).toBe(true);
-    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
-    fireEvent.click(screen.getByRole("button", { name: "Switch to light theme" }));
-    expect(document.documentElement.classList.contains("dark")).toBe(false);
-    expect(localStorage.getItem(THEME_KEY)).toBe("light");
+    const group = screen.getByRole("radiogroup", { name: "Theme" });
+    expect(within(group).getAllByRole("radio").map((r) => r.getAttribute("aria-label"))).toEqual(["System", "Light", "Dark"]);
+    expect(within(group).getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
+  });
 
-    cleanup();
-    localStorage.setItem(THEME_KEY, "dark");
+  it("with no saved choice, a dark system scheme renders dark", async () => {
+    stubScheme(true);
     mount();
-    expect(screen.getByRole("button", { name: "Switch to light theme" })).toBeTruthy();
+    await screen.findByText("Needs you (4)");
+    expect(isDark()).toBe(true);
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+  });
+
+  it("System follows a change of the system scheme with no reload", async () => {
+    const scheme = stubScheme(false);
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(isDark()).toBe(false);
+    act(() => scheme.set(true));
+    expect(isDark()).toBe(true);
+    act(() => scheme.set(false));
+    expect(isDark()).toBe(false);
+  });
+
+  it("Light or Dark overrides the system and removes the listener; System follows it again and clears the stored value", async () => {
+    const scheme = stubScheme(false);
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(scheme.listeners()).toBe(1);
+    choose("Dark");
+    expect(isDark()).toBe(true);
+    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
+    expect(scheme.listeners()).toBe(0);
+    act(() => scheme.set(false));
+    expect(isDark()).toBe(true);
+    choose("Light");
+    act(() => scheme.set(true));
+    expect(isDark()).toBe(false);
+    expect(localStorage.getItem(THEME_KEY)).toBe("light");
+    choose("System");
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+    expect(isDark()).toBe(true);
+    expect(scheme.listeners()).toBe(1);
+    act(() => scheme.set(false));
+    expect(isDark()).toBe(false);
+  });
+
+  it("the pre-render paint shows the system scheme without leaving a listener", () => {
+    const scheme = stubScheme(true);
+    paintChoice("system");
+    expect(isDark()).toBe(true);
+    expect(scheme.listeners()).toBe(0);
+    paintChoice("light");
+    expect(isDark()).toBe(false);
+  });
+
+  it("a saved light or dark value applies on load, over the system", async () => {
+    stubScheme(true);
+    localStorage.setItem(THEME_KEY, "light");
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(isDark()).toBe(false);
+    expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("the banner link takes the banner's own text token and is used by the revision banner", () => {
+    expect(BANNER_LINK_CLASS).toMatch(/(?<![\w-])text-current(?![\w-])/);
+    render(<RevisionBanner server="a" web="b" />);
+    expect(screen.getByText("reload").className).toBe(BANNER_LINK_CLASS);
+    expect(screen.getByTestId("revision-banner").className).toMatch(/(?<![\w-])text-pill-warn-fg(?![\w-])/);
+  });
+
+  it("keeps the stored choice ahead of the system preference", () => {
+    stubScheme(true);
+    localStorage.setItem(THEME_KEY, "light");
+    expect(storedChoice()).toBe("light");
+    paintChoice(storedChoice()); // what web/src/main.tsx does at startup
+    mount();
+    expect(screen.getByRole("radio", { name: "Light" }).getAttribute("aria-checked")).toBe("true");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    cleanup();
+    stubScheme(false);
+    localStorage.setItem(THEME_KEY, "dark");
+    expect(storedChoice()).toBe("dark");
+    paintChoice(storedChoice());
+    mount();
+    expect(screen.getByRole("radio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
   });
 });
 
@@ -203,8 +314,8 @@ describe("top bar on a narrow screen", () => {
     await screen.findByText("Needs you (4)");
     const header = document.querySelector("header")!;
     expect(header.className.split(" ")).toContain("flex-wrap");
-    for (const name of ["Refresh", "Switch to dark theme"]) {
-      expect(within(header).getByRole("button", { name }).className.split(" ")).toContain("shrink-0");
+    for (const el of [within(header).getByRole("button", { name: "Refresh" }), within(header).getByRole("radio", { name: "Dark" })]) {
+      expect(el.className.split(" ")).toContain("shrink-0");
     }
     const age = header.querySelector("[aria-live]")!;
     expect(age.textContent).toMatch(/^updated \d+s ago$/);
@@ -409,7 +520,7 @@ describe("Running now and Queue", () => {
   });
 });
 
-// ---- Item commands (issue #228): a button per command, the note box, the reject and revise forms (issue #527), the outcome ----
+// ---- Item commands (issue #228): a button per command, the note box, the reject and revise dialogs (issue #527), the outcome ----
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: `${name} it`, allowed: true, reason: null as string | null });
 const reply = (seq: number, command: string, handled: boolean, refusal: string | null = null) =>
   ({ seq, command, created_at: AT, handled_at: handled ? AT : null, refusal });
@@ -458,18 +569,17 @@ describe("item commands", () => {
     }
   });
 
-  it("revise and reject open their own forms, not the note box; the note box stays for the other commands", async () => {
+  it("revise and reject open a dialog, not the note box; the note box stays for the other commands", async () => {
     mountCommands();
     expect(screen.getByRole("textbox", { name: "Note" })).toBeTruthy();
     typeNote("tighten the tests");
-    expect(button("revise").getAttribute("aria-expanded")).toBe("false");
     fireEvent.click(button("revise"));
-    expect(button("revise").getAttribute("aria-expanded")).toBe("true");
-    const form = screen.getByRole("group", { name: "Revise the spec" });
-    expect((within(form).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    const dialog = screen.getByRole("dialog", { name: "Revise wi_1" });
+    expect((within(dialog).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     fireEvent.click(button("reject"));
-    expect(screen.getByRole("group", { name: "Why reject?" })).toBeTruthy();
-    expect(screen.queryByRole("group", { name: "Revise the spec" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Reject wi_1" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Revise wi_1" })).toBeNull();
     await settle();
     expect(posts).toEqual([]);
     cleanup();
@@ -506,7 +616,7 @@ describe("item commands", () => {
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("Cancel"));
-    expect(screen.queryByRole("button", { name: "Confirm reject" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("reject"));
@@ -718,14 +828,14 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
   it("the tab title leads with the Needs you count, and has no prefix at 0", async () => {
     mount();
     await screen.findByText("Needs you (4)");
-    await vi.waitFor(() => expect(document.title).toBe("(4) Needs you · software-factory"));
+    await vi.waitFor(() => expect(document.title).toBe("(4) Needs you · Gongbang"));
     cleanup();
     const before = overview.needs_you;
     overview.needs_you = 0;
     try {
       mount();
       await screen.findByText("Needs you (0)");
-      await vi.waitFor(() => expect(document.title).toBe("Needs you · software-factory"));
+      await vi.waitFor(() => expect(document.title).toBe("Needs you · Gongbang"));
     } finally {
       overview.needs_you = before;
     }
@@ -828,16 +938,32 @@ describe("Needs-you command buttons (issue #453)", () => {
     );
   }
 
-  it("one button per command of the row, in its order; Work items has none", () => {
+  const menu = () => screen.getByRole("button", { name: "More commands" });
+  const pick = (name: string) => {
+    fireEvent.click(menu());
+    fireEvent.click(screen.getByRole("menuitem", { name }));
+  };
+
+  it("one primary button and one ⋯ menu per row, holding the other commands; Work items has none", () => {
     mountNeeds(["approve", "reject", "revise"].map(cmd));
-    expect([...document.querySelectorAll("[data-need-commands] [data-command] > button")].map((b) => b.textContent)).toEqual(["approve", "reject", "revise"]);
+    expect([...document.querySelectorAll("[data-need-commands] > [data-command] > button")].map((b) => b.textContent)).toEqual(["approve"]);
+    expect(document.querySelectorAll("[data-need-commands] > span > button, [data-need-commands] > button")).toHaveLength(2);
+    expect(screen.queryByRole("menuitem")).toBeNull();
+    fireEvent.click(menu());
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["reject", "revise"]);
+    cleanup();
+    mountNeeds([cmd("retry"), cmd("reject")]);
+    expect(rowOf("retry").textContent).toBe("retry");
+    cleanup();
+    mountNeeds([cmd("reject")]);
+    expect(document.querySelector("[data-need-commands] [data-command] > button:not([role])")).toBeNull();
     cleanup();
     const it = row(1, "needs_approval", "Spec waiting", { need: { reason: "spec ready" }, commands: [cmd("approve")] });
     render(<ItemsTable items={[it as unknown as ItemRow]} now={Date.parse(AT)} label="Work items" empty="none" />);
     expect(document.querySelector("[data-need-commands]")).toBeNull();
   });
 
-  it("approve, retry and resolve send at once, with no note", async () => {
+  it("approve, retry and resolve send at once, with no note; the row shows no sent text, a status message does", async () => {
     for (const name of ["approve", "retry", "resolve"]) {
       posts = [];
       mountNeeds([cmd(name)]);
@@ -845,47 +971,107 @@ describe("Needs-you command buttons (issue #453)", () => {
       await settle();
       expect(posts.map((p) => [p.url, p.body]), name).toEqual([["/api/v1/items/wi_1/commands", { command: name }]]);
       expect(posts[0]!.headers["x-csrf-token"]).toBe("tok-123");
-      expect(within(rowOf(name)).getByRole("status").textContent).toBe("sent");
+      expect(document.querySelector("tr")!.textContent).not.toContain("sent");
+      expect(screen.getByRole("status").textContent).toBe(`Command sent: ${name}`);
       cleanup();
     }
   });
 
-  it("reject opens the Why? form and asks to confirm, naming the PR it closes; nothing is sent before the confirm", async () => {
+  it("the status message outlives a row that leaves the list after its send, then goes", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/v1/session"], SESSION);
+    const it = row(1, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", need: { reason: "spec ready", anchor: null }, commands: [cmd("approve")] });
+    client.setQueryData(["/api/v1/items"], { ...items, items: [it] });
+    function Listed() {
+      const list = useApi<Items>(API.items, false).data;
+      return <ItemsTable items={list?.items ?? []} now={Date.parse(AT)} label="Needs you" empty="none" actions />;
+    }
+    const saved = RESPONSES["/api/v1/items"];
+    RESPONSES["/api/v1/items"] = { ...items, items: [] };
+    try {
+      render(
+        <QueryClientProvider client={client}>
+          <Listed />
+        </QueryClientProvider>,
+      );
+      fireEvent.click(button("approve"));
+      await settle();
+      expect(posts.map((p) => p.body)).toEqual([{ command: "approve" }]);
+      expect(document.querySelector("[data-need-commands]")).toBeNull();
+      expect(screen.getByRole("status").textContent).toBe("Command sent: approve");
+      await act(async () => void (await vi.advanceTimersByTimeAsync(STATUS_MS)));
+      expect(screen.queryByRole("status")).toBeNull();
+    } finally {
+      RESPONSES["/api/v1/items"] = saved;
+    }
+  });
+
+  it("opening reject, revise or verdict leaves the row's children as they were; the dialog sits outside the row", () => {
+    mountNeeds(["approve", "reject", "revise", "verdict"].map(cmd));
+    const tr = document.querySelector("tr")!;
+    const before = [...tr.querySelectorAll("*")];
+    for (const [name, title] of [["reject", "Reject wi_1"], ["revise", "Revise wi_1"], ["verdict", "Record a verdict on wi_1"]] as const) {
+      pick(name);
+      const dialog = screen.getByRole("dialog", { name: title });
+      expect(tr.contains(dialog), name).toBe(false);
+      expect([...tr.querySelectorAll("*")], name).toEqual(before);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+    }
+  });
+
+  it("reject opens the dialog and asks to confirm, naming the PR it closes; nothing is sent before the confirm", async () => {
     mountNeeds(["approve", "reject"].map(cmd), { change_ref: "42" });
-    fireEvent.click(button("reject"));
-    const form = screen.getByRole("group", { name: "Why reject?" });
-    expect(form.textContent).toContain("Rejecting closes this item and its PR #42, without a merge.");
-    fireEvent.click(within(form).getByRole("radio", { name: "duplicate" }));
+    pick("reject");
+    const dialog = screen.getByRole("dialog", { name: "Reject wi_1" });
+    expect(dialog.textContent).toContain("Rejecting closes this item and its PR #42, without a merge.");
+    fireEvent.click(within(dialog).getByRole("radio", { name: "duplicate" }));
     await settle();
     expect(posts).toEqual([]);
     fireEvent.click(button("Confirm reject"));
     await settle();
     expect(posts.map((p) => p.body)).toEqual([{ command: "reject", note: "duplicate" }]);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("revise opens its note fields and sends only once a section has text; Cancel sends nothing", async () => {
-    mountNeeds([cmd("revise")]);
-    fireEvent.click(button("revise"));
-    const form = screen.getByRole("group", { name: "Revise the spec" });
-    expect((within(form).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    mountNeeds([cmd("approve"), cmd("revise")]);
+    pick("revise");
+    const dialog = screen.getByRole("dialog", { name: "Revise wi_1" });
+    expect((within(dialog).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await settle();
     expect(posts).toEqual([]);
-    fireEvent.click(button("revise"));
+    pick("revise");
     fireEvent.change(screen.getByRole("textbox", { name: "Comment on Problem" }), { target: { value: "narrower" } });
     fireEvent.click(button("Send revise"));
     await settle();
     expect(posts.map((p) => p.body)).toEqual([{ command: "revise", note: "### Problem\nnarrower" }]);
   });
 
-  it("a command the viewer may not send is disabled, with its reason beside it in plain text", async () => {
+  it("verdict opens a one-line dialog; Send verdict sends what was typed", async () => {
+    mountNeeds([cmd("approve"), cmd("verdict")]);
+    pick("verdict");
+    expect((button("Send verdict")).disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Verdict" }), { target: { value: " accept none ok " } });
+    fireEvent.click(button("Send verdict"));
+    await settle();
+    expect(posts.map((p) => p.body)).toEqual([{ command: "verdict", note: "accept none ok" }]);
+  });
+
+  it("a command the viewer may not send stays in the menu, disabled, with its reason in plain text", async () => {
     mountNeeds(["approve", "reject"].map((n) => ({ ...cmd(n), allowed: false, reason: NO_ROLE })));
+    // Nothing allowed is primary, so approve is in the menu too.
+    expect(document.querySelectorAll("[data-need-commands] [data-command] > button:not([role])")).toHaveLength(0);
+    fireEvent.click(menu());
     for (const name of ["approve", "reject"]) {
-      expect(button(name).disabled, name).toBe(true);
-      expect(rowOf(name).textContent).toContain("local:me has no role that allows it (no_role)");
-      expect(rowOf(name).textContent).not.toContain("`");
+      const item = screen.getByRole("menuitem", { name }) as HTMLButtonElement;
+      expect(item.disabled, name).toBe(true);
+      const li = item.closest("li")!;
+      expect(li.textContent).toContain("local:me has no role that allows it (no_role)");
+      expect(li.textContent).not.toContain("`");
     }
-    fireEvent.click(button("approve"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "approve" }));
     await settle();
     expect(posts).toEqual([]);
   });

@@ -10,7 +10,7 @@ import { Markdown } from "../web/src/components/ui/markdown.js";
 // the spec triage wrote sits behind "spec written (show)" and renders as markdown, never as escaped JSON; the
 // spec comment and PR link only for http(s) URLs; the Runs table names each run by kind and ID. A waiting spec
 // (issue #526) shows In short above Commands, its decisions as questions, and a confirm step before approve; Reject
-// and Revise have their own forms (issue #527).
+// and Revise open a dialog (issue #527).
 
 const AT = "2026-11-07T00:00:00.000Z";
 const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` });
@@ -274,7 +274,13 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
   });
 });
 
-describe("item page: the Reject and Revise forms (issue #527)", () => {
+beforeEach(() => {
+  // jsdom has no showModal: open and close by the attribute.
+  HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+  HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
+});
+
+describe("item page: the Reject and Revise dialogs (issue #527)", () => {
   const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
   let posts: { url: string; body: unknown }[];
 
@@ -302,12 +308,12 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     }));
   }
 
-  /** Clicks `name` once it is enabled; returns its form. */
+  /** Clicks `name` once it is enabled; returns its dialog. */
   async function open(name: "reject" | "revise") {
     const button = (await screen.findByRole("button", { name })) as HTMLButtonElement;
     await waitFor(() => expect(button.disabled).toBe(false));
     fireEvent.click(button);
-    return screen.getByRole("group", { name: name === "reject" ? "Why reject?" : "Revise the spec" });
+    return screen.getByRole("dialog", { name: name === "reject" ? "Reject wi_r" : "Revise wi_r" });
   }
 
   it("Reject opens a Why? form with four reasons and a text box; the reason and the text are sent as the reject note", async () => {
@@ -332,7 +338,7 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     let form = await open("reject");
     fireEvent.change(within(form).getByRole("textbox", { name: "Reject details" }), { target: { value: "covered by #12" } });
     fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("group", { name: "Why reject?" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(posts).toEqual([]);
     form = await open("reject");
     fireEvent.change(within(form).getByRole("textbox", { name: "Reject details" }), { target: { value: "covered by #12" } });
@@ -344,12 +350,12 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     serve();
     mount("/app/items/wi_r");
     let form = await open("reject");
-    expect(form.querySelector("[data-reject-closes]")!.textContent).toBe("Rejecting closes this item.");
+    expect(form.querySelector("[data-dialog-consequence]")!.textContent).toBe("Rejecting closes this item.");
     cleanup();
     serve({ change_ref: "42", change_url: "https://github.com/o/r/pull/42" });
     mount("/app/items/wi_r");
     form = await open("reject");
-    expect(form.querySelector("[data-reject-closes]")!.textContent).toBe("Rejecting closes this item and its PR #42, without a merge.");
+    expect(form.querySelector("[data-dialog-consequence]")!.textContent).toBe("Rejecting closes this item and its PR #42, without a merge.");
   });
 
   it("after a Reject is sent, its outcome shows next to the Reject button", async () => {
@@ -360,7 +366,7 @@ describe("item page: the Reject and Revise forms (issue #527)", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Confirm reject" }));
     const row = document.querySelector<HTMLElement>('[data-command="reject"]')!;
     await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
-    expect(screen.queryByRole("group", { name: "Why reject?" })).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("Revise shows the spec sections, each with an optional comment box, and sends one revise with only the commented sections", async () => {
@@ -452,6 +458,78 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     // No note box for commands that cannot be sent.
     expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
     expect(document.querySelector("[data-commands-none]")).toBeNull();
+  });
+});
+
+describe("item page: the command box and pending proposals (design 09-dashboard-app)", () => {
+  let posts: { url: string; body: unknown }[];
+  const PROPOSALS = [
+    { id: "prop_one", created_at: AT, commands: [{ index: 0, work_item_id: "wi_b", line: "/approve ship it" }, { index: 1, work_item_id: "wi_c", line: "/reject not needed" }] },
+    { id: "prop_two", created_at: AT, commands: [{ index: 0, work_item_id: "wi_b", line: "/retry" }] },
+  ];
+
+  /** Serves wi_b, running (no command applies) or at the spec gate, with `proposals`; records every POST. */
+  function serve(commands: string[], proposals: unknown[]) {
+    const detail = {
+      as_of: AT, item: base("wi_b", 50, "Box"), timeline: [], runs: [], replies: [], spec: null, proposals,
+      commands: commands.map((name) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null })),
+    };
+    posts = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0]!;
+      if (init?.method === "POST") {
+        posts.push({ url: path, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ request_id: "app:x", seq: 9, command: "x", work_item_id: "wi_b" }), { status: 202, headers: { "content-type": "application/json" } });
+      }
+      const bodies: Record<string, unknown> = {
+        "/api/v1/items/wi_b": detail,
+        "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+        "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
+      };
+      const body = bodies[path];
+      if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+  }
+
+  /** `name` in `scope` once it is enabled. */
+  async function enabled(scope: HTMLElement, name: string) {
+    const button = within(scope).getByRole("button", { name }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    return button;
+  }
+
+  it("shows each pending proposal with its commands, a Confirm all and a Cancel; each press sends one request carrying its proposal ID", async () => {
+    serve(["approve", "reject", "revise"], PROPOSALS);
+    mount("/app/items/wi_b");
+    const list = await screen.findByRole("list", { name: "Proposed commands" });
+    const shown = [...list.querySelectorAll<HTMLElement>("[data-proposal]")];
+    expect(shown.map((p) => p.dataset.proposal)).toEqual(["prop_one", "prop_two"]);
+    expect(shown[0]!.textContent).toContain("/approve ship it");
+    expect(shown[0]!.textContent).toContain("/reject not needed");
+    expect(shown[0]!.textContent).toContain("wi_c");
+    fireEvent.click(await enabled(shown[0]!, "Confirm all"));
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_b/commands", body: { command: "proposal_confirm", proposal: "prop_one" } }]));
+    fireEvent.click(await enabled(shown[1]!, "Cancel"));
+    await waitFor(() => expect(posts.map((p) => p.body)).toEqual([
+      { command: "proposal_confirm", proposal: "prop_one" },
+      { command: "proposal_cancel", proposal: "prop_two" },
+    ]));
+    await waitFor(() => expect(within(shown[0]!).getByRole("status").textContent).toBe("sent"));
+  });
+
+  it("the command box sends the sentence as one request, also when no typed command applies; an empty box sends nothing", async () => {
+    serve([], []);
+    mount("/app/items/wi_b");
+    const box = (await screen.findByRole("textbox", { name: "Say it in your own words" })) as HTMLTextAreaElement;
+    expect(screen.queryByRole("list", { name: "Proposed commands" })).toBeNull();
+    const form = box.closest("form")!;
+    const read = within(form).getByRole("button", { name: "Read it" }) as HTMLButtonElement;
+    expect(read.disabled).toBe(true);
+    fireEvent.change(box, { target: { value: "  approve wi_b but keep it small " } });
+    fireEvent.click(await enabled(form, "Read it"));
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_b/commands", body: { command: "sentence", note: "approve wi_b but keep it small" } }]));
+    await waitFor(() => expect(box.value).toBe(""));
   });
 });
 

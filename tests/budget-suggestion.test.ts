@@ -151,7 +151,7 @@ describe("the checkpoint comment", () => {
     const body = checkpointComment({
       tier: 2,
       stage: "REVIEW",
-      pr_number: 42,
+      change_ref: "42",
       runs: 4,
       tokens: 1_050_000,
       budget: 1_000_000,
@@ -175,7 +175,7 @@ describe("the checkpoint comment", () => {
     const body = checkpointComment({
       tier: 3,
       stage: "RUNNING",
-      pr_number: null,
+      change_ref: null,
       runs: 2,
       tokens: 500,
       budget: 400,

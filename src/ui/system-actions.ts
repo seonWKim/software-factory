@@ -1,32 +1,28 @@
 // System actions in Needs you (design §9 Status page, issue #311): what the factory needs from the operator
 // besides a work item. A pending migration, a GitHub token that expires within 3 days, a claim pause or a
-// worker pause in effect, a claim deadlock, an open alarm, and a dashboard or UI server that runs another
+// worker pause in effect, an open alarm, and a dashboard or UI server that runs another
 // revision than it should. Each names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
 // asks GitHub nothing (the token's days come from this process's last health run).
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { Run, WorkItemId } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
 import { type Check, TOKEN_WARN_DAYS } from "../setup.js";
 import type { FactoryStatus } from "./factory-status.js";
 import { alarmCommand, alarmText, alarmUntil, openAlarms } from "./alarms.js";
 import { activePauses } from "./pause-api.js";
-import { deadlocked } from "./why.js";
 
-export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "claim_deadlock" | "alarm" | "revision_mismatch";
+export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
 
 export interface SystemAction {
   code: SystemActionCode;
-  /** One sentence; may carry store text (a deadlock's holder), so the API passes it through the Withholder. */
+  /** One sentence; may carry store text (an alarm's detail), so the API passes it through the Withholder. */
   text: string;
   /** What clears it, as the operator types it. */
   command: string;
   /** When it ends by itself (a claim pause's end, model_stall's next probe, an alarm's close), else null. */
   until: string | null;
-  /** The item it is about (a deadlock), else null. */
-  work_item_id: WorkItemId | null;
 }
 
 /**
@@ -96,8 +92,6 @@ const short = (rev: string) => rev.slice(0, 7);
 
 export interface SystemInput {
   store: FactoryStore;
-  /** The running and queued runs the overview already read. */
-  active: readonly Run[];
   /** The supervisor's status; absent or null: none. */
   factory: FactoryStatus | null | undefined;
   deps: SystemDeps;
@@ -107,11 +101,11 @@ export interface SystemInput {
   dashboardRev: string | null;
 }
 
-/** Every system action in effect, in a fixed order: migration, token, pauses, deadlocks, alarms, revisions. */
+/** Every system action in effect, in a fixed order: migration, token, pauses, alarms, revisions. */
 export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   const out: SystemAction[] = [];
-  const add = (code: SystemActionCode, text: string, command: string, until: string | null = null, work_item_id: WorkItemId | null = null) =>
-    out.push({ code, text, command, until, work_item_id });
+  const add = (code: SystemActionCode, text: string, command: string, until: string | null = null) =>
+    out.push({ code, text, command, until });
 
   const migration = await pendingMigration(x.store, x.factory);
   if (migration) add("migration_pending", migration, "npm run migrate");
@@ -128,10 +122,6 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
   const workerPauses = await x.store.listWorkerPauses();
   if (workerPauses.length > 0) {
     add("worker_pause", `${workerPauses.length} worker pause${workerPauses.length === 1 ? "" : "s"} in effect (factory workers pause)`, "factory workers resume");
-  }
-
-  for (const d of await deadlocks(x.store, x.active)) {
-    add("claim_deadlock", `Started past a deadlock with ${d.holder_ref}: a person checks the overlap`, `factory status ${d.id}`, null, d.id);
   }
 
   for (const a of await openAlarms(x.store, x.now)) {
@@ -167,24 +157,6 @@ async function pendingMigration(store: FactoryStore, factory: FactoryStatus | nu
     return `The update to ${short(factory.target_rev ?? "unknown")} waits for the migration${steps}`;
   }
   return null;
-}
-
-/**
- * Open items not blocked on a person whose current run's latest claim decision is a deadlock (issue #310). One
- * claim-decision read per item with an active implement run. Listed until the run is resolved.
- */
-async function deadlocks(store: FactoryStore, active: readonly Run[]): Promise<{ id: WorkItemId; holder_ref: string }[]> {
-  const seen = new Set<WorkItemId>();
-  const out: { id: WorkItemId; holder_ref: string }[] = [];
-  for (const r of active.filter((x) => x.kind === "implement")) {
-    if (seen.has(r.work_item_id)) continue;
-    seen.add(r.work_item_id);
-    const d = (await store.listClaimDecisions(r.work_item_id)).at(-1) ?? null;
-    if (!d || !active.some((x) => x.work_item_id === r.work_item_id && deadlocked(d, x))) continue;
-    const it = await store.getWorkItem(r.work_item_id);
-    if (it && it.stage !== "CLOSED" && it.blocked_on !== "human") out.push({ id: it.id, holder_ref: d.holder_ref });
-  }
-  return out;
 }
 
 /** How often a `factory ui` started by hand checks that the factory has not moved past its revision. */

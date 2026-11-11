@@ -1,10 +1,13 @@
 import type { UserId, WorkItem, WorkItemId } from "./types.js";
 import type { ExternalIdentity } from "../interfaces/auth-provider.js";
+import type { EgressScanner } from "../interfaces/egress-scanner.js";
 import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
+import type { LLMProvider } from "../interfaces/llm-provider.js";
 import { MERGE_COMMAND } from "./local-merge.js";
-import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
+import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from "./command-table.js";
 import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
+import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
 import { parseQuickAdd } from "./quick-add.js";
 import { type TaskFields, taskLine } from "./tasks.js";
 
@@ -15,7 +18,8 @@ import { type TaskFields, taskLine } from "./tasks.js";
  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
- * issue #523). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
+ * issue #523). `confirm <proposal-id>` appends one `proposal_confirm` row for a stored proposal with a pending command
+ * (design 04-gate-commands, the CLI sentence form). `help [<id>]` prints the `/help` reply. The controller reads that log and applies each command with the same
  * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
  * answers (design 05-sources, CLI intake); a verdict is not mirrored. Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
@@ -67,11 +71,22 @@ export function isCliCommandKey(key: string): boolean {
 }
 const USER_ID = /^[a-z]+:\S+$/;
 
-/** The top-level words `factory` hands to this module: the table's task, item and users commands. */
+/** The top-level words `factory` hands to this module: the table's task, item (with `confirm`) and users commands. */
 export const CLI_TOP_WORDS = topWords(["task", "item", "users"]);
 
 /** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
 export const HELP_WORD = "help";
+
+/** `factory confirm <proposal-id>`: confirms every pending command of a stored proposal. */
+export const CONFIRM_WORD = "confirm";
+
+/**
+ * The dashboard's app commands beside the item commands (design 09-dashboard-app): the command box's sentence, read by
+ * the controller's plain-words reader, and a stored proposal's Cancel. Its Confirm all is `proposal_confirm`, the
+ * confirm row's own name (CONFIRM_COMMAND), as `factory confirm` stores it.
+ */
+export const SENTENCE_APP_COMMAND = "sentence";
+export const CANCEL_APP_COMMAND = "proposal_cancel";
 
 const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdict"] as const;
 
@@ -86,6 +101,7 @@ export type CliAction =
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
+  | { action: "confirm"; proposal: string }
   | { action: "users_list" }
   | { action: "users_add"; user: UserId; role: Exclude<LocalRole, "owner"> }
   | { action: "users_remove"; user: UserId };
@@ -149,6 +165,9 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (args.length > 1) return bad("help takes at most one work item ID");
     return { action: "help", id: (args[0] as WorkItemId | undefined) ?? null };
   }
+  if (word === CONFIRM_WORD) {
+    return args.length === 1 && isProposalId(args[0]!) ? { action: "confirm", proposal: args[0]! } : bad("confirm needs one proposal ID, as `factory \"<words>\"` printed it");
+  }
   if (word === MERGE_COMMAND) {
     const [id, ...rest] = args;
     if (!id || rest.length > 0) return bad("merge needs one work item ID");
@@ -173,7 +192,7 @@ export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
-    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask"
+    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask" | "listCommandProposals"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -269,6 +288,22 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
         lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
       };
     }
+    case "confirm": {
+      const rows = await d.store.listCommandProposals(a.proposal);
+      if (rows.length === 0) return fail(`no proposal ${a.proposal}`);
+      const pending = rows.filter((r) => r.status === "pending");
+      if (pending.length === 0) {
+        return { code: 0, lines: [`nothing was applied: every command of ${a.proposal} was already applied or answered`, ...rows.map((r) => `  ${r.work_item_id}\t/${r.command}${r.args ? ` ${r.args}` : ""}\t${r.status}`)] };
+      }
+      await claim();
+      // The controller's confirm path (src/controller/units/commands/proposals.ts) claims and applies each pending row,
+      // and answers a refusal in the thread of the first pending command's item.
+      const passport_id = await d.passport?.();
+      const args = { item: pending[0]!.work_item_id, proposal: a.proposal };
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args, ...(passport_id ? { passport_id } : {}) });
+      const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
+      return { code: 0, lines: [`stored \`factory confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
+    }
     case "help": {
       if (a.id === null) return { code: 0, lines: helpReply(null).split("\n") };
       const item = await d.store.getWorkItem(a.id);
@@ -315,7 +350,7 @@ async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
     `  blocked_reason: ${item.blocked_reason ?? "-"}`,
     `  close_reason: ${item.close_reason ?? "-"}`,
     `  tier: ${item.tier ?? "-"}`,
-    `  pr_number: ${item.change_ref ?? "-"}`,
+    `  change_ref: ${item.change_ref ?? "-"}`,
     `  version: ${item.version}`,
     "",
     "Spec",
@@ -338,4 +373,61 @@ async function showLines(d: LocalCliDeps, item: WorkItem): Promise<string[]> {
   if (messages.length === 0) out.push("  (none)");
   for (const m of messages) out.push(`  [${m.seq}] ${m.created_at}`, ...m.body.split("\n").map((l) => `    ${l}`));
   return out;
+}
+
+// `factory "<words>"` (design 04-gate-commands, the CLI sentence form): a command in the owner's own words, read by the
+// plain-words reader over the open items. src/main.ts runs it for any first word no command claims. Each proposed
+// command is printed as its typed line under the proposal ID and stored pending; `factory confirm <proposal-id>`
+// applies them through the controller's confirm path. Nothing here changes an item's state.
+
+export interface SentenceDeps {
+  store: Pick<FactoryStore, "listWorkItemsWhere" | "recordCommandProposals">;
+  llm: LLMProvider;
+  scanner: Pick<EgressScanner, "scan">;
+  identity: CliIdentity;
+  /** The identity's refusal of approve_spec through the local auth plugin, or null when it may (as a plain reply is checked). */
+  refusal: () => Promise<string | null>;
+  /** A new random ID: the proposal's. */
+  newId: () => string;
+}
+
+/** The words of `factory <words...>` as one sentence, or why they are none: a sentence has at least two words. */
+export function parseSentence(args: readonly string[]): { text: string } | { error: string } {
+  const text = args.join(" ").replace(/\s+/g, " ").trim();
+  if (text.split(" ").length < 2) {
+    return { error: `unknown command ${JSON.stringify(text)}; a command in your own words takes at least two words: factory ${SENTENCE_FORM}` };
+  }
+  if (text.length > INTERPRET_MAX_CHARS) return { error: `a command in your own words is at most ${INTERPRET_MAX_CHARS} characters` };
+  return { text };
+}
+
+/**
+ * Reads `text` as a message on no item: the role check, the egress scan of the words, one model call over the open
+ * items, the egress scan of the answer; then a `commands` answer's proposals are stored pending under one new proposal
+ * ID (`prop_` and the random ID's letters and digits) and printed as typed lines. Any other answer is printed as a
+ * plain reply would read, without its hidden marker; nothing is stored.
+ */
+export async function runSentence(d: SentenceDeps, text: string): Promise<CliResult> {
+  const fail = (line: string): CliResult => ({ code: 1, lines: [line] });
+  const refused = await d.refusal();
+  if (refused !== null) return fail(`not read: ${refused}`);
+  if (!(await d.scanner.scan("comment", text)).clean) return fail("not read: the words did not pass the egress scan, so they were not sent to the model");
+  const items = openItems(await d.store.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
+  const result = await interpret(text, items, d.llm, "top_level");
+  for (const t of interpretTexts(result)) if (!(await d.scanner.scan("comment", t)).clean) return fail("the model's answer did not pass the egress scan, so it is not shown");
+  if (result.kind === "request") return { code: 0, lines: ["That reads as a work request, so nothing has changed: create it with `factory task create --title <t> --body-file <f>`."] };
+  if (result.kind !== "commands") {
+    const reply = interpretReply(result) ?? "The factory did not find a command in your words, so nothing changed.";
+    return { code: 0, lines: reply.split("\n").filter((l) => !l.startsWith("<!--")) };
+  }
+  const id = `prop_${d.newId().replace(/[^A-Za-z0-9]/g, "")}`.slice(0, 64);
+  if (!isProposalId(id)) return fail("no proposal ID could be made");
+  await d.store.recordCommandProposals(result.proposals.map((p, idx) => ({ proposal_id: id, idx, work_item_id: p.item.id, command: p.command, args: p.args, author_id: d.identity.user })));
+  return {
+    code: 0,
+    lines: [
+      `proposal ${id}: nothing has changed. To apply every command, run \`factory ${CONFIRM_WORD} ${id}\`; or type a line on its item.`,
+      ...result.proposals.map((p) => `  ${p.item.id}\t${typed(p)}`),
+    ],
+  };
 }

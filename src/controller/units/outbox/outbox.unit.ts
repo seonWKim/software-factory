@@ -11,7 +11,7 @@ import { type WorkStatus, statusOf } from "../../../core/status-label.js";
 import { type SourceRef, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ThreadLinkField } from "../../../interfaces/factory-store.js";
 import { labelTarget } from "../../../interfaces/factory-store.js";
-import { THREAD_INTENT, type NewAction } from "../../../outbound/index.js";
+import { TACIT_LEDGER, THREAD_INTENT, type NewAction } from "../../../outbound/index.js";
 import type { Ctx } from "../context.js";
 import { type ControllerWrite, type ThreadEntry, deliveredUrl, threadEntry } from "../kernel.js";
 import { controllerUnit } from "../context.js";
@@ -69,14 +69,33 @@ export class OutboxUnit {
    * no forge, it goes to the item's own source.
    */
   async prComment(it: WorkItem, key: string, body: string): Promise<void> {
-    const pr_number = prNumber(it);
-    const pr = pr_number === null ? null : this.c.k.prRef(pr_number);
+    const n = prNumber(it);
+    const pr = n === null ? null : this.c.k.prRef(n);
     if (pr === null) {
       await this.comment(it, key, body);
       return;
     }
     const marker = `<!-- factory:${key} -->`;
     await this.write({ work_item_id: it.id, marker, body, delivery: { source_type: pr.type, target: pr, link_field: null } });
+  }
+
+  /**
+   * A pushback (a `/revise`, a `/reject`, a `changes` verdict) captured in the owner's ledger (issue #570), after its
+   * command applied: one intent keyed by the item and the command's comment ID, so the same command delivered again
+   * stores nothing more. The proposal is the item's latest finished run's summary. Outbound scans the text (G5) and
+   * runs the ledger's CLI, retrying with backoff; the command never waits on it. No ledger: no intent. A failure to
+   * record it is logged: the command it follows has applied.
+   */
+  async captureTacit(it: WorkItem, comment_id: string, pushback: string): Promise<void> {
+    if (!this.c.k.d.tacit?.enabled) return;
+    await this.c.k.guard("tacit", async () => {
+      // Runs are listed oldest first.
+      const last = (await this.c.k.reader.listRuns(it.id)).filter((r) => r.outcome?.status === "succeeded").at(-1)?.outcome;
+      const proposal = last?.status === "succeeded" ? last.summary : "";
+      await this.request({
+        action: "tacit_capture", target: TACIT_LEDGER, work_item_id: it.id, args: { session: it.id, proposal, pushback }, key: `tacit:${it.id}:${comment_id}`,
+      });
+    });
   }
 
   /** 👀 on the event, through outbound. Best effort there: a failure is a warning and never blocks anything. */
@@ -93,11 +112,10 @@ export class OutboxUnit {
    * thread entries before actions and outbound sends a destination's batches one at a time in intent order, so a
    * status is never posted before the spec of its transition is delivered (issue #586).
    */
-  async showStatus(it: WorkItem, current: (pr_number: number | null) => boolean = () => false): Promise<void> {
+  async showStatus(it: WorkItem, current: (change_ref: string | null) => boolean = () => false): Promise<void> {
     const status = statusOf(it);
     if (!current(null)) await this.setStatus(it.source, status, null);
-    const pr = prNumber(it);
-    if (pr !== null && it.origin !== "adopted" && !current(pr)) await this.setStatus(it.source, status, it.change_ref);
+    if (prNumber(it) !== null && it.origin !== "adopted" && !current(it.change_ref)) await this.setStatus(it.source, status, it.change_ref);
   }
 
   /**

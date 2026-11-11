@@ -1,4 +1,4 @@
-import { Activity, Archive, CalendarDays, Database, FolderKanban, HeartPulse, Inbox, ListOrdered, ListTodo, OctagonAlert, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
+import { Activity, Archive, CalendarDays, Database, FolderKanban, HeartPulse, Inbox, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
 /** Where a page sits in the sidebar: the Factory group, the collapsed System group, or only the top bar (Settings). */
 export type PageGroup = "factory" | "system" | null;
@@ -19,6 +19,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "activity", label: "Activity", key: "activity", icon: Activity, group: "factory" },
   { path: "health", label: "Health", key: "health", icon: HeartPulse, group: "system" },
   { path: "failures", label: "Failures", key: "failures", icon: OctagonAlert, group: "system" },
+  { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "system" },
   { path: "runners", label: "Runners", key: "runners", icon: Waypoints, group: "system" },
   { path: "queue", label: "Queue", key: "queue", icon: ListOrdered, group: "system" },
   { path: "data", label: "Data", key: "data", icon: Database, group: "system" },

@@ -119,6 +119,7 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
+import * as notices from "./notices.js";
 import * as posted from "./posted-comments.js";
 
 /**
@@ -201,12 +202,10 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async getWorkItemByPr(project: string, change_ref: string): Promise<WorkItem | null> {
-    const pr_number = prNumber({ change_ref });
     const [row] = await this.db.all(
-      // change_ref first; pr_number for a row an older controller wrote without it (change_ref NULL).
-      `SELECT * FROM controller_work_items WHERE project = ? AND (change_ref = ? OR (change_ref IS NULL AND pr_number = ?))
+      `SELECT * FROM controller_work_items WHERE project = ? AND change_ref = ?
          ORDER BY created_at, ${this.db.dialect.seq} LIMIT 1`,
-      [project, change_ref, pr_number],
+      [project, change_ref],
     );
     return row ? rowToWorkItem(row) : null;
   }
@@ -387,15 +386,9 @@ export class SqlFactoryStore implements FactoryStore {
   recordSignal(s: NewSignal): Promise<boolean> { return signals.recordSignal(this.db, s); }
   latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> { return signals.latestSignalTimes(this.db); }
   listSignalRefs(windows: Parameters<FactoryStore["listSignalRefs"]>[0]) { return signals.listSignalRefs(this.db, windows); }
-  listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> {
-    return signals.listStateChangesSince(this.db, q);
-  }
-  listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> {
-    return signals.listVerdictsSince(this.db, since);
-  }
-  listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> {
-    return signals.listRunsFinishedSince(this.db, q);
-  }
+  listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> { return signals.listStateChangesSince(this.db, q); }
+  listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> { return signals.listVerdictsSince(this.db, since); }
+  listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> { return signals.listRunsFinishedSince(this.db, q); }
   listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
 
   // Command proposals (design 04-gate-commands, issue #584): command-proposals.ts
@@ -406,6 +399,11 @@ export class SqlFactoryStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); }
+  // Owner notices (design 09-notifications): notices.ts
+  recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
+  listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }
+  listHeldNotices() { return notices.listHeldNotices(this.db); }
+  listPendingNotices() { return notices.listPendingNotices(this.db); }
 
   // Budget checkpoints
 
@@ -617,7 +615,7 @@ export class SqlFactoryStore implements FactoryStore {
     for (const r of await tx.all(`SELECT * FROM controller_work_items WHERE id IN (${placeholders(ids.length)})`, ids)) {
       items.set(r.id as string, rowToWorkItem(r));
     }
-    const openPrs = (await tx.all("SELECT * FROM controller_work_items WHERE pr_number IS NOT NULL AND stage <> 'CLOSED'")).map(rowToWorkItem);
+    const openPrs = (await tx.all(`SELECT * FROM controller_work_items WHERE change_ref IS NOT NULL AND stage <> 'CLOSED'`)).map(rowToWorkItem);
     for (const it of openPrs) items.set(it.id, it);
     const queuedIds = [...new Set(runs.map((q) => q.work_item_id as string))];
     const edges = await tx.all(
@@ -653,13 +651,13 @@ export class SqlFactoryStore implements FactoryStore {
     const depHeld = (id: string) => unmet.has(id) || items.get(id)?.blocked_on === "dependency";
     // Holders: running items, open PRs, then other claimable queued implement runs of items with no PR.
     const holders: Holder[] = [];
-    const ref = (it: WorkItem, self: string) => (it.pr_number !== null ? `#${it.pr_number}` : shortRef(it.source.id, self));
+    const ref = (it: WorkItem, self: string) => (it.change_ref !== null ? `#${it.change_ref}` : shortRef(it.source.id, self));
     const holderOf = (it: WorkItem, kind: Holder["kind"]): Holder => ({
       work_item_id: it.id,
       project: it.project,
       ref: ref(it, it.source.id),
       kind,
-      files: it.pr_files ?? (it.pr_number === null ? it.files_to_change : null) ?? it.allowed_paths,
+      files: it.pr_files ?? (it.change_ref === null ? it.files_to_change : null) ?? it.allowed_paths,
       fallback: kind === "pr" && it.pr_files === null,
     });
     for (const id of busy) {
@@ -669,7 +667,7 @@ export class SqlFactoryStore implements FactoryStore {
     for (const it of openPrs) if (!busy.has(it.id)) holders.push(holderOf(it, "pr"));
     for (const id of queuedIds) {
       const it = items.get(id);
-      if (it && it.pr_number === null && !busy.has(id) && !depHeld(id)) holders.push(holderOf(it, "waiting"));
+      if (it && it.change_ref === null && !busy.has(id) && !depHeld(id)) holders.push(holderOf(it, "waiting"));
     }
     return { items, holders, conflicts, decisions, depHeld };
   }
@@ -685,7 +683,7 @@ export class SqlFactoryStore implements FactoryStore {
     if (c.depHeld(itemId)) return false;
     const it = c.items.get(itemId);
     // A review fix or retry on an item with a PR: its conflicts are the PR's, handled at merge.
-    if (!it || it.pr_number !== null) return true;
+    if (!it || it.change_ref !== null) return true;
     const existing = c.decisions.get(runId) ?? null;
     // Holders named relative to this item, so one of the same repository is "#N".
     const holders = c.holders.map((h) => (h.work_item_id ? { ...h, ref: this.refFor(c, h.work_item_id, it) } : h));
@@ -712,7 +710,7 @@ export class SqlFactoryStore implements FactoryStore {
   private refFor(c: CoordContext, holderId: string, self: WorkItem): string {
     const h = c.items.get(holderId);
     if (!h) return holderId;
-    return h.pr_number !== null ? `#${h.pr_number}` : shortRef(h.source.id, self.source.id);
+    return h.change_ref !== null ? `#${h.change_ref}` : shortRef(h.source.id, self.source.id);
   }
 
   /** Upserts the run's claim decision; a decision equal to the stored one writes nothing. approved_by is kept. */
@@ -1500,15 +1498,12 @@ export class SqlFactoryStore implements FactoryStore {
   async recordUnreviewedMerge(input: NewUnreviewedMerge): Promise<{ merge: UnreviewedMerge; created: boolean }> {
     assertProjectKey(input.project);
     return this.db.transaction(async (tx) => {
-      const { pr_number } = await changeFields(tx, input.project, input.change_ref);
-      // The pr_number column is NOT NULL: only a PR number is a change here.
-      if (pr_number === null) throw new Error(`unreviewed merge change_ref is not a PR number: ${input.change_ref}`);
       const created = await this.insertOnce(
         tx,
-        "INSERT INTO controller_unreviewed_merges (id, project, pr_number, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [newId("um") as UnreviewedMergeId, input.project, pr_number, input.change_ref, input.merge_sha, input.merger_id, this.now()],
+        "INSERT INTO controller_unreviewed_merges (id, project, change_ref, merge_sha, merger_id, at) VALUES (?, ?, ?, ?, ?, ?)",
+        [newId("um") as UnreviewedMergeId, input.project, input.change_ref, input.merge_sha, input.merger_id, this.now()],
       );
-      const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND pr_number = ?", [input.project, pr_number]);
+      const [row] = await tx.all("SELECT * FROM controller_unreviewed_merges WHERE project = ? AND change_ref = ?", [input.project, input.change_ref]);
       return { merge: rowToUnreviewedMerge(row!), created };
     });
   }
@@ -2508,7 +2503,7 @@ export class SqlFactoryStore implements FactoryStore {
     }
   }
 
-  /** A patch's diff as assignments, with pr_number and change_url when it sets change_ref (on the patched project). */
+  /** A patch's diff as assignments, with change_url when it sets change_ref (on the patched project). */
   private async patchSql(tx: SqlExecutor, current: WorkItem, patch: WorkItemPatch): Promise<ReturnType<typeof diffPatch>> {
     const diff = diffPatch(current, patch);
     const change = await changeAssignments(tx, patch.project ?? current.project, diff.changes, patch.change_url ?? null);

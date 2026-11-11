@@ -578,14 +578,14 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * then stored. A failed write ends its claim and stores nothing.
    */
   async setStatus(source: SourceRef, status: WorkStatus, change_ref: string | null): Promise<void> {
-    const pr_number = change_ref === null ? null : prNumber({ change_ref });
-    if (change_ref !== null && pr_number === null) throw new Error(`not a GitHub PR number: ${change_ref}`);
-    if (!this.store) return this.writeStatus(source, status, pr_number);
-    const target = labelTarget(pr_number);
+    const pr = change_ref === null ? null : prNumber({ change_ref });
+    if (change_ref !== null && pr === null) throw new Error(`not a GitHub PR number: ${change_ref}`);
+    if (!this.store) return this.writeStatus(source, status, pr);
+    const target = labelTarget(change_ref);
     const token = await this.store.claimLabelWrite(source.id, target, status, LABEL_CLAIM_MS);
     if (token === null) return;
     try {
-      await this.writeStatus(source, status, pr_number);
+      await this.writeStatus(source, status, pr);
     } catch (err) {
       await this.store.releaseLabelClaim(source.id, target, token);
       throw err;
@@ -593,9 +593,9 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     await this.store.recordLabelState(source.id, target, status, token);
   }
 
-  private async writeStatus(source: SourceRef, status: WorkStatus, pr_number: number | null): Promise<void> {
+  private async writeStatus(source: SourceRef, status: WorkStatus, pr: number | null): Promise<void> {
     const repo = `/repos/${this.repo.owner}/${this.repo.name}`;
-    const n = pr_number ?? issueNumberFromSourceId(source.id);
+    const n = pr ?? issueNumberFromSourceId(source.id);
     const all = statusLabels(this.statusPrefix);
     const target = all.find((l) => l.status === status)!;
     const others = new Set(all.filter((l) => l !== target).map((l) => l.name));

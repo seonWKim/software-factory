@@ -31,14 +31,19 @@ const AUTO_MERGE_BATCH = 20;
 /** Why auto mode went back to manual: the alert's error code (design 03-risk, stop conditions). */
 type AutoStop = "red_main" | "failure_alert" | "budget_checkpoint";
 
-/** Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. */
-function conflictRefusal(id: WorkItemId, branch: string, base: string, conflicts: readonly string[]): string {
+/**
+ * Why a branch that does not merge cleanly into the local base was not merged, with the conflicting files. `resolving`:
+ * the automatic resolve started (design §5 Merge conflict); otherwise the person resolves it.
+ */
+function conflictRefusal(id: WorkItemId, branch: string, base: string, conflicts: readonly string[], resolving: boolean): string {
   return [
-    `\`${branch}\` does not merge cleanly into the local \`${base}\`, so nothing moved and the item still waits for a merge. Conflicting files:`,
+    `\`${branch}\` does not merge cleanly into the local \`${base}\`, so nothing moved. Conflicting files:`,
     "",
     ...conflicts.map((f) => `- \`${f}\``),
     "",
-    `\`${branch}\` is a local branch of this repository: merge \`${base}\` into it and commit the resolution there, then run \`factory merge ${id}\` again`,
+    resolving
+      ? `An automatic resolve run merges \`${base}\` into \`${branch}\`, resolves the conflicts and commits on the local branch; a fresh review follows, then run \`factory merge ${id}\` again`
+      : `\`${branch}\` is a local branch of this repository: merge \`${base}\` into it and commit the resolution there, then run \`factory merge ${id}\` again`,
   ].join("\n");
 }
 
@@ -51,7 +56,7 @@ export class LocalMergeUnit {
    * `factory merge <id>` through the command inbox and by the status page's Merge button (an app request,
    * applyAppRequest), never a second path. `who` is the CLI's local identity or the app request's factory user ID.
    * Authorized by the local auth plugin for `approve_merge`, the approver role. Refused, with a reply, for an item not waiting
-   * for a merge, and at once for a branch that conflicts with the local base. Otherwise the change enters the merge
+   * for a merge, and at once for a branch that conflicts with the local base, which starts its automatic resolve. Otherwise the change enters the merge
    * queue (RFC 0015 M8, the merge-queue unit): a merge-check run checks its merged result, and only a green one
    * lands (`requestMerge`, an outbound delivery); a red one is removed and the reply says why, and the item stays in merge_pending. A checkout of
    * the base is fast-forwarded when clean and left as it was otherwise (the close's detail and the reply say so).
@@ -83,7 +88,7 @@ export class LocalMergeUnit {
     else {
       const conflicts = await this.c.k.d.sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
       if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
-      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts);
+      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item.id));
       else {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
@@ -200,6 +205,47 @@ export class LocalMergeUnit {
     if (!item) return "the work item was not found";
     if (!(await this.autoMode(item.project))) return "auto mode is off now; a person merges it: `factory merge` (approver role)";
     return this.c.unit("auth").automatic("approve_merge", item);
+  }
+
+  /**
+   * A conflicting local branch at `factory merge` (design §5 Merge conflict, decision changed 2026-11-12): the
+   * automatic resolve starts, as from the merge check, keyed on the local base's commit. Only when this controller's
+   * sandbox reads the local base (`local_only`); with a forge selected its base read is the remote's, so the
+   * person resolves it as before. Returns whether the item moved to its resolve run.
+   */
+  private async resolveRefused(id: WorkItemId): Promise<boolean> {
+    const sandbox = this.c.k.d.sandbox;
+    if (this.c.k.cfg.local_only !== true || !sandbox) return false;
+    const { repo } = this.c.k.cfg;
+    await this.startLocalResolve(id, await sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch }), "merge_refused");
+    return (await this.c.k.reader.getWorkItem(id))?.stage === "RUNNING";
+  }
+
+  /**
+   * A local item's branch conflicts with the local base at `baseSha` (design §5 Merge conflict, decision changed
+   * 2026-11-12): the merge check or `factory merge` found it. No update run (the resolve run merges the base and runs
+   * the gates itself): the automatic resolve starts at once, as after a PR's update run. Only an item still waiting
+   * for a merge with no PR changes, so a second call changes nothing.
+   */
+  async startLocalResolve(id: WorkItemId, baseSha: string, cause: string): Promise<void> {
+    await this.c.unit("transitions").decide(id, (it) =>
+      awaitingMerge(it) && it.change_ref === null ? this.c.unit("run-results").autoResolve(it, baseSha, { cause }, null) : null);
+  }
+
+  /**
+   * Whether `it` is a local item waiting for a merge whose branch conflicts with the local base (design §5 Merge
+   * conflict, `/resolve`): the local merge's own probe (`localConflicts`, objects only). False with no sandbox for it.
+   */
+  async conflicting(it: WorkItem): Promise<boolean> {
+    const sandbox = this.c.k.d.sandbox;
+    if (!awaitingMerge(it) || it.change_ref !== null || !canMergeLocal(sandbox)) return false;
+    const { repo } = this.c.k.cfg;
+    return ((await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch: this.branchOf(it) }))?.length ?? 0) > 0;
+  }
+
+  /** The change a conflict comment names: the PR, or a local item's branch (`start`: at the start of a sentence). */
+  changeName(it: WorkItem, start = false): string {
+    return it.change_ref !== null ? `PR #${it.change_ref}` : `${start ? "The" : "the"} local branch \`${this.branchOf(it)}\``;
   }
 
   /** The item's local branch. */

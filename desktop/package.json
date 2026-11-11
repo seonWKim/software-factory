@@ -1,6 +1,6 @@
 {
   "name": "software-factory",
-  "productName": "Software Factory",
+  "productName": "Gongbang",
   "private": true,
   "type": "module",
   "main": "electron/macos/main.js"

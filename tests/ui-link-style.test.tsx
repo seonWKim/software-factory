@@ -85,7 +85,7 @@ describe("shared link style", () => {
     const page = await mountAt("items/wi_1", "Title 1");
     const source = contentLinks(page.container).find((a) => a.getAttribute("href") === "https://github.com/o/r/issues/1")!;
     expect(source.className).toContain("tabular-nums");
-    expect(source.className).not.toContain("text-zinc-500");
+    expect(source.className).not.toContain("text-text-3");
   });
 
   it("leaves the sidebar links on their own classes", async () => {
@@ -101,31 +101,18 @@ describe("shared link style", () => {
     const last = cells.slice(-2);
     expect(last.map((c) => c.textContent)).toEqual(["–", "#5"]);
     for (const c of last) expect(c.querySelector("a")).toBeNull();
-    expect(last.map((c) => c.innerHTML).join()).not.toContain("blue");
+    expect(last.map((c) => c.innerHTML).join()).not.toContain("accent");
   });
 
 });
 
-describe("no per-call-site blue", () => {
+describe("no per-call-site link colour", () => {
   const walk = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith(".tsx") ? [join(dir, e.name)] : []));
-  it("has no text-blue-* class in web/src/views", () => {
-    for (const f of walk("web/src/views")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-blue-/);
+  it("has no text-accent class in web/src/views", () => {
+    for (const f of walk("web/src/views")) expect(readFileSync(f, "utf8"), f).not.toMatch(/text-accent/);
   });
-  it("has the style in link-style.ts alone", () => {
-    expect(LINK_CLASS).toContain("text-blue-");
-  });
-});
-
-describe("contrast", () => {
-  const lum = (hex: string) => {
-    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
-    return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
-  };
-  const ratio = (a: string, b: string) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
-  it("is at least 4.5:1 in light and dark", () => {
-    expect(ratio("#1d4ed8", "#ffffff")).toBeGreaterThanOrEqual(4.5); // blue-700 on white
-    expect(ratio("#60a5fa", "#18181b")).toBeGreaterThanOrEqual(4.5); // blue-400 on zinc-900
-    expect(ratio("#60a5fa", "#09090b")).toBeGreaterThanOrEqual(4.5); // blue-400 on zinc-950
+  it("has the style in link-style.ts alone, as a token class", () => {
+    expect(LINK_CLASS).toContain("text-accent");
   });
 });

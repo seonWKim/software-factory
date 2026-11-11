@@ -3,6 +3,8 @@
 // same item. Store reads only, no forge call: the PR link is the item's stored change_url.
 
 import { LOCAL_SOURCE } from "../core/local-merge.js";
+import { parseNeedsHuman } from "../core/outputs.js";
+import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
 import type { Run, WorkItem } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
@@ -62,8 +64,14 @@ export async function needOf(c: NeedCtx, it: WorkItem, check: MergeCheckNeed | n
     const code = await c.text(failed, { channel: "run_outcome", max: 80 });
     return { reason: `failed: ${code}`, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
   }
+  if (reason === AGENT_NEEDS_HUMAN) {
+    const ask = await latestAsk(c.store, it);
+    if (ask) return { reason: await c.text(ask.question, { max: 200 }), ...stored(it.failure_comment_url, "Answer"), command: null };
+  }
+  // A null reason gets fixed words, never an empty or "no reason" text.
+  if (reason === "") return { reason: "waiting for a person", ...issue, command: null };
   // Scan the stored reason itself: the reworded text could hide a secret from the scanner.
-  const shown = reason === "" ? "no reason" : await c.text(reason);
+  const shown = await c.text(reason);
   const plain = shown !== reason ? shown : (PLAIN_REASONS[reason] ?? reason.replace(/[_:]+/g, " "));
   return { reason: plain, ...issue, command: null };
 }
@@ -73,4 +81,14 @@ async function latestErrorCode(store: NeedCtx["store"], it: WorkItem): Promise<s
   const failed = (await store.listRuns(it.id)).filter((r) => r.outcome?.status === "failed");
   const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
   return last?.outcome?.status === "failed" ? last.outcome.error_code : "unknown";
+}
+
+/** The latest run's ask (needs_human) of an item blocked on `agent_needs_human`, else null. */
+async function latestAsk(store: NeedCtx["store"], it: WorkItem): Promise<{ question: string } | null> {
+  for (const r of (await store.listRuns(it.id)).reverse()) {
+    if (r.outcome?.status !== "succeeded") continue;
+    const ask = parseNeedsHuman(r.outcome.data.needs_human);
+    if (ask.ok && ask.value) return ask.value;
+  }
+  return null;
 }

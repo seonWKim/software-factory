@@ -6,8 +6,9 @@ import { commandFooter, commandState, retryPathsReply } from "../../../core/comm
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail } from "../../../shared/command-notes.js";
+import { dependencyStop } from "./dependency-stop.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
-import { autoApprovedFooter, renderSpec } from "../../../core/spec-comment.js";
+import { autoApprovedFooter, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
 import { applyCompanions } from "../../../core/companions.js";
 import { suggestedSplit } from "../../../core/split.js";
@@ -181,6 +182,7 @@ export class RunResultsUnit {
             tier,
             token_cost: tokens,
           };
+          const missing = droppedValues(spec, it.issue_text), held = missing.length > 0; // dropped request values: no approval without /approve below
           // Each approval below without a person's reply: the spec comment with its note, no answer block and `footer`, RUNNING, the implement run queued.
           const approved = async (note: readonly string[], how: { actor: Actor; reason: string; detail?: StateChangeDetail }, footer = footerAfter(it, { stage: "RUNNING" })): Promise<Decision> => {
             const patch = { ...fields, stage: "RUNNING" as const };
@@ -209,7 +211,7 @@ export class RunResultsUnit {
               enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
             };
           }
-          if (!spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
+          if (!held && !spec.phases && !needsSpecApproval(tier, this.c.k.cfg.dials)) {
             const next = { ...it, ...fields };
             return {
               patch: { ...fields, stage: "RUNNING" },
@@ -220,7 +222,7 @@ export class RunResultsUnit {
             };
           }
           // The factory's fix for a recurring failure runs without a person (design §7); a gate-path change still waits for a person's merge.
-          const fix = spec.phases ? null : await this.c.unit("improve").fixPattern(it);
+          const fix = spec.phases || held ? null : await this.c.unit("improve").fixPattern(it);
           if (fix) {
             const gate = gatePathTouched(spec.allowed_paths);
             return approved([
@@ -229,7 +231,7 @@ export class RunResultsUnit {
             ], { actor: SYSTEM, reason: FIX_SPEC_APPROVED, detail: { pattern_key: fix.pattern_key } });
           }
           // A standing rule approves a tier 1 spec that would wait here, never one that touches protected paths.
-          const rule = spec.phases ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
+          const rule = spec.phases || held ? null : await this.c.unit("standing").standingRule(it, tier, spec.allowed_paths);
           if (rule) {
             const id = ruleId(rule.gate, rule.tier);
             return approved([
@@ -242,7 +244,7 @@ export class RunResultsUnit {
             });
           }
           // Auto mode (design 03-risk): a spec it may approve starts with each decision's default; any other waits.
-          const auto = spec.phases ? null : await this.c.unit("local-merge").autoMode(it.project);
+          const auto = spec.phases || held ? null : await this.c.unit("local-merge").autoMode(it.project);
           // Auto mode approves under the controller's service passport (RFC 0015 §8).
           const refusal = auto
             ? autoApproveRefusal({ tier, decisions: spec.decision_items ?? [], gate_path: gatePathTouched(spec.allowed_paths) })
@@ -256,14 +258,13 @@ export class RunResultsUnit {
             }, autoApprovedFooter(commandState({ ...it, stage: "RUNNING" }), tier, this.c.k.d.clock.now().toISOString()));
           }
           const patch = { ...fields, stage: "READY" as const, blocked_on: "human" as const, blocked_reason: "spec_pending" };
-          const waits = auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
+          const waits = held ? heldNote(missing) : auto ? `Auto mode is on, but this spec waits for \`/approve\`: ${refusal}.\n\n` : "";
           const url = await this.c.unit("outbox").comment(it, `spec:${run.id}`,
-            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footerAfter(it, patch)}`), "spec_comment_url");
+            renderSpec(spec, tier, { floor, previous: it.tier, added }, `${waits}${footerAfter(it, patch)}`, { missing }), "spec_comment_url");
           return {
             patch: { ...patch, spec_comment_url: url },
             actor: SYSTEM,
-            reason: "triaged",
-            ack_run: run.id,
+            reason: "triaged", ack_run: run.id,
           };
         }
         case "implement": {
@@ -349,7 +350,7 @@ export class RunResultsUnit {
           if (auto) {
             const counts = await this.conflictCountsOf(it, 0);
             await this.c.unit("outbox").prComment(it, `auto-resolved:${run.id}`, [
-              `The factory resolved the merge conflict on PR #${it.change_ref} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and pushed the merge. A fresh review runs next.`,
+              `The factory resolved the merge conflict on ${this.c.unit("local-merge").changeName(it)} automatically (attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`) and ${it.change_ref === null ? "committed" : "pushed"} the merge. A fresh review runs next.`,
               "",
               conflictCountsLine(counts),
             ].join("\n"));
@@ -392,7 +393,7 @@ export class RunResultsUnit {
               return review ? this.c.unit("checks-gate").checkGate(it, review, {}, run.id) : ack("update_up_to_date");
             }
             case "conflict":
-              return this.autoResolve(it, run, typeof data.base_sha === "string" ? data.base_sha : "");
+              return this.autoResolve(it, typeof data.base_sha === "string" ? data.base_sha : "", { run_id: run.id }, run.id);
             case "tests_failed":
               // The worker's PR comment names the failure; this one offers the command that applies now.
               await this.c.unit("outbox").prComment(it, `update-tests-failed:${run.id}`, [
@@ -762,35 +763,35 @@ export class RunResultsUnit {
   }
 
   /**
-   * An update run found a conflict (design §5 Merge conflict, decision changed 2026-11-02): under the limit of
-   * AUTO_RESOLVE_LIMIT automatic resolve runs per base commit, the item goes to RUNNING and a resolve run is
-   * enqueued in the same transition, keyed on (item, base commit, attempt). At the limit, or with no base
-   * commit to key on, it waits for a person on merge_conflict_pending, as before. The ack fences the update run,
-   * so applying it twice enqueues one resolve run.
+   * A conflict to resolve with no person (design §5 Merge conflict): an update run's (`ack_run`, 2026-11-02) or a local
+   * item's (local-merge's startLocalResolve, no run to ack, 2026-11-12). Under AUTO_RESOLVE_LIMIT automatic resolve runs
+   * per base commit, the item goes to RUNNING and a resolve run is enqueued in the same transition, keyed on (item, base
+   * commit, attempt). At the limit, or with no base commit to key on, it waits for a person on merge_conflict_pending.
+   * The ack (a local item: leaving merge_pending) fences a second apply, so applying it twice enqueues one resolve run.
    */
-  async autoResolve(it: WorkItem, run: Run, baseSha: string): Promise<Decision> {
+  async autoResolve(it: WorkItem, baseSha: string, cause: StateChangeDetail, ack_run: Run["id"] | null): Promise<Decision> {
     const keys = (await this.c.k.reader.listRuns(it.id)).filter((r) => r.kind === "resolve").map((r) => r.idempotency_key);
     const done = baseSha ? autoResolveAttempts(keys, it.id, baseSha) : AUTO_RESOLVE_LIMIT;
     const attempt = nextAutoResolveAttempt(done);
-    const detail = { run_id: run.id, base_sha: baseSha || null, auto_resolve_attempts: done };
+    const detail = { ...cause, base_sha: baseSha || null, auto_resolve_attempts: done };
     if (attempt === null) {
       const counts = await this.conflictCountsOf(it, 1);
-      await this.c.unit("outbox").prComment(it, `auto-resolve-limit:${run.id}`, [
-        `PR #${it.change_ref} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was pushed.`,
+      await this.c.unit("outbox").prComment(it, `auto-resolve-limit:${ack_run ?? `${it.id}:${baseSha}`}`, [
+        `${this.c.unit("local-merge").changeName(it, true)} still conflicts with base \`${baseSha.slice(0, 8) || "unknown"}\`, and the factory already made ${done} automatic resolve attempts for it (limit ${AUTO_RESOLVE_LIMIT} per base commit), so it stopped. Nothing was ${it.change_ref === null ? "committed" : "pushed"}.`,
         "Comment `/resolve [notes]` to try again, or resolve it by hand.",
         "",
         conflictCountsLine(counts),
         "",
         footerAfter(it, CONFLICT_PATCH),
       ].join("\n"));
-      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ack_run: run.id };
+      return { patch: CONFLICT_PATCH, actor: SYSTEM, reason: "update_conflict", detail, ...(ack_run === null ? {} : { ack_run }) };
     }
     return {
       patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null },
       actor: SYSTEM,
       reason: "auto_resolve_started",
       detail: { ...detail, attempt },
-      ack_run: run.id,
+      ...(ack_run === null ? {} : { ack_run }),
       enqueue: { kind: "resolve", idempotency_key: autoResolveKey(it.id, baseSha, attempt), input: { notes: "" } },
     };
   }
@@ -832,7 +833,7 @@ export class RunResultsUnit {
         ? `The automatic resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""} That was attempt ${auto.attempt} of ${AUTO_RESOLVE_LIMIT} for base \`${auto.base_sha.slice(0, 8)}\`, so the factory stopped.`
         : `The resolve run failed (\`${code}\`): ${describeFailure(code)}.${withDetail && detail ? ` ${detail}` : ""}`,
       "",
-      `Nothing was pushed; PR #${it.change_ref} is unchanged and still has the merge conflict.`,
+      `Nothing was ${it.change_ref === null ? "committed" : "pushed"}; ${this.c.unit("local-merge").changeName(it)} is unchanged and still has the merge conflict.`,
       "Comment `/resolve [notes]` to try again, or resolve it by hand.",
       ...(counts ? ["", conflictCountsLine(counts)] : []),
       "",
@@ -926,12 +927,11 @@ export class RunResultsUnit {
   }
 
   /**
-   * An implement, review or resolve run that returned needs_human (issue #167, decided 2026-11-07). The
-   * worker pushed nothing. The item keeps its stage and blocks on a human with `agent_needs_human`; nothing is
-   * queued. One comment, keyed on the run, gives the agent's reason and question (left out if the egress scan
-   * flags them) and the command footer. The run's tokens are added as for any finished run; the ack fences it.
+   * An implement, review or resolve run that returned needs_human (issue #167): nothing pushed or queued, blocked on `agent_needs_human`, one comment (keyed on
+   * the run) with the reason and question unless the scan flags them, and the footer. An implement stop on an open dependency waits instead (dependency-stop.ts).
    */
   async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
+    const waits = await dependencyStop(this.c, it, run, ask, tokens); if (waits) return waits;
     const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
     const footer = commandFooter(commandState({ ...it, ...patch }, run.kind));
     const answer = run.kind === "resolve"

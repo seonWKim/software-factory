@@ -14,6 +14,10 @@ Produce:
   function names.
 - problem: the problem in two to five sentences, in your own words, grounded in the code you read.
   File paths and details belong here, not in in_short. It is the second section of the spec.
+  When the request states exact values (tables, hex colours, numbers, names, commands, file paths), end the
+  problem with a "Given values" section and copy each value into it verbatim: a table stays a table, with every
+  row and cell. Never paraphrase, round, rename or drop a value; the implementer builds from the spec. The factory
+  checks the spec against the request, and a spec that drops a value waits for a person's approval.
 - decisions: what the human must decide before approving, one per entry: a risky choice you made, or an
   open question only the owner can answer. Ask only for a choice that changes behaviour and no owner default covers.
   At most 5. Each entry is

@@ -1,6 +1,6 @@
 // The English text of the app shell, keyed by name. `{name}` marks a value the caller fills in.
 export const en = {
-  "app.name": "software-factory",
+  "app.name": "Gongbang",
   "nav.sidebar": "Sidebar",
   "nav.tasks": "Tasks",
   "nav.factory": "Factory",
@@ -17,6 +17,7 @@ export const en = {
   "page.queue": "Queue",
   "page.health": "Health",
   "page.failures": "Failures",
+  "page.rules": "Rules",
   "page.settings": "Settings",
   "page.data": "Data",
   "search.open": "Search",
@@ -41,8 +42,10 @@ export const en = {
   "topbar.ago": " ago",
   "topbar.updateFailed": "update failed",
   "topbar.refresh": "Refresh",
-  "topbar.toLight": "Switch to light theme",
-  "topbar.toDark": "Switch to dark theme",
+  "topbar.theme": "Theme",
+  "topbar.themeSystem": "System",
+  "topbar.themeLight": "Light",
+  "topbar.themeDark": "Dark",
 } as const;
 
 export type MessageKey = keyof typeof en;

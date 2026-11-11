@@ -3,7 +3,7 @@
 // phases. Pure: no store, no clock, no I/O. The caller reads the inputs (list.ts) and passes the sentence
 // through the Withholder before it leaves (api.ts); `refs` are the same-repo issue numbers the sentence names.
 //
-// Precedence, first match wins: closed, blocked on a person or the budget, a deadlock claim, running, a claim
+// Precedence, first match wins: closed, blocked on a person or the budget, running, a claim
 // pause that stops this run's kind, a dependency, a phase hold, a coordination hold, a retry's not_before, the
 // queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
 // sentence (withAlarms), whichever rule gave it.
@@ -74,9 +74,14 @@ export function refsOf(text: string): number[] {
   return out;
 }
 
-/** True when the decision is a deadlock claim of the item's current run: a person should look (Needs you). */
+/** True when the decision is a deadlock claim of the item's current run: it waits on the holder (Blocked by another task); the run goes on. */
 export function deadlocked(decision: WhyInput["decision"], run: { id: string } | null): boolean {
   return decision?.decision === "deadlock" && run !== null && decision.run_id === run.id;
+}
+
+/** True when the decision is an unapproved `held` claim of the item's current run: a coordination hold. */
+export function heldBy(decision: WhyInput["decision"], run: { id: string } | null): boolean {
+  return decision?.decision === "held" && !decision.approved_by && run !== null && decision.run_id === run.id;
 }
 
 const FAILED = /^run_failed:|^max_attempts$|^max_restart$|^repeated_failure$/;
@@ -146,7 +151,7 @@ export function whyWaiting(x: WhyInput): Why {
   if (i.stage === "CLOSED") return why("closed", i.close_reason ? `Closed: ${i.close_reason.replace(/_/g, " ")}` : "Closed", "none");
   if (i.blocked_on === "human" || i.blocked_on === "budget") return human(i);
   if (deadlocked(x.decision, run)) {
-    return why("deadlock", `Started past a deadlock with ${x.decision!.holder_ref}: a person checks the overlap`, "human");
+    return why("deadlock", `Started past a deadlock with ${x.decision!.holder_ref}: a person checks the overlap`, "factory");
   }
   if (run?.status === "running") return why("running", `Running ${run.kind}`, "factory");
   const paused = run ? pause(x.pauses, run.kind) : null;
@@ -154,9 +159,7 @@ export function whyWaiting(x: WhyInput): Why {
   if (i.blocked_on === "dependency") return dependency(i.blocked_reason);
   if (i.blocked_on === "upstream" || i.blocked_on === "ci" || x.phases.waiting_on > 0) return phase(i, x.phases);
   const d = x.decision;
-  if (run && d && d.run_id === run.id && d.decision === "held" && !d.approved_by) {
-    return why("held", `Held behind ${d.holder_ref}, ${HOLDER[d.holder_kind]}`, "other_item");
-  }
+  if (heldBy(d, run)) return why("held", `Held behind ${d!.holder_ref}, ${HOLDER[d!.holder_kind]}`, "other_item");
   if (run && x.not_before) return why("not_before", `Retry waits until ${when(x.not_before)}`, "factory");
   if (run) return why("queued", run.position ? `Queued at position ${run.position}` : `Queued ${run.kind}`, "factory");
   return why("idle", "Nothing moves it: no run is queued", "human");

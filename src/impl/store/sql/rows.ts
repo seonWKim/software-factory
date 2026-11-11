@@ -52,7 +52,7 @@ const PATCHABLE: readonly (keyof WorkItemPatch)[] = [
   "loop_count",
   "restart_count",
   "token_cost",
-  // The PR field: changeAssignments adds pr_number and change_url beside it.
+  // The PR field: changeAssignments adds change_url beside it.
   "change_ref",
   "merge_sha",
   "fixes_pr",
@@ -92,7 +92,6 @@ export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Times
     loop_count: 0,
     restart_count: 0,
     token_cost: 0,
-    pr_number: change.pr_number,
     change_ref: change.change_ref,
     change_url: change.change_url,
     merge_sha: null,
@@ -119,7 +118,7 @@ export function newWorkItem(input: NewWorkItem, change: ChangeFields, now: Times
 const WORK_ITEM_COLUMNS =
   "id, version, source_type, source_id, source_link, requester_id, project, problem, resources, done_criteria, " +
   "desired_output, scope, allowed_paths, tier, stage, blocked_on, blocked_reason, close_reason, loop_count, " +
-  "restart_count, token_cost, pr_number, merge_sha, fixes_pr, created_at, updated_at, title, spec_comment_url, " +
+  "restart_count, token_cost, merge_sha, fixes_pr, created_at, updated_at, title, spec_comment_url, " +
   "failure_comment_url, issue_text, revision_count, spec_feedback, origin, head_branch, last_head_sha, parent_id, phase, " +
   "files_to_change, pr_files";
 
@@ -132,7 +131,7 @@ export function workItemInsert(i: WorkItem): { columns: string; values: SqlValue
     i.id, i.version, i.source.type, i.source.id, i.source.link, i.requester_id, i.project, i.problem,
     JSON.stringify(i.resources), i.done_criteria && JSON.stringify(i.done_criteria), i.desired_output, i.scope,
     JSON.stringify(i.allowed_paths), i.tier, i.stage, i.blocked_on, i.blocked_reason, i.close_reason, i.loop_count,
-    i.restart_count, i.token_cost, i.pr_number, i.merge_sha, i.fixes_pr, i.created_at, i.updated_at, i.title,
+    i.restart_count, i.token_cost, i.merge_sha, i.fixes_pr, i.created_at, i.updated_at, i.title,
     i.spec_comment_url, i.failure_comment_url,
     i.issue_text, i.revision_count, i.spec_feedback, i.origin, i.head_branch, i.last_head_sha,
     i.parent_id, i.phase,
@@ -195,9 +194,7 @@ export function rowToWorkItem(r: Row): WorkItem {
     loop_count: Number(r.loop_count),
     restart_count: Number(r.restart_count),
     token_cost: Number(r.token_cost),
-    pr_number: r.pr_number === null ? null : Number(r.pr_number),
-    // A row an older controller wrote without change_ref reads as its pr_number, so the core sees its PR.
-    change_ref: (r.change_ref as string | null | undefined) ?? (r.pr_number === null || r.pr_number === undefined ? null : String(r.pr_number)),
+    change_ref: (r.change_ref as string | null | undefined) ?? null,
     change_url: (r.change_url as string | null | undefined) ?? null,
     merge_sha: r.merge_sha as string | null,
     fixes_pr: r.fixes_pr === null ? null : Number(r.fixes_pr),
@@ -345,7 +342,7 @@ export function rowToUnreviewedMerge(r: Row): UnreviewedMerge {
   return {
     id: r.id as UnreviewedMergeId,
     project: r.project as string,
-    pr_number: Number(r.pr_number),
+    change_ref: r.change_ref as string,
     merge_sha: r.merge_sha as string,
     merger_id: (r.merger_id as UserId | null | undefined) ?? null,
     at: r.at as Timestamp,

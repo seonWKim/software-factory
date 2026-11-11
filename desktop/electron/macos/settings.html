@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'" />
+    <title>Quick-add shortcut</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <main class="settings">
+      <h1>Quick-add shortcut</h1>
+      <label for="shortcut">Click the field, then press the keys you want.</label>
+      <input id="shortcut" type="text" readonly aria-describedby="note" />
+      <p class="note" id="note" role="status"></p>
+      <div class="row"><button id="save" type="button">Save</button></div>
+    </main>
+    <script src="settings-page.js"></script>
+  </body>
+</html>

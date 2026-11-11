@@ -15,15 +15,30 @@ import { ProposalsSection, StandingSection } from "./standing.js";
 // the same checks as `factory settings`; a refusal is shown next to the field it came from. A per-project gate key
 // also shows the configured project's learned value (design 08-settings) next to its file and override values, with
 // its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
+// The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
+// and a quiet-hours field.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
 
 const input =
-  "rounded-md border border-zinc-300 bg-white px-2 py-1 text-sm tabular-nums dark:border-zinc-700 dark:bg-zinc-900 " +
-  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-blue-600";
+  "rounded-control border border-border-strong bg-surface px-2 py-1 text-sm tabular-nums " +
+  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus";
 const textButton = "h-8 w-auto px-2";
+/** message_style (design 04-agents): what it does in one line, and an example. */
+const STYLE_HINT = "Added after each agent's instructions; changes only how replies, specs and summaries read.";
+const STYLE_EXAMPLE = "Example: Short sentences. Plain words, no jargon. Lead with the decision.";
+
+/** A JSON string value as its text; anything else as it is. */
+function stringOf(text: string): string {
+  try {
+    const v: unknown = JSON.parse(text);
+    return typeof v === "string" ? v : text;
+  } catch {
+    return text;
+  }
+}
 
 /** A write and its outcome for one field: the refusal stays next to the field until the next try. */
 function useWrite(token: string) {
@@ -55,8 +70,8 @@ function useWrite(token: string) {
 }
 
 function Outcome({ error, done }: { error: string | null; done: string | null }) {
-  if (error) return <p role="alert" className="mt-1 text-xs text-pretty break-words text-red-700 dark:text-red-300">{error}</p>;
-  if (done) return <p role="status" className="mt-1 text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{done}</p>;
+  if (error) return <p role="alert" className="mt-1 text-xs text-pretty break-words text-pill-bad-fg">{error}</p>;
+  if (done) return <p role="status" className="mt-1 text-xs text-pretty break-words text-text-2">{done}</p>;
   return null;
 }
 
@@ -104,7 +119,7 @@ function JsonValue({ text }: { text: string }) {
     <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
       {entries(obj).map(([k, v]) => (
         <Fragment key={k}>
-          <dt className="text-zinc-600 dark:text-zinc-400">{k}</dt>
+          <dt className="text-text-2">{k}</dt>
           <dd className="min-w-0 break-words">{v}</dd>
         </Fragment>
       ))}
@@ -113,7 +128,7 @@ function JsonValue({ text }: { text: string }) {
   if (entries(obj).length <= SHORT_OBJECT) return list;
   return (
     <details>
-      <summary className="cursor-pointer text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{summaryOf(obj)}</summary>
+      <summary className="cursor-pointer text-xs text-pretty break-words text-text-2">{summaryOf(obj)}</summary>
       <div className="mt-1">{list}</div>
     </details>
   );
@@ -152,12 +167,25 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     control = (
       <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
         {TIERS.map((t) => (
-          <label key={t} className="flex items-center gap-1 text-xs text-zinc-600 dark:text-zinc-400">
+          <label key={t} className="flex items-center gap-1 text-xs text-text-2">
             {t}
             <input aria-label={`${label} ${t}`} className={cn(input, "w-28")} value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
           </label>
         ))}
         <Button type="submit" variant="outline" className={textButton} disabled={busy || tiers === null} aria-label={`Save ${label}`}>
+          Save
+        </Button>
+      </form>
+    );
+  } else if (row.kind === "text") {
+    // Free text: shown and edited as plain text, sent as a JSON string, as `factory settings set` takes it.
+    const shown = draft ?? stringOf(value);
+    control = (
+      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+        <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_HINT}</p>
+        <textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className={cn(input, "w-full min-w-48 text-sm")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_EXAMPLE}</p>
+        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -178,7 +206,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     control =
       obj !== null && entries(obj).length > SHORT_OBJECT ? (
         <details>
-          <summary className="cursor-pointer text-xs text-pretty break-words text-zinc-600 dark:text-zinc-400">{summaryOf(obj)} · edit</summary>
+          <summary className="cursor-pointer text-xs text-pretty break-words text-text-2">{summaryOf(obj)} · edit</summary>
           <div className="mt-2">{form}</div>
         </details>
       ) : (
@@ -206,7 +234,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     <div className={floating ? "relative" : undefined}>
       {control}
       {floating && (error || done) ? (
-        <div className="absolute top-full left-0 z-10 mt-2 w-80 rounded-md border border-zinc-200 bg-white p-2 shadow-md dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="absolute top-full left-0 z-10 mt-2 w-80 rounded-control border border-border bg-surface p-2 shadow-md">
           <Outcome error={error} done={done} />
         </div>
       ) : (
@@ -233,12 +261,12 @@ function ResetButton({ row, label, token, project, learned = false }: { row: Set
 /** A millisecond key's value as a duration with its unit ("1h 30m"), under its field; nothing for other keys. */
 function Duration({ settingKey, value }: { settingKey: string; value: string }) {
   if (!settingKey.endsWith("_ms") || !/^\d+$/.test(value.trim())) return null;
-  return <p data-duration className="mt-1 text-xs tabular-nums text-zinc-600 dark:text-zinc-400">{duration(Number(value))}</p>;
+  return <p data-duration className="mt-1 text-xs tabular-nums text-text-2">{duration(Number(value))}</p>;
 }
 
 /** What a key controls, under its name; always shown, narrow screens included. */
 function Description({ text }: { text: string }) {
-  return <p className="mt-1 max-w-64 text-xs text-pretty text-zinc-600 dark:text-zinc-400">{text}</p>;
+  return <p className="mt-1 max-w-64 text-xs text-pretty text-text-2">{text}</p>;
 }
 
 /** A learned value as GET /api/v1/settings returns it; `source` is the layer in force for its project ("learned" while it is). */
@@ -257,7 +285,7 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
   const runs = learned.evidence_run_ids;
   return (
     <div data-learned className="mt-2 flex flex-wrap items-start gap-2">
-      <div className="min-w-0 text-xs text-zinc-600 dark:text-zinc-400">
+      <div className="min-w-0 text-xs text-text-2">
         <p className="text-pretty">
           learned: <span className="font-mono">{learned.value}</span>{" "}
           <Badge level={learned.source === "learned" ? "needs_approval" : undefined}>{learned.source === "learned" ? "in force" : `ignored: ${learned.source} is tighter`}</Badge>{" "}
@@ -279,6 +307,91 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
   );
 }
 
+/** The kinds of wait on the owner that `notice_kinds` lists, in its order, each with its switch's label. */
+const NOTICE_KINDS = [
+  ["spec", "A spec waits for approval"],
+  ["merge", "A change waits for its merge"],
+  ["failure", "An item failed"],
+  ["other", "Anything else that needs you"],
+] as const;
+/** The keys the Notices section edits; their table rows point there instead of a generic editor that does not fit. */
+const NOTICE_KEYS = new Set(["notice_kinds", "quiet_hours"]);
+
+/** The strings in a JSON list; none for anything else. */
+function listOf(text: string): string[] {
+  try {
+    const v: unknown = JSON.parse(text);
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** A switch per kind; each change writes the whole `notice_kinds` list, kinds in their fixed order. */
+function NoticeKinds({ row, token }: { row: SettingRow; token: string }) {
+  const { busy, error, done, write } = useWrite(token);
+  const on = listOf(row.value);
+  const set = (kind: string, next: boolean) => {
+    const kinds = NOTICE_KINDS.map(([k]) => k).filter((k) => (k === kind ? next : on.includes(k)));
+    void write({ action: "set", key: row.key, value: JSON.stringify(kinds) });
+  };
+  return (
+    <div className="flex max-w-md flex-col gap-2 text-sm">
+      <span className="font-medium">Notice when</span>
+      {NOTICE_KINDS.map(([kind, label]) => (
+        <label key={kind} className="flex items-center gap-2">
+          <Switch aria-label={`Notice: ${kind}`} checked={on.includes(kind)} disabled={busy} onCheckedChange={(next) => set(kind, next)} />
+          <span className="text-pretty">{label}</span>
+        </label>
+      ))}
+      <Outcome error={error} done={done} />
+    </div>
+  );
+}
+
+/** The quiet-hours window as plain text (`HH:MM-HH:MM`, empty for off), sent as a JSON string; the server checks it. */
+function QuietHours({ row, token }: { row: SettingRow; token: string }) {
+  const { busy, error, done, write } = useWrite(token);
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? stringOf(row.value);
+  const save = async () => {
+    if (await write({ action: "set", key: row.key, value: JSON.stringify(shown.trim()) })) setDraft(null);
+  };
+  return (
+    <div className="flex max-w-md flex-col gap-1 text-sm">
+      <span className="font-medium">Quiet hours</span>
+      <p className="text-xs text-pretty text-text-2">
+        Local time, e.g. 22:00-07:00; empty is off. Notices inside it wait, then come as one summary.
+      </p>
+      <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
+        <input aria-label="Quiet hours" placeholder="22:00-07:00" className={cn(input, "w-32")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label="Save Quiet hours">
+          Save
+        </Button>
+      </form>
+      <Outcome error={error} done={done} />
+    </div>
+  );
+}
+
+/** Owner notices (design 09-notifications): which waits raise one, and the quiet hours that hold them. */
+function NoticesSection({ view }: { view: SettingsView }) {
+  const kinds = view.keys.find((k) => k.key === "notice_kinds");
+  const quiet = view.keys.find((k) => k.key === "quiet_hours");
+  if (!kinds && !quiet) return null;
+  return (
+    <Section title="Notices">
+      <p className="mb-2 text-sm text-pretty text-text-2">
+        The macOS app shows a notice when an item starts waiting on you. Changes apply on the next notifications pass.
+      </p>
+      <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
+        {kinds && <NoticeKinds row={kinds} token={view.csrf_token} />}
+        {quiet && <QuietHours row={quiet} token={view.csrf_token} />}
+      </div>
+    </Section>
+  );
+}
+
 function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
@@ -289,16 +402,22 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         <Description text={row.description} />
       </Td>
       <Td className="min-w-56">
-        <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        {NOTICE_KEYS.has(row.key) ? (
+          <p className="text-xs text-pretty text-text-2">
+            <span className="font-mono break-words">{row.value}</span> · edit under Notices
+          </p>
+        ) : (
+          <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        )}
         <Duration settingKey={row.key} value={row.value} />
         {row.key === "workers" && row.max !== undefined && (
-          <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-400">
+          <p className="mt-1 text-xs text-text-2">
             1 to {row.max} (max_workers){row.capped_at ? `; the stored value runs as ${row.capped_at}` : ""}
           </p>
         )}
         {row.project_settable && (
-          <div className="mt-2 border-t border-zinc-200 pt-2 dark:border-zinc-800">
-            <p className="mb-1 text-xs text-zinc-600 dark:text-zinc-400">
+          <div className="mt-2 border-t border-border pt-2">
+            <p className="mb-1 text-xs text-text-2">
               for {view.project ?? view.repo}: {own ? `${own.value} (${own.source})` : "the global value"}
               {view.project === null && " · no project label stored yet; use factory settings --project on the command line"}
             </p>
@@ -318,15 +437,15 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         {row.file_value !== null ? (
           <JsonValue text={row.file_value} />
         ) : asObject(row.default_value) === null ? (
-          <span className="font-mono text-xs break-words text-zinc-500">not set (default {row.default_value})</span>
+          <span className="font-mono text-xs break-words text-text-3">not set (default {row.default_value})</span>
         ) : (
           <>
-            <span className="text-xs text-zinc-500">not set; default:</span>
+            <span className="text-xs text-text-3">not set; default:</span>
             <JsonValue text={row.default_value} />
           </>
         )}
       </Td>
-      <Td className="min-w-32 text-zinc-600 dark:text-zinc-400">{row.applies_at}</Td>
+      <Td className="min-w-32 text-text-2">{row.applies_at}</Td>
       <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
     </Tr>
   );
@@ -346,7 +465,7 @@ function PageCommands() {
   return (
     <div id="page-commands" ref={ref} className="mt-6 first:mt-0">
       <Section title="Commands from the page">
-        <p className="text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+        <p className="text-sm text-pretty text-text-2">
           {s?.actor ? (
             <>
               Item commands act as <code>{s.actor}</code> (from {s.actor_source === "config" ? "config" : "environment"}).{" "}
@@ -379,7 +498,7 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   const settings = useApi<SettingsView>(API.settings);
   const v = settings.data;
   const mode = v ? currentMode(v) : null;
-  if (!v || !mode) return <span className="text-sm text-zinc-600 dark:text-zinc-400">Mode …</span>;
+  if (!v || !mode) return <span className="text-sm text-text-2">Mode …</span>;
   return (
     <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap">
       <span>Mode</span>
@@ -400,7 +519,7 @@ function ModeSection({ view }: { view: SettingsView }) {
   const tier = view.keys.find((k) => k.key === "auto_merge_max_tier");
   return (
     <Section title="Mode">
-      <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+      <p className="mb-2 text-sm text-pretty text-text-2">
         Auto approves specs below tier 4 with no owner-only decision and merges reviewed local changes up to the auto-merge
         tier; tier 4 and the gate list always wait for a person. A red main, a failure alarm or a budget checkpoint sets it
         back to manual. Changing either needs approve_merge.
@@ -432,9 +551,10 @@ export function SettingsPage() {
     <>
       <ProposalsSection />
       <ModeSection view={v} />
+      <NoticesSection view={v} />
       <PageCommands />
       <Section title="Settable keys" count={v.keys.length}>
-        <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+        <p className="mb-2 text-sm text-pretty text-text-2">
           A change is stored as an override and applies with no restart; the same checks as <code>factory settings</code> run first.
         </p>
         <Table label="Settable keys" head={["Key", "Value", "Source", "File value", "Applies at", ""]}>
@@ -457,7 +577,7 @@ export function SettingsPage() {
       )}
       <StandingSection />
       <Section title={PR_ONLY_TITLE} count={v.pr_only.length}>
-        <p className="mb-2 text-sm text-pretty text-zinc-600 dark:text-zinc-400">
+        <p className="mb-2 text-sm text-pretty text-text-2">
           These keys set the guards, secrets, permissions, plugins and what agents may read, so a person must review every
           change: this page and <code>factory settings set</code> refuse them. To change one, edit it in{" "}
           <code>factory.config.json</code> in a pull request and merge it after review.

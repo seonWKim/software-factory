@@ -74,7 +74,7 @@ function ToolResult({ step }: { step: TranscriptStep }) {
       <Toggle open={open} onClick={() => setOpen(!open)}>
         {open ? "Hide result" : `Show result (${lines} ${lines === 1 ? "line" : "lines"})`}
       </Toggle>
-      {open && <pre className={cn(PRE, "mt-1 rounded bg-zinc-50 p-2 dark:bg-zinc-900")}>{step.text}</pre>}
+      {open && <pre className={cn(PRE, "mt-1 rounded-control bg-bg p-2")}>{step.text}</pre>}
     </>
   );
 }
@@ -106,14 +106,14 @@ export function StepView({ step }: { step: TranscriptStep }) {
       data-step={step.kind}
       data-error={step.is_error ? "true" : undefined}
       className={cn(
-        "min-w-0 rounded-md border px-3 py-2",
-        step.is_error ? "border-red-300 bg-red-50 text-red-950 dark:border-red-800 dark:bg-red-950 dark:text-red-50" : "border-zinc-200 dark:border-zinc-800",
+        "min-w-0 rounded-control border px-3 py-2",
+        step.is_error ? "border-pill-bad-fg bg-pill-bad-bg text-pill-bad-fg" : "border-border",
       )}
     >
-      <p className="mb-1 flex flex-wrap items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400">
+      <p className="mb-1 flex flex-wrap items-center gap-2 text-xs text-text-2">
         <span className="font-medium">{KIND_LABEL[step.kind]}</span>
         {step.tool && <Badge>{step.tool}</Badge>}
-        {step.is_error && <Badge level="needs_human">error</Badge>}
+        {step.is_error && <Badge level="needs_you">error</Badge>}
         {step.truncated && <span>(cut to fit one page)</span>}
       </p>
       {body}
@@ -129,8 +129,8 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
       role="status"
       aria-label="Run outcome"
       className={cn(
-        "mt-3 rounded-md px-3 py-2 text-sm break-words [overflow-wrap:anywhere]",
-        failed ? "bg-red-50 text-red-900 dark:bg-red-950 dark:text-red-100" : o ? "bg-emerald-50 text-emerald-900 dark:bg-emerald-950 dark:text-emerald-100" : "bg-zinc-100 dark:bg-zinc-800",
+        "mt-3 rounded-control px-3 py-2 text-sm break-words [overflow-wrap:anywhere]",
+        failed ? "bg-pill-bad-bg text-pill-bad-fg" : o ? "bg-pill-ok-bg text-pill-ok-fg" : "bg-surface-2",
       )}
     >
       <p className="font-medium">
@@ -209,7 +209,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
             type="button"
             aria-pressed={filter === f.value}
             onClick={() => setFilter(f.value)}
-            className={cn("rounded-md border px-2 py-1 text-sm", filter === f.value ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900" : "border-zinc-300 dark:border-zinc-700")}
+            className={cn("rounded-control border px-2 py-1 text-sm", filter === f.value ? "border-text-1 bg-text-1 text-bg" : "border-border-strong")}
           >
             {f.label}
           </button>
@@ -224,15 +224,15 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
       {first.parts.length > 1 && (
         <div className="mt-2 flex flex-wrap gap-2 text-sm" role="group" aria-label="Agent step">
           {first.parts.map((p) => (
-            <button key={p || "main"} type="button" aria-pressed={first.part === p} onClick={() => setPart(p)} className={cn("rounded-md border border-zinc-300 px-2 py-1 dark:border-zinc-700", first.part === p && "font-medium")}>
+            <button key={p || "main"} type="button" aria-pressed={first.part === p} onClick={() => setPart(p)} className={cn("rounded-control border border-border-strong px-2 py-1", first.part === p && "font-medium")}>
               {p || "main step"}
             </button>
           ))}
         </div>
       )}
       <Section title="Steps" count={steps.length}>
-        {first.format === "plain" && <p className="mb-2 text-xs text-zinc-600 dark:text-zinc-400">Not stream-json: shown as plain lines.</p>}
-        {tail && first.earlier && <p className="mb-2 text-xs text-zinc-600 dark:text-zinc-400">The last steps of the transcript; earlier ones are not loaded.</p>}
+        {first.format === "plain" && <p className="mb-2 text-xs text-text-2">Not stream-json: shown as plain lines.</p>}
+        {tail && first.earlier && <p className="mb-2 text-xs text-text-2">The last steps of the transcript; earlier ones are not loaded.</p>}
         {steps.length === 0 && !hasNextPage ? (
           <Empty>{filter ? "No step of this type." : "The transcript has no steps."}</Empty>
         ) : (
@@ -241,7 +241,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
           </ol>
         )}
         {hasNextPage && (
-          <button type="button" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()} className={cn("mt-3 rounded-md border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700")}>
+          <button type="button" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()} className={cn("mt-3 rounded-control border border-border-strong px-3 py-1.5 text-sm")}>
             {isFetchingNextPage ? "Loading…" : "Load more"}
           </button>
         )}

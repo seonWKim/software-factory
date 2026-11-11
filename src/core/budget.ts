@@ -128,7 +128,8 @@ export function parseBudgetAmount(
 export interface CheckpointText {
   tier: Tier;
   stage: Stage;
-  pr_number: number | null;
+  /** The item's change reference (the PR number as a string), or null before a PR exists. */
+  change_ref: string | null;
   runs: number;
   tokens: number;
   budget: number;
@@ -147,7 +148,7 @@ export function checkpointComment(c: CheckpointText): string {
     "",
     `This tier-${c.tier} item reached its token budget, so the next ${c.held_run_kind} run was not started. All work so far is kept.`,
     "",
-    `- Stage: \`${c.stage}\`, ${c.pr_number === null ? "no PR yet" : `PR #${c.pr_number}`}`,
+    `- Stage: \`${c.stage}\`, ${c.change_ref === null ? "no PR yet" : `PR #${c.change_ref}`}`,
     `- Spent: ${c.runs} runs, ${c.tokens} tokens`,
     `- Current budget: ${c.budget} tokens`,
     `- Suggested budget: ${s.budget} tokens (${method})`,

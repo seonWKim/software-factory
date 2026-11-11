@@ -132,7 +132,7 @@ export class PrEventsUnit {
         }));
     const closed = await this.c.k.reader.getWorkItem(item.id);
     if (closed?.stage !== "CLOSED" || closed.merge_sha !== r.sha) return;
-    this.c.k.d.log.info("PR merged", { work_item_id: item.id, pr_number: pr, merge_sha: r.sha, user_id: actor.id });
+    this.c.k.d.log.info("PR merged", { work_item_id: item.id, change_ref, merge_sha: r.sha, user_id: actor.id });
     const head = String(a.head_sha).slice(0, 12);
     await this.c.unit("outbox").post(item, item.source, `Merged PR #${pr} at its reviewed head \`${head}\` as \`${r.sha.slice(0, 12)}\` (a merge commit). The item is closed.`, `<!-- factory:pr-merged:${key} -->`);
     await this.c.k.guard("dependents", () => this.c.unit("coordination").releaseDependents(item.source.id));
@@ -147,7 +147,7 @@ export class PrEventsUnit {
   async mergeVerdict(it: WorkItem, e: { change_ref: string; merge_sha: string }, merger: Actor | null): Promise<void> {
     if (it.origin !== "factory" || it.stage === "CLOSED" || it.change_ref !== e.change_ref) return;
     const id = it.id;
-    const log = { work_item_id: id, pr_number: prNumber(e) };
+    const log = { work_item_id: id, change_ref: e.change_ref };
     if (!merger) {
       this.c.k.d.log.warn("no implicit verdict: the merger does not resolve to a user", log);
       return;
@@ -181,7 +181,7 @@ export class PrEventsUnit {
       merger_id: merger?.user_id ?? null,
     });
     if (created) {
-      this.c.k.d.log.warn("unreviewed merge", { pr_number: prNumber(e), merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });
+      this.c.k.d.log.warn("unreviewed merge", { change_ref: e.change_ref, merge_sha: e.merge_sha, user_id: merger?.user_id ?? null, fork: e.fork ?? false });
     }
   }
 
@@ -209,7 +209,7 @@ export class PrEventsUnit {
    */
   async adopt(e: PrOpenEvent): Promise<void> {
     const pr = prNumber(e);
-    const log = { pr_number: pr };
+    const log = { change_ref: e.change_ref };
     const author = e.author ? await this.c.k.d.auth.resolve(e.author) : null;
     if (!author) {
       this.c.k.d.log.warn("PR not adopted: its author does not resolve to a user", log);
@@ -271,7 +271,7 @@ export class PrEventsUnit {
       manual: { actor, change_ref: e.change_ref },
     });
     if (r.ok && r.run) {
-      this.c.k.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, pr_number: prNumber(e), actor: actor.id });
+      this.c.k.d.log.info("manual push recorded", { work_item_id: it.id, run_id: r.run.id, change_ref: e.change_ref, actor: actor.id });
       if (it.origin === "factory") await this.pushVerdict(it.id, it.last_head_sha, e.head_sha, actor);
     }
   }

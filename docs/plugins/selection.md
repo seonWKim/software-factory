@@ -23,6 +23,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 | Clock | `plugins.clock` | `system` | no |
 | Updater | `plugins.updater` | `git-worktree` | no |
 | KeepAwake | `plugins.awake` | `caffeinate` on macOS, `none` elsewhere (not in the checked-in config, so the platform decides) | no |
+| TacitLedger | `plugins.tacit` | `none` (the `agents-home` plugin captures pushbacks in the owner's ledger; see [tacit-ledger.md](tacit-ledger.md)) | no |
 | Forge | `plugins.forge` | **optional**, no default plugin: left out, `github` when `plugins.source` lists `github-issues`, else none (see [forge.md](forge.md)) | no |
 
 ```jsonc

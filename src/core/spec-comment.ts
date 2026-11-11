@@ -1,6 +1,7 @@
 import { type CommandState, commandFooter } from "./commands.js";
 import type { AddedPath } from "./companions.js";
 import { MAX_DECISIONS, type TriageOutput, type TriagePhase } from "./outputs.js";
+import { missingValues, specText } from "./given-values.js";
 import { inShortParagraphs } from "./pr-body.js";
 import type { Tier } from "./types.js";
 
@@ -103,12 +104,34 @@ function answerBlock(n: number): string[] {
 }
 
 /**
+ * The request's given values the spec dropped (design 04-agents.md, Given values): what holds a spec for a person's
+ * `/approve`. None for an item whose request text was not kept (`issue_text` null).
+ */
+export const droppedValues = (spec: TriageOutput, request: string | null): string[] => (request === null ? [] : missingValues(request, specText(spec)));
+
+/** The hold line above the footer of a spec that dropped given values: it names each one. */
+export const heldNote = (missing: readonly string[]): string =>
+  `This spec waits for \`/approve\`, with no automatic or standing approval: the spec drops ${missing.length === 1 ? "a value" : "values"} the request states (${missing.map((v) => `\`${v}\``).join(", ")}).\n\n`;
+
+/** The spec comment's section naming the request's given values the spec dropped (design 04-agents.md, Given values). */
+function missingSection(missing: readonly string[]): string[] {
+  return [
+    "### Values from the request missing in the spec",
+    "The request states these exact values, and the spec text does not hold them. Check each one before you `/approve`, or `/revise` to get a spec that keeps them:",
+    ...missing.map(code),
+  ];
+}
+
+/**
  * The triage spec comment a human reads before typing /approve, /reject or /revise (layout issue #229): In
  * short, Problem, Decisions for you, Applied defaults, Done when, scope, Files, Risk. `footer` replaces the default last line;
  * the controller passes the command footer for the spec gate (`commandFooter`). `approved`: the spec was approved with
  * no reply (auto mode, a standing rule, the parent's split), so it has no answer block asking for `/approve` (issue #586).
+ * `missing`: the request's given values the spec dropped (`missingValues`), listed in their own section before the footer.
  */
-export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER, o: { approved?: boolean } = {}): string {
+export function renderSpec(
+  spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER, o: { approved?: boolean; missing?: readonly string[] } = {},
+): string {
   // The plain AS-IS → TO-BE statement comes first, so the reader has the idea before any file-level detail.
   const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", inShortParagraphs(spec.in_short), ""];
   out.push("### Problem", spec.problem, "");
@@ -143,6 +166,7 @@ export function renderSpec(spec: TriageOutput, tier: Tier, why: TierSources = {}
   out.push("");
   out.push("### Risk", `Tier ${tier}: ${spec.tier_reason}`, "");
   if (spec.phases?.length) out.push(...splitSection(spec, spec.phases), "");
+  if (o.missing?.length) out.push(...missingSection(o.missing), "");
   out.push(footer);
   return out.join("\n");
 }

@@ -23,7 +23,7 @@ const initialWindow = (): Window => {
 function Group({ group, now }: { group: FailureGroup; now: number }) {
   const [open, setOpen] = useState(false);
   return (
-    <li className="rounded-md border border-zinc-200 dark:border-zinc-800" data-testid="failure-group">
+    <li className="rounded-control border border-border" data-testid="failure-group">
       <button
         type="button"
         aria-expanded={open}
@@ -32,12 +32,12 @@ function Group({ group, now }: { group: FailureGroup; now: number }) {
       >
         <span className="font-mono text-xs font-semibold">{group.code}</span>
         <span className="tabular-nums">{group.count} {group.count === 1 ? "run" : "runs"}</span>
-        <span className="tabular-nums text-zinc-600 dark:text-zinc-400">{group.items} {group.items === 1 ? "item" : "items"}</span>
-        <span className="tabular-nums text-zinc-600 dark:text-zinc-400">last seen {ago(group.last_seen, now)} ago</span>
-        {group.description && <span className="basis-full text-pretty text-zinc-600 dark:text-zinc-400">{group.description}</span>}
+        <span className="tabular-nums text-text-2">{group.items} {group.items === 1 ? "item" : "items"}</span>
+        <span className="tabular-nums text-text-2">last seen {ago(group.last_seen, now)} ago</span>
+        {group.description && <span className="basis-full text-pretty text-text-2">{group.description}</span>}
       </button>
       {open && (
-        <div className="border-t border-zinc-200 p-2 dark:border-zinc-800">
+        <div className="border-t border-border p-2">
           <Table label={`Runs failed with ${group.code}`} head={["Item", "Attempt", "Detail", "Worker", "When"]}>
             {group.runs.map((r) => (
               <Tr key={r.id}>
@@ -64,7 +64,7 @@ export function FailuresPage() {
     <>
       <div role="group" aria-label="Window" className="mb-4 flex gap-2">
         {WINDOWS.map((w) => (
-          <Button key={w} variant="outline" aria-pressed={w === win} className={cn("size-auto px-3 py-1.5", w === win && "bg-zinc-100 dark:bg-zinc-800")} onClick={() => setWin(w)}>
+          <Button key={w} variant="outline" aria-pressed={w === win} className={cn("size-auto px-3 py-1.5", w === win && "bg-surface-2")} onClick={() => setWin(w)}>
             {WINDOW_LABELS[w]}
           </Button>
         ))}

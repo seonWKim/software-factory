@@ -144,7 +144,7 @@ describe("the retry continues the agent on the wip head", () => {
     expect(startedOn).toEqual(["base", WIP_HEAD]);
     expect(second!.prompt).toContain("same session and folder");
     // The run went on to its PR; its commits start at the run's start, so they include the earlier ones.
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
     const retried = (await f.runs(it0, "implement"))[1]!;
     expect(retried.outcome).toMatchObject({ status: "succeeded", data: { commits: 1 } });
     expect((await f.store.listHandoffs(it0.id)).map((h) => h.commit_sha)).toEqual(["c1"]);
@@ -172,7 +172,7 @@ describe("the retry continues the agent on the wip head", () => {
     expect(f.sandbox.gitCalls).toContain(`-c core.hooksPath=/dev/null checkout --quiet -f -B factory/${it0.id} ${WIP_HEAD}`);
     expect(second!.prompt).toContain(`new session from the wip head \`${WIP_HEAD.slice(0, 8)}\``);
     expect(second!.prompt).toContain("## Diff budget");
-    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", pr_number: 42 });
+    expect(await f.item(it0)).toMatchObject({ stage: "REVIEW", change_ref: "42" });
   });
 
   it("on the same host with the session gone it drops the kept folder and starts a new session on the wip head", async () => {

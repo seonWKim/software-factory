@@ -8,6 +8,8 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:tokens": "node scripts/build-tokens.mjs",
+    "build:icons": "node scripts/build-icons.mjs",
     "build:desktop:macos": "node scripts/build-desktop-macos.mjs",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p web/tsconfig.json",
     "test": "vitest run --configLoader runner",

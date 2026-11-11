@@ -72,6 +72,7 @@ import {
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
+import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 
 /**
  * The store is SQLite (design 05-coordination.md, 2026-11-11): a config with type "mysql" fails at startup
@@ -198,7 +199,7 @@ export interface FileConfig {
    */
   projects?: unknown;
   /**
-   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"triage": ["github.preflight"]}.
+   * Broker tools granted to agent runs: a run kind to a list of tool names, e.g. {"implement": ["forge.preflight"]}.
    * Absent: no grants. Checked at startup against the broker's tools (toolGrantsConfig, src/core/config.ts): only
    * read-only tools the broker lists, only run kinds.
    */
@@ -432,7 +433,7 @@ export async function loadConfig(
   const sharedStore = store.type === "mysql";
   const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
   const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
-  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore });
+  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore, builtin: opts.registry ?? REGISTRY });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
   if (!local) await checkGitHubSettings(file.github);
@@ -839,6 +840,7 @@ export async function build(
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
+  const tacit = await createPlugin(registry, "tacit", sel.tacit, base);
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
 
@@ -875,9 +877,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
-    network_probe,
-    bus,
-    ticks,
+    network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
     // The factory repo's git writes under this machine's stable host id; a SQLite store (solo) flushes every host's.
@@ -920,7 +920,7 @@ export async function build(
     // Split over the claiming slots as SF_TEST_WORKERS, so parallel test runs do not each take every CPU.
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
-    awake, capability, guidance: new PackGuidance(loaded.packs), // the packs' rules and learnings (design 07-self-improvement.md)
+    awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
     testDatabase,
     settings, learned,
     engines,

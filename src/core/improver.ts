@@ -1,10 +1,12 @@
-// The improve run (design §7, issues #306, #307, #308): a daily look back at failed runs, no agent. The project's failed
-// runs in a window are grouped by error code and normalized detail; each group of 2+ runs gets one plain model call (no
-// tools) for a draft; one report is stored for the learner (learnFromReport); the controller files its groups (fileReport).
+// The improve run (design §7, issues #306, #307, #308, #571): a daily look back at failed runs and the owner's pushbacks,
+// no agent. The project's failed runs in a window are grouped by error code and normalized detail, its pushbacks by their
+// normalized words (code `pushback`); each group of 2+ gets one plain model call (no tools) for a draft; one report is stored for the learner (learnFromReport); the controller files its groups (fileReport).
 export { learnFromReport } from "./learned-settings.js";
+export { PUSHBACK, type Pushback, groupFailures, normalizeDetail } from "./failure-groups.js";
 export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, scoreRun, scorerFor } from "./scorer.js";
 
 import { cyrb53 } from "./hash.js";
+import { PUSHBACK, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
 import { parseJson } from "./scorer.js";
 import { PROTECTED_PATHS } from "./standing.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -25,8 +27,6 @@ export const IMPROVER: Actor = { kind: "system", id: "system:improver" };
  * carries its project's improve runs, so nothing triages, implements or releases it.
  */
 export const SYSTEM_ITEM = "system_item";
-/** Characters of a normalized detail kept as a group's key. */
-const DETAIL_CHARS = 200;
 const DAY_MS = 86_400_000;
 
 type ImproveStore = Pick<FactoryStore, "createWorkItem" | "enqueueRun">;
@@ -116,11 +116,6 @@ export const TRIGGER_AGE_MS = 3 * DAY_MS;
 /** Why the trigger fires: TRIGGER_FAILURES failures in the last TRIGGER_WINDOW_MS, or a failure older than TRIGGER_AGE_MS. */
 export type TriggerReason = { reason: "count"; failures: number } | { reason: "age"; oldest: Timestamp };
 
-/** A failed run an improve report counts: the same runs groupFailures groups. */
-function reviewable(r: Run): boolean {
-  return r.kind !== "improve" && r.status === "failed" && r.outcome?.status === "failed";
-}
-
 /**
  * The trigger rule (design §7), pure: given the project's unreviewed runs (finished since its last improve run
  * was queued), whether an improve run is due. Counts the failed runs of any kind that finished in the last
@@ -177,47 +172,6 @@ async function ofProject(store: Pick<FactoryStore, "getWorkItem">, runs: readonl
   const projects = new Map<WorkItemId, string | null>();
   for (const r of runs) if (!projects.has(r.work_item_id)) projects.set(r.work_item_id, (await store.getWorkItem(r.work_item_id))?.project ?? null);
   return runs.filter((r) => projects.get(r.work_item_id) === project);
-}
-
-/**
- * A failure detail as a group key: lower case, every run of digits as `#` (counts, line numbers, ports, times,
- * shas' digit runs), hex ids of 7 or more characters as `<id>`, whitespace collapsed, cut to 200 characters.
- */
-export function normalizeDetail(detail: string): string {
-  return detail
-    .toLowerCase()
-    .replace(/\b[0-9a-f]{7,}\b/g, "<id>")
-    .replace(/\d+/g, "#")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, DETAIL_CHARS);
-}
-
-/**
- * Groups failed runs by error code and normalized detail. Pure and deterministic: runs are taken in
- * (finished_at, id) order; groups of two or more runs come first by size (largest first), then by key; one-run
- * patterns by key. Runs that did not fail, and improve runs themselves, are left out.
- */
-export function groupFailures(runs: readonly Run[]): { groups: FailureGroup[]; patterns: FailureGroup[] } {
-  const failed = runs
-    .filter(reviewable)
-    .sort((a, b) => cmp(a.finished_at ?? "", b.finished_at ?? "") || cmp(a.id, b.id));
-  const byKey = new Map<string, FailureGroup>();
-  for (const r of failed) {
-    const outcome = r.outcome as Extract<Run["outcome"], { status: "failed" }>;
-    const detail = normalizeDetail(outcome.detail ?? "");
-    const key = `${outcome.error_code}\n${detail}`;
-    const g = byKey.get(key) ?? { error_code: outcome.error_code, detail, run_ids: [] as RunId[], work_item_ids: [] as WorkItemId[] };
-    g.run_ids.push(r.id);
-    if (!g.work_item_ids.includes(r.work_item_id)) g.work_item_ids.push(r.work_item_id);
-    byKey.set(key, g);
-  }
-  const all = [...byKey.values()].sort((a, b) => b.run_ids.length - a.run_ids.length || cmp(a.error_code, b.error_code) || cmp(a.detail, b.detail));
-  return { groups: all.filter((g) => g.run_ids.length > 1), patterns: all.filter((g) => g.run_ids.length === 1) };
-}
-
-function cmp(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 /**
@@ -291,7 +245,10 @@ export function parseDraft(v: unknown): { cause: string; fix: string; touches: s
 
 /** What the draft step needs; without `llm` or `prompt` no model is asked and groups carry no draft. */
 export interface ImproveDeps {
-  store: Pick<FactoryStore, "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem">;
+  store: Pick<
+    FactoryStore,
+    "listRunsFinishedBetween" | "recordImproveReport" | "getImproveReport" | "getWorkItem" | "listStateChangesSince" | "listVerdictsSince" | "listRuns"
+  >;
   storage: SharedStorage;
   scanner: EgressScanner;
   llm?: LLMProvider;
@@ -301,8 +258,8 @@ export interface ImproveDeps {
 }
 
 /**
- * The improve run's work: the failed runs of the item's project finished inside its window, grouped, each group
- * drafted, stored as its one report. A run with no window in its input reports the 24 hours before it was queued.
+ * The improve run's work: the failed runs of the item's project finished inside its window and the owner's pushbacks
+ * made inside it, grouped, each group drafted, stored as its one report. A run with no window in its input reports the 24 hours before it was queued.
  * Safe to run twice: a run whose report exists returns it with no model call; the report is keyed by the run.
  */
 export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, "project">): Promise<ImproveReport> {
@@ -310,8 +267,9 @@ export async function runImprove(d: ImproveDeps, run: Run, item: Pick<WorkItem, 
   if (existing) return existing;
   const window = run.input?.improve ?? manualWindow(new Date(run.created_at));
   const runs = await ofProject(d.store, await d.store.listRunsFinishedBetween(window.window_start, window.window_end), item.project);
-  const { groups, patterns } = groupFailures(runs);
-  const itemOf = new Map(runs.map((r) => [r.id, r.work_item_id]));
+  const pushbacks = await pushbacksIn(d, window, item.project);
+  const { groups, patterns } = groupFailures(runs, pushbacks);
+  const itemOf = new Map([...runs.map((r) => [r.id, r.work_item_id] as const), ...pushbacks.map((p) => [p.run_id, p.work_item_id] as const)]);
   const llm = d.llm;
   const prompt = d.prompt;
   if (llm && prompt) {
@@ -387,7 +345,7 @@ function groupMessage(g: FailureGroup, tails: { run_id: RunId; text: string }[])
   const lines = [
     `Error code: ${g.error_code}`,
     `Normalized detail: ${g.detail}`,
-    `Failed runs: ${g.run_ids.length}, across ${g.work_item_ids.length} work items.`,
+    `${g.error_code === PUSHBACK ? "Runs the owner pushed back on with these words" : "Failed runs"}: ${g.run_ids.length}, across ${g.work_item_ids.length} work items.`,
     "",
   ];
   if (tails.length === 0) lines.push("No transcript tail is available for this group.");
@@ -547,13 +505,16 @@ async function commentGroup(
 
 /** The filed item's text: the pattern, its runs and items, and the draft when there is one. Never raw detail. */
 function issueBody(g: FailureGroup): string {
+  const pushback = g.error_code === PUSHBACK;
   const lines = [
-    `The factory's improve run found ${g.run_ids.length} failed runs with the same error, across ${g.work_item_ids.length} work items.`,
+    pushback
+      ? `The factory's improve run found ${g.run_ids.length} pushbacks from the owner with the same words, across ${g.work_item_ids.length} work items.`
+      : `The factory's improve run found ${g.run_ids.length} failed runs with the same error, across ${g.work_item_ids.length} work items.`,
     "",
     `- Error code: \`${g.error_code}\``,
     `- Normalized detail: ${g.detail === "" ? "(none)" : `\`${g.detail}\``}`,
     "",
-    "Failed runs:",
+    pushback ? "Runs pushed back on:" : "Failed runs:",
     ...g.run_ids.map((id) => `- \`${id}\``),
     "",
     "Work items:",

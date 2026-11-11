@@ -23,6 +23,7 @@ import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
+import type { TacitLedger } from "./interfaces/tacit-ledger.js";
 import type { TestDatabase } from "./interfaces/test-database.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
@@ -57,6 +58,8 @@ export interface Instances {
   ticks: TickSource;
   /** One ExecutionEngine per worker loop (docs/plugins/execution-engine.md). */
   engine: ExecutionEngines;
+  /** The owner's tacit-knowledge ledger, where pushbacks are captured (docs/plugins/tacit-ledger.md). */
+  tacit: TacitLedger;
 }
 
 export type PluginKind = keyof Instances;
@@ -115,6 +118,8 @@ export interface Contexts {
   ticks: BaseContext;
   /** The journal keeps its steps in the store's database. */
   engine: BaseContext & { store: FactoryStore };
+  /** Built for the controller only; the plugin finds its own home. */
+  tacit: BaseContext;
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */
