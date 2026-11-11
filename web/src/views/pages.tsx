@@ -153,15 +153,12 @@ export function ClaimPauses({ now }: { now: number }) {
   );
 }
 
-/** The factory floor: what needs the operator, what runs, what waits; then the numbers. */
-export function FloorPage() {
+/** Needs you: the factory banner and claim pauses, then what waits for the operator and the system actions. */
+export function NeedsYouPage() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
   const items = useApi<Items>(API.items);
-  const runs = useApi<{ runs: RunRow[] }>(API.runs);
-  const queue = useApi<{ queue: QueueRow[] }>(API.queue);
   const pauses = useApi<PausesView>(API.pauses);
-  const map = useMemo(() => byId(items.data?.items), [items.data]);
   const needs = (items.data?.items ?? []).filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level));
   const o = overview.data;
   const actions = o?.system_actions ?? [];
@@ -178,15 +175,22 @@ export function FloorPage() {
           <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} actions empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
         )}
       </Section>
+    </>
+  );
+}
+
+/** Activity: what runs now, then the numbers of the last 24 hours. */
+export function ActivityPage() {
+  const now = useNow();
+  const overview = useApi<Overview>(API.overview);
+  const items = useApi<Items>(API.items);
+  const runs = useApi<{ runs: RunRow[] }>(API.runs);
+  const map = useMemo(() => byId(items.data?.items), [items.data]);
+  const o = overview.data;
+  return (
+    <>
       <Section title="Running now" count={runs.data?.runs.filter((r) => r.status === "running").length}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
-      </Section>
-      <Section
-        title="Queue"
-        count={queue.data?.queue.length}
-        action={<Link href={`${BASE}queue`} className={cn("text-sm", LINK_CLASS)}>All queued runs</Link>}
-      >
-        {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data ? <Loading rows={2} /> : <QueueTable queue={queue.data.queue} items={map} now={now} limit={10} />}
       </Section>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
         <p data-testid="unreviewed-merges-line" className="mb-4 text-sm">
@@ -350,7 +354,7 @@ export function ItemPage({ id }: { id: string }) {
   return (
     <>
       <p className="mb-1 text-sm">
-        <Link href={`${BASE}items`} className={LINK_CLASS}>Work items</Link>
+        <Link href={`${BASE}items`} className={LINK_CLASS}>Work</Link>
         <span className="text-zinc-500"> / </span>
         <SourceLink source={item.source} className="inline-block align-bottom" />
       </p>
@@ -579,7 +583,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
 
 const WORKERS_SOURCE: Record<string, string> = { override: "override", file: "config file", default: "default" };
 
-export function WorkersPage() {
+export function RunnersPage() {
   const now = useNow();
   const workers = useApi<WorkersView>(API.workers);
   const overview = useApi<Overview>(API.overview);

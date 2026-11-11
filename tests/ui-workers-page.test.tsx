@@ -13,8 +13,8 @@ import type { Failures, WorkersView } from "../web/src/api.js";
 // page test does (tsconfig.test.json is checked without JSX).
 const mod = async (name: string) => (await import(/* @vite-ignore */ `../web/src/views/${name}.js`)) as Record<string, FunctionComponent>;
 const pages = await mod("pages");
-const WorkersPage = pages.WorkersPage!;
-const FloorPage = pages.FloorPage!;
+const WorkersPage = pages.RunnersPage!;
+const FloorPage = pages.ActivityPage!;
 const FailuresPage = (await mod("failures")).FailuresPage!;
 
 const AT = new Date().toISOString();
@@ -106,7 +106,7 @@ describe("Workers page", () => {
   });
 });
 
-describe("Floor", () => {
+describe("Activity", () => {
   it("links the failed count in the last 24 hours to Failures with the 24h window", async () => {
     show(FloorPage);
     const link = await screen.findByRole("link", { name: "7" });
