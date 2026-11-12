@@ -1,4 +1,4 @@
-import { AGENT_STOP_CHECKS_DEFAULT, type UiCheck } from "../../../core/config.js";
+import { AGENT_STOP_CHECKS_DEFAULT, withoutUiCheck } from "../../../core/config.js";
 import { settingValues } from "../../../core/settings.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
@@ -1120,13 +1120,3 @@ type AgentStep =
     /** Shared-storage key of the bundle of start..head; null when the commits did not scan clean (G5). */
     readonly bundle: string | null;
   };
-
-/**
- * The implementer's `missing` list without the entries that name the UI check (design §4): it runs at merge on the
- * merged commit, where Chrome can start, so not running it in the sandbox is no missing work. An entry names the check
- * when it holds the command's last argument (e.g. `check:responsive`), in any case. No `repo.ui_check`: all kept.
- */
-function withoutUiCheck(missing: readonly string[], ui: UiCheck | undefined): string[] {
-  const name = ui?.command.at(-1)?.toLowerCase();
-  return name ? missing.filter((m) => !m.toLowerCase().includes(name)) : [...missing];
-}

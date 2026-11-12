@@ -95,6 +95,42 @@ export interface UiCheck {
   paths: string[];
 }
 
+/** The paths a `repo.ui_check` without `paths` watches: the dashboard's sources. */
+export const UI_CHECK_DEFAULT_PATHS: readonly string[] = ["web/", "src/ui/"];
+
+const nonEmptyStrings = (v: unknown): v is string[] => Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === "string" && x !== "");
+
+/**
+ * `repo.ui_check` (design §4, UI check at merge): absent → nothing (off). Otherwise an object with `command`, an argv,
+ * and `paths`, a non-empty list of non-empty path prefixes (absent: UI_CHECK_DEFAULT_PATHS), and no other key; any
+ * other value fails startup naming the key.
+ */
+export function uiCheckConfig(value: unknown): { ui_check?: UiCheck } {
+  if (value === undefined) return {};
+  const example = '{ "command": ["npm", "run", "check:responsive"], "paths": ["web/", "src/ui/"] }';
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`repo.ui_check must be an object with an argv command and optional path prefixes, e.g. ${example}`);
+  }
+  const { command, paths, ...rest } = value as { command?: unknown; paths?: unknown };
+  const extra = Object.keys(rest);
+  if (extra.length > 0) throw new Error(`repo.ui_check has unknown keys ${extra.join(", ")}; valid keys: command, paths`);
+  if (!nonEmptyStrings(command)) throw new Error(`repo.ui_check.command must be a non-empty array of non-empty strings (argv), e.g. ${example}`);
+  if (paths !== undefined && !nonEmptyStrings(paths)) {
+    throw new Error(`repo.ui_check.paths must be a non-empty list of non-empty path prefixes, e.g. ${JSON.stringify(UI_CHECK_DEFAULT_PATHS)}`);
+  }
+  return { ui_check: { command: [...command], paths: [...(paths ?? UI_CHECK_DEFAULT_PATHS)] } };
+}
+
+/**
+ * The implementer's `missing` list without the entries that name the UI check (design §4): it runs at merge on the
+ * merged commit, where Chrome can start, so not running it in the sandbox is no missing work. An entry names the check
+ * when it holds the command's last argument (e.g. `check:responsive`), in any case. No `repo.ui_check`: all kept.
+ */
+export function withoutUiCheck(missing: readonly string[], ui: UiCheck | undefined): string[] {
+  const name = ui?.command.at(-1)?.toLowerCase();
+  return name ? missing.filter((m) => !m.toLowerCase().includes(name)) : [...missing];
+}
+
 /**
  * The config as loaded from factory.config.json, before startup resolves the configured repo to its project
  * key. `settings.projects` is still keyed by `owner/name` here; the composition root re-keys it.
