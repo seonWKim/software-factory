@@ -1779,6 +1779,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
       "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
+      "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "calendar_events", // the calendar component: src/calendar/migrations/20261112T1700-calendar-events

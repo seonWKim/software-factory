@@ -27,6 +27,8 @@ import { plainRefusal } from "../web/src/api.js";
 import { storedAnswers } from "../src/shared/command-notes.js";
 import { parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { META_STATUS, SlackSource, parseSlackSourceId, slackLink, slackSourceId } from "../src/impl/source/slack-source.js";
+import { NAMES_NO_ITEM } from "../src/impl/source/slack-notice-replies.js";
+import { UNLINKED } from "../src/impl/source/slack-commands.js";
 import { FakeForge, FakeSource, config, issueRef, recordingLog, silent, triageSpec, waitFor } from "./helpers/fakes.js";
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL, TEAM, eventEnvelope, mention, message, press, submission } from "./helpers/slack.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
@@ -73,7 +75,7 @@ afterEach(async () => {
   }
 });
 
-async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[]; llm?: LLMProvider; dashboard?: string } = {}) {
+async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[]; llm?: LLMProvider; dashboard?: string; notify_channel?: string } = {}) {
   const clock = new FakeClock();
   const { store: real } = await newStore(clock);
   const store = opts.store ? opts.store(real) : real;
@@ -90,7 +92,8 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   };
   // The Full spec link's base, as slack.plugin.ts gives it with no slack.dashboard_url (the default ui.port).
   const dashboard = async () => opts.dashboard ?? "http://127.0.0.1:4310";
-  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings, dashboard });
+  const notify = opts.notify_channel ? { notify_channel: opts.notify_channel } : {};
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings, dashboard, ...notify });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();
@@ -1727,5 +1730,194 @@ describe("slack source: spec messages and their modals", () => {
     await f.slack.setStatus(source, "implementing", null);
     await f.slack.setStatus(source, "in_review", null);
     expect(f.api.calls.map((c) => [c.method, c.text])).toEqual([["postMessage", "Status: *implementing*"], ["updateMessage", "Status: *in review*"]]);
+  });
+});
+
+describe("slack source: replies under a notice (design 05-sources)", () => {
+  const rows = async (f: F) => (await f.store.listCliCommandsAfter(0, 50)).map((c) => [c.command, c.args]);
+  const itemCount = async (f: F) => (await f.store.listWorkItems(50)).length;
+  const needsYou = (it: WorkItem) => ({
+    kind: "needs_you" as const, work_item_id: it.id, title: it.title ?? "", reason: "ready to merge", close_reason: null, thread_url: null, count: 1,
+  });
+  const summary = { kind: "summary" as const, work_item_id: null, title: "", reason: "", close_reason: null, thread_url: null, count: 2 };
+
+  /** Posts one notice naming `items` (none: a summary only) and returns its ts. */
+  async function notice(f: F, items: readonly WorkItem[], channel = CHANNEL): Promise<string> {
+    await f.slack.notifyOwner(items.length > 0 ? items.map(needsYou) : [summary]);
+    return f.api.messages.filter((m) => m.channel === channel && m.thread_ts === undefined).at(-1)!.ts;
+  }
+
+  /** A local work item: `merge` stores its merge row (a Slack item's merge is refused as not local). */
+  async function localItem(f: F, n: number): Promise<WorkItem> {
+    const source = { type: "local", id: `local-notice-${n}`, link: `local:local-notice-${n}` };
+    return (await f.store.createWorkItem({ source, title: `Local ${n}`, requester_id: "github:1" as UserId, project: PROJECT_KEY, problem: "p", resources: [] }, system)).item;
+  }
+
+  /** A which-item press: its block names the question (the reply's event ID), its value the item. */
+  function whichPress(ts: string, index: number, value: string, question: string, user = "U0ALICE"): Record<string, unknown> {
+    const p = press(ts, `sf_notice_item:${index}`, value, user);
+    const payload = p.payload as { actions: Record<string, unknown>[] };
+    payload.actions[0]!.block_id = `sf_notice_item:${question}`;
+    return p;
+  }
+
+  it('"go ahead and merge" under a one-item "ready to merge" notice queues that item\'s merge as `merge` does, and makes no item', async () => {
+    const f = await setup();
+    const item = await localItem(f, 1);
+    const ts = await notice(f, [item]);
+    expect(f.api.messages.find((m) => m.ts === ts)!.text).toContain("🙋 Needs you: ");
+    await deliver(f, eventEnvelope(mention("1800000300.000200", "go ahead and merge", { thread_ts: ts })));
+    expect(await rows(f)).toEqual([["merge", { item: item.id }]]);
+    expect(await itemCount(f)).toBe(1);
+    expect(await f.store.listInboxAfter("slack_thread", 0, 50)).toEqual([]);
+  });
+
+  it("a command's answer posts in the notice's thread, not in the item's own thread: the source's and the controller's", async () => {
+    const f = await setup();
+    const thread = "1800000301.000100";
+    const item = await specPending(f, thread);
+    const ts = await notice(f, [item]);
+    const before = f.api.thread(thread).length;
+    // `merge` on a Slack item: the CLI's refusal; `resolve` while the spec waits: stored, then refused by the controller.
+    await deliver(f, eventEnvelope(mention("1800000301.000200", "go ahead and merge", { thread_ts: ts })));
+    await deliver(f, eventEnvelope(mention("1800000301.000300", "resolve", { thread_ts: ts })));
+    await f.controller.tickCommands();
+    await f.controller.tickOutbox();
+    const answers = f.api.thread(ts).map((m) => m.text ?? "");
+    expect(answers.some((t) => t.includes("is not a local work item"))).toBe(true);
+    expect(answers.some((t) => t.includes("was not applied"))).toBe(true);
+    expect(f.api.thread(thread).slice(before).filter((m) => /not a local work item|was not applied/.test(m.text ?? ""))).toEqual([]);
+  });
+
+  const FORMS = ["merge", "approve", "retry", "revise narrower scope", "reject duplicate request", "resolve", "/revise narrower scope", "go ahead and merge"];
+  for (const form of FORMS) {
+    it(`\`${form}\` under a one-item notice reads as in the item's own thread`, async () => {
+      const f = await setup();
+      const [a, b] = [await specPending(f, "1800000310.000100"), await specPending(f, "1800000310.000200")];
+      const ts = await notice(f, [a]);
+      const bBefore = f.api.thread("1800000310.000200").length;
+      await deliver(f, eventEnvelope(mention("1800000310.000300", form, { thread_ts: ts })));
+      await deliver(f, eventEnvelope(mention("1800000310.000400", form, { thread_ts: "1800000310.000200" })));
+      await f.controller.tickCommands();
+      await f.controller.tickOutbox();
+      // The notice's reply stored the same row for `a` as the thread's for `b` (none for `merge`: a Slack item is not local).
+      const stored = (await rows(f)).map(([command, args]) => [command, { ...(args as object), item: (args as { item: string }).item === a.id ? "a" : "b" }]);
+      const same = (r: unknown[]) => JSON.stringify([r[0], { ...(r[1] as object), item: "" }]);
+      expect(stored.map((r) => (r[1] as { item: string }).item)).toEqual(form.endsWith("merge") ? [] : ["a", "b"]);
+      expect(new Set(stored.map(same)).size).toBeLessThanOrEqual(1);
+      expect(fields(await f.store.getWorkItem(a.id))).toEqual(fields(await f.store.getWorkItem(b.id)));
+      const answers = (ms: { text?: string }[]) => ms.map((m) => (m.text ?? "").replaceAll(a.id, "X").replaceAll(b.id, "X")).filter((t) => /not a local work item|was not applied/.test(t));
+      expect(answers(f.api.thread(ts))).toEqual(answers(f.api.thread("1800000310.000200").slice(bBefore)));
+      expect(await itemCount(f)).toBe(2);
+    });
+  }
+
+  it("a notice naming two items asks which, with one button per item; nothing runs before a press; a press runs the reply on that item as the presser", async () => {
+    const f = await setup();
+    const [a, b] = [await localItem(f, 1), await localItem(f, 2)];
+    const ts = await notice(f, [a, b]);
+    await deliver(f, eventEnvelope(mention("1800000320.000200", "go ahead and merge", { thread_ts: ts }), "Ev0WHICH1"));
+    const [question, ...more] = f.api.thread(ts);
+    expect(more).toEqual([]);
+    expect(question!.text).toContain("Which one");
+    const actions = question!.blocks!.find((x) => (x as { type: string }).type === "actions") as { block_id: string; elements: { action_id: string; value: string }[] };
+    expect(actions.elements.map((e) => [e.action_id, e.value])).toEqual([["sf_notice_item:0", a.id], ["sf_notice_item:1", b.id]]);
+    expect(actions.block_id).toBe("sf_notice_item:Ev0WHICH1");
+    expect(await f.store.getNoticeQuestion("Ev0WHICH1")).toMatchObject({ channel: CHANNEL, notice_ts: ts, text: "go ahead and merge" });
+    expect(await rows(f)).toEqual([]);
+    // An item the notice does not name, or an unknown question: nothing.
+    await deliver(f, whichPress(ts, 0, "wi_not_named", "Ev0WHICH1"), whichPress(ts, 0, a.id, "Ev0OTHER"));
+    expect(await rows(f)).toEqual([]);
+    await deliver(f, whichPress(ts, 1, b.id, "Ev0WHICH1"));
+    expect(await rows(f)).toEqual([["merge", { item: b.id }]]);
+    expect((await f.store.listCliCommandsAfter(0, 50))[0]!.actor).toBe("github:1");
+    expect(await itemCount(f)).toBe(2);
+  });
+
+  it("an unlinked account gets the usual refusal in the notice's thread, for a reply and for a press, and nothing is stored", async () => {
+    const f = await setup();
+    const [a, b] = [await localItem(f, 1), await localItem(f, 2)];
+    const one = await notice(f, [a]);
+    await deliver(f, eventEnvelope(mention("1800000330.000200", "go ahead and merge", { thread_ts: one, user: "U0EVE" })));
+    expect(f.api.thread(one).map((m) => m.text)).toEqual([toMrkdwn(UNLINKED, { owner: "o", name: "r" })]);
+    const two = await notice(f, [a, b]);
+    await deliver(f, eventEnvelope(mention("1800000330.000300", "merge", { thread_ts: two }), "Ev0WHICH2"));
+    await deliver(f, whichPress(two, 0, a.id, "Ev0WHICH2", "U0EVE"));
+    expect(f.api.thread(two).at(-1)!.text).toBe(toMrkdwn(UNLINKED, { owner: "o", name: "r" }));
+    expect(await rows(f)).toEqual([]);
+    expect(await itemCount(f)).toBe(2);
+  });
+
+  it("no reply under a notice makes an item: words with no command get one reply naming the commands, with nothing stored and no model call", async () => {
+    let calls = 0;
+    const llm: LLMProvider = { complete: (r) => (calls++, new ApproveLLM().complete(r)) };
+    const f = await setup({ llm });
+    const item = await specPending(f, "1800000340.000100");
+    const ts = await notice(f, [item]);
+    const before = calls;
+    await deliver(f, eventEnvelope(mention("1800000340.000200", "please build a dashboard for this", { thread_ts: ts })));
+    await f.controller.tickCommands();
+    const [reply, ...more] = f.api.thread(ts);
+    expect(more).toEqual([]);
+    expect(reply!.text).toContain("names no command");
+    expect(reply!.text).toContain("`approve [notes]`");
+    expect(reply!.blocks!.some((x) => (x as { type: string }).type === "actions")).toBe(false);
+    expect([calls - before, await itemCount(f), (await rows(f)).length]).toEqual([0, 1, 0]);
+    expect(await f.store.listInboxAfter("slack_thread", 0, 50)).toHaveLength(2); // the request and its press only
+  });
+
+  it("a notice that names no item (a summary) gets one reply saying so, and makes no item", async () => {
+    const f = await setup();
+    const ts = await notice(f, []);
+    await deliver(f, eventEnvelope(mention("1800000350.000200", "go ahead and merge", { thread_ts: ts })));
+    expect(f.api.thread(ts).map((m) => m.text)).toEqual([toMrkdwn(NAMES_NO_ITEM, { owner: "o", name: "r" })]);
+    expect([await itemCount(f), (await rows(f)).length]).toEqual([0, 0]);
+  });
+
+  it("a slash reply with no mention under a notice runs; a reply with neither is not read", async () => {
+    const f = await setup();
+    const item = await localItem(f, 1);
+    const ts = await notice(f, [item]);
+    await deliver(f, eventEnvelope(message("1800000360.000200", "merge it now please", { thread_ts: ts })));
+    expect([f.api.thread(ts).length, (await rows(f)).length]).toEqual([0, 0]);
+    await deliver(f, eventEnvelope(message("1800000360.000300", "/merge", { thread_ts: ts })));
+    expect(await rows(f)).toEqual([["merge", { item: item.id }]]);
+  });
+
+  it("the notices channel is read for replies under a notice even when it is not in slack.channels; nothing else there is read", async () => {
+    const f = await setup({ notify_channel: OTHER_CHANNEL });
+    const item = await localItem(f, 1);
+    const ts = await notice(f, [item], OTHER_CHANNEL);
+    await deliver(f, eventEnvelope(mention("1800000370.000100", "please make a thing", { channel: OTHER_CHANNEL })));
+    await deliver(f, eventEnvelope(mention("1800000370.000300", "go ahead and merge", { channel: OTHER_CHANNEL, thread_ts: ts })));
+    expect(await rows(f)).toEqual([["merge", { item: item.id }]]);
+    expect(f.api.thread("1800000370.000100", OTHER_CHANNEL)).toEqual([]);
+    // A thread there with no record is a notice posted before the records: it names no item.
+    await deliver(f, eventEnvelope(mention("1800000370.000500", "approve", { channel: OTHER_CHANNEL, thread_ts: "1700000000.000100" })));
+    expect(f.api.thread("1700000000.000100", OTHER_CHANNEL).map((m) => m.text)).toEqual([toMrkdwn(NAMES_NO_ITEM, { owner: "o", name: "r" })]);
+    expect([await itemCount(f), await f.store.listInboxAfter("slack_thread", 0, 50)]).toEqual([1, []]);
+  });
+
+  it("a mention in a thread that is neither an item nor a notice still makes an item from the thread", async () => {
+    const f = await setup();
+    await notice(f, [await localItem(f, 1)]);
+    await deliver(f, eventEnvelope(mention("1800000380.000200", "please add a scope gate", { thread_ts: "1800000380.000100" })));
+    expect(await itemOf(f, "1800000380.000100")).not.toBeNull();
+  });
+});
+
+describe('slack source: "go ahead and merge" in an item\'s own thread', () => {
+  it("is `merge`, in any case; other wording keeps today's reading", async () => {
+    const f = await setup();
+    const ts = "1800000390.000100";
+    await specPending(f, ts);
+    const refusals = () => f.api.thread(ts).filter((m) => m.text?.includes("is not a local work item")).length;
+    await deliver(f, eventEnvelope(mention("1800000390.000200", "merge", { thread_ts: ts })));
+    await deliver(f, eventEnvelope(mention("1800000390.000300", "Go Ahead And Merge", { thread_ts: ts })));
+    expect(refusals()).toBe(2);
+    await deliver(f, eventEnvelope(mention("1800000390.000400", "go ahead and merge it after lunch", { thread_ts: ts })));
+    expect(refusals()).toBe(2);
+    const last = (await f.store.listInboxAfter("slack_thread", 0, 50)).at(-1)!.event;
+    expect(last).toMatchObject({ kind: "plain_comment", body: "go ahead and merge it after lunch" });
   });
 });

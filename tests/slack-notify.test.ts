@@ -81,3 +81,18 @@ describe("slack notices: the notice record", () => {
     expect(posted).toEqual({ channel: CHANNEL, ts: api.messages[0]!.ts });
   });
 });
+
+describe("slack notices: a record that fails", () => {
+  it("is logged, not thrown: the posted notice is not posted again, and a reply under it names no item", async () => {
+    const f = await setup();
+    const warned: string[] = [];
+    const slack = new SlackSource({
+      api: f.api, connect: new FakeSocket().connect, channels: [CHANNEL], scanner: new PatternEgressScanner(async () => []),
+      store: { ...f.store, recordNoticeMessage: () => Promise.reject(new Error("store down")) } as never,
+      repo: { owner: "o", name: "r" }, log: { ...silent, warn: (m: string) => void warned.push(m) },
+    });
+    await slack.notifyOwner([needs("wi_a")]);
+    expect(topLevel(f.api)).toHaveLength(1);
+    expect(warned).toEqual(["slack notice posted but not recorded; replies under it name no item"]);
+  });
+});

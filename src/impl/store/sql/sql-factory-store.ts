@@ -2636,14 +2636,8 @@ export class SqlFactoryStore implements FactoryStore {
     detail: StateChangeDetail | null = null,
   ): Promise<StateChange> {
     const change: StateChange = {
-      id: newId("sc") as StateChangeId,
-      work_item_id: workItemId,
-      version,
-      at: this.now(),
-      actor,
-      reason,
-      changes,
-      detail,
+      id: newId("sc") as StateChangeId, work_item_id: workItemId, version, at: this.now(),
+      actor, reason, changes, detail,
     };
     await tx.run(
       "INSERT INTO controller_state_changes (id, work_item_id, version, at, actor, reason, changes, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

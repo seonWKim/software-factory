@@ -295,7 +295,8 @@ export function proposalButtons(id: string, commands: readonly CommandName[]): u
   ];
 }
 
-function button(label: string, action_id: string, value: string, style?: "primary"): unknown {
+/** One button of an actions block; `value` is untrusted when it comes back with a press. */
+export function button(label: string, action_id: string, value: string, style?: "primary"): unknown {
   return { type: "button", text: { type: "plain_text", text: label }, action_id, value, ...(style ? { style } : {}) };
 }
 
