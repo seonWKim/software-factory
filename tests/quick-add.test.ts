@@ -64,6 +64,7 @@ describe("parseQuickAdd accepts", () => {
 
 describe("parseQuickAdd reads a typed time and a duration (design 02-tasks, schedule a task)", () => {
   it("3pm, 3:30pm and at 3pm are a due time of 15:00 or 15:30, alone due today", () => {
+    expect(ok("pay rent 3pm")).toMatchObject({ title: "pay rent", due: { days_from_today: 0 }, due_time: "15:00" });
     expect(ok("call the bank 3pm")).toMatchObject({ title: "call the bank", due: { days_from_today: 0 }, due_time: "15:00" });
     expect(ok("call the bank 3:30pm")).toMatchObject({ title: "call the bank", due_time: "15:30" });
     expect(ok("call the bank at 3pm")).toMatchObject({ title: "call the bank", due_time: "15:00" });

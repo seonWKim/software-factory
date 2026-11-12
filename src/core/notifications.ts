@@ -36,7 +36,7 @@ export interface Notice {
   wait_key: string;
   /**
    * `backfill`: a wait the notices migration found already shown on the Needs-you list, stored as delivered. `task`: a
-   * plain task's reminder (design 02-tasks), its work_item_id the task's ID, its wait key the task's time; desktop only.
+   * plain task's reminder (design 02-tasks), its work_item_id the task's ID, its wait key the task's time.
    */
   kind: NoticeKind | typeof SUMMARY_KIND | "backfill" | "task";
   created_at: Timestamp;

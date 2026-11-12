@@ -176,8 +176,8 @@ export function durationError(n: unknown): string | null {
     ? null : `a duration must be 1 to ${MAX_DURATION_MINUTES} minutes (e.g. 45m, 1h or 1h30m)`;
 }
 
-/** How long after its time a task's reminder may still be sent: a controller down longer sends none for it. */
-export const REMINDER_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+/** The poll window: how long after its time a task's reminder may still be sent; a controller down longer sends none for it. */
+export const REMINDER_LOOKBACK_MS = 5 * 60 * 1000;
 
 /** `HH:MM` on the local day `date`, as an instant in this process's time zone. */
 function localInstant(date: string, time: string): Date {
