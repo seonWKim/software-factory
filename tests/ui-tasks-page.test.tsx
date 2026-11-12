@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskRow, TasksView } from "../web/src/api.js";
+import type { EventRow, TaskRow, TasksView } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -125,6 +125,60 @@ describe("Tasks page", () => {
     current = view({ can_build: false });
     await show();
     expect(screen.queryByRole("button", { name: /Build this/ })).toBeNull();
+  });
+
+  describe("calendar events (design 02-tasks, calendar views)", () => {
+    const ev = (id: string, time: string | null, source = "google-calendar"): EventRow => ({ kind: "event", source, id, title: `event ${id}`, all_day: time === null, time });
+    /** Every task and event card in the page, in document order. */
+    const entries = () => [...document.querySelectorAll<HTMLElement>("[data-task], [data-event]")].map((e) => e.dataset.task ?? `event:${e.dataset.event}`);
+
+    it("Today shows the all-day events at the top, then the timed tasks and events in time order, then the untimed tasks", async () => {
+      current = view({
+        today: {
+          overdue: [],
+          due: [
+            ev("holiday", null),
+            ev("standup", "09:30"),
+            row("tk_call", { due_date: "2026-11-12", due_time: "11:00" }),
+            ev("lunch", "12:00"),
+            row("tk_untimed", { due_date: "2026-11-12" }),
+          ],
+        },
+      });
+      render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
+      await screen.findByRole("list", { name: /^Today/ }, SLOW);
+      expect(entries()).toEqual(["event:google-calendar:holiday", "event:google-calendar:standup", "tk_call", "event:google-calendar:lunch", "tk_untimed"]);
+      const holiday = document.querySelector<HTMLElement>('[data-event="google-calendar:holiday"]')!;
+      expect(holiday.textContent).toContain("event holiday");
+      expect(holiday.textContent).toContain("all day");
+      expect(document.querySelector('[data-event="google-calendar:standup"]')!.textContent).toContain("09:30");
+      // An event is read-only: no Build this, no edit.
+      expect(within(holiday).queryByRole("button")).toBeNull();
+    });
+
+    it("Upcoming shows each day's calendar events next to its tasks", async () => {
+      current = view({
+        upcoming: [
+          { date: "2026-11-13", tasks: [ev("dentist", "08:00"), row("tk_soon", { due_date: "2026-11-13", due_time: "10:00" })] },
+          { date: "2026-11-14", tasks: [ev("trip", null)] },
+        ],
+      });
+      await show();
+      tab("Upcoming");
+      expect(entries()).toEqual(["event:google-calendar:dentist", "tk_soon", "event:google-calendar:trip"]);
+      const lists = screen.getAllByRole("list");
+      expect(lists).toHaveLength(2);
+      expect(within(lists[0]!).getByText("event dentist")).toBeTruthy();
+      expect(lists[0]!.querySelector('[data-task="tk_soon"]')).not.toBeNull();
+      expect(lists[1]!.textContent).toContain("all day");
+    });
+
+    it("a source whose last sync failed is named above Today and Upcoming, with its stored events still shown", async () => {
+      current = view({ today: { overdue: [], due: [ev("standup", "09:30")] }, calendar: [{ source: "google-calendar", synced_at: null, failed: true }] });
+      render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
+      expect((await screen.findByText(/google-calendar: showing the stored events/, undefined, SLOW)).closest("[data-calendar-stale]")).not.toBeNull();
+      expect(entries()).toEqual(["event:google-calendar:standup"]);
+    });
   });
 
   describe("quick add", () => {
