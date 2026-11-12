@@ -13,7 +13,7 @@ const AT = "2026-11-08T00:00:00.000Z";
 const t = (s: number) => new Date(Date.parse(AT) + s * 1000).toISOString();
 const SRC = { type: "local", id: "local:1", link: "local:1" };
 const entry = (seq: number, at: string, author: string, body: string, kind = author === "factory" ? "spec" : "message") =>
-  ({ seq, at, kind, author, channel: "local", anchor: `msg-${seq}`, body });
+  ({ seq, at, kind, author, role: author === "factory" ? "factory" : "owner", channel: "local", anchor: `msg-${seq}`, body });
 
 const ITEM = {
   id: "wi_1", source: SRC, title: "Thread item", stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2,
@@ -21,7 +21,7 @@ const ITEM = {
   version: 3, created_at: AT, updated_at: AT,
 };
 
-// Given out of order: the page sorts by time (seq 9 is the oldest, seq 4 and 5 tie and keep seq order).
+// Given out of order: the page sorts newest first by time (seq 9 is the oldest, seq 4 and 5 tie, the higher seq first).
 const THREAD = [
   entry(5, t(20), "unknown", "a comment"),
   entry(9, t(0), "factory", "## Spec\n\nthe **spec**"),
@@ -81,18 +81,71 @@ function mount(path: string) {
 const entries = (thread: HTMLElement) => within(thread).getAllByRole("listitem");
 
 describe("item page: thread", () => {
-  it("shows the full thread oldest first by time, with author, channel and anchor on each entry", async () => {
+  it("shows the thread newest first by time, with author, channel and anchor on each entry; the owner's entries say You", async () => {
     mount("/app/items/wi_1");
     const thread = await screen.findByRole("list", { name: "Thread" });
     const rows = entries(thread);
-    expect(rows.map((r) => r.getAttribute("data-seq"))).toEqual(["9", "4", "5", "7"]);
-    expect(rows.map((r) => r.id)).toEqual(["msg-9", "msg-4", "msg-5", "msg-7"]);
-    expect(rows.map((r) => r.querySelector("[data-author]")!.textContent)).toEqual(["factory", "factory", "unknown", "factory"]);
+    expect(rows.map((r) => r.getAttribute("data-seq"))).toEqual(["7", "5", "4", "9"]);
+    expect(rows.map((r) => r.id)).toEqual(["msg-7", "msg-5", "msg-4", "msg-9"]);
+    expect(rows.map((r) => r.querySelector("[data-author]")!.textContent)).toEqual(["factory", "You", "factory", "factory"]);
+    expect(rows[1]!.querySelector("[data-author-id]")!.textContent).toBe("unknown");
+    expect(rows.map((r) => r.getAttribute("data-role"))).toEqual(["factory", "owner", "factory", "factory"]);
     for (const r of rows) expect(r.querySelector("[data-channel]")!.textContent).toBe("on local");
-    // The body renders as markdown, not as raw text.
-    expect(within(rows[0]!).getByRole("heading", { name: "Spec" })).toBeTruthy();
-    expect(rows[0]!.querySelector("strong")!.textContent).toBe("spec");
-    expect(rows[3]!.textContent).toContain("the latest why");
+    // The newest and a spec are expanded: the body renders as markdown, not as raw text.
+    expect(within(rows[3]!).getByRole("heading", { name: "Spec" })).toBeTruthy();
+    expect(rows[3]!.querySelector("strong")!.textContent).toBe("spec");
+    expect(rows[0]!.textContent).toContain("the latest why");
+  });
+
+  it("owner entries show the command, its text and the channel in words", async () => {
+    detail = { ...detail, thread: [
+      { ...entry(0, t(5), "local:me", "split it", "revise"), anchor: "command-a", channel: "cli" },
+      { ...entry(0, t(1), "local:me", "looks good", "approve"), anchor: "command-b", channel: "app" },
+    ] };
+    mount("/app/items/wi_1");
+    const rows = entries(await screen.findByRole("list", { name: "Thread" }));
+    expect(rows.map((r) => r.querySelector("[data-channel]")!.textContent)).toEqual(["on local CLI", "on dashboard"]);
+    expect(rows[0]!.textContent).toContain("revise");
+    expect(rows[0]!.textContent).toContain("split it");
+    expect(rows[1]!.textContent).toContain("looks good");
+    expect(rows[1]!.querySelector("[data-author-id]")!.textContent).toBe("local:me");
+  });
+
+  it("older long factory messages show as one line behind Show more; the newest, specs and the URL's anchor start open", async () => {
+    const long = (n: string) => `## Review ${n}\n\nthe body of ${n}\n\nmore of ${n}`;
+    detail = { ...detail, thread: [
+      entry(1, t(0), "factory", long("old"), "review"),
+      entry(2, t(10), "factory", long("anchored"), "merge"),
+      entry(3, t(20), "factory", "## Spec\n\nthe spec body", "spec"),
+      entry(4, t(30), "factory", "## Held\n\nheld body", "coordination-hold"),
+      entry(5, t(40), "factory", long("newest"), "review"),
+      entry(6, t(50), "factory", "A short one.", "review"),
+    ] };
+    mount("/app/items/wi_1#msg-2");
+    const rows = entries(await screen.findByRole("list", { name: "Thread" }));
+    expect(rows.map((r) => r.getAttribute("data-seq"))).toEqual(["6", "5", "4", "3", "2", "1"]);
+    // Open: 6 (newest), 4 and 3 (asks), 2 (the URL's anchor); folded: 5 and 1.
+    expect(rows[0]!.textContent).toContain("A short one.");
+    expect(rows[0]!.querySelector("button")).toBeNull();
+    expect(within(rows[2]!).getByText("held body")).toBeTruthy();
+    expect(within(rows[3]!).getByText("the spec body")).toBeTruthy();
+    expect(within(rows[4]!).getByText("the body of anchored")).toBeTruthy();
+    // Folded: one line (the first heading), full body not rendered, Show more beside it.
+    for (const i of [1, 5]) {
+      expect(rows[i]!.querySelector("[data-summary]")!.textContent).toMatch(/^Review (newest|old)$/);
+      expect(within(rows[i]!).queryByText(/the body of/)).toBeNull();
+    }
+    fireEvent.click(within(rows[5]!).getByRole("button", { name: "Show more" }));
+    expect(within(rows[5]!).getByText("the body of old")).toBeTruthy();
+    expect(within(rows[5]!).getByRole("button", { name: "Show less" })).toBeTruthy();
+  });
+
+  it("without an anchor the newest message is open, and a long factory message that is newest shows in full", async () => {
+    detail = { ...detail, thread: [entry(1, t(0), "factory", "Old text one. Old text two.", "review"), entry(2, t(9), "factory", "New text one. New text two.", "review")] };
+    mount("/app/items/wi_1");
+    const rows = entries(await screen.findByRole("list", { name: "Thread" }));
+    expect(rows[0]!.textContent).toContain("New text two.");
+    expect(rows[1]!.querySelector("[data-summary]")!.textContent).toBe("Old text one.");
   });
 
   it("an item with no entries says so", async () => {
@@ -127,8 +180,8 @@ describe("item page: command reply in the thread", () => {
     expect(posts).toEqual([]);
     fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
     await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_1/commands", body: { command: "approve" } }]));
-    await waitFor(() => expect(entries(screen.getByRole("list", { name: "Thread" })).at(-1)!.id).toBe("msg-12"));
-    const last = entries(screen.getByRole("list", { name: "Thread" })).at(-1)!;
+    await waitFor(() => expect(entries(screen.getByRole("list", { name: "Thread" }))[0]!.id).toBe("msg-12"));
+    const last = entries(screen.getByRole("list", { name: "Thread" }))[0]!;
     expect(last.textContent).toContain("was not applied: you need the approver role.");
     expect(last.querySelector("[data-author]")!.textContent).toBe("factory");
   });

@@ -2784,6 +2784,19 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.listAppCommandRequestsForItem("wi_nope" as WorkItemId, 10)).toEqual([]);
       expect((await store.listAppCommandRequestsForItem("%" as WorkItemId, 10)).map((r) => r.key)).toEqual(["pct"]);
     });
+
+    it("the item's commands: CLI (args.item) and dashboard (args.work_item_id) rows oldest first, never another item's or a comment's", async () => {
+      const { store } = await make();
+      const base = { actor: "local:me" as UserId, command: "revise" };
+      await store.appendCliCommand({ ...base, key: "cli:a", args: { item: "wi_1", text: "t" } });
+      await store.recordAppCommandRequest(req("b", { args: { work_item_id: "wi_1", note: "n" } }));
+      await store.appendCliCommand({ ...base, key: "cli:other", args: { item: "wi_10" } });
+      await store.appendCliCommand({ ...base, key: "github:1", args: { item: "wi_1" } });
+      await store.appendCliCommand({ ...base, key: "cli:pct", args: { item: "%" } });
+      expect((await store.listItemCommands("wi_1" as WorkItemId, 10)).map((c) => [c.key, c.origin])).toEqual([["cli:a", "cli"], ["b", "app"]]);
+      expect((await store.listItemCommands("wi_1" as WorkItemId, 1)).map((c) => c.key)).toEqual(["b"]);
+      expect((await store.listItemCommands("%" as WorkItemId, 10)).map((c) => c.key)).toEqual(["cli:pct"]);
+    });
   });
 
   // Plain tasks (design 02-tasks): updateTask, deleteTask and addSubTask take plain arguments, so the CLI, chat and a

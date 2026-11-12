@@ -2357,16 +2357,16 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   async listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]> {
-    // `args` is JSON text written by JSON.stringify on both backends, so the pair appears verbatim; LIKE narrows
-    // (its wildcards escaped with `!`), and the exact check below drops any row whose id only looked alike.
-    const needle = `${JSON.stringify("work_item_id")}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`);
-    const rows = await this.db.all(
-      `SELECT * FROM inbound_commands WHERE origin = 'app' AND args LIKE ? ESCAPE '!' ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}`,
-      [`%${needle}%`],
-    );
-    return rows.map(rowToAppCommandRequest).filter((r) => r.args.work_item_id === id).reverse();
+    return (await this.itemCommandRows(id, "origin = 'app'", ["work_item_id"], limit)).map(rowToAppCommandRequest).filter((r) => r.args.work_item_id === id);
   }
-
+  async listItemCommands(id: WorkItemId, limit: number): Promise<CliCommand[]> {
+    return (await this.itemCommandRows(id, "origin IN ('cli', 'app')", ["item", "work_item_id"], limit)).map(rowToCliCommand).filter((c) => (c.args.item ?? c.args.work_item_id) === id);
+  }
+  /** The newest `limit` rows of `origins` (SQL) whose `args` (JSON text, the pair verbatim) name `id` in a field, oldest first; LIKE narrows, callers check the exact id. */
+  private itemCommandRows(id: WorkItemId, origins: string, fields: string[], limit: number): Promise<Row[]> {
+    const like = (f: string) => `%${`${JSON.stringify(f)}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`)}%`;
+    return this.db.all(`SELECT * FROM (SELECT * FROM inbound_commands WHERE ${origins} AND (${fields.map(() => "args LIKE ? ESCAPE '!'").join(" OR ")}) ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}) ORDER BY seq`, fields.map(like));
+  }
   // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident().
 
   async listTables(): Promise<StoreTable[]> {
