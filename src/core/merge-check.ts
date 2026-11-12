@@ -69,14 +69,30 @@ export class MergeChecker {
       if (!this.heads.has(it.id)) {
         this.heads.set(it.id, await this.d.sandbox.fetchBranch({ repo: t.repo, branch: `${t.branch_prefix}${it.id}` }));
       }
-      const head = this.heads.get(it.id) ?? null;
-      if (head === null) continue;
-      const stored = await this.d.store.getMergeCheck(it.id);
-      if (stored && stored.head_sha === head && stored.base_sha === base) continue;
-      const r = await this.d.sandbox.mergeCheck({ repo: t.repo, head_sha: head, base_sha: base });
-      const check: NewMergeCheck = { work_item_id: it.id, mergeable: r.mergeable, conflicts: r.conflicts, head_sha: head, base_sha: base };
-      if (!r.mergeable) await onConflict(it, check);
-      await this.d.store.recordMergeCheck(check);
+      await this.check(it, t, this.heads.get(it.id) ?? null, base, onConflict);
     }
+  }
+
+  /**
+   * One step over local items (no PR) when the sandbox's fetches read the remote (a forge selected; design §5 Merge
+   * conflict): the local base and each item's local branch are read with `read` (the factory repo's own refs, no
+   * fetch, so no throttle), then checked as `step` checks a PR's branch.
+   */
+  async stepLocal(items: readonly WorkItem[], t: MergeCheckTarget, read: (branch: string) => Promise<string | null>, onConflict: OnConflict): Promise<void> {
+    if (items.length === 0) return;
+    const base = await read(t.base_ref);
+    if (base === null) return;
+    for (const it of items) await this.check(it, t, await read(`${t.branch_prefix}${it.id}`), base, onConflict);
+  }
+
+  /** The git check of `it` at `head` on `base`, once per pair (the stored result is the cache); none with no head. */
+  private async check(it: WorkItem, t: MergeCheckTarget, head: string | null, base: string, onConflict: OnConflict): Promise<void> {
+    if (head === null) return;
+    const stored = await this.d.store.getMergeCheck(it.id);
+    if (stored && stored.head_sha === head && stored.base_sha === base) return;
+    const r = await this.d.sandbox.mergeCheck({ repo: t.repo, head_sha: head, base_sha: base });
+    const check: NewMergeCheck = { work_item_id: it.id, mergeable: r.mergeable, conflicts: r.conflicts, head_sha: head, base_sha: base };
+    if (!r.mergeable) await onConflict(it, check);
+    await this.d.store.recordMergeCheck(check);
   }
 }

@@ -6,7 +6,7 @@ import { checkCommands } from "../../../core/checks.js";
 import { ALERT_DEDUPE_MS } from "../../../core/alarms.js";
 import { modeOf } from "../../../core/settings.js";
 import { AUTO_ACTOR, autoMergeRefusal, branchFor } from "../../../core/policy.js";
-import { LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal, canSyncBase } from "../../../core/local-merge.js";
+import { LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal, canReadLocal, canSyncBase } from "../../../core/local-merge.js";
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, type SourceRef, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
@@ -88,7 +88,7 @@ export class LocalMergeUnit {
     else {
       const conflicts = await this.c.k.d.sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
       if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
-      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item.id));
+      else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item));
       else {
         // Ready and approved: the change enters the merge queue, which checks its merged result before it lands.
         const r = await this.c.unit("merge-queue").enter(item, auto ? AUTO_ACTOR : principal.user_id, key, detail);
@@ -209,17 +209,22 @@ export class LocalMergeUnit {
   }
 
   /**
-   * A conflicting local branch at `factory merge` (design §5 Merge conflict, decision changed 2026-11-12): the
-   * automatic resolve starts, as from the merge check, keyed on the local base's commit. Only when this controller's
-   * sandbox reads the local base (`local_only`); with a forge selected its base read is the remote's, so the
-   * person resolves it as before. Returns whether the item moved to its resolve run.
+   * A conflicting local branch at `factory merge` (design §5 Merge conflict): the automatic resolve starts, as from
+   * the merge check, keyed on the local base's commit. With no forge (`local_only`) the sandbox's base read is the
+   * local base; with a forge selected it is the remote's, so a local item reads the local base itself
+   * (`localBranch`, no fetch). Returns whether the item moved to its resolve run.
    */
-  private async resolveRefused(id: WorkItemId): Promise<boolean> {
+  private async resolveRefused(item: WorkItem): Promise<boolean> {
     const sandbox = this.c.k.d.sandbox;
-    if (this.c.k.cfg.local_only !== true || !sandbox) return false;
-    const { repo } = this.c.k.cfg;
-    await this.startLocalResolve(id, await sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch }), "merge_refused");
-    return (await this.c.k.reader.getWorkItem(id))?.stage === "RUNNING";
+    const { repo, local_only } = this.c.k.cfg;
+    const base = local_only === true && sandbox
+      ? await sandbox.updateBase({ repo: repo.path, base_ref: repo.base_branch })
+      : item.source.type === LOCAL_SOURCE && canReadLocal(sandbox)
+        ? await sandbox.localBranch({ repo: repo.path, branch: repo.base_branch })
+        : null;
+    if (base === null) return false;
+    await this.startLocalResolve(item.id, base, "merge_refused");
+    return (await this.c.k.reader.getWorkItem(item.id))?.stage === "RUNNING";
   }
 
   /**
