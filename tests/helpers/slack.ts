@@ -28,6 +28,12 @@ export class FakeSlackApi implements SlackApi {
   reactCalls = 0;
   /** A Slack error code every react call fails with, e.g. `missing_scope`; null: reacting works. */
   failReact: string | null = null;
+  /** Every views.open call that worked, in order. */
+  views: { trigger_id: string; view: unknown }[] = [];
+  /** A Slack error code every views.open call fails with, e.g. `expired_trigger_id`; null: opening works. */
+  failViews: string | null = null;
+  /** Called on each views.open before it answers (a test reads what was acked by then). */
+  onOpenView: (() => void) | null = null;
   private next = 5000;
 
   async identity(): Promise<{ team_id: string; user_id: string }> {
@@ -65,10 +71,20 @@ export class FakeSlackApi implements SlackApi {
     if (!this.reactions.some((r) => r.channel === channel && r.ts === ts && r.name === name)) this.reactions.push({ channel, ts, name });
   }
 
-  /** views.open calls: the trigger and the modal. */
-  views: { trigger_id: string; view: Record<string, unknown> }[] = [];
-  async openView(trigger_id: string, view: Record<string, unknown>): Promise<void> {
+  async openView(trigger_id: string, view: unknown): Promise<void> {
+    this.onOpenView?.();
+    if (this.failViews !== null) throw new SlackApiError("views.open", this.failViews);
     this.views.push({ trigger_id, view });
+  }
+  /** Every views.update call, in order. */
+  updatedViews: { view_id: string; view: unknown }[] = [];
+  async updateView(view_id: string, view: unknown): Promise<void> {
+    this.updatedViews.push({ view_id, view });
+  }
+  /** Every views.push call, in order. */
+  pushedViews: { trigger_id: string; view: unknown }[] = [];
+  async pushView(trigger_id: string, view: unknown): Promise<void> {
+    this.pushedViews.push({ trigger_id, view });
   }
 
   /** The factory's messages in one thread. */
@@ -174,19 +190,58 @@ export function message(ts: string, text: string, over: Record<string, unknown> 
   return { type: "message", user: "U0ALICE", ts, text, ...over };
 }
 
-/** A button press (`block_actions`) on a message in thread `thread_ts`. */
+/** A button press (`block_actions`) on a message in thread `thread_ts`, with its `trigger_id`. */
 export function press(thread_ts: string, action_id: string, value: string, user = "U0ALICE", action_ts = `${1800000100 + ++seq}.000001`): Record<string, unknown> {
   return {
     type: "interactive",
     envelope_id: nextId("env-"),
     payload: {
       type: "block_actions",
+      trigger_id: `trigger-${action_ts}`,
       user: { id: user, name: "display-name-never-read", team_id: TEAM },
       team: { id: TEAM, domain: "fake-workspace" },
       channel: { id: CHANNEL, name: "channel-name-never-read" },
       container: { type: "message", channel_id: CHANNEL, thread_ts },
       message: { ts: "1800000000.999999", thread_ts },
       actions: [{ action_id, value, action_ts, type: "button" }],
+    },
+  };
+}
+
+/**
+ * A button press (`block_actions`) inside an open modal `view` (its ID, callback ID and private_metadata), as Slack
+ * sends it: no channel and no message, the view and its trigger_id instead.
+ */
+export function modalPress(view: { id: string; callback_id: string; private_metadata: string }, action_id: string, value: string, user = "U0ALICE", action_ts = `${1800000100 + ++seq}.000001`): Record<string, unknown> {
+  return {
+    type: "interactive",
+    envelope_id: nextId("env-"),
+    payload: {
+      type: "block_actions",
+      trigger_id: `trigger-${action_ts}`,
+      user: { id: user, name: "display-name-never-read", team_id: TEAM },
+      team: { id: TEAM, domain: "fake-workspace" },
+      container: { type: "view", view_id: view.id },
+      view: { ...view, type: "modal", root_view_id: view.id },
+      actions: [{ action_id, value, action_ts, type: "button" }],
+    },
+  };
+}
+
+/**
+ * A modal submit (`view_submission`): `values` maps each input block ID to its text, as Slack nests it under the
+ * block and its one element's action ID.
+ */
+export function submission(view: { id: string; callback_id: string; private_metadata: string; root_view_id?: string }, values: Record<string, string>, user = "U0ALICE"): Record<string, unknown> {
+  const state = Object.fromEntries(Object.entries(values).map(([block, value]) => [block, { answer: { type: "plain_text_input", value } }]));
+  return {
+    type: "interactive",
+    envelope_id: nextId("env-"),
+    payload: {
+      type: "view_submission",
+      user: { id: user, name: "display-name-never-read", team_id: TEAM },
+      team: { id: TEAM, domain: "fake-workspace" },
+      view: { ...view, type: "modal", state: { values: state } },
     },
   };
 }

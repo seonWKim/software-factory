@@ -6,24 +6,17 @@
 
 import { defineMigration } from "../../state/index.js";
 
-const SQLITE = `CREATE TABLE IF NOT EXISTS identity_profiles (
+const CREATE = `CREATE TABLE IF NOT EXISTS identity_profiles (
     user_id       TEXT PRIMARY KEY,
     display_name  TEXT NOT NULL,
     source        TEXT NOT NULL,
     updated_at    TEXT NOT NULL
   )`;
 
-const MYSQL = `CREATE TABLE IF NOT EXISTS identity_profiles (
-    user_id       VARCHAR(191) NOT NULL PRIMARY KEY,
-    display_name  VARCHAR(255) NOT NULL,
-    source        VARCHAR(32) NOT NULL,
-    updated_at    CHAR(24) NOT NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`;
-
 export default defineMigration({
   change: "additive",
   tables: [],
   async up(db) {
-    await db.run(db.dialect === "sqlite" ? SQLITE : MYSQL);
+    await db.run(CREATE);
   },
 });

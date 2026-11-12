@@ -1,4 +1,5 @@
 import { Children, Fragment, type ReactNode, createContext, useContext, useEffect, useState } from "react";
+import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 
 // Small shared pieces for the pages: a section with a heading, a data table, a level badge and the loading
@@ -38,8 +39,9 @@ const TableMode = createContext<{ head: readonly string[]; cards: boolean }>({ h
 /**
  * A data table at `sm` and up; below it, one card per row with no horizontal scroll: the first cell is the
  * card's title, the next two sit under it, the rest are listed with their column names. Rows are `Tr`, cells `Td`.
+ * `numeric[i]` right-aligns the i-th column's heading to sit over its numbers.
  */
-export function Table({ head, children, label }: { head: readonly string[]; children: ReactNode; label: string }) {
+export function Table({ head, children, label, numeric }: { head: readonly string[]; children: ReactNode; label: string; numeric?: readonly boolean[] }) {
   const wide = useWide();
   if (!wide) {
     return (
@@ -55,8 +57,8 @@ export function Table({ head, children, label }: { head: readonly string[]; chil
       <table aria-label={label} className="w-full text-left text-sm">
         <thead className="bg-bg text-xs text-text-2">
           <tr>
-            {head.map((h) => (
-              <th key={h} scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
+            {head.map((h, i) => (
+              <th key={h} scope="col" className={cn("px-3 py-2 font-medium whitespace-nowrap", numeric?.[i] && "text-right")}>
                 {h}
               </th>
             ))}
@@ -101,7 +103,8 @@ export function Td({ children, className }: { children: ReactNode; className?: s
   return <td className={cn("px-3 py-2 align-top", className)}>{children}</td>;
 }
 
-const LEVEL_TONE: Record<string, string> = {
+/** The one status colour map: a level name to its token classes. Badge and StatusBadge both read it. */
+export const LEVEL_TONE: Record<string, string> = {
   ready_to_merge: "bg-pill-ok-bg text-pill-ok-fg",
   needs_approval: "bg-pill-warn-bg text-pill-warn-fg",
   needs_you: "bg-pill-bad-bg text-pill-bad-fg",
@@ -111,12 +114,17 @@ const LEVEL_TONE: Record<string, string> = {
   blocked_by_task: "bg-surface-2 text-text-1",
 };
 
+/** The token classes for a level; a level with no tone is neutral. */
+export function toneOf(level: string | undefined): string {
+  return (level && LEVEL_TONE[level]) ?? "bg-surface-2 text-text-1";
+}
+
 export function Badge({ level, children }: { level?: string | undefined; children: ReactNode }) {
   return (
     <span
       className={cn(
         "inline-block rounded-control px-1.5 py-0.5 text-xs font-medium whitespace-nowrap",
-        (level && LEVEL_TONE[level]) ?? "bg-surface-2 text-text-1",
+        toneOf(level),
       )}
     >
       {children}
@@ -127,7 +135,7 @@ export function Badge({ level, children }: { level?: string | undefined; childre
 /** A row-shaped placeholder while the first read is in flight. */
 export function Loading({ rows = 3 }: { rows?: number }) {
   return (
-    <div aria-busy="true" aria-label="Loading" className="space-y-2">
+    <div aria-busy="true" aria-label={t("common.loading")} className="space-y-2">
       {Array.from({ length: rows }, (_, i) => (
         <div key={i} className="h-8 rounded-control bg-surface-2" />
       ))}
@@ -138,7 +146,7 @@ export function Loading({ rows = 3 }: { rows?: number }) {
 export function ErrorNote({ error }: { error: unknown }) {
   return (
     <p role="alert" className="rounded-control bg-pill-bad-bg px-3 py-2 text-sm text-pill-bad-fg">
-      Could not load: {error instanceof Error ? error.message : String(error)}
+      {t("common.couldNotLoad", { message: error instanceof Error ? error.message : String(error) })}
     </p>
   );
 }

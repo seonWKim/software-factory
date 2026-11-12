@@ -8,13 +8,15 @@ import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from 
 import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
-import { parseQuickAdd } from "./quick-add.js";
-import { type TaskFields, taskLine } from "./tasks.js";
+import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
+import { type TaskEdit, type TaskFields, taskLine } from "./tasks.js";
+import { buildTask, createLocalItem } from "./task-build.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task add` stores a plain task from quick-add words and `task
- * done` completes one (design 02-tasks: no work item, no triage); `task list` and `task show` read the store; `approve`,
+ * done` completes one, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
+ * work item, no triage); `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
@@ -97,6 +99,10 @@ export type CliAction =
   | { action: "create"; title: string; bodyFile: string }
   | { action: "add"; task: TaskFields }
   | { action: "done"; id: string }
+  | { action: "edit"; id: string; edit: TaskEdit }
+  | { action: "delete"; id: string }
+  | { action: "sub"; parent: string; task: TaskFields }
+  | { action: "build"; id: string }
   | { action: "list" }
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
@@ -134,7 +140,21 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       const parsed = parseQuickAdd(rest.join(" "));
       return parsed.ok ? { action: "add", task: parsed.task } : bad(`task add: ${parsed.reason}`);
     }
+    if (sub === "edit") {
+      const [id, ...words] = rest;
+      if (!id || words.length === 0) return bad("task edit needs a task ID and quick-add words");
+      const parsed = parseQuickEdit(words.join(" "));
+      return parsed.ok ? { action: "edit", id, edit: parsed.edit } : bad(`task edit: ${parsed.reason}`);
+    }
+    if (sub === "sub") {
+      const [parent, ...words] = rest;
+      if (!parent) return bad("task sub needs a parent task ID and quick-add words");
+      const parsed = parseQuickAdd(words.join(" "));
+      return parsed.ok ? { action: "sub", parent, task: parsed.task } : bad(`task sub: ${parsed.reason}`);
+    }
+    if (sub === "delete") return rest.length === 1 && rest[0] ? { action: "delete", id: rest[0] } : bad("task delete needs one task ID");
     if (sub === "done") return rest.length === 1 && rest[0] ? { action: "done", id: rest[0] } : bad("task done needs one task ID");
+    if (sub === "build") return rest.length === 1 && rest[0] ? { action: "build", id: rest[0] } : bad("task build needs one task ID");
     if (sub === "show") return rest.length === 1 && rest[0] ? { action: "show", id: rest[0] as WorkItemId } : bad("task show needs one work item ID");
     if (sub === "create") {
       const flags: Record<string, string> = {};
@@ -193,6 +213,7 @@ export interface LocalCliDeps {
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
     | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask" | "listCommandProposals"
+    | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -234,14 +255,14 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       }
       await claim();
       const body = (await d.read(a.bodyFile)).trim();
-      const sid = `local-${d.newId()}`;
-      const source = { type: "local" as const, id: sid, link: `local:${sid}` };
-      const { item } = await d.store.createWorkItem(
-        { source, title: a.title, requester_id: user, project, problem: `${a.title}\n\n${body}`.trim(), resources: [source.link] },
-        { kind: "user", id: user },
-        { enqueue: { kind: "triage", idempotency_key: `${source.type}:${source.id}:triage` } },
-      );
+      const { item } = await createLocalItem(d.store, { source_id: `local-${d.newId()}`, title: a.title, body, project, user });
       return { code: 0, lines: [item.id] };
+    }
+    case "build": {
+      const r = await buildTask(d.store, a.id, await d.project(), user);
+      if (!r.ok) return fail(r.reason);
+      if (r.created) await claim();
+      return { code: 0, lines: [r.created ? `built ${a.id} as ${r.item.id}` : `${a.id} was already built as ${r.item.id}`] };
     }
     case "add": {
       await claim();
@@ -253,6 +274,26 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!r.ok) return fail(`no task ${a.id}`);
       const done = r.completed ? `done ${a.id}` : `${a.id} was already done`;
       return { code: 0, lines: [done, ...(r.next ? [`next: ${taskLine(r.next)}`] : [])] };
+    }
+    case "edit": {
+      const r = await d.store.updateTask(a.id, a.edit);
+      if (r.ok) return { code: 0, lines: [`edited ${taskLine(r.task)}`] };
+      if (r.reason === "needs_due_date") return fail(needsDueDate(r.recurrence));
+      return fail(r.reason === "done" ? `${a.id} is done: a done task cannot be edited` : `no task ${a.id}`);
+    }
+    case "delete": {
+      const r = await d.store.deleteTask(a.id);
+      if (r.ok) return { code: 0, lines: [`deleted ${a.id}`, ...(r.detached.length > 0 ? [`detached done sub-tasks: ${r.detached.map((t) => t.id).join(", ")}`] : [])] };
+      if (r.reason === "open_sub_tasks") return fail(`${a.id} has open sub-tasks: ${r.sub_tasks.map((t) => t.id).join(", ")}; complete or delete them first`);
+      return fail(`no task ${a.id}`);
+    }
+    case "sub": {
+      const r = await d.store.addSubTask(a.parent, { ...a.task, id: `tk_${d.newId()}`, created_by: user });
+      if (r.ok) {
+        await claim();
+        return { code: 0, lines: [taskLine(r.task)] };
+      }
+      return fail(r.reason === "nested" ? `${a.parent} is a sub-task: a sub-task cannot have sub-tasks` : `no task ${a.parent}`);
     }
     case "list": {
       const items = (await d.store.listWorkItems(TASK_LIST_LIMIT)).filter((i) => i.source.type === "local");

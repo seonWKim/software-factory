@@ -6,7 +6,7 @@ import { envelope, type Envelope } from "../../src/shared/envelope.js";
 import type { HandlerContext } from "../../src/shared/handler.js";
 import type { SqlDriver } from "../../src/state/index.js";
 
-// A SqlDriver may run a transaction's function again (MySQL retries a deadlock: SqlDriver.transaction). The
+// A SqlDriver may run a transaction's function again (a driver retries a deadlock: SqlDriver.transaction). The
 // messages a handler emitted on the attempt that rolled back must not be published by the attempt that commits:
 // each extra copy would be handled again downstream.
 
@@ -34,7 +34,7 @@ describe("component consumer", () => {
     const db = {
       transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => {
         attempts++;
-        await fn({}); // rolled back: a deadlock, retried as MySQL's driver does
+        await fn({}); // rolled back: a deadlock, retried as a driver may do
         return fn({});
       },
     } as unknown as SqlDriver;

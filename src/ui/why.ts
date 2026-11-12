@@ -95,6 +95,15 @@ function why(code: WhyCode, text: string, next_actor: NextActor): Why {
   return { code, text, next_actor, refs: refsOf(text) };
 }
 
+/** Each stage in words, for a block with no stored reason. */
+const STAGE_WORDS: Record<Stage, string> = {
+  NEW: "new, not triaged yet",
+  READY: "specced, not started",
+  RUNNING: "being built",
+  REVIEW: "in review",
+  CLOSED: "closed",
+};
+
 function human(i: WhyInput["item"]): Why {
   if (i.blocked_on === "budget") return why("human", "Waiting for a person to answer the budget check", "human");
   const r = i.blocked_reason ?? "";
@@ -109,7 +118,9 @@ function human(i: WhyInput["item"]): Why {
   if (r === "max_loops") return why("human", "Too many review loops: a person decides what happens next", "human");
   if (r === "merge_conflict_pending") return why("human", "A merge conflict needs a person", "human");
   if (FAILED.test(r)) return why("human", `The run failed (${r}): a person decides what happens next`, "human");
-  return why("human", r ? `Waiting for a person: ${r}` : "Waiting for a person", "human");
+  // No stored reason: the item's state and what moves it next, never an empty or "no reason" text.
+  if (!r) return why("human", `Waiting for a person: the item is ${STAGE_WORDS[i.stage]}; next, a person retries, resolves or rejects it`, "human");
+  return why("human", `Waiting for a person: ${r}`, "human");
 }
 
 /** The claim pause that stops this run's kind, by the store's claim rule (sql-factory-store claimRun). */

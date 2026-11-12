@@ -2,14 +2,12 @@
 // verdicts): which messages get them, what a tap and the Feedback modal store, the record_verdict check, one verdict
 // per message, the message edit, and the ack after the store write. The Slack and store fakes only.
 
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buttonVerdict, buttonVerdictKey, verdictButtonOf } from "../src/core/verdict.js";
 import type { SourceRef, UserId, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { STEPS_DIR } from "../src/impl/store/mysql/migrations.js";
 import { resultMarker } from "../src/impl/source/slack-format.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
@@ -125,7 +123,7 @@ describe("one-tap verdicts: the mapping (src/core/verdict.ts)", () => {
 describe("one-tap verdicts in Slack", () => {
   it("a result message ends with Good, Bad and Feedback after its command buttons; another factory message gets none", async () => {
     const f = await setup();
-    expect(FakeSlackApi.buttons(f.spec)).toEqual(["sf_cmd:approve", "sf_cmd:help", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
+    expect(FakeSlackApi.buttons(f.spec)).toEqual(["sf_spec_approve", "sf_spec_reject", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     await f.src.postComment(source(), "Merged PR #4 as `abc`. The item is closed.", "<!-- factory:pr-merged:4 -->");
     expect(FakeSlackApi.buttons(f.api.thread(ROOT).at(-1)!)).toEqual(["sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     await f.src.postComment(source(), "`/approve` was not applied: no.", "<!-- factory:refused:1.5 -->");
@@ -138,7 +136,7 @@ describe("one-tap verdicts in Slack", () => {
     expect(await rows(f)).toEqual([[f.key, "accept", "none", null]]);
     expect(await actorOf(f, f.item)).toEqual({ kind: "user", id: OWNER });
     const edited = f.api.messages.find((m) => m.ts === f.spec.ts)!;
-    expect(FakeSlackApi.buttons(edited)).toEqual(["sf_cmd:approve", "sf_cmd:help", "sf_verdict:bad", "sf_verdict:feedback"]);
+    expect(FakeSlackApi.buttons(edited)).toEqual(["sf_spec_approve", "sf_spec_reject", "sf_verdict:bad", "sf_verdict:feedback"]);
     expect(JSON.stringify(edited.blocks)).toContain(`Verdict: Good by ${OWNER} at`);
     expect(JSON.stringify(edited.blocks)).not.toContain("U0ALICE");
   });
@@ -150,7 +148,7 @@ describe("one-tap verdicts in Slack", () => {
     await f.deliver(tap(f.spec.ts, "bad"));
     const after = await f.store.listVerdicts(f.item.id);
     expect(after.map((v) => [v.id, v.comment_id, v.verdict, v.severity, v.reason])).toEqual([[first!.id, f.key, "changes", "minor", null]]);
-    expect(FakeSlackApi.buttons(f.api.messages.find((m) => m.ts === f.spec.ts)!)).toEqual(["sf_cmd:approve", "sf_cmd:help", "sf_verdict:good", "sf_verdict:feedback"]);
+    expect(FakeSlackApi.buttons(f.api.messages.find((m) => m.ts === f.spec.ts)!)).toEqual(["sf_spec_approve", "sf_spec_reject", "sf_verdict:good", "sf_verdict:feedback"]);
     const version = (await f.store.getWorkItem(f.item.id))!.version;
     const calls = f.api.calls.length;
     await f.deliver(tap(f.spec.ts, "bad"));
@@ -177,7 +175,7 @@ describe("one-tap verdicts in Slack", () => {
     await f.deliver(submit(f.spec.ts, "  The flag name is wrong.  "));
     expect(await rows(f)).toEqual([[f.key, "changes", "none", "The flag name is wrong."]]);
     const edited = f.api.messages.find((m) => m.ts === f.spec.ts)!;
-    expect(FakeSlackApi.buttons(edited)).toEqual(["sf_cmd:approve", "sf_cmd:help", "sf_verdict:good", "sf_verdict:bad"]);
+    expect(FakeSlackApi.buttons(edited)).toEqual(["sf_spec_approve", "sf_spec_reject", "sf_verdict:good", "sf_verdict:bad"]);
     expect(JSON.stringify(edited.blocks)).not.toContain("flag name");
   });
 
@@ -245,37 +243,35 @@ describe("one-tap verdicts in Slack", () => {
     expect((await f.store.listVerdictsSince(null)).map((v) => [v.comment_id, v.verdict, v.severity, v.reason])).toEqual([[f.key, "changes", "none", "More tests."]]);
   });
 
-  it("a state change after a verdict keeps the verdict line and buttons on the message", async () => {
+  it("a state change after a verdict keeps the verdict line and buttons on a result message; the spec message is not edited by it", async () => {
     const f = await setup();
-    await f.deliver(tap(f.spec.ts, "good"));
+    // A finished run's ready-to-merge message with the spec gate's command footer, as the controller writes it.
+    const marker = "<!-- factory:merge:run_r2 -->";
+    const body = "Ready to merge.\n\nCommands you can reply with now:\n- `/approve [notes]`: Approve.\n- `/help`: Help.";
+    await f.store.recordItemMessage({ work_item_id: f.item.id, marker, body });
+    await f.src.postComment(source(), body, marker);
+    const result = f.api.thread(ROOT).at(-1)!;
+    await f.deliver(tap(result.ts, "good"));
     const it = (await f.store.getWorkItem(f.item.id))!;
     const r = await f.store.transition({ id: it.id, expected_version: it.version, actor: system, reason: "spec_approved", patch: { stage: "RUNNING" } });
     if (!r.ok) throw new Error(r.reason);
+    const specBefore = JSON.stringify(f.api.messages.find((m) => m.ts === f.spec.ts)!.blocks);
     await f.src.setStatus(source(), "implementing", null);
-    const edited = f.api.messages.find((m) => m.ts === f.spec.ts)!;
+    const edited = f.api.messages.find((m) => m.ts === result.ts)!;
     expect(FakeSlackApi.buttons(edited)).toEqual(["sf_cmd:help", "sf_verdict:bad", "sf_verdict:feedback"]);
     const text = JSON.stringify(edited.blocks);
     expect(text).toContain(`Verdict: Good by ${OWNER}`);
     expect(text).toContain("Done: spec approved by");
+    expect(JSON.stringify(f.api.messages.find((m) => m.ts === f.spec.ts)!.blocks)).toBe(specBefore);
   });
 });
 
 describe("one-tap verdicts: no schema change", () => {
   const SQLITE = readFileSync("src/impl/store/sqlite/schema.ts", "utf8");
-  const MYSQL_BASELINE = readFileSync("src/impl/store/mysql/schema.ts", "utf8");
-  const MYSQL_STEPS = readdirSync(STEPS_DIR).filter((f) => /^\d{4}-/.test(f)).sort().map((f) => readFileSync(join(STEPS_DIR, f), "utf8"));
 
-  it("the schema files and migrations have nothing of their own for buttons: the verdict table and its comment-id key serve", () => {
-    for (const text of [SQLITE, MYSQL_BASELINE, ...MYSQL_STEPS]) expect(text.toLowerCase()).not.toContain("button");
-    // The key a tap is stored under is the verdict table's unique comment id, in both schemas.
+  it("the schema has nothing of its own for buttons: the verdict table and its comment-id key serve", () => {
+    expect(SQLITE.toLowerCase()).not.toContain("button");
+    // The key a tap is stored under is the verdict table's unique comment id.
     expect(SQLITE).toMatch(/CREATE TABLE verdicts \([^;]*?comment_id\s+TEXT NOT NULL UNIQUE/);
-    expect(MYSQL_BASELINE).toMatch(/UNIQUE KEY verdicts_comment \(comment_id\)/);
-  });
-
-  it("the longest button key fits the MySQL comment_id column", () => {
-    const widths = [MYSQL_BASELINE, ...MYSQL_STEPS].flatMap((t) => [...t.matchAll(/comment_id\s+VARCHAR\((\d+)\) NOT NULL/g)].map((m) => Number(m[1])));
-    const width = widths.at(-1)!;
-    const key = buttonVerdictKey("C0123456789AB", "1800000001.000100", `run_${"a".repeat(32)}`);
-    expect(key.length).toBeLessThanOrEqual(width);
   });
 });

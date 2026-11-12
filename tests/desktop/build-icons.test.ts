@@ -1,5 +1,5 @@
 // scripts/build-icons.mjs on a temp folder: every PNG size, icon.icns through iconutil on macOS only (iconutil
-// faked: the test never needs it installed), and the ember dot only at 64 px and up.
+// faked: the test never needs it installed), and the ember dot at every size.
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,11 +47,12 @@ const SQUARE = [0x1c, 0x1c, 0x1e, 255];
 const WHITE = [255, 255, 255, 255];
 
 describe("design-system/icon.svg", () => {
-  it("is a white 공 drawn as outlines on a rounded #1C1C1E square, with an ember dot from 64 px", () => {
+  it("is a white 공 drawn as outlines on a rounded #1C1C1E square, with an ember dot at every size", () => {
     const text = readFileSync(SVG, "utf8");
     expect(text).toMatch(/<rect id="square"[^>]* rx="\d+"[^>]* fill="#1C1C1E"/);
     expect(text).toMatch(/<path id="glyph"[^>]* fill="#FFFFFF"/);
-    expect(text).toMatch(/<circle id="ember" data-min-px="64"/);
+    expect(text).toMatch(/<circle id="ember" data-small-r="2\.5" cx="800" cy="224" r="44" fill="#FB923C"/);
+    expect(text).not.toContain("data-min-px");
     expect(text).not.toMatch(/<text|font-family|<use|<image/);
   });
 });
@@ -96,7 +97,7 @@ describe("build-icons", () => {
     expect(png(join(out, icons.pngName(1024))).width).toBe(1024);
   });
 
-  it("draws the square, the white 공 and transparent corners; the ember dot only at 64 px and up", () => {
+  it("draws the square, the white 공 and transparent corners", () => {
     const out = temp();
     icons.buildIcons(out, { platform: "linux", log: () => {} });
     for (const size of [16, 32, 64, 128, 256, 512, 1024]) {
@@ -104,9 +105,14 @@ describe("build-icons", () => {
       expect(p.pixel(0, 0)[3], `${size} corner`).toBe(0);
       if (size >= 64) expect(at(p, size, 512, 533), `${size} bar of ㅗ`).toEqual(WHITE);
       if (size >= 32) expect(at(p, size, 512, 724), `${size} hole of ㅇ`).toEqual(SQUARE);
-      const ember = at(p, size, 800, 224);
-      if (size >= 64) expect(ember.slice(0, 3), `${size} ember`).toEqual([0xff, 0x6a, 0x2b]);
-      else expect(ember, `${size} no ember`).toEqual(SQUARE);
+    }
+  });
+
+  it("draws the ember dot #FB923C at its centre at 16, 32, 64 and 1024 px", () => {
+    const out = temp();
+    icons.buildIcons(out, { platform: "linux", log: () => {} });
+    for (const size of [16, 32, 64, 1024]) {
+      expect(at(png(join(out, icons.pngName(size))), size, 800, 224), `${size} ember`).toEqual([0xfb, 0x92, 0x3c, 255]);
     }
   });
 

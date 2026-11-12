@@ -98,11 +98,16 @@ describe("Dialog", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it("only a destructive confirm uses the failed colour variable", () => {
+  it("only a destructive confirm is filled with the failed token, with on-solid text", () => {
     render(<Host onConfirm={() => {}} danger />);
     fireEvent.click(screen.getByRole("button", { name: "open it" }));
-    expect(screen.getByRole("button", { name: "Do it" }).className).toContain("(--color-red-700)");
-    expect(screen.getByRole("button", { name: "Cancel" }).className).not.toContain("red");
+    const classes = (name: string) => screen.getByRole("button", { name }).className.split(/\s+/);
+    expect(classes("Do it")).toEqual(expect.arrayContaining(["bg-failed", "text-on-solid"]));
+    expect(classes("Cancel")).not.toContain("bg-failed");
+    cleanup();
+    render(<Host onConfirm={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "open it" }));
+    expect(classes("Do it")).not.toContain("bg-failed");
   });
 
   it("the dialog and the stylesheet carry no hard-coded colours, and the dialog fills a phone with a 16 px gutter", () => {

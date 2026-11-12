@@ -90,11 +90,11 @@ async function openTable(name: string) {
 }
 
 describe("Data page", () => {
-  it("the Data entry is in the sidebar after Settings and shows the table list beside the rows", async () => {
+  it("the Data entry is last in the System group and shows the table list beside the rows", async () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].map((a) => a.textContent);
-    expect(links.slice(-3)).toEqual(["Settings", "Users", "Data"]);
+    expect(links.slice(-1)).toEqual(["Data"]);
     fireEvent.click(within(side).getByText("Data"));
     expect(location.pathname).toBe("/app/data");
     expect(await screen.findByRole("heading", { name: "Data" })).toBeTruthy();

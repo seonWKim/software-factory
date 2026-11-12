@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Why, mergeCheckLabel, showsMerge } from "../api.js";
+import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
+import { IdDetails } from "../components/ui/copy.js";
 import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { LEVEL_LABELS, ago, shortSource, until } from "../lib/format.js";
+import { LEVEL_LABELS, ago, isHttpUrl, isWorkerId, shortSource, stateAndNext, until, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { MergeButton, NeedCommands } from "./item-commands.js";
@@ -18,9 +20,39 @@ export function useNow(): number {
   return now;
 }
 
-/** An item's title (or its source id) linking to its page, with the source link beside it. */
-/** The item's source id in short form (`#192`, `30331a68`), linked to the source; the full id shows on hover. */
-export function SourceLink({ source, className }: { source: { id: string; link: string }; className?: string }) {
+/** The viewer: the factory user the page's commands act as (the session's actor), null while unknown. */
+export function useViewer(): string | null {
+  return useApi<Session>(API.session, false).data?.actor ?? null;
+}
+
+/** A worker as "worker N" (its slot number), the full ID behind it (decision 3 of the readable-names change). */
+export function WorkerName({ id }: { id: string | null | undefined }) {
+  if (!id) return <>–</>;
+  return <IdDetails label={workerName(id)} id={id} what="worker ID" />;
+}
+
+/**
+ * A person or process by ID: the factory, a worker ("worker N"), "you" when it is the viewer (the owner, on a
+ * one-owner factory), else the stored display name or "a person"; the full ID behind it.
+ */
+export function PersonName({ id, name, viewer }: { id: string | null; name?: string | null | undefined; viewer: string | null }) {
+  if (!id || id === "system") return <>{t("person.factory")}</>;
+  if (isWorkerId(id)) return <WorkerName id={id} />;
+  return <IdDetails label={id === viewer ? t("person.you") : (name || t("person.other"))} id={id} what="user ID" />;
+}
+
+/**
+ * The item's source id in short form (`#192`, `30331a68`), linked to the source; the full id shows on hover. With
+ * `itemId`, a source with no web address (a local item's `local:` link) links to the item's page instead.
+ */
+export function SourceLink({ source, className, itemId }: { source: { id: string; link: string }; className?: string; itemId?: string }) {
+  if (itemId !== undefined && !isHttpUrl(source.link)) {
+    return (
+      <Link href={itemPath(itemId)} title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", LINK_CLASS, className)}>
+        {shortSource(source.id)}
+      </Link>
+    );
+  }
   return (
     <a href={source.link} target="_blank" rel="noreferrer" title={source.id} className={cn("max-w-[16ch] min-w-0 truncate tabular-nums", LINK_CLASS, className)}>
       {shortSource(source.id)}
@@ -28,12 +60,17 @@ export function SourceLink({ source, className }: { source: { id: string; link: 
   );
 }
 
-export function ItemTitle({ id, title, source }: { id: string; title: string | null; source: { id: string; link: string } }) {
+/**
+ * An item's title (or its short source id) linking to its page, with the source link beside it. `itemPage`: a source
+ * with no web address links to the item page (the app's tables set it; the stored-link default goes once its last
+ * test, tests/ui-source-id.test.tsx, moves to it).
+ */
+export function ItemTitle({ id, title, source, itemPage = false }: { id: string; title: string | null; source: { id: string; link: string }; itemPage?: boolean }) {
   return (
     <span className="flex min-w-0 items-baseline gap-2">
-      <SourceLink source={source} className="shrink-0" />
+      <SourceLink source={source} className="shrink-0" {...(itemPage ? { itemId: id } : {})} />
       <Link href={itemPath(id)} className={cn("truncate font-medium", LINK_CLASS)}>
-        {title ?? source.id}
+        {title ?? shortSource(source.id)}
       </Link>
     </span>
   );
@@ -71,10 +108,12 @@ export function WhyText({ why }: { why: Why }) {
  * A Needs-you row's reason (the same words as the classic page). It links to the item page at the factory's newest
  * thread entry, when the item has one. The row's command buttons (NeedCommands) come after it.
  */
-function NeedText({ id, need }: { id: string; need: NonNullable<ItemRow["need"]> }) {
+function NeedText({ it, need }: { it: ItemRow; need: NonNullable<ItemRow["need"]> }) {
+  // No stored reason: the item's state and what moves it next, never "no reason".
+  const reason = it.blocked_reason === null ? stateAndNext(it.stage, it.commands) : need.reason;
   return (
     <span data-need>
-      {need.anchor ? <Link href={`${itemPath(id)}#${need.anchor}`} className={LINK_CLASS}>{need.reason}</Link> : need.reason}
+      {need.anchor ? <Link href={`${itemPath(it.id)}#${need.anchor}`} className={LINK_CLASS}>{reason}</Link> : reason}
     </span>
   );
 }
@@ -96,14 +135,14 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
 export function ItemsTable({ items, now, label, empty, plugins, actions = false }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"]; actions?: boolean }) {
   if (items.length === 0) return <Empty>{empty}</Empty>;
   const showIssue = plugins?.issues === "github";
-  const head = ["Item", "State", "Why", "Since", ...(showIssue ? ["Issue"] : []), "PR"];
+  const head = [t("col.item"), t("col.state"), t("col.why"), t("col.since"), ...(showIssue ? [t("col.issue")] : []), t("col.pr")];
   return (
     <Table label={label} head={head}>
       {items.map((it) => (
         <Tr key={it.id} data-key={it.id}>
           <Td className="max-w-md">
             <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
-              {it.title ?? it.id}
+              {it.title ?? shortSource(it.source.id)}
             </Link>
           </Td>
           <Td>
@@ -111,7 +150,7 @@ export function ItemsTable({ items, now, label, empty, plugins, actions = false 
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
           <Td className="text-text-2">
-            {it.need ? <NeedText id={it.id} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
+            {it.need ? <NeedText it={it} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
             {actions && (it.commands?.length ?? 0) > 0 && (
               <span className="ml-2">
                 <NeedCommands id={it.id} commands={it.commands!} pr={it.change_ref} />
@@ -137,19 +176,19 @@ export function ItemsTable({ items, now, label, empty, plugins, actions = false 
 /** Running runs with their item, owner and heartbeat. */
 export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; items: ReadonlyMap<string, ItemRow>; now: number }) {
   const running = runs.filter((r) => r.status === "running");
-  if (running.length === 0) return <Empty>No run is running. Queued runs start when a worker is free.</Empty>;
+  if (running.length === 0) return <Empty>{t("running.empty")}</Empty>;
   return (
-    <Table label="Running now" head={["Item", "Run", "Attempt", "Worker", "Running for", "Heartbeat"]}>
+    <Table label={t("running.label")} head={[t("col.item"), t("col.run"), t("col.attempt"), t("col.worker"), t("col.runningFor"), t("col.heartbeat")]}>
       {running.map((r) => {
         const it = items.get(r.work_item_id);
         return (
-          <Tr key={r.id}>
-            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
+          <Tr key={r.id} data-key={r.id}>
+            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} itemPage /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
-            <Td className="font-mono text-xs">{r.owner ?? "–"}</Td>
+            <Td><WorkerName id={r.owner} /></Td>
             <Td className="tabular-nums">{ago(r.started_at, now)}</Td>
-            <Td className="tabular-nums">{ago(r.heartbeat_at, now)} ago</Td>
+            <Td className="tabular-nums">{t("time.ago", { time: ago(r.heartbeat_at, now) })}</Td>
           </Tr>
         );
       })}
@@ -159,19 +198,19 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
 
 /** Queued runs in claim order, with their item and when each may start: "now" or its retry time, else why it waits. */
 export function QueueTable({ queue, items, now, limit }: { queue: readonly QueueRow[]; items: ReadonlyMap<string, ItemRow>; now: number; limit?: number }) {
-  if (queue.length === 0) return <Empty>The queue is empty.</Empty>;
+  if (queue.length === 0) return <Empty>{t("queue.empty")}</Empty>;
   const shown = limit ? queue.slice(0, limit) : queue;
   return (
-    <Table label="Queue" head={["#", "Item", "Run", "Attempt", "Queued", "Starts"]}>
+    <Table label={t("page.queue")} head={["#", t("col.item"), t("col.run"), t("col.attempt"), t("col.queued"), t("col.starts")]}>
       {shown.map((q) => {
         const it = items.get(q.work_item_id);
         return (
-          <Tr key={q.id}>
+          <Tr key={q.id} data-key={q.id}>
             <Td className="tabular-nums">{q.position}</Td>
-            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
+            <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} itemPage /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
             <Td>{q.kind}</Td>
             <Td className="tabular-nums">{q.attempt}</Td>
-            <Td className="tabular-nums">{ago(q.created_at, now)} ago</Td>
+            <Td className="tabular-nums">{t("time.ago", { time: ago(q.created_at, now) })}</Td>
             <Td className="tabular-nums">{q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)}</Td>
           </Tr>
         );

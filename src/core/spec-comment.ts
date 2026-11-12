@@ -1,7 +1,7 @@
 import { type CommandState, commandFooter } from "./commands.js";
 import type { AddedPath } from "./companions.js";
 import { MAX_DECISIONS, type TriageOutput, type TriagePhase } from "./outputs.js";
-import { missingValues, specText } from "./given-values.js";
+import { type MissingAnswer, missingAnswers, missingValues, specText } from "./given-values.js";
 import { inShortParagraphs } from "./pr-body.js";
 import type { Tier } from "./types.js";
 
@@ -109,9 +109,21 @@ function answerBlock(n: number): string[] {
  */
 export const droppedValues = (spec: TriageOutput, request: string | null): string[] => (request === null ? [] : missingValues(request, specText(spec)));
 
-/** The hold line above the footer of a spec that dropped given values: it names each one. */
-export const heldNote = (missing: readonly string[]): string =>
-  `This spec waits for \`/approve\`, with no automatic or standing approval: the spec drops ${missing.length === 1 ? "a value" : "values"} the request states (${missing.map((v) => `\`${v}\``).join(", ")}).\n\n`;
+/**
+ * The owner's stored answers (design 04-agents.md, Owner answers) a re-written spec dropped: what holds it for a
+ * person's `/approve` like a dropped request value. Matched outside the spec's decisions (`specText`).
+ */
+export const droppedAnswers = (spec: TriageOutput, answers: readonly { answer: string | null }[]): MissingAnswer[] =>
+  missingAnswers(answers.map((a) => a.answer), specText(spec, { decisions: false }));
+
+/** The hold line above the footer of a spec that dropped given values or owner answers: it names each one. */
+export function heldNote(missing: readonly string[], answers: readonly MissingAnswer[] = []): string {
+  const why = [
+    ...(missing.length ? [`${missing.length === 1 ? "a value" : "values"} the request states (${missing.map((v) => `\`${v}\``).join(", ")})`] : []),
+    ...(answers.length ? [`${answers.length === 1 ? "an owner answer" : "owner answers"} (${answers.map((a) => `decision ${a.n}`).join(", ")})`] : []),
+  ];
+  return `This spec waits for \`/approve\`, with no automatic or standing approval: the spec drops ${why.join(" and ")}.\n\n`;
+}
 
 /** The spec comment's section naming the request's given values the spec dropped (design 04-agents.md, Given values). */
 function missingSection(missing: readonly string[]): string[] {
@@ -122,15 +134,25 @@ function missingSection(missing: readonly string[]): string[] {
   ];
 }
 
+/** The spec comment's section naming the owner's stored answers the spec dropped, one `Owner answer missing:` line each. */
+function answersSection(answers: readonly MissingAnswer[]): string[] {
+  return [
+    "### Owner answers missing in the spec",
+    "You answered these decisions on an earlier approval, and the spec text does not hold the answer. Check each one before you `/approve`, or `/revise` to get a spec that keeps them:",
+    ...answers.map((a) => `- Owner answer missing: ${a.n}: ${a.answer}`),
+  ];
+}
+
 /**
  * The triage spec comment a human reads before typing /approve, /reject or /revise (layout issue #229): In
  * short, Problem, Decisions for you, Applied defaults, Done when, scope, Files, Risk. `footer` replaces the default last line;
  * the controller passes the command footer for the spec gate (`commandFooter`). `approved`: the spec was approved with
  * no reply (auto mode, a standing rule, the parent's split), so it has no answer block asking for `/approve` (issue #586).
- * `missing`: the request's given values the spec dropped (`missingValues`), listed in their own section before the footer.
+ * `missing`: the request's given values the spec dropped (`missingValues`), listed in their own section before the footer;
+ * `answers`: the owner's stored answers it dropped (`droppedAnswers`), in the next section.
  */
 export function renderSpec(
-  spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER, o: { approved?: boolean; missing?: readonly string[] } = {},
+  spec: TriageOutput, tier: Tier, why: TierSources = {}, footer: string = FOOTER, o: { approved?: boolean; missing?: readonly string[]; answers?: readonly MissingAnswer[] } = {},
 ): string {
   // The plain AS-IS → TO-BE statement comes first, so the reader has the idea before any file-level detail.
   const out = ["## Factory spec", "", "### In short (AS-IS → TO-BE)", inShortParagraphs(spec.in_short), ""];
@@ -167,6 +189,7 @@ export function renderSpec(
   out.push("### Risk", `Tier ${tier}: ${spec.tier_reason}`, "");
   if (spec.phases?.length) out.push(...splitSection(spec, spec.phases), "");
   if (o.missing?.length) out.push(...missingSection(o.missing), "");
+  if (o.answers?.length) out.push(...answersSection(o.answers), "");
   out.push(footer);
   return out.join("\n");
 }

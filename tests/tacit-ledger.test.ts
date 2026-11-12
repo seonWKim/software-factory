@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
+import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
+import { parsePending } from "../src/impl/tacit/ledger-text.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import { REGISTRY, createPlugin, defaultPlugins } from "../src/plugins.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
@@ -19,9 +20,20 @@ import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
 // by the command's comment ID, through an outbound intent that runs <home>/bin/tacit. Every test runs against a temp
 // home with stub CLIs: no real home, no network, no live CLI.
 
+/** `evolve pending` as the owner's CLI prints it (checked 2026-11-12): text, not JSON. */
+const PENDING_SAMPLE = `## proposals (open) 1
+- P-0007 [spec] src/core/foo.ts — Keep the flag
+## proposals (held) 0
+## tacit Pending 1
+- C-012 keep existing CLI flags
+## tacit Held 0
+`;
+
 /**
- * A temp agents home with stub `bin/tacit` and `bin/evolve`. The stubs log their argv and stdin to `<root>/log`,
- * outside the home, and read `<root>/control/{fail,sleep}`, so the home itself is never written.
+ * A temp agents home with stub `bin/tacit` and `bin/evolve` that take only the real CLIs' forms (checked 2026-11-12
+ * with `--help`) and exit 2 with usage text on any other. The stubs log each call's argv, one item per field, to
+ * `<root>/log/argv`, outside the home, and read `<root>/control/{fail,sleep}`, so the home itself is never written.
+ * Only capture reads stdin; any other call that gets stdin fails.
  */
 function stubHome(): { root: string; home: string; captures: () => Record<string, unknown>[]; argv: () => string[]; control: (name: "fail" | "sleep", on: boolean) => void } {
   const root = mkdtempSync(join(tmpdir(), "sf-tacit-"));
@@ -29,36 +41,63 @@ function stubHome(): { root: string; home: string; captures: () => Record<string
   mkdirSync(join(home, "bin"), { recursive: true });
   mkdirSync(join(root, "log"));
   mkdirSync(join(root, "control"));
-  const prelude = `#!/bin/sh
+  const prelude = (usage: string) => `#!/bin/sh
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-echo "$(basename "$0") $*" >> "$root/log/argv"
+{ printf '%s' "$(basename "$0")"; for a in "$@"; do printf '|%s' "$a"; done; echo; } >> "$root/log/argv"
+usage() { echo "${usage}" >&2; exit 2; }
+no_stdin() { [ -z "$(cat)" ] || { echo "unexpected stdin" >&2; exit 4; }; }
 `;
-  writeFileSync(join(home, "bin", "tacit"), `${prelude}
+  writeFileSync(join(home, "bin", "tacit"), `${prelude("usage: tacit {capture --agent <name> | verdict <class> {hold,promote,reject,retire} --reason <reason> [--rule <rule text>] [--encoded-to <file>]}")}
 case "$1" in
   --help)
     echo "usage: tacit <command> [options]"
     echo "commands:"
-    echo "  capture --agent <name>                  read one record as JSON on stdin"
-    echo "  list --agent <name> --state <s> --json  print the entries in a state"
+    echo "  capture --agent <name>  read one record as JSON on stdin"
+    echo "  verdict <class> {hold,promote,reject,retire} --reason <reason> [--rule <rule text>] [--encoded-to <file>]"
     ;;
   capture)
+    [ "$#" -eq 3 ] && [ "$2" = "--agent" ] || usage
     [ -f "$root/control/sleep" ] && sleep 5
     [ -f "$root/control/fail" ] && { echo "ledger locked" >&2; exit 3; }
     cat >> "$root/log/captures"; echo >> "$root/log/captures"
     ;;
-  list) echo '[{"id":"t1","state":"'"$5"'"}]' ;;
-  *) exit 2 ;;
+  verdict)
+    [ "$#" -ge 5 ] && [ "$4" = "--reason" ] || usage
+    case "$2" in C-*) ;; *) usage ;; esac
+    case "$3" in hold|promote|reject|retire) ;; *) usage ;; esac
+    shift 5
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --rule|--encoded-to) [ "$#" -ge 2 ] || usage; shift 2 ;; *) usage ;; esac
+    done
+    no_stdin
+    ;;
+  *) usage ;;
 esac
 `);
-  writeFileSync(join(home, "bin", "evolve"), `${prelude}
+  writeFileSync(join(home, "bin", "evolve"), `${prelude("usage: evolve {pending | verdict <id> {hold,promote,reject} --reason <reason> [--applied-to <file>]}")}
 case "$1" in
   --help)
     echo "usage: evolve <command> [options]"
     echo "commands:"
-    echo "  verdict --agent <name>  read {id, verdict} as JSON on stdin"
+    echo "  pending  list what waits for a verdict"
+    echo "  verdict <id> {hold,promote,reject} --reason <reason> [--applied-to <file>]"
     ;;
-  verdict) cat >> "$root/log/verdicts"; echo >> "$root/log/verdicts" ;;
-  *) exit 2 ;;
+  pending)
+    [ "$#" -eq 1 ] || usage
+    no_stdin
+    printf '%s' '${PENDING_SAMPLE}'
+    ;;
+  verdict)
+    [ "$#" -ge 5 ] && [ "$4" = "--reason" ] || usage
+    case "$2" in P-*) ;; *) usage ;; esac
+    case "$3" in hold|promote|reject) ;; *) usage ;; esac
+    shift 5
+    while [ "$#" -gt 0 ]; do
+      case "$1" in --applied-to) [ "$#" -ge 2 ] || usage; shift 2 ;; *) usage ;; esac
+    done
+    no_stdin
+    ;;
+  *) usage ;;
 esac
 `);
   for (const cli of ["tacit", "evolve"]) chmodSync(join(home, "bin", cli), 0o755);
@@ -138,7 +177,9 @@ describe("plugin none (the default)", () => {
     const none = await createPlugin(REGISTRY, "tacit", "none", {} as never);
     expect(none).toBeInstanceOf(NoTacitLedger);
     expect(none.enabled).toBe(false);
-    expect(await none.list("open")).toEqual([]);
+    expect(await none.pending()).toEqual([]);
+    expect(await none.rules()).toEqual([]);
+    await none.verdict("C-1", "promote", "why", "rule");
     for (const ledger of [none, undefined]) {
       const h = await harness(ledger);
       const it1 = await h.itemIn(issueRef(1), SPEC_PENDING, "the spec");
@@ -165,6 +206,26 @@ describe("plugin agents-home", () => {
     await h.send(revise(1, "keep the flag"));
     expect(await h.captureRows()).toEqual([]);
     expect(readdirSync(empty)).toEqual([]);
+  });
+
+  it("finds the home only when bin/tacit and bin/evolve are both executable files; else it names the first missing one", () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-tacit-detect-"));
+    const at = join(root, "home");
+    const check = () => checkAgentsHome({ AGENTS_HOME: at }, "/nowhere");
+    expect(check()).toEqual({ path: at, missing: "bin/tacit" });
+    mkdirSync(join(at, "bin"), { recursive: true });
+    writeFileSync(join(at, "bin", "tacit"), "#!/bin/sh\n");
+    expect(check().missing).toBe("bin/tacit"); // not executable
+    chmodSync(join(at, "bin", "tacit"), 0o755);
+    expect(check().missing).toBe("bin/evolve");
+    mkdirSync(join(at, "bin", "evolve")); // a folder is no CLI
+    expect(check().missing).toBe("bin/evolve");
+    rmSync(join(at, "bin", "evolve"), { recursive: true });
+    writeFileSync(join(at, "bin", "evolve"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(check()).toEqual({ path: at, missing: null });
+    expect(tacitLedgerAt({ AGENTS_HOME: at }, "/nowhere")).toBeInstanceOf(AgentsHomeTacitLedger);
+    // No AGENTS_HOME: ~/.agents under the given home.
+    expect(checkAgentsHome({}, root)).toEqual({ path: join(root, ".agents"), missing: "bin/tacit" });
   });
 
   it("is built from the stub home AGENTS_HOME names", () => {
@@ -195,7 +256,7 @@ describe("plugin agents-home", () => {
     ]);
     expect((await h.captureRows()).map((r) => r.intent_key)).toEqual([`tacit:${a.id}:c1`, `tacit:${b.id}:c2`, `tacit:${c.id}:c3`]);
     // The record goes on stdin; argv carries only the subcommand and the agent.
-    expect(s.argv()).toEqual(Array(3).fill(`tacit capture --agent ${TACIT_AGENT}`));
+    expect(s.argv()).toEqual(Array(3).fill(`tacit|capture|--agent|${TACIT_AGENT}`));
     // The factory never writes under the home: only the stubs ran, and they wrote outside it.
     expect(snapshot(s.home)).toEqual(before);
   });
@@ -261,21 +322,117 @@ describe("plugin agents-home", () => {
     expect(pushback).toContain("test_rule");
   });
 
-  it("list and verdict call bin/tacit and bin/evolve with subcommands their --help names", async () => {
+  it("the stubs refuse any form the real CLIs do not take, with usage text", () => {
+    const s = stubHome();
+    const run = (cli: string, args: string[]) => {
+      try {
+        execFileSync(join(s.home, "bin", cli), args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        return "ok";
+      } catch (err) {
+        const e = err as { status: number; stderr: string };
+        return `${e.status}: ${e.stderr.trim()}`;
+      }
+    };
+    for (const args of [["list", "--agent", TACIT_AGENT, "--state", "pending", "--json"], ["verdict", "--agent", TACIT_AGENT], ["verdict", "P-1", "hold", "--reason", "r"], ["capture"]]) {
+      expect(run("tacit", args)).toMatch(/^2: usage: tacit/);
+    }
+    for (const args of [["verdict", "--agent", TACIT_AGENT], ["verdict", "P-1", "retire", "--reason", "r"], ["verdict", "P-1", "promote", "--reason", "r", "--rule", "x"], ["pending", "--json"]]) {
+      expect(run("evolve", args)).toMatch(/^2: usage: evolve/);
+    }
+    expect(run("tacit", ["verdict", "C-1", "retire", "--reason", "r"])).toBe("ok");
+  });
+
+  it("pending runs evolve pending and reads its text: one entry per row with its ID, title and state", async () => {
+    const s = stubHome();
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    expect(await ledger.pending()).toEqual([
+      { id: "P-0007", title: "Keep the flag", state: "open" },
+      { id: "C-012", title: "keep existing CLI flags", state: "pending" },
+    ]);
+    expect(s.argv()).toEqual(["evolve|pending"]);
+  });
+
+  it("the pending text: open and held proposals, pending and held classes; rows under any other heading are skipped", () => {
+    expect(parsePending(PENDING_SAMPLE)).toEqual([
+      { id: "P-0007", title: "Keep the flag", state: "open" },
+      { id: "C-012", title: "keep existing CLI flags", state: "pending" },
+    ]);
+    const text = [
+      "## proposals (open) 0", "## proposals (held) 1", "- P-0003 [prompt] prompts/review.md — Ask for tests first",
+      "## tacit Pending 0", "## tacit Held 1", "- C-004 name the flag in the spec", "## stats", "- C-009 not an entry",
+    ].join("\n");
+    expect(parsePending(text)).toEqual([
+      { id: "P-0003", title: "Ask for tests first", state: "held" },
+      { id: "C-004", title: "name the flag in the spec", state: "held" },
+    ]);
+  });
+
+  it("a verdict on a C- ID runs tacit verdict, with --rule on promote only; each value is its own argv item, no shell", async () => {
+    const s = stubHome();
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    const reason = "seen twice; $(touch pwned) `id`";
+    await ledger.verdict("C-012", "promote", reason, "Keep every existing CLI flag.");
+    await ledger.verdict("C-013", "retire", "no longer true", "ignored");
+    await ledger.verdict("C-014", "hold", "wait");
+    expect(s.argv()).toEqual([
+      `tacit|verdict|C-012|promote|--reason|${reason}|--rule|Keep every existing CLI flag.`,
+      "tacit|verdict|C-013|retire|--reason|no longer true",
+      "tacit|verdict|C-014|hold|--reason|wait",
+    ]);
+    expect(existsSync(join(s.home, "pwned"))).toBe(false);
+  });
+
+  it("a verdict on a P- ID runs evolve verdict with no --rule; an ID that is neither throws before any CLI runs", async () => {
+    const s = stubHome();
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    await ledger.verdict("P-0007", "promote", "good shape", "dropped");
+    await ledger.verdict("P-0008", "reject", "not now");
+    expect(s.argv()).toEqual(["evolve|verdict|P-0007|promote|--reason|good shape", "evolve|verdict|P-0008|reject|--reason|not now"]);
+    await expect(ledger.verdict("t1", "promote", "x")).rejects.toThrow(/neither a class \(C-\) nor a proposal \(P-\)/);
+    await expect(ledger.verdict("P-0007", "retire", "x")).rejects.toThrow(/takes no retire/);
+    expect(s.argv()).toHaveLength(2);
+  });
+
+  it("a CLI that exits non-zero throws with the CLI and subcommand first", async () => {
+    const s = stubHome();
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    writeFileSync(join(s.home, "bin", "evolve"), "#!/bin/sh\necho 'ledger locked' >&2\nexit 5\n");
+    await expect(ledger.pending()).rejects.toThrow(/^evolve pending exited 5: ledger locked$/);
+    await expect(ledger.verdict("P-1", "hold", "x")).rejects.toThrow(/^evolve verdict exited 5: ledger locked$/);
+  });
+
+  it("rules reads <home>/private/tacit/rules.md: each C- section's default, exceptions and scope; no file, no rules", async () => {
+    const s = stubHome();
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    expect(await ledger.rules()).toEqual([]);
+    mkdirSync(join(s.home, "private", "tacit"), { recursive: true });
+    writeFileSync(join(s.home, "private", "tacit", "rules.md"), [
+      "# Rules", "", "intro text", "",
+      "## C-012 keep existing CLI flags", "- 기본값: Keep every existing CLI flag when renaming a command.", "- 예외: a flag the owner marked deprecated", "- 범위: software, CLI",
+      "", "## Notes", "- 기본값: not a rule",
+      "", "## C-020 summary first", "- 기본값: Open with a one-line summary.", "  Then the details.", "- 예외 없음", "- 범위: 모든 문서",
+    ].join("\n"));
+    const before = snapshot(s.home);
+    expect(await ledger.rules()).toEqual([
+      { id: "C-012", name: "keep existing CLI flags", default: "Keep every existing CLI flag when renaming a command.", exceptions: "a flag the owner marked deprecated", scope: "software, CLI" },
+      { id: "C-020", name: "summary first", default: "Open with a one-line summary.\nThen the details.", exceptions: "없음", scope: "모든 문서" },
+    ]);
+    expect(s.argv()).toEqual([]);
+    expect(snapshot(s.home)).toEqual(before);
+  });
+
+  it("pending and verdict call subcommands the CLIs' --help names, and never write under the home", async () => {
     const s = stubHome();
     const before = snapshot(s.home);
-    const help = (cli: string) => {
-      const out = execHelp(join(s.home, "bin", cli));
-      return [...out.matchAll(/^ {2}(\w+)/gm)].map((m) => m[1]);
-    };
+    const help = (cli: string) => [...execHelp(join(s.home, "bin", cli)).matchAll(/^ {2}(\w+)/gm)].map((m) => m[1]);
     const ledger = new AgentsHomeTacitLedger(s.home);
-    expect(await ledger.list("open")).toEqual([{ id: "t1", state: "open" }]);
-    await ledger.verdict("t1", "accept");
-    const calls = s.argv().filter((l) => !l.endsWith("--help"));
-    expect(calls).toEqual([`tacit list --agent ${TACIT_AGENT} --state open --json`, `evolve verdict --agent ${TACIT_AGENT}`]);
-    expect(help("tacit")).toContain("list");
-    expect(help("evolve")).toContain("verdict");
-    expect(readFileSync(join(s.root, "log", "verdicts"), "utf8").trim()).toBe(JSON.stringify({ id: "t1", verdict: "accept" }));
+    await ledger.pending();
+    await ledger.verdict("C-012", "promote", "r", "rule");
+    await ledger.verdict("P-0007", "hold", "r");
+    const used = s.argv().filter((l) => !l.endsWith("--help")).map((l) => l.split("|").slice(0, 2).join(" "));
+    expect(used).toEqual(["evolve pending", "tacit verdict", "evolve verdict"]);
+    expect(help("tacit")).toEqual(expect.arrayContaining(["capture", "verdict"]));
+    expect(help("evolve")).toEqual(expect.arrayContaining(["pending", "verdict"]));
     expect(snapshot(s.home)).toEqual(before);
   });
 

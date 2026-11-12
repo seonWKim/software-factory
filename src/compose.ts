@@ -6,7 +6,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
   coordinationConfig, retentionConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
@@ -28,7 +28,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
@@ -62,12 +62,14 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
+import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
+import { LiveTacit } from "./runtime/live-tacit.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
+  type BaseContext, GRANTS, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createCalendars, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
@@ -87,11 +89,11 @@ export interface FileConfig {
   store?: StoreConfig;
   /**
    * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. check_commands: a list of
-   * argv, the pre-push checks (design §4); absent: [test_command].
+   * argv, the pre-push checks (design §4); absent: [test_command]. ui_check: the merge-time UI check (uiCheckConfig).
    */
   repo: {
     owner: string; name: string; path: string; base_branch: string;
-    install_command?: unknown; test_command?: unknown; check_commands?: unknown;
+    install_command?: unknown; test_command?: unknown; check_commands?: unknown; ui_check?: unknown;
   };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
@@ -115,6 +117,7 @@ export interface FileConfig {
    * `source` may be a list of names, one adapter each (design 2026-11-01).
    */
   plugins?: Record<string, unknown>;
+  calendar?: unknown; calendar_ids?: unknown; // CalendarSource plugin names, in order, and the calendars a provider reads (docs/plugins/calendar-source.md). Absent or []: none.
   models: { cheap: string; standard: string; strong: string };
   /**
    * Model class per run kind and tier, plus `retry_up` (design §4, 2026-11-02). Absent: DEFAULT_MODEL_BY.
@@ -342,12 +345,12 @@ export const FORGE_PLACEHOLDER = "{{forge}}";
 
 /** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
 export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
+export const UI_CHECK_PLACEHOLDER = "{{ui_check}}"; // the UI check sentence (uiCheckSentence): empty with no repo.ui_check
 
 /**
  * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
  * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
- * (`plugins.forge`, else "local"); and with a `toolchain` block, one sentence saying those checks run offline from
- * the read-only caches. No block: the toolchain placeholder is removed, so the text is what it was before the block existed.
+ * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "").
  */
 export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
@@ -355,7 +358,7 @@ export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: str
   const offline = toolchain
     ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
     : "";
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline);
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -432,7 +435,7 @@ export async function loadConfig(
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
   const sharedStore = store.type === "mysql";
   const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
-  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
+  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
   const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore, builtin: opts.registry ?? REGISTRY });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
@@ -440,17 +443,17 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
 
   const home = process.env.HOME ?? "";
-  const { check_commands: rawChecks, ...fileRepo } = file.repo;
+  const { check_commands: rawChecks, ui_check: rawUiCheck, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
     repo: {
       ...fileRepo,
       path: repoPath,
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command: testCommand(file.repo.test_command),
-      ...checkCommandsConfig(rawChecks),
+      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck),
     },
     ...(local ? { local_only: true as const } : {}),
-    intake_label: file.intake_label,
+    intake_label: intakeLabel(file.intake_label),
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },
@@ -745,9 +748,7 @@ export class Plugins {
   async runner(sandbox: Sandbox, secrets: SecretStore, tools?: { broker: ToolBroker; scanner: EgressScanner }): Promise<AgentRunner> {
     const names = selectedRunners(this.loaded.plugins);
     const members = [];
-    for (const name of names) {
-      members.push({ name, impl: await createPlugin(this.loaded.registry, "runner", name, { ...this.base, sandbox, secrets, ...tools }) });
-    }
+    for (const name of names) members.push({ name, impl: await createPlugin(this.loaded.registry, "runner", name, { ...this.base, sandbox, secrets, ...tools }) });
     return members.length === 1 ? members[0]!.impl : new FallbackRunner(members);
   }
   testDatabase(secrets: SecretStore) {
@@ -840,7 +841,7 @@ export async function build(
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
-  const tacit = await createPlugin(registry, "tacit", sel.tacit, base);
+  const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
 
@@ -861,7 +862,7 @@ export async function build(
   const learned = new StoredLearnedSettings(store, new ConsoleLogger(clock, "settings"));
   const settings = new LiveSettings({
     config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, learned,
-    log: new ConsoleLogger(clock, "settings"),
+    log: new ConsoleLogger(clock, "settings"), integrations: [tacit],
   });
   await settings.refresh();
 
@@ -877,6 +878,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
+    calendar: await createCalendars(registry, sel, { ...base, secrets, clock }), // synced every 5 minutes (design 02-tasks); [] unless `calendar` lists some
     network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
@@ -1050,6 +1052,7 @@ export interface UiParts {
   pauses: UiPauses;
   /** Display names by user id from Identity's identity_profiles (M9), only to show. */
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
+  tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
   close(): Promise<void>;
 }
 
@@ -1074,14 +1077,10 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const store = await p.store(secrets, clock);
   await store.migrate();
   const scanner = await p.scanner(secrets);
-  const { owner, name } = loaded.config.repo;
-  const token = newCsrfToken();
+  const { owner, name } = loaded.config.repo, token = newCsrfToken();
   const settings: UiSettings = {
-    base: settingsBase(loaded),
-    repo: { owner, name },
-    actor: opts.identity.user,
-    resolveProject: storeProjectResolver(store, { owner, name }),
-    csrfToken: token,
+    base: settingsBase(loaded), repo: { owner, name }, actor: opts.identity.user, resolveProject: storeProjectResolver(store, { owner, name }), csrfToken: token,
+    integrations: INTEGRATION_KINDS.map((kind) => ({ kind, interface: loaded.registry[kind].interface, configured: String(loaded.plugins[kind]) })),
   };
   // The owner check for "Resume now" and the page's command checks (approve_spec, approve_merge): the configured auth plugin over the
   // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
@@ -1120,7 +1119,8 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   const profiles = new ProfileStore(storeSql(store));
   const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
-  return { clock, store, scanner, settings, commands, pauses, displayNames, close: () => identity.stop().then(() => store.close()) };
+  const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, close: () => identity.stop().then(() => store.close()) };
 }
 
 function refusalOf(d: AuthDecision): string | null {

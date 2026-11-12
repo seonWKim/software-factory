@@ -63,7 +63,7 @@ describe("envelope-shape", () => {
     expect(envelopeProblems(ok)).toEqual([]);
     const long = envelope({ type: "X", subject: "s", idempotency_key: "k", idempotency_key_ttl_ms: 10, payload: { body: "x".repeat(201) } }, cause, "test", "m2");
     expect(envelopeProblems(long)).toEqual([expect.stringContaining("store it and send its id")]);
-    // MySQL keeps these in VARCHAR(191): a longer one would be cut, and two keys sharing a prefix would dedupe as one.
+    // The store keeps these in VARCHAR(191): a longer one would be cut, and two keys sharing a prefix would dedupe as one.
     const key = (k: string, subject: string, producer: string) =>
       envelopeProblems(envelope({ type: "X", subject, idempotency_key: k, idempotency_key_ttl_ms: null, payload: {} }, cause, producer, "m3"));
     expect(key("k".repeat(191), "s".repeat(191), "p".repeat(191))).toEqual([]);

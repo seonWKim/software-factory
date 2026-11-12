@@ -9,10 +9,7 @@ import type {
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
-  type CoordinationSettings,
-  type DependencyLink,
-  type Hold,
-  type Holder,
+  type CoordinationSettings, type DependencyLink, type Hold, type Holder,
   DEFAULT_COORDINATION,
   claimDecision,
   holdOutcome,
@@ -120,6 +117,7 @@ import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
 import * as notices from "./notices.js";
+import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
 
@@ -399,11 +397,22 @@ export class SqlFactoryStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); }
+  getTask(id: string) { return tasks.getTask(this.db, id); }
+  linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
+  closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
+  updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
+  deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
+  addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
   // Owner notices (design 09-notifications): notices.ts
   recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }
   listHeldNotices() { return notices.listHeldNotices(this.db); }
   listPendingNotices() { return notices.listPendingNotices(this.db); }
+  // The Slack source's notice records (design 05-sources, "Replies under a notice"): notice-messages.ts
+  recordNoticeMessage(m: Parameters<FactoryStore["recordNoticeMessage"]>[0]) { return noticeMessages.recordNoticeMessage(this.db, m, this.now()); }
+  getNoticeMessage(channel: string, ts: string) { return noticeMessages.getNoticeMessage(this.db, channel, ts); }
+  recordNoticeQuestion(q: Parameters<FactoryStore["recordNoticeQuestion"]>[0]) { return noticeMessages.recordNoticeQuestion(this.db, q, this.now()); }
+  getNoticeQuestion(id: string) { return noticeMessages.getNoticeQuestion(this.db, id); }
 
   // Budget checkpoints
 
@@ -2627,14 +2636,8 @@ export class SqlFactoryStore implements FactoryStore {
     detail: StateChangeDetail | null = null,
   ): Promise<StateChange> {
     const change: StateChange = {
-      id: newId("sc") as StateChangeId,
-      work_item_id: workItemId,
-      version,
-      at: this.now(),
-      actor,
-      reason,
-      changes,
-      detail,
+      id: newId("sc") as StateChangeId, work_item_id: workItemId, version, at: this.now(),
+      actor, reason, changes, detail,
     };
     await tx.run(
       "INSERT INTO controller_state_changes (id, work_item_id, version, at, actor, reason, changes, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -2782,9 +2785,9 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
     where.push("blocked_on = ?");
     params.push(filter.blocked_on);
   }
-  if (filter.blocked_reason !== undefined) {
-    where.push("blocked_reason = ?");
-    params.push(filter.blocked_reason);
+  // `updated_since`: with stage CLOSED, the closes since then (owner notices, design 09-notifications).
+  for (const [sql, v] of [["blocked_reason = ?", filter.blocked_reason], ["updated_at >= ?", filter.updated_since]] as const) {
+    if (v !== undefined) { where.push(sql); params.push(v); }
   }
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
 }

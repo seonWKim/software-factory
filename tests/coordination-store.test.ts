@@ -72,7 +72,7 @@ describe.each(BACKENDS)("coordination in the store: $name", ({ make }) => {
       expect(await store.listClaimDecisions(b)).toEqual([]);
     });
 
-    it("two items that each add a MySQL step, a History line in one topic file and an index line score under 2.5: both claims succeed at once", async () => {
+    it("two items that each add a numbered migration step, a History line in one topic file and an index line score under 2.5: both claims succeed at once", async () => {
       const { store, clock } = await make();
       const a = await item(store, clock, 1, {
         files_to_change: ["migrations/mysql/0025-a.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/a.ts"],

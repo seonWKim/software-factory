@@ -1,28 +1,35 @@
 // The Rules page and the learned rules in the prompt (issue #571). The page lists the ledger's pending entries through
-// TacitLedger.list and sends promote, reject and hold through TacitLedger.verdict, owner only, with a reason, and for
-// promote the owner's wording. A promoted rule reaches the next run's prompt under its own heading, read through the
-// plugin only; a rule scoped to another domain does not. Every test runs against a temp home with stub CLIs: no real
-// home, no network, no live model.
+// TacitLedger.pending and sends promote, reject and hold through TacitLedger.verdict, owner only, with a reason, and for
+// promote of a class the owner's wording as the rule. A promoted rule reaches the next run's prompt under its own
+// heading, read through the plugin's rules() only. Every test runs against a temp home with stub CLIs that take only
+// the real CLIs' forms: no real home, no network, no live model.
+//
+// Turn on (design 08-settings, 2026-11-12): with the ledger off, GET names the agents home and the CLI missing there,
+// and gives the owner the `integrations` value; POST /api/v1/settings stores it through the settings route's guards
+// and owner check, and the next GET uses the rebuilt ledger with no restart.
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { LiveTacit } from "../src/runtime/live-tacit.js";
+import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { Worker } from "../src/worker/index.js";
-import { LearnedRules, inScope, joinGuidance, ruleEntry } from "../src/core/learned-rules.js";
+import { LearnedRules, joinGuidance } from "../src/core/learned-rules.js";
 import type { LogFields, Logger } from "../src/core/log.js";
 import type { UserId, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { AgentsHomeTacitLedger } from "../src/impl/tacit/agents-home-tacit-ledger.js";
+import { AgentsHomeTacitLedger, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import type { TacitLedger } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
+import type { UiTacit } from "../src/ui/rules-api.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
-import { newCsrfToken } from "../src/ui/settings-api.js";
+import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
@@ -36,47 +43,76 @@ const OTHER = "local:other@example.com" as UserId;
 // beside a store and a run: more than the 5 s default leaves, as in the other tests that start processes.
 const SPAWNS = { timeout: 30_000 };
 
+type Entry = { id: string; title: string; state: string; kind?: string; target?: string };
+
 /**
- * A temp agents home whose `bin/tacit list` prints the entries of `<root>/ledger.json` in the asked state, and whose
- * `bin/evolve verdict` logs its stdin to `<root>/verdicts` and moves the entry: promote → promoted (with the owner's
- * text beside its draft), reject → rejected, hold → held. Node scripts; they write only outside the home.
+ * A temp agents home whose stub CLIs take only the real forms and exit 2 with usage text on any other.
+ * `bin/evolve pending` prints the open and held entries of `<root>/ledger.json` as the real CLI's text; `bin/tacit
+ * verdict` (a C- class) and `bin/evolve verdict` (a P- proposal) log their argv to `<root>/verdicts` and move the
+ * entry: promote → promoted, reject → rejected, hold → held, retire → retired. A promoted class is written, as the
+ * real CLI does, to `<home>/private/tacit/rules.md` with its `--rule` (else its title) as the default. Node scripts.
  */
-function stubHome(entries: Record<string, unknown>[]) {
+function stubHome(entries: Entry[]) {
   const root = mkdtempSync(join(tmpdir(), "sf-rules-"));
   const home = join(root, "home");
   mkdirSync(join(home, "bin"), { recursive: true });
   const ledger = join(root, "ledger.json");
+  const verdicts = join(root, "verdicts");
   writeFileSync(ledger, JSON.stringify(entries));
-  const node = `#!${process.execPath}\nconst fs = require("node:fs");\nconst ledger = ${JSON.stringify(ledger)};\nconst read = () => JSON.parse(fs.readFileSync(ledger, "utf8"));\n`;
-  writeFileSync(join(home, "bin", "tacit"), `${node}
+  const node = (usage: string) => `#!${process.execPath}
+const fs = require("node:fs");
+const path = require("node:path");
+const ledger = ${JSON.stringify(ledger)};
+const read = () => JSON.parse(fs.readFileSync(ledger, "utf8"));
+const usage = () => { process.stderr.write(${JSON.stringify(usage)} + "\\n"); process.exit(2); };
 const a = process.argv.slice(2);
-if (a[0] !== "list") process.exit(2);
-const state = a[a.indexOf("--state") + 1];
-process.stdout.write(JSON.stringify(read().filter((e) => e.state === state)));
+/** \`verdict <id> <decision> --reason <r> [<option> <v>]...\`: the options, or usage. */
+const verdict = (id, decisions, options) => {
+  if (a[0] !== "verdict" || a.length < 5 || !id.test(a[1]) || !decisions.includes(a[2]) || a[3] !== "--reason") usage();
+  const opts = {};
+  for (let i = 5; i < a.length; i += 2) { if (!options.includes(a[i]) || i + 1 >= a.length) usage(); opts[a[i]] = a[i + 1]; }
+  fs.appendFileSync(${JSON.stringify(verdicts)}, JSON.stringify(a) + "\\n");
+  const states = { promote: "promoted", reject: "rejected", hold: "held", retire: "retired" };
+  fs.writeFileSync(ledger, JSON.stringify(read().map((e) => (e.id === a[1] ? { ...e, state: states[a[2]] } : e))));
+  return opts;
+};
+`;
+  writeFileSync(join(home, "bin", "tacit"), `${node("usage: tacit {capture --agent <name> | verdict <class> {hold,promote,reject,retire} --reason <reason> [--rule <rule text>] [--encoded-to <file>]}")}
+if (a[0] === "capture") { if (a.length !== 3 || a[1] !== "--agent") usage(); process.exit(0); }
+const opts = verdict(/^C-/, ["hold", "promote", "reject", "retire"], ["--rule", "--encoded-to"]);
+if (a[2] === "promote") {
+  const e = read().find((x) => x.id === a[1]);
+  const file = path.join(${JSON.stringify(home)}, "private", "tacit", "rules.md");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.appendFileSync(file, "## " + a[1] + " " + e.title + "\\n- 기본값: " + (opts["--rule"] ?? e.title) + "\\n- 예외: 없음\\n- 범위: software\\n\\n");
+}
 `);
-  writeFileSync(join(home, "bin", "evolve"), `${node}
-if (process.argv[2] !== "verdict") process.exit(2);
-const v = JSON.parse(fs.readFileSync(0, "utf8"));
-fs.appendFileSync(${JSON.stringify(join(root, "verdicts"))}, JSON.stringify(v) + "\\n");
-const states = { promote: "promoted", reject: "rejected", hold: "held" };
-fs.writeFileSync(ledger, JSON.stringify(read().map((e) => (e.id === v.id ? { ...e, state: states[v.verdict], ...(v.text ? { text: v.text } : {}) } : e))));
+  writeFileSync(join(home, "bin", "evolve"), `${node("usage: evolve {pending | verdict <id> {hold,promote,reject} --reason <reason> [--applied-to <file>]}")}
+if (a[0] === "pending") {
+  if (a.length !== 1) usage();
+  const all = read();
+  const section = (heading, rows) => [heading + " " + rows.length, ...rows];
+  const p = (s) => all.filter((e) => e.id.startsWith("P-") && e.state === s).map((e) => "- " + e.id + " [" + e.kind + "] " + e.target + " — " + e.title);
+  const c = (s) => all.filter((e) => e.id.startsWith("C-") && e.state === s).map((e) => "- " + e.id + " " + e.title);
+  process.stdout.write([...section("## proposals (open)", p("open")), ...section("## proposals (held)", p("held")),
+    ...section("## tacit Pending", c("pending")), ...section("## tacit Held", c("held"))].join("\\n") + "\\n");
+} else {
+  verdict(/^P-/, ["hold", "promote", "reject"], ["--applied-to"]);
+}
 `);
   for (const cli of ["tacit", "evolve"]) chmodSync(join(home, "bin", cli), 0o755);
-  const file = join(root, "verdicts");
   return {
+    home,
     ledger: new AgentsHomeTacitLedger(home),
-    verdicts: () => (existsSync(file) ? readFileSync(file, "utf8").trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>) : []),
-    entries: () => JSON.parse(readFileSync(ledger, "utf8")) as Record<string, unknown>[],
+    verdicts: () => (existsSync(verdicts) ? readFileSync(verdicts, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]) : []),
+    entries: () => JSON.parse(readFileSync(ledger, "utf8")) as Entry[],
   };
 }
 
-const PENDING = [
-  {
-    id: "r1", state: "pending", kind: "class", rule_draft: "Keep existing CLI flags when renaming commands.",
-    evidence: ["wi_1: keep the existing CLI flag", "wi_2: do not drop --json"], scope: "software",
-  },
-  { id: "r2", state: "pending", kind: "structure", rule_draft: "Open every resume with a summary.", evidence: "resume: summary first", scope: "resume-writing" },
-  { id: "r3", state: "pending", pushback: "split the test", rule_draft: "" },
+const PENDING: Entry[] = [
+  { id: "C-012", title: "keep existing CLI flags", state: "pending" },
+  { id: "P-0007", title: "Split the review prompt", state: "open", kind: "prompt", target: "prompts/review.md" },
+  { id: "C-013", title: "summary first", state: "held" },
 ];
 
 class MemLog implements Logger {
@@ -92,15 +128,35 @@ class MemLog implements Logger {
   }
 }
 
-async function page(tacit: TacitLedger | undefined, as: UserId = OWNER) {
+/** A fixed ledger as the UI holds it: settings that never change, and a home with no CLI. */
+const fixed = (ledger: TacitLedger): UiTacit => ({
+  ledger, settings: { refresh: async () => {}, values: () => ({ integrations: {} }) }, home: () => ({ path: "/no/home", missing: "bin/tacit" }),
+});
+
+/**
+ * The Rules page's deps. `tacit`: a fixed ledger, or `{ agentsHome }` for the UI's live holder as compose.ts builds it
+ * (config `none`, settings read from this store), with `agents-home` built at that home instead of the real one.
+ */
+async function page(tacit: TacitLedger | { agentsHome: string } | undefined, as: UserId = OWNER) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   await store.claimLocalOwner(OWNER);
   const log = new MemLog();
   const pauses: UiPauses = { principal: async () => as, authorize: async () => ({ allow: true }), csrfToken: newCsrfToken(), log };
+  const settings: UiSettings = {
+    base: baseFromConfig(config), repo: config.repo, actor: as, resolveProject: async () => null, csrfToken: pauses.csrfToken,
+    integrations: [{ kind: "tacit", interface: "TacitLedger", configured: "none" }],
+  };
+  let ui: UiTacit | undefined;
+  if (tacit && "agentsHome" in tacit) {
+    const env = { AGENTS_HOME: tacit.agentsHome };
+    const ledger = await LiveTacit.start("none", async (n) => (n === "agents-home" ? tacitLedgerAt(env) : new NoTacitLedger()), log);
+    const live = new LiveSettings({ config, base: baseFromConfig(config), source: store, log, integrations: [ledger] });
+    ui = { ledger, settings: live, home: () => checkAgentsHome(env) };
+  } else if (tacit) ui = fixed(tacit);
   const d: PauseDeps = {
-    store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses,
-    ...(tacit ? { tacit } : {}),
+    store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses, settings,
+    ...(ui ? { tacit: ui } : {}),
   };
   const get = async () => {
     const r = await respond(d, { method: "GET", url: "/api/v1/rules", host: HOST });
@@ -113,8 +169,16 @@ async function page(tacit: TacitLedger | undefined, as: UserId = OWNER) {
     });
     return { status: r.status, value: JSON.parse(r.body) };
   };
-  return { get, post, log };
+  /** POST /api/v1/settings, as the page's Turn on sends it. */
+  const setting = async (body: unknown, over: Partial<UiRequest> = {}) => {
+    const r = await respond(d, {
+      method: "POST", url: "/api/v1/settings", host: HOST, origin: ORIGIN, contentType: "application/json", csrfToken: pauses.csrfToken, body: JSON.stringify(body), ...over,
+    });
+    return { status: r.status, value: JSON.parse(r.body) };
+  };
+  return { get, post, setting, log, store };
 }
+
 
 /** One triage run through the controller and a worker with `guidance`: its agent prompt. */
 async function nextRunPrompt(tacit: TacitLedger): Promise<string> {
@@ -136,107 +200,167 @@ async function nextRunPrompt(tacit: TacitLedger): Promise<string> {
 }
 
 describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
-  it("lists each pending entry's kind, evidence lines and rule draft, read through TacitLedger.list", async () => {
-    const s = stubHome([...PENDING, { id: "old", state: "promoted", rule_draft: "x" }]);
+  it("lists each open, pending or held entry's ID, title and state, read through TacitLedger.pending", async () => {
+    const s = stubHome([...PENDING, { id: "C-001", title: "old", state: "promoted" }]);
     const v = await (await page(s.ledger)).get();
     expect(v).toMatchObject({ enabled: true, error: null, judge: null });
     expect(typeof v.csrf_token).toBe("string");
     expect(v.entries).toEqual([
-      { id: "r1", kind: "class", scope: ["software"], evidence: ["wi_1: keep the existing CLI flag", "wi_2: do not drop --json"], rule_draft: "Keep existing CLI flags when renaming commands." },
-      { id: "r2", kind: "structure", scope: ["resume-writing"], evidence: ["resume: summary first"], rule_draft: "Open every resume with a summary." },
-      { id: "r3", kind: "pushback", scope: [], evidence: ["split the test"], rule_draft: "" },
+      { id: "P-0007", title: "Split the review prompt", state: "open" },
+      { id: "C-012", title: "keep existing CLI flags", state: "pending" },
+      { id: "C-013", title: "summary first", state: "held" },
     ]);
   });
 
   it("names why a user who is not the owner cannot judge", async () => {
     const v = await (await page(stubHome(PENDING).ledger, OTHER)).get();
     expect(v.judge).toContain("Only the owner judges rules");
-    expect(v.entries).toHaveLength(PENDING.length);
+    expect(v.entries.map((e: { id: string }) => e.id)).toEqual(expect.arrayContaining(PENDING.map((e) => e.id)));
   });
 
   it("with the plugin none (or none wired) the page is told the ledger is off, and a verdict is refused", async () => {
     for (const tacit of [new NoTacitLedger(), undefined]) {
       const p = await page(tacit);
-      expect(await p.get()).toEqual({ enabled: false, entries: [], error: null, csrf_token: null, judge: null });
-      expect(await p.post({ id: "r1", verdict: "promote", reason: "why" })).toMatchObject({ status: 409, value: { error: expect.stringContaining("agents-home") } });
+      expect(await p.get()).toMatchObject({ enabled: false, entries: [], error: null, turn_on: null });
+      expect(await p.post({ id: "C-012", verdict: "promote", reason: "why" })).toMatchObject({ status: 409, value: { error: expect.stringContaining("turn it on from the Rules page") } });
     }
   });
 
   it("a ledger CLI that fails shows its error and no entries", async () => {
-    const broken: TacitLedger = { enabled: true, capture: async () => {}, list: async () => { throw new Error("ledger locked"); }, verdict: async () => {} };
+    const broken: TacitLedger = {
+      enabled: true, capture: async () => {}, pending: async () => { throw new Error("ledger locked"); }, verdict: async () => {}, rules: async () => [],
+    };
     const v = await (await page(broken)).get();
     expect(v).toMatchObject({ enabled: true, entries: [] });
     expect(v.error).toContain("ledger locked");
   });
 });
 
+describe("Rules page: Turn on", SPAWNS, () => {
+  it("ledger off and the home found: GET names the home and gives the owner the integrations value", async () => {
+    const s = stubHome(PENDING);
+    const v = await (await page({ agentsHome: s.home })).get();
+    expect(v).toMatchObject({ enabled: false, entries: [], judge: null, home: { path: s.home, missing: null }, turn_on: '{"tacit":"agents-home"}' });
+    expect(typeof v.csrf_token).toBe("string");
+  });
+
+  it("Turn on stores the entry through POST /api/v1/settings, and the next GET lists the rules with no restart", async () => {
+    const s = stubHome(PENDING);
+    const p = await page({ agentsHome: s.home });
+    const off = await p.get();
+    expect(await p.setting({ action: "set", key: "integrations", value: off.turn_on })).toMatchObject({ status: 200, value: { ok: true } });
+    const on = await p.get();
+    expect(on).toMatchObject({ enabled: true, error: null, judge: null });
+    expect(on.entries.map((e: { id: string }) => e.id)).toEqual(["P-0007", "C-012", "C-013"]);
+    expect((await p.store.listSettingChanges(10)).map((c) => [c.key, c.new_value])).toEqual([["integrations", '{"tacit":"agents-home"}']]);
+    // Turned off again (the entry reset): the config's `none` is back by the next request.
+    expect((await p.setting({ action: "reset", key: "integrations" })).status).toBe(200);
+    expect(await p.get()).toMatchObject({ enabled: false, turn_on: '{"tacit":"agents-home"}' });
+  });
+
+  it("the home not found: GET names the missing CLI and gives no turn-on value", async () => {
+    const s = stubHome(PENDING);
+    rmSync(join(s.home, "bin", "evolve"));
+    expect(await (await page({ agentsHome: s.home })).get()).toMatchObject({ enabled: false, home: { path: s.home, missing: "bin/evolve" }, turn_on: null });
+  });
+
+  it("a user who is not the owner gets no turn-on value, and their write is refused with nothing stored", async () => {
+    const s = stubHome(PENDING);
+    const p = await page({ agentsHome: s.home }, OTHER);
+    const v = await p.get();
+    expect(v).toMatchObject({ enabled: false, csrf_token: null, turn_on: null, judge: expect.stringContaining("Only the owner turns the ledger on") });
+    expect(await p.setting({ action: "set", key: "integrations", value: '{"tacit":"agents-home"}' })).toMatchObject({
+      status: 422, value: { error: expect.stringContaining("integrations changes only by the owner") },
+    });
+    expect(await p.store.listSettingOverrides()).toEqual([]);
+    expect(await p.store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("the write passes the existing request guards: a stale token, another origin or a non-JSON body is refused", async () => {
+    const s = stubHome(PENDING);
+    const p = await page({ agentsHome: s.home });
+    const body = { action: "set", key: "integrations", value: '{"tacit":"agents-home"}' };
+    expect((await p.setting(body, { csrfToken: "stale" })).status).toBe(403);
+    expect((await p.setting(body, { origin: "http://evil.example" })).status).toBe(403);
+    expect((await p.setting(body, { contentType: "text/plain" })).status).toBe(415);
+    expect(await p.store.listSettingOverrides()).toEqual([]);
+  });
+});
+
 describe("Rules page: POST /api/v1/rules/verdict", SPAWNS, () => {
-  it("promote, reject and hold reach the fake home's CLI through TacitLedger.verdict with the reason and the owner's user ID", async () => {
+  it("a class goes to tacit verdict (the owner's wording as --rule on promote), a proposal to evolve verdict with no rule", async () => {
     const s = stubHome(PENDING);
     const p = await page(s.ledger);
-    expect(await p.post({ id: "r1", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag." })).toEqual({ status: 200, value: { id: "r1", verdict: "promote" } });
-    expect((await p.post({ id: "r2", verdict: "reject", reason: "not for code" })).status).toBe(200);
-    expect((await p.post({ id: "r3", verdict: "hold", reason: "wait for more" })).status).toBe(200);
+    expect(await p.post({ id: "C-012", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag." })).toEqual({ status: 200, value: { id: "C-012", verdict: "promote" } });
+    expect((await p.post({ id: "P-0007", verdict: "promote", reason: "good shape" })).status).toBe(200);
+    expect((await p.post({ id: "C-013", verdict: "reject", reason: "not for code" })).status).toBe(200);
     expect(s.verdicts()).toEqual([
-      { id: "r1", verdict: "promote", reason: "seen twice", by: OWNER, text: "Keep every existing CLI flag." },
-      { id: "r2", verdict: "reject", reason: "not for code", by: OWNER },
-      { id: "r3", verdict: "hold", reason: "wait for more", by: OWNER },
+      ["verdict", "C-012", "promote", "--reason", "seen twice", "--rule", "Keep every existing CLI flag."],
+      ["verdict", "P-0007", "promote", "--reason", "good shape"],
+      ["verdict", "C-013", "reject", "--reason", "not for code"],
     ]);
-    // The edited wording is stored with the verdict; the draft is kept.
-    expect(s.entries()[0]).toMatchObject({ state: "promoted", text: "Keep every existing CLI flag.", rule_draft: "Keep existing CLI flags when renaming commands." });
+    expect(s.entries().map((e) => e.state)).toEqual(["promoted", "promoted", "rejected"]);
     expect(p.log.lines.map((l) => l.fields)).toEqual([
-      { id: "r1", verdict: "promote", actor: OWNER, edited: true },
-      { id: "r2", verdict: "reject", actor: OWNER, edited: false },
-      { id: "r3", verdict: "hold", actor: OWNER, edited: false },
+      { id: "C-012", verdict: "promote", actor: OWNER, edited: true },
+      { id: "P-0007", verdict: "promote", actor: OWNER, edited: false },
+      { id: "C-013", verdict: "reject", actor: OWNER, edited: false },
     ]);
     expect((await p.get()).entries).toEqual([]);
   });
 
-  it("refuses before the CLI runs: no reason, an unknown verdict, a text on reject, a user who is not the owner, a stale token", async () => {
+  it("refuses before the CLI runs: no reason, an unknown verdict, a text on reject or on a proposal, a user who is not the owner, a stale token", async () => {
     const s = stubHome(PENDING);
     const p = await page(s.ledger);
-    expect((await p.post({ id: "r1", verdict: "promote" })).status).toBe(400);
-    expect((await p.post({ id: "r1", verdict: "promote", reason: "  " })).status).toBe(400);
-    expect((await p.post({ id: "r1", verdict: "accept", reason: "x" })).status).toBe(400);
-    expect((await p.post({ id: "r2", verdict: "reject", reason: "x", text: "y" })).status).toBe(400);
-    expect((await p.post({ id: "r1", verdict: "hold", reason: "x" }, { csrfToken: "stale" })).status).toBe(403);
+    expect((await p.post({ id: "C-012", verdict: "promote" })).status).toBe(400);
+    expect((await p.post({ id: "C-012", verdict: "promote", reason: "  " })).status).toBe(400);
+    expect((await p.post({ id: "C-012", verdict: "accept", reason: "x" })).status).toBe(400);
+    expect((await p.post({ id: "C-013", verdict: "reject", reason: "x", text: "y" })).status).toBe(400);
+    expect((await p.post({ id: "P-0007", verdict: "promote", reason: "x", text: "y" })).status).toBe(400);
+    expect((await p.post({ id: "C-012", verdict: "hold", reason: "x" }, { csrfToken: "stale" })).status).toBe(403);
     const other = await page(s.ledger, OTHER);
-    expect(await other.post({ id: "r1", verdict: "promote", reason: "x" })).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner") } });
+    expect(await other.post({ id: "C-012", verdict: "promote", reason: "x" })).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner") } });
     expect(s.verdicts()).toEqual([]);
+  });
+
+  it("an ID that is neither a class nor a proposal is a 502 and no CLI runs", async () => {
+    const s = stubHome(PENDING);
+    const p = await page(s.ledger);
+    expect(await p.post({ id: "t1", verdict: "hold", reason: "x" })).toMatchObject({ status: 502, value: { error: expect.stringContaining("neither a class") } });
+    expect(s.verdicts()).toEqual([]);
+  });
+
+  it("a CLI that refuses the verdict is a 502 with its message", async () => {
+    const s = stubHome(PENDING);
+    writeFileSync(join(s.home, "bin", "tacit"), "#!/bin/sh\necho 'ledger locked' >&2\nexit 3\n");
+    expect(await (await page(s.ledger)).post({ id: "C-012", verdict: "hold", reason: "x" })).toMatchObject({
+      status: 502, value: { error: expect.stringContaining("tacit verdict exited 3: ledger locked") },
+    });
   });
 });
 
 describe("learned rules in the prompt", SPAWNS, () => {
-  it("a rule promoted through the page appears in the next run's prompt under its own heading, in the owner's wording", async () => {
+  it("a class promoted through the page appears in the next run's prompt under its own heading, in the owner's wording", async () => {
     const s = stubHome(PENDING);
     expect(await nextRunPrompt(s.ledger)).not.toContain("## Learned rules");
-    await (await page(s.ledger)).post({ id: "r1", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag." });
+    await (await page(s.ledger)).post({ id: "C-012", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag." });
     const prompt = await nextRunPrompt(s.ledger);
     expect(prompt).toContain("## Learned rules");
     const section = prompt.slice(prompt.indexOf("## Learned rules"));
-    expect(section).toContain("- Keep every existing CLI flag.");
-    expect(section).not.toContain("Keep existing CLI flags when renaming commands.");
+    expect(section).toContain("- Keep every existing CLI flag.\n  Except: 없음\n  Scope: software");
     expect(prompt.indexOf("## Learned rules")).toBeGreaterThan(prompt.indexOf("# Work item"));
   });
 
-  it("a rule whose scope names another domain is not in the prompt", async () => {
-    const s = stubHome(PENDING);
-    const p = await page(s.ledger);
-    await p.post({ id: "r1", verdict: "promote", reason: "for code" });
-    await p.post({ id: "r2", verdict: "promote", reason: "for resumes" });
-    const prompt = await nextRunPrompt(s.ledger);
-    expect(prompt).toContain("- Keep existing CLI flags when renaming commands.");
-    expect(prompt).not.toContain("resume");
-    expect(inScope(["mentoring"])).toBe(false);
-    expect(inScope(["Software"].map((t) => t.toLowerCase()))).toBe(true);
-    expect(inScope([])).toBe(true);
-    expect(ruleEntry({ id: "x", scope: "mentoring, resume-writing" })!.scope).toEqual(["mentoring", "resume-writing"]);
+  it("each rule is its default with its exceptions and scope when given; a rule with no default is left out", async () => {
+    const rule = (id: string, d: string, exceptions = "", scope = "") => ({ id, name: id, default: d, exceptions, scope });
+    const ledger = { enabled: true, rules: async () => [rule("C-1", "Keep flags.", "", "CLI"), rule("C-2", ""), rule("C-3", "Two\nlines", "never")] };
+    expect(await new LearnedRules(ledger).read(new MemLog())).toContain("- Keep flags.\n  Scope: CLI\n- Two\n  lines\n  Except: never");
   });
 
-  it("no ledger or a failed read: no section, and a failed read is a warning", async () => {
+  it("no ledger, no rules file or a failed read: no section, and a failed read is a warning", async () => {
     const log = new MemLog();
     expect(await new LearnedRules(new NoTacitLedger()).read(log)).toBe("");
-    const broken = { enabled: true, list: async () => { throw new Error("ledger locked"); } };
+    expect(await new LearnedRules(stubHome(PENDING).ledger).read(log)).toBe("");
+    const broken = { enabled: true, rules: async () => { throw new Error("ledger locked"); } };
     expect(await new LearnedRules(broken).read(log)).toBe("");
     expect(log.lines.map((l) => l.msg)).toEqual(["learned rules could not be read; none in the prompt"]);
   });
@@ -246,6 +370,6 @@ describe("learned rules in the prompt", SPAWNS, () => {
     const imports = [...src.matchAll(/from "([^"]+)"/g)].map((m) => m[1]);
     expect(imports.every((i) => !i!.startsWith("node:"))).toBe(true);
     expect(imports).toContain("../interfaces/tacit-ledger.js");
-    expect(src).not.toMatch(/AGENTS_HOME|\.agents|readFile|existsSync/);
+    expect(src).not.toMatch(/AGENTS_HOME|\.agents|rules\.md|readFile|existsSync/);
   });
 });

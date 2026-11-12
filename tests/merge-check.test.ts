@@ -8,15 +8,26 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig } from "../src/compose.js";
+import { build, loadConfig, localProject } from "../src/compose.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { SourceType, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { SourceType, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { FactoryConfig } from "../src/core/config.js";
+import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
+import { StaticGrant } from "../src/impl/grant/static.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
+import { Worker } from "../src/worker/index.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { autoResolveKey } from "../src/core/policy.js";
-import { FakeAuth, FakeSandbox, FakeSource, alice, cleanScanner, config, fakeRepoLookup, silent } from "./helpers/fakes.js";
+import {
+  FakeAuth, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent,
+  triageSpec,
+} from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const PR = 7;
@@ -78,12 +89,14 @@ async function readyItem(store: FactoryStore, n: number, type: SourceType = "git
   return r.item;
 }
 
-async function setup(opts: { sandbox: Sandbox; repo?: string; source?: FakeSource; local_only?: true }) {
+async function setup(opts: { sandbox: Sandbox; repo?: string; source?: FakeSource; local_only?: true; forge?: FakeForge }) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = opts.source ?? new FakeSource();
   const cfg = { ...config, repo: { ...config.repo, path: opts.repo ?? "/repo" }, ...(opts.local_only ? { local_only: true as const } : {}) };
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, sandbox: opts.sandbox });
+  const controller = new ControllerRole({
+    store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, sandbox: opts.sandbox, ...(opts.forge ? { forge: opts.forge } : {}),
+  });
   return { clock, store, source, controller };
 }
 
@@ -289,10 +302,19 @@ describe("merge check: caching, throttling and the update run", () => {
   });
 });
 
-/** The counting sandbox with the local merge's probe: `localConflicts` reports `local` for every branch. */
+/**
+ * The counting sandbox with the local merge's probe: `localConflicts` reports `local` for every branch, and
+ * `localBranch` reads `locals` (the factory repo's local branches; a forge selected reads them there).
+ */
 class LocalSandbox extends CountingSandbox {
   local: string[] = ["src/x.ts"];
+  locals: Record<string, string | null> = {};
   probes = 0;
+  localReads: string[] = [];
+  async localBranch(spec: { repo: string; branch: string }): Promise<string | null> {
+    this.localReads.push(spec.branch);
+    return this.locals[spec.branch] ?? null;
+  }
   async localConflicts(): Promise<string[] | null> {
     this.probes++;
     return this.local;
@@ -305,7 +327,8 @@ class LocalSandbox extends CountingSandbox {
 /** A local item (no PR) waiting for a merge, under a controller whose sandbox reads local refs (`local_only`). */
 async function localItem(opts: { local_only?: boolean } = {}) {
   const sandbox = new LocalSandbox();
-  const s = await setup({ sandbox, source: new FakeSource("local"), ...(opts.local_only === false ? {} : { local_only: true as const }) });
+  const source = new FakeSource("local");
+  const s = await setup({ sandbox, source, ...(opts.local_only === false ? { forge: new FakeForge(source) } : { local_only: true as const }) });
   const item = await readyItem(s.store, 1, "local", null);
   sandbox.heads[`factory/${item.id}`] = "a".repeat(40);
   const resolves = async () => (await s.store.listRuns(item.id)).filter((r) => r.kind === "resolve");
@@ -343,12 +366,70 @@ describe("merge check: a local item (no PR)", () => {
     expect(sandbox.calls.mergeCheck).toBe(1);
   });
 
-  it("with a forge selected (not local_only) a local item is not checked: no fetch of a branch origin does not have", async () => {
-    const { controller, sandbox, store, item } = await localItem({ local_only: false });
+  it("with a forge selected, a conflict with the local base starts the automatic resolve keyed on the local base's commit; nothing is fetched for it", async () => {
+    const { controller, sandbox, store, item, resolves } = await localItem({ local_only: false });
+    const [main, head] = ["c".repeat(40), "d".repeat(40)];
+    sandbox.locals = { main, [`factory/${item.id}`]: head };
+    await controller.tickMergeCheck();
     await controller.tickMergeCheck();
     expect(sandbox.calls.fetchBranch).toBe(0);
+    expect(sandbox.calls.mergeCheck).toBe(1);
+    expect(sandbox.localReads).toEqual(expect.arrayContaining(["main", `factory/${item.id}`]));
+    expect(await store.getWorkItem(item.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", change_ref: null });
+    expect((await resolves()).map((r) => r.idempotency_key)).toEqual([autoResolveKey(item.id, main, 1)]);
+    expect(await updates(store, item.id)).toEqual([]);
+    expect((await store.listStateChanges(item.id)).at(-1)).toMatchObject({ reason: "auto_resolve_started", detail: { cause: "merge_check", base_sha: main, attempt: 1 } });
+    expect(await store.getMergeCheck(item.id)).toMatchObject({ mergeable: false, head_sha: head, base_sha: main });
+  });
+
+  it("with a forge selected, a local item that merges cleanly runs no resolve and nothing changes", async () => {
+    const { controller, sandbox, store, item } = await localItem({ local_only: false });
+    sandbox.locals = { main: "c".repeat(40), [`factory/${item.id}`]: "d".repeat(40) };
+    sandbox.result = { mergeable: true, conflicts: [] };
+    await controller.tickMergeCheck();
+    expect(await store.getWorkItem(item.id)).toEqual(item);
+    expect(await store.listRuns(item.id)).toEqual([]);
+    expect(await store.getMergeCheck(item.id)).toMatchObject({ mergeable: true });
+  });
+
+  it("with a forge selected, a local item with no local branch is not checked", async () => {
+    const { controller, sandbox, store, item } = await localItem({ local_only: false });
+    sandbox.locals = { main: "c".repeat(40) };
+    await controller.tickMergeCheck();
+    expect(sandbox.calls.mergeCheck).toBe(0);
     expect(await store.getMergeCheck(item.id)).toBeNull();
     expect(await store.getWorkItem(item.id)).toEqual(item);
+  });
+
+  it("with a forge selected, at the limit of 2 automatic resolve runs for the local base, the item waits on merge_conflict_pending", async () => {
+    const { controller, sandbox, store, item, resolves } = await localItem({ local_only: false });
+    const main = "c".repeat(40);
+    sandbox.locals = { main, [`factory/${item.id}`]: "d".repeat(40) };
+    let v = item.version;
+    for (const attempt of [1, 2]) {
+      const r = await store.transition({
+        id: item.id, expected_version: v, patch: {}, actor: system, reason: "seed",
+        enqueue: { kind: "resolve", idempotency_key: autoResolveKey(item.id, main, attempt) },
+      });
+      if (!r.ok) throw new Error(r.reason);
+      v = r.item.version;
+    }
+    await controller.tickMergeCheck();
+    expect(await store.getWorkItem(item.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" });
+    expect(await resolves()).toHaveLength(2);
+    expect((await store.listStateChanges(item.id)).at(-1)).toMatchObject({ reason: "update_conflict", detail: { cause: "merge_check", auto_resolve_attempts: 2 } });
+  });
+
+  it("with a forge selected, a PR item's conflict still starts its update run, not a resolve", async () => {
+    const sandbox = new LocalSandbox();
+    const source = new FakeSource();
+    const { controller, store } = await setup({ sandbox, source, forge: new FakeForge(source) });
+    const pr = await readyItem(store, 2);
+    sandbox.heads[`factory/${pr.id}`] = "a".repeat(40);
+    await controller.tickMergeCheck();
+    expect((await updates(store, pr.id)).map((r) => r.idempotency_key)).toEqual([`${pr.id}:update:${PR}:${"a".repeat(40)}:${sandbox.base}`]);
+    expect((await store.listRuns(pr.id)).filter((r) => r.kind === "resolve")).toEqual([]);
+    expect(sandbox.localReads).toEqual([]);
   });
 
   it("at the limit of 2 automatic resolve runs for the base, the item waits on merge_conflict_pending; the comment is on its thread", async () => {
@@ -432,5 +513,142 @@ describe("merge check: composition", () => {
     } finally {
       await built.close();
     }
+  });
+});
+
+// The UI check at merge (design §4, issue: run check:responsive at merge, not in the sandbox): a merge-check run whose
+// merged result changes a path under `repo.ui_check.paths` runs `repo.ui_check.command` after the install command and
+// the checks; one that does not, or with no `repo.ui_check`, runs nothing more.
+describe("merge check run: the UI check (fake sandbox)", () => {
+  const ui_check = { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] };
+
+  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number> }) {
+    const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}) };
+    const f = await pipeline({ config: { repo } });
+    f.sandbox.changedFiles = o.changed;
+    Object.assign(f.sandbox.exits, o.exits ?? {});
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
+      enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    expect(await f.w1.tick()).toBe(true);
+    const run = (await f.runs(moved.item, "merge-check"))[0]!;
+    const diffs = f.sandbox.gitCalls.filter((c) => c.startsWith("diff --name-only") && !c.includes("--diff-filter=U"));
+    return { commands: f.sandbox.commands, diffs, outcome: run.outcome };
+  }
+
+  it("a merged result touching web/ runs the UI check after the install command and the checks", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["README.md", "web/src/App.tsx"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test", "npm run check:responsive"]);
+    expect(r.diffs).toEqual([expect.stringMatching(/^diff --name-only -z --no-renames \S+ \S+$/)]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("a merged result touching src/ui/ runs it too", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["src/ui/page.ts"] });
+    expect(r.commands.at(-1)).toBe("npm run check:responsive");
+  });
+
+  it("a merged result touching neither web/ nor src/ui/ does not run the UI check", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["src/core/policy.ts", "webby.md", "docs/web/x.md"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("with no repo.ui_check, no extra command runs and the changed files are not read", async () => {
+    const r = await mergeCheckRun({ changed: ["web/src/App.tsx"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.diffs).toEqual([]);
+  });
+
+  it("a failing UI check is a red result naming the command", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm run check:responsive": 1 } });
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm run check:responsive" } });
+  });
+
+  it("a failing check stops the run before the UI check", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm test": 1 } });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.outcome).toMatchObject({ data: { result: "red", command: "npm test" } });
+  });
+});
+
+// End to end over a real git repo (as tests/merge-queue-flow.test.ts): a local change to web/ whose merged commit fails
+// the UI check leaves the merge queue, `main` does not move, and the item's thread names the check.
+describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () => {
+  const ME = "local:me@example.com" as UserId;
+  const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+  const sh = (cwd: string, ...args: string[]) => git(cwd, ...args).trim();
+
+  it("keeps main where it was, removes the entry and names check:responsive in the thread", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-ui-check-"));
+    const repo = join(root, "repo");
+    sh(root, "init", "--quiet", "-b", "main", repo);
+    // The UI check fails on any merged commit.
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", private: true, scripts: { "check:responsive": "exit 1" } }));
+    sh(repo, "add", "-A");
+    sh(repo, ...ident, "commit", "--quiet", "-m", "init");
+    sh(repo, "checkout", "--quiet", "--detach");
+
+    const project = localProject({ owner: "o", name: "r" });
+    const pass = ["sh", "-c", "exit 0"];
+    const cfg: FactoryConfig = {
+      ...config, project, local_only: true, merge_queue_depth: 1,
+      repo: { ...config.repo, path: repo, install_command: pass, test_command: pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] } },
+    };
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
+    const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
+    const controller = new ControllerRole({
+      store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+    });
+    const runner = new FakeRunner({
+      triage: () => ({ output: { ...triageSpec, allowed_paths: ["web/"], files_to_change: ["web/app.css"] } }),
+      implement: (spec) => {
+        mkdirSync(join(spec.sandbox.workdir, "web"), { recursive: true });
+        writeFileSync(join(spec.sandbox.workdir, "web", "app.css"), "body {}\n");
+        sh(spec.sandbox.workdir, "add", "-A");
+        sh(spec.sandbox.workdir, ...ident, "commit", "--quiet", "-m", "web change");
+        return { output: { summary: "web change", next_steps: "none" } };
+      },
+      review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" } }),
+    });
+    const broker = new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo });
+    const worker = new Worker({
+      id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts,
+      log: silent, scanner: cleanScanner, toolEnv: { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" }, awake: new NoKeepAwake(),
+    });
+    const step = async () => {
+      await controller.tickIntake();
+      while (await worker.tick()) await controller.tickRuns();
+      await controller.tickRuns();
+    };
+    let n = 0;
+    const cli = (a: CliAction) =>
+      runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+
+    const id = (await cli({ action: "create", title: "Web change", bodyFile: "body.md" })).lines[0] as WorkItemId;
+    await step();
+    await cli({ action: "command", command: "approve", id, text: "" });
+    await step();
+    await step();
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    const mainBefore = sh(repo, "rev-parse", "main");
+
+    await cli({ action: "command", command: "merge", id, text: "" });
+    await step();
+
+    expect(sh(repo, "rev-parse", "main")).toBe(mainBefore);
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", merge_sha: null });
+    const queue = await controller.unit("merge-queue");
+    expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed"]);
+    const check = (await store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", command: "npm run check:responsive" } });
+    const refused = (await store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+    expect(refused.join("\n")).toContain("`npm run check:responsive`");
+    expect(refused.join("\n")).toContain("did not move and the change left the merge queue");
   });
 });

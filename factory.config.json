@@ -4,7 +4,8 @@
   "repo": {
     "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main",
     "install_command": ["npm", "ci"], "test_command": ["npm", "test"],
-    "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]]
+    "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]],
+    "ui_check": { "command": ["npm", "run", "-s", "check:responsive"], "paths": ["web/", "src/ui/"] }
   },
   "toolchain": {
     "warm_command": ["sh", "-c", "npm ci && if [ -f node_modules/electron/install.js ]; then node node_modules/electron/install.js; fi"]
@@ -29,6 +30,7 @@
     { "prefix": "src/impl/github/token-credentials.ts", "tier": 4 },
     { "prefix": "src/impl/github/app.plugin.ts", "tier": 4 },
     { "prefix": "src/impl/github/token.plugin.ts", "tier": 4 },
+    { "prefix": "src/calendar/plugins/google-calendar/", "tier": 4 },
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",
@@ -52,7 +54,8 @@
     "network_probe": "http",
     "bus": "sql",
     "ticks": "time-based",
-    "engine": "journal"
+    "engine": "journal",
+    "tacit": "agents-home"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {
@@ -80,20 +83,15 @@
   "agent_stop_checks": 3,
   "max_coordination_cost": 2.5,
   "hotspot_weight": 3.0,
-  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
+  "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
   "mechanical_weight": 0.25,
-  "mechanical_paths": ["src/impl/store/mysql/migrations.ts", "migrations/mysql/", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
+  "mechanical_paths": ["docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
   "path_companions": [
-    { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
-    { "when": "src/impl/store/mysql/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
     { "when": "docs/design.md", "also": ["docs/design/"] },
     { "when": "docs/plugins.md", "also": ["docs/plugins/"] },
     {
       "when": "src/interfaces/factory-store.ts",
-      "also": [
-        "src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts",
-        "tests/store-contract.test.ts", "migrations/mysql/", "src/impl/store/mysql/migrations.ts"
-      ]
+      "also": ["src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "tests/store-contract.test.ts"]
     },
     { "when": "src/config-keys.ts", "also": ["tests/config-keys.test.ts"] },
     { "when": "docs/design/", "also": ["docs/design.md"] }

@@ -14,9 +14,10 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { StaticGrant } from "../src/impl/grant/static.js";
+import { ACTION_MAKE_TASK } from "../src/impl/source/slack-format.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import { FakeBroker, FakeForge, FakeRunner, FakeSandbox, MemoryStorage, alice, config, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
-import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention, message } from "./helpers/slack.js";
+import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention, message, press } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
 
 /** The owner: a GitHub account the static grant makes an approver. Slack user U0ALICE links to it with a code. */
@@ -83,7 +84,22 @@ const ROOT = "1800000001.000100";
 const source = (ts = ROOT) => ({ type: "slack_thread" as const, id: slackSourceId({ team: TEAM, channel: CHANNEL, thread_ts: ts }) });
 const item = async (f: F, ts = ROOT): Promise<WorkItem> => (await f.store.getWorkItemBySource("slack_thread", source(ts).id))!;
 const statusLines = (f: F, ts = ROOT) => f.api.thread(ts).filter((m) => m.text?.startsWith("Status:"));
-const texts = (f: F, ts = ROOT) => f.api.thread(ts).map((m) => m.text ?? "");
+/** The thread's messages, the mention's reply and the press's "Task created" line (both before the item) left out. */
+const texts = (f: F, ts = ROOT) => f.api.thread(ts).map((m) => m.text ?? "").filter((t) => !isIntakeLine(t));
+const isIntakeLine = (t: string) => t.startsWith("I couldn't read that.") || t.startsWith("Task created:");
+
+/**
+ * A top-level mention made an item: the mention gets its reply with the Make this a task button, and U0ALICE presses
+ * it (design 04-gate-commands, "a mention creates an item only on a press").
+ */
+async function requested(f: F, text: string): Promise<void> {
+  await f.deliver(eventEnvelope(mention(ROOT, text)));
+  const offer = f.api.thread(ROOT).find((m) => FakeSlackApi.buttons(m).includes(ACTION_MAKE_TASK));
+  expect(offer).toBeTruthy();
+  expect(await f.store.getWorkItemBySource("slack_thread", source().id)).toBeNull();
+  await f.deliver(press(ROOT, ACTION_MAKE_TASK, text));
+  expect(f.api.thread(ROOT).filter((m) => m.text?.startsWith("Task created:")).map((m) => m.text)).toEqual([`Task created: ${text.split("\n")[0]}`]);
+}
 
 /** U0ALICE links her Slack account to the owner with a code from `factory link-code github:1`. */
 async function linked(f: F): Promise<void> {
@@ -99,15 +115,16 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     await linked(f);
 
     // Intake: one mention is one item, requested by the linked factory user; its triage runs on the worker.
-    await f.deliver(eventEnvelope(mention(ROOT, "please add a scope gate\nIt should run on every push.")));
+    await requested(f, "please add a scope gate\nIt should run on every push.");
     const triaged = await item(f);
     expect(triaged).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", requester_id: OWNER, title: "please add a scope gate" });
     expect(f.runner.specs.map((s) => s.role)).toEqual(["triage"]);
-    // The spec is in the thread, with buttons for the commands that apply now, and no marker text.
-    const spec = f.api.thread(ROOT).find((m) => FakeSlackApi.buttons(m).length > 0)!;
-    expect(spec).toBeTruthy();
-    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
-    expect(statusLines(f).map((m) => m.text)).toEqual(["Status: *needs approval*"]);
+    // The spec is in the thread as the short spec message, with its buttons, and no marker text. The status message
+    // posted while triaging is edited in place: no second message says it needs approval.
+    const spec = f.api.thread(ROOT).find((m) => FakeSlackApi.buttons(m).length > 0 && !isIntakeLine(m.text ?? ""))!;
+    expect(spec.text).toBe("Needs your approval: please add a scope gate");
+    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
+    expect(statusLines(f)).toHaveLength(1);
 
     // Approve with a mention in the thread, as the spec's hint says (Slack itself takes a message that starts with
     // `/`): implement opens PR 42 on the forge, review passes.
@@ -153,16 +170,14 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
   it("the person who asked sees each step in the thread, in order: status, spec, review verdict, ready for a human merge", async () => {
     const f = await slackFactory();
     await linked(f);
-    await f.deliver(eventEnvelope(mention(ROOT, "please add a scope gate")));
+    await requested(f, "please add a scope gate");
     // A reply without a mention starting with a space reaches the factory as a message (Slack keeps it).
     await f.deliver(eventEnvelope(message("1800000001.000200", " /approve", { thread_ts: ROOT })));
     const thread = texts(f);
     expect(thread).toHaveLength(4);
     expect(thread[0]).toBe("Status: *ready to merge* · <https://github.com/o/r/pull/42|PR #42>");
-    expect(thread[1]).toMatch(/^\*Factory spec\*/);
-    // The spec's folded "What the PR contains" block reads as a heading, not as escaped HTML tags.
-    expect(thread[1]).toContain("*What the PR contains*\n\nworkflow + test");
-    expect(thread[1]).not.toContain("&lt;details");
+    // The spec's message: its first line names the item; the full spec stays in the store and on the dashboard.
+    expect(thread[1]).toBe("Needs your approval: please add a scope gate");
     expect(thread[2]).toBe("*Factory review: pass*\n\nthe gate is right\n\nTier recheck: 2");
     expect(thread[3]).toMatch(/^<https:\/\/github\.com\/o\/r\/pull\/42\|PR #42> passed review \(tier 2\) and its checks passed\. A human merge is required\./);
     // The item's own conversation in the store holds the same factory messages, once each, and the reply between them.
@@ -173,7 +188,7 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
   it("a /verdict typed in the thread is recorded as the linked factory user", async () => {
     const f = await slackFactory();
     await linked(f);
-    await f.deliver(eventEnvelope(mention(ROOT, "please add a scope gate")));
+    await requested(f, "please add a scope gate");
     await f.deliver(eventEnvelope(mention("1800000001.000200", "/approve", { thread_ts: ROOT })));
     await f.deliver(eventEnvelope(mention("1800000001.000300", "/verdict accept", { thread_ts: ROOT })));
     const verdict = (await f.store.listStateChanges((await item(f)).id)).find((c) => c.reason === "human_verdict");
@@ -183,10 +198,10 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
   it("a 👍 on the factory's review message stores accept for the PR head; a 👎 on the spec asks for the severity once", async () => {
     const f = await slackFactory();
     await linked(f);
-    await f.deliver(eventEnvelope(mention(ROOT, "please add a scope gate")));
+    await requested(f, "please add a scope gate");
     await f.deliver(eventEnvelope(mention("1800000001.000200", "/approve", { thread_ts: ROOT })));
     const review = f.api.thread(ROOT).find((m) => m.text?.startsWith("*Factory review"))!;
-    const spec = f.api.thread(ROOT).find((m) => m.text?.startsWith("*Factory spec"))!;
+    const spec = f.api.thread(ROOT).find((m) => m.text?.startsWith("Needs your approval:"))!;
     const reacted = (ts: string, emoji: string) =>
       eventEnvelope({ type: "reaction_added", user: "U0ALICE", reaction: emoji, item: { type: "message", channel: CHANNEL, ts }, item_user: BOT, event_ts: "1800000900.000100" });
     const before = f.api.thread(ROOT).length;
@@ -206,7 +221,7 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     const f = await slackFactory();
     f.runner.script.triage = () => ({ output: { ...triageSpec, problem: `Add a CI scope gate using ${PLANTED}` } });
     await linked(f);
-    await f.deliver(eventEnvelope(mention(ROOT, "please add a scope gate")));
+    await requested(f, "please add a scope gate");
     const runs = await f.store.listRuns((await item(f)).id);
     expect(runs[0]).toMatchObject({ kind: "triage", status: "failed", outcome: { error_code: "egress_blocked" } });
     expect(JSON.stringify(f.api.messages)).not.toContain(PLANTED);

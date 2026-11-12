@@ -7,7 +7,7 @@ import type { FactoryStore } from "../../interfaces/factory-store.js";
 import type { Logger } from "../../core/log.js";
 import { SlackApiError, type SlackApi } from "./slack-api.js";
 import {
-  FEEDBACK_CALLBACK, FEEDBACK_INPUT, buttonApplies, escapeSlack, feedbackModal, footerCommands, obj, renderComment, resultMarker, str, type SlackRendered, type VerdictShown,
+  FEEDBACK_CALLBACK, FEEDBACK_INPUT, buttonApplies, escapeSlack, feedbackModal, footerCommands, obj, renderFactoryComment, resultMarker, str, type SlackRendered, type VerdictShown,
 } from "./slack-format.js";
 
 // One-tap verdicts in Slack (design 04-gate-commands, "One-tap verdicts"): a Good, Bad or Feedback press on a factory
@@ -35,8 +35,9 @@ export interface SlackVerdictDeps {
   scanner: EgressScanner;
   store: Pick<FactoryStore, "listPostedCommentsById" | "getWorkItemBySource" | "listItemMessages" | "getWorkItem" | "recordVerdict" | "listVerdicts" | "listStateChanges" | "getPostedComment">;
   auth: Pick<AuthProvider, "resolve" | "authorize">;
-  /** Where PR links point, as renderComment takes it. */
-  repo: Parameters<typeof renderComment>[1];
+  /** Where PR links point, and the dashboard base for a spec message's link (renderFactoryComment). */
+  repo: Parameters<typeof renderFactoryComment>[2]["repo"];
+  dashboard_url?: string;
   log: Logger;
 }
 
@@ -179,7 +180,7 @@ export class SlackVerdicts {
     const had = footerCommands(msg.entry.body);
     const keep = had.filter((c) => buttonApplies(c, msg.item));
     const done = keep.length < had.length ? { line: await this.host.done(msg.item), keep } : undefined;
-    const rendered = renderComment(msg.entry.body, this.d.repo, await this.host.bot(), done, await this.shown(msg.item, msg.key));
+    const rendered = renderFactoryComment(msg.entry.body, msg.item, this.d, await this.shown(msg.item, msg.key), done)(await this.host.bot());
     await this.host.update(msg.source, msg.ts, rendered, marker, msg.entry.marker);
   }
 

@@ -96,6 +96,50 @@ describe("repo.check_commands config", () => {
   });
 });
 
+describe("repo.ui_check config (UI check at merge)", () => {
+  function root(cfg: Record<string, unknown>): string {
+    const dir = mkdtempSync(join(tmpdir(), "sf-ui-check-cfg-"));
+    mkdirSync(join(dir, "prompts"));
+    for (const p of ["triage", "implement", "review"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
+    writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...cfg, store: { type: "sqlite" }, state_dir: "state" }));
+    return dir;
+  }
+  const withUiCheck = (value: unknown) => ({ ...REAL, repo: { ...REAL.repo, ui_check: value } });
+  const withoutUiCheck = () => {
+    const { ui_check: _, ...repo } = REAL.repo;
+    return { ...REAL, repo };
+  };
+  const command = ["npm", "run", "check:responsive"];
+
+  it("absent: off, nothing set", async () => {
+    const loaded = await loadConfig(root(withoutUiCheck()), { platform: "linux" });
+    expect(loaded.config.repo).not.toHaveProperty("ui_check");
+  });
+
+  it("an argv command; paths default to web/ and src/ui/, or are the configured prefixes", async () => {
+    const plain = await loadConfig(root(withUiCheck({ command })), { platform: "linux" });
+    expect(plain.config.repo.ui_check).toEqual({ command, paths: ["web/", "src/ui/"] });
+    const set = await loadConfig(root(withUiCheck({ command, paths: ["app/"] })), { platform: "linux" });
+    expect(set.config.repo.ui_check).toEqual({ command, paths: ["app/"] });
+  });
+
+  it("rejects a bad value at startup, naming the key", async () => {
+    const bad = [
+      "npm run check:responsive", command, null, {}, { command: "npm" }, { command: [] }, { command: [""] },
+      { command, paths: [] }, { command, paths: "web/" }, { command, paths: [""] }, { command, paths: [1] }, { command, path: ["web/"] },
+    ];
+    for (const value of bad) {
+      await expect(loadConfig(root(withUiCheck(value)), { platform: "linux" }), JSON.stringify(value)).rejects.toThrow(/repo\.ui_check/);
+    }
+  });
+
+  it("ui_check is a known repo key", async () => {
+    await expect(loadConfig(root({ ...REAL, repo: { ...REAL.repo, ui_chek: { command } } }), { platform: "linux" })).rejects.toThrow(
+      /did you mean "ui_check"/,
+    );
+  });
+});
+
 describe("redact", () => {
   it("replaces every value, longest first, and skips empty ones", () => {
     expect(redact("mysql://u:pw@h/db and pw", ["pw", "mysql://u:pw@h/db", ""])).toBe("[redacted] and [redacted]");

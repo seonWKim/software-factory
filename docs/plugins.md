@@ -13,7 +13,7 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | Interface | Plugins | Topic |
 |---|---|---|
 | How selection works | config keys, defaults, rules, the discovered registry, declared secrets | [selection.md](plugins/selection.md) |
-| FactoryStore | `mysql`, `sqlite` | [factory-store.md](plugins/factory-store.md) |
+| FactoryStore | `sqlite` | [factory-store.md](plugins/factory-store.md) |
 | AuthProvider | `github`, `local`, `none` | [auth-provider.md](plugins/auth-provider.md) |
 | GrantSource | `github-permission`, `static` | [grant-source.md](plugins/grant-source.md) |
 | SecretStore (guard) | `env-file` | [secret-store.md](plugins/secret-store.md) |
@@ -29,11 +29,12 @@ kebab-case (KeepAwake is `keep-awake.md`).
 | Updater | `git-worktree`, `none` | [updater.md](plugins/updater.md) |
 | KeepAwake | `caffeinate`, `none` | [keep-awake.md](plugins/keep-awake.md) |
 | GitHubCredentials | `token`, `app` | [github-credentials.md](plugins/github-credentials.md) |
-| TestDatabase | `mysql-local`, `none` | [test-database.md](plugins/test-database.md) |
+| TestDatabase | `none` | [test-database.md](plugins/test-database.md) |
 | NetworkProbe | `http` | [network-probe.md](plugins/network-probe.md) |
 | EventBus | `sql` | [event-bus.md](plugins/event-bus.md) |
 | TickGenerator | `time-based`, `manual` | [tick-generator.md](plugins/tick-generator.md) |
 | ExecutionEngine | `journal` | [execution-engine.md](plugins/execution-engine.md) |
 | TacitLedger | `agents-home`, `none` | [tacit-ledger.md](plugins/tacit-ledger.md) |
 | AppShell (wired by the desktop entry, not chosen in config) | `macos` | [app-shell.md](plugins/app-shell.md) |
+| CalendarSource (optional; top-level `calendar` list, default `[]`) | `google-calendar` | [calendar-source.md](plugins/calendar-source.md) |
 | Forge (optional; follows `plugins.source`: `github` with `github-issues`, else none) | `github`, `local` | [forge.md](plugins/forge.md) |

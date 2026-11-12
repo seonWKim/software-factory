@@ -10,7 +10,7 @@ import type { PausesView } from "../web/src/api.js";
 // tsconfig.test.json checks this file without JSX, so the pages are built with createElement and their .tsx
 // module is loaded by a specifier the node check skips (as tests/ui-settings-page.test.tsx does).
 const PAGE_MODULE = "../web/src/views/pages.js";
-const { FloorPage, HealthPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { FloorPage: FunctionComponent; HealthPage: FunctionComponent };
+const { NeedsYouPage, HealthPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { NeedsYouPage: FunctionComponent; HealthPage: FunctionComponent };
 
 // Claim pauses on the Floor and Health pages (issue #291, design §5 Restarts and §9): each pause in effect with
 // when it ends and a "Resume now" button that posts to /api/v1/pauses/resume with the CSRF token; a refusal
@@ -52,7 +52,7 @@ function show(page: FunctionComponent) {
   return screen.findByRole("list", { name: "Claim pauses" });
 }
 
-describe.each([["Floor", () => FloorPage], ["Health", () => HealthPage]] as const)("%s page claim pauses", (_name, page) => {
+describe.each([["Needs you", () => NeedsYouPage], ["Health", () => HealthPage]] as const)("%s page claim pauses", (_name, page) => {
   it("lists each active pause with its name, when it ends and a Resume now button", async () => {
     const list = await show(page());
     const items = [...list.querySelectorAll<HTMLElement>("li[data-pause]")];
@@ -90,7 +90,7 @@ describe("no pause in effect", () => {
   it("shows no pause list on the Floor page", async () => {
     view = { pauses: [], csrf_token: TOKEN };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(createElement(QueryClientProvider, { client }, createElement(FloorPage)));
+    render(createElement(QueryClientProvider, { client }, createElement(NeedsYouPage)));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => u === "/api/v1/pauses")).toBe(true));
     expect(screen.queryByRole("list", { name: "Claim pauses" })).toBeNull();
   });

@@ -1,7 +1,6 @@
 // The two status pages. Reads only: every value comes from FactoryStore read methods, and no store method
 // that writes is called from here. Free text goes through Withholder; everything else through esc().
 
-import type { TacitLedger } from "../interfaces/tacit-ledger.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemId, outcomeCost, outcomeTokens } from "../core/types.js";
@@ -23,6 +22,7 @@ import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { mergesSection } from "./merge-digest.js";
 import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
+import type { UiTacit } from "./rules-api.js";
 import type { UiSettings } from "./settings-api.js";
 import type { UiCommands } from "./commands.js";
 import { type DisplayNames, userLabel } from "./names.js";
@@ -63,7 +63,7 @@ export interface UiDeps {
   /** Display names by user id (Identity's identity_profiles), read only to show. Absent: ids only. */
   displayNames?: DisplayNames;
   /** The Rules page's tacit ledger (rules-api.ts, issue #571), read and judged only through it. Absent: the plugin `none`. */
-  tacit?: TacitLedger;
+  tacit?: UiTacit;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

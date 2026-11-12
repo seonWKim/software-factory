@@ -1,13 +1,14 @@
 // `factory ui`: the status page over FactoryStore (design §9, architecture §1).
 // node:http only, bound to 127.0.0.1 with no host option. GET and HEAD only, on every path (/api/health too),
-// except nine write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
+// except the write routes: POST /api/v1/settings (design §8, issue #236), POST /api/v1/items/:id/commands
 // (design §9, issue #227; commands.ts), POST /api/v1/pauses/resume (design §5 Restarts, issue #291), POST
 // /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts), POST /api/v1/users (design 08
 // permissions, issue #445; users-api.ts), POST /api/v1/improve/run (design §7, issue #508; improve-api.ts) and
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
-// issue #571; rules-api.ts) and POST /api/v1/tasks (design 02-tasks, the desktop quick-add box; tasks-api.ts), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
+// /api/v1/tasks/build, Build this, and /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing and improve routes then
-// check the owner (approve_spec), the users and rules routes the local owner, the pack approvals route approve_tool, the tasks route
+// check the owner (approve_spec), the users and rules routes the local owner, the pack approvals route approve_tool, the task routes
 // the commands actor. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
@@ -27,7 +28,7 @@ import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { USERS_PATH, writeUsers } from "./users-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
-import { TASKS_PATH, writeTask } from "./tasks-api.js";
+import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
 import { RULES_PATH, RULE_VERDICT_PATH, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
@@ -108,9 +109,12 @@ function error(status: number, message: string, extra: Record<string, string> = 
   return html(status, page(`${status}`, `<h1>${esc(status)}</h1><p>${esc(message)}</p>`), extra);
 }
 
+/** A raw request URL's path, without its query string or fragment. */
+const pathOf = (rawUrl: string | undefined): string => (rawUrl ?? "/").split(/[?#]/, 1)[0]!;
+
 /** Which area a request path belongs to, before the URL is parsed (errors take that area's format). */
 function areaOf(rawUrl: string | undefined): "api" | "app" | "page" {
-  const path = (rawUrl ?? "/").split(/[?#]/, 1)[0]!;
+  const path = pathOf(rawUrl);
   if (isApiPath(path)) return "api";
   if (isAppPath(path)) return "app";
   return "page";
@@ -132,12 +136,12 @@ type WriteRoute = "settings" | "resume" | "standing" | "users" | "improve" | "pa
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
  * /api/v1/pauses/resume or /api/v1/standing when the pause routes (their owner check) are, to exactly
  * /api/v1/users when the users routes are, or to exactly /api/v1/improve/run when both the pause routes and
- * settings (its project) are, or to exactly /api/v1/tasks when the commands route (its actor and token) is (a query
+ * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is (a query
  * string is ignored). Null for every other request.
  */
 function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (req.method !== "POST") return null;
-  const path = (req.url ?? "/").split(/[?#]/, 1)[0];
+  const path = pathOf(req.url);
   if (path === SETTINGS_PATH && d.settings !== undefined) return "settings";
   if (path === RESUME_PATH && d.pauses !== undefined) return "resume";
   if (path === STANDING_PATH && d.pauses !== undefined) return "standing";
@@ -145,7 +149,7 @@ function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (path === IMPROVE_RUN_PATH && improveRunWired(d)) return "improve";
   if (path === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined) return "packs";
   if (path === RULE_VERDICT_PATH && d.pauses !== undefined) return "rules";
-  if (path === TASKS_PATH && d.commands !== undefined) return "tasks";
+  if (Object.hasOwn(TASK_WRITES, path) && d.commands !== undefined) return "tasks";
   return null;
 }
 
@@ -187,7 +191,7 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
     : route === "improve" ? await runImproveNow(d as ImproveRunDeps)
     : route === "packs" ? await writePackApproval(d, d.pauses!, body)
     : route === "rules" ? await writeRuleVerdict(d, d.pauses!, body)
-    : route === "tasks" ? await writeTask(d, body)
+    : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
     : await writeStanding(d, d.pauses!, body);
   return json(r.status, r.value);
 }
@@ -197,7 +201,7 @@ function commandsWrite(req: Pick<UiRequest, "method" | "url">): string | null {
   return req.method === "POST" ? commandsPathId(req.url) : null;
 }
 
-/** The whole request handling, without the socket. Writes only through the nine write routes. */
+/** The whole request handling, without the socket. Writes only through the write routes. */
 export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
   const area = areaOf(req.url);
   if (!allowedHost(req.host)) return areaError(area, 403, "Host must be 127.0.0.1 or localhost.");
@@ -209,7 +213,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, users, improve run, pack approvals, rule verdict and tasks routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, users, improve run, pack approvals, rule verdict and task routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -221,8 +225,11 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
 
   // Decided on the parsed path too: "/app/../x" parses to "/x", which is not the app.
   if (isApiPath(url.pathname)) {
-    // The Rules page's read (issue #571) is served here beside the notices, so api.ts stays within its size budget.
-    const r = url.pathname === NOTICES_PATH ? await readNotices(d) : url.pathname === RULES_PATH ? await readRules(d) : await api(d, url);
+    // The Rules page's read (issue #571) and the Tasks page's (#607) are served here beside the notices, so api.ts stays within its size budget.
+    const r = url.pathname === NOTICES_PATH ? await readNotices(d)
+      : url.pathname === RULES_PATH ? await readRules(d)
+      : url.pathname === TASKS_PATH ? await readTasks(d)
+      : await api(d, url);
     return json(r.status, r.value);
   }
   if (isAppPath(url.pathname)) return serveApp(d.appDir ?? DEFAULT_APP_DIR, url.pathname);

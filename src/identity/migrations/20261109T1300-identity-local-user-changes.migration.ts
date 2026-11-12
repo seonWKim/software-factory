@@ -6,7 +6,7 @@
 
 import { defineMigration } from "../../state/index.js";
 
-const SQLITE = `CREATE TABLE IF NOT EXISTS identity_local_user_changes (
+const CREATE = `CREATE TABLE IF NOT EXISTS identity_local_user_changes (
     seq       INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id   TEXT NOT NULL,
     action    TEXT NOT NULL,
@@ -16,20 +16,10 @@ const SQLITE = `CREATE TABLE IF NOT EXISTS identity_local_user_changes (
     at        TEXT NOT NULL
   )`;
 
-const MYSQL = `CREATE TABLE IF NOT EXISTS identity_local_user_changes (
-    seq       BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    user_id   VARCHAR(128) NOT NULL,
-    action    VARCHAR(16) NOT NULL,
-    old_role  VARCHAR(16) NULL,
-    new_role  VARCHAR(16) NULL,
-    actor     VARCHAR(128) NOT NULL,
-    at        CHAR(24) NOT NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`;
-
 export default defineMigration({
   change: "additive",
   tables: [],
   async up(db) {
-    await db.run(db.dialect === "sqlite" ? SQLITE : MYSQL);
+    await db.run(CREATE);
   },
 });

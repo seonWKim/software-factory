@@ -224,6 +224,15 @@ export class NoOpSandbox implements Sandbox {
     return { merged: true, sha, already: false, not_updated: moved.not_updated };
   }
 
+  /**
+   * The commit of the factory repo's local branch `branch` (null: none), with or without `local`: a local item's
+   * branch and the local base are read here when a forge is selected (design §5 Merge conflict). No fetch.
+   */
+  async localBranch(spec: { repo: string; branch: string }): Promise<string | null> {
+    if (!SAFE_BRANCH.test(spec.branch) || spec.branch.includes("..")) throw new Error(`refusing to read branch ${JSON.stringify(spec.branch)}`);
+    return this.localCommit(spec.repo, spec.branch);
+  }
+
   /** The conflicting paths of `branch` merged into the local `base_ref`, from merge-tree (objects only); null: a branch is missing. */
   async localConflicts(spec: { repo: string; base_ref: string; branch: string }): Promise<string[] | null> {
     for (const b of [spec.base_ref, spec.branch]) {
