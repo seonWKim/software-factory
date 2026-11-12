@@ -12,7 +12,7 @@
 
 import type { TopicDescriptor } from "../../../shared/topic.js";
 import { topicTable } from "../../../shared/topic.js";
-import type { Dialect, MigrationDb, SqlExecutor, SqlValue } from "../../../state/index.js";
+import type { MigrationDb, SqlExecutor, SqlValue } from "../../../state/index.js";
 
 export interface TopicTables {
   readonly messages: string;
@@ -32,23 +32,11 @@ export const SCHEDULER_TABLE = "bus_scheduler";
 /** The partition column, quoted as the existing tables name it. */
 export const P = "`partition`";
 
-interface Types {
-  id: string;
-  int: string;
-  time: string;
-  text: string;
-  long: string;
-  autoSeq: string;
-}
-
-const TYPES: Record<Dialect, Types> = {
-  sqlite: { id: "TEXT", int: "INTEGER", time: "TEXT", text: "TEXT", long: "TEXT", autoSeq: "INTEGER PRIMARY KEY AUTOINCREMENT" },
-};
+/** SQLite column types. */
+const t = { id: "TEXT", int: "INTEGER", time: "TEXT", text: "TEXT", long: "TEXT", autoSeq: "INTEGER PRIMARY KEY AUTOINCREMENT" } as const;
 
 /** A competing topic's `requires`: the message's requirements as a sorted JSON list of strings (`["sandbox=docker"]`). */
-export const REQUIRES_COLUMN: Record<Dialect, string> = {
-  sqlite: "requires TEXT NOT NULL DEFAULT '[]'",
-};
+export const REQUIRES_COLUMN = "requires TEXT NOT NULL DEFAULT '[]'";
 
 interface Index {
   name: string;
@@ -66,8 +54,7 @@ function table(name: string, columns: readonly string[], indexes: readonly Index
 }
 
 /** The DDL of one topic's tables. */
-export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string[] {
-  const t = TYPES[dialect];
+export function topicTablesSql(topic: TopicDescriptor): string[] {
   const n = topicTables(topic.name);
   const competing = topic.consumption === "competing";
   const messageColumns = [
@@ -90,7 +77,7 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
     `payload ${t.long} NOT NULL`,
     `published_at ${t.time} NOT NULL`,
     ...(competing
-      ? [REQUIRES_COLUMN[dialect], `claimed_by ${t.id}`, `claim_token ${t.int} NOT NULL DEFAULT 0`, `claim_until ${t.time}`, `acked_at ${t.time}`]
+      ? [REQUIRES_COLUMN, `claimed_by ${t.id}`, `claim_token ${t.int} NOT NULL DEFAULT 0`, `claim_until ${t.time}`, `acked_at ${t.time}`]
       : []),
   ];
   const messageIndexes: Index[] = competing
@@ -142,8 +129,7 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
 }
 
 /** The bus's own bookkeeping: the topic list and the scheduler's release horizon (created by a bus migration). */
-export function busTablesSql(dialect: Dialect): string[] {
-  const t = TYPES[dialect];
+export function busTablesSql(): string[] {
   return [
     ...table(TOPICS_TABLE, [
       `name ${t.id} NOT NULL PRIMARY KEY`,
@@ -156,9 +142,9 @@ export function busTablesSql(dialect: Dialect): string[] {
 
 /**
  * `INSERT INTO <rest>` (`table (cols) VALUES (...)`) that skips a row whose unique key exists (ON CONFLICT DO
- * NOTHING); true when it inserted. `_dialect` stays until its callers stop passing it.
+ * NOTHING); true when it inserted.
  */
-export async function insertOrSkip(q: SqlExecutor, _dialect: Dialect, rest: string, params: readonly SqlValue[] = []): Promise<boolean> {
+export async function insertOrSkip(q: SqlExecutor, rest: string, params: readonly SqlValue[] = []): Promise<boolean> {
   return (await q.run(`INSERT INTO ${rest} ON CONFLICT DO NOTHING`, params)) === 1;
 }
 
@@ -178,8 +164,8 @@ export async function ensureTopicTables(db: MigrationDb, topics: readonly TopicD
       );
     }
     if (row) continue;
-    for (const sql of topicTablesSql(topic, db.dialect)) await db.run(sql);
-    await insertOrSkip(db, db.dialect, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`, [
+    for (const sql of topicTablesSql(topic)) await db.run(sql);
+    await insertOrSkip(db, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`, [
       topic.name,
       topic.consumption,
       topic.partitions,
@@ -188,9 +174,8 @@ export async function ensureTopicTables(db: MigrationDb, topics: readonly TopicD
 }
 
 /** The DDL of a component's outbox and inbox (one shape for every component). */
-export function componentTablesSql(component: string, dialect: Dialect): string[] {
+export function componentTablesSql(component: string): string[] {
   if (!/^[a-z]+$/.test(component)) throw new Error(`component name "${component}" must be lowercase letters`);
-  const t = TYPES[dialect];
   const outbox = `${component}_outbox`;
   const inbox = `${component}_inbox`;
   return [
@@ -224,5 +209,5 @@ export function componentTablesSql(component: string, dialect: Dialect): string[
 
 /** For a component's own migration: creates its outbox and inbox. */
 export async function ensureComponentTables(db: MigrationDb, component: string): Promise<void> {
-  for (const sql of componentTablesSql(component, db.dialect)) await db.run(sql);
+  for (const sql of componentTablesSql(component)) await db.run(sql);
 }

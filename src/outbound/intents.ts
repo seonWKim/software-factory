@@ -96,7 +96,6 @@ const ANNOUNCE_BATCH = 200;
 export async function recordAction(db: SqlDriver, a: NewAction, now: string): Promise<void> {
   await insertOrSkip(
     db,
-    db.dialect.name,
     "outbound_actions (work_item_id, source_type, target, action, args, intent_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     [a.work_item_id ?? null, a.target.type, JSON.stringify(a.target), a.action, JSON.stringify(a.args), a.key ?? null, now],
   );
@@ -177,7 +176,7 @@ export async function announce(db: SqlDriver, bus: EventBus, project_id: string,
       const fresh: Pending[] = [];
       for (const i of intents) {
         // Another replica's announce took it first: it is requested once, there.
-        const inserted = await insertOrSkip(tx, db.dialect.name, "outbound_requests (intent_id, destination, commit_id, commit_count, requested_at) VALUES (?, ?, ?, ?, ?)", [
+        const inserted = await insertOrSkip(tx, "outbound_requests (intent_id, destination, commit_id, commit_count, requested_at) VALUES (?, ?, ?, ?, ?)", [
           i.id, destination, commit_id, intents.length, now,
         ]);
         if (inserted) fresh.push(i);

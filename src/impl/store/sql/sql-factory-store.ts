@@ -2470,9 +2470,9 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   /**
-   * Takes the `commands` lock row until the transaction ends, so inserts into `inbound_commands` commit in seq
-   * order: a driver that assigns seq at insert, not at commit, would let inbound's cursor (`seq > cursor`) would skip a lower seq
-   * that commits after a higher one (design 10-event-driven, sequence locks).
+   * Reads the `commands` lock row, which a driver with row locks holds until the transaction ends, so inserts into
+   * `inbound_commands` commit in seq order and inbound's cursor (`seq > cursor`) never skips a lower seq (design
+   * 10-event-driven, sequence locks). SQLite has one writer, so there the read only checks that the row exists.
    */
   private async lockCommandSequence(tx: SqlExecutor): Promise<void> {
     const [row] = await tx.all(`SELECT name FROM inbound_sequence_locks WHERE name = 'commands'${this.db.dialect.forUpdate}`);

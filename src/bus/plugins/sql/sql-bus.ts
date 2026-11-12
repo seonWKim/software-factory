@@ -16,7 +16,7 @@ import { MAX_KEY_LENGTH, MAX_PAYLOAD_STRING, envelopeProblems, newMessageId, typ
 import { CAPABILITY, maxRedeliveryMs, partitionOf, requirementsOf, type TopicDescriptor } from "../../../shared/topic.js";
 import type { StartPosition } from "../../../shared/handler.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
-import type { Dialect, Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
+import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
 import { P, TOPICS_TABLE, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { addMs } from "../../../shared/time.js";
@@ -50,7 +50,6 @@ const DEFAULT_OUTBOX_RETENTION_MS = 86_400_000;
 
 export class SqlEventBus implements EventBus, Inbox, Relay {
   private readonly db: SqlDriver;
-  private readonly dialect: Dialect;
   private readonly outbox: string;
   private readonly inbox: string;
   private readonly consumerId: string;
@@ -66,7 +65,6 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   constructor(o: SqlBusOptions) {
     if (!/^[a-z]+$/.test(o.component)) throw new Error(`component name "${o.component}" must be lowercase letters`);
     this.db = o.db;
-    this.dialect = o.db.dialect.name;
     this.outbox = `${o.component}_outbox`;
     this.inbox = `${o.component}_inbox`;
     this.consumerId = o.consumerId;
@@ -125,10 +123,10 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   }
 
   /**
-   * Takes the `bus_topics` rows of `names` until the transaction ends, before it inserts into their tables: inserts
-   * into one topic then commit in seq order. A driver that assigns seq at insert, not at commit, would otherwise let a
-   * cursor (`seq > last_seq`) could pass a lower seq whose transaction commits later and skip it for good. One
-   * statement in key order, so two writers never take two topics in opposite orders. SQLite has one writer.
+   * Takes the `bus_topics` rows of `names` until the transaction ends, before it inserts into their tables, so inserts
+   * into one topic commit in seq order and a cursor (`seq > last_seq`) never skips a lower seq. One statement in key
+   * order, so two writers never take two topics in opposite orders. SQLite has one writer and no row locks
+   * (`forUpdate` is empty), so there it returns at once.
    */
   private async lockTopics(tx: SqlExecutor, names: readonly string[]): Promise<void> {
     const forUpdate = this.db.dialect.forUpdate;
@@ -166,7 +164,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     const competing = topic.consumption === "competing";
     if (competing) values.push(JSON.stringify(requirementsOf(topic, m)));
     const columns = competing ? `${MESSAGE_COLUMNS}, requires` : MESSAGE_COLUMNS;
-    await insertOrSkip(tx, this.dialect, `${topicTables(topic.name).messages} (${columns}) VALUES (${values.map(() => "?").join(", ")})`, values);
+    await insertOrSkip(tx, `${topicTables(topic.name).messages} (${columns}) VALUES (${values.map(() => "?").join(", ")})`, values);
   }
 
   /** Inserts `(consumer, idempotency_key)` with the caller's state change; a key seen before is a duplicate. */
@@ -174,7 +172,6 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     const expires = m.idempotency_key_ttl_ms === null ? null : addMs(m.occurred_at, m.idempotency_key_ttl_ms);
     const inserted = await insertOrSkip(
       tx,
-      this.dialect,
       `${this.inbox} (consumer, idempotency_key, message_id, processed_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
       [consumer, m.idempotency_key, m.id, await readHorizon(tx), expires],
     );
@@ -196,7 +193,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
       const heads = from === "earliest" ? [] : await tx.all(`SELECT ${P} AS p, MAX(seq) AS seq FROM ${t.messages} GROUP BY ${P}`);
       const head = new Map(heads.map((r) => [Number(r.p), Number(r.seq)]));
       for (let p = 0; p < topic.partitions; p++) {
-        await insertOrSkip(tx, this.dialect, `${t.cursors} (consumer_group, ${P}, last_seq) VALUES (?, ?, ?)`, [group, p, head.get(p) ?? 0]);
+        await insertOrSkip(tx, `${t.cursors} (consumer_group, ${P}, last_seq) VALUES (?, ?, ?)`, [group, p, head.get(p) ?? 0]);
       }
     });
     this.subscribed.add(`${topic.name}\0${group}`);

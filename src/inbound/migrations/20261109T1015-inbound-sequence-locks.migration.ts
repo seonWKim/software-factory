@@ -12,6 +12,6 @@ export default defineMigration({
   tables: [],
   async up(db) {
     await db.run("CREATE TABLE IF NOT EXISTS inbound_sequence_locks (name TEXT NOT NULL PRIMARY KEY)");
-    await insertOrSkip(db, db.dialect, "inbound_sequence_locks (name) VALUES (?)", [COMMANDS_SEQUENCE]);
+    await insertOrSkip(db, "inbound_sequence_locks (name) VALUES (?)", [COMMANDS_SEQUENCE]);
   },
 });

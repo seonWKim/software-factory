@@ -12,7 +12,7 @@ export default defineMigration({
     for (const row of await db.all(`SELECT name FROM ${TOPICS_TABLE} WHERE consumption = 'competing'`)) {
       const table = topicTables(String(row.name)).messages;
       if ((await tableColumns(db, table)).includes("requires")) continue;
-      await db.run(`ALTER TABLE ${table} ADD COLUMN ${REQUIRES_COLUMN[db.dialect]}`);
+      await db.run(`ALTER TABLE ${table} ADD COLUMN ${REQUIRES_COLUMN}`);
     }
   },
 });

@@ -9,7 +9,7 @@ export default defineMigration({
   change: "additive",
   tables: [],
   async up(db) {
-    for (const sql of busTablesSql(db.dialect)) await db.run(sql);
-    await insertOrSkip(db, db.dialect, `${SCHEDULER_TABLE} (id, released_until) VALUES (1, '1970-01-01T00:00:00.000Z')`);
+    for (const sql of busTablesSql()) await db.run(sql);
+    await insertOrSkip(db, `${SCHEDULER_TABLE} (id, released_until) VALUES (1, '1970-01-01T00:00:00.000Z')`);
   },
 });
