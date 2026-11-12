@@ -93,7 +93,7 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   };
   // slack.dashboard_url and slack.notify_channel as slack.plugin.ts passes them: absent unless the test sets them.
   const optional = { ...(opts.dashboard_url ? { dashboard_url: opts.dashboard_url } : {}), ...(opts.notify_channel ? { notify_channel: opts.notify_channel } : {}) };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings, ...optional });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo, log, settings, ...optional });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();
@@ -479,7 +479,7 @@ describe("slack source: replies, buttons and commands", () => {
     const item = await specPending(f, ts);
     const spec = itemThread(f, ts).find((m) => FakeSlackApi.buttons(m).length > 0)!;
     expect(spec.text).toBe("Needs your approval: please add a scope gate");
-    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject"]);
+    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     expect(JSON.stringify(spec.blocks)).not.toContain("<!--");
     expect(JSON.stringify(spec.blocks)).not.toContain("Full spec");
     expect((spec.blocks![0] as { accessory: unknown }).accessory).toEqual({ type: "button", text: { type: "plain_text", text: "View" }, action_id: "sf_view", value: item.id });
@@ -659,7 +659,7 @@ describe("slack source: buttons after a state change (issue #586)", () => {
     const source = { type: "slack_thread" as const, id: sourceId("1800000018.000100"), link: "" };
     await f.slack.postComment(source, renderSpec(parsed.value, 2, {}, footer, { approved: true }), "<!-- factory:spec:r1 -->");
     const [posted] = f.api.thread("1800000018.000100");
-    expect(FakeSlackApi.buttons(posted!)).toEqual(["sf_cmd:help"]);
+    expect(FakeSlackApi.buttons(posted!)).toEqual(["sf_cmd:help", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     const text = JSON.stringify(posted!.blocks);
     expect(text).toContain("Approved automatically (auto mode, tier 2) at 2026-11-11 10:00 UTC.");
     expect(text).not.toContain("To answer, reply");
@@ -1578,8 +1578,9 @@ describe("slack source: spec messages and their modals", () => {
       // No dashboard_url: no Full spec link and no 127.0.0.1 anywhere; the first section's View button names the item.
       expect(JSON.stringify(m.blocks)).not.toMatch(/Full spec|127\.0\.0\.1/);
       expect((m.blocks![0] as { accessory: { action_id: string; value: string } }).accessory).toMatchObject({ action_id: "sf_view", value: item.id });
-      // Buttons: Approve with defaults, Other… with a decision, Reject…; no per-decision "Default: …" button.
-      expect(labels(m)).toEqual(n === 0 ? ["Approve with defaults", "Reject…"] : ["Approve with defaults", "Other…", "Reject…"]);
+      // Buttons: Approve with defaults, Other… with a decision, Reject…, then the verdicts; no per-decision "Default: …" button.
+      const verdicts = ["Good", "Bad", "Feedback"];
+      expect(labels(m)).toEqual(n === 0 ? ["Approve with defaults", "Reject…", ...verdicts] : ["Approve with defaults", "Other…", "Reject…", ...verdicts]);
       expect(JSON.stringify(m.blocks)).not.toContain("Default:");
     }
   });

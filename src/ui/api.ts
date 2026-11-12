@@ -459,8 +459,8 @@ async function item(c: ApiCtx, id: WorkItemId) {
       const parts = runParts(stored, id, r.id);
       return parts.length > 0 ? [[r.id, parts] as const] : [];
     })),
-    /** The item's thread, oldest first (thread.ts): every body through the Withholder. */
-    thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!),
+    /** The item's thread, oldest first (thread.ts), its verdicts included: every body through the Withholder. */
+    thread: await threadRows(s, it.id, it.source.type, async (v) => (await c.text(v))!, changes),
     commands: await itemCommands(it, runs, await actorGrant(c.d, "approve_spec")(), (v) => c.text(v)), spec: await waitingSpec(it, runs, (v) => c.text(v)), // the viewer's (#453)
     replies: await itemReplies(c.d, it.id, (v) => c.text(v)), proposals: await itemProposals(c.d, it.id, (v) => c.text(v)), // pending, from the thread's markers
   };

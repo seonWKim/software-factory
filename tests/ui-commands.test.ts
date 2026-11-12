@@ -6,7 +6,7 @@ import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/typ
 import { parseVerdict } from "../src/core/verdict.js";
 // TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
 // @ts-expect-error -- see above
-import { verdictNote } from "../web/src/views/item-commands.js";
+import { oneTapNote, verdictNote } from "../web/src/views/item-commands.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { parseProposalMarker } from "../src/core/interpret.js";
@@ -516,6 +516,27 @@ describe("verdict from the item page and the item API (issue #523)", () => {
     expect(await h.store.getWorkItem(it1.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", version: it1.version + 1 });
     const [row] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
     expect(row!.refusal).toBeNull();
+  });
+
+  it("Good, Bad and Feedback on a local item: one verdict row per click through the verdict request, and no source call", async () => {
+    const h = await harness({ localAuth: true });
+    const it1 = await itemOf(h, local(1), MERGE_PENDING);
+    const notes = [oneTapNote("good", ""), oneTapNote("bad", ""), oneTapNote("feedback", "the flag name is wrong")];
+    for (const [i, note] of notes.entries()) await h.request(`app-tap-${i}`, ME, "verdict", { work_item_id: it1.id, note });
+    await h.controller.tickCommands();
+    expect((await h.store.listVerdicts(it1.id)).map((v) => [v.verdict, v.severity, v.reason])).toEqual([
+      ["accept", "none", null], ["changes", "minor", "Bad"], ["changes", "none", "the flag name is wrong"],
+    ]);
+    await h.controller.tickOutbox();
+    expect(h.source.comments).toEqual([]);
+  });
+
+  it("the one-tap notes: Good accept/none, Bad changes/minor, Feedback changes/none and only with text", () => {
+    expect(oneTapNote("good", "")).toBe("accept none");
+    expect(oneTapNote("bad", "")).toBe("changes minor Bad");
+    expect(oneTapNote("bad", "too big")).toBe("changes minor too big");
+    expect(oneTapNote("feedback", "  ")).toBeNull();
+    expect(parseVerdict(oneTapNote("feedback", "more tests")!)).toEqual({ ok: true, value: { verdict: "changes", severity: "none", reason: "more tests" } });
   });
 
   it("the buttons' note is `<kind> <severity> <reason>`, which the `/verdict` parser reads back", () => {

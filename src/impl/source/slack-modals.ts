@@ -10,7 +10,7 @@ import { type ChatAnswer, type ChatStore, UNLINKED, runChatCommand } from "./sla
 import { type SlackSourceDeps, parseSlackSourceId } from "./slack-source.js";
 import {
   ACTION_SPEC_APPROVE, ACTION_SPEC_OTHER, ACTION_SPEC_REJECT, ACTION_VIEW, MAX_SECTIONS, SECTION_MAX, type SlackRendered, button, buttonApplies,
-  chunks, cutNote, escapeSlack, modal, modalCommand, section, specModal, toMrkdwn, waitingSpec, withheldNotice, withoutFooter,
+  chunks, cutNote, escapeSlack, modal, modalCommand, obj, section, specModal, str, toMrkdwn, waitingSpec, withheldNotice, withoutFooter,
 } from "./slack-format.js";
 
 // Slack modals (design 05-sources): the spec decision modals (Other… and Reject…) and the read-only item modal a
@@ -25,9 +25,6 @@ export const VIEW_ITEM = "sf_item";
 export const ACTION_MERGE = "sf_merge";
 /** The title every item modal shows (Slack takes at most 24 characters). */
 const ITEM_TITLE = "Work item";
-
-const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
-const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {});
 
 /** What the modals need of the `slack` source: its deps, and its thread replies for an item from a Slack thread. */
 export interface ModalHost {

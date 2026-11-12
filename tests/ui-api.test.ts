@@ -379,6 +379,30 @@ describe("ui api: item thread (issue #286)", () => {
     expect((await json<{ thread: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`)).thread).toEqual([]);
   });
 
+  it("the thread shows each verdict with its kind, actor ID and feedback text (withheld like any body)", async () => {
+    const { d, store, clock, items } = await seeded();
+    const it = items.secretive;
+    clock.advance(1_000);
+    const actor = { kind: "user" as const, id: "slack-linked:owner" as UserId };
+    const base = { id: it.id, actor, target: "issue" as const, implicit: false, pr_head: null };
+    const good = await store.recordVerdict({ ...base, expected_version: (await store.getWorkItem(it.id))!.version, verdict: "accept", severity: "none", reason: null, comment_id: "button:C1:1.1" });
+    if (!good.ok) throw new Error(good.reason);
+    const fb = await store.recordVerdict({
+      ...base, expected_version: good.item.version, verdict: "changes", severity: "none", reason: `rename the flag ${SECRET}`, comment_id: "button:C1:1.2",
+    });
+    if (!fb.ok) throw new Error(fb.reason);
+    const body = await json<{ thread: Record<string, unknown>[] }>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    const verdicts = body.thread.filter((e) => e.kind === "verdict");
+    expect(verdicts).toEqual([
+      { seq: 0, at: good.verdict.at, kind: "verdict", author: actor.id, channel: "github_issue", anchor: `verdict-${good.verdict.id}`, body: "Verdict **accept**, severity none" },
+      {
+        seq: 0, at: fb.verdict.at, kind: "verdict", author: actor.id, channel: "github_issue", anchor: `verdict-${fb.verdict.id}`,
+        body: "Verdict **changes**, severity none\n\n[withheld: github_token]",
+      },
+    ]);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
   it("each Needs-you row's need has the anchor of the item's newest factory entry; null when it has none", async () => {
     const { d, store, items } = await seeded();
     await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "<!-- factory:needs-human:1 -->", body: "first why" });

@@ -43,7 +43,7 @@ async function slackFactory() {
   const scanned: string[] = [];
   const inner = new PatternEgressScanner(async () => [PLANTED]);
   const scanner = { scan: (kind: Parameters<typeof inner.scan>[0], text: string) => (scanned.push(text), inner.scan(kind, text)) };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, repo: { owner: "o", name: "r" }, log });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo: { owner: "o", name: "r" }, log });
   const forge = new FakeForge();
   const grant = new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} });
   const auth = new GitHubAuthProvider(store, [grant]);
@@ -123,7 +123,7 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     // posted while triaging is edited in place: no second message says it needs approval.
     const spec = f.api.thread(ROOT).find((m) => FakeSlackApi.buttons(m).length > 0 && !isIntakeLine(m.text ?? ""))!;
     expect(spec.text).toBe("Needs your approval: please add a scope gate");
-    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject"]);
+    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject", "sf_verdict:good", "sf_verdict:bad", "sf_verdict:feedback"]);
     expect(statusLines(f)).toHaveLength(1);
 
     // Approve with a mention in the thread, as the spec's hint says (Slack itself takes a message that starts with
