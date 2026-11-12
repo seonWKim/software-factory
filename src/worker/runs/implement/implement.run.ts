@@ -5,7 +5,7 @@ import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, si
 import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
 import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
-import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, wipBranchFor } from "../../../core/policy.js";
+import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, wipBranchFor } from "../../../core/policy.js";
 import { failingTests } from "../../../core/output-summary.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";
@@ -155,11 +155,8 @@ async function implement(
   // Sync before push (design §4): every pre-push check sees the branch with the fetched base merged in. A resumed
   // run has no agent, so a conflict there fails with merge_conflict.
   const sync = await syncBase(w, run, item, handle, signal, gitDir, dirs, baseSha, model, resumed !== null);
-  // A new MySQL step whose number the base took moves to the next free number (issue #297), before the gates.
-  const renumbered = sync.merged ? await w.renumberSteps(run, handle, sync.baseSha) : [];
-  // The files an earlier sync of these commits conflicted in still pass the scope gate, and so does a step moved from an allowed path.
+  // The files an earlier sync of these commits conflicted in still pass the scope gate.
   const conflicts = [...new Set([...work.conflicts, ...sync.conflicts])];
-  const passing = [...conflicts, ...renumbered.filter((r) => isCovered(r.from, item.allowed_paths)).map((r) => r.to)];
   const fix: FixContext = { gitDir, dirs, model, start, baseSha: sync.baseSha };
   let beforeFix: string | null = null; // HEAD before the first before_finish fix step, so its commits are counted
   // before_finish pack checks (design §4, issue #494): a refusal sends the agent back up to the check's retries, then
@@ -168,7 +165,7 @@ async function implement(
     beforeFix ??= (await w.git(handle, ["rev-parse", "HEAD"])).trim();
     await fixStep(w, run, item, handle, signal, fix, r);
   });
-  const prePush = await prePushGates(w, run, item, handle, sync.baseSha, passing);
+  const prePush = await prePushGates(w, run, item, handle, sync.baseSha, conflicts);
   let floor = prePush.floor;
   const paths = prePush.paths;
   if (floor) {
@@ -206,7 +203,7 @@ async function implement(
   if (checked.fixed || packFixed) {
     await countFixCommits();
     // The fix commit goes through every gate again, on the final diff.
-    const postFixPrePush = await prePushGates(w, run, item, handle, sync.baseSha, passing);
+    const postFixPrePush = await prePushGates(w, run, item, handle, sync.baseSha, conflicts);
     floor = postFixPrePush.floor;
     if (floor) return { floor_block: true, required_tier: requiredTier(floor), floor_paths: floor };
   }

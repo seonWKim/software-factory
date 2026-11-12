@@ -59,9 +59,6 @@ async function update(w: Worker, c: RunCall) {
       ].join("\n"));
       return { result: "conflict", conflicts, head_sha, base_sha };
     }
-    // A new MySQL step whose number the base took moves to the next free number (issue #297), before the checks.
-    await w.renumberSteps(run, handle, base_sha);
-
     // The check list in place of the test command (design §4), stopping at the first failure.
     const checks = await w.runCheckList(run, handle, signal);
     if (checks.failed) {

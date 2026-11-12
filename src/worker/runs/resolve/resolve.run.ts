@@ -2,13 +2,12 @@ import type { ModelClass } from "../../../core/model-choice.js";
 import { checkCommands, checkedLines, commandText, redact, runChecks } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, type NeedsHuman, parseImplement } from "../../../core/outputs.js";
 import { branchFor } from "../../../core/policy.js";
-import { MYSQL_STEPS_DIR, type Renumbering, mergeAppendedConflicts } from "../../../core/mechanical.js";
+import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt, resolveScopeViolations } from "../../../core/resolve.js";
 import type { Run, WorkItem } from "../../../core/types.js";
-import { errorText } from "../../../core/log.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
 import type { ToolCallContext } from "../../../interfaces/tool-broker.js";
-import { NO_HOOKS, RunFailure, gitIdentity, specQuery, staleStepNote, tail } from "../../support.js";
+import { NO_HOOKS, RunFailure, gitIdentity, specQuery, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
@@ -17,8 +16,7 @@ import { RESUME_LOST, fetchBundle, saveBundle } from "../../bundle.js";
  * The resolve run (design §5 Merge conflict), started by a human's `/resolve` or automatically. In the PR branch's
  * sandbox, or a local item's (no PR: the local route, whose `origin/<base>` and `origin/<branch>` are the factory
  * repo's local base and branch, and whose store commits to the local branch with nothing pushed to a remote):
- * merge origin/<base> with --no-commit and leave the conflicts; stage any MySQL step renumbering (issue #297);
- * snapshot the merged tree; let the agent resolve;
+ * merge origin/<base> with --no-commit and leave the conflicts; snapshot the merged tree; let the agent resolve;
  * snapshot again. The worker never trusts the agent's index, refs or commits: the post-agent snapshot is the
  * tree that is pushed. Gates before any push: the scope gate (every path that differs between the two
  * snapshots, tracked, untracked or tracked-but-ignored, is a conflicting file or under allowed_paths), no
@@ -106,9 +104,6 @@ async function mergeAndResolve(
   // scope gate has nothing to check (no agent changed the tree); markers, the commit and the gates still run.
   const mechanical = conflicts.length > 0 && (await mergeAppendedConflicts(w.mergeIO(handle), conflicts));
   if (conflicts.length > 0 && !mechanical) await w.recordConflicts(item, baseSha, conflicts);
-  // A new MySQL step whose number the base took moves to the next free number (issue #297), staged before the
-  // snapshot on the clean and the conflict path alike.
-  const renumbered = await renumberPendingMerge(w, run, handle, baseSha, realIndex);
 
   // Seeded from the merge's own index (written by the worker, before the agent): every tracked path, ignored or not.
   const cp = await w.d.sandbox.exec(handle, ["cp", "--", realIndex, index], { env: w.d.toolEnv });
@@ -123,7 +118,7 @@ async function mergeAndResolve(
     }
     const notes = run.input?.notes ?? "";
     const result = await w.agent(run, item, handle, signal, {
-      prompt: await w.withIndex(renderResolvePrompt(item, baseRef, files, notes) + staleStepNote(renumbered, files), specQuery(item)),
+      prompt: await w.withIndex(renderResolvePrompt(item, baseRef, files, notes), specQuery(item)),
       model_class: model,
       output_schema: IMPLEMENT_SCHEMA,
       writable_paths: [gitDir],
@@ -182,32 +177,6 @@ async function restoreResolution(w: Worker, run: Run, handle: SandboxHandle, bra
   await w.git(handle, [...NO_HOOKS, "clean", "-ffdxq"]);
   w.d.log.info("run resumes after its resolve step", { run_id: run.id, attempt: run.attempt });
 }
-/**
- * The resolve run's renumbering (design §5 Merge conflict), after its merge and before its snapshot, so the
- * moves are part of the merge and never the agent's changes. Staged, not committed: the run commits the checked
- * tree itself. A failure restores the index and the tracked files from before it, removes any moved step file,
- * logs, and lets the run go on as if nothing moved.
- */
-async function renumberPendingMerge(w: Worker, run: Run, handle: SandboxHandle, baseSha: string, realIndex: string): Promise<Renumbering[]> {
-  const saved = `${realIndex}.sf-renumber`;
-  const cp = (from: string, to: string) => w.d.sandbox.exec(handle, ["cp", "--", from, to], { env: w.d.toolEnv });
-  const copied = await cp(realIndex, saved);
-  if (copied.exit_code !== 0) throw new RunFailure("git_failed", `copy index: ${copied.stderr.trim()}`, true);
-  try {
-    return await w.stageRenumbering(run, handle, ["--cached", baseSha]);
-  } catch (err) {
-    const restored = await cp(saved, realIndex);
-    if (restored.exit_code !== 0) throw new RunFailure("git_failed", `restore index: ${restored.stderr.trim()}`, true);
-    await w.git(handle, [...NO_HOOKS, "checkout-index", "-a", "-f"]);
-    await w.git(handle, [...NO_HOOKS, "clean", "-fdq", "--", MYSQL_STEPS_DIR]);
-    w.d.log.warn("migration renumbering failed: the index is restored and the run goes on", {
-      run_id: run.id,
-      error: errorText(err),
-    });
-    return [];
-  }
-}
-
 /**
  * The working tree as a tree object, staged through the worker's own index file (seeded by the caller) so
  * the merge's index, with its conflict stages, is untouched. `add -A` updates every path the seed tracks,

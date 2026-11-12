@@ -1,15 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  type MergeIO,
-  appendMerge,
-  applyRenumbering,
-  mergeAppendedConflicts,
-  renameStepRefs,
-  renumberPlan,
-  staleStepRefs,
-  stepFile,
-  touchesSqliteSchema,
-} from "../src/core/mechanical.js";
+import { type MergeIO, appendMerge, mergeAppendedConflicts } from "../src/core/mechanical.js";
 
 const lines = (...xs: string[]) => xs.map((x) => `${x}\n`).join("");
 
@@ -45,19 +35,13 @@ describe("appended-line merge (design §5, issue #297)", () => {
   });
 
   /** An index in memory: stages per conflicted path, and what each write staged. */
-  function memoryIO(stages: Record<string, [string | null, string | null, string | null]>, tree: Record<string, string> = {}) {
+  function memoryIO(stages: Record<string, [string | null, string | null, string | null]>) {
     const written: Record<string, string> = {};
-    const moves: string[] = [];
     const io: MergeIO = {
-      stage: async (path, n) => (n === 0 ? written[path] ?? tree[path] ?? null : stages[path]?.[n - 1] ?? null),
+      stage: async (path, n) => (n === 0 ? written[path] ?? null : stages[path]?.[n - 1] ?? null),
       write: async (path, text) => void (written[path] = text),
-      move: async (from, to) => {
-        moves.push(`${from} → ${to}`);
-        tree[to] = tree[from]!;
-        delete tree[from];
-      },
     };
-    return { io, written, moves };
+    return { io, written };
   }
 
   it("every conflicted file appendable: each is merged and staged, with no model call", async () => {
@@ -83,78 +67,5 @@ describe("appended-line merge (design §5, issue #297)", () => {
     expect(await mergeAppendedConflicts(memoryIO({ "n.md": [null, "x\n", "y\n"] }).io, ["n.md"])).toBe(false);
     expect(await mergeAppendedConflicts(memoryIO({ "n.md": ["x\n", null, "x\ny\n"] }).io, ["n.md"])).toBe(false);
     expect(await mergeAppendedConflicts(memoryIO({}).io, [])).toBe(false);
-  });
-});
-
-describe("migration renumbering (design §5, issue #297)", () => {
-  const base = ["migrations/mysql/0024-item-thread.sql", "migrations/mysql/0025-from-base.sql", "migrations/mysql/README.md"];
-
-  it("reads step files only", () => {
-    expect(stepFile("migrations/mysql/0025-a-b.sql")).toEqual({ number: 25, rest: "a-b.sql" });
-    expect(stepFile("migrations/mysql/0026-data.ts")).toEqual({ number: 26, rest: "data.ts" });
-    expect(stepFile("migrations/mysql/README.md")).toBeNull();
-    expect(stepFile("migrations/sqlite/0025-a.sql")).toBeNull();
-  });
-
-  it("a new step whose number the base took moves to the next free number; later new steps follow in order", () => {
-    expect(renumberPlan(base, ["migrations/mysql/0025-mine.sql"])).toEqual([
-      { from: "migrations/mysql/0025-mine.sql", to: "migrations/mysql/0026-mine.sql" },
-    ]);
-    expect(renumberPlan(base, ["migrations/mysql/0026-second.ts", "migrations/mysql/0025-first.sql"])).toEqual([
-      { from: "migrations/mysql/0025-first.sql", to: "migrations/mysql/0026-first.sql" },
-      { from: "migrations/mysql/0026-second.ts", to: "migrations/mysql/0027-second.ts" },
-    ]);
-  });
-
-  it("no collision, no move", () => {
-    expect(renumberPlan(base, ["migrations/mysql/0026-mine.sql"])).toEqual([]);
-    expect(renumberPlan(base, [])).toEqual([]);
-  });
-
-  it("a SQLite schema change in the same branch is detected (renumbering is then skipped)", () => {
-    expect(touchesSqliteSchema(["src/impl/store/sqlite/schema.ts", "migrations/mysql/0025-a.sql"])).toBe(true);
-    expect(touchesSqliteSchema(["src/impl/store/mysql/schema.ts", "docs/design.md"])).toBe(false);
-  });
-
-  it("literal references to the old step name follow; other numbers and longer names do not", () => {
-    const plan = [{ from: "migrations/mysql/0025-mine.sql", to: "migrations/mysql/0026-mine.sql" }];
-    expect(renameStepRefs("step `migrations/mysql/0025-mine.sql`; 0025-mine; 0025-mine-two; 10025-mine; 0025", plan)).toBe(
-      "step `migrations/mysql/0026-mine.sql`; 0026-mine; 0025-mine-two; 10025-mine; 0025",
-    );
-  });
-
-  it("applying a plan moves the step and rewrites the changed files that name it", async () => {
-    const tree: Record<string, string> = {
-      "migrations/mysql/0025-mine.sql": "-- 0025-mine\nCREATE TABLE t (id INT);\n",
-      "docs/design/05-coordination.md": "MySQL step `migrations/mysql/0025-mine.sql`.\n",
-      "lib/a.ts": "export const a = 1;\n",
-    };
-    const written: Record<string, string> = {};
-    const moves: string[] = [];
-    const io: MergeIO = {
-      stage: async (path, n) => (n === 0 ? written[path] ?? tree[path] ?? null : null),
-      write: async (path, text) => void (written[path] = text),
-      move: async (from, to) => {
-        moves.push(`${from} → ${to}`);
-        tree[to] = tree[from]!;
-        delete tree[from];
-      },
-    };
-    const plan = renumberPlan(base, ["migrations/mysql/0025-mine.sql"]);
-    const edited = await applyRenumbering(io, plan, ["migrations/mysql/0025-mine.sql", "docs/design/05-coordination.md", "lib/a.ts", "gone.md"]);
-    expect(moves).toEqual(["migrations/mysql/0025-mine.sql → migrations/mysql/0026-mine.sql"]);
-    expect(edited).toEqual(["migrations/mysql/0026-mine.sql", "docs/design/05-coordination.md"]);
-    expect(written["docs/design/05-coordination.md"]).toBe("MySQL step `migrations/mysql/0026-mine.sql`.\n");
-    expect(written["migrations/mysql/0026-mine.sql"]).toBe("-- 0026-mine\nCREATE TABLE t (id INT);\n");
-  });
-
-  it("after a plan, the files whose text still names an old step are listed (a conflicted file the rewrite skipped)", () => {
-    const plan = [{ from: "migrations/mysql/0039-sync-lease.sql", to: "migrations/mysql/0040-sync-lease.sql" }];
-    const files = [
-      { path: "docs/design.md", text: "<<<<<<< HEAD\n- step 0039-sync-lease\n=======\n- other\n>>>>>>> origin/main\n" },
-      { path: "docs/a.md", text: "step 0040-sync-lease; 0039-implicit-verdicts\n" },
-    ];
-    expect(staleStepRefs(files, plan)).toEqual(["docs/design.md"]);
-    expect(staleStepRefs(files, [])).toEqual([]);
   });
 });

@@ -5,8 +5,6 @@ import { type ReviewOutput, specFindings, unverifiedOf } from "../core/outputs.j
 import { AGENT_STALLED, RATE_LIMITED } from "../core/policy.js";
 import { type LocalRoute, type PrText, TRUSTED_GIT_ENV, type WorkerDeps, hasTool, prTitle, routeFor, runPushIntents, threadDelivery } from "../core/worker-deps.js";
 import { stripAnsi } from "../core/output-summary.js";
-import { MYSQL_STEPS_DIR, type Renumbering, staleStepRefs } from "../core/mechanical.js";
-import type { ConflictFile } from "../core/resolve.js";
 import { Bash, Edit, Glob, Grep, Read, TOOLS, type ToolSpec, Write } from "../core/tools/index.js";
 import type { Run, RunId, RunKind, RunResume, RunUsage, Timestamp, WipRef, WorkItem } from "../core/types.js";
 import type { AgentRunResult } from "../interfaces/agent-runner.js";
@@ -469,25 +467,6 @@ export function fenced(text: string): string {
   const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((m) => m[0].length));
   const fence = "`".repeat(longest + 1);
   return `${fence}text\n${text}\n${fence}`;
-}
-
-/**
- * The resolve prompt's note on a renumbering (design §5 Merge conflict): the conflicting files that still name a
- * moved step, which the worker could not rewrite. Empty when there are none.
- */
-export function staleStepNote(plan: readonly Renumbering[], files: readonly ConflictFile[]): string {
-  const stale = staleStepRefs(files, plan);
-  if (stale.length === 0) return "";
-  const name = (p: string) => `\`${p.slice(MYSQL_STEPS_DIR.length)}\``;
-  return [
-    "",
-    "",
-    "## Migration steps renumbered",
-    "",
-    `The factory renumbered this branch's MySQL steps after the merge, because the base took their numbers: ${plan.map((r) => `${name(r.from)} → ${name(r.to)}`).join(", ")}. It renamed the references in every file it could; these conflicting files still name an old step. Use the new name when you resolve them:`,
-    "",
-    ...stale.map((p) => `- \`${p}\``),
-  ].join("\n");
 }
 
 /** The search query for implement and review: the problem plus the done criteria. */
