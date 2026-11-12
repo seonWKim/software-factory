@@ -16,6 +16,8 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { LiveTacit } from "../src/runtime/live-tacit.js";
 import { type SettingsDeps, runSettings } from "../src/settings-cmd.js";
 import { WorkerPool } from "../src/worker/index.js";
+import { HealthMonitor } from "../src/ui/health.js";
+import { type UiSettings, readSettings } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, cleanScanner, config, prompts, silent,
@@ -198,5 +200,20 @@ describe("integrations: no restart", () => {
     await s.set({ tacit: "fake" });
     await s.settings.refresh();
     expect(await rules.read(silent)).toContain("rule from fake");
+  });
+});
+
+describe("integrations: the Settings page", () => {
+  it("lists each integration with the plugin in force and whether the setting or the config chose it", async () => {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const d = { store, scanner: cleanScanner, clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock) };
+    const s: UiSettings = {
+      base: baseFromConfig(config), repo: config.repo, actor: "local:owner", resolveProject: async () => null, csrfToken: "t",
+      integrations: [{ kind: "tacit", interface: "TacitLedger", configured: "none" }],
+    };
+    expect((await readSettings(d, s)).integrations).toEqual([{ kind: "tacit", interface: "TacitLedger", plugin: "none", source: "config", configured: "none" }]);
+    await store.setSettingOverride({ key: "integrations", project: "", value: '{"tacit":"agents-home"}', actor: "local:owner" });
+    expect((await readSettings(d, s)).integrations).toEqual([{ kind: "tacit", interface: "TacitLedger", plugin: "agents-home", source: "setting", configured: "none" }]);
   });
 });

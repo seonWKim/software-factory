@@ -18,7 +18,8 @@ import { ProposalsSection, StandingSection } from "./standing.js";
 // also shows the configured project's learned value (design 08-settings) next to its file and override values, with
 // its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
 // The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
-// and a quiet-hours field.
+// and a quiet-hours field. Integrations (design 08-settings, 2026-11-12) lists each integration with the plugin in force;
+// its Switch removes the dashboard's choice, so factory.config.json decides again.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
@@ -398,6 +399,40 @@ function NoticesSection({ view }: { view: SettingsView }) {
   );
 }
 
+/** Each integration's state; the Switch removes the `integrations` entry the dashboard stored (back to the config). */
+function IntegrationsSection({ view }: { view: SettingsView }) {
+  const { busy, error, done, write } = useWrite(view.csrf_token);
+  const row = view.keys.find((k) => k.key === "integrations");
+  const integrations = view.integrations ?? [];
+  if (!row || integrations.length === 0) return null;
+  const back = (kind: string) => {
+    const rest = { ...(asObject(row.value) ?? {}) };
+    delete rest[kind];
+    void write(Object.keys(rest).length === 0 ? { action: "reset", key: row.key } : { action: "set", key: row.key, value: JSON.stringify(rest) });
+  };
+  return (
+    <Section title="Integrations" count={integrations.length}>
+      <p className="mb-2 text-sm text-pretty text-text-2">
+        Turned on from their own page (the tacit ledger from Rules). A switch turns one off: factory.config.json decides again, with no restart.
+      </p>
+      <ul className="space-y-2 text-sm">
+        {integrations.map((i) => {
+          const on = i.plugin !== "none";
+          return (
+            <li key={i.kind} data-integration={i.kind} className="flex flex-wrap items-center gap-2">
+              <Switch aria-label={`Integration: ${i.interface}`} checked={on} disabled={busy || i.source !== "setting"} onCheckedChange={() => back(i.kind)} />
+              <span className="font-medium">{i.interface}</span>
+              <Badge level={on ? "needs_approval" : undefined}>{on ? i.plugin : "off"}</Badge>
+              <span className="text-xs text-pretty text-text-2">{i.source === "setting" ? "set from the dashboard" : "from factory.config.json"}</span>
+            </li>
+          );
+        })}
+      </ul>
+      <Outcome error={error} done={done} />
+    </Section>
+  );
+}
+
 function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
@@ -558,6 +593,7 @@ export function SettingsPage() {
       <ProposalsSection />
       <ModeSection view={v} />
       <NoticesSection view={v} />
+      <IntegrationsSection view={v} />
       <PageCommands />
       <Section title="Settable keys" count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
