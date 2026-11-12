@@ -1,14 +1,15 @@
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571). GET /api/v1/rules lists the
-// owner's tacit ledger entries waiting for a verdict (pending pushbacks, candidate classes, structure proposals), each
-// with its evidence lines and rule draft, read through `TacitLedger.list` only. POST /api/v1/rules/verdict sends one
-// verdict (promote, reject or hold) with the owner's reason, and for promote their wording, through
-// `TacitLedger.verdict` only: the page has no other write path and writes nothing to the store. The request guards
+// owner's tacit ledger entries waiting for a verdict (candidate classes `C-…` and structure proposals `P-…`, open or
+// held), each with its ID, title and state, read through `TacitLedger.pending` only. POST /api/v1/rules/verdict sends
+// one verdict (promote, reject or hold) with the owner's reason, and for promote of a class their wording as the rule,
+// through `TacitLedger.verdict` only: the page has no other write path and writes nothing to the store. The request guards
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (decision 1 of #571:
 // the store's local owner only); every refusal comes before the ledger's CLI runs.
 
-import { PENDING_STATE, RULE_VERDICTS, type RuleEntry, type RuleVerdict, ruleEntry } from "../core/learned-rules.js";
+import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
 import { errorText } from "../core/log.js";
 import type { UserId } from "../core/types.js";
+import { type TacitPendingEntry, tacitIdKind } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import { Withholder } from "./withhold.js";
@@ -37,10 +38,10 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   if (!tacit?.enabled) return { status: 200, value: { enabled: false, entries: [], error: null, csrf_token: null, judge: null } };
   const who = d.pauses ? await owner(d, d.pauses) : { error: "The page has no owner check: verdicts are off." };
   const judge = "error" in who ? who.error : null;
-  let entries: RuleEntry[] = [];
+  let entries: readonly TacitPendingEntry[] = [];
   let error: string | null = null;
   try {
-    entries = (await tacit.list(PENDING_STATE)).map(ruleEntry).filter((e): e is RuleEntry => e !== null);
+    entries = await tacit.pending();
   } catch (err) {
     error = `The ledger could not be read: ${errorText(err)}`;
   }
@@ -48,10 +49,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   const text = async (v: string) => (await w.plain(v)).text;
   const shown = [];
   for (const e of entries) {
-    shown.push({
-      id: await text(e.id), kind: e.kind, scope: e.scope,
-      evidence: await Promise.all(e.evidence.map(text)), rule_draft: await text(e.rule_draft),
-    });
+    shown.push({ id: await text(e.id), title: await text(e.title), state: e.state });
   }
   return {
     status: 200,
@@ -71,15 +69,16 @@ function parseVerdict(body: unknown): VerdictBody | string {
   if (!RULE_VERDICTS.includes(b.verdict as RuleVerdict)) return `verdict must be one of ${RULE_VERDICTS.join(", ")}`;
   if (typeof b.reason !== "string" || b.reason.trim() === "" || b.reason.length > MAX_REASON) return `reason must be 1 to ${MAX_REASON} characters`;
   if (b.text !== undefined) {
-    if (b.verdict !== "promote") return "only promote takes a text";
+    if (b.verdict !== "promote" || tacitIdKind(b.id.trim()) !== "class") return "only promote of a class (C-) takes a text";
     if (typeof b.text !== "string" || b.text.trim() === "" || b.text.length > MAX_RULE_TEXT) return `text must be 1 to ${MAX_RULE_TEXT} characters`;
   }
   return { id: b.id.trim(), verdict: b.verdict as RuleVerdict, reason: b.reason.trim(), ...(typeof b.text === "string" ? { text: b.text.trim() } : {}) };
 }
 
 /**
- * POST /api/v1/rules/verdict with `{ id, verdict, reason, text? }`, after the request guards: 400 for a body that is not
- * one, 409 with no ledger, 403 for anyone but the owner, 502 when the ledger's CLI fails; else 200.
+ * POST /api/v1/rules/verdict with `{ id, verdict, reason, text? }` (`text` only on promote of a class), after the
+ * request guards: 400 for a body that is not one, 409 with no ledger, 403 for anyone but the owner, 502 when the
+ * ledger's CLI fails; else 200.
  */
 export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
   const v = parseVerdict(body);
@@ -88,8 +87,8 @@ export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown)
   const who = await owner(d, p);
   if ("error" in who) return { status: 403, value: { error: who.error } };
   try {
-    // The edited wording goes with the verdict; the ledger keeps the entry's own draft (decision 3 of #571).
-    await d.tacit.verdict(v.id, v.verdict, { reason: v.reason, by: who.user, ...(v.text !== undefined ? { text: v.text } : {}) });
+    // The owner's wording goes as the promoted class's rule; the CLIs take no "by", so the log keeps who judged.
+    await d.tacit.verdict(v.id, v.verdict, v.reason, v.text);
   } catch (err) {
     return { status: 502, value: { error: `The ledger refused the verdict: ${errorText(err)}` } };
   }
