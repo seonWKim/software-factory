@@ -1,5 +1,5 @@
 import type { UserId } from "./types.js";
-import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
+import type { AuthAction, AuthDecision, AuthProvider, AuthResource, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
 /**
@@ -41,7 +41,8 @@ export class OwnerAuth implements AuthProvider {
     return user_id ? { user_id, attributes: {} } : null;
   }
 
-  async authorize(principal: Principal, action: AuthAction): Promise<AuthDecision> {
+  /** The resource does not matter: the owner may act on every project and item. */
+  async authorize(principal: Principal, action: AuthAction, _resource?: AuthResource): Promise<AuthDecision> {
     if (OPEN_ACTIONS.includes(action)) return { allow: true };
     return (await this.isOwner(principal.user_id)) ? { allow: true } : { allow: false, reason: NOT_OWNER };
   }

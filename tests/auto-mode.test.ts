@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,11 +15,9 @@ import { footerCommands } from "../src/impl/source/slack-format.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
@@ -77,11 +76,11 @@ async function autoFactory(opts: Opts = {}) {
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
+  const auth = new OwnerAuth({ store: store, claimer: null });
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
   const controller = new ControllerRole({
-    store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
+    store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner,
     sandbox: opts.controllerSandbox ? opts.controllerSandbox(sandbox) : sandbox, repeated_failure_rule: false, settings,
     check_env: { PATH: process.env.PATH ?? "" },
   });

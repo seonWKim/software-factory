@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,8 +9,6 @@ import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { cleanScanner, config, silent } from "./helpers/fakes.js";
@@ -58,9 +57,9 @@ describe.each(BACKENDS)("local merge on a shared store: $name", ({ make }) => {
     expect(moved.ok).toBe(true);
     const mainBefore = git(repo, "rev-parse", "main");
 
-    const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
+    const auth = new OwnerAuth({ store: store, claimer: null });
     const replica = (n: number) => new ControllerRole({
-      store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
+      store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner,
       sandbox: new NoOpSandbox(join(root, `wt${n}`), undefined, undefined, { local: true }), repeated_failure_rule: false,
     });
     const who = { provider: "local" as const, subject: "me@example.com" };

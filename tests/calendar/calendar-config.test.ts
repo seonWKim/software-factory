@@ -33,7 +33,7 @@ function root(config: Record<string, unknown>): string {
 
 const withFake = (name: string) => withPlugin(REGISTRY, "calendar", name, () => new FakeCalendarSource());
 const select = (registry: typeof REGISTRY, calendar: unknown) =>
-  selectPlugins(registry, { store: { type: "sqlite" }, auth: "github", calendar }, { platform: "linux" });
+  selectPlugins(registry, { store: { type: "sqlite" }, calendar }, { platform: "linux" });
 
 describe("calendar config key", () => {
   it("is a top-level key, never a plugins key, registered as an optional kind with no default", () => {
@@ -81,7 +81,7 @@ describe("calendar config key", () => {
   });
 
   it("`plugins.calendar` is an unknown plugins key that points to the top-level key", () => {
-    expect(() => selectPlugins(REGISTRY, { store: { type: "sqlite" }, auth: "github", plugins: { calendar: [] } })).toThrow(
+    expect(() => selectPlugins(REGISTRY, { store: { type: "sqlite" }, plugins: { calendar: [] } })).toThrow(
       /unknown plugins key "calendar"; calendar is selected by the top-level "calendar" key/,
     );
   });

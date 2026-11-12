@@ -1,7 +1,7 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { describe, expect, it } from "vitest";
 import { uiCommandsActor } from "../src/compose.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { parseVerdict } from "../src/core/verdict.js";
 // TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
@@ -36,7 +36,7 @@ const RETRY_MS = 1_000;
 async function harness(opts: { localAuth?: boolean; tick_ms?: number } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
-  const auth = opts.localAuth ? new LocalAuthProvider(store) : new FakeAuth();
+  const auth = opts.localAuth ? new OwnerAuth({ store: store, claimer: null }) : new FakeAuth();
   const controller = new ControllerRole({ store, source, auth, clock, config: { ...config, tick_ms: opts.tick_ms ?? config.tick_ms }, log: silent, scanner: cleanScanner });
   const actor = { kind: "system" as const, id: "system:test" };
   /** A work item on issue `n`, put in the state `patch` describes. */
@@ -391,7 +391,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
 
   /** The page as `actor`, its grants checked as compose.ts checks them: the local auth plugin over the local grants, on the project. */
   function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): ApiDeps {
-    const auth = new LocalAuthProvider(h.store);
+    const auth = new OwnerAuth({ store: h.store, claimer: null });
     const allowed = (action: PageAction) => auth.authorize({ user_id: actor, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
@@ -439,8 +439,8 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     );
     // Sent anyway (another page, the CLI): the controller, with the local auth plugin as compose.ts wires it, refuses it
     // with the same reason.
-    const local = new LocalAuthProvider(h.store);
-    const controller = new ControllerRole({ store: h.store, source: h.source, auth: local, local_auth: local, clock: h.clock, config, log: silent, scanner: cleanScanner });
+    const local = new OwnerAuth({ store: h.store, claimer: null });
+    const controller = new ControllerRole({ store: h.store, source: h.source, auth: local, clock: h.clock, config, log: silent, scanner: cleanScanner });
     await h.request("app-x", helper, "approve", { work_item_id: it1.id });
     await controller.tickCommands();
     const [row] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
@@ -538,7 +538,7 @@ describe("Needs you: the verdict control (issue #513)", () => {
 
   /** The page as the local owner, its grants checked by the local auth plugin, as compose.ts checks them. */
   function page(h: Awaited<ReturnType<typeof harness>>): ApiDeps {
-    const auth = new LocalAuthProvider(h.store);
+    const auth = new OwnerAuth({ store: h.store, claimer: null });
     const allowed = (action: PageAction) => auth.authorize({ user_id: OWNER, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
@@ -625,7 +625,7 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const llm = new ApproveLLM();
-    const auth = new LocalAuthProvider(store);
+    const auth = new OwnerAuth({ store: store, claimer: null });
     const controller = new ControllerRole({ store, source, auth, clock, config, log: silent, scanner: cleanScanner, llm });
     await store.claimLocalOwner(OWNER);
     await store.setLocalUserRole(HELPER, "requester", OWNER);

@@ -1,7 +1,7 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId } from "../src/core/types.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { LINK_CODE_PATTERN, linkCodeCommand, newLinkCode } from "../src/impl/auth/link-code.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
@@ -131,7 +131,7 @@ describe("identity links: codes and the CLI", () => {
 describe("identity links: resolve", () => {
   it("a GitHub account resolves to github:<id>; a linked account to its user; an unlinked Slack account to nobody", async () => {
     const { store } = await newStore();
-    const auth = new GitHubAuthProvider(store, []);
+    const auth = new OwnerAuth({ store: store, claimer: null });
     expect(await auth.resolve(gh("7", "seven"))).toMatchObject({ user_id: "github:7" });
     expect(await auth.resolve(slack("U1"))).toBeNull();
     const code = newLinkCode();
@@ -142,7 +142,7 @@ describe("identity links: resolve", () => {
 
   it("a display name change does not change which user an identity maps to", async () => {
     const { store } = await newStore();
-    const auth = new GitHubAuthProvider(store, []);
+    const auth = new OwnerAuth({ store: store, claimer: null });
     const code = newLinkCode();
     await store.createLinkCode(USER, code);
     await store.redeemLinkCode(code, gh("42", "old-name"));
@@ -158,7 +158,7 @@ describe("/link through the controller", () => {
     const { store } = await newStore(clock);
     const source = new FakeSource();
     const log = recordingLog();
-    const auth = new GitHubAuthProvider(store, []);
+    const auth = new OwnerAuth({ store: store, claimer: null });
     const controller = new ControllerRole({ store, source, auth, clock, config, log, scanner: cleanScanner });
     let n = 100;
     const link = async (body: string, who = gh("5", "five")) => {

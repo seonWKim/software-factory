@@ -1,12 +1,11 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { SourceRef, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import {
@@ -204,7 +203,7 @@ describe("no source at all", () => {
   async function factory() {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} })]);
+    const auth = new OwnerAuth({ store: store, claimer: OWNER });
     const controller = new ControllerRole({ store, sources: [], auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),

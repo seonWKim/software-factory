@@ -2,13 +2,12 @@
 // effect; POST /api/v1/pauses/resume ends one behind the settings write's guards (Host, Origin, Content-Type,
 // CSRF token) and then the owner check (approve_spec). Every refusal leaves every claim_pauses row as it was.
 
+import { OwnerAuth } from "../src/core/authorize.js";
 import { describe, expect, it } from "vitest";
 import type { LogFields, Logger } from "../src/core/log.js";
 import type { Timestamp, UserId } from "../src/core/types.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { RESUMABLE_PAUSES } from "../src/resume-cmd.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -49,7 +48,7 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
       return typeof v === "function" ? v.bind(target) : v;
     },
   });
-  const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] }, [STRANGER]: { "*": ["requester"] } }, deny: {} })]);
+  const auth = new OwnerAuth({ store: store, claimer: OWNER });
   const log = new MemLog();
   const pauses: UiPauses = {
     principal: async () => (opts.user === undefined ? OWNER : opts.user),

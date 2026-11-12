@@ -1,9 +1,9 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, phaseMarker } from "../src/core/split.js";
 import type { CloseReason, RunOutcome, SourceRef, UserId, WorkItem, WorkItemId } from "../src/core/types.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -40,8 +40,8 @@ async function setup() {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const local = new FlakyLocal(store);
-  const auth = new LocalAuthProvider(store);
-  const controller = new ControllerRole({ store, sources: [local], auth, local_auth: auth, clock, config, log: silent, scanner: cleanScanner });
+  const auth = new OwnerAuth({ store: store, claimer: null });
+  const controller = new ControllerRole({ store, sources: [local], auth, clock, config, log: silent, scanner: cleanScanner });
   let n = 0;
   const cli = (a: CliAction) => {
     const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };

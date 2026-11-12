@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -10,11 +11,9 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId } from "../src/core/types.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import type { GitHubClient } from "../src/impl/github/github-client.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -90,9 +89,9 @@ async function setup(opts: { forge?: Forge; store?: FactoryStore; clock?: FakeCl
 }
 
 function replica(store: FactoryStore, clock: FakeClock, sandbox: FakeMergeSandbox, forge?: Forge, host?: { replica_id: string; git_host: { id: string; flush_all: boolean } }) {
-  const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
+  const auth = new OwnerAuth({ store: store, claimer: null });
   return new ControllerRole({
-    store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
+    store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner,
     sandbox: sandbox as unknown as Sandbox, repeated_failure_rule: false, ...(forge ? { forge } : {}), ...host,
   });
 }
