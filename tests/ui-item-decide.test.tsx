@@ -95,8 +95,8 @@ describe("item page: What you need to decide", () => {
     // The buttons read Approve, Revise and Reject; approve, the one the state asks for, is the one primary button.
     const buttons = ["approve", "revise", "reject"].map((n) => within(decide).getByRole("button", { name: n }));
     for (const b of buttons) expect(b.className.split(" ")).toContain("capitalize");
-    expect(buttons[0]!.className).toContain("bg-text-1");
-    expect(buttons.slice(1).map((b) => b.className.includes("bg-text-1"))).toEqual([false, false]);
+    expect(buttons[0]!.className).toContain("bg-accent");
+    expect(buttons.slice(1).map((b) => b.className.includes("bg-accent"))).toEqual([false, false]);
   });
 
   it("has no control without an accessible name", async () => {
@@ -111,10 +111,10 @@ describe("item page: What you need to decide", () => {
   it("the severity dropdown has a visible label, Severity", async () => {
     body = detail({ item: item({ stage: "REVIEW", blocked_reason: "merge_pending", change_ref: "41" }), commands: [cmd("verdict")], spec: null });
     mount();
-    const select = await screen.findByRole("combobox", { name: "Severity" });
+    // The accessible name says which severity (item-page.test.tsx); the label beside it shows "Severity".
+    const select = await screen.findByRole("combobox", { name: "Verdict severity" });
     const label = select.closest("label")!;
     expect(label.textContent).toContain("Severity");
-    expect(select.getAttribute("aria-label")).toBeNull();
   });
 
   it("the terminal hint names the item's short number; Copy copies the full command", async () => {

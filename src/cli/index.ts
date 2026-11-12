@@ -20,3 +20,17 @@ export async function loadCommands(root: string = import.meta.dirname): Promise<
   }
   return out;
 }
+
+/**
+ * The command `factory <cmd> <args...>` runs, the name it is called by and its arguments; null for none (print the
+ * usage). A first word no command claims, unless it is a flag, runs `fallback` (main.ts: the sentence form,
+ * `factory "<words>"`, design 04-gate-commands), which gets every word, the first included.
+ */
+export function resolveCommand(
+  commands: ReadonlyMap<string, CommandDescriptor>, fallback: CommandDescriptor, cmd: string | undefined, args: readonly string[],
+): { command: CommandDescriptor; name: string; args: readonly string[] } | null {
+  if (cmd === undefined) return null;
+  const known = commands.get(cmd);
+  if (known) return { command: known, name: cmd, args };
+  return cmd.startsWith("-") ? null : { command: fallback, name: fallback.names[0]!, args: [cmd, ...args] };
+}

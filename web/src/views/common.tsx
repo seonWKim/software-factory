@@ -135,7 +135,7 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
 export function ItemsTable({ items, now, label, empty, plugins, actions = false }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"]; actions?: boolean }) {
   if (items.length === 0) return <Empty>{empty}</Empty>;
   const showIssue = plugins?.issues === "github";
-  const head = ["Item", "State", "Why", "Since", ...(showIssue ? ["Issue"] : []), "PR"];
+  const head = [t("col.item"), t("col.state"), t("col.why"), t("col.since"), ...(showIssue ? [t("col.issue")] : []), t("col.pr")];
   return (
     <Table label={label} head={head}>
       {items.map((it) => (
@@ -176,19 +176,19 @@ export function ItemsTable({ items, now, label, empty, plugins, actions = false 
 /** Running runs with their item, owner and heartbeat. */
 export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; items: ReadonlyMap<string, ItemRow>; now: number }) {
   const running = runs.filter((r) => r.status === "running");
-  if (running.length === 0) return <Empty>No run is running. Queued runs start when a worker is free.</Empty>;
+  if (running.length === 0) return <Empty>{t("running.empty")}</Empty>;
   return (
-    <Table label="Running now" head={["Item", "Run", "Attempt", "Worker", "Running for", "Heartbeat"]}>
+    <Table label={t("running.label")} head={[t("col.item"), t("col.run"), t("col.attempt"), t("col.worker"), t("col.runningFor"), t("col.heartbeat")]}>
       {running.map((r) => {
         const it = items.get(r.work_item_id);
         return (
-          <Tr key={r.id}>
+          <Tr key={r.id} data-key={r.id}>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} itemPage /> : <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{r.work_item_id}</Link>}</Td>
             <Td>{r.kind}</Td>
             <Td className="tabular-nums">{r.attempt}</Td>
             <Td><WorkerName id={r.owner} /></Td>
             <Td className="tabular-nums">{ago(r.started_at, now)}</Td>
-            <Td className="tabular-nums">{ago(r.heartbeat_at, now)} ago</Td>
+            <Td className="tabular-nums">{t("time.ago", { time: ago(r.heartbeat_at, now) })}</Td>
           </Tr>
         );
       })}
@@ -198,19 +198,19 @@ export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; it
 
 /** Queued runs in claim order, with their item and when each may start: "now" or its retry time, else why it waits. */
 export function QueueTable({ queue, items, now, limit }: { queue: readonly QueueRow[]; items: ReadonlyMap<string, ItemRow>; now: number; limit?: number }) {
-  if (queue.length === 0) return <Empty>The queue is empty.</Empty>;
+  if (queue.length === 0) return <Empty>{t("queue.empty")}</Empty>;
   const shown = limit ? queue.slice(0, limit) : queue;
   return (
-    <Table label="Queue" head={["#", "Item", "Run", "Attempt", "Queued", "Starts"]}>
+    <Table label={t("page.queue")} head={["#", t("col.item"), t("col.run"), t("col.attempt"), t("col.queued"), t("col.starts")]}>
       {shown.map((q) => {
         const it = items.get(q.work_item_id);
         return (
-          <Tr key={q.id}>
+          <Tr key={q.id} data-key={q.id}>
             <Td className="tabular-nums">{q.position}</Td>
             <Td className="max-w-md">{it ? <ItemTitle id={it.id} title={it.title} source={it.source} itemPage /> : <Link href={itemPath(q.work_item_id)} className={LINK_CLASS}>{q.work_item_id}</Link>}</Td>
             <Td>{q.kind}</Td>
             <Td className="tabular-nums">{q.attempt}</Td>
-            <Td className="tabular-nums">{ago(q.created_at, now)} ago</Td>
+            <Td className="tabular-nums">{t("time.ago", { time: ago(q.created_at, now) })}</Td>
             <Td className="tabular-nums">{q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)}</Td>
           </Tr>
         );

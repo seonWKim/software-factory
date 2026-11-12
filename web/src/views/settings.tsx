@@ -1,10 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
-import { cn } from "../lib/cn.js";
+import { Textarea } from "../components/ui/textarea.js";
 import { ago, duration } from "../lib/format.js";
 import { useNow } from "./common.js";
 import { ProposalsSection, StandingSection } from "./standing.js";
@@ -15,15 +17,13 @@ import { ProposalsSection, StandingSection } from "./standing.js";
 // the same checks as `factory settings`; a refusal is shown next to the field it came from. A per-project gate key
 // also shows the configured project's learned value (design 08-settings) next to its file and override values, with
 // its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
+// The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
+// and a quiet-hours field.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
 
-const input =
-  "rounded-control border border-border-strong bg-surface px-2 py-1 text-sm tabular-nums " +
-  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus";
-const textButton = "h-8 w-auto px-2";
 /** message_style (design 04-agents): what it does in one line, and an example. */
 const STYLE_HINT = "Added after each agent's instructions; changes only how replies, specs and summaries read.";
 const STYLE_EXAMPLE = "Example: Short sentences. Plain words, no jargon. Lead with the decision.";
@@ -112,13 +112,13 @@ const summaryOf = (obj: Record<string, unknown>) => `${Object.keys(obj).length} 
  */
 function JsonValue({ text }: { text: string }) {
   const obj = asObject(text);
-  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs break-words">{text}</span>;
+  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs wrap-anywhere">{text}</span>;
   const list = (
     <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
       {entries(obj).map(([k, v]) => (
         <Fragment key={k}>
           <dt className="text-text-2">{k}</dt>
-          <dd className="min-w-0 break-words">{v}</dd>
+          <dd className="min-w-0 wrap-anywhere">{v}</dd>
         </Fragment>
       ))}
     </dl>
@@ -140,6 +140,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   const { busy, error, done, write } = useWrite(token);
   const [draft, setDraft] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
+  const uid = useId();
   const target = project === undefined ? {} : { project };
   const save = async (text: string) => {
     if (await write({ action: "set", key: row.key, value: text, ...target })) {
@@ -163,27 +164,34 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const current = asObject(value) ?? {};
     const shown = tiers ?? Object.fromEntries(TIERS.map((t) => [t, typeof current[t] === "string" ? (current[t] as string) : ""]));
     control = (
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
-        {TIERS.map((t) => (
-          <label key={t} className="flex items-center gap-1 text-xs text-text-2">
-            {t}
-            <input aria-label={`${label} ${t}`} className={cn(input, "w-28")} value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
-          </label>
-        ))}
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || tiers === null} aria-label={`Save ${label}`}>
-          Save
-        </Button>
+      // Two columns, tier | 7rem field, so the three fields start at one x; Save in its own row 12px below.
+      <form className="space-y-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+        <div data-tiers className="grid grid-cols-[auto_7rem] items-center gap-x-2 gap-y-3">
+          {TIERS.map((t) => (
+            <Fragment key={t}>
+              <label htmlFor={`${uid}-${t}`} className="text-xs text-text-2">
+                {t}
+              </label>
+              <Input id={`${uid}-${t}`} aria-label={`${label} ${t}`} className="w-full tabular-nums" value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
+            </Fragment>
+          ))}
+        </div>
+        <ButtonRow>
+          <Button type="submit" variant="secondary" disabled={busy || tiers === null} aria-label={`Save ${label}`}>
+            Save
+          </Button>
+        </ButtonRow>
       </form>
     );
   } else if (row.kind === "text") {
     // Free text: shown and edited as plain text, sent as a JSON string, as `factory settings set` takes it.
     const shown = draft ?? stringOf(value);
     control = (
-      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_HINT}</p>
-        <textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className={cn(input, "w-full min-w-48 text-sm")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className="w-full min-w-48" value={shown} onChange={(e) => setDraft(e.target.value)} />
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_EXAMPLE}</p>
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -194,9 +202,9 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const lines = shown.split("\n").length;
     const obj = asObject(value);
     const form = (
-      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className={cn(input, "w-full min-w-64 font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
+      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
+        <Textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className="w-full min-w-64 font-mono" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -214,14 +222,14 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const shown = draft ?? value;
     control = (
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <input
+        <Input
           aria-label={label}
           type="number"
-          className={cn(input, "w-32")}
+          className="w-32 tabular-nums"
           value={shown}
           onChange={(e) => setDraft(e.target.value)}
         />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -248,7 +256,7 @@ function ResetButton({ row, label, token, project, learned = false }: { row: Set
   const body: SettingsWrite & { learned?: true } = { action: "reset", key: row.key, ...(project === undefined ? {} : { project }), ...(learned ? { learned: true as const } : {}) };
   return (
     <div>
-      <Button variant="outline" className={textButton} disabled={busy} aria-label={`Reset ${learned ? "learned " : ""}${label}`} onClick={() => void write(body)}>
+      <Button variant="secondary" disabled={busy} aria-label={`Reset ${learned ? "learned " : ""}${label}`} onClick={() => void write(body)}>
         {learned ? "Reset learned" : "Reset"}
       </Button>
       <Outcome error={error} done={done} />
@@ -305,6 +313,91 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
   );
 }
 
+/** The kinds of wait on the owner that `notice_kinds` lists, in its order, each with its switch's label. */
+const NOTICE_KINDS = [
+  ["spec", "A spec waits for approval"],
+  ["merge", "A change waits for its merge"],
+  ["failure", "An item failed"],
+  ["other", "Anything else that needs you"],
+] as const;
+/** The keys the Notices section edits; their table rows point there instead of a generic editor that does not fit. */
+const NOTICE_KEYS = new Set(["notice_kinds", "quiet_hours"]);
+
+/** The strings in a JSON list; none for anything else. */
+function listOf(text: string): string[] {
+  try {
+    const v: unknown = JSON.parse(text);
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** A switch per kind; each change writes the whole `notice_kinds` list, kinds in their fixed order. */
+function NoticeKinds({ row, token }: { row: SettingRow; token: string }) {
+  const { busy, error, done, write } = useWrite(token);
+  const on = listOf(row.value);
+  const set = (kind: string, next: boolean) => {
+    const kinds = NOTICE_KINDS.map(([k]) => k).filter((k) => (k === kind ? next : on.includes(k)));
+    void write({ action: "set", key: row.key, value: JSON.stringify(kinds) });
+  };
+  return (
+    <div className="flex max-w-md flex-col gap-2 text-sm">
+      <span className="font-medium">Notice when</span>
+      {NOTICE_KINDS.map(([kind, label]) => (
+        <label key={kind} className="flex items-center gap-2">
+          <Switch aria-label={`Notice: ${kind}`} checked={on.includes(kind)} disabled={busy} onCheckedChange={(next) => set(kind, next)} />
+          <span className="text-pretty">{label}</span>
+        </label>
+      ))}
+      <Outcome error={error} done={done} />
+    </div>
+  );
+}
+
+/** The quiet-hours window as plain text (`HH:MM-HH:MM`, empty for off), sent as a JSON string; the server checks it. */
+function QuietHours({ row, token }: { row: SettingRow; token: string }) {
+  const { busy, error, done, write } = useWrite(token);
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? stringOf(row.value);
+  const save = async () => {
+    if (await write({ action: "set", key: row.key, value: JSON.stringify(shown.trim()) })) setDraft(null);
+  };
+  return (
+    <div className="flex max-w-md flex-col gap-1 text-sm">
+      <span className="font-medium">Quiet hours</span>
+      <p className="text-xs text-pretty text-text-2">
+        Local time, e.g. 22:00-07:00; empty is off. Notices inside it wait, then come as one summary.
+      </p>
+      <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
+        <Input aria-label="Quiet hours" placeholder="22:00-07:00" className="w-32 tabular-nums" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label="Save Quiet hours">
+          Save
+        </Button>
+      </form>
+      <Outcome error={error} done={done} />
+    </div>
+  );
+}
+
+/** Owner notices (design 09-notifications): which waits raise one, and the quiet hours that hold them. */
+function NoticesSection({ view }: { view: SettingsView }) {
+  const kinds = view.keys.find((k) => k.key === "notice_kinds");
+  const quiet = view.keys.find((k) => k.key === "quiet_hours");
+  if (!kinds && !quiet) return null;
+  return (
+    <Section title="Notices">
+      <p className="mb-2 text-sm text-pretty text-text-2">
+        The macOS app shows a notice when an item starts waiting on you. Changes apply on the next notifications pass.
+      </p>
+      <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
+        {kinds && <NoticeKinds row={kinds} token={view.csrf_token} />}
+        {quiet && <QuietHours row={quiet} token={view.csrf_token} />}
+      </div>
+    </Section>
+  );
+}
+
 function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
@@ -315,7 +408,13 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         <Description text={row.description} />
       </Td>
       <Td className="min-w-56">
-        <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        {NOTICE_KEYS.has(row.key) ? (
+          <p className="text-xs text-pretty text-text-2">
+            <span className="font-mono wrap-anywhere">{row.value}</span> · edit under Notices
+          </p>
+        ) : (
+          <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        )}
         <Duration settingKey={row.key} value={row.value} />
         {row.key === "workers" && row.max !== undefined && (
           <p className="mt-1 text-xs text-text-2">
@@ -328,7 +427,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
               for {view.project ?? view.repo}: {own ? `${own.value} (${own.source})` : "the global value"}
               {view.project === null && " · no project label stored yet; use factory settings --project on the command line"}
             </p>
-            <div className="flex items-start gap-2">
+            <div className="flex flex-wrap items-start gap-2">
               <Editor row={row} label={`${row.key} for ${view.repo}`} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
               {own?.source === "override" && <ResetButton row={row} label={`${row.key} for ${view.repo}`} token={view.csrf_token} project={view.repo} />}
             </div>
@@ -344,7 +443,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         {row.file_value !== null ? (
           <JsonValue text={row.file_value} />
         ) : asObject(row.default_value) === null ? (
-          <span className="font-mono text-xs break-words text-text-3">not set (default {row.default_value})</span>
+          <span className="font-mono text-xs wrap-anywhere text-text-3">not set (default {row.default_value})</span>
         ) : (
           <>
             <span className="text-xs text-text-3">not set; default:</span>
@@ -352,7 +451,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
           </>
         )}
       </Td>
-      <Td className="min-w-32 text-text-2">{row.applies_at}</Td>
+      <Td className="min-w-24 text-text-2">{row.applies_at}</Td>
       <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
     </Tr>
   );
@@ -458,6 +557,7 @@ export function SettingsPage() {
     <>
       <ProposalsSection />
       <ModeSection view={v} />
+      <NoticesSection view={v} />
       <PageCommands />
       <Section title="Settable keys" count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">

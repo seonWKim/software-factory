@@ -113,7 +113,7 @@ graph TB
     LLMP["LLMProvider<br/><b>claude-cli</b>, openai-compatible"]
     SBX["Sandbox<br/><b>noop</b> (git worktree)"]
     CAP["CapabilitySearch<br/><b>bm25</b>, list-all"]
-    TDB["TestDatabase<br/><b>none</b>, mysql-local"]
+    TDB["TestDatabase<br/><b>none</b>"]
   end
 
   subgraph SYNC["Sync plugins"]
@@ -293,7 +293,7 @@ graph LR
 - **Destinations.** A thread entry or action goes to `<source type>:<id>`; a run's push and PR, a merge queue landing and its base push go to a `git` destination that names the host whose factory repo holds the ref and the branch, so one destination's intents keep their order and only that host's outbound flushes them. Solo default: one process, which flushes every `git` destination. Enterprise setting: each replica flushes only its own host's.
 - **One forge sync per project**: only the `inbound_sync_leases` holder polls GitHub and writes the synced type; outbound's flush skips destinations this process cannot write now, so they wait for one that can.
 
-Tables by owner (the full list is the generated `schema/sqlite.sql` and `schema/mysql.sql`):
+Tables by owner (the full list is the generated `schema/sqlite.sql`):
 
 | Owner | Tables |
 |---|---|

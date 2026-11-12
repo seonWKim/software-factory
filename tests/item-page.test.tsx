@@ -459,6 +459,112 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
     expect(document.querySelector("[data-commands-none]")).toBeNull();
   });
+
+  it("the verdict row: a Verdict severity select, then Accept, Changes, Reject and a ghost Done in one button row; Done hides the outcome", async () => {
+    const replies = [{ seq: 4, command: "verdict", created_at: AT, handled_at: AT, refusal: null }];
+    serve({ commands: [cmd("verdict")], replies });
+    mount("/app/items/wi_g");
+    const row = await found('[data-command="verdict"]');
+    const select = within(row).getByRole("combobox", { name: "Verdict severity" });
+    expect(select.tagName).toBe("SELECT");
+    const done = await waitFor(() => within(row).getByRole("button", { name: "Done" }));
+    const group = done.parentElement!;
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Accept", "Changes", "Reject", "Done"]);
+    expect(group.className.split(" ")).toEqual(expect.arrayContaining(["flex-wrap", "gap-2"]));
+    const cls = (name: string) => within(group).getByRole("button", { name }).className.split(" ");
+    expect(cls("Accept")).toContain("border-border-strong");
+    expect(cls("Reject")).toContain("text-failed");
+    expect(cls("Done")).not.toContain("border");
+    fireEvent.click(done);
+    expect(within(row).queryByRole("button", { name: "Done" })).toBeNull();
+  });
+
+  it("Merge is its own block 24 px (space-6) below the verdict row, after it; Reject has the danger border", async () => {
+    serve({ item: base("wi_g", 50, "Grants", { merge: { enabled: true, reason: null } }), commands: [cmd("verdict")] });
+    mount("/app/items/wi_g");
+    const merge = await found('[data-command="merge"]');
+    const verdict = document.querySelector<HTMLElement>('[data-command="verdict"]')!;
+    expect(verdict.nextElementSibling).toBe(merge);
+    expect(merge.className.split(" ")).toContain("not-first:mt-6");
+    expect(verdict.className.split(" ")).not.toContain("not-first:mt-6");
+    expect(within(merge).getByRole("button", { name: "Merge" })).toBeTruthy();
+    const reject = within(verdict).getByRole("button", { name: "Reject" }).className.split(" ");
+    expect(reject).toEqual(expect.arrayContaining(["border", "border-border-strong", "text-failed"]));
+  });
+});
+
+describe("item page: the command box and pending proposals (design 09-dashboard-app)", () => {
+  let posts: { url: string; body: unknown }[];
+  const PROPOSALS = [
+    { id: "prop_one", created_at: AT, commands: [{ index: 0, work_item_id: "wi_b", line: "/approve ship it" }, { index: 1, work_item_id: "wi_c", line: "/reject not needed" }] },
+    { id: "prop_two", created_at: AT, commands: [{ index: 0, work_item_id: "wi_b", line: "/retry" }] },
+  ];
+
+  /** Serves wi_b, running (no command applies) or at the spec gate, with `proposals`; records every POST. */
+  function serve(commands: string[], proposals: unknown[]) {
+    const detail = {
+      as_of: AT, item: base("wi_b", 50, "Box"), timeline: [], runs: [], replies: [], spec: null, proposals,
+      commands: commands.map((name) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null })),
+    };
+    posts = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      const path = url.split("?")[0]!;
+      if (init?.method === "POST") {
+        posts.push({ url: path, body: JSON.parse(String(init.body)) });
+        return new Response(JSON.stringify({ request_id: "app:x", seq: 9, command: "x", work_item_id: "wi_b" }), { status: 202, headers: { "content-type": "application/json" } });
+      }
+      const bodies: Record<string, unknown> = {
+        "/api/v1/items/wi_b": detail,
+        "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+        "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
+      };
+      const body = bodies[path];
+      if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }));
+  }
+
+  /** `name` in `scope` once it is enabled. */
+  async function enabled(scope: HTMLElement, name: string) {
+    const button = within(scope).getByRole("button", { name }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    return button;
+  }
+
+  it("shows each pending proposal with its commands, a Confirm all and a Cancel; each press sends one request carrying its proposal ID", async () => {
+    serve(["approve", "reject", "revise"], PROPOSALS);
+    mount("/app/items/wi_b");
+    const list = await screen.findByRole("list", { name: "Proposed commands" });
+    const shown = [...list.querySelectorAll<HTMLElement>("[data-proposal]")];
+    expect(shown.map((p) => p.dataset.proposal)).toEqual(["prop_one", "prop_two"]);
+    expect(shown[0]!.textContent).toContain("/approve ship it");
+    expect(shown[0]!.textContent).toContain("/reject not needed");
+    expect(shown[0]!.textContent).toContain("wi_c");
+    fireEvent.click(await enabled(shown[0]!, "Confirm all"));
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_b/commands", body: { command: "proposal_confirm", proposal: "prop_one" } }]));
+    fireEvent.click(await enabled(shown[1]!, "Cancel"));
+    await waitFor(() => expect(posts.map((p) => p.body)).toEqual([
+      { command: "proposal_confirm", proposal: "prop_one" },
+      { command: "proposal_cancel", proposal: "prop_two" },
+    ]));
+    await waitFor(() => expect(within(shown[0]!).getByRole("status").textContent).toBe("sent"));
+  });
+
+  it("the command box sends the sentence as one request, also when no typed command applies; an empty box sends nothing", async () => {
+    serve([], []);
+    mount("/app/items/wi_b");
+    const box = (await screen.findByRole("textbox", { name: "Say it in your own words" })) as HTMLTextAreaElement;
+    expect(screen.queryByRole("list", { name: "Proposed commands" })).toBeNull();
+    const form = box.closest("form")!;
+    const read = within(form).getByRole("button", { name: "Read it" }) as HTMLButtonElement;
+    expect(read.disabled).toBe(true);
+    // Read it is a secondary Button.
+    expect(read.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface", "border-border-strong"]));
+    fireEvent.change(box, { target: { value: "  approve wi_b but keep it small " } });
+    fireEvent.click(await enabled(form, "Read it"));
+    await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_b/commands", body: { command: "sentence", note: "approve wi_b but keep it small" } }]));
+    await waitFor(() => expect(box.value).toBe(""));
+  });
 });
 
 describe("Markdown", () => {

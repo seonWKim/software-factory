@@ -346,6 +346,26 @@ CREATE TABLE bus_topics (
   partitions INTEGER NOT NULL
 );
 
+CREATE TABLE calendar_events (
+    source      TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    starts_at   TEXT NOT NULL,
+    ends_at     TEXT NOT NULL,
+    all_day     INTEGER NOT NULL,
+    updated_at  TEXT,
+    synced_at   TEXT NOT NULL,
+    PRIMARY KEY (source, event_id)
+  );
+
+CREATE TABLE calendar_sync_state (
+    source        TEXT PRIMARY KEY,
+    next_sync_at  TEXT NOT NULL,
+    synced_at     TEXT,
+    error         TEXT,
+    error_at      TEXT
+  );
+
 CREATE TABLE controller_alert_patterns (
     pattern_key    TEXT PRIMARY KEY,
     last_alert_at  TEXT NOT NULL
@@ -599,16 +619,15 @@ CREATE TABLE controller_tasks (
     created_at  TEXT NOT NULL,
     done_at     TEXT,
     parent_id   TEXT UNIQUE
-  );
+  , work_item_id TEXT);
 
-CREATE TABLE controller_unreviewed_merges (
+CREATE TABLE "controller_unreviewed_merges" (
     id          TEXT PRIMARY KEY,
     project     TEXT NOT NULL,
-    pr_number   INTEGER NOT NULL,
     merge_sha   TEXT NOT NULL,
     merger_id   TEXT,
-    at          TEXT NOT NULL, change_ref TEXT,
-    UNIQUE (project, pr_number)
+    at          TEXT NOT NULL,
+    change_ref  TEXT
   );
 
 CREATE TABLE controller_verdicts (
@@ -623,33 +642,48 @@ CREATE TABLE controller_verdicts (
     at               TEXT NOT NULL
   , implicit INTEGER NOT NULL DEFAULT 0, pr_head TEXT);
 
-CREATE TABLE controller_work_items (
-    id              TEXT PRIMARY KEY,
-    version         INTEGER NOT NULL,
-    source_type     TEXT NOT NULL,
-    source_id       TEXT NOT NULL,
-    source_link     TEXT NOT NULL,
-    requester_id    TEXT NOT NULL,
-    project         TEXT NOT NULL,
-    problem         TEXT NOT NULL,
-    resources       TEXT NOT NULL,
-    done_criteria   TEXT,
-    desired_output  TEXT,
-    scope           TEXT,
-    allowed_paths   TEXT NOT NULL,
-    tier            INTEGER,
-    stage           TEXT NOT NULL,
-    blocked_on      TEXT NOT NULL,
-    blocked_reason  TEXT,
-    close_reason    TEXT,
-    loop_count      INTEGER NOT NULL,
-    restart_count   INTEGER NOT NULL,
-    token_cost      INTEGER NOT NULL,
-    pr_number       INTEGER,
-    merge_sha       TEXT,
-    fixes_pr        INTEGER,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL, title TEXT, issue_text TEXT, revision_count INTEGER NOT NULL DEFAULT 0, spec_feedback TEXT, spec_comment_url TEXT, failure_comment_url TEXT, origin TEXT NOT NULL DEFAULT 'factory', head_branch TEXT, last_head_sha TEXT, parent_id TEXT, phase INTEGER, files_to_change TEXT, pr_files TEXT, edges_source_updated_at TEXT, change_ref TEXT, change_url TEXT,
+CREATE TABLE "controller_work_items" (
+    id                       TEXT PRIMARY KEY,
+    version                  INTEGER NOT NULL,
+    source_type              TEXT NOT NULL,
+    source_id                TEXT NOT NULL,
+    source_link              TEXT NOT NULL,
+    requester_id             TEXT NOT NULL,
+    project                  TEXT NOT NULL,
+    problem                  TEXT NOT NULL,
+    resources                TEXT NOT NULL,
+    done_criteria            TEXT,
+    desired_output           TEXT,
+    scope                    TEXT,
+    allowed_paths            TEXT NOT NULL,
+    tier                     INTEGER,
+    stage                    TEXT NOT NULL,
+    blocked_on               TEXT NOT NULL,
+    blocked_reason           TEXT,
+    close_reason             TEXT,
+    loop_count               INTEGER NOT NULL,
+    restart_count            INTEGER NOT NULL,
+    token_cost               INTEGER NOT NULL,
+    merge_sha                TEXT,
+    fixes_pr                 INTEGER,
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL,
+    title                    TEXT,
+    issue_text               TEXT,
+    revision_count           INTEGER NOT NULL DEFAULT 0,
+    spec_feedback            TEXT,
+    spec_comment_url         TEXT,
+    failure_comment_url      TEXT,
+    origin                   TEXT NOT NULL DEFAULT 'factory',
+    head_branch              TEXT,
+    last_head_sha            TEXT,
+    parent_id                TEXT,
+    phase                    INTEGER,
+    files_to_change          TEXT,
+    pr_files                 TEXT,
+    edges_source_updated_at  TEXT,
+    change_ref               TEXT,
+    change_url               TEXT,
     UNIQUE (source_type, source_id)
   );
 
@@ -915,6 +949,46 @@ CREATE TABLE "legacy_command_inbox" (
     args         TEXT NOT NULL,
     created_at   TEXT NOT NULL
   , mirror INTEGER NOT NULL DEFAULT 0, mirrored_at TEXT);
+
+CREATE TABLE "legacy_controller_unreviewed_merges" (
+    id          TEXT PRIMARY KEY,
+    project     TEXT NOT NULL,
+    pr_number   INTEGER NOT NULL,
+    merge_sha   TEXT NOT NULL,
+    merger_id   TEXT,
+    at          TEXT NOT NULL, change_ref TEXT,
+    UNIQUE (project, pr_number)
+  );
+
+CREATE TABLE "legacy_controller_work_items" (
+    id              TEXT PRIMARY KEY,
+    version         INTEGER NOT NULL,
+    source_type     TEXT NOT NULL,
+    source_id       TEXT NOT NULL,
+    source_link     TEXT NOT NULL,
+    requester_id    TEXT NOT NULL,
+    project         TEXT NOT NULL,
+    problem         TEXT NOT NULL,
+    resources       TEXT NOT NULL,
+    done_criteria   TEXT,
+    desired_output  TEXT,
+    scope           TEXT,
+    allowed_paths   TEXT NOT NULL,
+    tier            INTEGER,
+    stage           TEXT NOT NULL,
+    blocked_on      TEXT NOT NULL,
+    blocked_reason  TEXT,
+    close_reason    TEXT,
+    loop_count      INTEGER NOT NULL,
+    restart_count   INTEGER NOT NULL,
+    token_cost      INTEGER NOT NULL,
+    pr_number       INTEGER,
+    merge_sha       TEXT,
+    fixes_pr        INTEGER,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL, title TEXT, issue_text TEXT, revision_count INTEGER NOT NULL DEFAULT 0, spec_feedback TEXT, spec_comment_url TEXT, failure_comment_url TEXT, origin TEXT NOT NULL DEFAULT 'factory', head_branch TEXT, last_head_sha TEXT, parent_id TEXT, phase INTEGER, files_to_change TEXT, pr_files TEXT, edges_source_updated_at TEXT, change_ref TEXT, change_url TEXT,
+    UNIQUE (source_type, source_id)
+  );
 
 CREATE TABLE "legacy_cursors" (
     name   TEXT PRIMARY KEY,
@@ -1596,6 +1670,8 @@ CREATE INDEX bus_system_alerts_published ON bus_system_alerts (published_at);
 
 CREATE INDEX bus_system_alerts_retries_due ON bus_system_alerts_retries (next_attempt_at);
 
+CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
+
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 
 CREATE INDEX claim_decisions_work_item ON "legacy_claim_decisions" (work_item_id, at);
@@ -1632,25 +1708,39 @@ CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
 
 CREATE INDEX controller_tasks_open ON controller_tasks (done_at, created_at);
 
-CREATE INDEX controller_unreviewed_merges_at ON controller_unreviewed_merges (at);
+CREATE INDEX controller_unreviewed_merges_at ON "legacy_controller_unreviewed_merges" (at);
 
-CREATE UNIQUE INDEX controller_unreviewed_merges_change ON controller_unreviewed_merges (project, change_ref);
+CREATE INDEX controller_unreviewed_merges_by_at ON "controller_unreviewed_merges" (at);
+
+CREATE UNIQUE INDEX controller_unreviewed_merges_by_change ON "controller_unreviewed_merges" (project, change_ref);
+
+CREATE UNIQUE INDEX controller_unreviewed_merges_change ON "legacy_controller_unreviewed_merges" (project, change_ref);
 
 CREATE INDEX controller_verdicts_head ON controller_verdicts (work_item_id, pr_head);
 
 CREATE INDEX controller_verdicts_work_item ON controller_verdicts (work_item_id, at);
 
-CREATE INDEX controller_work_items_change ON controller_work_items (project, change_ref);
+CREATE INDEX controller_work_items_by_change ON "controller_work_items" (project, change_ref);
 
-CREATE INDEX controller_work_items_merge_sha ON controller_work_items (merge_sha);
+CREATE INDEX controller_work_items_by_merge_sha ON "controller_work_items" (merge_sha);
 
-CREATE INDEX controller_work_items_parent ON controller_work_items (parent_id, phase);
+CREATE INDEX controller_work_items_by_parent ON "controller_work_items" (parent_id, phase);
 
-CREATE INDEX controller_work_items_pr ON controller_work_items (project, pr_number);
+CREATE INDEX controller_work_items_by_stage ON "controller_work_items" (stage, updated_at);
 
-CREATE INDEX controller_work_items_stage ON controller_work_items (stage, updated_at);
+CREATE INDEX controller_work_items_by_tier ON "controller_work_items" (project, tier, stage);
 
-CREATE INDEX controller_work_items_tier ON controller_work_items (project, tier, stage);
+CREATE INDEX controller_work_items_change ON "legacy_controller_work_items" (project, change_ref);
+
+CREATE INDEX controller_work_items_merge_sha ON "legacy_controller_work_items" (merge_sha);
+
+CREATE INDEX controller_work_items_parent ON "legacy_controller_work_items" (parent_id, phase);
+
+CREATE INDEX controller_work_items_pr ON "legacy_controller_work_items" (project, pr_number);
+
+CREATE INDEX controller_work_items_stage ON "legacy_controller_work_items" (stage, updated_at);
+
+CREATE INDEX controller_work_items_tier ON "legacy_controller_work_items" (project, tier, stage);
 
 CREATE INDEX dependency_edges_target ON "legacy_dependency_edges" (depends_on);
 

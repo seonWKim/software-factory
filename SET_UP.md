@@ -157,6 +157,14 @@ Who may act is decided by the grant plugins in `permissions.grants` (default: wr
 
 If you have write permission and reply in plain words on an open work item's issue (300 characters or fewer, say "ship it"), the factory may answer once with the command it thinks you mean, such as `/approve`, or with the commands that apply now. It uses a cheap model call to do this. Nothing runs and nothing changes until you type the command yourself as a reply; that command is checked like any other.
 
+### Commands in your own words
+
+You can type a command in your own words in the dashboard, the CLI and Slack. The factory reads it with one cheap model call and answers with the commands it thinks you mean, as typed lines, stored as one pending proposal. Nothing changes until you confirm the proposal, or type a line yourself; a confirm is checked as the typed command is, as you, so a command you may not run, or one whose item has moved on, is refused with a reply saying why. You need the role that approves (the owner, or an approver).
+
+- **Dashboard:** on an item's page, write in the box under Commands ("Say it in your own words"), for example `looks good, approve it but keep the change small`, and press Read it. The factory answers in the item's thread; the proposal shows on the page with Confirm all and Cancel.
+- **CLI:** `factory "approve wi_123 but keep the change small"` prints each proposed command with its proposal ID, for example `proposal prop_3f2a…`. Run `factory confirm prop_3f2a…` to apply them. Any first word that is not a `factory` command is read this way.
+- **Slack:** in a work item's thread, reply with no mention, for example `ship it, the tests look fine`. The factory answers in the thread with a button per command, Confirm all and Cancel. In a thread that is not a work item's, a reply with no mention is not read; mention the bot there.
+
 ### Local tasks from the command line
 
 Work items can also come from your terminal instead of a GitHub issue. Add `"local"` to `plugins.source` (e.g. `"source": ["github-issues", "local"]`). Run the commands as `npm run --silent factory -- <command>`. None of them calls GitHub, and they work the same whether GitHub is selected, unreachable or rate limited.
@@ -180,6 +188,7 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
 - `factory task add <words>`: Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, `HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title. Who: anyone who may submit work. Prints: the task: ID, title, due, priority, list and recurrence.
 - `factory task done <task_id>`: Complete a plain task; a recurring one gets its next occurrence once, however often it is completed. Who: anyone who may submit work. Prints: that it is done (or already was), and the next occurrence.
+- `factory task build <task_id>`: Send an open plain task to intake as one local work item, linked to the task; building it again makes no second item, and a merge of that item completes the task. Who: anyone who may submit work. Prints: the work item's ID (or that the task was already built as it).
 - `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task.
 - `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
 - `factory approve <id> [notes]`: Store `/approve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
@@ -189,6 +198,8 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory resolve <id> [notes]`: Store `/resolve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
 - `factory verdict <id> <accept|changes|reject> [<severity> <reason>]`: Store `/verdict` for the item: a verdict on its result, which changes no state. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
 - `factory merge <id>`: Merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself). Who: the owner and approvers (approve_merge). Prints: the stored command's number; the controller applies it and answers in the item's thread.
+- `factory "<words>"`: Read a command in your own words with the plain-words reader; in chat, a reply with no mention in an item's thread the factory owns. Nothing changes: each proposed command is stored as pending until it is confirmed. Who: the owner and approvers. Prints: each proposed command as its typed line, with the proposal ID to confirm.
+- `factory confirm <proposal-id>`: Confirm a stored proposal: the controller applies each of its pending commands once, through the typed command's path and check, as you. Who: the owner and approvers. Prints: the stored command's number, or that nothing is pending; the controller answers a refusal in the item's thread.
 - `factory users list`: List local users. Who: anyone. Prints: your identity and every local user with its role (owner, approver, requester).
 - `factory users add <user_id> --role approver|requester`: Give a local user a role, e.g. `local:dev@example.com`. Who: the local owner. Prints: the user's new role.
 - `factory users remove <user_id>`: Remove a local user's role. Who: the local owner. Prints: whether a role was removed.
@@ -316,39 +327,7 @@ Once, after the workflow has run at least once on GitHub, make the `test` check 
 
 ### Checks before push
 
-Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so; CI has no MySQL job, so they run only where a test database is selected (below).
-
-### Local test MySQL
-
-To run the MySQL tests before push too, give the factory a test-only MySQL user and select the `mysql-local` test database. Use a server that holds no factory data if you can (a second local instance on another port is best); at least, use a user that can touch nothing but `sf_test_*` databases.
-
-1. Create the user and its grants (as the MySQL admin, e.g. `mysql -u root -p`), with a password of your own:
-
-   ```sql
-   CREATE USER 'sf_test'@'localhost' IDENTIFIED BY '<a new password>';
-   GRANT ALL PRIVILEGES ON `sf\_test\_%`.* TO 'sf_test'@'localhost';
-   ```
-
-   Those are the only grants: the user may create, use and drop databases whose names start with `sf_test_`, and nothing else. It has no access to `software_factory` or any other database, no `GRANT OPTION`, and no global privileges. The pattern needs the backslashes: an unescaped `_` matches any character.
-   What the MySQL suite needs, by test:
-
-   | Grant | Needed by | Without it |
-   |---|---|---|
-   | `ALL` on ``sf\_test\_%``.* (the grant above) | every MySQL test: each makes and drops its own `sf_test_*` database | the MySQL tests fail |
-   | Global `CREATE USER` with `GRANT OPTION` (an admin such as CI's `root`; never give it to `sf_test`) | only "dev, worker, controller, status, ui and golden add exit non-zero…" in `tests/mysql-migrations.test.ts`, which makes a throwaway `sf_e2e_*` user | the test checks first, creates nothing and skips, with a message naming `CREATE USER`, the test user and this file |
-
-2. Put its admin URL in the secret file, outside the repository (`~/.config/software-factory/.env`, mode 600; never in `factory.config.json` or any file in the repository):
-
-   ```sh
-   TEST_MYSQL_URL=mysql://sf_test:<password>@127.0.0.1:3306
-   ```
-
-   URL-encode the password if it has `@`, `:` or `/`.
-3. Select the plugin in `factory.config.json`: `"plugins": { ..., "test_database": "mysql-local" }`. With `mysql-local` selected and `TEST_MYSQL_URL` missing, the factory refuses to start.
-4. Restart the factory. Each run that runs checks then creates `sf_test_<run id>`, passes `SF_TEST_MYSQL_URL=mysql://sf_test:<password>@127.0.0.1:3306/sf_test_<run id>` to the check commands only (never to an agent), and drops the database when the run ends. The tests make their own `sf_test_*` databases with the same user.
-
-What it exposes: the check commands run code the agent wrote, with `SF_TEST_MYSQL_URL` in their environment, so that code can read this user's password while the checks run. That is why the user gets only the grants above. A run that crashes before it finishes can leave an `sf_test_*` database behind; nothing sweeps them yet. List them with `SHOW DATABASES LIKE 'sf\_test\_%';` and drop them by hand.
-
+Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so.
 
 ## Run the factory on your project
 
@@ -363,14 +342,14 @@ With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve fro
 
 ## macOS app
 
-A Mac app that runs the factory for you: a window on the dashboard, `SF <n>` in the menu bar (`n`: how many items need you, refreshed every 15 seconds), and a Quit that lets the factory finish what it is doing. Unsigned, macOS only. Decisions: [`docs/design/09-desktop-app.md`](docs/design/09-desktop-app.md).
+Gongbang, a Mac app that runs the factory for you: a window on the dashboard, `Gb <n>` in the menu bar (`n`: how many items need you, refreshed every 15 seconds), and a Quit that lets the factory finish what it is doing. Unsigned, macOS only. Decisions: [`docs/design/09-desktop-app.md`](docs/design/09-desktop-app.md).
 
 Install:
 
 1. Finish `npm run setup` in this checkout, and build it once: `npm run build`.
-2. Build the app: `npm run build:desktop:macos`. It copies Electron from `node_modules/electron/dist` into `desktop/out/Software Factory.app`. If it says `node_modules/electron/dist` is missing, install the project's dependencies (`npm install`) and run it again; the script itself never installs anything.
-3. Optional: drag `desktop/out/Software Factory.app` to `/Applications`. The app runs the checkout it was built from, wherever the app itself is.
-4. Start it: `open "desktop/out/Software Factory.app"`. The app is not signed: the first time, macOS may refuse to open it; right-click it in Finder, choose Open, and confirm.
+2. Build the app: `npm run build:desktop:macos`. It copies Electron from `node_modules/electron/dist` into `desktop/out/Gongbang.app`, with the Gongbang icon (built from `design-system/icon.svg`; `npm run build:icons -- <folder>` writes the PNG sizes alone). If it says `node_modules/electron/dist` is missing, install the project's dependencies (`npm install`) and run it again; the script itself never installs anything.
+3. Optional: drag `desktop/out/Gongbang.app` to `/Applications`; an older `Software Factory.app` there can go to the Trash. The app runs the checkout it was built from, wherever the app itself is.
+4. Start it: `open desktop/out/Gongbang.app`. The app is not signed: the first time, macOS may refuse to open it; right-click it in Finder, choose Open, and confirm.
 
 Use:
 
@@ -463,6 +442,7 @@ In Slack a command follows a mention of the bot, in the item's thread and with n
 - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
 - `@bot task add <words>`: as `factory task add <words>`. Who: anyone who may submit work.
 - `@bot task done <task_id>`: as `factory task done <task_id>`. Who: anyone who may submit work.
+- `@bot task build <task_id>`: as `factory task build <task_id>`. Who: anyone who may submit work.
 - `@bot list`: as `factory task list`. Who: anyone.
 - `@bot show <id>`: as `factory task show <id>`. Who: anyone.
 - `@bot approve [notes]`: as `factory approve <id> [notes]`, in the item's thread. Who: the owner and approvers.
@@ -472,6 +452,8 @@ In Slack a command follows a mention of the bot, in the item's thread and with n
 - `@bot resolve [notes]`: as `factory resolve <id> [notes]`, in the item's thread. Who: the owner and approvers.
 - `@bot verdict <accept|changes|reject> [<severity> <reason>]`: as `factory verdict <id> <accept|changes|reject> [<severity> <reason>]`, in the item's thread. Who: the owner and approvers.
 - `@bot merge`: as `factory merge <id>`, in the item's thread. Who: the owner and approvers (approve_merge).
+- `@bot <command in your own words>`: as `factory "<words>"`; in an item's thread the factory owns, a reply with no mention. Who: the owner and approvers.
+- `@bot confirm <proposal-id>`: as `factory confirm <proposal-id>`. Who: the owner and approvers.
 - `@bot users list`: as `factory users list`. Who: anyone.
 - `@bot users add <user_id> --role approver|requester`: as `factory users add <user_id> --role approver|requester`; refused in chat until #479, so use the CLI. Who: the local owner.
 - `@bot users remove <user_id>`: as `factory users remove <user_id>`; refused in chat until #479, so use the CLI. Who: the local owner.

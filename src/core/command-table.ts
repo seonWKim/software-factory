@@ -11,8 +11,14 @@ import type { CommandName } from "./commands.js";
 /** Who may run a command: anyone, the holder of an action's role, or the local owner. */
 export type CommandWho = "anyone" | "submit_work" | "approve_spec" | "approve_merge" | "owner";
 
-/** The CLI handler that runs it: local tasks, item commands, local users, or settings and the mode. */
-export type CommandGroup = "task" | "item" | "users" | "settings";
+/**
+ * The CLI handler that runs it: local tasks, item commands, local users, settings and the mode, or (`sentence`) the
+ * plain-words reader, which `factory` runs for any first word no handler claims (src/main.ts).
+ */
+export type CommandGroup = "task" | "item" | "users" | "settings" | "sentence";
+
+/** The sentence form's name: `factory "<words>"`, a command in the owner's own words (design 04-gate-commands). */
+export const SENTENCE_FORM = '"<words>"';
 
 /**
  * What the chat form takes after its words: nothing, one ID, free text (notes, feedback, a reason), any words
@@ -73,6 +79,12 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     prints: "that it is done (or already was), and the next occurrence", chat: "task done <task_id>", chat_args: "id", item: false, edge: false,
   },
   {
+    name: "task build", args: "<task_id>", who: "submit_work", group: "task",
+    does: "Send an open plain task to intake as one local work item, linked to the task; building it again makes no second item, " +
+      "and a merge of that item completes the task",
+    prints: "the work item's ID (or that the task was already built as it)", chat: "task build <task_id>", chat_args: "id", item: false, edge: false,
+  },
+  {
     name: "task list", args: "", who: "anyone", group: "task", does: "List local work items, then open plain tasks",
     prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task", chat: "list", chat_args: "none", item: false, edge: false,
   },
@@ -90,6 +102,19 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     name: "merge", args: "<id>", who: "approve_merge", group: "item",
     does: "Merge a local item's branch into the local base branch once its review passed (no push; in auto mode the controller may merge it itself)",
     prints: ITEM_PRINTS, chat: "merge", chat_args: "none", item: true, edge: false,
+  },
+  {
+    name: SENTENCE_FORM, args: "", who: "approve_spec", group: "sentence",
+    does: "Read a command in your own words with the plain-words reader; in chat, a reply with no mention in an item's thread the factory owns. " +
+      "Nothing changes: each proposed command is stored as pending until it is confirmed",
+    prints: "each proposed command as its typed line, with the proposal ID to confirm", chat: "<command in your own words>", chat_args: "request",
+    item: false, edge: false,
+  },
+  {
+    name: "confirm", args: "<proposal-id>", who: "approve_spec", group: "item",
+    does: "Confirm a stored proposal: the controller applies each of its pending commands once, through the typed command's path and check, as you",
+    prints: "the stored command's number, or that nothing is pending; the controller answers a refusal in the item's thread", chat: "confirm <proposal-id>",
+    chat_args: "id", item: false, edge: false,
   },
   {
     name: "users list", args: "", who: "anyone", group: "users", does: "List local users",
@@ -163,7 +188,9 @@ export function commandLine(c: TableCommand): string {
  */
 export function chatCommandListMarkdown(): string {
   return COMMAND_TABLE.map((c) => {
-    const where = c.edge ? "; refused in chat until #479, so use the CLI" : c.item ? ", in the item's thread" : "";
+    const where = c.edge ? "; refused in chat until #479, so use the CLI"
+      : c.item ? ", in the item's thread"
+      : c.group === "sentence" ? "; in an item's thread the factory owns, a reply with no mention" : "";
     return `- \`@bot ${c.chat.replace(/^\//, "")}\`: as \`factory ${cliUsageOf(c)}\`${where}. Who: ${WHO[c.who]}.`;
   }).join("\n");
 }

@@ -48,7 +48,7 @@ for (const backend of BACKENDS) {
       expect((await q.ofItem("wi_1")).map((e) => [e.entry_id, e.state, e.reason])).toEqual([["mqe_1", "removed", "red"], ["mqe_4", "queued", null]]);
     });
 
-    it("a long project key plus base ref makes one queue (its id fits MySQL's key)", async () => {
+    it("a long project key plus base ref makes one queue (its id fits the store key)", async () => {
       const q = await open();
       const project = `p_${"x".repeat(185)}`;
       const base = `release/${"y".repeat(180)}`;

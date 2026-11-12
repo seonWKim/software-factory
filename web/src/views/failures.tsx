@@ -1,9 +1,11 @@
 import { useMemo, useState } from "react";
+import { type MessageKey } from "../i18n/en.js";
 import { API, type FailureGroup, type Failures, type Items, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
-import { cn } from "../lib/cn.js";
+import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -11,7 +13,7 @@ import { WorkerName, useNow } from "./common.js";
 
 const WINDOWS = ["24h", "7d"] as const;
 type Window = (typeof WINDOWS)[number];
-const WINDOW_LABELS: Record<Window, string> = { "24h": "Last 24 hours", "7d": "Last 7 days" };
+const WINDOW_LABELS = { "24h": "failures.window24h", "7d": "failures.window7d" } as const satisfies Record<Window, MessageKey>;
 
 /** The window a link selected (`/app/failures?window=7d`); 24h otherwise. */
 const initialWindow = (): Window => {
@@ -24,28 +26,28 @@ function Group({ group, now, titles }: { group: FailureGroup; now: number; title
   const [open, setOpen] = useState(false);
   return (
     <li className="rounded-control border border-border" data-testid="failure-group">
-      <button
-        type="button"
+      <Button
+        variant="ghost"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-left text-sm"
+        className="w-full flex-wrap gap-x-3 gap-y-1 py-2 text-left"
       >
         <span className="font-mono text-xs font-semibold">{group.code}</span>
-        <span className="tabular-nums">{group.count} {group.count === 1 ? "run" : "runs"}</span>
-        <span className="tabular-nums text-text-2">{group.items} {group.items === 1 ? "item" : "items"}</span>
-        <span className="tabular-nums text-text-2">last seen {ago(group.last_seen, now)} ago</span>
+        <span className="tabular-nums">{t(group.count === 1 ? "failures.runOne" : "failures.runMany", { count: group.count })}</span>
+        <span className="tabular-nums text-text-2">{t(group.items === 1 ? "failures.itemOne" : "failures.itemMany", { count: group.items })}</span>
+        <span className="tabular-nums text-text-2">{t("failures.lastSeen", { time: t("time.ago", { time: ago(group.last_seen, now) }) })}</span>
         {group.description && <span className="basis-full text-pretty text-text-2">{group.description}</span>}
-      </button>
+      </Button>
       {open && (
         <div className="border-t border-border p-2">
-          <Table label={`Runs failed with ${group.code}`} head={["Item", "Attempt", "Detail", "Worker", "When"]}>
+          <Table label={t("failures.runsFailed", { code: group.code })} head={[t("col.item"), t("col.attempt"), t("col.detail"), t("col.worker"), t("col.when")]}>
             {group.runs.map((r) => (
               <Tr key={r.id}>
                 <Td><Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{titles.get(r.work_item_id) ?? r.work_item_id}</Link></Td>
                 <Td className="tabular-nums">{r.attempt}</Td>
                 <Td className="max-w-md text-xs break-words">{r.detail || "–"}</Td>
                 <Td><WorkerName id={r.worker} /></Td>
-                <Td className="tabular-nums whitespace-nowrap">{ago(r.finished_at, now)} ago</Td>
+                <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(r.finished_at, now) })}</Td>
               </Tr>
             ))}
           </Table>
@@ -65,24 +67,24 @@ export function FailuresPage() {
   const titles = useMemo(() => new Map((items.data?.items ?? []).flatMap((i) => (i.title ? [[i.id, i.title] as const] : []))), [items.data]);
   return (
     <>
-      <div role="group" aria-label="Window" className="mb-4 flex gap-2">
+      <ButtonRow role="group" aria-label={t("failures.window")} className="mb-6">
         {WINDOWS.map((w) => (
-          <Button key={w} variant="outline" aria-pressed={w === win} className={cn("size-auto px-3 py-1.5", w === win && "bg-surface-2")} onClick={() => setWin(w)}>
-            {WINDOW_LABELS[w]}
+          <Button key={w} aria-pressed={w === win} onClick={() => setWin(w)}>
+            {t(WINDOW_LABELS[w])}
           </Button>
         ))}
-      </div>
-      <Section title="Failed runs by error code" count={q.data?.total}>
+      </ButtonRow>
+      <Section title={t("failures.title")} count={q.data?.total}>
         {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} /> : q.data.groups.length === 0 ? (
-          <Empty>No run failed in this window.</Empty>
+          <Empty>{t("failures.empty")}</Empty>
         ) : (
           <>
             {q.data.capped && (
               <p data-testid="failures-cap" className="mb-2 text-sm text-pretty">
-                Showing the newest {q.data.cap} of {q.data.total} failed runs in this window.
+                {t("failures.capped", { cap: q.data.cap, total: q.data.total })}
               </p>
             )}
-            <ul aria-label="Failure groups" className="space-y-2">
+            <ul aria-label={t("failures.groups")} className="space-y-2">
               {q.data.groups.map((g) => <Group key={g.code} group={g} now={now} titles={titles} />)}
             </ul>
           </>

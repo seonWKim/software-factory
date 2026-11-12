@@ -102,12 +102,14 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
 
 describe("mechanical paths (design §5, issue #297)", () => {
   const holder = (files: string[]): Holder => ({ work_item_id: "wi_b", project: "p", ref: "#2", kind: "running", files, fallback: false });
+  /** The defaults plus a step folder this test sets itself, so the check does not depend on a default folder. */
+  const STEPS = { ...S, mechanical: [...S.mechanical, "db/steps/"] };
 
   it("a mechanical path is never a hotspot, even when hotspot_paths lists it, and weighs mechanical_weight", () => {
     expect(S.hotspots).toContain("docs/design.md");
     expect(pathWeight("docs/design.md", none, S)).toEqual({ path: "docs/design.md", weight: 0.25, conflicts: 0, hotspot: false, mechanical: true });
     // A file under a mechanical folder too; a folder that only holds mechanical files is not one.
-    expect(pathWeight("migrations/mysql/0025-x.sql", none, S)).toMatchObject({ weight: 0.25, mechanical: true });
+    expect(pathWeight("db/steps/0025-x.sql", none, STEPS)).toMatchObject({ weight: 0.25, mechanical: true });
     expect(pathWeight("docs/", none, S).mechanical).toBeUndefined();
     expect(pathWeight("docs/design/05-coordination.md", none, { ...S, mechanical_weight: 0.5 }).weight).toBe(0.5);
     // Listed in both: still mechanical.
@@ -120,10 +122,10 @@ describe("mechanical paths (design §5, issue #297)", () => {
   });
 
   it("a step file, a History line and an index line each: 0.5, so the two run side by side", () => {
-    const a = ["migrations/mysql/0025-a.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/a.ts"];
-    const b = ["migrations/mysql/0025-b.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/b.ts"];
-    expect(coordinationCost(a, b, none, S).cost).toBe(0.5);
-    expect(claimDecision(holdsOn({ work_item_id: "wi_a", project: "p", files: a }, [holder(b)], none, S))).toBe("free");
+    const a = ["db/steps/0025-a.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/a.ts"];
+    const b = ["db/steps/0025-b.sql", "docs/design/05-coordination.md", "docs/design.md", "lib/b.ts"];
+    expect(coordinationCost(a, b, none, STEPS).cost).toBe(0.5);
+    expect(claimDecision(holdsOn({ work_item_id: "wi_a", project: "p", files: a }, [holder(b)], none, STEPS))).toBe("free");
   });
 
   it("two items that both change src/controller/router/router.ts are still held", () => {

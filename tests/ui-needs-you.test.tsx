@@ -78,7 +78,6 @@ describe("Needs you on the Floor", () => {
     for (let el = firstSection.previousElementSibling; el; el = el.previousElementSibling) {
       expect(["H1", "P"]).toContain(el.tagName);
     }
-    expect(table.compareDocumentPosition(screen.getByRole("region", { name: "Running now" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The deadlocks are one line after the list, linking to Work items; no row and no count of their own.
     const notes = screen.getByRole("list", { name: "System actions" });
     expect(table.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

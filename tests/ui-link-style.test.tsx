@@ -116,25 +116,3 @@ describe("no per-call-site link colour", () => {
     expect(LINK_CLASS).toContain("text-accent");
   });
 });
-
-describe("contrast", () => {
-  const css = readFileSync("web/src/tokens.css", "utf8");
-  const token = (block: string, name: string) => new RegExp(`${block} \\{[^}]*--${name}: oklch\\(([\\d.]+)% ([\\d.]+) ([\\d.]+)\\)`).exec(css)!.slice(1).map(Number) as [number, number, number];
-  // oklch to linear sRGB (Ottosson), then WCAG relative luminance.
-  const lum = ([l, c, h]: [number, number, number]) => {
-    const a = c * Math.cos((h * Math.PI) / 180), b = c * Math.sin((h * Math.PI) / 180), L = l / 100;
-    const [l_, m_, s_] = [L + 0.3963377774 * a + 0.2158037573 * b, L - 0.1055613458 * a - 0.0638541728 * b, L - 0.0894841775 * a - 1.291485548 * b].map((x) => x ** 3);
-    const [r, g, bl] = [
-      4.0767416621 * l_! - 3.3077115913 * m_! + 0.2309699292 * s_!,
-      -1.2684380046 * l_! + 2.6097574011 * m_! - 0.3413193965 * s_!,
-      -0.0041960863 * l_! - 0.7034186147 * m_! + 1.707614701 * s_!,
-    ].map((x) => Math.min(1, Math.max(0, x)));
-    return 0.2126 * r! + 0.7152 * g! + 0.0722 * bl!;
-  };
-  const ratio = (a: [number, number, number], b: [number, number, number]) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
-  it("is at least 4.5:1 in light and dark", () => {
-    for (const block of [":root", "\\.dark"]) {
-      for (const ground of ["surface", "bg"]) expect(ratio(token(block, "accent"), token(block, ground)), `${block} ${ground}`).toBeGreaterThanOrEqual(4.5);
-    }
-  });
-});

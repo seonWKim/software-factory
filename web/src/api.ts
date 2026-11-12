@@ -1,10 +1,11 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume), POST /api/v1/standing (postStanding) and POST /api/v1/users (postUsers), each with the per-process
-// CSRF token (from GET /api/v1/settings, /api/v1/session, /api/v1/pauses, /api/v1/standing or /api/v1/users) in
-// x-csrf-token.
+// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
+// /api/v1/tasks/build (postTaskBuild) and POST /api/v1/tasks (postTaskAdd), each with the per-process CSRF token (from GET /api/v1/settings,
+// /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules or /api/v1/tasks) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
+import { t } from "./i18n/index.js";
 
 /** The supervisor's status (the status page's banner); null when the factory is stopped. */
 export interface FactoryState {
@@ -69,9 +70,9 @@ export interface MergeCheckView {
 
 /** The short label shown next to a ready-to-merge item's state. */
 export function mergeCheckLabel(m: MergeCheckView): string {
-  if (m.state === "mergeable") return "Mergeable";
-  if (m.state === "checking") return "Checking…";
-  return `Conflicts: ${m.conflicts.length} ${m.conflicts.length === 1 ? "file" : "files"}`;
+  if (m.state === "mergeable") return t("api.mergeable");
+  if (m.state === "checking") return t("api.checking");
+  return t(m.conflicts.length === 1 ? "api.conflictsOne" : "api.conflictsMany", { count: m.conflicts.length });
 }
 
 /**
@@ -252,6 +253,8 @@ export interface ItemDetail {
   spec?: WaitingSpec | null;
   /** The item's app command requests, oldest first; the note is never returned. */
   replies?: CommandReply[];
+  /** The item's pending proposals (src/ui/commands.ts itemProposals), oldest first. */
+  proposals?: ProposalView[];
   /** Run id → its stored transcript parts ("" is the main step); a run not listed has no transcript. */
   transcripts?: Record<string, string[]>;
 }
@@ -340,6 +343,13 @@ export interface ItemCommand {
   allowed: boolean;
   /** Why not, in the controller's refusal words; null when allowed. */
   reason: string | null;
+}
+
+/** A stored proposal with its pending commands, each as its typed line and the item it is for. */
+export interface ProposalView {
+  id: string;
+  created_at: string;
+  commands: { index: number; work_item_id: string; line: string }[];
 }
 
 /** One app command request: `handled_at` null while the controller has not applied or refused it. */
@@ -501,31 +511,57 @@ export interface StandingView {
   proposals: StandingProposalRow[];
 }
 
-/** One user of `/api/v1/users` (design 08-permissions): a local user, or one the `static` grant names. */
-export interface UserRow {
-  user_id: string;
-  role: "owner" | "approver" | "requester";
-  source: "local" | "static";
-  /** Null for a static grant user (it comes from config, not from a person). */
-  added_by: string | null;
-  added_at: string | null;
-  /** The static grant's roles per project key (`*` for every project); empty for a local user. */
-  projects: { project: string; roles: string[] }[];
-  links: { provider: string; subject: string }[];
+/** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
+export interface RuleRow {
+  /** `C-…` for a candidate class, `P-…` for a structure proposal. */
+  id: string;
+  title: string;
+  /** `open`, `pending` or `held`: the ledger's heading it is listed under. */
+  state: string;
 }
 
-/** `/api/v1/users`: the viewer and the users; `read_only_reason` is why the viewer cannot change roles, or null. */
-export interface UsersView {
-  as_of: string;
-  csrf_token: string;
-  viewer: { user_id: string; source: "cli_user" | "git user.email" | "OS user" | "anonymous"; role: string | null };
-  can_change: boolean;
-  read_only_reason: string | null;
-  users: UserRow[];
+/**
+ * `/api/v1/rules`: `enabled` false when the tacit plugin is `none`; `judge` is why the viewer cannot send a verdict,
+ * or null; `error` is a failed ledger read, or null.
+ */
+export interface RulesView {
+  enabled: boolean;
+  entries: RuleRow[];
+  error: string | null;
+  csrf_token: string | null;
+  judge: string | null;
 }
 
-/** A Users page write: add a user, change one's role, or remove one. */
-export type UsersWrite = { action: "add" | "change"; user_id: string; role: "approver" | "requester" } | { action: "remove"; user_id: string };
+export type RuleVerdict = "promote" | "reject" | "hold";
+
+/** One open plain task on the Tasks page (design 02-tasks, issue #607). */
+export interface TaskRow {
+  id: string;
+  title: string;
+  /** A free `#label`, without the `#`. */
+  list: string | null;
+  priority: number | null;
+  /** `YYYY-MM-DD`, or null. */
+  due_date: string | null;
+  due_time: string | null;
+  recurrence: string | null;
+  /** The work item Build this made from it, or null. */
+  work_item_id: string | null;
+}
+
+/**
+ * `/api/v1/tasks`: the open tasks placed by due date at the server's local midnight; `csrf_token` and `can_build` for
+ * Build this (null and false when the page has no commands actor).
+ */
+export interface TasksView {
+  today_date: string;
+  inbox: TaskRow[];
+  today: { overdue: TaskRow[]; due: TaskRow[] };
+  upcoming: { date: string; tasks: TaskRow[] }[];
+  projects: { list: string | null; tasks: TaskRow[] }[];
+  csrf_token: string | null;
+  can_build: boolean;
+}
 
 declare const __FACTORY_REV__: string | null | undefined;
 
@@ -603,7 +639,10 @@ export const API = {
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",
-  users: "/api/v1/users",
+  rules: "/api/v1/rules",
+  ruleVerdict: "/api/v1/rules/verdict",
+  tasks: "/api/v1/tasks",
+  taskBuild: "/api/v1/tasks/build",
   dataTables: "/api/v1/data/tables",
   dataAutonomy: "/api/v1/data/autonomy",
   dataTable: (name: string, params: URLSearchParams) => {
@@ -651,22 +690,26 @@ async function postJson<T extends { error?: string }>(url: string, token: string
 export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
   const r = await postJson<{ ok?: boolean; lines?: string[]; error?: string }>(API.settings, token, body);
   if (r.ok && r.value.ok) return { ok: true, lines: r.value.lines ?? [] };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text. 202 → the request's seq. */
-export async function postCommand(token: string, id: string, command: string, note: string): Promise<CommandResult> {
+/**
+ * POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text; a proposal's Confirm all or
+ * Cancel sends `{ command, proposal }` instead. 202 → the request's seq.
+ */
+export async function postCommand(token: string, id: string, command: string, note: string, proposal?: string): Promise<CommandResult> {
   const text = note.trim();
-  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, text ? { command, note: text } : { command });
+  const body = proposal !== undefined ? { command, proposal } : text ? { command, note: text } : { command };
+  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, body);
   if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** POST /api/v1/pauses/resume: ends one pause now. A refusal (403, 400, …) comes back as `{ ok: false, error }`. */
 export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
   if (r.ok) return { ok: true, ended: r.value.ended === true };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** POST /api/v1/standing: a rule on or off, naming the proposal it answers if any. A refusal comes back as `{ ok: false, error }`. */
@@ -676,14 +719,30 @@ export async function postStanding(
 ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
   if (r.ok) return { ok: true, changed: r.value.changed === true };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/users: an add, change or remove. A refusal (403, 409, 400, …) comes back as `{ ok: false, error }`. */
-export async function postUsers(token: string, body: UsersWrite): Promise<{ ok: true; done: string } | { ok: false; error: string }> {
-  const r = await postJson<{ done?: string; error?: string }>(API.users, token, body);
-  if (r.ok) return { ok: true, done: r.value.done ?? "" };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording. */
+export async function postRuleVerdict(
+  token: string,
+  body: { id: string; verdict: RuleVerdict; reason: string; text?: string },
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
+  if (r.ok) return { ok: true };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/tasks/build: Build this. The work item's ID; a refusal (409, 503, …) comes back as `{ ok: false, error }`. */
+export async function postTaskBuild(token: string, id: string): Promise<{ ok: true; work_item_id: string } | { ok: false; error: string }> {
+  const r = await postJson<{ work_item_id?: string; error?: string }>(API.taskBuild, token, { id });
+  if (r.ok) return { ok: true, work_item_id: r.value.work_item_id ?? "" };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/tasks: quick-add words under the page's own `tk_` ID (a resend stores one task). A refusal comes back as `{ ok: false, error }`. */
+export async function postTaskAdd(token: string, id: string, words: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.tasks, token, { id, words });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
 /**

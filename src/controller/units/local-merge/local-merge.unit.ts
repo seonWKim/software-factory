@@ -170,6 +170,7 @@ export class LocalMergeUnit {
       if (closed && (!awaitingMerge(closed) || closed.change_ref !== null)) return `${item.id} is no longer waiting for a merge`;
       throw new Error(`the close of ${item.id} after its local merge did not apply; applied again`);
     }
+    await this.c.unit("pr-events").closeLinkedTasks(item.id);
     this.c.k.d.log.info("local merge", { work_item_id: item.id, merge_sha: r.sha, user_id: by, base_push: push });
     const how = auto ? " in auto mode" : "";
     const body = [

@@ -168,7 +168,7 @@ describe("item links", () => {
   it("the breadcrumb and every item link point to /app/items/<id>; no link has a local: or other non-web address", async () => {
     await mountAt("items/wi_local3", "A local task");
     const crumbs = [...screen.getByRole("navigation", { name: "Breadcrumb" }).querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href")]);
-    expect(crumbs).toEqual([["Work items", "/app/items"], ["30331a68", "/app/items/wi_local3"]]);
+    expect(crumbs).toEqual([["Work", "/app/items"], ["30331a68", "/app/items/wi_local3"]]);
     for (const path of ["items/wi_local3", "items", ""]) {
       cleanup();
       await mountAt(path, path === "" ? "Spec waiting" : "A local task");

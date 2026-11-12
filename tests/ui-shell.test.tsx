@@ -132,14 +132,31 @@ describe("app shell", () => {
   it("shows the sidebar pages, Needs you (N) from /api/v1/overview, and fetches only /api/v1/* URLs", async () => {
     mount();
     expect(await screen.findByText("Needs you (4)")).toBeTruthy();
-    const nav = screen.getByRole("navigation", { name: "Pages" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Floor", "Work items", "Workers", "Queue", "Health", "Failures", "Settings", "Users"]);
+    const factory = screen.getByRole("navigation", { name: "Factory" });
+    expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you", "Work", "Activity"]);
+    const nav = screen.getByRole("navigation", { name: "System" });
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Rules", "Runners", "Queue", "Data"]);
     fireEvent.click(within(nav).getByText("Queue"));
     expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
     expect(location.pathname).toBe("/app/queue");
     expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched.every((u) => u.startsWith("/api/v1/"))).toBe(true);
+  });
+
+  it("the sidebar top shows the mark and the wordmark Gongbang", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    const sidebar = screen.getByRole("complementary", { name: "Sidebar" });
+    const brand = sidebar.querySelector("p")!;
+    expect(brand.textContent).toBe("Gongbang");
+    const mark = within(brand).getByTestId("brand-mark");
+    expect(mark.getAttribute("aria-hidden")).toBe("true");
+    expect(mark.querySelector("path")!.getAttribute("fill-rule")).toBe("evenodd");
+    const ember = mark.querySelector("circle")!;
+    expect(ember.getAttribute("class")).toBe("fill-ember");
+    expect([ember.getAttribute("cx"), ember.getAttribute("cy")]).toEqual(["800", "224"]);
+    expect(Number(ember.getAttribute("r"))).toBeCloseTo((2.5 * 1024) / 24, 1);
   });
 
   it("polls every 3 s while visible and stops while the document is hidden", async () => {
@@ -279,7 +296,7 @@ describe("sidebar in the icon-only layout", () => {
     try {
       mount();
       await screen.findByText("Needs you (4)");
-      for (const nav of [screen.getByRole("navigation", { name: "Pages" }), screen.getByRole("navigation", { name: "Tools" })]) {
+      for (const nav of [screen.getByRole("navigation", { name: "Factory" }), screen.getByRole("navigation", { name: "System" })]) {
         const links = [...nav.querySelectorAll("a")];
         expect(links.length).toBeGreaterThan(0);
         for (const a of links) {
@@ -312,18 +329,50 @@ describe("top bar on a narrow screen", () => {
 });
 
 describe("app pages", () => {
-  it("the Floor shows the factory banner, what needs you, what runs and the queue, in that order", async () => {
+  it("Needs you shows the factory banner and what needs you; Activity shows what runs", async () => {
     mount();
     expect((await screen.findByTestId("factory-banner")).textContent).toContain("Update to bbbbbbb waits for npm run migrate (pending: schema 12)");
+    expect(screen.getByRole("heading", { level: 1, name: "Needs you" })).toBeTruthy();
     const needs = await screen.findByRole("table", { name: "Needs you" });
     expect(within(needs).getByText("Spec waiting")).toBeTruthy();
     expect(within(needs).queryByText("Being built")).toBeNull();
+    expect(screen.queryByRole("table", { name: "Running now" })).toBeNull();
+    cleanup();
+    history.replaceState(null, "", "/app/activity");
+    mount();
+    expect(screen.getByRole("heading", { level: 1, name: "Activity" })).toBeTruthy();
     const running = await screen.findByRole("table", { name: "Running now" });
     expect(within(running).getByText("Being built")).toBeTruthy();
-    const q = await screen.findByRole("table", { name: "Queue" });
-    expect(within(q).getByText("Waiting its turn")).toBeTruthy();
-    const order = [...document.querySelectorAll("section[aria-label]")].map((e) => e.getAttribute("aria-label"));
-    expect(order.slice(0, 3)).toEqual(["Needs you", "Running now", "Queue"]);
+  });
+
+  it("the sidebar's Tasks group links the Tasks page, the System group is collapsed, and there is no Users", () => {
+    mount();
+    const tasks = screen.getByRole("navigation", { name: "Tasks" });
+    expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks"]);
+    expect(document.querySelector("aside details")!.hasAttribute("open")).toBe(false);
+    expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
+  });
+
+  it("old paths redirect: /app/workers to Runners, /app/users to Needs you", async () => {
+    history.replaceState(null, "", "/app/workers");
+    mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Runners" })).toBeTruthy();
+    await vi.waitFor(() => expect(location.pathname).toBe("/app/runners"));
+    cleanup();
+    history.replaceState(null, "", "/app/users");
+    mount();
+    expect(await screen.findByRole("heading", { level: 1, name: "Needs you" })).toBeTruthy();
+    await vi.waitFor(() => expect(location.pathname).toBe("/app/"));
+  });
+
+  it("each page's heading matches its menu name", async () => {
+    const names: Record<string, string> = { items: "Work", activity: "Activity", runners: "Runners", queue: "Queue", health: "Health", failures: "Failures", data: "Data", settings: "Settings" };
+    for (const [path, name] of Object.entries(names)) {
+      history.replaceState(null, "", `/app/${path}`);
+      mount();
+      expect(screen.getByRole("heading", { level: 1, name })).toBeTruthy();
+      cleanup();
+    }
   });
 
   it("an item link opens its page: runs with their error, the timeline, and a way back", async () => {
@@ -334,7 +383,7 @@ describe("app pages", () => {
     expect(screen.getByText(": git merge: boom", { exact: false })).toBeTruthy();
     expect(screen.getByText("intake")).toBeTruthy();
     // The breadcrumb back to the list (the sidebar's entry is the current page).
-    fireEvent.click(screen.getByRole("link", { name: "Work items", current: false }));
+    fireEvent.click(screen.getByRole("link", { name: "Work", current: false }));
     expect(location.pathname).toBe("/app/items");
   });
 
@@ -358,7 +407,8 @@ describe("app pages", () => {
 });
 
 describe("unreviewed merges", () => {
-  it("the Floor says how many PRs merged without review and links to Health; hidden at 0", async () => {
+  it("Activity says how many PRs merged without review and links to Health; hidden at 0", async () => {
+    history.replaceState(null, "", "/app/activity");
     mount();
     const line = await screen.findByTestId("unreviewed-merges-line");
     expect(line.textContent).toContain("2 PRs merged without review in the last 7 days");
@@ -367,9 +417,9 @@ describe("unreviewed merges", () => {
     cleanup();
     (overview as { unreviewed_merges_7d: number }).unreviewed_merges_7d = 0;
     try {
-      history.replaceState(null, "", "/app/");
+      history.replaceState(null, "", "/app/activity");
       mount();
-      await screen.findByTestId("factory-banner");
+      await screen.findByRole("table", { name: "Running now" });
       expect(screen.queryByTestId("unreviewed-merges-line")).toBeNull();
     } finally {
       (overview as { unreviewed_merges_7d: number }).unreviewed_merges_7d = 2;
@@ -667,16 +717,12 @@ describe("why an item waits (issue #310)", () => {
   }
   const dependencyLinks = [["#12", `${REF_URL}12`], ["#13", `${REF_URL}13`]];
 
-  it("the Floor's Needs you shows the sentence with #N linked, and a held run's Starts shows its sentence, not now", () =>
+  it("Needs you shows the sentence with #N linked", () =>
     withWhy(async () => {
       mount();
       const needs = await screen.findByRole("table", { name: "Needs you" });
       expect(within(needs).getByText("Waiting for", { exact: false }).textContent).toBe(dep.text);
       expect(refLinks(needs)).toEqual(dependencyLinks);
-      const q = await screen.findByRole("table", { name: "Queue" });
-      const starts = q.querySelector("tbody tr td:last-child") as HTMLElement;
-      expect(starts.textContent).toBe("Held behind #92, which has an open PR");
-      expect(refLinks(starts)).toEqual([["#92", `${REF_URL}92`]]);
     }));
 
   it("Work items and the Queue page show the same sentences, #N linked", () =>
@@ -790,14 +836,14 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
   it("the tab title leads with the Needs you count, and has no prefix at 0", async () => {
     mount();
     await screen.findByText("Needs you (4)");
-    await vi.waitFor(() => expect(document.title).toBe("(4) Floor · software-factory"));
+    await vi.waitFor(() => expect(document.title).toBe("(4) Needs you · Gongbang"));
     cleanup();
     const before = overview.needs_you;
     overview.needs_you = 0;
     try {
       mount();
       await screen.findByText("Needs you (0)");
-      await vi.waitFor(() => expect(document.title).toBe("Floor · software-factory"));
+      await vi.waitFor(() => expect(document.title).toBe("Needs you · Gongbang"));
     } finally {
       overview.needs_you = before;
     }

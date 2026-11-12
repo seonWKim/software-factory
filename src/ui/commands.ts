@@ -11,10 +11,16 @@
 // `merge` fields are built here too.
 // `merge` (design §9, the Merge button) is an app command beside the item commands, with no note: the local merge
 // of `factory merge` for a local item, the PR's merge on the forge for any other.
+// The command box (design 09-dashboard-app) sends `sentence` with the words as its note, for the controller's
+// plain-words reader; a pending proposal's Confirm all sends `proposal_confirm` and its Cancel `proposal_cancel`, each
+// with `proposal`, the proposal ID only. The item API's `proposals` lists the item's pending proposals, found by the
+// marker of the replies in its thread. This process makes no model call and applies none of them.
 
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
 import { COMMANDS, type CommandName, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, roleRefusal } from "../core/commands.js";
+import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
+import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
 import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
 import type { Run, UserId, WorkItem, WorkItemId } from "../core/types.js";
@@ -92,14 +98,31 @@ function mediaType(value: string | undefined): string {
   return (value ?? "").split(";", 1)[0]!.trim().toLowerCase();
 }
 
-/** The body as a command, or why it is not one. */
-export function parseCommand(body: unknown): { command: AppCommand; note?: string } | { error: string } {
+/** A proposal's Confirm all and Cancel: the page's requests that name a stored proposal by its ID. */
+const PROPOSAL_REQUESTS: readonly string[] = [CONFIRM_COMMAND, CANCEL_APP_COMMAND];
+
+/** What the page may send: an item command with its note, a sentence (its words as the note), or a proposal's request. */
+export type PageRequest = { command: AppCommand; note?: string } | { command: typeof SENTENCE_APP_COMMAND; note: string } | { command: string; proposal: string };
+
+/** The body as a request, or why it is not one. */
+export function parseCommand(body: unknown): PageRequest | { error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => k !== "command" && k !== "note");
+  const extra = Object.keys(b).find((k) => k !== "command" && k !== "note" && k !== "proposal");
   if (extra) return { error: `unknown field "${extra}"` };
+  if (typeof b.command === "string" && PROPOSAL_REQUESTS.includes(b.command)) {
+    if (b.note !== undefined) return { error: `${b.command} takes no note` };
+    return typeof b.proposal === "string" && isProposalId(b.proposal) ? { command: b.command, proposal: b.proposal } : { error: "proposal must be a proposal ID" };
+  }
+  if (b.proposal !== undefined) return { error: `unknown field "proposal"` };
+  if (b.command === SENTENCE_APP_COMMAND) {
+    const words = typeof b.note === "string" ? b.note.trim() : "";
+    if (words === "") return { error: "sentence needs your words" };
+    if (words.length > INTERPRET_MAX_CHARS) return { error: `sentence must be at most ${INTERPRET_MAX_CHARS} characters` };
+    return { command: SENTENCE_APP_COMMAND, note: words };
+  }
   if (typeof b.command !== "string" || !APP_COMMANDS.includes(b.command as AppCommand)) {
-    return { error: `command must be one of ${APP_COMMANDS.join(", ")}` };
+    return { error: `command must be one of ${[...APP_COMMANDS, SENTENCE_APP_COMMAND, ...PROPOSAL_REQUESTS].join(", ")}` };
   }
   const command = b.command as AppCommand;
   if (b.note !== undefined && typeof b.note !== "string") return { error: "note must be a string" };
@@ -142,7 +165,9 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   const item = await d.store.getWorkItem(id as WorkItemId);
   if (!item) return err(404, "No such work item.");
   const key = `app:${randomUUID()}`;
-  const args: Record<string, unknown> = { work_item_id: item.id, ...(parsed.note === undefined ? {} : { note: parsed.note }) };
+  const args: Record<string, unknown> = {
+    work_item_id: item.id, ...("note" in parsed && parsed.note !== undefined ? { note: parsed.note } : {}), ...("proposal" in parsed ? { proposal: parsed.proposal } : {}),
+  };
   const passport_id = await c.passport?.();
   const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args, ...(passport_id ? { passport_id } : {}) });
   return { status: 202, value: { request_id: request.key, seq: request.seq, command: request.command, work_item_id: item.id } };
@@ -236,6 +261,28 @@ export async function waitingSpec(it: WorkItem, runs: readonly Run[], text: (v: 
     });
   }
   return { in_short: await text(spec.in_short), decisions };
+}
+
+/**
+ * The item API's `proposals`: each stored proposal a reply in the item's thread names by its marker
+ * (parseProposalMarker), oldest first, with its pending commands as typed lines (through `text`, the Withholder); a
+ * proposal with none pending is left out. Store reads only: the thread and listCommandProposals.
+ */
+export async function itemProposals(d: UiDeps, id: WorkItemId, text: (v: string) => Promise<string | null>) {
+  const ids = new Set<string>();
+  for (const m of await d.store.listItemMessages(id)) {
+    const marker = parseProposalMarker(m.body);
+    if (marker) ids.add(marker.id);
+  }
+  const out = [];
+  for (const proposal of ids) {
+    const pending = (await d.store.listCommandProposals(proposal)).filter((r) => r.status === "pending");
+    if (pending.length === 0) continue;
+    const commands = [];
+    for (const r of pending) commands.push({ index: r.idx, work_item_id: r.work_item_id, line: (await text(typed(r))) ?? "" });
+    out.push({ id: proposal, created_at: pending[0]!.created_at, commands });
+  }
+  return out;
 }
 
 /** The item API's `replies`: the item's app requests; the refusal and command pass `text`, the note never leaves. */

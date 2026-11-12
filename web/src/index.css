@@ -19,7 +19,10 @@
   --color-text-2: var(--text-2);
   --color-text-3: var(--text-3);
   --color-accent: var(--accent);
+  --color-ember: var(--ember);
+  --color-failed: var(--failed);
   --color-focus: var(--focus);
+  --color-on-solid: var(--on-solid);
   --color-pill-ok-bg: var(--pill-ok-bg);
   --color-pill-ok-fg: var(--pill-ok-fg);
   --color-pill-warn-bg: var(--pill-warn-bg);

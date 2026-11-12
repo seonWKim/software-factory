@@ -1,4 +1,5 @@
 import { Children, Fragment, type ReactNode, createContext, useContext, useEffect, useState } from "react";
+import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 
 // Small shared pieces for the pages: a section with a heading, a data table, a level badge and the loading
@@ -128,7 +129,7 @@ export function Badge({ level, children }: { level?: string | undefined; childre
 /** A row-shaped placeholder while the first read is in flight. */
 export function Loading({ rows = 3 }: { rows?: number }) {
   return (
-    <div aria-busy="true" aria-label="Loading" className="space-y-2">
+    <div aria-busy="true" aria-label={t("common.loading")} className="space-y-2">
       {Array.from({ length: rows }, (_, i) => (
         <div key={i} className="h-8 rounded-control bg-surface-2" />
       ))}
@@ -139,7 +140,7 @@ export function Loading({ rows = 3 }: { rows?: number }) {
 export function ErrorNote({ error }: { error: unknown }) {
   return (
     <p role="alert" className="rounded-control bg-pill-bad-bg px-3 py-2 text-sm text-pill-bad-fg">
-      Could not load: {error instanceof Error ? error.message : String(error)}
+      {t("common.couldNotLoad", { message: error instanceof Error ? error.message : String(error) })}
     </p>
   );
 }

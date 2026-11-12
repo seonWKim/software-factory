@@ -13,7 +13,7 @@ export function RevisionBanner({ server, web }: { server: string | null | undefi
   if (!server || !web || server === web) return null;
   return (
     <p role="alert" data-testid="revision-banner" className="border-b border-pill-warn-fg bg-pill-warn-bg px-4 py-2 text-sm text-pretty text-pill-warn-fg">
-      Dashboard out of date: <a href="" className={BANNER_LINK_CLASS}>reload</a> / restart <code className="font-mono">factory ui</code>
+      {t("banner.outOfDate")}<a href="" className={BANNER_LINK_CLASS}>{t("banner.reload")}</a>{t("banner.restart")}<code className="font-mono">{"factory ui"}</code>
     </p>
   );
 }
@@ -31,7 +31,7 @@ export function FloorNotes({ actions, deadlocks }: { actions: readonly SystemAct
   const line = "flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-control px-3 py-1.5 text-sm";
   const red = "bg-pill-bad-bg text-pill-bad-fg";
   return (
-    <ul aria-label="System actions" className="mt-3 space-y-1">
+    <ul aria-label={t("banner.systemActions")} className="mt-3 space-y-1">
       {others.map((a, i) => (
         <li key={`${a.code}:${i}`} data-action={a.code} className={cn(line, red)}>
           <span className="min-w-0 text-pretty break-words">{a.text}</span>

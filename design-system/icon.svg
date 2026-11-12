@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- The Gongbang mark (docs/design/09-brand-and-tokens.md): a white bold 공 on a rounded #1C1C1E square, on the
+       macOS icon grid. The 공 is outlines (ㄱ, ㅗ and the ring of ㅇ), so no installed font is needed. The ember dot
+       is drawn at every size; data-small-r is its smallest radius in px (scripts/build-icons.mjs). -->
+  <rect id="square" x="100" y="100" width="824" height="824" rx="185" fill="#1C1C1E"/>
+  <path id="glyph" fill="#FFFFFF" fill-rule="evenodd" d="M316 212H708V412H630V286H316ZM474 428H550V496H766V570H258V496H474ZM512 598C581.6 598 638 654.4 638 724C638 793.6 581.6 850 512 850C442.4 850 386 793.6 386 724C386 654.4 442.4 598 512 598ZM512 666C544 666 570 692 570 724C570 756 544 782 512 782C480 782 454 756 454 724C454 692 480 666 512 666Z"/>
+  <circle id="ember" data-small-r="2.5" cx="800" cy="224" r="44" fill="#FB923C"/>
+</svg>

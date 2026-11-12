@@ -2,7 +2,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createMacosShell, windowOptions } from "../../desktop/electron/macos/app-shell.js";
+import { PRODUCT_NAME } from "../../desktop/electron/common/product.js";
+import { STARTUP_ERROR_TITLE, createMacosShell, windowOptions } from "../../desktop/electron/macos/app-shell.js";
 import { electronMock, flush } from "./fakes.js";
 
 const DASHBOARD = "http://127.0.0.1:4310/app/";
@@ -53,7 +54,7 @@ describe("macOS shell window", () => {
     win.close();
     m.menuItem("Open dashboard").click!();
     expect(win.visible).toBe(true);
-    const quit = m.menuItem("Quit Software Factory");
+    const quit = m.menuItem("Quit Gongbang");
     expect(quit.accelerator).toBe("Command+Q");
     quit.click!();
     await flush();
@@ -72,9 +73,33 @@ describe("macOS shell window", () => {
   it("the menu shows the factory state and the needs-you count", () => {
     const { m, shell } = opened();
     shell.setStatus({ state: "running", needsYou: 4 });
-    expect(m.tray.title).toBe("SF 4");
+    expect(m.tray.title).toBe("Gb 4");
     expect(m.tray.menu.map((i) => i.label)).toContain("Factory: running");
     expect(m.tray.menu.map((i) => i.label)).toContain("Needs you: 4");
+  });
+});
+
+describe("the product name", () => {
+  it("is desktop/package.json's productName, Gongbang", () => {
+    const pkg = JSON.parse(readFileSync(join(DESKTOP, "..", "package.json"), "utf8"));
+    expect(pkg.productName).toBe("Gongbang");
+    expect(PRODUCT_NAME).toBe("Gongbang");
+  });
+
+  it("names the window, the tray tooltip and the Quit item", () => {
+    const { m, win, shell } = opened();
+    expect(win.options.title).toBe("Gongbang");
+    shell.setStatus({ state: "running", needsYou: 1 });
+    expect(m.tray.tooltip).toBe("Gongbang: running");
+    expect(m.menuItem("Quit Gongbang")).toBeDefined();
+    expect(m.tray.menu.map((i) => i.label).filter((l) => /Software Factory/.test(l ?? ""))).toEqual([]);
+  });
+
+  it("names the startup error dialog, which main.js shows", () => {
+    expect(STARTUP_ERROR_TITLE).toBe("Gongbang could not start");
+    const main = readFileSync(join(DESKTOP, "macos", "main.js"), "utf8");
+    expect(main).toMatch(/dialog\.showErrorBox\(STARTUP_ERROR_TITLE,/);
+    expect(main).not.toContain("Software Factory");
   });
 });
 

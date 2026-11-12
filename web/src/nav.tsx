@@ -5,17 +5,18 @@ import { type AnchorHTMLAttributes, type MouseEvent, createContext, useContext, 
 
 const NavContext = createContext<(to: string) => void>(() => undefined);
 
-/** The current location path, and a navigate function that pushes a new one. */
-export function useLocationPath(): [string, (to: string) => void] {
+/** The current location path, and a navigate function that pushes a new one (`replace`: swaps the current entry). */
+export function useLocationPath(): [string, (to: string, replace?: boolean) => void] {
   const [path, setPath] = useState(() => location.pathname);
   useEffect(() => {
     const onPop = () => setPath(location.pathname);
     addEventListener("popstate", onPop);
     return () => removeEventListener("popstate", onPop);
   }, []);
-  const navigate = (to: string) => {
+  const navigate = (to: string, replace = false) => {
     if (to === location.pathname) return;
-    history.pushState(null, "", to);
+    if (replace) history.replaceState(null, "", to);
+    else history.pushState(null, "", to);
     setPath(to);
     scrollTo?.(0, 0);
   };

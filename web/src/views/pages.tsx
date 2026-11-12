@@ -5,7 +5,9 @@ import {
   type UnreviewedMerges, type WorkerProcess, type WorkersView, postResume, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
+import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
@@ -132,7 +134,7 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
         {label} at {pause.ends_at}{ends > now ? ` (in ${ago(new Date(now).toISOString(), ends)})` : ""}
       </span>
       {token !== null && (
-        <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} onClick={() => void resume()}>
+        <Button variant="secondary" disabled={busy} onClick={() => void resume()}>
           Resume now
         </Button>
       )}
@@ -155,15 +157,12 @@ export function ClaimPauses({ now }: { now: number }) {
   );
 }
 
-/** The factory floor: what needs the operator first, then what runs and what waits; then the numbers. */
-export function FloorPage() {
+/** Needs you: the factory banner, then what waits for the operator first, with one line per kind of note; then the claim pauses. */
+export function NeedsYouPage() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
   const items = useApi<Items>(API.items);
-  const runs = useApi<{ runs: RunRow[] }>(API.runs);
-  const queue = useApi<{ queue: QueueRow[] }>(API.queue);
   const pauses = useApi<PausesView>(API.pauses);
-  const map = useMemo(() => byId(items.data?.items), [items.data]);
   const rows = items.data?.items ?? [];
   // One row per item that waits on the operator; an item started past a deadlock goes on by itself (decision 1).
   const needs = rows.filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level) && i.why?.code !== "deadlock");
@@ -182,15 +181,22 @@ export function FloorPage() {
         <FloorNotes actions={actions} deadlocks={deadlocks} />
       </Section>
       <ClaimPauses now={now} />
+    </>
+  );
+}
+
+/** Activity: what runs now, then the numbers of the last 24 hours. */
+export function ActivityPage() {
+  const now = useNow();
+  const overview = useApi<Overview>(API.overview);
+  const items = useApi<Items>(API.items);
+  const runs = useApi<{ runs: RunRow[] }>(API.runs);
+  const map = useMemo(() => byId(items.data?.items), [items.data]);
+  const o = overview.data;
+  return (
+    <>
       <Section title="Running now" count={runs.data?.runs.filter((r) => r.status === "running").length}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
-      </Section>
-      <Section
-        title="Queue"
-        count={queue.data?.queue.length}
-        action={<Link href={`${BASE}queue`} className={cn("text-sm", LINK_CLASS)}>All queued runs</Link>}
-      >
-        {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data ? <Loading rows={2} /> : <QueueTable queue={queue.data.queue} items={map} now={now} limit={10} />}
       </Section>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
         <p data-testid="unreviewed-merges-line" className="mb-4 text-sm">
@@ -240,12 +246,6 @@ function rateLimitText(pauses: PausesView | undefined): string {
   return p ? `paused until ${p.ends_at}` : "ok";
 }
 
-const buttonClass = (on: boolean) =>
-  cn(
-    "rounded-control border px-2 py-1 text-xs tabular-nums",
-    on ? "border-text-1 bg-text-1 text-bg" : "border-border-strong hover:bg-surface-2",
-  );
-
 /** The tree's summary line; each count is a button that sets the matching state filter. */
 function Summary({ rows, rateLimit, onFilter }: { rows: readonly ItemRow[]; rateLimit: string; onFilter: (s: string) => void }) {
   const c = summaryCounts(rows);
@@ -253,7 +253,7 @@ function Summary({ rows, rateLimit, onFilter }: { rows: readonly ItemRow[]; rate
   return (
     <p data-testid="summary" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       {parts.map(([label, n, filter]) => (
-        <button key={filter} type="button" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{n} {label}</button>
+        <Button key={filter} variant="ghost" size="sm" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{n} {label}</Button>
       ))}
       <span>rate limit: {rateLimit}</span>
     </p>
@@ -297,35 +297,35 @@ export function ItemsPage() {
   return (
     <>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <input
+        <Input
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search by title or issue number"
           aria-label="Search work items"
-          className="w-full max-w-sm rounded-control border border-border-strong bg-transparent px-2 py-1 text-sm"
+          className="w-full max-w-sm"
         />
-        <div role="group" aria-label="View" className="flex gap-1.5">
+        <ButtonRow role="group" aria-label="View">
           {(["tree", "list"] as const).map((v) => (
-            <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={buttonClass(view === v)}>{v === "tree" ? "Tree" : "List"}</button>
+            <Button key={v} size="sm" aria-pressed={view === v} onClick={() => setView(v)}>{v === "tree" ? "Tree" : "List"}</Button>
           ))}
-        </div>
+        </ButtonRow>
         {tree && (
-          <div className="flex gap-1.5">
-            <button type="button" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)} className={buttonClass(showClosed)}>Show closed</button>
-            <button type="button" onClick={() => setExpanded(parentIds(nodes))} className={buttonClass(false)}>Expand all</button>
-            <button type="button" onClick={() => setExpanded([])} className={buttonClass(false)}>Collapse all</button>
-          </div>
+          <ButtonRow>
+            <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>Show closed</Button>
+            <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>Expand all</Button>
+            <Button size="sm" onClick={() => setExpanded([])}>Collapse all</Button>
+          </ButtonRow>
         )}
       </div>
       {tree && items.data && <Summary rows={rows} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
-      <div role="group" aria-label="Filter by state" className="mb-3 flex flex-wrap gap-1.5">
+      <ButtonRow role="group" aria-label="Filter by state" className="mb-3">
         {[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => (
-          <button key={s ?? "all"} type="button" aria-pressed={state === s} onClick={() => setState(s)} className={buttonClass(state === s)}>
+          <Button key={s ?? "all"} size="sm" aria-pressed={state === s} onClick={() => setState(s)} className="tabular-nums">
             {s === null ? "All" : FILTER_LABELS[s]} {s === null ? allCount : counted(s)}
-          </button>
+          </Button>
         ))}
-      </div>
+      </ButtonRow>
       {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
         nodes.length === 0 ? <Empty>No work item matches this filter.</Empty> : (
           <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
@@ -357,7 +357,7 @@ export function ItemPage({ id }: { id: string }) {
   return (
     <>
       <nav aria-label="Breadcrumb" className="mb-1 text-sm">
-        <Link href={`${BASE}items`} className={LINK_CLASS}>Work items</Link>
+        <Link href={`${BASE}items`} className={LINK_CLASS}>Work</Link>
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", LINK_CLASS)}>{short}</Link>
       </nav>
@@ -550,9 +550,9 @@ function TimelineRow({ entry: t, now, viewer }: { entry: TimelineEntry; now: num
         )}
         {spec.length > 0 && (
           <div className="mt-1">
-            <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className={cn("text-xs", LINK_CLASS)}>
+            <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} className={LINK_CLASS}>
               spec written ({open ? "hide" : "show"})
-            </button>
+            </Button>
             {open && (
               <div data-spec className="mt-2 space-y-3 rounded-control border border-border p-3">
                 {spec.map(([f, c]) => (
@@ -602,7 +602,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
 
 const WORKERS_SOURCE: Record<string, string> = { override: "override", file: "config file", default: "default" };
 
-export function WorkersPage() {
+export function RunnersPage() {
   const now = useNow();
   const workers = useApi<WorkersView>(API.workers);
   const overview = useApi<Overview>(API.overview);
