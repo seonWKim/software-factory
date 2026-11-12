@@ -103,11 +103,12 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     const triaged = await item(f);
     expect(triaged).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", requester_id: OWNER, title: "please add a scope gate" });
     expect(f.runner.specs.map((s) => s.role)).toEqual(["triage"]);
-    // The spec is in the thread, with buttons for the commands that apply now, and no marker text.
+    // The spec is in the thread as the short spec message, with its buttons, and no marker text. The status message
+    // posted while triaging is edited in place: no second message says it needs approval.
     const spec = f.api.thread(ROOT).find((m) => FakeSlackApi.buttons(m).length > 0)!;
-    expect(spec).toBeTruthy();
-    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help"]);
-    expect(statusLines(f).map((m) => m.text)).toEqual(["Status: *needs approval*"]);
+    expect(spec.text).toBe("Needs your approval: please add a scope gate");
+    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject"]);
+    expect(statusLines(f)).toHaveLength(1);
 
     // Approve with a mention in the thread, as the spec's hint says (Slack itself takes a message that starts with
     // `/`): implement opens PR 42 on the forge, review passes.
@@ -159,10 +160,8 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     const thread = texts(f);
     expect(thread).toHaveLength(4);
     expect(thread[0]).toBe("Status: *ready to merge* · <https://github.com/o/r/pull/42|PR #42>");
-    expect(thread[1]).toMatch(/^\*Factory spec\*/);
-    // The spec's folded "What the PR contains" block reads as a heading, not as escaped HTML tags.
-    expect(thread[1]).toContain("*What the PR contains*\n\nworkflow + test");
-    expect(thread[1]).not.toContain("&lt;details");
+    // The spec's message: its first line names the item; the full spec stays in the store and on the dashboard.
+    expect(thread[1]).toBe("Needs your approval: please add a scope gate");
     expect(thread[2]).toBe("*Factory review: pass*\n\nthe gate is right\n\nTier recheck: 2");
     expect(thread[3]).toMatch(/^<https:\/\/github\.com\/o\/r\/pull\/42\|PR #42> passed review \(tier 2\) and its checks passed\. A human merge is required\./);
     // The item's own conversation in the store holds the same factory messages, once each, and the reply between them.
@@ -186,7 +185,7 @@ describe("a Slack thread from mention to merged PR", { timeout: 60_000 }, () => 
     await f.deliver(eventEnvelope(mention(ROOT, "please add a scope gate")));
     await f.deliver(eventEnvelope(mention("1800000001.000200", "/approve", { thread_ts: ROOT })));
     const review = f.api.thread(ROOT).find((m) => m.text?.startsWith("*Factory review"))!;
-    const spec = f.api.thread(ROOT).find((m) => m.text?.startsWith("*Factory spec"))!;
+    const spec = f.api.thread(ROOT).find((m) => m.text?.startsWith("Needs your approval:"))!;
     const reacted = (ts: string, emoji: string) =>
       eventEnvelope({ type: "reaction_added", user: "U0ALICE", reaction: emoji, item: { type: "message", channel: CHANNEL, ts }, item_user: BOT, event_ts: "1800000900.000100" });
     const before = f.api.thread(ROOT).length;
