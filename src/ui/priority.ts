@@ -47,6 +47,8 @@ export interface PriorityInput {
    * `workers pause` stopped (design §5 Pause); it ranks as queued, never as stuck.
    */
   run: { kind: RunKind; status: "queued" | "running"; heartbeat_at: string; paused_at?: string | null } | null;
+  /** ISO time the item's latest run finished, if any: tells the gap before the next run is queued from an idle item. */
+  last_finished_at?: string | null;
   /** Open items that wait on this one. 0 until dependency data exists (issue #49). */
   dependents: number;
   /** Open items this one waits on: a split phase's previous phase, a split parent's open phases. */
@@ -100,7 +102,9 @@ export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
   if (i.run?.status === "running") return "running";
   if (i.blocked_on === "dependency" || i.held) return "blocked_by_task";
   if (i.run?.status === "queued") return "queued";
+  if (i.blocked_on === "ci") return "running";
   if (i.waiting_on > 0 || i.blocked_on === "upstream") return "blocked_by_task";
+  if (i.blocked_on === "none" && i.last_finished_at && now.getTime() - ms(i.last_finished_at) < lease_ms) return "queued";
   return "stuck";
 }
 
@@ -143,10 +147,10 @@ export function badgesOf(i: PriorityInput, level: Level, now: Date, lease_ms: nu
       break;
     }
     case "running":
-      main = `running ${i.run!.kind}`;
+      main = i.run ? `running ${i.run.kind}` : "waiting for CI";
       break;
     case "queued":
-      main = i.run!.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
+      main = !i.run ? "next run queued" : i.run.paused_at ? `paused ${i.run!.kind}` : `queued ${i.run!.kind}`;
       break;
     case "blocked_by_task":
       main = blockedBadge(i);

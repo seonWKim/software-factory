@@ -38,7 +38,8 @@ export interface ChatContext {
   origin: string;
 }
 
-const UNLINKED =
+/** The refusal for a Slack account linked to no factory user: a command, a button press or a modal submit. */
+export const UNLINKED =
   "This Slack account is not linked to a factory user, so the command was not run. To link it, run `factory link-code <user_id>` " +
   "and post `/link <code>` here after a mention of the bot. Until then only `/link` and `help` are answered.";
 

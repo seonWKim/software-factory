@@ -35,6 +35,12 @@ function tableCells(text: string): string[] {
   return out;
 }
 
+/**
+ * The answer syntax of a spec's decisions (`N: <answer>`, `1: <answer>`, `N: answer`): a request that quotes it
+ * states no value. Defined here, since src/core cannot import the parser in src/shared/command-notes.ts.
+ */
+const ANSWER_SYNTAX = /^(?:\d+|N)\s*:\s*(?:<answer>|answer)$/i;
+
 /** The request's given values in the order they appear, each once: hex colours, code spans, table cells. */
 export function givenValues(request: string): string[] {
   const prose = request.replace(FENCE, "");
@@ -42,7 +48,7 @@ export function givenValues(request: string): string[] {
     ...[...request.matchAll(HEX)].map((m) => m[0]).filter(isColour),
     ...[...prose.matchAll(CODE_SPAN)].map((m) => m[1]!.trim()),
     ...tableCells(prose),
-  ].filter((v) => v !== "");
+  ].filter((v) => v !== "" && !ANSWER_SYNTAX.test(v));
   return [...new Set(found)];
 }
 
@@ -59,8 +65,27 @@ export function missingValues(request: string, spec: string): string[] {
   return givenValues(request).filter((v) => (/^#[0-9a-f]+$/i.test(v) ? !lower.includes(v.toLowerCase()) : !text.includes(squash(v))));
 }
 
-/** The spec text the implementer gets (the stored fields and the decisions), the text a given value must appear in. */
-export function specText(spec: TriageOutput): string {
+/** A stored owner answer the spec does not hold: its decision number and its text. */
+export interface MissingAnswer {
+  n: number;
+  answer: string;
+}
+
+/**
+ * The owner's stored answers (decision N's answer at index N-1; null: none given) the spec text does not hold, in
+ * order. The whole answer must appear, letter case and whitespace runs ignored; no fuzzy match.
+ */
+export function missingAnswers(answers: readonly (string | null)[], spec: string): MissingAnswer[] {
+  const text = squash(spec).toLowerCase();
+  return answers.flatMap((a, i) => (a === null || a.trim() === "" || text.includes(squash(a.trim()).toLowerCase()) ? [] : [{ n: i + 1, answer: a }]));
+}
+
+/**
+ * The spec text the implementer gets (the stored fields and the decisions), the text a given value must appear in.
+ * `decisions: false` leaves the decisions out: an owner answer counts only where the spec states it, not where a
+ * re-written spec asks the question again with the answer as an option.
+ */
+export function specText(spec: TriageOutput, o: { decisions?: boolean } = {}): string {
   return [
     spec.problem,
     ...spec.done_criteria,
@@ -68,7 +93,7 @@ export function specText(spec: TriageOutput): string {
     spec.scope,
     ...(spec.in_scope ?? []),
     ...(spec.out_of_scope ?? []),
-    ...(spec.decisions ?? []),
+    ...(o.decisions === false ? [] : spec.decisions ?? []),
     ...spec.allowed_paths,
     ...spec.files_to_change,
   ].join("\n");

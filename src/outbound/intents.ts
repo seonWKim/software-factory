@@ -15,13 +15,17 @@ import { DELIVERY_REQUESTED } from "./topics/deliveries-requests.topic.js";
  * a comment, through the forge), `merge_pr` (a PR merged at its reviewed head, through the forge), `push` (a run's commit from the factory repo to its forge branch) and `pr` (the
  * branch's PR opened or updated), `merge` (a merge queue landing in the factory repo, M8), `push_base` (the local
  * base pushed to its remote after a merge) and `file_sub_issue` (one phase of a split filed under its parent, whose
- * delivered ref names the filed item) and `tacit_capture` (a pushback captured in the owner's ledger, issue #570) retry
- * until delivered.
+ * delivered ref names the filed item), `tacit_capture` (a pushback captured in the owner's ledger, issue #570) and
+ * `notify` (an owner notice for a `notify_channels` adapter, design 12-notification-channels) retry until delivered.
  */
-export type ActionKind = "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue" | "tacit_capture";
+export type ActionKind =
+  | "status" | "seen" | "close" | "post" | "close_pr" | "merge_pr" | "push" | "pr" | "merge" | "push_base" | "file_sub_issue" | "tacit_capture" | "notify";
 
 /** The actions whose failure retries their batch with backoff; the rest are best effort. */
-export const RETRIED_ACTIONS: readonly ActionKind[] = ["close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue", "tacit_capture"];
+export const RETRIED_ACTIONS: readonly ActionKind[] = [
+  "close", "post", "close_pr", "merge_pr", "push", "pr", "merge", "push_base", "file_sub_issue", "tacit_capture", "notify",
+];
+
 
 /**
  * The owner's ledger (issue #570): its captures wait in their own destination order (`tacit:ledger`), so a failing

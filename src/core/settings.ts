@@ -4,7 +4,7 @@ import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordi
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
 import { parseMessageStyle, withMessageStyle } from "./message-style.js";
-import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, quietHoursSetting } from "./notifications.js";
+import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, parseNotifyChannels, quietHoursSetting } from "./notifications.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
 import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
@@ -260,7 +260,7 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
-  "message_style", "notice_kinds", "quiet_hours",
+  "message_style", "notice_kinds", "quiet_hours", "notify_channels",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -316,7 +316,7 @@ export interface SettableValues {
   mode: Mode;
   auto_merge_max_tier: number;
   message_style: string;
-  notice_kinds: NoticeKind[]; quiet_hours: string;
+  notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -344,7 +344,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
-  notice_kinds: [...NOTICE_KINDS], quiet_hours: "",
+  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [],
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -422,8 +422,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "workers":
       if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
-    case "phases_auto_approve":
-      return booleanSetting(key, value) as SettableValues[K];
+    case "phases_auto_approve": return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy":
       return parseHoldPolicy(value) as SettableValues[K];
     case "mode":
@@ -438,6 +437,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return parseMessageStyle(value) as SettableValues[K];
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
+    case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }

@@ -2,7 +2,8 @@ import type { ModelClass } from "../../../core/model-choice.js";
 import { TRIAGE_SCHEMA, parseTriage } from "../../../core/outputs.js";
 import type { Run, WorkItem } from "../../../core/types.js";
 import type { SandboxHandle } from "../../../interfaces/sandbox.js";
-import { RunFailure, renderRevision, renderWorkItem, tail } from "../../support.js";
+import { ownerAnswersFor } from "../../../shared/command-notes.js";
+import { RunFailure, renderOwnerAnswers, renderRevision, renderWorkItem, tail } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, type RunCall, defineRunKind } from "../../run-kind.js";
 
@@ -12,9 +13,11 @@ const MARKUP_REFUSAL = ": tool-call markup outside code";
 async function triage(w: Worker, run: Run, item: WorkItem, handle: SandboxHandle, signal: AbortSignal, model: ModelClass, step: RunCall["step"]) {
   // One journaled step: a takeover after it returns the stored spec.
   return step("run-agent", async () => {
+    // The owner's stored answers bind every re-write of the spec, a phase's from its parent's split (design 04-agents.md).
+    const answers = renderOwnerAnswers(await ownerAnswersFor(item, (id) => w.d.store.listStateChanges(id)));
     const prompt = item.revision_count > 0
-      ? await w.withIndex(renderRevision(item), [item.issue_text ?? item.problem, item.spec_feedback ?? ""].join("\n"))
-      : await w.withIndex(renderWorkItem(item, { includeSpec: false }), item.problem);
+      ? await w.withIndex(renderRevision(item, answers), [item.issue_text ?? item.problem, item.spec_feedback ?? ""].join("\n"))
+      : await w.withIndex(renderWorkItem(item, { includeSpec: false, answers }), item.problem);
     const ask = (text: string, agentStep?: string) =>
       w.agent(run, item, handle, signal, { prompt: text, model_class: model, output_schema: TRIAGE_SCHEMA }, agentStep);
     let result = await ask(prompt);

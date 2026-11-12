@@ -115,6 +115,8 @@ describe("Settings page", () => {
     expect(tick.textContent).toContain("default");
     expect(tick.textContent).toContain("not set (default 2000)");
     expect(tick.textContent).toContain("the next tick");
+    // A long unbroken value may break anywhere, so the table fits its card at 1280 px and Reset keeps its 12 px.
+    expect(within(tick).getByText("not set (default 2000)").className.split(" ")).toContain("wrap-anywhere");
     // Reset only where an override exists.
     expect(within(loops).queryByRole("button", { name: "Reset max_loops" })).not.toBeNull();
     expect(within(tick).queryByRole("button", { name: /^Reset/ })).toBeNull();
@@ -129,6 +131,22 @@ describe("Settings page", () => {
     const att = rowOf(table, "max_attempts");
     expect(att.textContent).toContain("for github.com/o/r: 2 (override)");
     expect(within(att).getByRole("button", { name: "Reset max_attempts for o/r" })).not.toBeNull();
+  });
+
+  it("the models form is a two-column grid (tier | 7rem field, 8 px by 12 px) with Save in its own button row 12 px below", async () => {
+    const table = await show();
+    const models = rowOf(table, "models");
+    const grid = models.querySelector<HTMLElement>("[data-tiers]")!;
+    expect(grid.className.split(" ")).toEqual(expect.arrayContaining(["grid", "grid-cols-[auto_7rem]", "gap-x-2", "gap-y-3"]));
+    // Each tier is a label cell then its field cell, so the three fields share one column and start at one x.
+    expect([...grid.children].map((c) => c.tagName)).toEqual(["LABEL", "INPUT", "LABEL", "INPUT", "LABEL", "INPUT"]);
+    for (const t of ["cheap", "standard", "strong"]) expect(within(grid).getByLabelText(`models ${t}`).className).toContain("w-full");
+    const save = within(models).getByRole("button", { name: "Save models" });
+    expect(grid.contains(save)).toBe(false);
+    const row = save.parentElement!;
+    expect(row.previousElementSibling).toBe(grid);
+    expect(row.className.split(" ")).toEqual(expect.arrayContaining(["flex", "gap-2"]));
+    expect(row.parentElement!.className.split(" ")).toContain("space-y-3");
   });
 
   it("lists the PR-only keys read-only, with no control, under a heading that says where and why they change", async () => {

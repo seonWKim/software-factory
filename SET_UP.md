@@ -40,21 +40,6 @@ make setup
 
 It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`, which asks again and removes only the factory's own entries), GitHub issues or pull requests, the GitHub App, or the Slack app; it prints where to remove each by hand. Decisions: [`docs/design/08-teardown.md`](docs/design/08-teardown.md).
 
-## Move a MySQL store to SQLite: copy, then switch
-
-The `mysql` store is deprecated and refused at startup ([`docs/plugins/factory-store.md`](docs/plugins/factory-store.md)). To keep the data of a MySQL store: stop the factory, run the copy, then switch the config. The copy takes the MySQL connection from its own flags, never from `factory.config.json`: `--mysql-host` (default `localhost`), `--mysql-port` (`3306`), `--mysql-database` (`software_factory`) and `--mysql-user` (`factory`). The password is `MYSQL_PASSWORD` in the secret file; this one command reads it, as a named exception, and goes away with the `mysql` plugin.
-
-```bash
-npm run migrate -- --copy-from-mysql --dry-run   # lists each table and its row count; writes nothing, may run while the factory runs
-npm run migrate -- --copy-from-mysql             # stop the factory first: it refuses and names the pids while one runs
-npm run migrate -- --copy-from-mysql --mysql-host db.internal --mysql-port 3307   # another server than the defaults
-```
-
-1. **Copy.** It reads MySQL with SELECT only, inside one consistent snapshot, and copies every table into `<state_dir>/db/factory.db`, row by row in primary-key order and in batches, at the latest SQLite schema. It skips only `schema_state` and `schema_migrations`; `legacy_*` tables are copied too. A MySQL table the SQLite schema lacks makes it refuse and list the table, writing no file. It builds into a temporary file beside `factory.db` and checks each table (row count and a checksum over the primary-key columns); on a mismatch it deletes the new file and names the table. If `factory.db` already holds data, it refuses; with `--replace` the old file (and its `-wal`/`-shm` files) moves to `<state_dir>/db/backups/factory-<time>.db` first, and the path is printed. MySQL is never changed.
-2. **Switch.** The copy prints the change to make and the next step; it does not edit `factory.config.json`. Make sure it has `"store": { "type": "sqlite" }`, run `npm run migrate`, then start the factory.
-
-The copy is removed with the `mysql` plugin in its follow-up removal.
-
 ## Before you start
 
 - Node.js 22.13 or newer, and git
@@ -327,39 +312,7 @@ Once, after the workflow has run at least once on GitHub, make the `test` check 
 
 ### Checks before push
 
-Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so; CI has no MySQL job, so they run only where a test database is selected (below).
-
-### Local test MySQL
-
-To run the MySQL tests before push too, give the factory a test-only MySQL user and select the `mysql-local` test database. Use a server that holds no factory data if you can (a second local instance on another port is best); at least, use a user that can touch nothing but `sf_test_*` databases.
-
-1. Create the user and its grants (as the MySQL admin, e.g. `mysql -u root -p`), with a password of your own:
-
-   ```sql
-   CREATE USER 'sf_test'@'localhost' IDENTIFIED BY '<a new password>';
-   GRANT ALL PRIVILEGES ON `sf\_test\_%`.* TO 'sf_test'@'localhost';
-   ```
-
-   Those are the only grants: the user may create, use and drop databases whose names start with `sf_test_`, and nothing else. It has no access to `software_factory` or any other database, no `GRANT OPTION`, and no global privileges. The pattern needs the backslashes: an unescaped `_` matches any character.
-   What the MySQL suite needs, by test:
-
-   | Grant | Needed by | Without it |
-   |---|---|---|
-   | `ALL` on ``sf\_test\_%``.* (the grant above) | every MySQL test: each makes and drops its own `sf_test_*` database | the MySQL tests fail |
-   | Global `CREATE USER` with `GRANT OPTION` (an admin such as CI's `root`; never give it to `sf_test`) | only "dev, worker, controller, status, ui and golden add exit non-zero…" in `tests/mysql-migrations.test.ts`, which makes a throwaway `sf_e2e_*` user | the test checks first, creates nothing and skips, with a message naming `CREATE USER`, the test user and this file |
-
-2. Put its admin URL in the secret file, outside the repository (`~/.config/software-factory/.env`, mode 600; never in `factory.config.json` or any file in the repository):
-
-   ```sh
-   TEST_MYSQL_URL=mysql://sf_test:<password>@127.0.0.1:3306
-   ```
-
-   URL-encode the password if it has `@`, `:` or `/`.
-3. Select the plugin in `factory.config.json`: `"plugins": { ..., "test_database": "mysql-local" }`. With `mysql-local` selected and `TEST_MYSQL_URL` missing, the factory refuses to start.
-4. Restart the factory. Each run that runs checks then creates `sf_test_<run id>`, passes `SF_TEST_MYSQL_URL=mysql://sf_test:<password>@127.0.0.1:3306/sf_test_<run id>` to the check commands only (never to an agent), and drops the database when the run ends. The tests make their own `sf_test_*` databases with the same user.
-
-What it exposes: the check commands run code the agent wrote, with `SF_TEST_MYSQL_URL` in their environment, so that code can read this user's password while the checks run. That is why the user gets only the grants above. A run that crashes before it finishes can leave an `sf_test_*` database behind; nothing sweeps them yet. List them with `SHOW DATABASES LIKE 'sf\_test\_%';` and drop them by hand.
-
+Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so.
 
 ## Run the factory on your project
 
@@ -403,7 +356,6 @@ Use:
 | After an update that adds a breaking migration or a data step (`npm run migrate -- --status` lists them; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. It drains only `factory dev`: stop any `factory controller` or `factory worker` you started yourself before you migrate, so no old process writes meanwhile. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
 | See the pending breaking migrations and data steps | `npm run migrate -- --status` |
 | See what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
-| Move a MySQL store's data into SQLite (stop the factory, copy, then switch the config; see [Move a MySQL store to SQLite](#move-a-mysql-store-to-sqlite-copy-then-switch)) | `npm run migrate -- --copy-from-mysql` (`--dry-run` lists, `--replace` backs up an existing file, `--mysql-host`/`--mysql-port`/`--mysql-database`/`--mysql-user` name the server) |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
 | File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
