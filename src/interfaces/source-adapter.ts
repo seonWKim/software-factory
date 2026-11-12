@@ -6,6 +6,24 @@ import type { ExternalIdentity } from "./auth-provider.js";
 
 // Intake surface. Two kinds of source: polled (e.g. forge issues) and streamed (pushed events, e.g. Slack).
 
+// The offer to make a top-level message a task (design §4, decision 1 of the chat answer): the message text rides in
+// the reply's hidden marker, base64url so no text can close the comment, and the source draws a "Make this a task"
+// button from it, whose press is an `offered` item_requested. No store table holds it; the press takes the message in
+// through intake, keyed on the message's source id.
+
+const TASK_OFFER = /^<!-- factory:make-task:([A-Za-z0-9_-]*) -->$/m;
+
+/** The hidden line that ends an offer to make a message a task (a request, unsure or unread answer): the message. */
+export function taskOfferMarker(message: string): string {
+  return `<!-- factory:make-task:${Buffer.from(message, "utf8").toString("base64url")} -->`;
+}
+
+/** The message an offer makes a task of (its marker), or null. */
+export function parseTaskOfferMarker(body: string): string | null {
+  const m = TASK_OFFER.exec(body);
+  return m ? Buffer.from(m[1]!, "base64url").toString("utf8") : null;
+}
+
 /**
  * Command events carry `comment_id`, the id of the comment that held the command, so the controller can
  * react to it (`markSeen`) and key a refusal reply on it. `item_requested` is identified by `source.id`.
@@ -15,11 +33,15 @@ export type SourceEvent =
    * An open source item, delivered when it is new and again after each edit (e.g. the open-issue list since the
    * cursor). `updated_at`: when the source item last changed, ISO time; the controller re-reads its dependency
    * links only when it moved past the time they were read at (issue #254). Absent when the source gives none.
-   * `classify`: a top-level chat message (a Slack mention outside any thread), which the controller reads before
-   * intake, from a requester who may approve: a chat answer or an offer of a task in its own thread instead of an item
-   * when it is not a work request. Absent: taken in as an item, as from every other source.
+   * `classify`: a top-level chat message (a Slack mention outside any thread), which the controller answers in its own
+   * thread and never takes in by itself: a chat answer, proposals, or a short reply with an offer to make it a task.
+   * `offered`: a press of that offer ("Make this a task"), the only way such a message becomes an item; the controller
+   * posts one "Task created" line when the press creates it. Both absent: taken in as an item, as from every other source.
    */
-  | { kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string; updated_at?: string; classify?: true }
+  | {
+      kind: "item_requested"; source: SourceRef; requester: ExternalIdentity; title: string; body: string; updated_at?: string; classify?: true;
+      offered?: true;
+    }
   /**
    * `/approve [notes]`. `note` is the trimmed text after the command (same line and following lines), possibly
    * empty; untrusted. The controller splits a leading `+paths <path>...` line off it (parseCommandPaths), then
