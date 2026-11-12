@@ -450,8 +450,8 @@ export async function connectSetup(ctx: CommandContext, r: ConnectRequest, deps?
   const next = r.disconnect ? listed.filter((n) => n !== name) : listed.includes(name) ? listed : [...listed, name];
   const changes: ReturnType<typeof applyChoices> = new Map();
   if (now === undefined ? !r.disconnect : JSON.stringify(next) !== JSON.stringify(now)) changes.set(key, next);
-  const what = `${name} ${r.disconnect ? "dropped from" : "listed in"} "${key}"`;
-  const written = await writeChoices(s, io, config, changes, what, r.disconnect ? `it stays listed` : "it is not turned on and not synced");
+  const what = `${r.disconnect ? "drop" : "list"} ${name} ${r.disconnect ? "from" : "in"} "${key}"`;
+  const written = await writeChoices(s, io, config, changes, what, r.disconnect ? "it stays listed" : "it is not turned on and not synced");
   io.print(`   ${written.ok ? "✓" : "✗"} ${written.line}`);
   if (!written.ok) return 1;
   if (r.disconnect || !selectedCalendars(s.loaded.plugins).includes(name)) return 0;
