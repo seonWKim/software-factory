@@ -1,5 +1,6 @@
 # 9. Brand and design tokens
 
+- **The design system is code and docs only (new decision, 2026-11-13, owner request).** The decision that changed: the dashboard had a "Design system" page (a gallery of every shared component); it is removed, with its sidebar entry, route and text. A UI change reads `design-system/components.md` and `design-system/patterns.md` and composes from `web/src/components/ui/`. The guard stays: `tests/web-ui-components.test.tsx` fails when an exported component has no section in `components.md`.
 - **Controls are composed by the design rules (decision changed 2026-11-12, controls follow-ups).** The decision that changed: **the danger button had no border, so Reject read as a text link beside Accept and Changes; now danger has secondary's box (1px `border-strong`, bg `surface`) with text in `failed`**. The solid danger of a confirm dialog's destructive confirm is unchanged. With it, from the design review of 2026-11-12 (measured):
   - **Separate actions sit 24 px (`space-6`) apart.** On the item page, Merge is its own block 24 px below the verdict row (`not-first:mt-6` on its row, which collapses with the list's 8 px), so it never reads as a fourth verdict.
   - **SegmentedControl** (`segmented-control.tsx`): one choice of a few views, a 32 px box (1px `border-strong`, bg `surface`) holding 28 px segments in one row that never wraps. The selected segment has `aria-pressed` and is filled `accent` with `on-solid` text, so it reads in light and dark; the others are `text-2`. The Tasks page picks Inbox, Today, Upcoming and Project with it (it was a row of toggle buttons that wrapped to two rows at 390 px, the selected one hard to see in dark).
@@ -26,6 +27,7 @@
 
 ## History
 
+- **Design gallery page in the dashboard** (replaced 2026-11-13). Before: a "Design system" page in the System group of the sidebar (route `/app/design`) showed every shared component in each variant, size and state, and `tests/web-design-system.test.tsx` failed when an exported component was missing from it. Now the design system is `design-system/` and `web/src/components/ui/` only.
 - **No product name or mark** (replaced 2026-11-12, phase 3). Before: the app was "Software Factory.app" with Electron's icon, the menu bar said `SF <n>`, and the dashboard's title and sidebar said "software-factory" with no favicon.
 - **Token source and generated CSS** (new decision, 2026-11-11). Before: each file chose Tailwind palette classes (`text-blue-700`, `dark:text-zinc-400`) and nothing stopped a hex colour.
 - **Pages on token classes** (new decision, 2026-11-12, phase 2). Before: pages chose Tailwind palette classes with `dark:` variants and `rounded-md`; phase 1 left them as they were.

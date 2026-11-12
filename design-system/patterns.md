@@ -1,6 +1,6 @@
 # Patterns
 
-How a dashboard page is put together from the shared components (`components.md`) and the scales (`foundations.md`). The Design system page of the dashboard (`web/src/views/design.tsx`, menu entry "Design system") shows every component; `tests/web-design-system.test.tsx` checks it uses every exported component. Text rules: `writing.md`. How to build and check a page: `dx.md`.
+How a dashboard page is put together from the shared components (`components.md`) and the scales (`foundations.md`). `components.md` lists each component, and `tests/web-ui-components.test.tsx` checks each exported one has a section. Text rules: `writing.md`. How to build and check a page: `dx.md`.
 
 These are rules for new and changed pages. Existing pages move onto them in follow-up issues; the first is the Needs you redesign (wi_fc2c), see `dx.md`.
 
