@@ -75,6 +75,16 @@ export class FakeSlackApi implements SlackApi {
     if (this.failViews !== null) throw new SlackApiError("views.open", this.failViews);
     this.views.push({ trigger_id, view });
   }
+  /** Every views.update call, in order. */
+  updatedViews: { view_id: string; view: unknown }[] = [];
+  async updateView(view_id: string, view: unknown): Promise<void> {
+    this.updatedViews.push({ view_id, view });
+  }
+  /** Every views.push call, in order. */
+  pushedViews: { trigger_id: string; view: unknown }[] = [];
+  async pushView(trigger_id: string, view: unknown): Promise<void> {
+    this.pushedViews.push({ trigger_id, view });
+  }
 
   /** The factory's messages in one thread. */
   thread(thread_ts: string, channel = CHANNEL): FakeMessage[] {
@@ -198,10 +208,30 @@ export function press(thread_ts: string, action_id: string, value: string, user 
 }
 
 /**
+ * A button press (`block_actions`) inside an open modal `view` (its ID, callback ID and private_metadata), as Slack
+ * sends it: no channel and no message, the view and its trigger_id instead.
+ */
+export function modalPress(view: { id: string; callback_id: string; private_metadata: string }, action_id: string, value: string, user = "U0ALICE", action_ts = `${1800000100 + ++seq}.000001`): Record<string, unknown> {
+  return {
+    type: "interactive",
+    envelope_id: nextId("env-"),
+    payload: {
+      type: "block_actions",
+      trigger_id: `trigger-${action_ts}`,
+      user: { id: user, name: "display-name-never-read", team_id: TEAM },
+      team: { id: TEAM, domain: "fake-workspace" },
+      container: { type: "view", view_id: view.id },
+      view: { ...view, type: "modal", root_view_id: view.id },
+      actions: [{ action_id, value, action_ts, type: "button" }],
+    },
+  };
+}
+
+/**
  * A modal submit (`view_submission`): `values` maps each input block ID to its text, as Slack nests it under the
  * block and its one element's action ID.
  */
-export function submission(view: { id: string; callback_id: string; private_metadata: string }, values: Record<string, string>, user = "U0ALICE"): Record<string, unknown> {
+export function submission(view: { id: string; callback_id: string; private_metadata: string; root_view_id?: string }, values: Record<string, string>, user = "U0ALICE"): Record<string, unknown> {
   const state = Object.fromEntries(Object.entries(values).map(([block, value]) => [block, { answer: { type: "plain_text_input", value } }]));
   return {
     type: "interactive",

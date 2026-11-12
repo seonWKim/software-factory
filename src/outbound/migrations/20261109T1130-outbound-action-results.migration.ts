@@ -11,7 +11,7 @@ export default defineMigration({
     const have = await tableColumns(db, "outbound_actions");
     for (const col of ["delivered_ref", "delivered_url"]) {
       if (have.includes(col)) continue;
-      await db.run(`ALTER TABLE outbound_actions ADD COLUMN ${col} ${db.dialect === "mysql" ? "VARCHAR(1024) NULL" : "TEXT"}`);
+      await db.run(`ALTER TABLE outbound_actions ADD COLUMN ${col} TEXT`);
     }
   },
 });

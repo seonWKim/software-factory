@@ -6,8 +6,9 @@
 // progress record, so the next run offers to continue from the step that did not finish. `--me` only registers
 // the person.
 
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { syncCalendars } from "../../../calendar/index.js";
 import { type Loaded, Plugins, buildStatsStore, settingsBase } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
 import { cliIdentity } from "../../../core/local-cli.js";
@@ -15,16 +16,21 @@ import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../..
 import { ProfileStore } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import {
+  CONNECT_COMMANDS,
+  type ConnectContext,
   MAX_TOKEN_DAYS,
   type SetupIo,
   type SetupState,
   type SetupStep,
   type StepResult,
+  calendarFeed,
   canaryStep,
   checksStep,
+  connectHooks,
   neededSecrets,
   openBrowser,
   pluginSetupStep,
+  removeSecret,
   runStep,
   secretFileStep,
   secretsToPrompt,
@@ -120,20 +126,21 @@ async function readConfig(loaded: Loaded) {
   return { text, raw: JSON.parse(text) as Record<string, never> };
 }
 
-/** Shows the change as a diff and writes it after a yes; a no keeps the file as it is. */
+/** Shows the change as a diff and writes it after a yes; a no keeps the file as it is and says `declined`. */
 async function writeChoices(
   s: GuidedState,
   io: SetupIo,
   config: Awaited<ReturnType<typeof readConfig>>,
   changes: ReturnType<typeof applyChoices>,
   what: string,
+  declined = "the steps below use your answers and the file as it is",
 ): Promise<StepResult> {
   const file = s.loaded.configFile;
   if (changes.size === 0) return { ok: true, line: `${what} (${file}: no change)` };
   io.print(`   Changes to ${file}:`);
   for (const line of configDiffLines(config.raw, changes)) io.print(`     ${line}`);
   if (!(await io.ask.yesNo("   Write them?", true))) {
-    return { ok: true, line: `${what}; ${file} not written, the steps below use your answers and the file as it is` };
+    return { ok: true, line: `${what}; ${file} not written, ${declined}` };
   }
   const reloaded = await writeConfig(s.ctx, file, config.text, editConfigText(config.text, changes));
   if (typeof reloaded === "string") return { ok: false, stop: true, line: `refused by the config check, the file is unchanged: ${reloaded}` };
@@ -368,4 +375,109 @@ async function applyMode(ctx: CommandContext, loaded: Loaded, choice: ModeChoice
   return later.length === 0
     ? { ok: true, line: `mode ${choice.mode}, auto_merge_max_tier ${choice.auto_merge_max_tier}` }
     : { ok: false, line: `not set; later: ${later.join("; ")}` };
+}
+
+export { CONNECT_COMMANDS };
+
+type Clock = ConnectContext["clock"];
+
+/** `factory setup <kind> <command>`, or with `disconnect` its `--disconnect` form. */
+export interface ConnectRequest {
+  kind: string;
+  command: string;
+  disconnect: boolean;
+}
+
+/** The terminal, the browser and the Clock; tests fake all three. */
+export interface ConnectDeps {
+  io: SetupIo;
+  openBrowser(url: string): Promise<void>;
+  /** Absent: the configured Clock. */
+  clock?: Clock;
+}
+
+/**
+ * Connects (or disconnects) the plugin whose connect hook answers `setup <kind> <command>`. A missing secret file
+ * stops it before anything runs. The hook asks, signs in and stores its secrets; then the plugin is listed in (or,
+ * on disconnect, dropped from) its kind's top-level list key after a diff and a yes, through the loader check. On
+ * connect, one sync of that plugin follows when the key lists it, printing how many events it read. Exit 0 or 1.
+ */
+export async function connectSetup(ctx: CommandContext, r: ConnectRequest, deps?: ConnectDeps): Promise<number> {
+  if (!deps && !process.stdin.isTTY) {
+    console.error(`setup ${r.kind} ${r.command} is interactive: run it in a terminal`);
+    return 1;
+  }
+  const { io, clock: given } = deps ?? { io: terminalIo(false) };
+  const loaded = await ctx.load();
+  const found = connectHooks(loaded.registry).find((h) => h.kind === r.kind && h.hook.command === r.command);
+  if (!found) {
+    io.print(`setup: no plugin connects through "setup ${r.kind} ${r.command}"`);
+    return 1;
+  }
+  const { kind, name, hook } = found;
+  const file = loaded.secretsFile;
+  if (!(await stat(file).then(() => true, () => false))) {
+    io.print(`No secret file at ${file}: run npm run setup first (it creates it), then this command again. Nothing was written.`);
+    return 1;
+  }
+  // The secrets read as if the plugin were selected: it may not be listed yet.
+  const asSelected = new Plugins({ ...loaded, plugins: { ...loaded.plugins, calendars: [...new Set([...(loaded.plugins.calendars ?? []), name])] } });
+  const clock = given ?? (await asSelected.clock());
+  const hc: ConnectContext = {
+    secretsFile: file,
+    secrets: await asSelected.secrets(),
+    ask: { yesNo: (q, d) => io.ask.yesNo(q, d), hidden: (p) => io.secret(p) },
+    print: io.print,
+    openBrowser: deps?.openBrowser ?? openBrowser,
+    async storeSecrets(values) {
+      // Checked first, so the values are written together or not at all.
+      const bad = [...values].find(([, v]) => !v || /\s/.test(v));
+      if (bad) throw new Error(`${bad[0]}: empty or contains whitespace; nothing written`);
+      for (const [n, v] of values) await setSecret(file, n, v);
+    },
+    async removeSecrets(names) {
+      for (const n of names) await removeSecret(file, n);
+    },
+    clock,
+  };
+  try {
+    await (r.disconnect ? hook.disconnect(hc) : hook.connect(hc));
+  } catch (err) {
+    io.print(`   ✗ ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+
+  const s: GuidedState = { loaded, github: loaded.config.local_only !== true, rotate: [], ctx };
+  const config = await readConfig(loaded);
+  const key = loaded.registry[kind].configKey;
+  const now: unknown = config.raw[key];
+  const listed = Array.isArray(now) ? now.filter((n): n is string => typeof n === "string") : [];
+  const next = r.disconnect ? listed.filter((n) => n !== name) : listed.includes(name) ? listed : [...listed, name];
+  const changes: ReturnType<typeof applyChoices> = new Map();
+  if (now === undefined ? !r.disconnect : JSON.stringify(next) !== JSON.stringify(now)) changes.set(key, next);
+  const what = `${r.disconnect ? "drop" : "list"} ${name} ${r.disconnect ? "from" : "in"} "${key}"`;
+  const written = await writeChoices(s, io, config, changes, what, r.disconnect ? "it stays listed" : "it is not turned on and not synced");
+  io.print(`   ${written.ok ? "✓" : "✗"} ${written.line}`);
+  if (!written.ok) return 1;
+  if (r.disconnect || !(s.loaded.plugins.calendars ?? []).includes(name)) return 0;
+  return syncOnce(s.loaded, name, clock, io.print);
+}
+
+/** One sync of the calendar plugin `name` against the store: prints the events it read, or its error (exit 1). */
+async function syncOnce(loaded: Loaded, name: string, clock: Clock, print: (line: string) => void): Promise<number> {
+  const store = await openStore(loaded, print);
+  if (!store) return 1;
+  try {
+    const feed = { name, source: await calendarFeed(loaded, name, clock) };
+    const out = (await syncCalendars(storeSql(store), [feed], clock.now().getTime())).find((o) => o.source === name);
+    if (!out) print(`   ✓ ${name} synced in the last 5 minutes already; it syncs again when due`);
+    else if (out.ok) print(`   ✓ synced ${name}: read ${out.events} events`);
+    else print(`   ✗ sync of ${name} failed: ${out.error}`);
+    return out && !out.ok ? 1 : 0;
+  } catch (err) {
+    print(`   ✗ sync of ${name} failed: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  } finally {
+    await store.close();
+  }
 }

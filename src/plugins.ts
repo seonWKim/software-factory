@@ -33,6 +33,7 @@ import type {
   SecretDeclaration,
   Selection,
   SetupHook,
+  ConnectHook,
 } from "./plugin-api.js";
 
 export type {
@@ -53,7 +54,7 @@ export type {
   SetupContext,
   SetupHook,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, selectedSetups, defineGrant, definePlugin, selectedCalendars, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
+export { connectHooks, declaredSecretNames, declaredSecrets, selectedSetups, defineGrant, definePlugin, selectedCalendars, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
 import { authByOrigin, selectedCalendars } from "./plugin-api.js";
 
 interface KindInfo {
@@ -174,7 +175,7 @@ export async function loadRegistry(dirs: readonly string[]): Promise<Registry> {
 function checkDescriptor(file: string, d: unknown): PluginDescriptor {
   const bad = (why: string) => new Error(`plugin descriptor ${file}: ${why} (docs/plugins.md, "Adding a plugin")`);
   if (d === null || typeof d !== "object") throw bad("no default export; write `export default definePlugin({...})`");
-  const { kind, name, create, secrets, setup, default: dflt } = d as Record<string, unknown>;
+  const { kind, name, create, secrets, setup, connect, default: dflt } = d as Record<string, unknown>;
   if (typeof kind !== "string" || !Object.hasOwn(KINDS, kind)) {
     throw bad(`unknown kind ${JSON.stringify(kind)}; known kinds: ${PLUGIN_KINDS.join(", ")}`);
   }
@@ -184,6 +185,14 @@ function checkDescriptor(file: string, d: unknown): PluginDescriptor {
   if (typeof create !== "function") throw bad("create must be a function");
   if (secrets !== undefined && !Array.isArray(secrets)) throw bad("secrets must be a list");
   if (setup !== undefined && typeof setup !== "function") throw bad("setup must be a function");
+  if (connect !== undefined) {
+    const c = connect as Partial<Record<keyof ConnectHook, unknown>> | null;
+    if (typeof c?.command !== "string" || !/^[a-z][a-z0-9-]*$/.test(c.command) || typeof c.connect !== "function" || typeof c.disconnect !== "function") {
+      throw bad("connect must be { command: a lower-case word, connect(ctx), disconnect(ctx) }");
+    }
+    // The CLI lists or unlists a connected plugin in its kind's top-level list key; only calendar has one.
+    if (kind !== "calendar") throw bad(`${kind} plugins take no connect hook: only calendar plugins, listed in the top-level "calendar" key, do`);
+  }
   if (dflt !== undefined) {
     if (TOP_LEVEL_KINDS.includes(kind as PluginKind)) {
       throw bad(`${kind} plugins take no default: the top-level "${info.configKey}" config key always picks one`);
@@ -206,6 +215,7 @@ function registryOf(found: readonly Found[]): Registry {
     const plugins: Record<string, PluginFactory<PluginKind>> = {};
     const secrets: Record<string, readonly SecretDeclaration[]> = {};
     const setups: Record<string, SetupHook> = {};
+    const connects: Record<string, ConnectHook> = {};
     const fileOf = new Map<string, string>();
     for (const { file, descriptor: d } of mine) {
       const first = fileOf.get(d.name);
@@ -217,6 +227,11 @@ function registryOf(found: readonly Found[]): Registry {
       plugins[d.name] = d.create as PluginFactory<PluginKind>;
       secrets[d.name] = d.secrets ?? [];
       if (d.setup) setups[d.name] = d.setup;
+      if (d.connect) {
+        const twin = Object.entries(connects).find(([, c]) => c.command === d.connect!.command);
+        if (twin) errors.push(`${label} has two connect hooks for "setup ${kind} ${d.connect.command}": ${twin[0]} and ${d.name}`);
+        else connects[d.name] = d.connect;
+      }
     }
     if (info.guard && mine.length === 0) {
       errors.push(`${label} is a guard and has no plugin; guards cannot be disabled (docs/architecture.md §5)`);
@@ -252,7 +267,7 @@ function registryOf(found: readonly Found[]): Registry {
       const files = mine.length > 0 ? mine.map((f) => f.file).join(", ") : "no plugin files";
       errors.push(`${label} has no default plugin; mark one descriptor \`default: true\` (${files})`);
     }
-    registry[kind] = { ...info, plugins, secrets, setups, defaults };
+    registry[kind] = { ...info, plugins, secrets, setups, connects, defaults };
   }
   if (errors.length > 0) throw new Error(`plugin registry: ${errors.join("; ")}`);
   return registry as unknown as Registry;
@@ -278,11 +293,15 @@ export async function withPackPlugins(registry: Registry, files: readonly string
     }
     if (d.default !== undefined) throw bad(`a pack plugin takes no default; select "${d.name}" at ${entry.configKey}`);
     if (Object.hasOwn(entry.plugins, d.name)) throw bad(`${entry.interface} (${d.kind}) already has a plugin named "${d.name}"`);
+    if (d.connect && Object.values(entry.connects).some((c) => c.command === d.connect!.command)) {
+      throw bad(`"setup ${d.kind} ${d.connect.command}" already connects another ${entry.interface} plugin`);
+    }
     out[d.kind] = {
       ...entry,
       plugins: { ...entry.plugins, [d.name]: d.create as PluginFactory<PluginKind> },
       secrets: { ...entry.secrets, [d.name]: d.secrets ?? [] },
       setups: d.setup ? { ...entry.setups, [d.name]: d.setup } : entry.setups,
+      connects: d.connect ? { ...entry.connects, [d.name]: d.connect } : entry.connects,
     };
   }
   return out as unknown as Registry;

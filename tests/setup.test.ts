@@ -6,7 +6,7 @@ import { loadConfig } from "../src/compose.js";
 import { GitHubClient, GitHubError } from "../src/impl/github/github-client.js";
 import { type SecretStore, secretName } from "../src/interfaces/secret-store.js";
 import { createLabels } from "../src/impl/github/github-issue-source.js";
-import { checkStatus, ensureSecretFile, setSecret, statusLabelChecks, tokenExpiryCheck } from "../src/setup.js";
+import { checkStatus, ensureSecretFile, removeSecret, setSecret, statusLabelChecks, tokenExpiryCheck } from "../src/setup.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 
 describe("setup: secret file writes", () => {
@@ -37,6 +37,20 @@ describe("setup: secret file writes", () => {
       "# comment\nCLAUDE_CODE_OAUTH_TOKEN=\nGITHUB_TOKEN=github_pat_def\nMYSQL_HOST=\nMYSQL_PASSWORD=\n",
     );
     expect(statSync(file).mode & 0o777).toBe(0o600);
+  });
+
+  it("removeSecret drops every line of the name, keeps the other lines and mode 600; a name not in the file is a no-op", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-setup-")), ".env");
+    writeFileSync(file, "# comment\nA_KEY=1\nGONE=x\nB_KEY=2\nexport GONE=y\nGONE_TOO=z\n", { mode: 0o644 });
+    await removeSecret(file, secretName("GONE"));
+    expect(readFileSync(file, "utf8")).toBe("# comment\nA_KEY=1\nB_KEY=2\nGONE_TOO=z\n");
+    expect(statSync(file).mode & 0o777).toBe(0o600);
+    await removeSecret(file, secretName("NOT_THERE"));
+    expect(readFileSync(file, "utf8")).toBe("# comment\nA_KEY=1\nB_KEY=2\nGONE_TOO=z\n");
+  });
+
+  it("src/setup.ts stays under 600 lines", () => {
+    expect(readFileSync(join(import.meta.dirname, "..", "src", "setup.ts"), "utf8").split("\n").length).toBeLessThan(600);
   });
 
   it("refuses empty or whitespace values", async () => {

@@ -5,7 +5,7 @@
 
 import { defineMigration } from "../../state/index.js";
 
-const SQLITE = [
+const TABLES = [
   `CREATE TABLE IF NOT EXISTS calendar_events (
     source      TEXT NOT NULL,
     event_id    TEXT NOT NULL,
@@ -27,33 +27,10 @@ const SQLITE = [
   )`,
 ];
 
-// Indexes inline, so each statement is whole and a rerun after a failure (MySQL DDL is not transactional) is a no-op.
-const MYSQL = [
-  `CREATE TABLE IF NOT EXISTS calendar_events (
-    source      VARCHAR(191) NOT NULL,
-    event_id    VARCHAR(191) NOT NULL,
-    title       TEXT NOT NULL,
-    starts_at   CHAR(24) NOT NULL,
-    ends_at     CHAR(24) NOT NULL,
-    all_day     TINYINT NOT NULL,
-    updated_at  CHAR(24) NULL,
-    synced_at   CHAR(24) NOT NULL,
-    PRIMARY KEY (source, event_id),
-    KEY calendar_events_starts (starts_at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
-  `CREATE TABLE IF NOT EXISTS calendar_sync_state (
-    source        VARCHAR(191) NOT NULL PRIMARY KEY,
-    next_sync_at  CHAR(24) NOT NULL,
-    synced_at     CHAR(24) NULL,
-    error         TEXT NULL,
-    error_at      CHAR(24) NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
-];
-
 export default defineMigration({
   change: "additive",
   tables: [],
   async up(db) {
-    for (const sql of db.dialect === "sqlite" ? SQLITE : MYSQL) await db.run(sql);
+    for (const sql of TABLES) await db.run(sql);
   },
 });
