@@ -222,6 +222,9 @@ export const en = {
   "design.dialog.confirm": "Confirm",
   "design.menu.label": "Sample menu",
   "design.markdown": "A **bold** word and `code`.",
+  "design.copy.value": "wi_sample0123",
+  "design.copy.what": "sample ID",
+  "design.copy.label": "Sample name",
 } as const;
 
 export type MessageKey = keyof typeof en;

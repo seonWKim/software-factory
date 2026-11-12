@@ -2,6 +2,7 @@ import { type ReactNode, useState } from "react";
 import { Brand, BrandMark } from "../components/ui/brand.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { CopyButton, CopyText, IdDetails } from "../components/ui/copy.js";
 import { DataTable } from "../components/ui/data-table.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
@@ -281,6 +282,11 @@ function BrandAndText() {
       <Brand />
       <BrandMark className="size-10" />
       <Markdown text={t("design.markdown")} />
+      <div className="flex flex-wrap items-baseline gap-3">
+        <CopyButton value={t("design.copy.value")} what={t("design.copy.what")} />
+        <CopyText value={t("design.copy.value")} what={t("design.copy.what")} />
+        <IdDetails label={t("design.copy.label")} id={t("design.copy.value")} what={t("design.copy.what")} />
+      </div>
     </div>
   );
 }
