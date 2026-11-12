@@ -48,6 +48,10 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 - When the factory works on this repo: changes to its own gates, prompts, permissions or tools always need a human merge, whatever the tier.
 - Factory feature or local development process: before filing or building something, ask whether a factory user on another project would get anything from it. If yes, it is a factory feature (an issue, built through the factory). If it only helps develop this repository (a review agent for its own dashboard, a dev script, a local check), it is a local development process: a Claude Code agent or skill under `.claude/`, or a script under `scripts/`, never a factory issue or a factory role.
 
+## UI changes
+
+A change to the dashboard (`web/`) follows `design-system/dx.md`: its build steps, its checks and its PR checklist.
+
 ## Rules for agents working on this repo
 
 The factory's prompts in `prompts/` are generic, for any project. These are this repo's own rules on top of them.
