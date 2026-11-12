@@ -111,7 +111,7 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
 function LedgerOff() {
   const [shown, setShown] = useState(false);
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <Empty>No tacit ledger is on, so there are no rules to review.</Empty>
       <Button variant="secondary" aria-expanded={shown} aria-controls="rules-enable" onClick={() => setShown(!shown)}>
         How to turn on the ledger

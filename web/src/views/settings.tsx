@@ -1,7 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
@@ -111,13 +112,13 @@ const summaryOf = (obj: Record<string, unknown>) => `${Object.keys(obj).length} 
  */
 function JsonValue({ text }: { text: string }) {
   const obj = asObject(text);
-  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs break-words">{text}</span>;
+  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs wrap-anywhere">{text}</span>;
   const list = (
     <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
       {entries(obj).map(([k, v]) => (
         <Fragment key={k}>
           <dt className="text-text-2">{k}</dt>
-          <dd className="min-w-0 break-words">{v}</dd>
+          <dd className="min-w-0 wrap-anywhere">{v}</dd>
         </Fragment>
       ))}
     </dl>
@@ -139,6 +140,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   const { busy, error, done, write } = useWrite(token);
   const [draft, setDraft] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
+  const uid = useId();
   const target = project === undefined ? {} : { project };
   const save = async (text: string) => {
     if (await write({ action: "set", key: row.key, value: text, ...target })) {
@@ -162,16 +164,23 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const current = asObject(value) ?? {};
     const shown = tiers ?? Object.fromEntries(TIERS.map((t) => [t, typeof current[t] === "string" ? (current[t] as string) : ""]));
     control = (
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
-        {TIERS.map((t) => (
-          <label key={t} className="flex items-center gap-1 text-xs text-text-2">
-            {t}
-            <Input aria-label={`${label} ${t}`} className="w-28 tabular-nums" value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
-          </label>
-        ))}
-        <Button type="submit" variant="secondary" disabled={busy || tiers === null} aria-label={`Save ${label}`}>
-          Save
-        </Button>
+      // Two columns, tier | 7rem field, so the three fields start at one x; Save in its own row 12px below.
+      <form className="space-y-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+        <div data-tiers className="grid grid-cols-[auto_7rem] items-center gap-x-2 gap-y-3">
+          {TIERS.map((t) => (
+            <Fragment key={t}>
+              <label htmlFor={`${uid}-${t}`} className="text-xs text-text-2">
+                {t}
+              </label>
+              <Input id={`${uid}-${t}`} aria-label={`${label} ${t}`} className="w-full tabular-nums" value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
+            </Fragment>
+          ))}
+        </div>
+        <ButtonRow>
+          <Button type="submit" variant="secondary" disabled={busy || tiers === null} aria-label={`Save ${label}`}>
+            Save
+          </Button>
+        </ButtonRow>
       </form>
     );
   } else if (row.kind === "text") {
@@ -401,7 +410,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
       <Td className="min-w-56">
         {NOTICE_KEYS.has(row.key) ? (
           <p className="text-xs text-pretty text-text-2">
-            <span className="font-mono break-words">{row.value}</span> · edit under Notices
+            <span className="font-mono wrap-anywhere">{row.value}</span> · edit under Notices
           </p>
         ) : (
           <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
@@ -418,7 +427,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
               for {view.project ?? view.repo}: {own ? `${own.value} (${own.source})` : "the global value"}
               {view.project === null && " · no project label stored yet; use factory settings --project on the command line"}
             </p>
-            <div className="flex items-start gap-2">
+            <div className="flex flex-wrap items-start gap-2">
               <Editor row={row} label={`${row.key} for ${view.repo}`} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
               {own?.source === "override" && <ResetButton row={row} label={`${row.key} for ${view.repo}`} token={view.csrf_token} project={view.repo} />}
             </div>
@@ -434,7 +443,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         {row.file_value !== null ? (
           <JsonValue text={row.file_value} />
         ) : asObject(row.default_value) === null ? (
-          <span className="font-mono text-xs break-words text-text-3">not set (default {row.default_value})</span>
+          <span className="font-mono text-xs wrap-anywhere text-text-3">not set (default {row.default_value})</span>
         ) : (
           <>
             <span className="text-xs text-text-3">not set; default:</span>
@@ -442,7 +451,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
           </>
         )}
       </Td>
-      <Td className="min-w-32 text-text-2">{row.applies_at}</Td>
+      <Td className="min-w-24 text-text-2">{row.applies_at}</Td>
       <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
     </Tr>
   );

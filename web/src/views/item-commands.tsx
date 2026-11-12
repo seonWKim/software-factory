@@ -241,8 +241,9 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
               </li>
             );
           })}
+          {/* Merge is its own block, 24px (space-6) below the verdict row, so it never reads as one of the verdicts. */}
           {showMerge && (
-            <li data-command="merge" className="flex flex-wrap items-center gap-2">
+            <li data-command="merge" className="flex flex-wrap items-center gap-2 not-first:mt-6">
               <MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} />
             </li>
           )}

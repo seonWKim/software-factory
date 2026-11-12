@@ -11,8 +11,11 @@ const VARIANTS = {
   primary: "bg-accent text-on-solid enabled:hover:opacity-90",
   secondary: "border border-border-strong bg-surface text-text-1 enabled:hover:bg-surface-2 aria-pressed:border-text-1",
   ghost: "enabled:hover:bg-surface-2",
-  /** Failed-colour text; filled with the failed colour only as a confirm dialog's destructive confirm (`solid`). */
-  danger: "text-failed enabled:hover:bg-surface-2",
+  /**
+   * Secondary's box (1px border-strong) with failed-colour text, so Reject sits beside Accept as a button, not a link;
+   * filled with the failed colour only as a confirm dialog's destructive confirm (`solid`).
+   */
+  danger: "border border-border-strong bg-surface text-failed enabled:hover:bg-surface-2",
 } as const;
 
 /** md and sm set the least height, so a long label wraps at a narrow width instead of spilling out. */

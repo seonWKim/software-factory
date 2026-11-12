@@ -141,6 +141,8 @@ describe("Rules page", () => {
     const action = await screen.findByRole("button", { name: "How to turn on the ledger" }, SLOW);
     expect(screen.getAllByRole("button")).toEqual([action]);
     expect(action.getAttribute("aria-expanded")).toBe("false");
+    // 12 px (space-y-3) between the empty box and its button.
+    expect(action.parentElement!.className.split(" ")).toContain("space-y-3");
     fireEvent.click(action);
     expect(action.getAttribute("aria-expanded")).toBe("true");
     expect(document.getElementById("rules-enable")!.textContent).toContain('"tacit": "agents-home"');
