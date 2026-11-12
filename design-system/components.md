@@ -98,6 +98,10 @@ The dashboard's one button. Variants: `primary` (accent background, `on-solid` t
 
 A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
 
+## SegmentedControl
+
+One choice among a few views (`role=group` with an `aria-label`): a 32 px box with a 1 px `border-strong` edge on `surface`, holding 28 px segments in one row that never wraps. Controlled by `value` and `onChange`; `options` gives each segment's `id` and label. States: selected (`aria-pressed`, `accent` fill, `on-solid` text), default (`text-2`), hover (`surface-2`, `text-1`), focus-visible.
+
 ## Dialog
 
 The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, optional children and a one-line `consequence`, and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
