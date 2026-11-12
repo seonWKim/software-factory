@@ -9,10 +9,7 @@ import type {
 } from "../../../core/types.js";
 import { RECURRING_FAILURE, outcomeTokens } from "../../../core/types.js";
 import {
-  type CoordinationSettings,
-  type DependencyLink,
-  type Hold,
-  type Holder,
+  type CoordinationSettings, type DependencyLink, type Hold, type Holder,
   DEFAULT_COORDINATION,
   claimDecision,
   holdOutcome,
@@ -402,6 +399,9 @@ export class SqlFactoryStore implements FactoryStore {
   getTask(id: string) { return tasks.getTask(this.db, id); }
   linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
   closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
+  updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
+  deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
+  addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
   // Owner notices (design 09-notifications): notices.ts
   recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }

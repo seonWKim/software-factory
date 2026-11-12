@@ -13,8 +13,10 @@ import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore, ForgeBudget, NewAlert, WorkerProcessReport } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { recordAction } from "../src/outbound/intents.js";
-import { type MigrationDb, type SqlDriver, applyMigrations, discoverMigrations } from "../src/state/index.js";
+import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, applyMigrations, discoverMigrations } from "../src/state/index.js";
 import CHANGE_REF_ONLY from "../src/controller/migrations/20261112T1200-controller-change-ref-only.migration.js";
+import SUB_TASKS from "../src/controller/migrations/20261112T1800-controller-sub-tasks.migration.js";
+import { type NewTask, localDate } from "../src/core/tasks.js";
 import { newStore, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -2742,6 +2744,98 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
+  // Plain tasks (design 02-tasks): updateTask, deleteTask and addSubTask take plain arguments, so the CLI, chat and a
+  // later HTTP route call the same methods; each write is conditional and a refusal writes nothing.
+  describe("plain tasks: edit, delete and sub-tasks", () => {
+    const by = "local:dev@example.com" as UserId;
+    const plain = (id: string, over: Partial<NewTask> = {}): NewTask => ({
+      id, title: id, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: by, ...over,
+    });
+    const rows = (store: { db: SqlDriver }) => store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+
+    it("updateTask changes only the named fields, resolves today with the Clock and is safe to repeat", async () => {
+      const { store } = await make(new FakeClock("2026-11-11T12:00:00.000Z"));
+      const before = await store.addTask(plain("tk_a", { title: "pay rent", list: "home", priority: 2, due: { date: "2026-12-01" }, due_time: "08:30" }));
+      const r = await store.updateTask("tk_a", { priority: 1, due: { days_from_today: 1 } });
+      expect(r).toEqual({ ok: true, task: { ...before, priority: 1, due_date: localDate(new Date("2026-11-11T12:00:00.000Z"), 1) } });
+      expect(await store.updateTask("tk_a", { priority: 1, due: { days_from_today: 1 } })).toEqual(r);
+      expect(await store.updateTask("tk_a", { title: "pay the rent" })).toMatchObject({ ok: true, task: { title: "pay the rent", list: "home", priority: 1 } });
+    });
+
+    it("updateTask refuses an unknown task, a done task and a recurrence with no due date, writing nothing", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_a"));
+      await store.addTask(plain("tk_b"));
+      await store.completeTask("tk_b");
+      const before = await rows(store);
+      expect(await store.updateTask("tk_nope", { priority: 1 })).toEqual({ ok: false, reason: "not_found" });
+      expect(await store.updateTask("tk_b", { priority: 1 })).toEqual({ ok: false, reason: "done" });
+      expect(await store.updateTask("tk_a", { recurrence: "week" })).toEqual({ ok: false, reason: "needs_due_date", recurrence: "week" });
+      expect(await rows(store)).toEqual(before);
+    });
+
+    it("updateTask with a time alone on an undated task makes it due today, as quick-add does", async () => {
+      const { store } = await make(new FakeClock("2026-11-11T12:00:00.000Z"));
+      await store.addTask(plain("tk_a"));
+      expect(await store.updateTask("tk_a", { due_time: "09:00" })).toMatchObject({
+        ok: true, task: { due_date: localDate(new Date("2026-11-11T12:00:00.000Z")), due_time: "09:00" },
+      });
+    });
+
+    it("addSubTask stores parent_task_id, keeps parent_id null, is idempotent on the ID and goes one level deep", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_p"));
+      const r = await store.addSubTask("tk_p", plain("tk_s"));
+      expect(r).toMatchObject({ ok: true, task: { id: "tk_s", parent_task_id: "tk_p", parent_id: null } });
+      expect(await store.addSubTask("tk_p", plain("tk_s", { title: "other" }))).toEqual(r);
+      const before = await rows(store);
+      expect(await store.addSubTask("tk_s", plain("tk_x"))).toEqual({ ok: false, reason: "nested" });
+      expect(await store.addSubTask("tk_nope", plain("tk_y"))).toEqual({ ok: false, reason: "not_found" });
+      expect(await rows(store)).toEqual(before);
+      expect((await store.addTask(plain("tk_q"))).parent_task_id).toBeNull();
+    });
+
+    it("completing a parent or a sub-task completes only that task", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s1"));
+      await store.addSubTask("tk_p", plain("tk_s2"));
+      await store.completeTask("tk_s1");
+      expect((await store.getTask("tk_p"))!.done_at).toBeNull();
+      await store.completeTask("tk_p");
+      expect((await store.getTask("tk_s2"))!.done_at).toBeNull();
+    });
+
+    it("deleteTask hard-deletes; a second delete is not_found and writes nothing", async () => {
+      const { store } = await make();
+      const t = await store.addTask(plain("tk_a"));
+      await store.addTask(plain("tk_b"));
+      expect(await store.deleteTask("tk_a")).toEqual({ ok: true, task: t, detached: [] });
+      const after = await rows(store);
+      expect(after.map((r) => r.id)).toEqual(["tk_b"]);
+      expect(await store.deleteTask("tk_a")).toEqual({ ok: false, reason: "not_found" });
+      expect(await rows(store)).toEqual(after);
+    });
+
+    it("deleteTask refuses while open sub-tasks remain, naming them; with only done ones it detaches them", async () => {
+      const { store } = await make();
+      await store.addTask(plain("tk_p"));
+      await store.addSubTask("tk_p", plain("tk_s1"));
+      await store.addSubTask("tk_p", plain("tk_s2"));
+      await store.completeTask("tk_s1");
+      const before = await rows(store);
+      const refused = await store.deleteTask("tk_p");
+      expect(refused).toMatchObject({ ok: false, reason: "open_sub_tasks" });
+      expect(refused.ok === false && refused.reason === "open_sub_tasks" ? refused.sub_tasks.map((s) => s.id) : null).toEqual(["tk_s2"]);
+      expect(await rows(store)).toEqual(before);
+      await store.completeTask("tk_s2");
+      const done = await rows(store);
+      const r = await store.deleteTask("tk_p");
+      expect(r.ok && r.detached.map((s) => [s.id, s.parent_task_id])).toEqual([["tk_s1", null], ["tk_s2", null]]);
+      expect(await rows(store)).toEqual(done.filter((x) => x.id !== "tk_p").map((x) => ({ ...x, parent_task_id: null })));
+    });
+  });
+
   // Interactive sessions (design §5, 2026-11-01): the actor, transcript and token fields are run columns (migration
   // 18 on both backends); notes and the last finish live in the run's input.
   describe("interactive sessions", () => {
@@ -3044,4 +3138,38 @@ describe("migration 40 (sync leases, forge budget, thread actor)", () => {
     raw.close();
   });
 
+});
+
+describe("20261112T1800-controller-sub-tasks on an existing SQLite database", () => {
+  const ID = "20261112T1800-controller-sub-tasks";
+  const mdb = (db: SqlDriver): MigrationDb => ({ dialect: "sqlite", all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) });
+
+  it("adds the nullable, indexed parent_task_id, backfills nothing, keeps parent_id unique and is safe to rerun", async () => {
+    const { store } = await newStore();
+    const db = store.db;
+    await db.run("DROP INDEX controller_tasks_sub_tasks");
+    await db.run("ALTER TABLE controller_tasks DROP COLUMN parent_task_id");
+    await db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID]);
+    await db.run(
+      "INSERT INTO controller_tasks (id, title, created_by, created_at, parent_id) VALUES ('tk_old', 'old', 'u', '2026-01-01T00:00:00.000Z', NULL)",
+    );
+    await store.migrate();
+    expect(await db.all(`SELECT id FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID])).toEqual([{ id: ID }]);
+    expect(await db.all("SELECT id, parent_id, parent_task_id FROM controller_tasks")).toEqual([{ id: "tk_old", parent_id: null, parent_task_id: null }]);
+    expect(await db.all("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'controller_tasks_sub_tasks'")).toEqual([{ name: "controller_tasks_sub_tasks" }]);
+    expect(SUB_TASKS).toMatchObject({ change: "additive" });
+    await SUB_TASKS.up(mdb(db));
+    expect(await db.all("SELECT id, parent_task_id FROM controller_tasks")).toEqual([{ id: "tk_old", parent_task_id: null }]);
+    // parent_id keeps its recurrence meaning and its unique key.
+    await db.run("UPDATE controller_tasks SET parent_id = 'tk_x'");
+    await expect(
+      db.run("INSERT INTO controller_tasks (id, title, created_by, created_at, parent_id) VALUES ('tk_2', 't', 'u', 'x', 'tk_x')"),
+    ).rejects.toThrow();
+  });
+
+  it("names the column and its index in its MySQL DDL", async () => {
+    const ran: string[] = [];
+    await SUB_TASKS.up({ dialect: "mysql", all: async () => [], run: async (sql: string) => { ran.push(sql); return 0; } } as unknown as MigrationDb);
+    expect(ran.join("\n")).toMatch(/ADD COLUMN parent_task_id VARCHAR\(191\) NULL, ADD KEY controller_tasks_sub_tasks \(parent_task_id\)/);
+  });
 });
