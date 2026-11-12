@@ -3,7 +3,7 @@ import type { ComponentProps } from "react";
 import { cn } from "../../lib/cn.js";
 import { FIELD } from "./control.js";
 
-export interface SelectProps extends ComponentProps<"select"> {
+interface SelectProps extends ComponentProps<"select"> {
   /** Classes of the box around the select and its chevron (its width, its margin). */
   wrapperClassName?: string;
 }

@@ -303,18 +303,18 @@ function VerdictButtons({
         ))}
       </Select>
       <ButtonRow>
-      {VERDICTS.map(([kind, label]) => (
-        <Button
-          key={kind}
-          variant={VERDICT_VARIANT[kind]}
-          data-verdict-kind={kind}
-          disabled={disabled || (kind !== "accept" && reason.trim() === "")}
-          title={kind === "accept" ? title : `${title} (write the reason in the note box first)`}
-          onClick={() => onSend(verdictNote(kind, severity, reason))}
-        >
-          {label}
-        </Button>
-      ))}
+        {VERDICTS.map(([kind, label]) => (
+          <Button
+            key={kind}
+            variant={VERDICT_VARIANT[kind]}
+            data-verdict-kind={kind}
+            disabled={disabled || (kind !== "accept" && reason.trim() === "")}
+            title={kind === "accept" ? title : `${title} (write the reason in the note box first)`}
+            onClick={() => onSend(verdictNote(kind, severity, reason))}
+          >
+            {label}
+          </Button>
+        ))}
         {done ? (
           !doneHidden && (
             <Button variant="ghost" data-outcome title="The verdict was handled; hide this" onClick={() => setDoneHidden(true)}>

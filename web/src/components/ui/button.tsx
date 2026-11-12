@@ -24,10 +24,10 @@ const SIZES = {
 
 const SOLID_DANGER = "bg-failed text-on-solid enabled:hover:opacity-90";
 
-export type ButtonVariant = keyof typeof VARIANTS;
-export type ButtonSize = keyof typeof SIZES;
+type ButtonVariant = keyof typeof VARIANTS;
+type ButtonSize = keyof typeof SIZES;
 
-export interface ButtonProps extends ComponentProps<"button"> {
+interface ButtonProps extends ComponentProps<"button"> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   /** The danger variant filled with the failed colour: only for a confirm dialog's destructive confirm. */

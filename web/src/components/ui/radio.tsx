@@ -2,7 +2,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
 import { DISABLED, FOCUS } from "./control.js";
 
-export interface RadioProps extends Omit<ComponentProps<"input">, "type" | "children"> {
+interface RadioProps extends Omit<ComponentProps<"input">, "type" | "children"> {
   /** The visible label; the radio's accessible name. */
   children: ReactNode;
 }
