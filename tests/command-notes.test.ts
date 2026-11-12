@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { answersDetail, autoApprovalDetail, decisionsSection, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
+import { type NoteChange, answersDetail, autoApprovalDetail, decisionsSection, ownerAnswersFor, splitAnswers, storedAnswers } from "../src/shared/command-notes.js";
 
 // Answers to a spec's decisions in an approval note (issue #526): one parser for every approval source.
 
@@ -96,5 +96,43 @@ describe("decisionsSection", () => {
     const text = readFileSync(new URL("../src/shared/command-notes.ts", import.meta.url), "utf8");
     const imports = [...text.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]!);
     expect(imports.filter((s) => !s.startsWith("./"))).toEqual([]);
+  });
+});
+
+describe("ownerAnswersFor (design 04-agents.md, Owner answers)", () => {
+  const ans = (answer: string) => [{ question: "Range?", answer, accepted_default: false }];
+  const c = (reason: string, detail: Record<string, unknown> | null = null): NoteChange => ({ reason, detail });
+  const read = (by: Record<string, NoteChange[]>) => {
+    const reads: string[] = [];
+    return { reads, changes: async (id: string) => (reads.push(id), by[id] ?? []) };
+  };
+
+  it("takes the newest approval that stored answers: a newer answer replaces an older one", async () => {
+    const r = read({ a: [c("spec_approved", answersDetail(ans("Today"))), c("triaged"), c("spec_approved", answersDetail(ans("Upcoming 7 days")))] });
+    expect(await ownerAnswersFor({ id: "a", parent_id: null }, r.changes)).toEqual(ans("Upcoming 7 days"));
+  });
+
+  it("keeps the earlier answers past an approval with none (a standing rule, the improver's fix, a note only)", async () => {
+    const r = read({ a: [c("spec_approved", answersDetail(ans("Upcoming 7 days"))), c("standing_approved", { standing_rule: "spec-t1" }), c("fix_spec_approved"), c("spec_approved", { note: "x" })] });
+    expect(await ownerAnswersFor({ id: "a", parent_id: null }, r.changes)).toEqual(ans("Upcoming 7 days"));
+  });
+
+  it("a split's answers count on its own item", async () => {
+    const r = read({ a: [c("split_approved", { phases: 2, ...answersDetail(ans("Upcoming 7 days")) })] });
+    expect(await ownerAnswersFor({ id: "a", parent_id: null }, r.changes)).toEqual(ans("Upcoming 7 days"));
+  });
+
+  it("a phase with none of its own takes its parent's split answers; with its own, the parent is not read", async () => {
+    const parent = [c("spec_approved", answersDetail(ans("Today"))), c("split_approved", answersDetail(ans("Upcoming 7 days")))];
+    const r = read({ p: parent });
+    expect(await ownerAnswersFor({ id: "a", parent_id: "p" }, r.changes)).toEqual(ans("Upcoming 7 days"));
+    expect(r.reads).toEqual(["a", "p"]);
+    const own = read({ a: [c("spec_approved", answersDetail(ans("Tomorrow")))], p: parent });
+    expect(await ownerAnswersFor({ id: "a", parent_id: "p" }, own.changes)).toEqual(ans("Tomorrow"));
+    expect(own.reads).toEqual(["a"]);
+  });
+
+  it("is empty with no approval that stored answers", async () => {
+    expect(await ownerAnswersFor({ id: "a", parent_id: "p" }, read({ p: [c("spec_approved", answersDetail(ans("x")))] }).changes)).toEqual([]);
   });
 });

@@ -9,6 +9,7 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
+import { StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
@@ -379,7 +380,7 @@ export function ItemPage({ id }: { id: string }) {
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {([
-          ["State", <Badge level={level}>{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</Badge>],
+          ["State", <StatusBadge level={level} size="sm">{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</StatusBadge>],
           ["Source", isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
           ["Tier", item.tier ?? "–"],
           ["PR", item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
