@@ -73,7 +73,7 @@ interface CalendarCache {
   events: Map<string, FeedEvent>;
 }
 
-const fail = (what: string): Error => new Error(`google-calendar: ${what}`);
+export const fail = (what: string): Error => new Error(`google-calendar: ${what}`);
 
 export class GoogleCalendarSource<N extends string> implements CalendarFeed {
   private access: { token: string; expiresAt: number } | null = null;
@@ -218,7 +218,7 @@ class SyncTokenGone extends Error {
 }
 
 /** A body as JSON; a body that is not JSON throws without quoting it. */
-async function json<T>(res: HttpResponse, what: string): Promise<T> {
+export async function json<T>(res: HttpResponse, what: string): Promise<T> {
   try {
     return JSON.parse(await res.text()) as T;
   } catch {
