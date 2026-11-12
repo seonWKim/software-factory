@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, type RefObject, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
+import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
 
@@ -104,7 +105,7 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
         )}
         <div className="flex justify-end gap-2">
           <Button variant="outline" className={BUTTON} onClick={() => close.current()}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button type="submit" variant="outline" className={cn(BUTTON, danger && DANGER)} disabled={confirmDisabled}>
             {confirmLabel}
