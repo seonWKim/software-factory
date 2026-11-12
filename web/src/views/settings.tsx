@@ -2,9 +2,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
-import { cn } from "../lib/cn.js";
+import { Textarea } from "../components/ui/textarea.js";
 import { ago, duration } from "../lib/format.js";
 import { useNow } from "./common.js";
 import { ProposalsSection, StandingSection } from "./standing.js";
@@ -22,10 +23,6 @@ const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
 
-const input =
-  "rounded-control border border-border-strong bg-surface px-2 py-1 text-sm tabular-nums " +
-  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus";
-const textButton = "h-8 w-auto px-2";
 /** message_style (design 04-agents): what it does in one line, and an example. */
 const STYLE_HINT = "Added after each agent's instructions; changes only how replies, specs and summaries read.";
 const STYLE_EXAMPLE = "Example: Short sentences. Plain words, no jargon. Lead with the decision.";
@@ -169,10 +166,10 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
         {TIERS.map((t) => (
           <label key={t} className="flex items-center gap-1 text-xs text-text-2">
             {t}
-            <input aria-label={`${label} ${t}`} className={cn(input, "w-28")} value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
+            <Input aria-label={`${label} ${t}`} className="w-28 tabular-nums" value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
           </label>
         ))}
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || tiers === null} aria-label={`Save ${label}`}>
+        <Button type="submit" variant="secondary" disabled={busy || tiers === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -181,11 +178,11 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     // Free text: shown and edited as plain text, sent as a JSON string, as `factory settings set` takes it.
     const shown = draft ?? stringOf(value);
     control = (
-      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_HINT}</p>
-        <textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className={cn(input, "w-full min-w-48 text-sm")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className="w-full min-w-48" value={shown} onChange={(e) => setDraft(e.target.value)} />
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_EXAMPLE}</p>
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -196,9 +193,9 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const lines = shown.split("\n").length;
     const obj = asObject(value);
     const form = (
-      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className={cn(input, "w-full min-w-64 font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
+      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
+        <Textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className="w-full min-w-64 font-mono" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -216,14 +213,14 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const shown = draft ?? value;
     control = (
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <input
+        <Input
           aria-label={label}
           type="number"
-          className={cn(input, "w-32")}
+          className="w-32 tabular-nums"
           value={shown}
           onChange={(e) => setDraft(e.target.value)}
         />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={`Save ${label}`}>
           Save
         </Button>
       </form>
@@ -250,7 +247,7 @@ function ResetButton({ row, label, token, project, learned = false }: { row: Set
   const body: SettingsWrite & { learned?: true } = { action: "reset", key: row.key, ...(project === undefined ? {} : { project }), ...(learned ? { learned: true as const } : {}) };
   return (
     <div>
-      <Button variant="outline" className={textButton} disabled={busy} aria-label={`Reset ${learned ? "learned " : ""}${label}`} onClick={() => void write(body)}>
+      <Button variant="secondary" disabled={busy} aria-label={`Reset ${learned ? "learned " : ""}${label}`} onClick={() => void write(body)}>
         {learned ? "Reset learned" : "Reset"}
       </Button>
       <Outcome error={error} done={done} />
@@ -364,8 +361,8 @@ function QuietHours({ row, token }: { row: SettingRow; token: string }) {
         Local time, e.g. 22:00-07:00; empty is off. Notices inside it wait, then come as one summary.
       </p>
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
-        <input aria-label="Quiet hours" placeholder="22:00-07:00" className={cn(input, "w-32")} value={shown} onChange={(e) => setDraft(e.target.value)} />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label="Save Quiet hours">
+        <Input aria-label="Quiet hours" placeholder="22:00-07:00" className="w-32 tabular-nums" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label="Save Quiet hours">
           Save
         </Button>
       </form>

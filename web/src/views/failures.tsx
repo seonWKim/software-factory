@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { API, type FailureGroup, type Failures, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
-import { cn } from "../lib/cn.js";
 import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -24,18 +24,18 @@ function Group({ group, now }: { group: FailureGroup; now: number }) {
   const [open, setOpen] = useState(false);
   return (
     <li className="rounded-control border border-border" data-testid="failure-group">
-      <button
-        type="button"
+      <Button
+        variant="ghost"
         aria-expanded={open}
         onClick={() => setOpen(!open)}
-        className="flex w-full flex-wrap items-baseline gap-x-3 gap-y-1 px-3 py-2 text-left text-sm"
+        className="w-full flex-wrap gap-x-3 gap-y-1 py-2 text-left"
       >
         <span className="font-mono text-xs font-semibold">{group.code}</span>
         <span className="tabular-nums">{group.count} {group.count === 1 ? "run" : "runs"}</span>
         <span className="tabular-nums text-text-2">{group.items} {group.items === 1 ? "item" : "items"}</span>
         <span className="tabular-nums text-text-2">last seen {ago(group.last_seen, now)} ago</span>
         {group.description && <span className="basis-full text-pretty text-text-2">{group.description}</span>}
-      </button>
+      </Button>
       {open && (
         <div className="border-t border-border p-2">
           <Table label={`Runs failed with ${group.code}`} head={["Item", "Attempt", "Detail", "Worker", "When"]}>
@@ -62,13 +62,13 @@ export function FailuresPage() {
   const q = useApi<Failures>(API.failures(win));
   return (
     <>
-      <div role="group" aria-label="Window" className="mb-4 flex gap-2">
+      <ButtonRow role="group" aria-label="Window" className="mb-6">
         {WINDOWS.map((w) => (
-          <Button key={w} variant="outline" aria-pressed={w === win} className={cn("size-auto px-3 py-1.5", w === win && "bg-surface-2")} onClick={() => setWin(w)}>
+          <Button key={w} aria-pressed={w === win} onClick={() => setWin(w)}>
             {WINDOW_LABELS[w]}
           </Button>
         ))}
-      </div>
+      </ButtonRow>
       <Section title="Failed runs by error code" count={q.data?.total}>
         {q.isError ? <ErrorNote error={q.error} /> : !q.data ? <Loading rows={3} /> : q.data.groups.length === 0 ? (
           <Empty>No run failed in this window.</Empty>
