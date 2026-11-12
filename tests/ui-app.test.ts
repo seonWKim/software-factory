@@ -14,7 +14,7 @@ import { type ItemDetail, type ItemRow, type MergeCheckView, type MergeReadiness
 // @ts-expect-error -- see above
 import { ItemsTable } from "../web/src/views/common.js";
 // @ts-expect-error -- see above
-import { NeedCommands, VERDICT_PLACEHOLDER } from "../web/src/views/item-commands.js";
+import { NeedCommands } from "../web/src/views/item-commands.js";
 // @ts-expect-error -- see above
 import { ItemPage } from "../web/src/views/pages.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -310,7 +310,7 @@ describe("ui app: item commands markup", () => {
     client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true, actor: "local:me", actor_source: "environment" });
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
     const buttons = [...html.matchAll(/<li data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
-    expect(buttons).toEqual(names.map((n) => [n, n]));
+    expect(buttons).toEqual(names.map((n) => [n, n[0]!.toUpperCase() + n.slice(1)]));
     // The note box is for approve's note; it no longer names reject or revise.
     expect(html).toMatch(/<textarea aria-label="Note"/);
     expect(html).not.toContain("Reason for reject");
@@ -423,13 +423,13 @@ describe("ui app: the Needs-you commands and the verdict control", () => {
   const VERDICT = { name: "verdict", usage: "/verdict accept|changes|reject <severity> <reason>", description: "Record a verdict", allowed: true, reason: null };
   const APPROVE = { name: "approve", usage: "/approve", description: "Approve", allowed: true, reason: null };
   const render = (commands: unknown[]) =>
-    renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedCommands, { id: "wi_1", commands: commands as never, pr: "42" })));
+    renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedCommands, { id: "wi_1", title: "Spec", commands: commands as never, pr: "42" })));
 
   it("a row shows its primary button and one ⋯ menu, no inline form and no dialog", () => {
     const html = render([APPROVE, VERDICT]);
-    expect(html).toMatch(/<span data-command="approve"[^>]*><button[^>]*>approve<\/button>/);
+    expect(html).toMatch(/<span data-command="approve"[^>]*><button[^>]*>Approve<\/button>/);
     expect(html).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"[^>]*>⋯<\/button>/);
-    expect(html).not.toContain("verdict</button>");
+    expect(html).not.toContain("Verdict</button>");
     expect(html).not.toContain("<dialog");
     expect(html).not.toContain("data-verdict-form");
   });
@@ -438,9 +438,5 @@ describe("ui app: the Needs-you commands and the verdict control", () => {
     const html = render([VERDICT]);
     expect(html).not.toContain("data-command=");
     expect(html).toContain('aria-label="More commands"');
-  });
-
-  it("the verdict dialog's placeholder is the verdict as typed after /verdict", () => {
-    expect(VERDICT_PLACEHOLDER).toBe(VERDICT.usage.replace("/verdict ", "").replace("<severity>", "<none|minor|major|critical>"));
   });
 });

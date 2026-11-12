@@ -191,4 +191,26 @@ describe("the Gongbang mark in the dashboard", () => {
     const glyph = /MARK_GLYPH =\s*"([^"]+)"/.exec(brand)!;
     expect(svg).toContain(` d="${glyph[1]}"`);
   });
+
+  it("the dialog, the row menu panel and the toast use token utilities only: no zinc-, red- or rounded-md", () => {
+    const dialog = readFileSync(join(WEB_SRC, "components", "ui", "dialog.tsx"), "utf8");
+    const commands = readFileSync(join(WEB_SRC, "views", "item-commands.tsx"), "utf8");
+    const toast = dialog.match(/const STATUS_CLASS =\s*"([^"]*)"/)?.[1];
+    const menu = commands.match(/role="menu"\s+className="([^"]*)"/)?.[1];
+    expect(toast).toContain("bg-surface");
+    expect(menu).toContain("bg-surface");
+    const bad = /(?<![\w-])(?:[a-z-]+-)?(?:zinc|red)-\d|(?<![\w-])rounded-md(?![\w-])/;
+    for (const [name, text] of [["dialog.tsx", dialog], ["the menu panel", menu!], ["the toast", toast!]] as const) expect(bad.test(text), name).toBe(false);
+    expect(bad.test("bg-zinc-900 dark:border-red-500 rounded-md")).toBe(true);
+    expect(dialog).toContain("rounded-card");
+    expect(dialog).toContain("border-border-strong");
+  });
+
+  it("the item page has no inline approve confirm or inline verdict form: every action opens the shared Dialog", () => {
+    const commands = readFileSync(join(WEB_SRC, "views", "item-commands.tsx"), "utf8");
+    const decisions = readFileSync(join(WEB_SRC, "views", "item-decisions.tsx"), "utf8");
+    expect(commands).not.toMatch(/ApproveConfirm|VERDICT_PLACEHOLDER|setConfirming/);
+    expect(decisions).not.toMatch(/ApproveConfirm/);
+    for (const name of ["ApproveDialog", "RejectDialog", "ReviseDialog", "VerdictDialog"]) expect(commands + decisions).toContain(`function ${name}(`);
+  });
 });

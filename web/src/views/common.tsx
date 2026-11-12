@@ -135,38 +135,38 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
 export function ItemsTable({ items, now, label, empty, plugins, actions = false }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"]; actions?: boolean }) {
   if (items.length === 0) return <Empty>{empty}</Empty>;
   const showIssue = plugins?.issues === "github";
-  const head = [t("col.item"), t("col.state"), t("col.why"), t("col.since"), ...(showIssue ? [t("col.issue")] : []), t("col.pr")];
+  const head = [t("col.item"), t("col.state"), t("col.why"), t("col.since"), ...(showIssue ? [t("col.issue")] : []), t("col.pr"), ...(actions ? [t("commands.label")] : [])];
+  // Needs-you rows centre every cell on the row's buttons (the cell's own top alignment is overridden).
+  const mid = actions ? "align-middle!" : "";
   return (
     <Table label={label} head={head}>
       {items.map((it) => (
         <Tr key={it.id} data-key={it.id}>
-          <Td className="max-w-md">
+          <Td className={cn("max-w-md", mid)}>
             <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
               {it.title ?? shortSource(it.source.id)}
             </Link>
           </Td>
-          <Td>
+          <Td className={mid}>
             <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
             {it.merge_check && <MergeCheckNote check={it.merge_check} />}
           </Td>
-          <Td className="text-text-2">
+          <Td className={cn("text-text-2", mid)}>
             {it.need ? <NeedText it={it} need={it.need} /> : it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}
-            {actions && (it.commands?.length ?? 0) > 0 && (
-              <span className="ml-2">
-                <NeedCommands id={it.id} commands={it.commands!} pr={it.change_ref} />
-              </span>
-            )}
-            {actions && showsMerge(it.merge) && (
-              <span className="ml-2">
-                <MergeButton id={it.id} source={it.source.type} merge={it.merge} />
-              </span>
-            )}
           </Td>
-          <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
-          {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
-          <Td className="tabular-nums">
+          <Td className={cn("tabular-nums whitespace-nowrap", mid)}>{ago(it.since, now)}</Td>
+          {showIssue && <Td className={cn("tabular-nums", mid)}>{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
+          <Td className={cn("tabular-nums", mid)}>
             {it.change_ref === null ? "–" : it.change_url ? <Ext href={it.change_url}>#{it.change_ref}</Ext> : `#${it.change_ref}`}
           </Td>
+          {actions && (
+            <Td className={mid}>
+              <span className="inline-flex items-center gap-2">
+                {showsMerge(it.merge) && <MergeButton id={it.id} source={it.source.type} merge={it.merge} />}
+                {(it.commands?.length ?? 0) > 0 && <NeedCommands id={it.id} title={it.title ?? it.id} commands={it.commands!} pr={it.change_ref} />}
+              </span>
+            </Td>
+          )}
         </Tr>
       ))}
     </Table>

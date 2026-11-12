@@ -69,7 +69,7 @@ describe("Needs you on the Floor", () => {
     expect(rows.map((r) => r.getAttribute("data-key"))).toEqual(["wi_30"]);
     expect(within(rows[0]!).getByRole("link", { name: "Spec waiting for you" })).toBeTruthy();
     // Its buttons sit in its own row: the primary approve and the menu with the others.
-    expect(within(rows[0]!).getByRole("button", { name: "approve" })).toBeTruthy();
+    expect(within(rows[0]!).getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(within(rows[0]!).getByRole("button", { name: "More commands" })).toBeTruthy();
     // Needs you is the first section of the page: only the one-line factory banner may come before it.
     const main = document.querySelector("main")!;
