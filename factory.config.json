@@ -29,6 +29,7 @@
     { "prefix": "src/impl/github/token-credentials.ts", "tier": 4 },
     { "prefix": "src/impl/github/app.plugin.ts", "tier": 4 },
     { "prefix": "src/impl/github/token.plugin.ts", "tier": 4 },
+    { "prefix": "src/calendar/plugins/google-calendar/", "tier": 4 },
     { "prefix": ".claude/", "tier": 4 }
   ],
   "auth": "github",

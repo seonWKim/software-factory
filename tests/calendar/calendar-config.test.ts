@@ -10,7 +10,7 @@ import { fakeRepoLookup } from "../helpers/fakes.js";
 import { FakeCalendarSource } from "./fakes.js";
 
 // The top-level `calendar` key (design 02-tasks, calendar): a list of CalendarSource plugin names, default [], checked
-// at startup. No provider ships yet, so these tests register fake sources only.
+// at startup. These tests register fake sources beside the shipped providers (google-calendar).
 
 const REPO_ROOT = join(import.meta.dirname, "..", "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
@@ -36,11 +36,11 @@ const select = (registry: typeof REGISTRY, calendar: unknown) =>
   selectPlugins(registry, { store: { type: "sqlite" }, auth: "github", calendar }, { platform: "linux" });
 
 describe("calendar config key", () => {
-  it("is a top-level key, never a plugins key, registered as an optional kind with no plugin and no default", () => {
+  it("is a top-level key, never a plugins key, registered as an optional kind with no default", () => {
     expect(TOP_LEVEL_KEYS).toContain("calendar");
     expect(PLUGINS_KEYS).not.toContain("calendar");
     expect(REGISTRY.calendar).toMatchObject({ interface: "CalendarSource", configKey: "calendar", optional: true, guard: false });
-    expect(REGISTRY.calendar.plugins).toEqual({});
+    expect(Object.keys(REGISTRY.calendar.plugins)).toContain("google-calendar");
     expect(REGISTRY.calendar.defaults).toEqual({ platforms: {} });
   });
 
@@ -60,7 +60,7 @@ describe("calendar config key", () => {
     expect(err).toContain("CalendarSource");
     expect(err).toContain('"outlook"');
     expect(err).toContain("at calendar");
-    expect(err).toContain("available: none");
+    expect(err).toMatch(/available: .*google-calendar/);
     const named = (() => {
       try {
         select(withFake("work"), ["wrok"]);
@@ -70,7 +70,7 @@ describe("calendar config key", () => {
       }
     })();
     expect(named).toContain("at calendar");
-    expect(named).toContain("available: work");
+    expect(named).toMatch(/available: .*\bwork\b/);
   });
 
   it("a value that is not a list, a non-string entry or a name listed twice fails", () => {
