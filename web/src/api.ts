@@ -1,7 +1,8 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
-// /api/v1/tasks/build (postTaskBuild) and POST /api/v1/tasks (postTaskAdd), each with the per-process CSRF token (from GET /api/v1/settings,
+// /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
+// /api/v1/tasks (postTaskAction: edit, done, delete, sub), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules or /api/v1/tasks) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
@@ -562,6 +563,8 @@ export interface TaskRow {
   recurrence: string | null;
   /** The work item Build this made from it, or null. */
   work_item_id: string | null;
+  /** The task this is a sub-task of (one level), or null. */
+  parent_task_id?: string | null;
 }
 
 /**
@@ -686,6 +689,7 @@ export const API = {
   ruleVerdict: "/api/v1/rules/verdict",
   tasks: "/api/v1/tasks",
   taskBuild: "/api/v1/tasks/build",
+  taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
   dataTables: "/api/v1/data/tables",
   dataAutonomy: "/api/v1/data/autonomy",
   dataTable: (name: string, params: URLSearchParams) => {
@@ -786,6 +790,18 @@ export async function postTaskBuild(token: string, id: string): Promise<{ ok: tr
 export async function postTaskAdd(token: string, id: string, words: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.tasks, token, { id, words });
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** A Tasks page row action: the path segment of its route. */
+export type TaskAction = "edit" | "done" | "delete" | "sub";
+
+/**
+ * POST /api/v1/tasks/<action>: a row action (edit `{ id, words }`, done and delete `{ id }`, sub `{ parent, id, words }`).
+ * A refusal (400, 404, 409, …) comes back as `{ ok: false, error }` with the server's reason.
+ */
+export async function postTaskAction(token: string, action: TaskAction, body: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.taskAction(action), token, body);
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /**
