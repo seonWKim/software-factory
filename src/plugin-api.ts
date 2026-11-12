@@ -107,7 +107,7 @@ export interface Contexts {
   updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
   awake: BaseContext & { clock: Clock };
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
-  /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
+  /** The pre-push checks' throwaway database (design §4); `none` is its one plugin. */
   test_database: BaseContext & { secrets: SecretStore };
   /** `credentials`: what a run's push needs; only outbound's targets call the forge's writes (RFC 0015 M7, G2). */
   forge: BaseContext & { github: GitHubApi; credentials?: GitHubCredentials };
