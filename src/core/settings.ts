@@ -261,6 +261,7 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "notify_channels",
+  "integrations",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -279,6 +280,12 @@ export type Mode = (typeof MODES)[number];
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
+
+/**
+ * Keys only the owner changes (design 08-settings): `integrations` switches a plugin the factory runs (the tacit
+ * ledger's CLIs). Free in either direction, and needs no grant beyond being the owner.
+ */
+export const OWNER_KEYS: readonly SettableKey[] = ["integrations"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -317,6 +324,8 @@ export interface SettableValues {
   auto_merge_max_tier: number;
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
+  /** Integration interface → plugin name (design 08-settings); an interface with no entry keeps its config choice. */
+  integrations: Readonly<Record<string, string>>;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -345,6 +354,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auto_merge_max_tier: 0,
   message_style: "",
   notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [],
+  integrations: {},
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -438,9 +448,24 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
+    case "integrations": return integrationEntries(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
+}
+
+/**
+ * `integrations` as stored: an object from interface to a non-empty plugin name. Which interfaces are integrations and
+ * which names they hold is the registry's to say (src/plugins.ts checkIntegrations), checked where a set is written.
+ */
+function integrationEntries(value: unknown): Record<string, string> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("integrations must be an object from interface to plugin name");
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v !== "string" || v.trim() === "") throw new Error(`integrations.${k} must be a plugin name`);
+    out[k] = v;
+  }
+  return out;
 }
 
 /** A ModelTable back in the form `model_by` is written in, so it can be checked and stored like any value. */
@@ -668,6 +693,14 @@ export interface OverrideSource {
 }
 
 /**
+ * A plugin a running process holds for an integration interface (design 08-settings): LiveSettings gives it the
+ * `integrations` entry after each refresh, and it rebuilds its plugin when the entry names another. Never throws.
+ */
+export interface IntegrationHolder {
+  apply(integrations: Readonly<Record<string, string>>): Promise<void>;
+}
+
+/**
  * The settings a running process acts on. refresh() re-reads the stored overrides and learned values (the controller each tick,
  * the worker pool each tick, a worker before each claim and each lease renewal); the getters return the last
  * resolved values without I/O. Only a cache of store rows: no replica needs it, and a restart rebuilds it.
@@ -679,7 +712,11 @@ export class LiveSettings {
   private readonly reported = new Set<string>();
 
   constructor(
-    private readonly opts: { config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger },
+    private readonly opts: {
+      config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger;
+      /** Plugin holders the `integrations` entry switches (src/runtime/live-tacit.ts), given it after each refresh. */
+      integrations?: readonly IntegrationHolder[];
+    },
   ) {
     this.current = resolveSettings(opts.base, [], this.label);
     this.view = this.viewOf(this.current);
@@ -705,6 +742,7 @@ export class LiveSettings {
     }
     this.current = resolveSettings(this.opts.base, rows, this.label);
     this.view = this.viewOf(this.current);
+    for (const h of this.opts.integrations ?? []) await h.apply(this.current.values.integrations);
     for (const i of this.current.ignored) {
       const sig = JSON.stringify([i.key, i.project, i.value]);
       if (this.reported.has(sig)) continue;

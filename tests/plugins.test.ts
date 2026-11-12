@@ -54,6 +54,7 @@ import {
   REGISTRY,
   type Registry,
   GRANTS,
+  INTEGRATION_KINDS,
   createPlugin,
   declaredSecrets,
   selectedSetups,
@@ -444,6 +445,26 @@ describe("plugin registry: guards cannot be disabled", () => {
 
   it("a guard plugin cannot be registered under a disabling name", () => {
     expect(() => withPlugin(REGISTRY, "secrets", "none", () => new MapSecrets())).toThrow(/means disabled/);
+  });
+});
+
+describe("plugin registry: integrations switch at runtime, and nothing else does", () => {
+  // The interfaces the owner may switch from the dashboard (design 08-settings). Adding one here is a reviewed choice;
+  // a guard never joins it.
+  const ALLOWED_INTEGRATIONS: readonly PluginKind[] = ["tacit"];
+
+  it("marks tacit (TacitLedger) as an integration", () => {
+    expect(INTEGRATION_KINDS).toContain("tacit");
+    expect(REGISTRY.tacit.interface).toBe("TacitLedger");
+  });
+
+  it("marks no other interface, and never a guard (SecretStore, EgressScanner, ToolBroker)", () => {
+    for (const kind of INTEGRATION_KINDS) expect(ALLOWED_INTEGRATIONS, kind).toContain(kind);
+    for (const guard of GUARDS) {
+      expect(REGISTRY[guard].guard, guard).toBe(true);
+      expect(INTEGRATION_KINDS, guard).not.toContain(guard);
+    }
+    expect(GUARDS.map((g) => REGISTRY[g].interface).sort()).toEqual(["EgressScanner", "SecretStore", "ToolBroker"]);
   });
 });
 

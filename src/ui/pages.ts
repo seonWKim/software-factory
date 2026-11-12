@@ -63,7 +63,17 @@ export interface UiDeps {
   /** Display names by user id (Identity's identity_profiles), read only to show. Absent: ids only. */
   displayNames?: DisplayNames;
   /** The Rules page's tacit ledger (rules-api.ts, issue #571), read and judged only through it. Absent: the plugin `none`. */
-  tacit?: TacitLedger;
+  tacit?: UiTacit;
+}
+
+/** The Rules page's tacit ledger as the UI process holds it (design 08-settings, 2026-11-12). */
+export interface UiTacit {
+  /** The live holder (src/runtime/live-tacit.ts): the plugin the `integrations` entry, else config, names. */
+  ledger: TacitLedger;
+  /** The UI's settings: refreshed before each Rules request, which rebuilds `ledger` when the entry changed. */
+  settings: { refresh(): Promise<void>; values(): { integrations: Readonly<Record<string, string>> } };
+  /** The agents home (AGENTS_HOME, else ~/.agents) and the first CLI missing there, or null when both are executable. */
+  home(): { path: string; missing: string | null };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

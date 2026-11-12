@@ -5,6 +5,11 @@
 // through `TacitLedger.verdict` only: the page has no other write path and writes nothing to the store. The request guards
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (decision 1 of #571:
 // the store's local owner only); every refusal comes before the ledger's CLI runs.
+//
+// The ledger is the UI's live holder (design 08-settings, 2026-11-12): each request first refreshes the UI's settings,
+// so a changed `integrations` entry takes effect here with no restart. With the ledger off, GET also says where the
+// agents home is and which CLI is missing there, and gives the owner the `integrations` value that turns the ledger
+// on; the page writes it through POST /api/v1/settings, whose guards and owner check run as for any setting.
 
 import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
 import { errorText } from "../core/log.js";
@@ -21,23 +26,45 @@ export const RULE_VERDICT_PATH = "/api/v1/rules/verdict";
 export const MAX_REASON = 1000;
 export const MAX_RULE_TEXT = 2000;
 
-/** The page's user when they may judge rules (the local owner), else why not. */
-async function owner(d: PauseDeps, p: UiPauses): Promise<{ user: UserId } | { error: string }> {
+/** The plugin the Rules page turns on. */
+export const RULES_PLUGIN = "agents-home";
+
+/** The page's user when they are the local owner, else why not; `does` names the act (`judges rules`). */
+export async function ownerOf(d: PauseDeps, p: UiPauses, does: string): Promise<{ user: UserId } | { error: string }> {
   const user = await p.principal();
   if (user === null) return { error: "No factory user acts from this page: link your local account or set cli_user." };
   // The local grants first (as every check): a solo store's first identity becomes its owner there.
   const decision = await p.authorize(user);
-  if (!decision.allow) return { error: `Only the owner judges rules: ${decision.reason}.` };
-  if ((await d.store.getLocalUser(user))?.role !== "owner") return { error: `Only the owner judges rules; you are ${user}.` };
+  if (!decision.allow) return { error: `Only the owner ${does}: ${decision.reason}.` };
+  if ((await d.store.getLocalUser(user))?.role !== "owner") return { error: `Only the owner ${does}; you are ${user}.` };
   return { user };
 }
 
 /** GET /api/v1/rules. Every ledger text leaves through the Withholder (G5, `ui`). */
 export async function readRules(d: PauseDeps): Promise<ApiResult> {
-  const tacit = d.tacit;
-  if (!tacit?.enabled) return { status: 200, value: { enabled: false, entries: [], error: null, csrf_token: null, judge: null } };
-  const who = d.pauses ? await owner(d, d.pauses) : { error: "The page has no owner check: verdicts are off." };
-  const judge = "error" in who ? who.error : null;
+  await d.tacit?.settings.refresh();
+  const tacit = d.tacit?.ledger;
+  const w = new Withholder(d.scanner);
+  const text = async (v: string) => (await w.plain(v)).text;
+  const judgeOf = async (does: string) => {
+    const who = d.pauses ? await ownerOf(d, d.pauses, does) : { error: "The page has no owner check: verdicts are off." };
+    return "error" in who ? await text(who.error) : null;
+  };
+  if (!tacit?.enabled) {
+    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], error: null, csrf_token: null, judge: null, home: null, turn_on: null } };
+    const judge = await judgeOf("turns the ledger on");
+    const home = d.tacit.home();
+    // The whole entry with `tacit` set: other integrations keep theirs.
+    const turnOn = judge === null && home.missing === null ? JSON.stringify({ ...d.tacit.settings.values().integrations, tacit: RULES_PLUGIN }) : null;
+    return {
+      status: 200,
+      value: {
+        enabled: false, entries: [], error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
+        home: { path: await text(home.path), missing: home.missing }, turn_on: turnOn,
+      },
+    };
+  }
+  const judge = await judgeOf("judges rules");
   let entries: readonly TacitPendingEntry[] = [];
   let error: string | null = null;
   try {
@@ -45,15 +72,13 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   } catch (err) {
     error = `The ledger could not be read: ${errorText(err)}`;
   }
-  const w = new Withholder(d.scanner);
-  const text = async (v: string) => (await w.plain(v)).text;
   const shown = [];
   for (const e of entries) {
     shown.push({ id: await text(e.id), title: await text(e.title), state: e.state });
   }
   return {
     status: 200,
-    value: { enabled: true, entries: shown, error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge: judge === null ? null : await text(judge) },
+    value: { enabled: true, entries: shown, error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null },
   };
 }
 
@@ -83,12 +108,14 @@ function parseVerdict(body: unknown): VerdictBody | string {
 export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
   const v = parseVerdict(body);
   if (typeof v === "string") return { status: 400, value: { error: v } };
-  if (!d.tacit?.enabled) return { status: 409, value: { error: "No tacit ledger: set plugins.tacit to agents-home and restart `factory ui`." } };
-  const who = await owner(d, p);
+  await d.tacit?.settings.refresh();
+  const tacit = d.tacit?.ledger;
+  if (!tacit?.enabled) return { status: 409, value: { error: "No tacit ledger is on: turn it on from the Rules page." } };
+  const who = await ownerOf(d, p, "judges rules");
   if ("error" in who) return { status: 403, value: { error: who.error } };
   try {
     // The owner's wording goes as the promoted class's rule; the CLIs take no "by", so the log keeps who judged.
-    await d.tacit.verdict(v.id, v.verdict, v.reason, v.text);
+    await tacit.verdict(v.id, v.verdict, v.reason, v.text);
   } catch (err) {
     return { status: 502, value: { error: `The ledger refused the verdict: ${errorText(err)}` } };
   }
