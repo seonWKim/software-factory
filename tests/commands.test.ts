@@ -117,7 +117,7 @@ describe("command table", () => {
   });
 
   it("a footer with no state-changing command ends with /help and a no-change line", () => {
-    const f = commandFooter(s("merge_pending", true)).split("\n");
+    const f = commandFooter(s("merged", true)).split("\n");
     expect(f.at(-2)).toMatch(/^- `\/help`/);
     expect(f.at(-1)).toBe("No command changes this item's state now.");
   });

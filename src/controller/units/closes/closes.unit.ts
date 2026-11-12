@@ -5,7 +5,8 @@ import { prNumber } from "../../../core/change-ref.js";
 import { errorText } from "../../../core/log.js";
 import { type Actor, type CloseReason, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
-import { SYSTEM, SOURCE_CLOSE_PENDING, quote } from "../support.js";
+import { SYSTEM, SOURCE_CLOSE_PENDING, awaitingMerge, quote } from "../support.js";
+import { LIVE_ENTRY_STATES } from "../../actors/merge-queue-entry/merge-queue-entry.actor.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -17,6 +18,11 @@ const INTAKE: Actor = { kind: "system", id: "system:intake" };
  * `blocked_on: upstream` and this reason until both are done (design §4, source closed and `/reject`).
  */
 const PR_CLOSE_PENDING = "pr_close_pending";
+/** Why `/reject` is refused on an item whose change is already merged. */
+const MERGED = "the change is already merged, so the item cannot be rejected now; undo a merged change with a new change that reverts it";
+/** Why `/reject` is refused on an item whose change is in the merge queue (`state`: its entry's, e.g. `checking`). */
+const inQueue = (state: string) => `the change is in the merge queue (${state}), so the item cannot be rejected now: the queue lands it once its ` +
+  "merged result passes the checks, and a change that fails them leaves the queue, where `/reject` applies again";
 /** Rejected items finished per intake tick. */
 const CLOSE_BATCH = 50;
 /** An item closed from its source whose PR comment or PR close may not have happened yet. */
@@ -42,6 +48,17 @@ export class ClosesUnit {
     await this.c.k.guard("source closes", () => this.tickSourceCloses());
     // Phases are sub-issues on their source, so their holds and parents move once per poll, after its closes are applied.
     await this.c.k.guard("phases", () => this.c.unit("phases").tickPhases());
+  }
+
+  /**
+   * Why `/reject` cannot close `it` now (design 04-gate-commands, 2026-11-13), else null: its change is already merged,
+   * or in the merge queue, which may be landing it.
+   */
+  async rejectRefusal(it: WorkItem): Promise<string | null> {
+    if (it.merge_sha) return MERGED;
+    if (!awaitingMerge(it) || this.c.k.db === null) return null;
+    const live = (await this.c.unit("merge-queue").entries(it.id)).filter((x) => LIVE_ENTRY_STATES.includes(x.state)).at(-1);
+    return live ? inQueue(live.state) : null;
   }
 
   /**
@@ -98,7 +115,7 @@ export class ClosesUnit {
   }
 
   /**
-   * The rest of a source close or a spec reject for an item with a PR (RFC 0015 M7): one `close_pr` intent, keyed on
+   * The rest of a source close or a reject for an item with a PR (RFC 0015 M7): one `close_pr` intent, keyed on
    * the item, which outbound delivers as one comment on the PR (naming who closed the issue, or quoting the reject's
    * reason), then the PR closed without a merge (a PR already merged or closed is left alone, with no comment). The
    * pending mark is cleared when outbound reports it delivered (`prClosed`); until then each tick records it again,
@@ -140,7 +157,7 @@ export class ClosesUnit {
 
   /**
    * The rest of a reject: one comment quoting the reason, then the source issue closed as not planned, then the
-   * pending mark cleared, or, for a spec reject of an item with a PR and a forge, moved to `pr_close_pending` and the
+   * pending mark cleared, or, for a `/reject` of an item with a PR and a forge, moved to `pr_close_pending` and the
    * PR closed (finishPrClose). A budget reject leaves the PR as it is. Each step is idempotent, so a repeat after a
    * stop does no harm. A local item's surface is the store, so it needs no adapter and never waits on a sync plugin.
    */

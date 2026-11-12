@@ -10,7 +10,7 @@ import { SUPERVISED_ENV } from "../../../supervisor.js";
 import { modelStallChecks, projectKeyChecks, readFactoryStatus } from "../../../ui/factory-status.js";
 import { HealthMonitor, syncChecks } from "../../../ui/health.js";
 import { startUi } from "../../../ui/server.js";
-import { LastChecks, olderThanFactory, serverRevision, watchRevision } from "../../../ui/system-actions.js";
+import { LastChecks, checkoutRevision, olderThanFactory, serverRevision, watchRevision } from "../../../ui/system-actions.js";
 import { defineCommand } from "../../command.js";
 import { cliEnvironment, stopOnSignals } from "../../support.js";
 
@@ -29,11 +29,12 @@ export default defineCommand({
     // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
     const lastChecks = new LastChecks();
     const revision = await serverRevision(loaded.codeRoot);
+    const checkout = await checkoutRevision(loaded.codeRoot);
     const factoryStatus = () => readFactoryStatus(join(loaded.stateDir, SUPERVISOR_STATUS_FILE), loaded.config.workers);
     // A page started by hand (not the supervisor's child, which it swaps) never serves code older than the
     // factory runs (design 08 Self-update): it refuses to start, and stops once the factory moves past it.
     const supervised = process.env[SUPERVISED_ENV] === "1" && process.send !== undefined;
-    const older = async () => (supervised ? null : olderThanFactory(loaded.codeRoot, revision, (await factoryStatus())?.rev ?? null));
+    const older = async () => (supervised ? null : olderThanFactory(loaded.codeRoot, checkout, (await factoryStatus())?.rev ?? null));
     const refused = await older();
     if (refused !== null) {
       console.log(refused);
@@ -61,7 +62,7 @@ export default defineCommand({
           parts.clock,
         ),
         lastChecks,
-        // The revision this server runs (its code root's HEAD): the app shows a banner when its own differs.
+        // The revision this server's build was made from (the stamp in dist/): the app shows a banner when its own differs.
         revision,
         // What the supervisor (`factory dev`) is doing: the banner explains drains and when settings apply.
         factoryStatus,
