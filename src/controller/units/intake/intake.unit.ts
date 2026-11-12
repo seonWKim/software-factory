@@ -1,17 +1,26 @@
 // Takes a requested item in: authorize, create, status, edges, links.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
+import { INTERPRET_MAX_CHARS, UNREAD_TEXT, taskOfferMarker } from "../../../core/interpret.js";
 import { PHASE_MARKER } from "../../../core/split.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
+import { scanClean } from "../commands/scan.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+
+type ItemRequested = Extract<SourceEvent, { kind: "item_requested" }>;
+
+/** The reply to an empty top-level mention: nothing to offer as a task. */
+const EMPTY_TEXT = "I couldn't read that.";
+/** The reply to a top-level mention the egress scan flags: quotes nothing from it, and offers nothing. */
+const FLAGGED_TEXT = "I can't use that message: it looks like it holds a secret. Remove it and mention me again.";
 
 /** Takes a requested item in: authorize, create, status, edges, links. */
 export class IntakeUnit {
   constructor(private readonly c: Ctx) {}
 
   /** A source asked for a work item: a phase of a split is the split's; anyone else is authorized, then taken in. */
-  async itemRequested(e: Extract<SourceEvent, { kind: "item_requested" }>): Promise<void> {
+  async itemRequested(e: ItemRequested): Promise<void> {
     // A phase of a split spec: the split that filed it takes it in (held or not), never intake.
     if (PHASE_MARKER.test(e.body)) return;
     const principal = await this.c.unit("auth").authorize(e.requester, "submit_work", e.source.id);
@@ -38,6 +47,8 @@ export class IntakeUnit {
     );
     if (created) {
       this.c.k.d.log.info("intake", { work_item_id: item.id });
+      // A press of "Make this a task" (design 04-gate-commands): one line before the item's status and spec.
+      if (e.offered) await this.c.unit("outbox").postWithoutItem(e.source, `Task created: ${e.title}`, `<!-- factory:task-created:${e.source.id} -->`);
       await this.c.unit("outbox").setStatus(item.source, "triaging", null);
       // Edges first, so a claim holds the implement run even before the next coordination tick.
       await this.c.k.guard("dependencies", async () => void (await this.c.unit("coordination").refreshEdges(item, this.c.unit("coordination").issueTime(e.updated_at))));
@@ -51,23 +62,36 @@ export class IntakeUnit {
   }
 
   /**
-   * A top-level chat message read before intake (design 05-sources, 04-gate-commands): true when it got a reply in
-   * its own thread instead of an item (a chat answer, an offer to make it a task, or proposals for open items), false
-   * when it is to be taken in as today. Taken in: a message already an item (a press, a redelivery), a requester
-   * without `approve_spec` (no model call), an empty or long message, one the egress scan flags, no model, and a
-   * `request`, failed or malformed answer, so no request is dropped silently. An answer the scan flags posts nothing
-   * and stores nothing. The reply is keyed on the message's source id, so a redelivery posts no second one.
+   * A top-level chat message (design 05-sources, 04-gate-commands): answered in its own thread, never taken in by
+   * itself; only a press of the offer (`offered`) makes it an item. True when it was answered; false only when it is
+   * already an item (a redelivery after a press), which intake handles as before. An empty message gets one line; a
+   * message the egress scan flags gets one fixed line that quotes nothing and offers nothing, before any model call,
+   * so the offer's marker, which carries the message, never holds a flagged text. A requester without `approve_spec`,
+   * no model, a long message or no usable answer (`none`) get the unread line and the offer, with no model call where
+   * there is no model or no right. A model answer the scan flags posts nothing. Every reply is keyed on the message's
+   * source id, so a redelivery posts no second one.
    */
-  private async answered(e: Extract<SourceEvent, { kind: "item_requested" }>): Promise<boolean> {
-    if (!this.c.k.reader.llm || (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id))) return false;
-    if ("refuse" in (await this.c.unit("auth").authorize(e.requester, "approve_spec", e.source.id))) return false;
-    const where = { source_id: e.source.id };
-    const read = await this.c.unit("commands").readMessage(e.body, where, null);
-    if (read === "blocked") return true;
-    if (read === "unread" || read.body === null) return false;
-    this.c.k.d.log.info("chat message answered", { ...where, kind: read.kind });
-    await this.c.unit("outbox").postWithoutItem(e.source, read.body, `<!-- factory:chat-answer:${e.source.id} -->`);
+  private async answered(e: ItemRequested): Promise<boolean> {
+    if (await this.c.k.reader.getWorkItemBySource(e.source.type, e.source.id)) return false;
+    const body = await this.answer(e);
+    if (body !== null) await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:chat-answer:${e.source.id} -->`);
     return true;
+  }
+
+  /** The reply to a top-level chat message, or null when the model's answer failed the egress scan. */
+  private async answer(e: ItemRequested): Promise<string | null> {
+    const where = { source_id: e.source.id };
+    const text = e.body.trim();
+    if (text === "") return EMPTY_TEXT;
+    if (!(await scanClean(this.c, where, "message", [text]))) return FLAGGED_TEXT;
+    const offer = `${UNREAD_TEXT}\n${taskOfferMarker(text)}`;
+    if (!this.c.k.reader.llm || text.length > INTERPRET_MAX_CHARS) return offer;
+    if ("refuse" in (await this.c.unit("auth").authorize(e.requester, "approve_spec", e.source.id))) return offer;
+    const read = await this.c.unit("commands").readMessage(text, where, null);
+    if (read === "blocked") return null;
+    if (read === "unread" || read.body === null) return offer;
+    this.c.k.d.log.info("chat message answered", { ...where, kind: read.kind });
+    return read.body;
   }
 }
 

@@ -120,8 +120,8 @@ const STATUS_WORDS: Record<WorkStatus, string> = {
  * socket only once the listener stored it. Anything else is acked at once and dropped. Only events in the
  * configured channels count, never the bot's own messages, edits, joins or other subtypes. A mention of the bot
  * starts a work item from its thread (`slack:<team>:<channel>:<thread ts>`); a top-level one is marked `classify`, so
- * the controller first reads whether it is a request or chat (a chat answer, or an offer whose "Make this a task"
- * press is the same item request, as the presser, keyed on the message's source id); a mention followed by a command, a
+ * the controller answers it in its thread and makes no item (a chat answer, or a reply with an offer whose "Make this
+ * a task" press, marked `offered`, is the item request, as the presser, keyed on the message's source id); a mention followed by a command, a
  * reply in an item's thread and a button press are the same events a GitHub comment gives; a reply in any other
  * thread is not stored. After a mention in an item's thread, a command word with no slash is that command (`revise x`
  * is `/revise x`, issue #541); outside one, the same words are a request. A person's reply in an
@@ -244,7 +244,7 @@ export class SlackSource implements StreamSource {
     if (inThread && item) {
       return { event: { kind: "plain_comment", source, comment_id: ts, author: who, body: said }, key };
     }
-    // A top-level mention is read by the controller before intake (classify): it may be chat, not a request.
+    // A top-level mention is answered by the controller (classify): only a press of its offer makes it an item.
     return { event: { kind: "item_requested", source, requester: who, title: titleOf(said), body: said, ...(inThread ? {} : { classify: true as const }) }, key };
   }
 
@@ -303,14 +303,14 @@ export class SlackSource implements StreamSource {
     const action_ts = str(action.action_ts);
     if (user === null || channel === null || thread_ts === null || action_id === null || action_ts === null) return null;
     if (!this.d.channels.includes(channel) || user === me.user_id) return null;
-    // "Make this a task" under an unsure answer: the message (the button's value) taken in as the presser, keyed on
-    // the message's source id (the thread root), so a second press changes nothing.
+    // "Make this a task" under a top-level answer: the message (the button's value) taken in as the presser, keyed on
+    // the message's source id (the thread root), so a second press changes nothing. `offered`: the press, not a mention.
     if (action_id === ACTION_MAKE_TASK) {
       const text = str(action.value)?.trim();
       if (!text) return null;
       const source = threadRef({ team, channel, thread_ts });
       const requester: ExternalIdentity = { provider: "slack", subject: user };
-      return { event: { kind: "item_requested", source, requester, title: titleOf(text), body: text }, key: `action:${team}:${user}:${action_ts}` };
+      return { event: { kind: "item_requested", source, requester, title: titleOf(text), body: text, offered: true }, key: `action:${team}:${user}:${action_ts}` };
     }
     const proposal = proposalPress(action_id, str(action.value));
     if (proposal) {
