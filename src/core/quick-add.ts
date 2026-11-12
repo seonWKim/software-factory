@@ -20,7 +20,7 @@ export type QuickEditResult = { ok: true; edit: TaskEdit } | { ok: false; reason
 const RECURRENCES: readonly Recurrence[] = ["day", "week", "month"];
 
 /** A real calendar date, `YYYY-MM-DD`. */
-function validDate(s: string): boolean {
+export function validDate(s: string): boolean {
   const [y, m, d] = s.split("-").map(Number) as [number, number, number];
   const t = new Date(Date.UTC(y, m - 1, d));
   return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;

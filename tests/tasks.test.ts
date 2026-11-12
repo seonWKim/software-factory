@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/controller/migrations/20261111T1610-controller-tasks.migration.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
-import { DEFAULT_DURATION_MINUTES, type NewTask, localDate, planDay, taskDuration, taskViews } from "../src/core/tasks.js";
-import type { UserId } from "../src/core/types.js";
+import { DEFAULT_DURATION_MINUTES, type NewTask, type Task, localDate, planDay, taskDuration, taskViews } from "../src/core/tasks.js";
+import type { Timestamp, UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableExists } from "../src/state/index.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
@@ -142,8 +142,8 @@ describe("schedule a task: duration and recurrence (design 02-tasks)", () => {
   it("the timeline leaves untimed tasks and all-day events out, draws a timed event its length, and cuts a block at midnight", () => {
     const day = "2026-11-11";
     const at = (h: number, m = 0) => new Date(2026, 10, 11, h, m).toISOString();
-    const late = { ...task({ due: { date: day } }), id: "tk_late", due_date: day, due_time: "23:45", created_at: at(1), done_at: null, parent_id: null,
-      work_item_id: null, parent_task_id: null, duration_minutes: null, reminded_at: null } as const;
+    const late: Task = { ...task(), id: "tk_late", due_date: day, due_time: "23:45", created_at: at(1) as Timestamp, done_at: null, parent_id: null,
+      work_item_id: null, parent_task_id: null, duration_minutes: null, reminded_at: null };
     const untimed = { ...late, id: "tk_untimed", due_time: null };
     const event = { kind: "event" as const, source: "work", id: "ev1", title: "standup", starts_at: at(9), ends_at: at(9, 15), all_day: false, time: "09:00" };
     const allDay = { ...event, id: "ev2", all_day: true, time: null };
