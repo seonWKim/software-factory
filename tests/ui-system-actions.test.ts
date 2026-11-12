@@ -3,7 +3,7 @@
 // /api/v1/overview's `system_actions` and counted in `needs_you`. The poll asks GitHub nothing.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +17,8 @@ import type { Check } from "../src/setup.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
-import { LastChecks, olderThanFactory, parseRevision } from "../src/ui/system-actions.js";
+import { LastChecks, REVISION_STAMP, olderThanFactory, parseRevision, serverRevision } from "../src/ui/system-actions.js";
+import { buildRevision } from "../web/vite.config.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const REV_A = "a".repeat(40);
@@ -201,6 +202,67 @@ describe("system actions: revisions", () => {
     const factory = { state: "running", rev: REV_B, target_rev: null, child_pid: 1, since: "x", workers: 1 } as FactoryStatus;
     const o = await (await setup({ revision: REV_A, factory })).overview();
     expect(o.system_actions).toMatchObject([{ code: "revision_mismatch", text: "UI server and factory differ: the UI runs aaaaaaa, the factory bbbbbbb", command: "restart the older: `factory ui` or `factory dev`" }]);
+  });
+
+  it("server_rev is the build stamp in dist/, not the checkout's HEAD: a docs-only move, a web/ change and an old page", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-stamp-"));
+    try {
+      const git = (...a: string[]) => execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...a], { cwd: root, encoding: "utf8" }).trim();
+      const commit = (file: string, text: string) => {
+        mkdirSync(join(root, file, ".."), { recursive: true });
+        writeFileSync(join(root, file), text);
+        git("add", "-A");
+        git("commit", "-q", "-m", file);
+        return git("rev-parse", "HEAD");
+      };
+      // What a build does at the checkout's HEAD: scripts/build.mjs stamps dist/ (tests/build.test.ts), Vite builds the page's in.
+      const buildServer = () => { mkdirSync(join(root, "dist"), { recursive: true }); writeFileSync(join(root, "dist", REVISION_STAMP), `${git("rev-parse", "HEAD")}\n`); };
+      const buildPage = () => buildRevision(root)!;
+      const overviewAt = async (page: string) => (await setup({ revision: await serverRevision(root) })).overview(`?rev=${page}`);
+      git("init", "-q");
+      const built = commit("web/app.ts", "1");
+      buildServer();
+      const page = buildPage();
+      expect(page).toBe(built);
+
+      // A docs-only move: the checkout moves, nothing is rebuilt, the server keeps its build's stamp.
+      const moved = commit("docs/a.md", "docs");
+      expect(git("rev-parse", "HEAD")).toBe(moved);
+      expect(await serverRevision(root)).toBe(built);
+      expect(codes(await overviewAt(page))).toEqual([]);
+
+      // A real web/ change: rebuilt; the page loaded before it is older than its server and is told to reload.
+      const changed = commit("web/app.ts", "2");
+      buildServer();
+      expect(await serverRevision(root)).toBe(changed);
+      const old = await overviewAt(page);
+      expect(old.system_actions).toEqual([expect.objectContaining({
+        code: "revision_mismatch",
+        text: `Dashboard out of date: it was built from ${page.slice(0, 7)}, the server runs ${changed.slice(0, 7)}`,
+        command: "reload / restart `factory ui`",
+      })]);
+      // After a reload the page and the server carry the same build stamp.
+      const reloaded = buildPage();
+      expect(reloaded).toBe(changed);
+      expect(codes(await overviewAt(reloaded))).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("a dist/ without a stamp (an older build) gives server_rev null and no banner", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-stamp-"));
+    try {
+      mkdirSync(join(root, "dist"));
+      expect(await serverRevision(root)).toBeNull();
+      writeFileSync(join(root, "dist", REVISION_STAMP), "not a revision\n");
+      expect(await serverRevision(root)).toBeNull();
+      const o = await (await setup({ revision: await serverRevision(root) })).overview(`?rev=${REV_B}`);
+      expect(o.server_rev).toBeNull();
+      expect(codes(o)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("only a hex commit id counts as a dashboard revision", () => {

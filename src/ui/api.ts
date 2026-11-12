@@ -264,7 +264,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const token = c.d.lastChecks?.tokenDays() ?? null;
   return {
     as_of: c.now.toISOString(),
-    /** The git revision this UI server runs; the app compares it with the one built into it. */
+    /** The revision this UI server's build was made from (its dist/ stamp); the app compares it with the one built into it. */
     server_rev: c.d.revision ?? null,
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),

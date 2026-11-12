@@ -5,6 +5,8 @@
 // asks GitHub nothing (the token's days come from this process's last health run).
 
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
@@ -56,14 +58,30 @@ export class LastChecks {
 
 /** What the overview needs for system actions beside the store. Each absent value lists nothing. */
 export interface SystemDeps {
-  /** The git revision this UI server's code was started from (`serverRevision`); null: unknown. */
+  /** The revision this UI server's build was made from (`serverRevision`, the stamp in dist/); null: unknown. */
   revision?: string | null;
   /** The last health run of this process. */
   lastChecks?: LastChecks;
 }
 
-/** `git rev-parse HEAD` in `root`: the revision the server runs. Null when git cannot say. */
+/**
+ * The name of the build stamp in dist/: the revision `npm run build` (scripts/build.mjs, which names the same file)
+ * built dist/ and web/dist/ from. A docs-only update moves the checkout without a build, so its git HEAD is no
+ * revision of the running code (design 08 Self-update).
+ */
+export const REVISION_STAMP = "revision";
+
+/** The revision the server at `root` runs: the build stamp in `<root>/dist`. Null when there is none (an older build). */
 export async function serverRevision(root: string): Promise<string | null> {
+  try {
+    return parseRevision((await readFile(join(root, "dist", REVISION_STAMP), "utf8")).trim());
+  } catch {
+    return null;
+  }
+}
+
+/** `git rev-parse HEAD` in `root`: the checkout a hand-started page refuses by (`olderThanFactory`). Null when git cannot say. */
+export async function checkoutRevision(root: string): Promise<string | null> {
   try {
     const r = await promisify(execFile)("git", ["rev-parse", "HEAD"], { cwd: root, timeout: 5000 });
     return r.stdout.trim() || null;

@@ -15,7 +15,7 @@ import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { serverRevision } from "../src/ui/system-actions.js";
+import { checkoutRevision } from "../src/ui/system-actions.js";
 import viteConfig from "../web/vite.config.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
@@ -1334,9 +1334,9 @@ describe("ui api: why an item waits (issue #310)", () => {
 });
 
 describe("ui api: the server's revision and the app's (issue #311)", () => {
-  it("the overview returns the server's git revision, the same one the web build has built in through Vite define", async () => {
+  it("the overview returns the server's revision; the web build has the checkout's HEAD built in through Vite define, the one the build stamps", async () => {
     const root = new URL("..", import.meta.url).pathname;
-    const server = await serverRevision(root);
+    const server = await checkoutRevision(root);
     expect(server).toMatch(/^[0-9a-f]{40}$/);
     const define = (viteConfig as { define?: Record<string, string> }).define ?? {};
     expect(JSON.parse(define.__FACTORY_REV__ ?? "null")).toBe(server);

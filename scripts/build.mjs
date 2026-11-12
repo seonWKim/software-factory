@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 const STAGE = ".build-";
 const OLD = ".old-";
 const LOCK = "dist.swap-lock";
+/** The build stamp in dist/: the revision this build was made from (src/ui/system-actions.ts REVISION_STAMP). */
+const REVISION_STAMP = "revision";
 
 /** True while a process with this pid exists (EPERM: it exists but belongs to someone else). */
 export function alive(pid) {
@@ -106,7 +108,18 @@ export function viteBuildArgs(root, outDir) {
   return ["build", "--configLoader", "runner", "--config", join(root, "web", "vite.config.ts"), "--logLevel", "warn", "--outDir", outDir, "--emptyOutDir"];
 }
 
-/** Builds the checkout at `root` into staging folders and swaps them in. */
+/**
+ * Writes the revision of the checkout at `root` (its git HEAD, the one web/vite.config.ts builds into the app) into
+ * the staged `outDir`, so the UI server reports the revision of its build, not of a checkout a docs-only update moved
+ * later (docs/design/08-self-update.md). No stamp when git cannot say: the server reports none.
+ */
+function stamp(root, outDir) {
+  const r = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  const rev = r.status === 0 ? r.stdout.trim() : "";
+  if (rev) writeFileSync(join(outDir, REVISION_STAMP), `${rev}\n`);
+}
+
+/** Builds the checkout at `root` into staging folders, stamps the staged dist/ and swaps them in. */
 export function build(root) {
   const require = createRequire(join(root, "package.json"));
   const tsc = require.resolve("typescript/bin/tsc");
@@ -120,6 +133,8 @@ export function build(root) {
   try {
     run([tsc, "-p", join(root, "tsconfig.json"), "--outDir", stagedDist], root);
     run([vite, ...viteBuildArgs(root, stagedWeb)], root);
+    // Before the swap: a failed build never gets this far, so the live dist/ keeps its own stamp.
+    stamp(root, stagedDist);
     withLock(root, () => {
       swapIn(stagedDist, dist);
       swapIn(stagedWeb, webDist);
