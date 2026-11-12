@@ -2,7 +2,8 @@
 // Outbound hands it the notices of one 60 s batch, already egress-scanned; they go out as one top-level message in
 // `slack.notify_channel` (default the first of `slack.channels`), one line each. The main text of a line is the item's
 // title, never a display name or an ID; the title links to the item's dashboard page, and a needs-you line also
-// links the item's Slack thread when it has one.
+// links the item's Slack thread when it has one. The source records each posted message with the items its lines
+// name (`noticeItemIds`), so a reply in its thread acts on them (design 05-sources, "Replies under a notice").
 
 import type { SourceNotice } from "../../interfaces/source-adapter.js";
 import type { SlackPost } from "./slack-api.js";
@@ -32,9 +33,19 @@ export function noticeLine(n: SourceNotice, base: string | null): string {
   return `🙋 Needs you: ${title}: ${escapeSlack(n.reason)}${thread}`;
 }
 
-/** Posts the notices as one message, one line each; nothing for none. Throws on a Slack failure (outbound retries). */
-export async function postNotices(d: SlackNotifyDeps, notices: readonly SourceNotice[]): Promise<void> {
-  if (notices.length === 0) return;
+/** The work item IDs the notices' lines name, in line order, each once; a summary line names none. */
+export function noticeItemIds(notices: readonly SourceNotice[]): string[] {
+  return [...new Set(notices.flatMap((n) => (n.kind !== "summary" && n.work_item_id ? [n.work_item_id] : [])))];
+}
+
+/**
+ * Posts the notices as one message, one line each, and returns where it went; nothing (null) for none. Throws on a
+ * Slack failure (outbound retries).
+ */
+export async function postNotices(d: SlackNotifyDeps, notices: readonly SourceNotice[]): Promise<{ channel: string; ts: string } | null> {
+  if (notices.length === 0) return null;
   const base = d.dashboard ? (await d.dashboard()).replace(/\/+$/, "") : null;
-  await d.api.postMessage({ channel: d.notify_channel ?? d.channels[0]!, text: notices.map((n) => noticeLine(n, base)).join("\n") });
+  const channel = d.notify_channel ?? d.channels[0]!;
+  const { ts } = await d.api.postMessage({ channel, text: notices.map((n) => noticeLine(n, base)).join("\n") });
+  return { channel, ts };
 }

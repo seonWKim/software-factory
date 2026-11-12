@@ -18,7 +18,7 @@ import {
 } from "./slack-format.js";
 import { type ChatAnswer, type ChatDeps, type ChatStore, type ProposalPress, UNLINKED, proposalPress, runChatCommand, runProposalPress } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
-import { postNotices } from "./slack-notify.js";
+import { noticeItemIds, postNotices } from "./slack-notify.js";
 
 /** Metadata event types on the factory's own messages: a comment (by marker hash) and the one status message. */
 export const META_MESSAGE = "factory_message";
@@ -58,6 +58,7 @@ export interface SlackSourceDeps {
   store: ChatStore & Pick<
     FactoryStore,
     "getWorkItemBySource" | "recordItemMessage" | "getPostedComment" | "recordPostedComment" | "listStateChanges" | "listPostedCommentsById"
+    | "recordNoticeMessage" | "getNoticeMessage" | "recordNoticeQuestion" | "getNoticeQuestion"
   >;
   /** `settings list` and `settings history` from Slack; absent: they answer that settings are not readable here. */
   settings?: ChatDeps["settings"];
@@ -141,8 +142,14 @@ export class SlackSource implements StreamSource {
 
   constructor(private readonly d: SlackSourceDeps) {}
 
-  /** The owner's notices of one tick as one message (slack-notify.ts, design 12-notification-channels). */
-  notifyOwner(notices: readonly SourceNotice[]): Promise<void> { return postNotices(this.d, notices); }
+  /**
+   * The owner's notices of one tick as one message (slack-notify.ts, design 12-notification-channels), then its record:
+   * its channel and ts with the item IDs its lines name, so a reply in its thread acts on them (slack-notice-replies.ts).
+   */
+  async notifyOwner(notices: readonly SourceNotice[]): Promise<void> {
+    const posted = await postNotices(this.d, notices);
+    if (posted) await this.d.store.recordNoticeMessage({ ...posted, work_item_ids: noticeItemIds(notices) });
+  }
 
   async *subscribe(signal: AbortSignal): AsyncGenerator<PushedEvent> {
     const me = await this.identity();
