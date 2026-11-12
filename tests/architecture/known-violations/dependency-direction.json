@@ -46,6 +46,7 @@
   "component-imports-legacy|cli/handlers/settings/settings.command.ts|core/local-cli.ts",
   "component-imports-legacy|cli/handlers/settings/settings.command.ts|settings-cmd.ts",
   "component-imports-legacy|cli/handlers/settings/settings.command.ts|ui/settings-api.ts",
+  "component-imports-legacy|cli/handlers/setup/config-edit.ts|core/config-text.ts",
   "component-imports-legacy|cli/handlers/setup/guided.ts|compose.ts",
   "component-imports-legacy|cli/handlers/setup/guided.ts|core/config.ts",
   "component-imports-legacy|cli/handlers/setup/guided.ts|core/local-cli.ts",

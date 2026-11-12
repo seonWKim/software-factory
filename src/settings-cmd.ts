@@ -25,6 +25,7 @@ import {
   workersCap,
 } from "./core/settings.js";
 import { learnedFromRows } from "./core/learned-settings.js";
+import type { ConfigEditRequest, ConfigEditResult } from "./core/config-writer.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { FactoryStore, SettingOverride } from "./interfaces/factory-store.js";
 import { loadSettingCatalog } from "./runtime/index.js";
@@ -36,11 +37,15 @@ const MODE_COMMAND = COMMAND_TABLE.find((c) => c.name === "mode")!;
 /** The words `factory` hands to the settings handler: `settings` and `mode`, from the command table. */
 export const SETTINGS_TOP_WORDS = topWords(["settings"]);
 
+/** `settings edit-file` (design 08-settings): outside the command table, which SET_UP.md mirrors. */
+const EDIT_FILE_USAGE = "edit-file <key> <json> [--confirm]";
+
 export const SETTINGS_USAGE = `usage: npm run factory -- settings <action>
 ${SETTINGS_COMMANDS.map((c) => `  ${cliUsageOf(c).slice("settings ".length).padEnd(42)}  ${c.does}`).join("\n")}
 --project: only for ${PROJECT_SETTABLE_KEYS.join(", ")}, and only with the configured repo's owner/name.
 ${APPROVE_MERGE_KEYS.join(" and ")}, and a set or reset that loosens a tighten-only key: only with approve_merge on the project.
-reset <key> --project <owner/name> --learned: clear the value the improve run learned; only with approve_merge when that loosens the value in force.`;
+reset <key> --project <owner/name> --learned: clear the value the improve run learned; only with approve_merge when that loosens the value in force.
+  ${EDIT_FILE_USAGE.padEnd(42)}  Set one file-only key of factory.config.json on a new local branch, filed for your \`factory merge <id>\`; a guard, floor or permission needs --confirm`;
 
 export const MODE_USAGE = `usage: npm run factory -- ${cliUsageOf(MODE_COMMAND)}
   ${MODE_COMMAND.does}: needs approve_merge on the project, and writes one audit row`;
@@ -57,7 +62,8 @@ export type SettingsAction =
   | { action: "list" }
   | { action: "set"; key: string; value: string; project?: string }
   | { action: "reset"; key: string; project?: string; learned?: true }
-  | { action: "history"; limit: number };
+  | { action: "history"; limit: number }
+  | ({ action: "edit-file" } & ConfigEditRequest);
 
 const DEFAULT_HISTORY = 50;
 
@@ -71,7 +77,7 @@ export function parseSettingsArgs(args: readonly string[]): SettingsAction | { e
   const flags: Record<string, string> = {};
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
-    if (a === "--learned") flags[a] = "";
+    if (a === "--learned" || a === "--confirm") flags[a] = "";
     else if (a === "--project" || a === "--limit") {
       const v = rest[i + 1];
       if (v === undefined) return { error: `${a} needs a value` };
@@ -100,6 +106,9 @@ export function parseSettingsArgs(args: readonly string[]): SettingsAction | { e
       if (raw !== undefined && !/^[1-9]\d*$/.test(raw)) return { error: "--limit must be a positive integer" };
       return { action, limit: raw === undefined ? DEFAULT_HISTORY : Number(raw) };
     }
+    case "edit-file":
+      if (free.length !== 2 || extra(["--confirm"])) return { error: `edit-file needs <key> <json> [--confirm]` };
+      return { action, key: free[0]!, value: free[1]!, confirm: flags["--confirm"] !== undefined };
     default:
       return { error: action ? `unknown settings action "${action}"` : "settings needs an action" };
   }
@@ -127,6 +136,8 @@ export interface SettingsDeps {
    * `message_style`) is refused when it flags the value. Absent: such a set is refused, never stored unscanned.
    */
   scanner?: EgressScanner;
+  /** The file-only key writer (compose.ts configWriter), the one the Settings write route runs too. Absent: edit-file is refused. */
+  editFile?(r: ConfigEditRequest): Promise<ConfigEditResult>;
 }
 
 export interface SettingsResult {
@@ -142,6 +153,8 @@ export async function runSettings(deps: SettingsDeps, a: SettingsAction): Promis
       return list(deps);
     case "history":
       return history(deps, a.limit);
+    case "edit-file":
+      return editFile(deps, a);
     case "set":
     case "reset":
       return a.action === "reset" && a.learned ? resetLearned(deps, a.key, a.project!) : change(deps, a);
@@ -341,6 +354,20 @@ async function resetLearned(deps: SettingsDeps, key: string, project: string): P
   const change = await deps.store.resetLearnedSetting({ key, project: ref.key, actor: deps.actor });
   if (!change) return fail(`${key} has no learned value for ${ref.label}; nothing to reset`);
   return { ok: true, lines: [`${key} for ${ref.label}: learned value ${change.old_value ?? ""} cleared; ${now.value} (${now.layer}) applies`] };
+}
+
+/** `settings edit-file <key> <json> [--confirm]`: the file-only key writer; a refusal writes nothing. */
+async function editFile(deps: SettingsDeps, r: ConfigEditRequest): Promise<SettingsResult> {
+  if (!deps.editFile) return fail("this process has no file-only key writer");
+  const e = await deps.editFile({ key: r.key, value: r.value, confirm: r.confirm });
+  if (!e.ok) return fail(e.refusal);
+  return {
+    ok: true,
+    lines: [
+      `${r.key} = ${e.new_value} (was ${e.old_value ?? "not set"}) on the local branch ${e.branch} as ${e.sha.slice(0, 12)}, filed as ${e.item}`,
+      `the file changes once you merge it: factory merge ${e.item}`,
+    ],
+  };
 }
 
 async function list(deps: SettingsDeps): Promise<SettingsResult> {

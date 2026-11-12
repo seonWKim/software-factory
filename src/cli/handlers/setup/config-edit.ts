@@ -2,6 +2,8 @@
 // plugins (GitHub, Slack) are on. Pure: it reads and returns the file's text, and changes only the top-level keys
 // a choice touches, leaving every other line as it was written.
 
+import { type Json, type JsonObject as Obj, formatValue, isJsonObject as isObj, removeConfigKey, setConfigKey } from "../../../core/config-text.js";
+
 /** What setup asks for the whole team. Per-person choices (the display name) never go to the file. */
 export interface SharedChoices {
   github: boolean;
@@ -9,9 +11,6 @@ export interface SharedChoices {
   /** Slack channel IDs (`C…`, `G…`); read only when `slack` is on. */
   slack_channels: readonly string[];
 }
-
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
-type Obj = { [k: string]: Json };
 
 const SLACK_CHANNEL = /^[CG][A-Z0-9]{2,}$/;
 
@@ -21,8 +20,6 @@ export function parseSlackChannels(raw: string): { ok: true; channels: string[] 
   const bad = channels.find((c) => !SLACK_CHANNEL.test(c));
   return bad === undefined ? { ok: true, channels } : { ok: false, bad };
 }
-
-const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
  * The choices as the file stands: each step's default. `githubSelected` is the loaded config's answer (any GitHub
@@ -88,105 +85,10 @@ export function applyChoices(raw: Obj, c: SharedChoices): Map<string, Json | und
   return out;
 }
 
-// Text edits that keep the file's own layout.
-
-interface Member {
-  key: string;
-  /** Index of the key's opening quote. */
-  start: number;
-  valueStart: number;
-  /** Index just past the value. */
-  end: number;
-}
-
-function skipWs(t: string, i: number): number {
-  while (i < t.length && /\s/.test(t[i]!)) i++;
-  return i;
-}
-
-function skipString(t: string, i: number): number {
-  for (i++; i < t.length; i++) {
-    if (t[i] === "\\") i++;
-    else if (t[i] === '"') return i + 1;
-  }
-  throw new Error("factory.config.json: unterminated string");
-}
-
-function skipValue(t: string, i: number): number {
-  if (t[i] === '"') return skipString(t, i);
-  if (t[i] !== "{" && t[i] !== "[") {
-    while (i < t.length && !/[\s,}\]]/.test(t[i]!)) i++;
-    return i;
-  }
-  let depth = 0;
-  for (; i < t.length; i++) {
-    const ch = t[i]!;
-    if (ch === '"') i = skipString(t, i) - 1;
-    else if (ch === "{" || ch === "[") depth++;
-    else if (ch === "}" || ch === "]") {
-      depth--;
-      if (depth === 0) return i + 1;
-    }
-  }
-  throw new Error("factory.config.json: unbalanced brackets");
-}
-
-/** The top-level members of a JSON object text, in order, with their positions. */
-function members(t: string): { members: Member[]; close: number } {
-  let i = skipWs(t, 0);
-  if (t[i] !== "{") throw new Error("factory.config.json: not a JSON object");
-  const out: Member[] = [];
-  i = skipWs(t, i + 1);
-  while (t[i] !== "}") {
-    const start = i;
-    i = skipString(t, i);
-    const key = JSON.parse(t.slice(start, i)) as string;
-    i = skipWs(t, i);
-    if (t[i] !== ":") throw new Error(`factory.config.json: expected ":" after "${key}"`);
-    const valueStart = skipWs(t, i + 1);
-    const end = skipValue(t, valueStart);
-    out.push({ key, start, valueStart, end });
-    i = skipWs(t, end);
-    if (t[i] === ",") i = skipWs(t, i + 1);
-  }
-  return { members: out, close: i };
-}
-
-/** One line when short (`{ "a": 1 }`), else one member per line, each member's value on one line. */
-export function formatValue(v: Json, indent = "  "): string {
-  const one = compact(v);
-  if (one.length <= 100 || !isObj(v)) return one;
-  return `{\n${Object.entries(v).map(([k, x]) => `${indent}  ${JSON.stringify(k)}: ${compact(x)}`).join(",\n")}\n${indent}}`;
-}
-
-function compact(v: Json): string {
-  if (Array.isArray(v)) return `[${v.map(compact).join(", ")}]`;
-  if (isObj(v)) {
-    const e = Object.entries(v);
-    return e.length === 0 ? "{}" : `{ ${e.map(([k, x]) => `${JSON.stringify(k)}: ${compact(x)}`).join(", ")} }`;
-  }
-  return JSON.stringify(v);
-}
-
 /** `text` with each top-level key set to its new value (`undefined`: removed); new keys go last. */
 export function editConfigText(text: string, changes: ReadonlyMap<string, Json | undefined>): string {
   let t = text;
-  for (const [key, value] of changes) {
-    const { members: ms, close } = members(t);
-    const at = ms.findIndex((m) => m.key === key);
-    const m = ms[at];
-    if (value === undefined) {
-      if (!m) continue;
-      // Drop the member and the separator before it (or after it, when it is the first).
-      t = at > 0 ? t.slice(0, ms[at - 1]!.end) + t.slice(m.end) : t.slice(0, m.start) + t.slice(ms[1] ? ms[1].start : m.end);
-    } else if (m) {
-      t = t.slice(0, m.valueStart) + formatValue(value) + t.slice(m.end);
-    } else {
-      const last = ms[ms.length - 1];
-      const entry = `  ${JSON.stringify(key)}: ${formatValue(value)}`;
-      t = last ? `${t.slice(0, last.end)},\n${entry}${t.slice(last.end)}` : `${t.slice(0, close)}\n${entry}\n${t.slice(close)}`;
-    }
-  }
+  for (const [key, value] of changes) t = value === undefined ? removeConfigKey(t, key) : setConfigKey(t, [key], value);
   return t;
 }
 
