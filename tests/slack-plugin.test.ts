@@ -52,6 +52,9 @@ function fakeFetch(answers: Record<string, unknown> = {}, http: Record<string, {
       "chat.postMessage": { ok: true, ts: "1800000000.000001" },
       "chat.update": { ok: true },
       "conversations.replies": { ok: true, messages: [] },
+      "views.open": { ok: true },
+      "views.update": { ok: true },
+      "views.push": { ok: true },
     };
     const headers = http[method]?.headers ?? {};
     return { status: http[method]?.status ?? 200, headers: { get: (name) => headers[name.toLowerCase()] ?? null }, json: async () => answers[method] ?? defaults[method] };
@@ -79,6 +82,24 @@ describe("slack config block", () => {
   it("is required once the plugin is selected", () => {
     expect(() => slackConfig({})).toThrow(/no "slack" block/);
     expect(slackConfig({ slack: { channels: [CHANNEL] } })).toEqual({ channels: [CHANNEL] });
+  });
+
+  it("takes an optional https slack.dashboard_url; a bad value fails at load, naming the key", () => {
+    expect(() => checkConfigKeys({ ...REAL, slack: { channels: [CHANNEL], dashboard_url: "https://factory.example.com" } })).not.toThrow();
+    for (const bad of ["http://factory.example.com", "factory.example.com", 42]) {
+      expect(() => checkConfigKeys({ ...REAL, slack: { channels: [CHANNEL], dashboard_url: bad } })).toThrow(/slack\.dashboard_url must be an https URL/);
+    }
+    expect(slackConfig({ slack: { channels: [CHANNEL], dashboard_url: "https://factory.example.com" } })).toEqual({ channels: [CHANNEL], dashboard_url: "https://factory.example.com" });
+  });
+
+  it("passes slack.dashboard_url to the source when set; without it none, never the local dashboard on ui.port", async () => {
+    const base = (file: Record<string, unknown>) => {
+      const source = slackPlugin.create({ loaded: { file }, secrets: new RecordingSecrets(), scanner: cleanScanner, store: {}, repo: REPO, log: recordingLog() } as never);
+      return (source as SlackSource).d.dashboard_url;
+    };
+    expect(base({ slack: { channels: [CHANNEL], dashboard_url: "https://factory.example.com" }, ui: { port: 5555 } })).toBe("https://factory.example.com");
+    expect(base({ slack: { channels: [CHANNEL] }, ui: { port: 5555 } })).toBeUndefined();
+    expect(base({ slack: { channels: [CHANNEL] } })).toBeUndefined();
   });
 
   it("a config that selects slack without the block fails when the plugin is built", () => {
@@ -163,12 +184,19 @@ describe("slack plugin secrets", () => {
     await api.postMessage({ channel: CHANNEL, thread_ts: "1800000000.000001", text: "hi" });
     await api.updateMessage({ channel: CHANNEL, ts: "1800000000.000002", text: "hi" });
     await api.threadReplies(CHANNEL, "1800000000.000001");
+    await api.openView("trigger-1", { type: "modal" });
+    await api.updateView("V0ITEM", { type: "modal" });
+    await api.pushView("trigger-2", { type: "modal" });
     expect([...new Set(secrets.reads)].sort()).toEqual(["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN"]);
     expect(requests.every((r) => r.url.startsWith("https://slack.com/api/"))).toBe(true);
     // The app token opens the socket and nothing else; the bot token does the rest.
     const byToken = (v: string) => requests.filter((r) => r.headers.authorization === `Bearer ${v}`).map((r) => r.url.split("/").at(-1));
     expect(byToken(VALUES.SLACK_APP_TOKEN!)).toEqual(["apps.connections.open"]);
-    expect(byToken(VALUES.SLACK_BOT_TOKEN!)).toEqual(["auth.test", "chat.postMessage", "chat.update", "conversations.replies"]);
+    expect(byToken(VALUES.SLACK_BOT_TOKEN!)).toEqual(["auth.test", "chat.postMessage", "chat.update", "conversations.replies", "views.open", "views.update", "views.push"]);
+    // views.open and views.push send the press's trigger_id and the view as JSON; views.update the open view's ID.
+    expect(JSON.parse(requests.find((r) => r.url.endsWith("/views.open"))!.body)).toEqual({ trigger_id: "trigger-1", view: { type: "modal" } });
+    expect(JSON.parse(requests.find((r) => r.url.endsWith("/views.update"))!.body)).toEqual({ view_id: "V0ITEM", view: { type: "modal" } });
+    expect(JSON.parse(requests.find((r) => r.url.endsWith("/views.push"))!.body)).toEqual({ trigger_id: "trigger-2", view: { type: "modal" } });
     expect(JSON.stringify(requests)).not.toContain(VALUES.GITHUB_TOKEN);
   });
 

@@ -30,7 +30,6 @@ export const DEFAULT_HOTSPOT_WEIGHT = 3.0;
 /** Default `hotspot_paths`: the files nearly every change touches, and that conflict when two do. */
 export const DEFAULT_HOTSPOTS: readonly string[] = [
   "src/impl/store/sqlite/schema.ts",
-  "src/impl/store/mysql/schema.ts",
   "src/controller/",
   "src/worker/",
   "docs/design.md",
@@ -39,12 +38,10 @@ export const DEFAULT_HOTSPOTS: readonly string[] = [
 
 /**
  * Default `mechanical_paths` (design §5, issue #297): files two items usually change only by adding lines or new
- * files (the MySQL migration runner and its step folder, the design and plugin indexes and topic files). Their
+ * files (the design and plugin indexes and topic files). Their
  * conflicts are merged in code (src/core/mechanical.ts), so they weigh `mechanical_weight` and are never hotspots.
  */
 export const DEFAULT_MECHANICAL: readonly string[] = [
-  "src/impl/store/mysql/migrations.ts",
-  "migrations/mysql/",
   "docs/design/",
   "docs/design.md",
   "docs/plugins.md",

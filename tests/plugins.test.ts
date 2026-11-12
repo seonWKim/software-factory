@@ -45,6 +45,8 @@ import type { ToolBroker, ToolDescriptor, ToolResult } from "../src/interfaces/t
 import {
   type Contexts,
   PLUGIN_ROOT,
+  connectHooks,
+  loadRegistry,
   type PluginDescriptor,
   defaultPlugins,
   findPluginFiles,
@@ -54,6 +56,7 @@ import {
   REGISTRY,
   type Registry,
   GRANTS,
+  INTEGRATION_KINDS,
   createPlugin,
   declaredSecrets,
   selectedSetups,
@@ -96,6 +99,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   ticks: { "time-based": TimeBasedTicks },
   engine: { journal: JournalEngines },
   tacit: { none: NoTacitLedger },
+  // Optional, selected as a list by the top-level `calendar` key, default []: no provider (google-calendar) is a default.
+  calendar: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -205,6 +210,8 @@ describe("plugin registry: defaults", () => {
     });
     const ctx = await context(loaded);
     for (const kind of PLUGIN_KINDS) {
+      // The calendar list defaults to [] (no source), so nothing is built for it.
+      if (kind === "calendar") continue;
       const name = loaded.plugins[kind];
       if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);
@@ -218,20 +225,20 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local and Slack intake and the bm25 doc index, leaving awake to the platform", async () => {
+  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local and Slack intake, the bm25 doc index and the agents-home tacit ledger, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, auth: _a, github_auth, sources, capability, forge, ...rest } = loaded.plugins;
+      const { store: _s, auth: _a, github_auth, sources, capability, tacit, forge, ...rest } = loaded.plugins;
       expect(github_auth).toBe("app");
+      expect(tacit).toBe("agents-home");
       expect(sources).toEqual(["github-issues", "local", "slack"]);
       expect(forge).toBe("github");
       expect(capability).toBe("bm25");
-      const { github_auth: _g, capability: _c, ...defaults } = defaultPlugins(platform);
+      const { github_auth: _g, capability: _c, tacit: _t, ...defaults } = defaultPlugins(platform);
       expect(rest).toEqual(defaults);
     }
-    // tacit is left out of the checked-in config: its default, `none`, applies.
-    const { awake: _w, tacit: _t, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25" });
+    const { awake: _w, ...fixed } = defaultPlugins("darwin");
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25", tacit: "agents-home" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
@@ -279,8 +286,7 @@ describe("plugin registry: every discovered plugin", () => {
         // A `slack` block too: the slack source needs its channels to build (it is off in the checked-in config).
         const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, slack: { channels: ["C0TEST0001"] } }));
         const ctx = await context(loaded);
-        const isMysql = d.kind === "store" && d.name === "mysql";
-        const run = () => createPlugin(REGISTRY, d.kind, d.name, (isMysql ? { ...ctx, loaded: mysqlLoaded(loaded) } : ctx) as never);
+        const run = () => createPlugin(REGISTRY, d.kind, d.name, ctx as never);
         try {
           const x = await run();
           expect(x).toBeTypeOf("object");
@@ -323,15 +329,11 @@ function implementationClasses(file: string): string[] {
     .filter((name) => constructed.has(name));
 }
 
-/** A loaded config whose store block is mysql (the mysql plugin checks it; the driver connects lazily). */
-function mysqlLoaded(loaded: Loaded): Loaded {
-  return { ...loaded, store: { type: "mysql", host: "127.0.0.1", port: 3306, database: "sf", user: "sf" } };
-}
-
 describe("plugin registry: unknown names fail at startup", () => {
   const configWith = (kind: PluginKind, value: unknown): Record<string, unknown> => {
     if (kind === "store") return { ...REAL, store: { type: value } };
     if (kind === "auth") return { ...REAL, auth: value };
+    if (kind === "calendar") return { ...REAL, calendar: [value] };
     return { ...REAL, plugins: { ...(REAL.plugins as object), [kind]: value } };
   };
 
@@ -439,6 +441,26 @@ describe("plugin registry: guards cannot be disabled", () => {
 
   it("a guard plugin cannot be registered under a disabling name", () => {
     expect(() => withPlugin(REGISTRY, "secrets", "none", () => new MapSecrets())).toThrow(/means disabled/);
+  });
+});
+
+describe("plugin registry: integrations switch at runtime, and nothing else does", () => {
+  // The interfaces the owner may switch from the dashboard (design 08-settings). Adding one here is a reviewed choice;
+  // a guard never joins it.
+  const ALLOWED_INTEGRATIONS: readonly PluginKind[] = ["tacit"];
+
+  it("marks tacit (TacitLedger) as an integration", () => {
+    expect(INTEGRATION_KINDS).toContain("tacit");
+    expect(REGISTRY.tacit.interface).toBe("TacitLedger");
+  });
+
+  it("marks no other interface, and never a guard (SecretStore, EgressScanner, ToolBroker)", () => {
+    for (const kind of INTEGRATION_KINDS) expect(ALLOWED_INTEGRATIONS, kind).toContain(kind);
+    for (const guard of GUARDS) {
+      expect(REGISTRY[guard].guard, guard).toBe(true);
+      expect(INTEGRATION_KINDS, guard).not.toContain(guard);
+    }
+    expect(GUARDS.map((g) => REGISTRY[g].interface).sort()).toEqual(["EgressScanner", "SecretStore", "ToolBroker"]);
   });
 });
 
@@ -791,7 +813,6 @@ describe("plugin registry: CapabilitySearch wiring", () => {
 describe("plugin registry: only plugin descriptors construct implementations", () => {
   it("compose.ts, canary.ts and setup.ts call new on none of them", () => {
     const classes = new Set(DESCRIPTORS.flatMap(({ file }) => implementationClasses(file)));
-    expect(classes).toContain("MysqlDriver");
     expect(classes).toContain("SqliteDriver");
     for (const f of ["compose.ts", "canary.ts", "setup.ts"]) {
       const text = readFileSync(join(REPO_ROOT, "src", f), "utf8");
@@ -890,6 +911,41 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     expect(posted).toContain(`POST /repos/${owner}/${name}/labels ${loaded.config.status_label_prefix}triaging`);
     expect(posted).toContain(`POST /repos/${owner}/${name}/labels ${loaded.config.status_label_prefix}incomplete`);
     expect(lines[0]).toBe(`   "${loaded.config.intake_label}": created`);
+  });
+});
+
+describe("connect hooks (factory setup <kind> <command>)", () => {
+  const API_URL = pathToFileURL(join(REPO_ROOT, "src", "plugin-api.ts")).href;
+  /** A temp folder with one calendar (or `kind`) descriptor whose `connect` field is `connect`. */
+  const descriptorDir = (connect: string, kind = "calendar", name = "fixture-cal"): string => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-connect-"));
+    writeFileSync(
+      join(dir, `${name}.plugin.ts`),
+      `import { definePlugin } from ${JSON.stringify(API_URL)};\n` +
+        `export default definePlugin({ kind: ${JSON.stringify(kind)}, name: ${JSON.stringify(name)}, create: () => ({}), connect: ${connect} });\n`,
+    );
+    return dir;
+  };
+  const hook = (command: string) => `{ command: ${JSON.stringify(command)}, connect: async () => {}, disconnect: async () => {} }`;
+  const failure = (p: Promise<unknown>) => p.then(() => null, (e: Error) => e.message);
+
+  it("the registry lists each kind's connect hooks by plugin name, as it lists setups", () => {
+    for (const kind of PLUGIN_KINDS) expect(typeof REGISTRY[kind].connects, kind).toBe("object");
+    expect(REGISTRY.calendar.connects["google-calendar"]?.command).toBe("google");
+    expect(connectHooks(REGISTRY).map((h) => `${h.kind}/${h.name}/${h.hook.command}`)).toContain("calendar/google-calendar/google");
+    for (const h of connectHooks(REGISTRY)) expect(Object.keys(REGISTRY[h.kind].plugins), h.name).toContain(h.name);
+  });
+
+  it("a descriptor's connect field is loaded into its kind's entry", async () => {
+    const registry = await loadRegistry([PLUGIN_ROOT, descriptorDir(hook("fixture"))]);
+    expect(registry.calendar.connects["fixture-cal"]?.command).toBe("fixture");
+    expect(connectHooks(registry).map((h) => h.name)).toEqual(expect.arrayContaining(["google-calendar", "fixture-cal"]));
+  });
+
+  it("a bad connect field, a kind other than calendar, or a command taken twice fails startup", async () => {
+    expect(await failure(loadRegistry([PLUGIN_ROOT, descriptorDir("{ command: 'Bad Word', connect: async () => {} }")]))).toMatch(/connect must be/);
+    expect(await failure(loadRegistry([PLUGIN_ROOT, descriptorDir(hook("x"), "clock", "fixture-clock")]))).toMatch(/clock plugins take no connect hook/);
+    expect(await failure(loadRegistry([PLUGIN_ROOT, descriptorDir(hook("google"))]))).toMatch(/two connect hooks for "setup calendar google": google-calendar and fixture-cal/);
   });
 });
 

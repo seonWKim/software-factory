@@ -6,7 +6,7 @@ import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
 import { LINK_CLASS } from "./components/ui/link-style.js";
 import { type MessageKey } from "./i18n/en.js";
-import { t } from "./i18n/index.js";
+import { t, withUnit } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
@@ -15,6 +15,7 @@ import { HelpDialog, SearchDialog } from "./search.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
+import { DesignPage } from "./views/design.js";
 import { FailuresPage } from "./views/failures.js";
 import { ActivityPage, HealthPage, ItemPage, ItemsPage, NeedsYouPage, QueuePage, RunnersPage } from "./views/pages.js";
 import { ModeSwitch, SettingsPage } from "./views/settings.js";
@@ -30,7 +31,7 @@ function Ago({ at }: { at: number }) {
   return (
     <>
       <span className="max-sm:sr-only">{t("topbar.updated")}</span>
-      {Math.max(0, Math.floor((now - at) / 1000))}s<span className="max-sm:sr-only">{t("topbar.ago")}</span>
+      {withUnit(Math.max(0, Math.floor((now - at) / 1000)), "s")}<span className="max-sm:sr-only">{t("topbar.ago")}</span>
     </>
   );
 }
@@ -47,6 +48,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   rules: RulesPage,
   settings: SettingsPage,
   data: DataPage,
+  design: DesignPage,
 };
 
 /** A page's name in the active locale: its menu name and its heading. */
@@ -93,9 +95,11 @@ function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c:
           key={c}
           role="radio"
           aria-checked={choice === c}
+          variant="ghost"
+          size="icon"
           aria-label={t(label)}
           title={t(label)}
-          className={cn("shrink-0", choice === c && "bg-surface-2")}
+          className="shrink-0"
           onClick={() => onChoose(c)}
         >
           <Icon aria-hidden className="size-4" />
@@ -139,7 +143,7 @@ export function App() {
   useEffect(() => {
     // The Needs you count leads the tab title, so a background tab shows it: "(4) Needs you · Gongbang".
     const count = needs ? `(${needs}) ` : "";
-    document.title = `${count}${transcript ? "Run transcript" : route.itemId ? "Work item" : pageLabel(route.page)} · ${t("app.name")}`;
+    document.title = `${count}${transcript ? t("app.runTranscript") : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
   }, [route.page, route.itemId, transcript, needs]);
 
   return (
@@ -182,10 +186,10 @@ export function App() {
             <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2 tabular-nums" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : <Ago at={overview.dataUpdatedAt} />}
             </span>
-            <Button aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
+            <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
               <Search aria-hidden className="size-4" />
             </Button>
-            <Button aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
+            <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
               <RefreshCw aria-hidden className="size-4" />
             </Button>
             <ThemeControl choice={choice} onChoose={choose} />

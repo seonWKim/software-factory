@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
+import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { parsePending } from "../src/impl/tacit/ledger-text.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import { REGISTRY, createPlugin, defaultPlugins } from "../src/plugins.js";
@@ -206,6 +206,26 @@ describe("plugin agents-home", () => {
     await h.send(revise(1, "keep the flag"));
     expect(await h.captureRows()).toEqual([]);
     expect(readdirSync(empty)).toEqual([]);
+  });
+
+  it("finds the home only when bin/tacit and bin/evolve are both executable files; else it names the first missing one", () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-tacit-detect-"));
+    const at = join(root, "home");
+    const check = () => checkAgentsHome({ AGENTS_HOME: at }, "/nowhere");
+    expect(check()).toEqual({ path: at, missing: "bin/tacit" });
+    mkdirSync(join(at, "bin"), { recursive: true });
+    writeFileSync(join(at, "bin", "tacit"), "#!/bin/sh\n");
+    expect(check().missing).toBe("bin/tacit"); // not executable
+    chmodSync(join(at, "bin", "tacit"), 0o755);
+    expect(check().missing).toBe("bin/evolve");
+    mkdirSync(join(at, "bin", "evolve")); // a folder is no CLI
+    expect(check().missing).toBe("bin/evolve");
+    rmSync(join(at, "bin", "evolve"), { recursive: true });
+    writeFileSync(join(at, "bin", "evolve"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(check()).toEqual({ path: at, missing: null });
+    expect(tacitLedgerAt({ AGENTS_HOME: at }, "/nowhere")).toBeInstanceOf(AgentsHomeTacitLedger);
+    // No AGENTS_HOME: ~/.agents under the given home.
+    expect(checkAgentsHome({}, root)).toEqual({ path: join(root, ".agents"), missing: "bin/tacit" });
   });
 
   it("is built from the stub home AGENTS_HOME names", () => {

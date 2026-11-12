@@ -11,11 +11,8 @@
 //   a new row's seq never equals an old request's seq (refusal markers and state changes name requests by seq;
 //   migrated requests keep naming theirs by `legacy_seq`).
 // - The copy is verified per source over every old column; then both old tables become `legacy_inbound_commands`
-//   and `legacy_inbound_app_requests` and the new one takes the name, in one step (one transaction on SQLite, one
-//   RENAME TABLE on MySQL). They stay until a contract migration after the owner confirms (§12).
-//
-// MySQL DDL is not transactional: a rerun after a crash before the rename empties the half-built table and copies
-// again; after the rename there is nothing left to do.
+//   and `legacy_inbound_app_requests` and the new one takes the name, in one step (one transaction). They stay until
+//   a contract migration after the owner confirms (§12).
 
 import { LEGACY_PREFIX, defineMigration, tableExists, verifyCopy, type MigrationDb } from "../../state/index.js";
 
@@ -26,8 +23,7 @@ const NEXT = "inbound_commands_next";
 export const FROM_COMMANDS = "command_inbox";
 export const FROM_APPS = "app_command_requests";
 
-const DDL: Record<MigrationDb["dialect"], string> = {
-  sqlite: `CREATE TABLE ${NEXT} (
+const DDL = `CREATE TABLE ${NEXT} (
     seq           INTEGER PRIMARY KEY AUTOINCREMENT,
     id            TEXT NOT NULL UNIQUE,
     origin        TEXT NOT NULL,
@@ -43,30 +39,7 @@ const DDL: Record<MigrationDb["dialect"], string> = {
     passport_id   TEXT,
     legacy_table  TEXT,
     legacy_seq    INTEGER
-  )`,
-  mysql: `CREATE TABLE ${NEXT} (
-    seq           BIGINT NOT NULL AUTO_INCREMENT,
-    id            VARCHAR(191) NOT NULL,
-    origin        VARCHAR(32) NOT NULL,
-    command_key   VARCHAR(255) NOT NULL,
-    actor         VARCHAR(128) NOT NULL,
-    command       VARCHAR(64) NOT NULL,
-    args          MEDIUMTEXT NOT NULL,
-    created_at    CHAR(24) NOT NULL,
-    handled_at    CHAR(24),
-    refusal       MEDIUMTEXT,
-    mirror        TINYINT NOT NULL DEFAULT 0,
-    mirrored_at   CHAR(24),
-    passport_id   VARCHAR(191),
-    legacy_table  VARCHAR(64),
-    legacy_seq    BIGINT,
-    PRIMARY KEY (seq),
-    UNIQUE KEY inbound_commands_id (id),
-    UNIQUE KEY inbound_commands_key (command_key),
-    KEY inbound_commands_pending (handled_at, created_at),
-    KEY inbound_commands_unmirrored (mirror, mirrored_at, seq)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
-};
+  )`;
 
 /** SQLite names indexes per database; the legacy table keeps `inbound_commands_mirror`. */
 const SQLITE_INDEXES = [
@@ -74,8 +47,8 @@ const SQLITE_INDEXES = [
   `CREATE INDEX inbound_commands_unmirrored ON ${COMMANDS} (mirror, mirrored_at, seq)`,
 ];
 
-function concat(db: MigrationDb, prefix: string, column: string): string {
-  return db.dialect === "mysql" ? `CONCAT('${prefix}', ${column})` : `'${prefix}' || ${column}`;
+function concat(prefix: string, column: string): string {
+  return `'${prefix}' || ${column}`;
 }
 
 /** Old column → merged column, per source; verified row for row. */
@@ -108,10 +81,10 @@ async function copy(db: MigrationDb): Promise<void> {
   const [clash] = await db.all(`SELECT a.request_key AS k FROM ${APPS} a JOIN ${COMMANDS} c ON c.command_key = a.request_key LIMIT 1`);
   if (clash) throw new Error(`cannot merge ${APPS} into ${COMMANDS}: key ${String(clash.k)} is in both; no row was copied`);
   if (await tableExists(db, NEXT)) await db.run(`DELETE FROM ${NEXT}`);
-  else await db.run(DDL[db.dialect]);
+  else await db.run(DDL);
   await db.run(
     `INSERT INTO ${NEXT} (seq, id, origin, command_key, actor, command, args, created_at, mirror, mirrored_at, legacy_table, legacy_seq)
-     SELECT seq, ${concat(db, `cmd_${FROM_COMMANDS}_`, "seq")},
+     SELECT seq, ${concat(`cmd_${FROM_COMMANDS}_`, "seq")},
        CASE WHEN command_key LIKE 'github:%' THEN 'github' WHEN command_key LIKE 'app:%' THEN 'app' ELSE 'cli' END,
        command_key, actor, command, args, created_at, mirror, mirrored_at, '${FROM_COMMANDS}', seq
      FROM ${COMMANDS}`,
@@ -119,17 +92,13 @@ async function copy(db: MigrationDb): Promise<void> {
   const [top] = await db.all(`SELECT COALESCE(MAX(seq), 0) AS n FROM ${COMMANDS}`);
   await db.run(
     `INSERT INTO ${NEXT} (seq, id, origin, command_key, actor, command, args, created_at, handled_at, refusal, legacy_table, legacy_seq)
-     SELECT ? + seq, ${concat(db, `cmd_${FROM_APPS}_`, "seq")}, 'app', request_key, actor, command, args, created_at, handled_at, refusal, '${FROM_APPS}', seq
+     SELECT ? + seq, ${concat(`cmd_${FROM_APPS}_`, "seq")}, 'app', request_key, actor, command, args, created_at, handled_at, refusal, '${FROM_APPS}', seq
      FROM ${APPS}`,
     [Number(top?.n ?? 0)],
   );
 }
 
 async function swap(db: MigrationDb): Promise<void> {
-  if (db.dialect === "mysql") {
-    await db.run(`RENAME TABLE ${COMMANDS} TO ${LEGACY_PREFIX}${COMMANDS}, ${APPS} TO ${LEGACY_PREFIX}${APPS}, ${NEXT} TO ${COMMANDS}`);
-    return;
-  }
   await db.run(`ALTER TABLE ${COMMANDS} RENAME TO ${LEGACY_PREFIX}${COMMANDS}`);
   await db.run(`ALTER TABLE ${APPS} RENAME TO ${LEGACY_PREFIX}${APPS}`);
   await db.run(`ALTER TABLE ${NEXT} RENAME TO ${COMMANDS}`);

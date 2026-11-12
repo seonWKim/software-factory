@@ -7,6 +7,7 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { newLinkCode } from "../src/impl/auth/link-code.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { ACTION_MAKE_TASK } from "../src/impl/source/slack-format.js";
 import { SlackSource } from "../src/impl/source/slack-source.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
@@ -17,7 +18,7 @@ import {
   FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSlackPollSource, FakeSource, MemoryStorage,
   alice, cleanScanner, config, issueRef, mallory, pipeline, prompts, silent, triageSpec,
 } from "./helpers/fakes.js";
-import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention } from "./helpers/slack.js";
+import { BOT, CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention, press } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
 
 // Feedback on a factory PR (design §4, issue #178): `/revise <feedback>` on the PR, and a GitHub "Request
@@ -404,7 +405,9 @@ async function slackItem(o: { gate?: boolean; scanner?: EgressScanner } = {}) {
     await deliver(env);
     return env;
   };
+  // The mention gets its reply; a press of its Make this a task button makes the item (design 04-gate-commands).
   await deliver(envelope("please add a scope gate", false));
+  await deliver(press(ROOT, ACTION_MAKE_TASK, "please add a scope gate", "1"));
   const it = (await store.listWorkItems(10)).find((x) => x.source.type === "slack_thread")!;
   const item = async () => (await store.getWorkItem(it.id))!;
   const implementRuns = async () => (await store.listRuns(it.id)).filter((r) => r.kind === "implement");

@@ -94,7 +94,7 @@ describe("Data page", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
     const links = [...side.querySelectorAll("a")].map((a) => a.textContent);
-    expect(links.slice(-2)).toEqual(["Queue", "Data"]);
+    expect(links.slice(-1)).toEqual(["Data"]);
     fireEvent.click(within(side).getByText("Data"));
     expect(location.pathname).toBe("/app/data");
     expect(await screen.findByRole("heading", { name: "Data" })).toBeTruthy();

@@ -1,6 +1,7 @@
 import { COMMANDS, type CommandName, commandPhase, commandSpec, phaseLabel } from "../../core/commands.js";
 import { parseProposalMarker, parseTaskOfferMarker } from "../../core/interpret.js";
 import { utcMinute } from "../../core/spec-comment.js";
+import type { WorkStatus } from "../../core/status-label.js";
 import type { StateChange, WorkItem } from "../../core/types.js";
 import type { RepoRef } from "../github/github-client.js";
 
@@ -29,12 +30,34 @@ export const ACTION_PROPOSAL_ALL = "sf_proposal_all";
 export const ACTION_PROPOSAL_CANCEL = "sf_proposal_cancel";
 /** "Make this a task" (the chat answer): its value is the top-level message's text, at most SLACK_VALUE_MAX characters. */
 export const ACTION_MAKE_TASK = "sf_make_task";
+/**
+ * A spec waiting for approval (design 05-sources, "Slack spec messages"): Approve with defaults, Other… (the answers
+ * modal) and Reject… (the reason modal). Their value is the item ID, for reading only: a press acts on its thread's item.
+ */
+export const ACTION_SPEC_APPROVE = "sf_spec_approve";
+export const ACTION_SPEC_OTHER = "sf_spec_other";
+export const ACTION_SPEC_REJECT = "sf_spec_reject";
+/**
+ * View (design 05-sources, "View in Slack"): on a spec message's first section and on each notice line when no https
+ * `slack.dashboard_url` is set. Its value is the item ID; a press opens the item modal (slack-modals.ts).
+ */
+export const ACTION_VIEW = "sf_view";
+/** The two modals' callback IDs; each input's element has the action ID MODAL_INPUT. */
+export const VIEW_SPEC_ANSWERS = "sf_spec_answers";
+export const VIEW_SPEC_REJECT = "sf_spec_reject";
+const MODAL_INPUT = "answer";
+const REASON_BLOCK = "reason";
+/** Slack's modal holds at most 100 blocks: one field per decision for the first 99; the rest are typed. */
+export const MODAL_FIELDS_MAX = 99;
+/** The most characters Slack takes in a block label and in a text input. */
+const LABEL_MAX = 2000;
+const INPUT_MAX = 3000;
 /** The most characters Slack takes in a button's value. */
 export const SLACK_VALUE_MAX = 2000;
 
 const FOOTER_HEADING = "Commands you can reply with now:";
-const SECTION_MAX = 3000;
-const MAX_SECTIONS = 45;
+export const SECTION_MAX = 3000;
+export const MAX_SECTIONS = 45;
 
 export interface SlackRendered {
   text: string;
@@ -141,13 +164,36 @@ function inline(line: string, repo: RepoRef): string {
   return text;
 }
 
+const STATUS_WORDS: Record<WorkStatus, string> = {
+  triaging: "triaging",
+  needs_approval: "needs approval",
+  implementing: "implementing",
+  in_review: "in review",
+  ready_to_merge: "ready to merge",
+  needs_human: "needs a human",
+  done: "done",
+  rejected: "rejected",
+};
+
+/** A thread's status message: the status, with a link to the PR once the item has one (`change_ref`, its number). */
+export function statusLine(status: WorkStatus, repo: RepoRef, change_ref: string | null): string {
+  const pr = change_ref ? ` · <${prUrl(repo, change_ref)}|PR #${change_ref}>` : "";
+  return `Status: *${escapeSlack(STATUS_WORDS[status] ?? status)}*${pr}`;
+}
+
+/** The one notice a withheld message or modal leaves in the thread: the scan's rules, none of its content. */
+export function withheldNotice(rules: string): SlackRendered {
+  const text = `A factory message for this thread was withheld by the leak scanner (${escapeSlack(rules)}). It is not posted in any form.`;
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+}
+
 /** The PR link for PR `n`: a number, or a change_ref (the PR number as text). */
 export function prUrl(repo: RepoRef, n: number | string): string {
   return `https://github.com/${repo.owner}/${repo.name}/pull/${n}`;
 }
 
 /** Splits mrkdwn into chunks of at most `max` characters, at line breaks where it can. */
-function chunks(text: string, max = SECTION_MAX): string[] {
+export function chunks(text: string, max = SECTION_MAX): string[] {
   const out: string[] = [];
   let cur = "";
   for (const line of text.split("\n")) {
@@ -173,7 +219,7 @@ const LABELS: Record<string, string> = { approve: "Approve", retry: "Retry", res
  * `body` without its command footer (the heading, its list and the "No command changes" line after it): what an
  * earlier message keeps once its commands no longer apply (issue #586).
  */
-function withoutFooter(body: string): string {
+export function withoutFooter(body: string): string {
   const lines = body.split(/\r?\n/);
   const at = lines.findIndex((l) => l.trim() === FOOTER_HEADING);
   if (at < 0) return body;
@@ -254,6 +300,152 @@ export function proposalButtons(id: string, commands: readonly CommandName[]): u
   ];
 }
 
-function button(label: string, action_id: string, value: string, style?: "primary"): unknown {
+/** One button of an actions block; `value` is untrusted when it comes back with a press. */
+export function button(label: string, action_id: string, value: string, style?: "primary"): unknown {
   return { type: "button", text: { type: "plain_text", text: label }, action_id, value, ...(style ? { style } : {}) };
+}
+
+/** A section of mrkdwn `text`, with the View button of item `view` as its accessory when given. */
+export function section(text: string, view?: string): unknown {
+  return { type: "section", text: { type: "mrkdwn", text }, ...(view ? { accessory: button("View", ACTION_VIEW, view) } : {}) };
+}
+
+/** The dashboard's base for links: `url` with no trailing slash when it is https, else null (View buttons instead). */
+export function dashboardBase(url: string | undefined): string | null {
+  return url !== undefined && /^https:\/\//.test(url) ? url.replace(/\/+$/, "") : null;
+}
+
+/** One numbered decision of a spec: its text and its proposed default (null: none proposed). */
+export interface SpecDecisionLine {
+  n: number;
+  text: string;
+  default: string | null;
+}
+
+/** What Slack shows of a spec waiting for approval: its In short lines and its numbered decisions. */
+export interface SpecSummary {
+  in_short: string[];
+  decisions: SpecDecisionLine[];
+}
+
+/** The lines under the `### <name>` heading of `lines`, up to the next heading. */
+function sectionLines(lines: readonly string[], name: string): string[] {
+  const at = lines.findIndex((l) => l.trim().startsWith(`### ${name}`));
+  if (at < 0) return [];
+  const end = lines.findIndex((l, i) => i > at && /^#{1,3}\s/.test(l.trim()));
+  return lines.slice(at + 1, end < 0 ? undefined : end);
+}
+
+/** `1. <text> Proposed default: <d>.` (with ` (owner only)` maybe) as its parts; a line with no default keeps its text. */
+function decisionOf(n: number, line: string): SpecDecisionLine {
+  const m = /^(.*?)\s*Proposed default:\s*(.*?)\.?(?:\s*\(owner only\))?\s*$/.exec(line);
+  return m ? { n, text: m[1]!.trim(), default: m[2]!.trim() } : { n, text: line.trim(), default: null };
+}
+
+/**
+ * The spec comment `body` read by its headings, when it is a spec waiting for approval: it has the `## Factory spec`
+ * heading and its command footer offers approve. Else null (another comment, or a spec approved with no reply).
+ */
+export function waitingSpec(body: string): SpecSummary | null {
+  const lines = body.split(/\r?\n/);
+  if (!lines.some((l) => l.trim() === "## Factory spec") || !footerCommands(body).includes("approve")) return null;
+  const in_short = sectionLines(lines, "In short").map((l) => l.trim()).filter((l) => l !== "").slice(0, 3);
+  const decisions = sectionLines(lines, "Decisions for you").flatMap((l) => {
+    const m = /^\s*(\d+)\.\s+(.*)$/.exec(l);
+    return m ? [decisionOf(Number(m[1]), m[2]!)] : [];
+  });
+  return { in_short, decisions };
+}
+
+/** `text` at most SECTION_MAX characters: a longer one is cut and ends with `cutNote(whole, link)`. */
+function fitSection(text: string, whole: string, link?: string): string {
+  if (text.length <= SECTION_MAX) return text;
+  const note = cutNote(whole, link);
+  return `${text.slice(0, SECTION_MAX - note.length - 1)}\n${note}`;
+}
+
+/**
+ * The Slack message for a spec waiting for approval: "Needs your approval: <title>", In short (at most 3 lines),
+ * Decisions (one line each, with its proposed default), and a Full spec link to the dashboard item page (`link`; null:
+ * a View button on the first section instead, which opens the item modal). Problem, Applied defaults, Done when and the rest stay in the store and on the dashboard. Each section is
+ * at most SECTION_MAX characters, a longer one cut with the note naming `factory task show <id>`. Buttons: Approve
+ * with defaults, Other… when there is a decision, and Reject….
+ */
+export function renderSpecMessage(spec: SpecSummary, item: { id: string; title: string | null }, repo: RepoRef, link: string | null): SlackRendered {
+  const whole = `factory task show ${item.id}`;
+  const at = link ?? undefined;
+  const first = `Needs your approval: ${escapeSlack(item.title ?? item.id)}`;
+  const sections = [first, `*In short*\n${toMrkdwn(spec.in_short.join("\n"), repo)}`];
+  if (spec.decisions.length > 0) {
+    const lines = spec.decisions.map((d) => `${d.n}. ${inline(d.text, repo)}${d.default === null ? "" : ` _Proposed default: ${inline(d.default, repo)}_`}`);
+    sections.push(`*Decisions*\n${lines.join("\n")}`);
+  }
+  if (link !== null) sections.push(`<${link.replace(/[<>|]/g, "")}|Full spec>`);
+  const fitted = sections.map((t) => fitSection(t, whole, at));
+  const buttons = [
+    button("Approve with defaults", ACTION_SPEC_APPROVE, item.id, "primary"),
+    ...(spec.decisions.length > 0 ? [button("Other…", ACTION_SPEC_OTHER, item.id)] : []),
+    button("Reject…", ACTION_SPEC_REJECT, item.id),
+  ];
+  const blocks: unknown[] = [...fitted.map((t, i) => section(t, i === 0 && link === null ? item.id : undefined)), { type: "actions", elements: buttons }];
+  return { text: fitted[0]!, blocks };
+}
+
+const plain = (text: string, max: number) => ({ type: "plain_text", text: text.slice(0, max) || " " });
+
+/** A modal; `submit` null: a read-only one, closed with Close. */
+export function modal(callback_id: string, title: string, submit: string | null, private_metadata: string, blocks: unknown[]): Record<string, unknown> {
+  const buttons = submit === null ? { close: plain("Close", 24) } : { submit: plain(submit, 24), close: plain("Cancel", 24) };
+  return { type: "modal", callback_id, private_metadata, title: plain(title, 24), ...buttons, blocks };
+}
+
+/**
+ * The Other… modal: one optional text field per decision (the first MODAL_FIELDS_MAX), labelled with the decision's
+ * text and prefilled with its proposed default. `meta`: the thread's source ID, read back on submit.
+ */
+export function answersModal(decisions: readonly SpecDecisionLine[], meta: string): Record<string, unknown> {
+  const blocks = decisions.slice(0, MODAL_FIELDS_MAX).map((d) => ({
+    type: "input",
+    block_id: `d${d.n}`,
+    optional: true,
+    label: plain(`${d.n}. ${d.text}`, LABEL_MAX),
+    element: { type: "plain_text_input", action_id: MODAL_INPUT, max_length: INPUT_MAX, ...(d.default === null ? {} : { initial_value: d.default.slice(0, INPUT_MAX) }) },
+  }));
+  return modal(VIEW_SPEC_ANSWERS, "Answer the decisions", "Approve", meta, blocks);
+}
+
+/** The modal a press opens: Other…'s from the last waiting spec among `bodies` (the factory's thread entries), else Reject…'s. */
+export function specModal(action: string, bodies: readonly string[], meta: string): Record<string, unknown> {
+  const spec = action === ACTION_SPEC_OTHER ? bodies.map(waitingSpec).filter((x) => x !== null).at(-1) : undefined;
+  return spec ? answersModal(spec.decisions, meta) : rejectModal(meta);
+}
+
+/** The Reject… modal: one required reason field. */
+export function rejectModal(meta: string): Record<string, unknown> {
+  const reason = { type: "input", block_id: REASON_BLOCK, label: plain("Reason", LABEL_MAX), element: { type: "plain_text_input", action_id: MODAL_INPUT, multiline: true, max_length: INPUT_MAX } };
+  return modal(VIEW_SPEC_REJECT, "Reject spec", "Reject", meta, [reason]);
+}
+
+/** One submitted field's text, its line breaks folded to spaces; "" when absent. */
+function fieldOf(values: Record<string, unknown>, block: string): string {
+  const el = (values[block] as Record<string, { value?: unknown }> | undefined)?.[MODAL_INPUT];
+  return typeof el?.value === "string" ? el.value.replace(/\s+/g, " ").trim() : "";
+}
+
+/**
+ * The command a submitted modal stands for, as typed in the thread: the answers modal's `/approve` with one `N: <answer>`
+ * line per non-blank field, the reject modal's `/reject <reason>`. Null for another view. `values`: the view's
+ * `state.values`, untrusted.
+ */
+export function modalCommand(callback_id: string, values: Record<string, unknown>): string | null {
+  if (callback_id === VIEW_SPEC_REJECT) return `/reject ${fieldOf(values, REASON_BLOCK)}`.trim();
+  if (callback_id !== VIEW_SPEC_ANSWERS) return null;
+  const lines = Object.keys(values)
+    .flatMap((b) => (/^d(\d{1,4})$/.exec(b) ? [Number(b.slice(1))] : []))
+    .sort((a, b) => a - b)
+    .flatMap((n) => {
+      const v = fieldOf(values, `d${n}`);
+      return v === "" ? [] : [`${n}: ${v}`];
+    });
+  return ["/approve", ...lines].join("\n");
 }

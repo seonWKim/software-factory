@@ -11,6 +11,6 @@ export default defineMigration({
   tables: [],
   async up(db) {
     if ((await tableColumns(db, "ext_packs_entries")).includes("module_hash")) return;
-    await db.run(`ALTER TABLE ext_packs_entries ADD COLUMN module_hash ${db.dialect === "mysql" ? "CHAR(64) NULL" : "TEXT"}`);
+    await db.run(`ALTER TABLE ext_packs_entries ADD COLUMN module_hash TEXT`);
   },
 });

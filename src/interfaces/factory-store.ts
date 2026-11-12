@@ -115,10 +115,7 @@ export interface NewAlert {
   detail: string | null;
 }
 
-export interface Alert extends NewAlert {
-  id: string;
-  created_at: Timestamp;
-}
+export interface Alert extends NewAlert { id: string; created_at: Timestamp }
 
 /** An improve run's report as the improver builds it; the store adds `id` and `created_at`. */
 export interface NewImproveReport extends ImproveWindow {
@@ -135,12 +132,7 @@ export type NewFiledPattern = Omit<FiledPattern, "id" | "created_at" | "filed_re
 export type NewStandingRule = Pick<StandingRule, "gate" | "tier" | "enabled" | "set_by">;
 
 /** A standing-approval proposal as the run check finds it; the store adds `id` and `created_at`. */
-export interface NewStandingProposal {
-  gate: StandingGate;
-  tier: Tier;
-  run_length: number;
-  threshold: number;
-}
+export interface NewStandingProposal { gate: StandingGate; tier: Tier; run_length: number; threshold: number }
 
 export interface TransitionInput {
   id: WorkItemId;
@@ -265,10 +257,10 @@ export type BudgetCheckpointResult =
 /** Read-only filter for listWorkItemsWhere. Absent fields do not filter. */
 export interface WorkItemFilter {
   stage?: Stage | undefined;
-  blocked_on?: BlockedOn | undefined;
-  blocked_reason?: string | undefined;
-  /** Leave out CLOSED items. Ignored when `stage` is given. */
-  exclude_closed?: boolean | undefined;
+  blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
+  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
+  /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
+  updated_since?: Timestamp | undefined;
   limit: number;
 }
 
@@ -343,7 +335,19 @@ export interface SessionUpdate { note?: string; tokens?: number; transcript_url?
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
 export interface SchemaVersion { applied: number; latest: number }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore {
+/** A Slack notice as posted (design 05-sources, "Replies under a notice"): channel, ts, the work item IDs its lines name. */
+export interface NoticeMessage { channel: string; ts: string; work_item_ids: string[]; created_at: Timestamp }
+/** A reply under a several-item notice, kept for its which-item press: its ID (the Slack event ID), the notice and its words. */
+export interface NoticeQuestion { id: string; channel: string; notice_ts: string; text: string; created_at: Timestamp }
+/** The Slack source's notice records: each insert skips a stored key and says whether it inserted; a read finds none as null. */
+export interface NoticeMessageStore {
+  recordNoticeMessage(m: Omit<NoticeMessage, "created_at">): Promise<boolean>;
+  getNoticeMessage(channel: string, ts: string): Promise<NoticeMessage | null>;
+  recordNoticeQuestion(q: Omit<NoticeQuestion, "created_at">): Promise<boolean>;
+  getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
+}
+
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
@@ -1250,11 +1254,7 @@ export interface SetSettingInput {
   actor: string;
 }
 
-export interface ResetSettingInput {
-  key: string;
-  project: string;
-  actor: string;
-}
+export interface ResetSettingInput { key: string; project: string; actor: string }
 
 /** How long a link code works (design 2026-11-01). */
 export const LINK_CODE_TTL_MS = 10 * 60 * 1000;

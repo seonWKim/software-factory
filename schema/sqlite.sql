@@ -346,6 +346,26 @@ CREATE TABLE bus_topics (
   partitions INTEGER NOT NULL
 );
 
+CREATE TABLE calendar_events (
+    source      TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    starts_at   TEXT NOT NULL,
+    ends_at     TEXT NOT NULL,
+    all_day     INTEGER NOT NULL,
+    updated_at  TEXT,
+    synced_at   TEXT NOT NULL,
+    PRIMARY KEY (source, event_id)
+  );
+
+CREATE TABLE calendar_sync_state (
+    source        TEXT PRIMARY KEY,
+    next_sync_at  TEXT NOT NULL,
+    synced_at     TEXT,
+    error         TEXT,
+    error_at      TEXT
+  );
+
 CREATE TABLE controller_alert_patterns (
     pattern_key    TEXT PRIMARY KEY,
     last_alert_at  TEXT NOT NULL
@@ -523,6 +543,22 @@ CREATE TABLE controller_merge_queues (
     updated_at   TEXT NOT NULL
   );
 
+CREATE TABLE controller_notice_messages (
+    channel        TEXT NOT NULL,
+    ts             TEXT NOT NULL,
+    work_item_ids  TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    PRIMARY KEY (channel, ts)
+  );
+
+CREATE TABLE controller_notice_questions (
+    id          TEXT PRIMARY KEY,
+    channel     TEXT NOT NULL,
+    notice_ts   TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+  );
+
 CREATE TABLE controller_notices (
     work_item_id  TEXT NOT NULL,
     wait_key      TEXT NOT NULL,
@@ -599,7 +635,7 @@ CREATE TABLE controller_tasks (
     created_at  TEXT NOT NULL,
     done_at     TEXT,
     parent_id   TEXT UNIQUE
-  , work_item_id TEXT);
+  , work_item_id TEXT, parent_task_id TEXT);
 
 CREATE TABLE "controller_unreviewed_merges" (
     id          TEXT PRIMARY KEY,
@@ -1650,6 +1686,8 @@ CREATE INDEX bus_system_alerts_published ON bus_system_alerts (published_at);
 
 CREATE INDEX bus_system_alerts_retries_due ON bus_system_alerts_retries (next_attempt_at);
 
+CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
+
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 
 CREATE INDEX claim_decisions_work_item ON "legacy_claim_decisions" (work_item_id, at);
@@ -1685,6 +1723,8 @@ CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
 
 CREATE INDEX controller_tasks_open ON controller_tasks (done_at, created_at);
+
+CREATE INDEX controller_tasks_sub_tasks ON controller_tasks (parent_task_id);
 
 CREATE INDEX controller_unreviewed_merges_at ON "legacy_controller_unreviewed_merges" (at);
 

@@ -13,11 +13,17 @@ export default definePlugin({
     { name: SLACK_APP_TOKEN, purpose: "Slack app-level token (xapp-, connections:write): opens the Socket Mode connection" },
     { name: SLACK_BOT_TOKEN, purpose: "Slack bot token (xoxb-): reads the listed channels' threads and replies in them" },
   ],
-  create: (c) =>
-    new SlackSource({
+  create: (c) => {
+    const block = slackConfig(c.loaded.file);
+    return new SlackSource({
       api: new HttpSlackApi(c.secrets),
       connect: webSocketConnector,
-      channels: slackConfig(c.loaded.file).channels,
+      channels: block.channels,
+      // The owner's notices (design 12-notification-channels): slack.notify_channel, else the first listed channel.
+      ...(block.notify_channel !== undefined ? { notify_channel: block.notify_channel } : {}),
+      // A spec message's Full spec link and each notice's link go to slack.dashboard_url (https) when set; without it
+      // they are View buttons that open the item in a Slack modal, never a link to the local dashboard (a phone cannot open it).
+      ...(block.dashboard_url !== undefined ? { dashboard_url: block.dashboard_url } : {}),
       scanner: c.scanner,
       store: c.store,
       repo: c.repo,
@@ -32,5 +38,6 @@ export default definePlugin({
         const refuse = () => Promise.reject(new Error("settings reads name no project"));
         return runSettings({ store: c.store, base: settingsBase(c.loaded), repo: c.repo, resolveProject: refuse, actor: "" }, a);
       },
-    }),
+    });
+  },
 });

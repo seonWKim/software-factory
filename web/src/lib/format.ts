@@ -1,22 +1,23 @@
-import { locale } from "../i18n/index.js";
+import { type MessageKey } from "../i18n/en.js";
+import { formatInteger, t, withUnit } from "../i18n/index.js";
 
 // Display helpers. Pure: `now` is passed in, so a test can fix it.
 
 /** "12s", "4m", "3h", "2d" since `at`; "–" for none. */
 export function ago(at: string | null | undefined, now: number): string {
-  if (!at) return "–";
+  if (!at) return t("format.none");
   const s = Math.max(0, Math.floor((now - Date.parse(at)) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86400)}d`;
+  if (s < 60) return withUnit(s, "s");
+  if (s < 3600) return withUnit(Math.floor(s / 60), "m");
+  if (s < 86400) return withUnit(Math.floor(s / 3600), "h");
+  return withUnit(Math.floor(s / 86400), "d");
 }
 
 /** "in 4m" for a time ahead, "now" for one passed; "–" for none. */
 export function until(at: string | null | undefined, now: number): string {
-  if (!at) return "–";
+  if (!at) return t("format.none");
   const ms = Date.parse(at) - now;
-  return ms <= 0 ? "now" : `in ${ago(new Date(now - ms).toISOString(), now)}`;
+  return ms <= 0 ? t("format.now") : t("format.in", { time: ago(new Date(now - ms).toISOString(), now) });
 }
 
 /** A local item id: `local-` (or `local-filed-`), its hex id, then its phase suffixes (`-phase-N`, nested). */
@@ -35,11 +36,10 @@ export function shortSource(id: string): string {
 
 /** 38521431 → "38.5M"; 29285 → "29.3k". */
 export function tokens(n: number | null | undefined): string {
-  if (n === null || n === undefined) return "–";
-  const one = new Intl.NumberFormat(locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-  if (n >= 1_000_000) return `${one.format(n / 1_000_000)}M`;
-  if (n >= 1000) return `${one.format(n / 1000)}k`;
-  return new Intl.NumberFormat(locale(), { useGrouping: false }).format(n);
+  if (n === null || n === undefined) return t("format.none");
+  if (n >= 1_000_000) return withUnit(n / 1_000_000, "million", true);
+  if (n >= 1000) return withUnit(n / 1000, "thousand", true);
+  return formatInteger(n);
 }
 
 const DURATION_UNITS = [["d", 86_400_000], ["h", 3_600_000], ["m", 60_000], ["s", 1000], ["ms", 1]] as const;
@@ -52,9 +52,9 @@ export function duration(ms: number): string {
   for (const [unit, size] of DURATION_UNITS) {
     const n = Math.floor(left / size);
     left -= n * size;
-    if (n > 0) parts.push(`${n}${unit}`);
+    if (n > 0) parts.push(withUnit(n, unit));
   }
-  return parts.length > 0 ? parts.join(" ") : "0s";
+  return parts.length > 0 ? parts.join(" ") : withUnit(0, "s");
 }
 
 /** True only for an absolute http: or https: URL: the only links the app draws from stored text. */
@@ -68,22 +68,70 @@ export function isHttpUrl(url: string | null | undefined): url is string {
   }
 }
 
-export const shortRev =(rev: string | null | undefined) => (rev ? rev.slice(0, 7) : "unknown");
+export const shortRev =(rev: string | null | undefined) => (rev ? rev.slice(0, 7) : t("format.unknown"));
 
 /** The status page's level names (src/ui/priority.ts LEVEL_LABELS), for the same words in both UIs. */
-export const LEVEL_LABELS: Record<string, string> = {
-  ready_to_merge: "Ready to merge",
-  needs_approval: "Needs approval",
-  needs_you: "Needs you",
-  needs_triage: "Needs triage",
-  stuck: "Stuck",
-  running: "Running",
-  queued: "Queued",
-  blocked_by_task: "Blocked by another task",
-  closed: "Closed",
-};
+export const LEVEL_LABELS: Record<string, string> = Object.fromEntries(
+  ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"].map((level) => [
+    level,
+    t(`level.${level}` as MessageKey),
+  ]),
+);
 
 /**
  * Levels that wait on the operator: the Floor lists them first. Never "Blocked by another task".
  */
 export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck"] as const;
+
+/** "worker 3" for a worker id `<host>:<pid>:<slot>` (its slot number); "a worker" for any other id; "–" for none. */
+export function workerName(id: string | null | undefined): string {
+  if (!id) return "–";
+  const slot = /:(\d+)$/.exec(id)?.[1];
+  return slot === undefined ? "a worker" : `worker ${slot}`;
+}
+
+/** True for a worker id `<host>:<pid>:<slot>`, as lease owners and attempt records name a worker loop. */
+export const isWorkerId = (id: string): boolean => /^[^:\s]+:\d+:\d+$/.test(id);
+
+/** The stage in words, for a row with no stored reason. */
+const STAGE_WORDS: Record<string, string> = {
+  NEW: "New, not triaged yet",
+  READY: "Specced, not started",
+  RUNNING: "Being built",
+  REVIEW: "In review",
+  CLOSED: "Closed",
+};
+
+/** "approve", "retry or reject", "approve, revise or reject". */
+function orList(words: readonly string[]): string {
+  return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`;
+}
+
+/**
+ * A waiting row with no stored reason: the item's state and what moves it next (the commands the viewer may send
+ * now), never an empty or "no reason" text.
+ */
+export function stateAndNext(stage: string, commands: readonly { name: string; allowed: boolean }[] | undefined): string {
+  const names = (commands ?? []).filter((c) => c.allowed && c.name !== "verdict").map((c) => c.name);
+  const next = names.length > 0 ? `${orList(names)} it` : "open the item and send the next command";
+  return `${STAGE_WORDS[stage] ?? stage}; next: ${next}`;
+}
+
+/**
+ * The item page's state pill: the list's level words, from the item's stage, block and why code (the item API has
+ * no level). Running, queued and held come from the why code; an item nothing moves (`idle`) is "Stuck".
+ */
+export function detailLevel(i: { stage: string; blocked_on: string; blocked_reason: string | null; why?: { code: string } | undefined }): string {
+  if (i.stage === "CLOSED") return "closed";
+  if (i.blocked_on === "human" && i.blocked_reason === "merge_pending") return "ready_to_merge";
+  if (i.blocked_on === "human" && (i.blocked_reason === "spec_pending" || i.blocked_reason === "max_revisions")) return "needs_approval";
+  if (i.blocked_on === "human" || i.blocked_on === "budget") return "needs_you";
+  const code = i.why?.code;
+  if (code === "running") return "running";
+  if (code === "queued" || code === "not_before" || code === "paused") return "queued";
+  if (code === "dependency" || code === "phase" || code === "held" || code === "deadlock" || i.blocked_on === "dependency" || i.blocked_on === "upstream") {
+    return "blocked_by_task";
+  }
+  if (code === "idle") return "stuck";
+  return i.stage === "RUNNING" || i.stage === "REVIEW" ? "running" : "queued";
+}

@@ -1,25 +1,31 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { API, type TaskRow, type TasksView, postTaskBuild, useApi } from "../api.js";
+import { type FormEvent, useRef, useState } from "react";
+import { API, type DayRow, type EventRow, type TaskRow, type TasksView, isEventRow, postTaskAdd, postTaskBuild, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { announceStatus } from "../components/ui/dialog.js";
+import { Input } from "../components/ui/input.js";
+import { Notice } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { SegmentedControl } from "../components/ui/segmented-control.js";
+import { QUICK_ADD_ATTR } from "../keys.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's open plain tasks, read through GET
-// /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then due today. Upcoming: the next 7
-// days, by day. Project: every task under its #list. The server places each task by its due date at its own local
-// midnight, so the page does no date arithmetic. Build this sends a task to intake once (POST /api/v1/tasks/build); a
+// /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then today's tasks and calendar
+// events. Upcoming: today through 7 days ahead, by day, tasks and events. Project: every task under its #list. The
+// server places each task and event and orders each day (all-day events, then timed items by time, then untimed
+// tasks), so the page does no date arithmetic. A source whose last sync failed is named with its last sync time. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
 
 const TABS = [
-  { id: "inbox", label: "Inbox" },
-  { id: "today", label: "Today" },
-  { id: "upcoming", label: "Upcoming" },
-  { id: "project", label: "Project" },
+  { id: "inbox", label: t("tasks.inbox") },
+  { id: "today", label: t("tasks.today") },
+  { id: "upcoming", label: t("tasks.upcoming") },
+  { id: "project", label: t("tasks.project") },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -46,7 +52,7 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
         setError(r.error);
         return;
       }
-      announceStatus(`${task.title} is in intake as ${r.work_item_id}.`);
+      announceStatus(t("tasks.inIntake", { title: task.title, id: r.work_item_id }));
       await client.invalidateQueries({ queryKey: [API.tasks] });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -56,8 +62,8 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   };
   return (
     <span className="flex flex-col items-start gap-1">
-      <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} aria-label={`Build this: ${task.title}`} onClick={() => void build()}>
-        Build this
+      <Button variant="secondary" disabled={busy} aria-label={t("tasks.buildLabel", { title: task.title })} onClick={() => void build()}>
+        {t("tasks.build")}
       </Button>
       {error !== null && (
         <span role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">
@@ -68,6 +74,74 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   );
 }
 
+/** A new task ID: `tk_` and 32 hex characters, inside the route's 8 to 64 URL-safe ones. */
+const newTaskId = (): string => `tk_${crypto.randomUUID().replaceAll("-", "")}`;
+
+/**
+ * Quick add: Enter or Add posts the words under an ID the page chose. The field keeps that ID, for those words, until
+ * the add succeeds, so a retry after an error stores one task. Esc clears the field.
+ */
+function QuickAdd({ token }: { token: string | null }) {
+  const client = useQueryClient();
+  const input = useRef<HTMLInputElement>(null);
+  const attempt = useRef<{ id: string; words: string } | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    const words = text.trim();
+    if (token === null || busy || words === "") return;
+    if (attempt.current?.words !== words) attempt.current = { id: newTaskId(), words };
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postTaskAdd(token, attempt.current.id, words);
+      if (!r.ok) {
+        setError(r.error);
+        return;
+      }
+      attempt.current = null;
+      setText("");
+      await client.invalidateQueries({ queryKey: [API.tasks] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      input.current?.focus();
+    }
+  };
+  return (
+    <form onSubmit={(e) => void submit(e)} className="mb-6 space-y-1">
+      <div className="flex gap-2">
+        <Input
+          ref={input}
+          {...{ [QUICK_ADD_ATTR]: "" }}
+          className="flex-1"
+          aria-label={t("tasks.addLabel")}
+          placeholder={t("tasks.addPlaceholder")}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setText("");
+              setError(null);
+            }
+          }}
+        />
+        <Button type="submit" disabled={token === null || busy}>
+          {t("tasks.add")}
+        </Button>
+      </div>
+      {error !== null && (
+        <p role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
 function TaskCard({ task, overdue = false, token }: { task: TaskRow; overdue?: boolean; token: string | null }) {
   const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
   return (
@@ -75,11 +149,11 @@ function TaskCard({ task, overdue = false, token }: { task: TaskRow; overdue?: b
       <div className="min-w-0 flex-1 space-y-1">
         <p className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg")}>{task.title}</p>
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
-          {overdue && <Badge level="stuck">Overdue</Badge>}
-          {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>due {due}</span>}
+          {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
+          {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>{t("tasks.due", { due })}</span>}
           {task.priority !== null && <span>!{task.priority}</span>}
           {task.list !== null && <span className="break-all">#{task.list}</span>}
-          {task.recurrence !== null && <span>every {task.recurrence}</span>}
+          {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
         </p>
       </div>
       {task.work_item_id !== null ? (
@@ -93,18 +167,34 @@ function TaskCard({ task, overdue = false, token }: { task: TaskRow; overdue?: b
   );
 }
 
-function TaskList({ label, tasks, token, overdue = false }: { label: string; tasks: readonly TaskRow[]; token: string | null; overdue?: boolean }) {
+/** A calendar event: its title, its time that day or "all day", and its source's name. Read-only. */
+function EventCard({ event }: { event: EventRow }) {
+  return (
+    <li data-event={`${event.source}:${event.id}`} className="flex flex-wrap items-start gap-x-3 gap-y-2 p-3">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="text-sm text-pretty break-words">{event.title}</p>
+        <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
+          <Badge>{t("tasks.event")}</Badge>
+          <span className="tabular-nums">{event.time ?? t("tasks.allDay")}</span>
+          <span className="break-all">{event.source}</span>
+        </p>
+      </div>
+    </li>
+  );
+}
+
+function TaskList({ label, tasks, token, overdue = false }: { label: string; tasks: readonly DayRow[]; token: string | null; overdue?: boolean }) {
   return (
     <ul aria-label={label} className="divide-y divide-border rounded-control border border-border">
-      {tasks.map((t) => (
-        <TaskCard key={t.id} task={t} overdue={overdue} token={token} />
-      ))}
+      {tasks.map((t) =>
+        isEventRow(t) ? <EventCard key={`event:${t.source}:${t.id}`} event={t} /> : <TaskCard key={t.id} task={t} overdue={overdue} token={token} />,
+      )}
     </ul>
   );
 }
 
 /** One heading and its list, for the groups of Today, Upcoming and Project. */
-function Group({ title, tasks, token, overdue = false }: { title: string; tasks: readonly TaskRow[]; token: string | null; overdue?: boolean }) {
+function Group({ title, tasks, token, overdue = false }: { title: string; tasks: readonly DayRow[]; token: string | null; overdue?: boolean }) {
   return (
     <div className="space-y-1">
       <h3 className={cn("text-xs font-medium", overdue ? "text-pill-bad-fg" : "text-text-2")}>{title}</h3>
@@ -115,19 +205,19 @@ function Group({ title, tasks, token, overdue = false }: { title: string; tasks:
 
 function TabBody({ tab, v, token }: { tab: Tab; v: TasksView; token: string | null }) {
   if (tab === "inbox") {
-    return v.inbox.length === 0 ? <Empty>No open task without a due date.</Empty> : <TaskList label="Inbox" tasks={v.inbox} token={token} />;
+    return v.inbox.length === 0 ? <Empty>{t("tasks.emptyInbox")}</Empty> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} token={token} />;
   }
   if (tab === "today") {
-    if (v.today.overdue.length + v.today.due.length === 0) return <Empty>Nothing is due today or overdue.</Empty>;
+    if (v.today.overdue.length + v.today.due.length === 0) return <Empty>{t("tasks.emptyToday")}</Empty>;
     return (
       <div className="space-y-3">
-        {v.today.overdue.length > 0 && <Group title="Overdue" tasks={v.today.overdue} token={token} overdue />}
-        {v.today.due.length > 0 && <Group title={`Today, ${dayLabel(v.today_date)}`} tasks={v.today.due} token={token} />}
+        {v.today.overdue.length > 0 && <Group title={t("tasks.overdue")} tasks={v.today.overdue} token={token} overdue />}
+        {v.today.due.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={v.today.due} token={token} />}
       </div>
     );
   }
   if (tab === "upcoming") {
-    if (v.upcoming.length === 0) return <Empty>Nothing is due in the next 7 days.</Empty>;
+    if (v.upcoming.length === 0) return <Empty>{t("tasks.emptyUpcoming")}</Empty>;
     return (
       <div className="space-y-3">
         {v.upcoming.map((d) => (
@@ -136,12 +226,30 @@ function TabBody({ tab, v, token }: { tab: Tab; v: TasksView; token: string | nu
       </div>
     );
   }
-  if (v.projects.length === 0) return <Empty>No open task.</Empty>;
+  if (v.projects.length === 0) return <Empty>{t("tasks.emptyProject")}</Empty>;
   return (
     <div className="space-y-3">
       {v.projects.map((p) => (
-        <Group key={p.list ?? ""} title={p.list === null ? "No list" : `#${p.list}`} tasks={p.tasks} token={token} />
+        <Group key={p.list ?? ""} title={p.list === null ? t("tasks.noList") : `#${p.list}`} tasks={p.tasks} token={token} />
       ))}
+    </div>
+  );
+}
+
+/** The sources whose last sync failed, each with its last sync time: their events shown are the last stored ones. */
+function StaleCalendars({ v }: { v: TasksView }) {
+  const failed = (v.calendar ?? []).filter((c) => c.failed);
+  if (failed.length === 0) return null;
+  const when = (at: string | null) => (at === null ? t("tasks.neverSynced") : t("tasks.lastSynced", { at: new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }));
+  return (
+    <div className="mb-3">
+      <Notice tone="warn" title={t("tasks.calendarSyncFailed")}>
+        {failed.map((c) => (
+          <p key={c.source} data-calendar-stale={c.source} className="text-pretty break-words">
+            {t("tasks.staleCalendar", { source: c.source, when: when(c.synced_at) })}
+          </p>
+        ))}
+      </Notice>
     </div>
   );
 }
@@ -159,18 +267,13 @@ export function TasksPage() {
   const token = v?.can_build ? v.csrf_token : null;
   return (
     <>
-      <div role="group" aria-label="Task view" className="mb-4 flex flex-wrap gap-2">
-        {TABS.map((t) => (
-          <Button key={t.id} variant="outline" aria-pressed={t.id === tab} className={cn("size-auto px-3 py-1.5", t.id === tab && "bg-surface-2")} onClick={() => setTab(t.id)}>
-            {t.label}
-          </Button>
-        ))}
-      </div>
+      <QuickAdd token={v?.csrf_token ?? null} />
+      <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} className="mb-6" />
       <Section title={TABS.find((t) => t.id === tab)!.label} count={v ? count(v, tab) : undefined}>
+        {v && (tab === "today" || tab === "upcoming") && <StaleCalendars v={v} />}
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <TabBody tab={tab} v={v} token={token} />}
         <p className={`mt-3 ${muted}`}>
-          Add a task with <code className="font-mono break-all">factory task add &lt;words&gt;</code>. Build this sends one to intake as a work item; its
-          merge marks the task done.
+          {t("tasks.buildNote")}
         </p>
       </Section>
     </>

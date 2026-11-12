@@ -4,7 +4,7 @@
 
 import type { SourceRef } from "../../core/types.js";
 import type { Forge, PrMergeResult } from "../../interfaces/forge.js";
-import type { SourceAdapter } from "../../interfaces/source-adapter.js";
+import type { SourceAdapter, SourceNotice } from "../../interfaces/source-adapter.js";
 import type { ActionRow } from "../intents.js";
 import type { LocalGit } from "./local-git.js";
 
@@ -19,6 +19,11 @@ export interface DeliveryTarget {
   accepts(d: Delivery): boolean;
   /** Writes it; throws on a failure. A comment returns its URL; a PR its number (`ref`) and link. */
   deliver(d: Delivery): Promise<{ url: string | null; ref?: string }>;
+  /**
+   * Writes several `notify` actions of one batch in one call (one message, design 12-notification-channels); throws
+   * on a failure. Present only on a target that takes them: outbound calls it instead of `deliver` for those.
+   */
+  deliverBatch?(rows: readonly ActionRow[]): Promise<void>;
 }
 
 /** What the targets write through: the configured sources by type, the forge, and the factory repo it pushes from. */
@@ -73,7 +78,27 @@ export async function act(adapter: SourceAdapter, row: ActionRow): Promise<{ url
       throw new Error(`a ${row.action} goes through the local target`);
     case "tacit_capture":
       throw new Error("a tacit_capture goes through the tacit target");
+    case "notify":
+      throw new Error("a notify goes through the notify target");
   }
+}
+
+/**
+ * A `notify` action as `adapter` renders it: the unit's args, with the item's thread only when the item came from
+ * this adapter's own source (a GitHub issue is no Slack thread).
+ */
+export function sourceNotice(adapter: Pick<SourceAdapter, "type">, row: ActionRow): SourceNotice {
+  const a = row.args;
+  const text = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
+  return {
+    kind: a.kind === "finished" || a.kind === "summary" ? a.kind : "needs_you",
+    work_item_id: text(a.work_item_id),
+    title: String(a.title ?? ""),
+    reason: String(a.reason ?? ""),
+    close_reason: text(a.close_reason),
+    thread_url: a.source_type === adapter.type ? text(a.thread_url) : null,
+    count: Number(a.count ?? 1),
+  };
 }
 
 /** A delivered `merge_pr` action's result: the PR merged (its merge sha) or the forge's refusal. Null: not delivered. */

@@ -2,9 +2,11 @@ import { useState } from "react";
 import type { SpecDecision, WaitingSpec } from "../api.js";
 import type { RefObject } from "react";
 import { Dialog } from "../components/ui/dialog.js";
+import { Input } from "../components/ui/input.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { Section } from "../components/ui/parts.js";
-import { cn } from "../lib/cn.js";
+import { Radio } from "../components/ui/radio.js";
+import { Textarea } from "../components/ui/textarea.js";
 
 // The item page's spec panel (design §9, issue #526): the waiting spec's In short above Commands, and its decisions
 // as questions to answer before `approve`. A decision with options is a radio group with the default selected and
@@ -71,13 +73,6 @@ const PHASES: Record<ApprovePhase, { what: string; next: string }> = {
   rule_of_two: { what: "the run held for a person by the Rule of Two", next: "The held run starts." },
 };
 
-/** A text button's size, for the command buttons. */
-export const textButton = "h-8 w-auto px-2";
-
-export const field =
-  "rounded-control border border-border-strong bg-surface px-2 py-1 text-sm " +
-  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus";
-
 /** The waiting spec's In short, above Commands. */
 export function InShort({ spec }: { spec: WaitingSpec | null | undefined }) {
   if (!spec?.in_short) return null;
@@ -113,32 +108,25 @@ export function DecisionsPanel({
             {d.options.length > 0 ? (
               <div role="radiogroup" aria-label={label} className="mt-1 space-y-1">
                 {d.options.map((o) => (
-                  <label key={o} className="flex items-center gap-2 text-sm break-words">
-                    <input type="radio" name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })} />
+                  <Radio key={o} name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })}>
                     {o}
                     {o === d.default && <span className="text-xs text-text-2">(default)</span>}
-                  </label>
+                  </Radio>
                 ))}
-                <label className="flex flex-wrap items-center gap-2 text-sm">
-                  <input type="radio" name={`decision-${i + 1}`} checked={c.own} onChange={() => onChange(i, { own: true, value: c.own ? c.value : "" })} />
+                <Radio name={`decision-${i + 1}`} checked={c.own} onChange={() => onChange(i, { own: true, value: c.own ? c.value : "" })}>
                   write my own
-                </label>
+                </Radio>
                 {c.own && (
-                  <input
-                    aria-label={`Answer ${i + 1}`}
-                    value={c.value}
-                    onChange={(e) => onChange(i, { own: true, value: e.target.value })}
-                    className={cn(field, "w-full")}
-                  />
+                  <Input aria-label={`Answer ${i + 1}`} value={c.value} onChange={(e) => onChange(i, { own: true, value: e.target.value })} className="w-full" />
                 )}
               </div>
             ) : (
-              <input
+              <Input
                 aria-label={`Answer ${i + 1}`}
                 value={c.value}
                 placeholder={d.default === null ? "Your answer (no default)" : undefined}
                 onChange={(e) => onChange(i, { own: true, value: e.target.value })}
-                className={cn(field, "mt-1 w-full")}
+                className="mt-1 w-full"
               />
             )}
           </fieldset>
@@ -208,20 +196,19 @@ export function RejectDialog({ id, pr, busy, error, returnFocusTo, onSend, onClo
         <legend className="text-sm font-medium">Why?</legend>
         <div role="radiogroup" aria-label="Reason" className="mt-1 space-y-1">
           {REJECT_REASONS.map((r) => (
-            <label key={r} className="flex items-center gap-2 text-sm break-words">
-              <input type="radio" name="reject-reason" checked={reason === r} onChange={() => setReason(r)} />
+            <Radio key={r} name="reject-reason" checked={reason === r} onChange={() => setReason(r)}>
               {r}
-            </label>
+            </Radio>
           ))}
         </div>
       </fieldset>
-      <textarea
+      <Textarea
         aria-label="Reject details"
         rows={2}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Say more (optional when a reason is chosen)"
-        className={cn(field, "w-full")}
+        className="w-full"
       />
     </Dialog>
   );
@@ -254,15 +241,15 @@ export function ReviseDialog({ id, busy, error, returnFocusTo, onSend, onClose }
       onClose={onClose}
     >
       {SPEC_SECTIONS.map((s, i) => (
-        <div key={s} data-revise-section={s}>
+        <div key={s} data-revise-section={s} className="flex flex-col gap-1">
           <span className="text-sm font-medium">{s}</span>
-          <textarea
+          <Textarea
             aria-label={`Comment on ${s}`}
             rows={2}
             value={comments[i]}
             onChange={(e) => setComments(comments.map((x, j) => (j === i ? e.target.value : x)))}
             placeholder="Optional comment"
-            className={cn(field, "mt-1 w-full")}
+            className="w-full"
           />
         </div>
       ))}

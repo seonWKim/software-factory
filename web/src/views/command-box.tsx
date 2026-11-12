@@ -1,8 +1,11 @@
 import { useState } from "react";
 import type { ProposalView } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { t } from "../i18n/index.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { Field } from "../components/ui/field.js";
+import { Textarea } from "../components/ui/textarea.js";
 import { cn } from "../lib/cn.js";
-import { field, textButton } from "./item-decisions.js";
 
 // The item page's command box and pending proposals (design 09-dashboard-app). The box sends the owner's words as one
 // app request (`sentence`); the controller reads them with the plain-words reader and answers in the item's thread,
@@ -44,32 +47,32 @@ export function CommandBox({ enabled, busy, outcome, send }: { enabled: boolean;
   return (
     <form
       data-command-box
-      className="mt-3 flex max-w-xl flex-col gap-1.5"
+      className="mt-6 flex max-w-xl flex-col gap-3"
       onSubmit={(e) => {
         e.preventDefault();
         void submit();
       }}
     >
-      <label htmlFor="command-box" className="text-sm font-medium">
-        Say it in your own words
-      </label>
-      <textarea
-        id="command-box"
-        rows={2}
-        value={words}
-        onChange={(e) => setWords(e.target.value)}
-        placeholder="e.g. looks good, approve it but keep it small"
-        className={cn(field, "w-full")}
-      />
-      <span className="flex flex-wrap items-center gap-2">
-        <Button type="submit" variant="outline" className={textButton} disabled={!enabled || busy || words.trim() === ""}>
-          Read it
+      <Field
+        label={t("command.label")}
+        htmlFor="command-box"
+        help={t("command.note")}
+      >
+        <Textarea
+          id="command-box"
+          rows={2}
+          value={words}
+          onChange={(e) => setWords(e.target.value)}
+          placeholder={t("command.placeholder")}
+          className="w-full"
+        />
+      </Field>
+      <ButtonRow>
+        <Button type="submit" variant="secondary" disabled={!enabled || busy || words.trim() === ""}>
+          {t("command.submit")}
         </Button>
         <OutcomeText outcome={outcome} />
-      </span>
-      <p className="text-xs text-pretty text-text-2">
-        The factory answers in the thread below with the commands it read. Nothing changes until you confirm them.
-      </p>
+      </ButtonRow>
     </form>
   );
 }
@@ -80,26 +83,26 @@ export function PendingProposals({
 }: { proposals: readonly ProposalView[]; enabled: boolean; busy: boolean; outcomes: (id: string) => Outcome; send: Send }) {
   if (proposals.length === 0) return null;
   return (
-    <ul aria-label="Proposed commands" className="mt-3 space-y-2">
+    <ul aria-label={t("command.proposals")} className="mt-3 space-y-2">
       {proposals.map((p) => (
         <li key={p.id} data-proposal={p.id} className="max-w-xl min-w-0 rounded-control border border-border-strong p-2">
-          <p className="text-xs text-text-2">Proposed, not applied yet:</p>
+          <p className="text-xs text-text-2">{t("command.pending")}</p>
           <ul className="my-1 space-y-0.5">
             {p.commands.map((c) => (
               <li key={c.index} className="min-w-0 text-sm break-words">
-                <code className="break-all">{c.line}</code> <span className="text-xs text-text-2">on {c.work_item_id}</span>
+                <code className="break-all">{c.line}</code> <span className="text-xs text-text-2">{t("command.on", { id: c.work_item_id })}</span>
               </li>
             ))}
           </ul>
-          <span className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" className={textButton} disabled={!enabled || busy} onClick={() => void send(CONFIRM_ALL, "", p.id)}>
-              Confirm all
+          <ButtonRow className="mt-3">
+            <Button variant="secondary" disabled={!enabled || busy} onClick={() => void send(CANCEL, "", p.id)}>
+              {t("common.cancel")}
             </Button>
-            <Button variant="outline" className={textButton} disabled={!enabled || busy} onClick={() => void send(CANCEL, "", p.id)}>
-              Cancel
+            <Button variant="secondary" disabled={!enabled || busy} onClick={() => void send(CONFIRM_ALL, "", p.id)}>
+              {t("command.confirmAll")}
             </Button>
             <OutcomeText outcome={outcomes(p.id)} />
-          </span>
+          </ButtonRow>
         </li>
       ))}
     </ul>

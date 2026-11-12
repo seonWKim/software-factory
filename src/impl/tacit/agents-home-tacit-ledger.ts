@@ -4,7 +4,7 @@
 // stdin (as JSON). The forms are the owner's real CLIs (checked 2026-11-12); they print text, read in ledger-text.ts.
 // Factory processes only: an agent run never gets it.
 
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -26,10 +26,27 @@ export function agentsHome(env: Readonly<Record<string, string | undefined>>, ho
   return set ? set : join(home, ".agents");
 }
 
-/** The ledger at the agents home `env` names; with no `bin/tacit` there, no ledger (as `none`), and startup goes on. */
+/** The two CLIs a home must hold, as executable files. */
+export const AGENTS_HOME_CLIS = ["bin/tacit", "bin/evolve"] as const;
+
+/** The agents home `env` names, and the first of its CLIs that is missing or not executable (null: the home is found). */
+export function checkAgentsHome(env: Readonly<Record<string, string | undefined>>, home: string = homedir()): { path: string; missing: string | null } {
+  const path = agentsHome(env, home);
+  const runnable = (file: string) => {
+    try {
+      accessSync(join(path, file), constants.X_OK);
+      return statSync(join(path, file)).isFile();
+    } catch {
+      return false;
+    }
+  };
+  return { path, missing: AGENTS_HOME_CLIS.find((f) => !runnable(f)) ?? null };
+}
+
+/** The ledger at the agents home `env` names; with either CLI missing there, no ledger (as `none`), and startup goes on. */
 export function tacitLedgerAt(env: Readonly<Record<string, string | undefined>>, home: string = homedir()): TacitLedger {
-  const at = agentsHome(env, home);
-  return existsSync(join(at, "bin", "tacit")) ? new AgentsHomeTacitLedger(at) : new NoTacitLedger();
+  const found = checkAgentsHome(env, home);
+  return found.missing === null ? new AgentsHomeTacitLedger(found.path) : new NoTacitLedger();
 }
 
 export class AgentsHomeTacitLedger implements TacitLedger {

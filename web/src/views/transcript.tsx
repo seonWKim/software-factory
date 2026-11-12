@@ -1,6 +1,8 @@
 import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { API, type StepFilter, type TranscriptPage, type TranscriptStep, getJson } from "../api.js";
+import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
@@ -46,9 +48,9 @@ const PRE = "font-mono text-xs whitespace-pre-wrap break-words [overflow-wrap:an
 
 function Toggle({ open, onClick, children }: { open: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" aria-expanded={open} onClick={onClick} className={cn("mt-1 text-xs", LINK_CLASS)}>
+    <Button variant="ghost" size="sm" aria-expanded={open} onClick={onClick} className={cn("mt-1", LINK_CLASS)}>
       {children}
-    </button>
+    </Button>
   );
 }
 
@@ -202,33 +204,27 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
       <Back itemId={itemId} />
       <h2 className="text-balance text-base font-semibold break-words">Transcript of the {run.kind} run, attempt {run.attempt}</h2>
       <Outcome run={run} now={now} />
-      <div className="mt-4 flex flex-wrap items-center gap-2" role="group" aria-label="Step type">
+      <ButtonRow className="mt-6" role="group" aria-label="Step type">
         {FILTERS.map((f) => (
-          <button
-            key={f.label}
-            type="button"
-            aria-pressed={filter === f.value}
-            onClick={() => setFilter(f.value)}
-            className={cn("rounded-control border px-2 py-1 text-sm", filter === f.value ? "border-text-1 bg-text-1 text-bg" : "border-border-strong")}
-          >
+          <Button key={f.label} aria-pressed={filter === f.value} onClick={() => setFilter(f.value)}>
             {f.label}
-          </button>
+          </Button>
         ))}
         {run.status === "failed" && !tail && (
-          <button type="button" onClick={() => setTail(true)} className={cn("ml-auto text-sm", LINK_CLASS)}>Jump to the last 20 steps</button>
+          <Button variant="ghost" onClick={() => setTail(true)} className={cn("ml-auto", LINK_CLASS)}>Jump to the last 20 steps</Button>
         )}
         {tail && (
-          <button type="button" onClick={() => setTail(false)} className={cn("ml-auto text-sm", LINK_CLASS)}>Show from the start</button>
+          <Button variant="ghost" onClick={() => setTail(false)} className={cn("ml-auto", LINK_CLASS)}>Show from the start</Button>
         )}
-      </div>
+      </ButtonRow>
       {first.parts.length > 1 && (
-        <div className="mt-2 flex flex-wrap gap-2 text-sm" role="group" aria-label="Agent step">
+        <ButtonRow className="mt-2" role="group" aria-label="Agent step">
           {first.parts.map((p) => (
-            <button key={p || "main"} type="button" aria-pressed={first.part === p} onClick={() => setPart(p)} className={cn("rounded-control border border-border-strong px-2 py-1", first.part === p && "font-medium")}>
+            <Button key={p || "main"} aria-pressed={first.part === p} onClick={() => setPart(p)}>
               {p || "main step"}
-            </button>
+            </Button>
           ))}
-        </div>
+        </ButtonRow>
       )}
       <Section title="Steps" count={steps.length}>
         {first.format === "plain" && <p className="mb-2 text-xs text-text-2">Not stream-json: shown as plain lines.</p>}
@@ -241,9 +237,9 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
           </ol>
         )}
         {hasNextPage && (
-          <button type="button" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()} className={cn("mt-3 rounded-control border border-border-strong px-3 py-1.5 text-sm")}>
+          <Button disabled={isFetchingNextPage} onClick={() => void fetchNextPage()} className="mt-3">
             {isFetchingNextPage ? "Loading…" : "Load more"}
-          </button>
+          </Button>
         )}
       </Section>
     </>

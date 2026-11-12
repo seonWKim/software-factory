@@ -1,13 +1,17 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
-import { cn } from "../lib/cn.js";
+import { Textarea } from "../components/ui/textarea.js";
+import type { MessageKey } from "../i18n/en.js";
+import { t } from "../i18n/index.js";
 import { ago, duration } from "../lib/format.js";
 import { useNow } from "./common.js";
-import { ProposalsSection, StandingSection } from "./standing.js";
+import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 
 // The Settings page (design §8 and §9, issue #236): every settable key with its value, source and when a change
 // applies, an edit control per key and a reset when an override exists, the PR-only keys read-only, and the
@@ -16,19 +20,16 @@ import { ProposalsSection, StandingSection } from "./standing.js";
 // also shows the configured project's learned value (design 08-settings) next to its file and override values, with
 // its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
 // The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
-// and a quiet-hours field.
+// and a quiet-hours field. Integrations (design 08-settings, 2026-11-12) lists each integration with the plugin in force;
+// its Switch removes the dashboard's choice, so factory.config.json decides again.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
-const PR_ONLY_TITLE = "Change only in factory.config.json (by a reviewed PR)";
+const PR_ONLY_TITLE = t("settings.prOnlyTitle");
 const SOURCE_TONE: Record<string, string> = { override: "needs_approval", file: "", default: "" };
 
-const input =
-  "rounded-control border border-border-strong bg-surface px-2 py-1 text-sm tabular-nums " +
-  "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus";
-const textButton = "h-8 w-auto px-2";
 /** message_style (design 04-agents): what it does in one line, and an example. */
-const STYLE_HINT = "Added after each agent's instructions; changes only how replies, specs and summaries read.";
-const STYLE_EXAMPLE = "Example: Short sentences. Plain words, no jargon. Lead with the decision.";
+const STYLE_HINT = t("settings.styleHint");
+const STYLE_EXAMPLE = t("settings.styleExample");
 
 /** A JSON string value as its text; anything else as it is. */
 function stringOf(text: string): string {
@@ -56,7 +57,7 @@ function useWrite(token: string) {
         setError(r.error);
         return false;
       }
-      setDone(r.lines[0] ?? "saved");
+      setDone(r.lines[0] ?? t("settings.saved"));
       await client.invalidateQueries({ queryKey: [API.settings] });
       return true;
     } catch (err) {
@@ -106,7 +107,7 @@ function entries(value: unknown, path = ""): [string, string][] {
 const SHORT_OBJECT = 3;
 
 /** An object's one-line summary: its top-level keys. */
-const summaryOf = (obj: Record<string, unknown>) => `${Object.keys(obj).length} keys: ${Object.keys(obj).join(", ")}`;
+const summaryOf = (obj: Record<string, unknown>, key: MessageKey = "settings.keysSummary") => t(key, { count: Object.keys(obj).length, keys: Object.keys(obj).join(", ") });
 
 /**
  * A setting value: a JSON object as one `key → value` line per entry (behind a summary of its keys when it has more
@@ -114,13 +115,13 @@ const summaryOf = (obj: Record<string, unknown>) => `${Object.keys(obj).length} 
  */
 function JsonValue({ text }: { text: string }) {
   const obj = asObject(text);
-  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs break-words">{text}</span>;
+  if (obj === null || Object.keys(obj).length === 0) return <span className="font-mono text-xs wrap-anywhere">{text}</span>;
   const list = (
     <dl data-entries className="grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-2 font-mono text-xs">
       {entries(obj).map(([k, v]) => (
         <Fragment key={k}>
           <dt className="text-text-2">{k}</dt>
-          <dd className="min-w-0 break-words">{v}</dd>
+          <dd className="min-w-0 wrap-anywhere">{v}</dd>
         </Fragment>
       ))}
     </dl>
@@ -142,6 +143,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   const { busy, error, done, write } = useWrite(token);
   const [draft, setDraft] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
+  const uid = useId();
   const target = project === undefined ? {} : { project };
   const save = async (text: string) => {
     if (await write({ action: "set", key: row.key, value: text, ...target })) {
@@ -156,7 +158,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     control = (
       <span className="flex items-center gap-2 text-sm">
         <Switch aria-label={label} checked={value === '"auto"'} disabled={busy} onCheckedChange={(next) => void save(JSON.stringify(next ? "auto" : "manual"))} />
-        {value === '"auto"' ? "auto" : "manual"}
+        {value === '"auto"' ? t("settings.modeAuto") : t("settings.modeManual")}
       </span>
     );
   } else if (row.kind === "boolean") {
@@ -165,28 +167,35 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const current = asObject(value) ?? {};
     const shown = tiers ?? Object.fromEntries(TIERS.map((t) => [t, typeof current[t] === "string" ? (current[t] as string) : ""]));
     control = (
-      <form className="flex flex-wrap items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
-        {TIERS.map((t) => (
-          <label key={t} className="flex items-center gap-1 text-xs text-text-2">
-            {t}
-            <input aria-label={`${label} ${t}`} className={cn(input, "w-28")} value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
-          </label>
-        ))}
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || tiers === null} aria-label={`Save ${label}`}>
-          Save
-        </Button>
+      // Two columns, tier | 7rem field, so the three fields start at one x; Save in its own row 12px below.
+      <form className="space-y-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+        <div data-tiers className="grid grid-cols-[auto_7rem] items-center gap-x-2 gap-y-3">
+          {TIERS.map((t) => (
+            <Fragment key={t}>
+              <label htmlFor={`${uid}-${t}`} className="text-xs text-text-2">
+                {t}
+              </label>
+              <Input id={`${uid}-${t}`} aria-label={`${label} ${t}`} className="w-full tabular-nums" value={shown[t]} onChange={(e) => setTiers({ ...shown, [t]: e.target.value })} />
+            </Fragment>
+          ))}
+        </div>
+        <ButtonRow>
+          <Button type="submit" variant="secondary" disabled={busy || tiers === null} aria-label={t("settings.saveLabel", { label })}>
+            {t("settings.save")}
+          </Button>
+        </ButtonRow>
       </form>
     );
   } else if (row.kind === "text") {
     // Free text: shown and edited as plain text, sent as a JSON string, as `factory settings set` takes it.
     const shown = draft ?? stringOf(value);
     control = (
-      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
+      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_HINT}</p>
-        <textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className={cn(input, "w-full min-w-48 text-sm")} value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className="w-full min-w-48" value={shown} onChange={(e) => setDraft(e.target.value)} />
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_EXAMPLE}</p>
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
-          Save
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
+          {t("settings.save")}
         </Button>
       </form>
     );
@@ -196,17 +205,17 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const lines = shown.split("\n").length;
     const obj = asObject(value);
     const form = (
-      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className={cn(input, "w-full min-w-64 font-mono text-xs")} value={shown} onChange={(e) => setDraft(e.target.value)} />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
-          Save
+      <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
+        <Textarea aria-label={label} rows={Math.min(lines, 16)} spellCheck={false} wrap="off" className="w-full min-w-64 font-mono" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
+          {t("settings.save")}
         </Button>
       </form>
     );
     control =
       obj !== null && entries(obj).length > SHORT_OBJECT ? (
         <details>
-          <summary className="cursor-pointer text-xs text-pretty break-words text-text-2">{summaryOf(obj)} · edit</summary>
+          <summary className="cursor-pointer text-xs text-pretty break-words text-text-2">{summaryOf(obj, "settings.keysSummaryEdit")}</summary>
           <div className="mt-2">{form}</div>
         </details>
       ) : (
@@ -216,15 +225,15 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     const shown = draft ?? value;
     control = (
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
-        <input
+        <Input
           aria-label={label}
           type="number"
-          className={cn(input, "w-32")}
+          className="w-32 tabular-nums"
           value={shown}
           onChange={(e) => setDraft(e.target.value)}
         />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label={`Save ${label}`}>
-          Save
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
+          {t("settings.save")}
         </Button>
       </form>
     );
@@ -250,8 +259,8 @@ function ResetButton({ row, label, token, project, learned = false }: { row: Set
   const body: SettingsWrite & { learned?: true } = { action: "reset", key: row.key, ...(project === undefined ? {} : { project }), ...(learned ? { learned: true as const } : {}) };
   return (
     <div>
-      <Button variant="outline" className={textButton} disabled={busy} aria-label={`Reset ${learned ? "learned " : ""}${label}`} onClick={() => void write(body)}>
-        {learned ? "Reset learned" : "Reset"}
+      <Button variant="secondary" disabled={busy} aria-label={t(learned ? "settings.resetLearnedLabel" : "settings.resetLabel", { label })} onClick={() => void write(body)}>
+        {learned ? t("settings.resetLearned") : t("settings.reset")}
       </Button>
       <Outcome error={error} done={done} />
     </div>
@@ -281,19 +290,19 @@ interface LearnedValue {
 /** The configured project's learned value of a key: in force or not, its evidence runs and when it was set, and its reset. */
 function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: LearnedValue; view: SettingsView }) {
   const now = useNow();
-  const label = `${row.key} for ${view.repo}`;
+  const label = t("settings.keyFor", { key: row.key, project: view.repo });
   const runs = learned.evidence_run_ids;
   return (
     <div data-learned className="mt-2 flex flex-wrap items-start gap-2">
       <div className="min-w-0 text-xs text-text-2">
         <p className="text-pretty">
-          learned: <span className="font-mono">{learned.value}</span>{" "}
-          <Badge level={learned.source === "learned" ? "needs_approval" : undefined}>{learned.source === "learned" ? "in force" : `ignored: ${learned.source} is tighter`}</Badge>{" "}
-          <span className="tabular-nums">set {ago(learned.set_at, now)} ago</span>
+          {t("settings.learned")} <span className="font-mono">{learned.value}</span>{" "}
+          <Badge level={learned.source === "learned" ? "needs_approval" : undefined}>{learned.source === "learned" ? t("settings.inForce") : t("settings.ignoredTighter", { source: learned.source })}</Badge>{" "}
+          <span className="tabular-nums">{t("settings.setAgo", { time: ago(learned.set_at, now) })}</span>
         </p>
         {runs.length > 0 && (
           <details>
-            <summary className="cursor-pointer">from {runs.length} failed {runs.length === 1 ? "run" : "runs"}</summary>
+            <summary className="cursor-pointer">{t(runs.length === 1 ? "settings.fromRunOne" : "settings.fromRunMany", { count: runs.length })}</summary>
             <ul className="mt-1 font-mono break-all">
               {runs.map((id) => (
                 <li key={id}>{id}</li>
@@ -309,10 +318,10 @@ function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: Learne
 
 /** The kinds of wait on the owner that `notice_kinds` lists, in its order, each with its switch's label. */
 const NOTICE_KINDS = [
-  ["spec", "A spec waits for approval"],
-  ["merge", "A change waits for its merge"],
-  ["failure", "An item failed"],
-  ["other", "Anything else that needs you"],
+  ["spec", t("settings.noticeSpec")],
+  ["merge", t("settings.noticeMerge")],
+  ["failure", t("settings.noticeFailure")],
+  ["other", t("settings.noticeOther")],
 ] as const;
 /** The keys the Notices section edits; their table rows point there instead of a generic editor that does not fit. */
 const NOTICE_KEYS = new Set(["notice_kinds", "quiet_hours"]);
@@ -337,10 +346,10 @@ function NoticeKinds({ row, token }: { row: SettingRow; token: string }) {
   };
   return (
     <div className="flex max-w-md flex-col gap-2 text-sm">
-      <span className="font-medium">Notice when</span>
+      <span className="font-medium">{t("settings.noticeWhen")}</span>
       {NOTICE_KINDS.map(([kind, label]) => (
         <label key={kind} className="flex items-center gap-2">
-          <Switch aria-label={`Notice: ${kind}`} checked={on.includes(kind)} disabled={busy} onCheckedChange={(next) => set(kind, next)} />
+          <Switch aria-label={t("settings.noticeKind", { kind })} checked={on.includes(kind)} disabled={busy} onCheckedChange={(next) => set(kind, next)} />
           <span className="text-pretty">{label}</span>
         </label>
       ))}
@@ -359,14 +368,14 @@ function QuietHours({ row, token }: { row: SettingRow; token: string }) {
   };
   return (
     <div className="flex max-w-md flex-col gap-1 text-sm">
-      <span className="font-medium">Quiet hours</span>
+      <span className="font-medium">{t("settings.quietHours")}</span>
       <p className="text-xs text-pretty text-text-2">
-        Local time, e.g. 22:00-07:00; empty is off. Notices inside it wait, then come as one summary.
+        {t("settings.quietHint")}
       </p>
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
-        <input aria-label="Quiet hours" placeholder="22:00-07:00" className={cn(input, "w-32")} value={shown} onChange={(e) => setDraft(e.target.value)} />
-        <Button type="submit" variant="outline" className={textButton} disabled={busy || draft === null} aria-label="Save Quiet hours">
-          Save
+        <Input aria-label={t("settings.quietHours")} placeholder="22:00-07:00" className="w-32 tabular-nums" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label: t("settings.quietHours") })}>
+          {t("settings.save")}
         </Button>
       </form>
       <Outcome error={error} done={done} />
@@ -380,14 +389,48 @@ function NoticesSection({ view }: { view: SettingsView }) {
   const quiet = view.keys.find((k) => k.key === "quiet_hours");
   if (!kinds && !quiet) return null;
   return (
-    <Section title="Notices">
+    <Section title={t("settings.notices")}>
       <p className="mb-2 text-sm text-pretty text-text-2">
-        The macOS app shows a notice when an item starts waiting on you. Changes apply on the next notifications pass.
+        {t("settings.noticesIntro")}
       </p>
       <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
         {kinds && <NoticeKinds row={kinds} token={view.csrf_token} />}
         {quiet && <QuietHours row={quiet} token={view.csrf_token} />}
       </div>
+    </Section>
+  );
+}
+
+/** Each integration's state; the Switch removes the `integrations` entry the dashboard stored (back to the config). */
+function IntegrationsSection({ view }: { view: SettingsView }) {
+  const { busy, error, done, write } = useWrite(view.csrf_token);
+  const row = view.keys.find((k) => k.key === "integrations");
+  const integrations = view.integrations ?? [];
+  if (!row || integrations.length === 0) return null;
+  const back = (kind: string) => {
+    const rest = { ...(asObject(row.value) ?? {}) };
+    delete rest[kind];
+    void write(Object.keys(rest).length === 0 ? { action: "reset", key: row.key } : { action: "set", key: row.key, value: JSON.stringify(rest) });
+  };
+  return (
+    <Section title={t("settings.integrations")} count={integrations.length}>
+      <p className="mb-2 text-sm text-pretty text-text-2">
+        {t("settings.integrationsHint")}
+      </p>
+      <ul className="space-y-2 text-sm">
+        {integrations.map((i) => {
+          const on = i.plugin !== "none";
+          return (
+            <li key={i.kind} data-integration={i.kind} className="flex flex-wrap items-center gap-2">
+              <Switch aria-label={t("settings.integrationLabel", { name: i.interface })} checked={on} disabled={busy || i.source !== "setting"} onCheckedChange={() => back(i.kind)} />
+              <span className="font-medium">{i.interface}</span>
+              <Badge level={on ? "needs_approval" : undefined}>{on ? i.plugin : t("settings.integrationOff")}</Badge>
+              <span className="text-xs text-pretty text-text-2">{i.source === "setting" ? t("settings.integrationFromDashboard") : t("settings.integrationFromConfig")}</span>
+            </li>
+          );
+        })}
+      </ul>
+      <Outcome error={error} done={done} />
     </Section>
   );
 }
@@ -404,7 +447,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
       <Td className="min-w-56">
         {NOTICE_KEYS.has(row.key) ? (
           <p className="text-xs text-pretty text-text-2">
-            <span className="font-mono break-words">{row.value}</span> · edit under Notices
+            <span className="font-mono wrap-anywhere">{row.value}</span> · {t("settings.editUnderNotices")}
           </p>
         ) : (
           <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
@@ -412,18 +455,18 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         <Duration settingKey={row.key} value={row.value} />
         {row.key === "workers" && row.max !== undefined && (
           <p className="mt-1 text-xs text-text-2">
-            1 to {row.max} (max_workers){row.capped_at ? `; the stored value runs as ${row.capped_at}` : ""}
+            {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
           </p>
         )}
         {row.project_settable && (
           <div className="mt-2 border-t border-border pt-2">
             <p className="mb-1 text-xs text-text-2">
-              for {view.project ?? view.repo}: {own ? `${own.value} (${own.source})` : "the global value"}
-              {view.project === null && " · no project label stored yet; use factory settings --project on the command line"}
+              {t("settings.forValue", { project: view.project ?? view.repo, value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
+              {view.project === null && ` · ${t("settings.noProjectLabel")}`}
             </p>
-            <div className="flex items-start gap-2">
-              <Editor row={row} label={`${row.key} for ${view.repo}`} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
-              {own?.source === "override" && <ResetButton row={row} label={`${row.key} for ${view.repo}`} token={view.csrf_token} project={view.repo} />}
+            <div className="flex flex-wrap items-start gap-2">
+              <Editor row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
+              {own?.source === "override" && <ResetButton row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} token={view.csrf_token} project={view.repo} />}
             </div>
             <Duration settingKey={row.key} value={own?.value ?? row.value} />
             {learned && <LearnedLayer row={row} learned={learned} view={view} />}
@@ -437,15 +480,15 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         {row.file_value !== null ? (
           <JsonValue text={row.file_value} />
         ) : asObject(row.default_value) === null ? (
-          <span className="font-mono text-xs break-words text-text-3">not set (default {row.default_value})</span>
+          <span className="font-mono text-xs wrap-anywhere text-text-3">{t("settings.notSetDefault", { value: row.default_value })}</span>
         ) : (
           <>
-            <span className="text-xs text-text-3">not set; default:</span>
+            <span className="text-xs text-text-3">{t("settings.notSetDefaultColon")}</span>
             <JsonValue text={row.default_value} />
           </>
         )}
       </Td>
-      <Td className="min-w-32 text-text-2">{row.applies_at}</Td>
+      <Td className="min-w-24 text-text-2">{row.applies_at}</Td>
       <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
     </Tr>
   );
@@ -464,18 +507,23 @@ function PageCommands() {
   const s = session.data;
   return (
     <div id="page-commands" ref={ref} className="mt-6 first:mt-0">
-      <Section title="Commands from the page">
+      <Section title={t("settings.commandsTitle")}>
         <p className="text-sm text-pretty text-text-2">
           {s?.actor ? (
             <>
-              Item commands act as <code>{s.actor}</code> (from {s.actor_source === "config" ? "config" : "environment"}).{" "}
+              {withNodes("settings.cmdActsAs", { actor: <code>{s.actor}</code> }, { source: t(s.actor_source === "config" ? "settings.sourceConfig" : "settings.sourceEnvironment") })}{" "}
             </>
           ) : (
-            <>Item commands are off: this server is not on loopback, so it needs a user to act as. </>
+            <>{t("settings.cmdOff")} </>
           )}
-          To act as another user, set <code>ui.user_id</code> in <code>factory.config.json</code> to a factory user ID (e.g.{" "}
-          <code>{'"ui": { "user_id": "github:12345" }'}</code>) and restart <code>factory ui</code>. Without it, a server on
-          127.0.0.1 acts as the CLI identity: <code>cli_user</code>, else git <code>user.email</code>, else the OS user.
+          {withNodes("settings.cmdHowTo", {
+            userId: <code>{"ui.user_id"}</code>,
+            file: <code>{"factory.config.json"}</code>,
+            example: <code>{'"ui": { "user_id": "github:12345" }'}</code>,
+            ui: <code>{"factory ui"}</code>,
+            cliUser: <code>{"cli_user"}</code>,
+            email: <code>{"user.email"}</code>,
+          })}
         </p>
       </Section>
     </div>
@@ -498,10 +546,10 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   const settings = useApi<SettingsView>(API.settings);
   const v = settings.data;
   const mode = v ? currentMode(v) : null;
-  if (!v || !mode) return <span className="text-sm text-text-2">Mode …</span>;
+  if (!v || !mode) return <span className="text-sm text-text-2">{t("settings.modeLoading")}</span>;
   return (
     <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap">
-      <span>Mode</span>
+      <span>{t("settings.mode")}</span>
       <ModeControl view={v} floating={floating} />
     </div>
   );
@@ -511,29 +559,27 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
 function ModeControl({ view, floating = false }: { view: SettingsView; floating?: boolean }) {
   const mode = currentMode(view);
   if (!mode) return null;
-  return <Editor row={mode.row} label="Auto mode" value={mode.value} token={view.csrf_token} floating={floating} {...(mode.project === undefined ? {} : { project: mode.project })} />;
+  return <Editor row={mode.row} label={t("settings.autoMode")} value={mode.value} token={view.csrf_token} floating={floating} {...(mode.project === undefined ? {} : { project: mode.project })} />;
 }
 
 /** The mode and, next to it, the auto-merge tier (design 09): what decides whether the factory merges on its own. */
 function ModeSection({ view }: { view: SettingsView }) {
   const tier = view.keys.find((k) => k.key === "auto_merge_max_tier");
   return (
-    <Section title="Mode">
+    <Section title={t("settings.mode")}>
       <p className="mb-2 text-sm text-pretty text-text-2">
-        Auto approves specs below tier 4 with no owner-only decision and merges reviewed local changes up to the auto-merge
-        tier; tier 4 and the gate list always wait for a person. A red main, a failure alarm or a budget checkpoint sets it
-        back to manual. Changing either needs approve_merge.
+        {t("settings.modeIntro")}
       </p>
       {/* Each label sits above its control, so a refusal under one never squeezes the other's label. */}
       <div className="flex flex-wrap items-start gap-x-10 gap-y-4">
         <div className="flex max-w-md flex-col gap-1 text-sm">
-          <span className="font-medium">Mode</span>
+          <span className="font-medium">{t("settings.mode")}</span>
           <ModeControl view={view} />
         </div>
         {tier && (
           <div className="flex max-w-md flex-col gap-1 text-sm">
-            <span className="font-medium whitespace-nowrap">Auto-merge tier (0 to 3)</span>
-            <Editor row={tier} label="Auto-merge tier" value={tier.value} token={view.csrf_token} />
+            <span className="font-medium whitespace-nowrap">{t("settings.tierLabel")}</span>
+            <Editor row={tier} label={t("settings.tier")} value={tier.value} token={view.csrf_token} />
           </div>
         )}
       </div>
@@ -552,24 +598,25 @@ export function SettingsPage() {
       <ProposalsSection />
       <ModeSection view={v} />
       <NoticesSection view={v} />
+      <IntegrationsSection view={v} />
       <PageCommands />
-      <Section title="Settable keys" count={v.keys.length}>
+      <Section title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
-          A change is stored as an override and applies with no restart; the same checks as <code>factory settings</code> run first.
+          {withNodes("settings.settableIntro", { command: <code>{"factory settings"}</code> })}
         </p>
-        <Table label="Settable keys" head={["Key", "Value", "Source", "File value", "Applies at", ""]}>
+        <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.colSource"), t("settings.colFileValue"), t("settings.colAppliesAt"), ""]}>
           {v.keys.map((row) => (
             <KeyRow key={row.key} row={row} view={v} />
           ))}
         </Table>
       </Section>
       {v.ignored.length > 0 && (
-        <Section title="Ignored overrides" count={v.ignored.length}>
+        <Section title={t("settings.ignoredOverrides")} count={v.ignored.length}>
           <ul className="space-y-1 text-sm">
             {v.ignored.map((i, n) => (
               <li key={n} className="text-pretty break-words">
                 <code>{i.key}</code>
-                {i.project ? ` for ${i.project}` : ""} = <code>{i.value}</code>: {i.reason}
+                {i.project ? t("settings.forProject", { project: i.project }) : ""} = <code>{i.value}</code>: {i.reason}
               </li>
             ))}
           </ul>
@@ -578,11 +625,9 @@ export function SettingsPage() {
       <StandingSection />
       <Section title={PR_ONLY_TITLE} count={v.pr_only.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
-          These keys set the guards, secrets, permissions, plugins and what agents may read, so a person must review every
-          change: this page and <code>factory settings set</code> refuse them. To change one, edit it in{" "}
-          <code>factory.config.json</code> in a pull request and merge it after review.
+          {withNodes("settings.prOnlyIntro", { command: <code>{"factory settings set"}</code>, file: <code>{"factory.config.json"}</code> })}
         </p>
-        <Table label={PR_ONLY_TITLE} head={["Key"]}>
+        <Table label={PR_ONLY_TITLE} head={[t("settings.colKey")]}>
           {v.pr_only.map((p) => (
             <Tr key={p.key} data-key={p.key}>
               <Td>
@@ -593,21 +638,21 @@ export function SettingsPage() {
           ))}
         </Table>
       </Section>
-      <Section title="History" count={v.history.length}>
+      <Section title={t("settings.history")} count={v.history.length}>
         {v.history.length === 0 ? (
-          <Empty>No settings changes yet.</Empty>
+          <Empty>{t("settings.noHistory")}</Empty>
         ) : (
-          <Table label="History" head={["When", "Who", "Key", "Change"]}>
+          <Table label={t("settings.history")} head={[t("col.when"), t("settings.colWho"), t("settings.colKey"), t("settings.colChange")]}>
             {v.history.map((c) => (
               <Tr key={c.seq}>
-                <Td className="tabular-nums whitespace-nowrap">{ago(c.at, now)} ago</Td>
+                <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(c.at, now) })}</Td>
                 <Td className="font-mono text-xs">{c.actor}</Td>
                 <Td className="font-mono text-xs">
                   {c.key}
-                  {c.project ? ` for ${c.project}` : ""}
+                  {c.project ? t("settings.forProject", { project: c.project }) : ""}
                 </Td>
                 <Td className="font-mono text-xs break-all">
-                  {c.new_value === null ? `reset (was ${c.old_value})` : `${c.old_value ?? "(no override)"} → ${c.new_value}`}
+                  {c.new_value === null ? t("settings.resetWas", { old: String(c.old_value) }) : t("settings.changed", { old: c.old_value ?? t("settings.noOverride"), new: c.new_value })}
                 </Td>
               </Tr>
             ))}

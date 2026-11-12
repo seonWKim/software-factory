@@ -10,6 +10,7 @@ import { ConfigKeyError, suggestion } from "./config-keys.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { AuthProvider, GrantSource } from "./interfaces/auth-provider.js";
+import type { CalendarSource } from "./interfaces/calendar-source.js";
 import type { Capability, CapabilitySearch } from "./interfaces/capability-search.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -21,6 +22,8 @@ import type { NetworkProbe } from "./interfaces/network-probe.js";
 import type { ExecutionEngines } from "./worker/engine/index.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
+// Re-exported so a component's plugin declares its secret names without importing a legacy folder (RFC 0015 §9).
+export { secretName } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { TacitLedger } from "./interfaces/tacit-ledger.js";
@@ -60,15 +63,17 @@ export interface Instances {
   engine: ExecutionEngines;
   /** The owner's tacit-knowledge ledger, where pushbacks are captured (docs/plugins/tacit-ledger.md). */
   tacit: TacitLedger;
+  /** A calendar the factory reads (docs/plugins/calendar-source.md); selected as a list by the top-level `calendar` key. */
+  calendar: CalendarSource;
 }
 
 export type PluginKind = keyof Instances;
 
 /**
  * Kinds config may leave unselected (issue #172): no plugin is their default, and an absent value or "none"
- * selects nothing. Never a guard.
+ * selects nothing. Never a guard. `calendar` is selected as a list (`calendars` in the Selection), never one name.
  */
-export type OptionalKind = "forge";
+export type OptionalKind = "forge" | "calendar";
 
 /** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
 export interface BaseContext {
@@ -107,7 +112,7 @@ export interface Contexts {
   updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
   awake: BaseContext & { clock: Clock };
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
-  /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
+  /** The pre-push checks' throwaway database (design §4); `none` is its one plugin. */
   test_database: BaseContext & { secrets: SecretStore };
   /** `credentials`: what a run's push needs; only outbound's targets call the forge's writes (RFC 0015 M7, G2). */
   forge: BaseContext & { github: GitHubApi; credentials?: GitHubCredentials };
@@ -120,6 +125,8 @@ export interface Contexts {
   engine: BaseContext & { store: FactoryStore };
   /** Built for the controller only; the plugin finds its own home. */
   tacit: BaseContext;
+  /** `secrets`: what a provider reads its credentials from. `clock`: "now", for the provider's own window. */
+  calendar: BaseContext & { secrets: SecretStore; clock: Clock };
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */
@@ -129,6 +136,35 @@ export interface SetupContext extends BaseContext {
 }
 
 export type SetupHook = (ctx: SetupContext) => Promise<void>;
+
+/**
+ * What a plugin's connect hook gets (`factory setup <kind> <command>`): plain values and functions only. `secrets`
+ * reads the secret file as if the plugin were selected; it stays read-only, so the hook writes through
+ * `storeSecrets` (every value at once, after all its checks) and `removeSecrets`. `ask.hidden` reads a value
+ * without echoing it. Nothing a hook prints may carry a secret value.
+ */
+export interface ConnectContext {
+  secretsFile: string;
+  secrets: SecretStore;
+  ask: { yesNo(question: string, dflt: boolean): Promise<boolean>; hidden(prompt: string): Promise<string> };
+  print: (line: string) => void;
+  openBrowser: (url: string) => Promise<void>;
+  storeSecrets: (values: ReadonlyMap<SecretName, string>) => Promise<void>;
+  removeSecrets: (names: readonly SecretName[]) => Promise<void>;
+  clock: Clock;
+}
+
+/**
+ * A plugin's account connection: `factory setup <kind> <command>` runs `connect`, and `--disconnect` runs
+ * `disconnect`; the CLI then lists or unlists the plugin in its kind's config key. A failure throws; its message is
+ * printed, so it never holds a secret value. Only the calendar kind, selected by a top-level list, takes one.
+ */
+export interface ConnectHook {
+  /** The word after `factory setup <kind>`; unique within the kind. */
+  command: string;
+  connect(ctx: ConnectContext): Promise<void>;
+  disconnect(ctx: ConnectContext): Promise<void>;
+}
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
 
@@ -160,6 +196,8 @@ export interface PluginDescriptor<K extends PluginKind = PluginKind> {
   secrets?: readonly SecretDeclaration[];
   /** One-time work `npm run setup` does for this plugin when it is selected (the github-issues labels); see selectedSetups. */
   setup?: SetupHook;
+  /** How `factory setup <kind> <command>` connects this plugin's account; see connectHooks. */
+  connect?: ConnectHook;
   /**
    * Absent: not a default. store and auth take none: their top-level config keys always pick one. Optional
    * kinds (forge) take none either: leaving their key out selects nothing.
@@ -195,6 +233,8 @@ export interface InterfaceEntry<K extends PluginKind> {
   secrets: Readonly<Record<string, readonly SecretDeclaration[]>>;
   /** The setup hook of each plugin that has one. */
   setups: Readonly<Record<string, SetupHook>>;
+  /** The connect hook of each plugin that has one. */
+  connects: Readonly<Record<string, ConnectHook>>;
   /** From the descriptors' `default` fields. */
   defaults: KindDefaults;
 }
@@ -216,6 +256,8 @@ export type Selection = { [K in Exclude<PluginKind, OptionalKind>]: string } & {
   local_auth?: string;
   /** The auth plugin for Slack thread commands, when `auth.slack_thread` names one (issue #486). Absent: the `local` origin's (issue #498). */
   slack_auth?: string;
+  /** The CalendarSource plugins the top-level `calendar` key lists, in config order; absent when it lists none. */
+  calendars?: readonly string[];
 };
 
 /**
@@ -260,6 +302,11 @@ export function selectedSources(selection: Selection): readonly string[] {
   return selection.sources ?? [selection.source];
 }
 
+/** Every selected CalendarSource plugin name, in config order: none unless the top-level `calendar` key lists some. */
+export function selectedCalendars(selection: Selection): readonly string[] {
+  return selection.calendars ?? [];
+}
+
 /** The AgentRunner fallback chain, in config order: `runners`, or `[runner]` when one is selected. */
 export function selectedRunners(selection: Selection): readonly string[] {
   return selection.runners ?? [selection.runner];
@@ -274,6 +321,7 @@ function selectedNames(selection: Selection, kind: PluginKind): readonly string[
   if (kind === "source") return selectedSources(selection);
   if (kind === "runner") return selectedRunners(selection);
   if (kind === "llm") return selectedLlms(selection);
+  if (kind === "calendar") return selectedCalendars(selection);
   const name = selection[kind];
   return name === undefined ? [] : [name];
 }
@@ -302,6 +350,13 @@ export function selectedSetups(registry: Registry, selection: Selection): { kind
       const setup = registry[kind].setups[name];
       return setup ? [{ kind, name, setup }] : [];
     }),
+  );
+}
+
+/** Every plugin's connect hook, selected or not, in interface order: what `factory setup <kind> <command>` runs. */
+export function connectHooks(registry: Registry): { kind: PluginKind; name: string; hook: ConnectHook }[] {
+  return (Object.keys(registry) as PluginKind[]).flatMap((kind) =>
+    Object.entries(registry[kind].connects).map(([name, hook]) => ({ kind, name, hook })),
   );
 }
 

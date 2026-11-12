@@ -9,12 +9,8 @@ export default defineMigration({
   tables: [],
   async up(db) {
     if (!(await tableColumns(db, "outbound_actions")).includes("intent_key")) {
-      await db.run(
-        db.dialect === "mysql"
-          ? "ALTER TABLE outbound_actions ADD COLUMN intent_key VARCHAR(191) NULL, ADD UNIQUE KEY outbound_actions_key (intent_key)"
-          : "ALTER TABLE outbound_actions ADD COLUMN intent_key TEXT",
-      );
+      await db.run("ALTER TABLE outbound_actions ADD COLUMN intent_key TEXT");
     }
-    if (db.dialect === "sqlite") await db.run("CREATE UNIQUE INDEX IF NOT EXISTS outbound_actions_key ON outbound_actions (intent_key)");
+    await db.run("CREATE UNIQUE INDEX IF NOT EXISTS outbound_actions_key ON outbound_actions (intent_key)");
   },
 });

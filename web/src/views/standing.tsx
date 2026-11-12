@@ -1,9 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
+import type { MessageKey } from "../i18n/en.js";
+import { t } from "../i18n/index.js";
 
 // Standing approvals on the Settings page (design 05-standing-approvals and §9, issue #300): an on or off switch per
 // rule with its gate, tier, threshold, who set it, when it was created and when it was last used, and Accept and
@@ -11,6 +14,14 @@ import { Switch } from "../components/ui/switch.js";
 // owner check (approve_spec), and a refusal shows beside the item it came from.
 
 const muted = "text-xs text-pretty text-text-2";
+
+/** The text of `key` with each `{name}` in `nodes` replaced by that element (a sentence with <code> in it); `vars` fill plain values. */
+export function withNodes(key: MessageKey, nodes: Record<string, ReactNode>, vars: Record<string, string | number> = {}): ReactNode[] {
+  return t(key, vars).split(/(\{\w+\})/).map((part, i) => {
+    const name = /^\{(\w+)\}$/.exec(part)?.[1];
+    return name !== undefined && name in nodes ? <Fragment key={i}>{nodes[name]}</Fragment> : part;
+  });
+}
 
 /** One write and its refusal, kept beside its item until the next try. */
 function useStandingWrite(token: string | null) {
@@ -45,13 +56,13 @@ function RuleItem({ rule, token }: { rule: StandingRuleRow; token: string | null
       <div className="flex items-center gap-3">
         <Switch aria-label={rule.rule} checked={rule.enabled} disabled={busy} onCheckedChange={(next) => void write({ rule: rule.rule, enabled: next })} />
         <span className="font-mono text-sm">{rule.rule}</span>
-        <span className="text-sm">{rule.enabled ? "on" : "off"}</span>
+        <span className="text-sm">{rule.enabled ? t("standing.on") : t("standing.off")}</span>
       </div>
       <p className={`mt-1 ${muted}`}>
-        gate {rule.gate} · tier {rule.tier} · threshold {rule.threshold} (standing_approvals.threshold)
-        {rule.set_by !== null && ` · set by ${rule.set_by}`}
-        {` · created ${rule.created_at ?? "never stored"}`}
-        {` · last used ${rule.last_used_at ?? "not recorded"}`}
+        {t("standing.facts", { gate: rule.gate, tier: rule.tier, threshold: rule.threshold })}
+        {rule.set_by !== null && t("standing.setBy", { name: rule.set_by })}
+        {t("standing.created", { when: rule.created_at ?? t("standing.neverStored") })}
+        {t("standing.lastUsed", { when: rule.last_used_at ?? t("standing.notRecorded") })}
       </p>
       <Refusal error={error} />
     </li>
@@ -64,17 +75,16 @@ function ProposalItem({ proposal, token }: { proposal: StandingProposalRow; toke
   return (
     <li data-proposal={proposal.id} className="rounded-control border border-border px-3 py-2">
       <p className="text-sm text-pretty">
-        Turn on <code>{proposal.rule}</code>: {proposal.run_length} approvals in a row with the spec unchanged (threshold {proposal.threshold}),
-        proposed {proposal.created_at}.
+        {withNodes("standing.proposal", { rule: <code>{proposal.rule}</code> }, { count: proposal.run_length, threshold: proposal.threshold, when: proposal.created_at })}
       </p>
-      <div className="mt-2 flex gap-2">
-        <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} onClick={() => answer(true)}>
-          Accept
+      <ButtonRow className="mt-3">
+        <Button variant="secondary" disabled={busy} onClick={() => answer(true)}>
+          {t("standing.accept")}
         </Button>
-        <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} onClick={() => answer(false)}>
-          Decline
+        <Button variant="secondary" disabled={busy} onClick={() => answer(false)}>
+          {t("standing.decline")}
         </Button>
-      </div>
+      </ButtonRow>
       <Refusal error={error} />
     </li>
   );
@@ -94,12 +104,12 @@ function WithStanding({ title, count, children }: { title: string; count: (v: St
 /** The pending proposals, at the top of the Settings page: the one part of it that waits for an answer. */
 export function ProposalsSection() {
   return (
-    <WithStanding title="Pending proposals" count={(v) => v.proposals.length}>
+    <WithStanding title={t("standing.pending")} count={(v) => v.proposals.length}>
       {(v) =>
         v.proposals.length === 0 ? (
-          <Empty>No proposal is waiting.</Empty>
+          <Empty>{t("standing.noProposal")}</Empty>
         ) : (
-          <ul aria-label="Pending proposals" className="space-y-2">
+          <ul aria-label={t("standing.pending")} className="space-y-2">
             {v.proposals.map((p) => (
               <ProposalItem key={p.id} proposal={p} token={v.csrf_token} />
             ))}
@@ -112,14 +122,14 @@ export function ProposalsSection() {
 
 export function StandingSection() {
   return (
-    <WithStanding title="Standing approvals" count={(v) => v.rules.length}>
+    <WithStanding title={t("standing.title")} count={(v) => v.rules.length}>
       {(v) => (
         <>
           <p className={`mb-2 ${muted}`}>
-            A rule that is on approves the specs of its tier that wait at its gate without a reply. Changing one needs approve_spec.
-            {v.csrf_token === null && " This server has no write route; use /standing on a work item."}
+            {t("standing.intro")}
+            {v.csrf_token === null && t("standing.noWrite")}
           </p>
-          <ul aria-label="Standing rules" className="space-y-2">
+          <ul aria-label={t("standing.rules")} className="space-y-2">
             {v.rules.map((r) => (
               <RuleItem key={r.rule} rule={r} token={v.csrf_token} />
             ))}

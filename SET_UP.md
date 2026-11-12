@@ -40,21 +40,6 @@ make setup
 
 It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`, which asks again and removes only the factory's own entries), GitHub issues or pull requests, the GitHub App, or the Slack app; it prints where to remove each by hand. Decisions: [`docs/design/08-teardown.md`](docs/design/08-teardown.md).
 
-## Move a MySQL store to SQLite: copy, then switch
-
-The `mysql` store is deprecated and refused at startup ([`docs/plugins/factory-store.md`](docs/plugins/factory-store.md)). To keep the data of a MySQL store: stop the factory, run the copy, then switch the config. The copy takes the MySQL connection from its own flags, never from `factory.config.json`: `--mysql-host` (default `localhost`), `--mysql-port` (`3306`), `--mysql-database` (`software_factory`) and `--mysql-user` (`factory`). The password is `MYSQL_PASSWORD` in the secret file; this one command reads it, as a named exception, and goes away with the `mysql` plugin.
-
-```bash
-npm run migrate -- --copy-from-mysql --dry-run   # lists each table and its row count; writes nothing, may run while the factory runs
-npm run migrate -- --copy-from-mysql             # stop the factory first: it refuses and names the pids while one runs
-npm run migrate -- --copy-from-mysql --mysql-host db.internal --mysql-port 3307   # another server than the defaults
-```
-
-1. **Copy.** It reads MySQL with SELECT only, inside one consistent snapshot, and copies every table into `<state_dir>/db/factory.db`, row by row in primary-key order and in batches, at the latest SQLite schema. It skips only `schema_state` and `schema_migrations`; `legacy_*` tables are copied too. A MySQL table the SQLite schema lacks makes it refuse and list the table, writing no file. It builds into a temporary file beside `factory.db` and checks each table (row count and a checksum over the primary-key columns); on a mismatch it deletes the new file and names the table. If `factory.db` already holds data, it refuses; with `--replace` the old file (and its `-wal`/`-shm` files) moves to `<state_dir>/db/backups/factory-<time>.db` first, and the path is printed. MySQL is never changed.
-2. **Switch.** The copy prints the change to make and the next step; it does not edit `factory.config.json`. Make sure it has `"store": { "type": "sqlite" }`, run `npm run migrate`, then start the factory.
-
-The copy is removed with the `mysql` plugin in its follow-up removal.
-
 ## Before you start
 
 - Node.js 22.13 or newer, and git
@@ -188,8 +173,11 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
 - `factory task add <words>`: Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, `HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title. Who: anyone who may submit work. Prints: the task: ID, title, due, priority, list and recurrence.
 - `factory task done <task_id>`: Complete a plain task; a recurring one gets its next occurrence once, however often it is completed. Who: anyone who may submit work. Prints: that it is done (or already was), and the next occurrence.
+- `factory task edit <task_id> <words>`: Edit an open plain task with quick-add words: only the fields they name change, and words with no title keep the title. Who: anyone who may submit work. Prints: the edited task.
+- `factory task delete <task_id>`: Delete a plain task for good; refused while it has open sub-tasks, and its done sub-tasks become plain tasks. Who: anyone who may submit work. Prints: that it is deleted, and the done sub-tasks it detached.
+- `factory task sub <parent_id> <words>`: Add a sub-task under a plain task from quick-add words, one level deep: a sub-task cannot have sub-tasks. Who: anyone who may submit work. Prints: the sub-task, with its parent's ID.
 - `factory task build <task_id>`: Send an open plain task to intake as one local work item, linked to the task; building it again makes no second item, and a merge of that item completes the task. Who: anyone who may submit work. Prints: the work item's ID (or that the task was already built as it).
-- `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task.
+- `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task (a sub-task with its parent's ID).
 - `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
 - `factory approve <id> [notes]`: Store `/approve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
 - `factory retry <id> [text]`: Store `/retry` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
@@ -296,11 +284,11 @@ Five settings are gates that can differ per project: `max_attempts`, `max_diff_l
 
 ### Path companions
 
-Some files always change together: a store schema change needs a MySQL migration step, and a design decision lives in a topic file beside its index. Declare these in `factory.config.json` under the optional top-level key `path_companions`, so a triage spec that names one file also allows the others:
+Some files always change together: a store interface change needs the SQL store, the SQLite schema and the contract test, and a design decision lives in a topic file beside its index. Declare these in `factory.config.json` under the optional top-level key `path_companions`, so a triage spec that names one file also allows the others:
 
 ```json
 "path_companions": [
-  { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
+  { "when": "src/interfaces/factory-store.ts", "also": ["src/impl/store/sql/sql-factory-store.ts", "src/impl/store/sqlite/schema.ts", "tests/store-contract.test.ts"] },
   { "when": "docs/design.md", "also": ["docs/design/"] }
 ]
 ```
@@ -308,9 +296,9 @@ Some files always change together: a store schema change needs a MySQL migration
 - **Format.** A list of entries. Each has `when`, one repo-relative path, and `also`, a non-empty list of repo-relative paths. A path ending in `/` names a folder. No other key is allowed in an entry. A bad shape stops startup with a message naming the key and the entry index (`path_companions[1].also must be ...`). Without the key there are no companions.
 - **How `when` matches.** Only the spec's `files_to_change` (the files triage expects to change) is matched, not `allowed_paths`. A path matches when it equals `when`, sits under a `when` folder, or is a folder that `when` sits under.
 - **What gets added.** Each `also` path goes into the spec's `allowed_paths`, unless an allowed path already covers it. This happens on triage's answer before it is checked, so a companion triage lists in `files_to_change` but forgot in `allowed_paths` is accepted. It also happens before the tier floor, so an added path under a floor raises the tier. Built in, whatever the config: naming `docs/design.md` or `docs/plugins.md` in either list adds `docs/design/` or `docs/plugins/`; the index stays allowed. A split spec's phases are left alone: each phase's own triage adds its companions.
-- **The spec line.** The spec comment's Files section lists each added path under "Added by `path_companions`", with the path that caused it: ``- `migrations/mysql/`: added because the spec names `src/impl/store/sqlite/schema.ts` ``. A spec that matches nothing reads exactly as triage wrote it.
+- **The spec line.** The spec comment's Files section lists each added path under "Added by `path_companions`", with the path that caused it: ``- `tests/store-contract.test.ts`: added because the spec names `src/interfaces/factory-store.ts` ``. A spec that matches nothing reads exactly as triage wrote it.
 
-The checked-in config declares both store schemas (SQLite and MySQL) and both doc indexes. Changing `path_companions` changes `factory.config.json`, which is under a floor, so it needs a human merge.
+The checked-in config declares the store interface, the config keys and both doc indexes. Changing `path_companions` changes `factory.config.json`, which is under a floor, so it needs a human merge.
 
 ### CI and branch protection
 
@@ -327,39 +315,7 @@ Once, after the workflow has run at least once on GitHub, make the `test` check 
 
 ### Checks before push
 
-Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so; CI has no MySQL job, so they run only where a test database is selected (below).
-
-### Local test MySQL
-
-To run the MySQL tests before push too, give the factory a test-only MySQL user and select the `mysql-local` test database. Use a server that holds no factory data if you can (a second local instance on another port is best); at least, use a user that can touch nothing but `sf_test_*` databases.
-
-1. Create the user and its grants (as the MySQL admin, e.g. `mysql -u root -p`), with a password of your own:
-
-   ```sql
-   CREATE USER 'sf_test'@'localhost' IDENTIFIED BY '<a new password>';
-   GRANT ALL PRIVILEGES ON `sf\_test\_%`.* TO 'sf_test'@'localhost';
-   ```
-
-   Those are the only grants: the user may create, use and drop databases whose names start with `sf_test_`, and nothing else. It has no access to `software_factory` or any other database, no `GRANT OPTION`, and no global privileges. The pattern needs the backslashes: an unescaped `_` matches any character.
-   What the MySQL suite needs, by test:
-
-   | Grant | Needed by | Without it |
-   |---|---|---|
-   | `ALL` on ``sf\_test\_%``.* (the grant above) | every MySQL test: each makes and drops its own `sf_test_*` database | the MySQL tests fail |
-   | Global `CREATE USER` with `GRANT OPTION` (an admin such as CI's `root`; never give it to `sf_test`) | only "dev, worker, controller, status, ui and golden add exit non-zero…" in `tests/mysql-migrations.test.ts`, which makes a throwaway `sf_e2e_*` user | the test checks first, creates nothing and skips, with a message naming `CREATE USER`, the test user and this file |
-
-2. Put its admin URL in the secret file, outside the repository (`~/.config/software-factory/.env`, mode 600; never in `factory.config.json` or any file in the repository):
-
-   ```sh
-   TEST_MYSQL_URL=mysql://sf_test:<password>@127.0.0.1:3306
-   ```
-
-   URL-encode the password if it has `@`, `:` or `/`.
-3. Select the plugin in `factory.config.json`: `"plugins": { ..., "test_database": "mysql-local" }`. With `mysql-local` selected and `TEST_MYSQL_URL` missing, the factory refuses to start.
-4. Restart the factory. Each run that runs checks then creates `sf_test_<run id>`, passes `SF_TEST_MYSQL_URL=mysql://sf_test:<password>@127.0.0.1:3306/sf_test_<run id>` to the check commands only (never to an agent), and drops the database when the run ends. The tests make their own `sf_test_*` databases with the same user.
-
-What it exposes: the check commands run code the agent wrote, with `SF_TEST_MYSQL_URL` in their environment, so that code can read this user's password while the checks run. That is why the user gets only the grants above. A run that crashes before it finishes can leave an `sf_test_*` database behind; nothing sweeps them yet. List them with `SHOW DATABASES LIKE 'sf\_test\_%';` and drop them by hand.
-
+Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so.
 
 ## Run the factory on your project
 
@@ -403,7 +359,6 @@ Use:
 | After an update that adds a breaking migration or a data step (`npm run migrate -- --status` lists them; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. It drains only `factory dev`: stop any `factory controller` or `factory worker` you started yourself before you migrate, so no old process writes meanwhile. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
 | See the pending breaking migrations and data steps | `npm run migrate -- --status` |
 | See what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
-| Move a MySQL store's data into SQLite (stop the factory, copy, then switch the config; see [Move a MySQL store to SQLite](#move-a-mysql-store-to-sqlite-copy-then-switch)) | `npm run migrate -- --copy-from-mysql` (`--dry-run` lists, `--replace` backs up an existing file, `--mysql-host`/`--mysql-port`/`--mysql-database`/`--mysql-user` name the server) |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
 | File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
@@ -474,6 +429,9 @@ In Slack a command follows a mention of the bot, in the item's thread and with n
 - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
 - `@bot task add <words>`: as `factory task add <words>`. Who: anyone who may submit work.
 - `@bot task done <task_id>`: as `factory task done <task_id>`. Who: anyone who may submit work.
+- `@bot task edit <task_id> <words>`: as `factory task edit <task_id> <words>`. Who: anyone who may submit work.
+- `@bot task delete <task_id>`: as `factory task delete <task_id>`. Who: anyone who may submit work.
+- `@bot task sub <parent_id> <words>`: as `factory task sub <parent_id> <words>`. Who: anyone who may submit work.
 - `@bot task build <task_id>`: as `factory task build <task_id>`. Who: anyone who may submit work.
 - `@bot list`: as `factory task list`. Who: anyone.
 - `@bot show <id>`: as `factory task show <id>`. Who: anyone.

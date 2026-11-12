@@ -2,6 +2,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type JSX, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { API, type Items } from "./api.js";
 import { Button } from "./components/ui/button.js";
+import { ButtonRow } from "./components/ui/button-row.js";
+import { Input } from "./components/ui/input.js";
+import { cn } from "./lib/cn.js";
 import { SHORTCUTS } from "./keys.js";
 import { t } from "./i18n/index.js";
 import { type MessageKey } from "./i18n/en.js";
@@ -42,9 +45,9 @@ function Dialog({ label, onClose, children }: { label: string; onClose: () => vo
     <div className="fixed inset-0 z-50 flex items-start justify-center bg-text-1/40 p-4 pt-[10dvh]" onKeyDown={onKey}>
       <div ref={frame} tabIndex={-1} role="dialog" aria-modal="true" aria-label={label} className="max-h-[80dvh] w-full max-w-md overflow-y-auto rounded-control outline-none border border-border bg-surface p-3 text-sm shadow-lg">
         {children}
-        <div className="mt-3 text-right">
-          <Button variant="outline" className="h-8 w-auto px-3" onClick={onClose}>{t("keys.close")}</Button>
-        </div>
+        <ButtonRow className="mt-3 justify-end">
+          <Button onClick={onClose}>{t("keys.close")}</Button>
+        </ButtonRow>
       </div>
     </div>
   );
@@ -81,7 +84,7 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
   };
   return (
     <Dialog label={t("search.open")} onClose={onClose}>
-      <input
+      <Input
         ref={input}
         type="search"
         value={text}
@@ -92,7 +95,7 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
           setAt(0);
         }}
         onKeyDown={onKey}
-        className="h-9 w-full rounded-control border border-border-strong bg-surface px-2 text-sm"
+        className="w-full"
       />
       {hits.length === 0 ? (
         <p className="mt-2 text-text-2">{t("search.none")}</p>
@@ -100,14 +103,14 @@ export function SearchDialog({ navigate, onClose }: { navigate: (to: string) => 
         <ul role="listbox" aria-label={t("search.open")} className="mt-2 space-y-0.5">
           {hits.map((h, i) => (
             <li key={h.to} role="option" aria-selected={i === at}>
-              <button
-                type="button"
+              <Button
+                variant="ghost"
                 onClick={() => go(h)}
-                className={`flex w-full items-baseline gap-2 rounded-control px-2 py-1.5 text-left hover:bg-surface-2 ${i === at ? "bg-surface-2" : ""}`}
+                className={cn("w-full py-1.5 text-left", i === at && "bg-surface-2")}
               >
                 <span className="min-w-0 flex-1 break-words">{h.label}</span>
                 <span className="shrink-0 text-xs text-text-2">{t(h.group)}</span>
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

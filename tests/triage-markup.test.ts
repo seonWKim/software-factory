@@ -16,6 +16,7 @@ const stray = { ...clean, problem: STRAY };
 function fakeWorker(outputs: unknown[]) {
   const calls: { prompt: string; step: string | undefined }[] = [];
   const w = {
+    d: { store: { listStateChanges: async () => [] } },
     withIndex: async (prompt: string) => prompt,
     agent: async (_r: Run, _i: WorkItem, _h: unknown, _s: AbortSignal, role: { prompt: string }, step?: string) => {
       calls.push({ prompt: role.prompt, step });

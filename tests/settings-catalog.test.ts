@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   APPROVE_MERGE_KEYS,
   GATE_SETTABLE_KEYS,
+  OWNER_KEYS,
   PROJECT_SETTABLE_KEYS,
   PR_ONLY_KEYS,
   SETTABLE_DEFAULTS,
@@ -29,6 +30,16 @@ describe("settings catalog", () => {
     for (const k of SETTABLE_KEYS) expect(catalog.get(k)!.default, k).toEqual(SETTABLE_DEFAULTS[k]);
     expect(keys((s) => s.changed_by === "runtime" && s.scope === "project")).toEqual([...PROJECT_SETTABLE_KEYS].sort());
     expect(keys((s) => s.change_needs === "approve_merge")).toEqual([...APPROVE_MERGE_KEYS].sort());
+  });
+
+  it("keeps each owner-only key (integrations) runtime, global and free, with no grant beyond the owner", () => {
+    for (const k of OWNER_KEYS) {
+      const s = catalog.get(k)!;
+      expect(s, k).toMatchObject({ changed_by: "runtime", scope: "global", direction: "free" });
+      expect(s.change_needs, k).toBeUndefined();
+    }
+    expect(OWNER_KEYS).toContain("integrations");
+    expect(catalog.get("plugins")!.changed_by).toBe("review");
   });
 
   it("orders each per-project gate as the resolver's tighten-only check does", () => {
