@@ -2785,9 +2785,9 @@ function whereOf(filter: Omit<WorkItemFilter, "limit">): { where: string; params
     where.push("blocked_on = ?");
     params.push(filter.blocked_on);
   }
-  if (filter.blocked_reason !== undefined) {
-    where.push("blocked_reason = ?");
-    params.push(filter.blocked_reason);
+  // `updated_since`: with stage CLOSED, the closes since then (owner notices, design 09-notifications).
+  for (const [sql, v] of [["blocked_reason = ?", filter.blocked_reason], ["updated_at >= ?", filter.updated_since]] as const) {
+    if (v !== undefined) { where.push(sql); params.push(v); }
   }
   return { where: where.length ? ` WHERE ${where.join(" AND ")}` : "", params };
 }
