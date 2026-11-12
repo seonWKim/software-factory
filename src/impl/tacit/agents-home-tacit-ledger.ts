@@ -1,12 +1,17 @@
 // The owner's ledger in their agents home (issue #570): `<home>/bin/tacit` and `<home>/bin/evolve`, found from
 // AGENTS_HOME, else ~/.agents. The factory only runs these CLIs, each stopped after 30 seconds; it never writes under
-// the home itself. A record goes on stdin as JSON, never in argv. Built in the controller only.
+// the home itself. Each value is its own argv item and nothing goes through a shell; only a captured record goes on
+// stdin (as JSON). The forms are the owner's real CLIs (checked 2026-11-12); they print text, read in ledger-text.ts.
+// Factory processes only: an agent run never gets it.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { TacitEntry, TacitLedger, TacitPushback, TacitVerdictNote } from "../../interfaces/tacit-ledger.js";
+import {
+  type TacitDecision, type TacitLedger, type TacitPendingEntry, type TacitPushback, type TacitRule, tacitIdKind,
+} from "../../interfaces/tacit-ledger.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
+import { parsePending, parseRules } from "./ledger-text.js";
 import { NoTacitLedger } from "./no-tacit-ledger.js";
 
 /** How long one CLI call may take before it is stopped and counted as a failure. */
@@ -40,15 +45,31 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     await this.run("tacit", ["capture", "--agent", TACIT_AGENT], JSON.stringify(record));
   }
 
-  async list(state: string): Promise<readonly TacitEntry[]> {
-    const out = await this.run("tacit", ["list", "--agent", TACIT_AGENT, "--state", state, "--json"]);
-    const parsed: unknown = JSON.parse(out || "[]");
-    if (!Array.isArray(parsed)) throw new Error("tacit list printed no JSON list");
-    return parsed as TacitEntry[];
+  /** `evolve pending`: the open and held proposals and the pending and held classes. */
+  async pending(): Promise<readonly TacitPendingEntry[]> {
+    return parsePending(await this.run("evolve", ["pending"]));
   }
 
-  async verdict(id: string, verdict: string, note?: TacitVerdictNote): Promise<void> {
-    await this.run("evolve", ["verdict", "--agent", TACIT_AGENT], JSON.stringify({ id, verdict, ...note }));
+  /** `tacit verdict` for a class (with `--rule` on promote only), `evolve verdict` for a proposal (never a rule). */
+  async verdict(id: string, decision: TacitDecision, reason: string, rule?: string): Promise<void> {
+    const kind = tacitIdKind(id);
+    if (kind === null) throw new Error(`"${id}" is neither a class (C-) nor a proposal (P-) ID`);
+    if (kind === "proposal" && decision === "retire") throw new Error(`evolve verdict takes no retire: "${id}" is a proposal`);
+    const args = ["verdict", id, decision, "--reason", reason];
+    if (kind === "class" && decision === "promote" && rule !== undefined) args.push("--rule", rule);
+    await this.run(kind === "class" ? "tacit" : "evolve", args);
+  }
+
+  /** `<home>/private/tacit/rules.md`, read as it is; no file: no rules. */
+  async rules(): Promise<readonly TacitRule[]> {
+    let text: string;
+    try {
+      text = readFileSync(join(this.home, "private", "tacit", "rules.md"), "utf8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
+    return parseRules(text);
   }
 
   /** Runs `<home>/bin/<cli> <args>` with `stdin`; its stdout, or a throw on a non-zero exit or the timeout. */
