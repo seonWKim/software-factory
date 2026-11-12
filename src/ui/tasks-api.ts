@@ -1,4 +1,4 @@
-// The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views; POST /api/v1/tasks/edit,
+// The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views with the stored calendar events; POST /api/v1/tasks/edit,
 // /done, /delete and /sub, the page's row actions, each calling the store method of its CLI command (`factory task
 // edit`, `done`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
 // its Build this button (task-build.ts, the same action as `factory task build`); and POST /api/v1/tasks, which
@@ -8,12 +8,14 @@
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts before writeTask is reached; every
 // refusal comes before the store write.
 
+import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "../core/quick-add.js";
 import { buildTask } from "../core/task-build.js";
-import { type Task, taskViews } from "../core/tasks.js";
+import { taskViews } from "../core/tasks.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
+import { storeSql } from "../impl/store/sql/store-sql.js";
 import { Withholder } from "./withhold.js";
 
 export const TASKS_PATH = "/api/v1/tasks";
@@ -30,21 +32,29 @@ const MAX_ID = 200;
 /** The longest quick-add text taken; a task title is a line, not a document. */
 export const MAX_WORDS = 1000;
 
-/** Each task's title through the Withholder, as on the other routes. */
-async function shown(d: UiDeps, tasks: readonly Task[]): Promise<Task[]> {
-  const w = new Withholder(d.scanner);
-  return Promise.all(tasks.map(async (t) => ({ ...t, title: (await w.plain(t.title)).text })));
+/** Each task's or event's title through the Withholder, as on the other routes. */
+async function shown<T extends { title: string }>(w: Withholder, rows: readonly T[]): Promise<T[]> {
+  return Promise.all(rows.map(async (t) => ({ ...t, title: (await w.plain(t.title)).text })));
 }
 
 /**
  * GET /api/v1/tasks: the open tasks' views (Inbox, Today, Upcoming, Projects; core/tasks.ts taskViews) at the server's
- * clock, in its time zone; `csrf_token` and `can_build` for Build this (null and false when the commands route is off).
+ * clock, in its time zone, with the calendar events stored by the last syncs placed in Today and Upcoming, and
+ * `calendar`, each source's last sync time and whether its last sync failed. Reads the stored copy only: no source
+ * is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false when the commands
+ * route is off).
  */
 export async function readTasks(d: UiDeps): Promise<ApiResult> {
   const now = d.clock.now();
-  const open = await shown(d, await d.store.listTasks(TASK_LIST_LIMIT));
+  const w = new Withholder(d.scanner);
+  const open = await shown(w, await d.store.listTasks(TASK_LIST_LIMIT));
+  const calendar = await readCalendar(storeSql(d.store));
+  const events = await shown(w, calendar.events);
   const can_build = (d.commands?.actor ?? null) !== null;
-  return { status: 200, value: { as_of: now.toISOString(), ...taskViews(open, now), csrf_token: d.commands?.token ?? null, can_build } };
+  return {
+    status: 200,
+    value: { as_of: now.toISOString(), ...taskViews(open, now, events), calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build },
+  };
 }
 
 /**
@@ -124,7 +134,7 @@ export async function writeTaskEdit(d: UiDeps, body: unknown): Promise<ApiResult
   if (!parsed.ok) return refused(400, parsed.reason);
   if (parsed.edit.recurrence !== undefined) return refused(400, "a task's recurrence is not edited here: leave out every day, every week or every month");
   const r = await d.store.updateTask(b.id, parsed.edit);
-  if (r.ok) return { status: 200, value: { task: (await shown(d, [r.task]))[0] } };
+  if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
   if (r.reason === "needs_due_date") return refused(409, needsDueDate(r.recurrence));
   return r.reason === "done" ? refused(409, "the task is done: a done task cannot be edited") : unknown(b.id);
 }
@@ -150,7 +160,7 @@ export async function writeTaskDelete(d: UiDeps, body: unknown): Promise<ApiResu
   const r = await d.store.deleteTask(b.id);
   if (r.ok) return { status: 200, value: { task_id: r.task.id } };
   if (r.reason === "not_found") return unknown(b.id);
-  const titles = (await shown(d, r.sub_tasks)).map((t) => t.title).join(", ");
+  const titles = (await shown(new Withholder(d.scanner), r.sub_tasks)).map((t) => t.title).join(", ");
   return refused(409, `it has open sub-tasks (${titles}): complete or delete them first`);
 }
 
@@ -167,7 +177,7 @@ export async function writeTaskSub(d: UiDeps, body: unknown): Promise<ApiResult>
   const parsed = parseQuickAdd(b.words);
   if (!parsed.ok) return refused(400, parsed.reason);
   const r = await d.store.addSubTask(b.parent, { ...parsed.task, id: b.id, created_by: actor });
-  if (r.ok) return { status: 200, value: { task: (await shown(d, [r.task]))[0] } };
+  if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
   return r.reason === "nested" ? refused(409, "the parent is a sub-task: a sub-task cannot have sub-tasks") : unknown(b.parent);
 }
 

@@ -12,14 +12,9 @@ const WORD = /[A-Za-z]{2,}/;
 
 /** The files still holding English text, to be converted by later phases. Delete a line when its file is clean. */
 const BASELINE: readonly string[] = [
-  "web/src/views/data.tsx",
   "web/src/views/item-commands.tsx",
   "web/src/views/item-decisions.tsx",
-  "web/src/views/pages.tsx",
   "web/src/views/rules.tsx",
-  "web/src/views/settings.tsx",
-  "web/src/views/standing.tsx",
-  "web/src/views/tasks.tsx",
   "web/src/views/transcript.tsx",
   "web/src/views/tree.tsx",
 ];

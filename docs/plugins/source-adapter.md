@@ -1,5 +1,7 @@
 # SourceAdapter
 
+**Replies under a Slack notice act on its items** (decision changed 2026-11-12; design 05-sources has the full decision; replaces "`notifyOwner` keeps nothing of a posted notice, and `slack` reads only `slack.channels`"). The `slack` source's `notifyOwner` records each posted notice (channel, ts, the work item IDs its lines name) through `recordNoticeMessage`; a reply in the notice's thread after a mention or with a slash is read as in that item's thread (`src/impl/source/slack-notice-replies.ts`): one item runs the command, several get a which-item question with one button per item (`sf_notice_item:<n>`, value the item ID, the reply's words stored with `recordNoticeQuestion`), none gets one reply. It never creates a work item, refuses an unlinked account, and answers in the notice's thread. `slack.notify_channel` is read for these replies even when it is not in `slack.channels`.
+
 What it does: intake. Brings in new work items and commands from a source, and posts comments back. Pull requests are not a source's: PR events, PR facts, PR comments and PR status belong to the forge (`docs/plugins/forge.md`, issue #273). `SourceAdapter` is a union on `intake` (docs/architecture.md, Intake):
 
 - `intake: "poll"` (`PollSource`): `poll(cursor)` returns events and the next cursor; the controller calls it every `poll_interval_ms`, reads every poll source first, then polls the forge, and handles the forge's events before the sources' (so a merge that closed an issue is applied before the close). A null cursor means "start from now", not "read the history".
@@ -93,6 +95,7 @@ Switch back / disable: `"source": "github-issues"` (or drop the other names from
 
 ## History
 
+- **Replies under a Slack notice** (changed 2026-11-12). Before: `notifyOwner` posted the notice and kept nothing, so a mention under it was a request that made a work item, and `slack` read no channel outside `slack.channels`.
 - **Slack dashboard links on 127.0.0.1** (changed 2026-11-12, design 05-sources). Before: with no `slack.dashboard_url`, the Full spec link and the notice title links went to the local dashboard `http://127.0.0.1:<ui.port>`, which a phone cannot open; now they are View buttons that open the item in a Slack modal.
 - **PR fields are `change_ref`** (changed 2026-11-08, phase 3 of the change fields). Before: `revise_requested` and `resolve_requested` named their PR as `pr: { pr_number, head_branch }`, a `/verdict` PR target had `pr_number`, and `setStatus` took `pr_number` (a number or null); all are now `change_ref`, a string. Queued command rows that still hold `args.pr.pr_number` are read as before (removal plan: design 02).
 - **`notifyOwner`** (added 2026-11-12, design 12-notification-channels). Before: no source got the owner's notices; they were stored for the desktop shell only.

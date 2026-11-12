@@ -1,5 +1,7 @@
 # 4. Agents: gate commands
 
+**"go ahead and merge" is `merge` in Slack** (decision changed 2026-11-12; replaces "only a command word is a command after a mention in an item's thread"). The decision that changed: **after a mention, the whole reply `go ahead and merge` (any case, an optional `.` or `!`) is read as `merge`, in an item's own thread and under a notice (design 05-sources, "Replies under a Slack notice act on its items").** It is a fixed phrase, not the plain-words reader: no model call, the same `merge` path and checks (a local item's merge row is stored; any other item gets the CLI's "merge its change on the forge" refusal). Any other wording keeps today's reading (`go ahead and merge it` is a plain comment in an item's thread). `threadWords` in `src/impl/source/slack-notice-replies.ts` reads it before the bare command words. Why: the owner typed the phrase under a "ready to merge" notice and it was taken as a request.
+
 **A mention creates an item only on a press** (decision changed 2026-11-12; replaces "a top-level Slack mention the interpreter reads as `request`, or does not read, is taken in as a work item at once"). The decision that changed: **a top-level Slack mention never becomes a work item by itself. The factory answers it in its own thread, and when the message may be work it offers a Make this a task button; only a press creates the item.** The local CLI sentence form and GitHub intake are unchanged.
 
 - **The replies** (the intake unit, `answered`; one reply per message, keyed `factory:chat-answer:<source id>`, so a redelivery posts nothing more):
@@ -141,6 +143,7 @@ Any other command (`budget` among them: a follow-up) is refused (`only \`approve
 
 ## History
 
+- **Only a command word was a command after a mention** (decision changed 2026-11-12). Before: `go ahead and merge` after a mention in an item's thread was a plain comment the plain-words reader read, and under a notice a request that made a new item.
 - **A top-level mention read as `request`, or not read, was taken in at once** (decision changed 2026-11-12). Before: the intake unit created a work item for a `request` answer, a `none` answer, a requester without `approve_spec`, no model, and an empty, long or flagged message, with no reply, so triage posted a full spec in the owner's thread even when the owner was only asking; only `unsure` got the Make this a task button, and its press posted no line of its own.
 - **A plain task never reached intake** (decision changed 2026-11-12, issue #607). Before: `task add` and `task done` were the only task commands; to have the factory build a to-do the owner had to retype it as `task create`, and nothing tied the two.
 - **Only a Slack press confirmed a proposal** (decision changed 2026-11-12, issue #585). Before: a plain-language reply's proposals were stored and confirmable only by a Slack button; the CLI had no sentence form and no `factory confirm`, and the dashboard showed only the typed command buttons, so outside Slack a proposal was applied only by typing its line.
