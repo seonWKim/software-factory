@@ -5,7 +5,7 @@ import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, si
 import { NumstatError, diffGates, scopeGate } from "../../../core/pre-push.js";
 import { BASE_CHECKOUT_DIR, CHECKS_FAILED_RUN, type CheckResult, TOOLCHAIN_MISSING, checkCommands, checkedLines, commandText, failingTestFiles, toolchainMissing, withTestFiles } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, type NeedsHuman, SPEC_CONFLICT, findingLine, parseImplement, parseReview } from "../../../core/outputs.js";
-import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, isCovered, wipBranchFor } from "../../../core/policy.js";
+import { CHECKS_ENV, CHECKS_ENV_LIMIT, PREFLIGHT_FAILED, branchFor, wipBranchFor } from "../../../core/policy.js";
 import { failingTests } from "../../../core/output-summary.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
 import { type ConflictFile, renderResolvePrompt } from "../../../core/resolve.js";
