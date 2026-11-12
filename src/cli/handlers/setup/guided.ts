@@ -14,18 +14,19 @@ import { cliUserConfig } from "../../../core/config.js";
 import { cliIdentity } from "../../../core/local-cli.js";
 import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../../core/settings.js";
 import { ProfileStore } from "../../../identity/index.js";
-import type { Clock } from "../../../interfaces/clock.js";
-import { type ConnectContext, type PluginKind, connectHooks, selectedCalendars } from "../../../plugin-api.js";
-import { createCalendars } from "../../../plugins.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import {
+  CONNECT_COMMANDS,
+  type ConnectContext,
   MAX_TOKEN_DAYS,
   type SetupIo,
   type SetupState,
   type SetupStep,
   type StepResult,
+  calendarFeed,
   canaryStep,
   checksStep,
+  connectHooks,
   neededSecrets,
   openBrowser,
   pluginSetupStep,
@@ -376,9 +377,13 @@ async function applyMode(ctx: CommandContext, loaded: Loaded, choice: ModeChoice
     : { ok: false, line: `not set; later: ${later.join("; ")}` };
 }
 
+export { CONNECT_COMMANDS };
+
+type Clock = ConnectContext["clock"];
+
 /** `factory setup <kind> <command>`, or with `disconnect` its `--disconnect` form. */
 export interface ConnectRequest {
-  kind: PluginKind;
+  kind: string;
   command: string;
   disconnect: boolean;
 }
@@ -409,14 +414,14 @@ export async function connectSetup(ctx: CommandContext, r: ConnectRequest, deps?
     io.print(`setup: no plugin connects through "setup ${r.kind} ${r.command}"`);
     return 1;
   }
-  const { name, hook } = found;
+  const { kind, name, hook } = found;
   const file = loaded.secretsFile;
   if (!(await stat(file).then(() => true, () => false))) {
     io.print(`No secret file at ${file}: run npm run setup first (it creates it), then this command again. Nothing was written.`);
     return 1;
   }
   // The secrets read as if the plugin were selected: it may not be listed yet.
-  const asSelected = new Plugins({ ...loaded, plugins: { ...loaded.plugins, calendars: [...new Set([...selectedCalendars(loaded.plugins), name])] } });
+  const asSelected = new Plugins({ ...loaded, plugins: { ...loaded.plugins, calendars: [...new Set([...(loaded.plugins.calendars ?? []), name])] } });
   const clock = given ?? (await asSelected.clock());
   const hc: ConnectContext = {
     secretsFile: file,
@@ -444,7 +449,7 @@ export async function connectSetup(ctx: CommandContext, r: ConnectRequest, deps?
 
   const s: GuidedState = { loaded, github: loaded.config.local_only !== true, rotate: [], ctx };
   const config = await readConfig(loaded);
-  const key = loaded.registry[r.kind].configKey;
+  const key = loaded.registry[kind].configKey;
   const now: unknown = config.raw[key];
   const listed = Array.isArray(now) ? now.filter((n): n is string => typeof n === "string") : [];
   const next = r.disconnect ? listed.filter((n) => n !== name) : listed.includes(name) ? listed : [...listed, name];
@@ -454,7 +459,7 @@ export async function connectSetup(ctx: CommandContext, r: ConnectRequest, deps?
   const written = await writeChoices(s, io, config, changes, what, r.disconnect ? "it stays listed" : "it is not turned on and not synced");
   io.print(`   ${written.ok ? "✓" : "✗"} ${written.line}`);
   if (!written.ok) return 1;
-  if (r.disconnect || !selectedCalendars(s.loaded.plugins).includes(name)) return 0;
+  if (r.disconnect || !(s.loaded.plugins.calendars ?? []).includes(name)) return 0;
   return syncOnce(s.loaded, name, clock, io.print);
 }
 
@@ -463,9 +468,8 @@ async function syncOnce(loaded: Loaded, name: string, clock: Clock, print: (line
   const store = await openStore(loaded, print);
   if (!store) return 1;
   try {
-    const p = new Plugins(loaded);
-    const feeds = (await createCalendars(loaded.registry, loaded.plugins, { ...p.base, secrets: await p.secrets(), clock })).filter((f) => f.name === name);
-    const out = (await syncCalendars(storeSql(store), feeds, clock.now().getTime())).find((o) => o.source === name);
+    const feed = { name, source: await calendarFeed(loaded, name, clock) };
+    const out = (await syncCalendars(storeSql(store), [feed], clock.now().getTime())).find((o) => o.source === name);
     if (!out) print(`   ✓ ${name} synced in the last 5 minutes already; it syncs again when due`);
     else if (out.ok) print(`   ✓ synced ${name}: read ${out.events} events`);
     else print(`   ✗ sync of ${name} failed: ${out.error}`);

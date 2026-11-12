@@ -9,10 +9,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Clock } from "../../../interfaces/clock.js";
-import type { ConnectContext, ConnectHook } from "../../../plugin-api.js";
-import type { SecretName } from "../../../interfaces/secret-store.js";
-import { CALENDAR_READONLY_SCOPE, type HttpClient, TOKEN_URL, fail, json } from "./google-calendar-source.js";
+import { CALENDAR_READONLY_SCOPE, type HttpClient, type SecretReader, TOKEN_URL, fail, json } from "./google-calendar-source.js";
 
 export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 /** How long the loopback listener waits for the browser's callback. */
@@ -20,28 +17,48 @@ export const CONNECT_TIMEOUT_MS = 5 * 60_000;
 const CALLBACK_PATH = "/callback";
 const BACK_TO_TERMINAL = "Go back to the terminal: it says whether the connection worked. You can close this tab.";
 
-export interface GoogleConnectOptions {
+/** The timer the listener's timeout runs on: the context's Clock. */
+interface Sleeper {
+  sleep(ms: number, signal?: AbortSignal): Promise<void>;
+}
+
+/**
+ * The ConnectContext (src/plugin-api.ts) as this hook uses it, restated because a component imports no legacy
+ * folder (RFC 0015 §9); the descriptor hands the hook over, so the typecheck keeps the two in step.
+ */
+export interface ConnectCtx<N extends string> {
+  secretsFile: string;
+  secrets: SecretReader<N>;
+  ask: { hidden(prompt: string): Promise<string> };
+  print: (line: string) => void;
+  openBrowser: (url: string) => Promise<void>;
+  storeSecrets: (values: ReadonlyMap<N, string>) => Promise<void>;
+  removeSecrets: (names: readonly N[]) => Promise<void>;
+  clock: Sleeper;
+}
+
+export interface GoogleConnectOptions<N extends string> {
   http: HttpClient;
   /** The secret names the descriptor declares. */
-  names: { refreshToken: SecretName; clientId: SecretName; clientSecret: SecretName };
+  names: { refreshToken: N; clientId: N; clientSecret: N };
 }
 
 /** The descriptor's connect hook: `factory setup calendar google`, and `--disconnect`. */
-export function googleCalendarConnect(o: GoogleConnectOptions): ConnectHook {
+export function googleCalendarConnect<N extends string>(o: GoogleConnectOptions<N>) {
   const all = [o.names.clientId, o.names.clientSecret, o.names.refreshToken];
   return {
     command: "google",
-    connect: (ctx) => connect(o, ctx),
-    async disconnect(ctx) {
+    connect: (ctx: ConnectCtx<N>) => connect(o, ctx),
+    async disconnect(ctx: ConnectCtx<N>) {
       await ctx.removeSecrets(all);
       ctx.print(`   removed ${all.join(", ")} from ${ctx.secretsFile}`);
     },
   };
 }
 
-async function connect(o: GoogleConnectOptions, ctx: ConnectContext): Promise<void> {
+async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: ConnectCtx<N>): Promise<void> {
   const { clientId: idName, clientSecret: secretName, refreshToken } = o.names;
-  const stored = async (name: SecretName) => (await ctx.secrets.get(name))?.reveal() || null;
+  const stored = async (name: N) => (await ctx.secrets.get(name))?.reveal() || null;
   let clientId = await stored(idName);
   let clientSecret = await stored(secretName);
   if (clientId && clientSecret) ctx.print(`   using the ${idName} and ${secretName} in ${ctx.secretsFile}`);
@@ -77,7 +94,7 @@ async function connect(o: GoogleConnectOptions, ctx: ConnectContext): Promise<vo
   ctx.print(`   stored ${idName}, ${secretName} and ${refreshToken} in ${ctx.secretsFile}`);
 }
 
-async function askHidden(ctx: ConnectContext, name: SecretName): Promise<string> {
+async function askHidden<N extends string>(ctx: ConnectCtx<N>, name: N): Promise<string> {
   const value = (await ctx.ask.hidden(`   Paste ${name} (hidden): `)).trim();
   if (!value || /\s/.test(value)) throw fail(`${name} is empty or holds whitespace: nothing stored`);
   return value;
@@ -143,7 +160,7 @@ interface Loopback {
 }
 
 /** A listener on 127.0.0.1, on a port the system picks, for one callback within CONNECT_TIMEOUT_MS of `clock`. */
-function listen(clock: Clock): Promise<Loopback> {
+function listen(clock: Sleeper): Promise<Loopback> {
   let answer!: (q: URLSearchParams) => void;
   let refuse!: (e: Error) => void;
   const callback = new Promise<URLSearchParams>((res, rej) => ((answer = res), (refuse = rej)));

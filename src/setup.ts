@@ -13,7 +13,8 @@ import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
-import { type SecretDeclaration, declaredSecrets, selectedSetups } from "./plugins.js";
+import type { ConnectContext } from "./plugin-api.js";
+import { REGISTRY, type SecretDeclaration, connectHooks, createPlugin, declaredSecrets, selectedSetups } from "./plugins.js";
 import type { Ask } from "./cli/handlers/setup/ask.js";
 
 export const MAX_TOKEN_DAYS = 30;
@@ -499,6 +500,20 @@ export async function setSecret(file: string, name: SecretName, value: string): 
   const tmp = `${file}.tmp-${process.pid}`;
   await writeFile(tmp, lines.join("\n"), { mode: 0o600 });
   await rename(tmp, file);
+}
+
+// connect (`factory setup <kind> <command>`, src/cli/handlers/setup/guided.ts)
+
+export type { ConnectContext };
+export { connectHooks };
+
+/** Every connect command of the built-in registry, for the usage text: `setup <kind> <command>`. */
+export const CONNECT_COMMANDS = connectHooks(REGISTRY).map((h) => ({ kind: h.kind, name: h.name, command: h.hook.command, configKey: REGISTRY[h.kind].configKey }));
+
+/** The calendar plugin `name`, built from the registry as a selected one is (its secrets, `clock`): setup's one sync. */
+export async function calendarFeed(loaded: Loaded, name: string, clock: ConnectContext["clock"]) {
+  const p = new Plugins(loaded);
+  return createPlugin(loaded.registry, "calendar", name, { ...p.base, secrets: await p.secrets(), clock });
 }
 
 /** Drops every `name=` line, keeping every other line. A name not in the file writes nothing. Atomic rename, mode 600. */

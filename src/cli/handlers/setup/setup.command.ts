@@ -1,18 +1,15 @@
 import { type SecretName, secretName } from "../../../interfaces/secret-store.js";
-import { type PluginKind, connectHooks } from "../../../plugin-api.js";
-import { REGISTRY } from "../../../plugins.js";
 import { defineCommand } from "../../command.js";
-import { connectSetup, guidedSetup } from "./guided.js";
+import { CONNECT_COMMANDS, connectSetup, guidedSetup } from "./guided.js";
 
 const ROTATE: Readonly<Record<string, string>> = {
   "--rotate-github": "GITHUB_TOKEN",
   "--rotate-claude": "CLAUDE_CODE_OAUTH_TOKEN",
 };
 
-/** Every plugin's connect command, from the registry: `setup <kind> <command>`, one line each. */
-const CONNECTS = connectHooks(REGISTRY);
-const connectUsage = CONNECTS.map(
-  (c) => `\n  setup ${c.kind} ${c.hook.command} [--disconnect]\n               connect the ${c.kind} plugin ${c.name}: sign in, store its secrets, list it in "${REGISTRY[c.kind].configKey}"
+/** Every plugin's connect command, from the registry: `setup <kind> <command>`, one entry each. */
+const connectUsage = CONNECT_COMMANDS.map(
+  (c) => `\n  setup ${c.kind} ${c.command} [--disconnect]\n               connect the ${c.kind} plugin ${c.name}: sign in, store its secrets, list it in "${c.configKey}"
                after a diff, sync once; --disconnect removes its secrets and its entry`,
 ).join("");
 
@@ -29,12 +26,12 @@ export default defineCommand({
   async run(args, ctx) {
     const [kind, command, ...rest] = args;
     if (kind !== undefined && !kind.startsWith("-")) {
-      const known = CONNECTS.some((c) => c.kind === kind && c.hook.command === command);
+      const known = CONNECT_COMMANDS.some((c) => c.kind === kind && c.command === command);
       if (!known || rest.some((a) => a !== "--disconnect")) {
         console.error(`setup: unknown arguments ${JSON.stringify(args.join(" "))}\n${ctx.usage}`);
         return 1;
       }
-      return connectSetup(ctx, { kind: kind as PluginKind, command: command!, disconnect: rest.includes("--disconnect") });
+      return connectSetup(ctx, { kind, command: command!, disconnect: rest.includes("--disconnect") });
     }
     const rotate: SecretName[] = [];
     for (const a of args) {
