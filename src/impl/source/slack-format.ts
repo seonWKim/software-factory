@@ -3,6 +3,7 @@ import { parseProposalMarker, parseTaskOfferMarker } from "../../core/interpret.
 import { utcMinute } from "../../core/spec-comment.js";
 import type { WorkStatus } from "../../core/status-label.js";
 import type { StateChange, WorkItem } from "../../core/types.js";
+import { VERDICT_BUTTONS, VERDICT_BUTTON_LABELS, type VerdictButton } from "../../core/verdict.js";
 import type { RepoRef } from "../github/github-client.js";
 
 // How a control-plane comment (GitHub Markdown) becomes a Slack thread message (issue #109): mrkdwn text in
@@ -13,6 +14,8 @@ import type { RepoRef } from "../github/github-client.js";
 // Cancel instead (issue #584); their values carry only the proposal ID and index, the args are read at press time.
 // An unsure answer to a top-level message (its task-offer marker) gets one "Make this a task" button whose value is
 // the message text (design 04-gate-commands, the chat answer); a press takes the message in as the presser.
+// A result message (a spec, a finished run's ready-to-merge message, a merge: `resultMarker`) also ends with the Good,
+// Bad and Feedback buttons (design 04-gate-commands, one-tap verdicts), after its command buttons.
 
 /** Commands that take no text get a button; the others (reject, revise, verdict) stay typed. */
 export const BUTTON_COMMANDS: readonly CommandName[] = ["approve", "retry", "resolve", "budget", "help"];
@@ -30,6 +33,13 @@ export const ACTION_PROPOSAL_ALL = "sf_proposal_all";
 export const ACTION_PROPOSAL_CANCEL = "sf_proposal_cancel";
 /** "Make this a task" (the chat answer): its value is the top-level message's text, at most SLACK_VALUE_MAX characters. */
 export const ACTION_MAKE_TASK = "sf_make_task";
+/** A one-tap verdict button (`sf_verdict:good|bad|feedback`); its value names nothing, the message is read from the store. */
+export const ACTION_VERDICT = "sf_verdict";
+/** The Feedback modal's callback ID and its text input (block and action IDs). */
+export const FEEDBACK_CALLBACK = "sf_feedback";
+export const FEEDBACK_INPUT = "feedback";
+/** The most characters the Feedback modal takes. */
+export const FEEDBACK_MAX = 3000;
 /**
  * A spec waiting for approval (design 05-sources, "Slack spec messages"): Approve with defaults, Other… (the answers
  * modal) and Reject… (the reason modal). Their value is the item ID, for reading only: a press acts on its thread's item.
@@ -97,6 +107,61 @@ export function doneLine(last: Pick<StateChange, "reason" | "actor" | "at"> | nu
   const what = last ? `${last.reason.replace(/_/g, " ")} by ${last.actor.id} at ${utcMinute(last.at)}` : "the item moved on";
   return `Done: ${what}. The item is now ${phaseLabel(commandPhase(it))}.`;
 }
+
+/**
+ * Whether the message posted under `marker` is a result message, which gets the Good, Bad and Feedback buttons: a
+ * spec (`spec:<run>`), a finished review run's ready-to-merge message (`merge:<run>`) or a merge (`pr-merged:`,
+ * `local-merged:`). `run`: the run the message reports, for the verdict's key. Null for any other message.
+ */
+export function resultMarker(marker: string): { run: string | null } | null {
+  const m = /^<!-- factory:(spec|merge|pr-merged|local-merged)(?::(\S+))? -->$/.exec(marker);
+  if (!m) return null;
+  return { run: (m[1] === "spec" || m[1] === "merge") && m[2] ? m[2] : null };
+}
+
+/** The one-tap verdict button an action ID names, or null. */
+export function verdictAction(action_id: string): VerdictButton | null {
+  const b = action_id.startsWith(`${ACTION_VERDICT}:`) ? action_id.slice(ACTION_VERDICT.length + 1) : "";
+  return (VERDICT_BUTTONS as readonly string[]).includes(b) ? (b as VerdictButton) : null;
+}
+
+/**
+ * A result message's verdict as its message shows it: `chosen` the stored verdict's button (null: none yet), whose
+ * button is no longer offered, and `line`, the stored verdict in words.
+ */
+export interface VerdictShown {
+  chosen: VerdictButton | null;
+  line?: string;
+}
+
+/** A result message's verdict buttons, all but the stored verdict's; none for another message. */
+function verdictButtons(verdict: VerdictShown | undefined): unknown[] {
+  // No style: the buttons' look waits for the design system (decision 5 of the one-tap verdicts).
+  return verdict ? VERDICT_BUTTONS.filter((b) => b !== verdict.chosen).map((b) => button(VERDICT_BUTTON_LABELS[b], `${ACTION_VERDICT}:${b}`, b)) : [];
+}
+
+/** The Feedback modal (views.open): one text input; `meta` (the message's channel and ts) comes back on its submit. */
+export function feedbackModal(meta: { channel: string; ts: string }): Record<string, unknown> {
+  return {
+    type: "modal",
+    callback_id: FEEDBACK_CALLBACK,
+    private_metadata: JSON.stringify(meta),
+    title: { type: "plain_text", text: "Feedback" },
+    submit: { type: "plain_text", text: "Send" },
+    close: { type: "plain_text", text: "Cancel" },
+    blocks: [{
+      type: "input",
+      block_id: FEEDBACK_INPUT,
+      label: { type: "plain_text", text: "What should the factory know about this result?" },
+      element: { type: "plain_text_input", action_id: FEEDBACK_INPUT, multiline: true, max_length: FEEDBACK_MAX },
+    }],
+  };
+}
+
+/** A non-empty string from an untrusted payload field, else null. */
+export const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
+/** An untrusted payload field as an object (empty when it is not one). */
+export const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {});
 
 /** `&`, `<` and `>` as Slack wants them in text. */
 export function escapeSlack(s: string): string {
@@ -235,11 +300,15 @@ export function withoutFooter(body: string): string {
  * #541), and an actions block with the command buttons. A stored proposal's reply gets its proposal buttons instead
  * (`proposalButtons`); a reply with no marker (a question, or one not stored) stays plain text, with no buttons.
  * `done` (issue #586): the message after a state change, its footer dropped, the `done` line added, and only the
- * buttons in `keep` (those of its footer that still apply).
+ * buttons in `keep` (those of its footer that still apply). `verdict`: a result message's verdict buttons, all but the
+ * stored verdict's, after the others, with the stored verdict's line.
  */
-export function renderComment(body: string, repo: RepoRef, botUserId: string, done?: { line: string; keep: readonly CommandName[] }): SlackRendered {
+export function renderComment(
+  body: string, repo: RepoRef, botUserId: string, done?: { line: string; keep: readonly CommandName[] }, verdict?: VerdictShown,
+): SlackRendered {
   let text = toMrkdwn(done ? withoutFooter(body) : body, repo);
   if (done) text += `\n\n*${escapeSlack(done.line)}*`;
+  if (verdict?.line) text += `\n\n*${escapeSlack(verdict.line)}*`;
   const cmds = done ? done.keep : footerCommands(body);
   if (cmds.length > 0 || (!done && body.includes(FOOTER_HEADING))) {
     text += `\n\n_In Slack, type a command after a mention, e.g. <@${botUserId}> approve or <@${botUserId}> revise &lt;feedback&gt; ` +
@@ -262,6 +331,7 @@ export function renderComment(body: string, repo: RepoRef, botUserId: string, do
     : offerFits
     ? [button("Make this a task", ACTION_MAKE_TASK, offer, "primary")]
     : cmds.map((c) => button(LABELS[c] ?? c, `${ACTION_COMMAND}:${c}`, `/${c}`, c === "approve" ? "primary" : undefined));
+  buttons.push(...verdictButtons(verdict));
   if (buttons.length > 0) blocks.push({ type: "actions", elements: buttons });
   return { text: sections[0] ?? "", blocks };
 }
@@ -369,9 +439,11 @@ function fitSection(text: string, whole: string, link?: string): string {
  * Decisions (one line each, with its proposed default), and a Full spec link to the dashboard item page (`link`; null:
  * a View button on the first section instead, which opens the item modal). Problem, Applied defaults, Done when and the rest stay in the store and on the dashboard. Each section is
  * at most SECTION_MAX characters, a longer one cut with the note naming `factory task show <id>`. Buttons: Approve
- * with defaults, Other… when there is a decision, and Reject….
+ * with defaults, Other… when there is a decision, and Reject…, then `verdict`'s Good, Bad and Feedback, with its line.
  */
-export function renderSpecMessage(spec: SpecSummary, item: { id: string; title: string | null }, repo: RepoRef, link: string | null): SlackRendered {
+export function renderSpecMessage(
+  spec: SpecSummary, item: { id: string; title: string | null }, repo: RepoRef, link: string | null, verdict?: VerdictShown,
+): SlackRendered {
   const whole = `factory task show ${item.id}`;
   const at = link ?? undefined;
   const first = `Needs your approval: ${escapeSlack(item.title ?? item.id)}`;
@@ -381,14 +453,33 @@ export function renderSpecMessage(spec: SpecSummary, item: { id: string; title: 
     sections.push(`*Decisions*\n${lines.join("\n")}`);
   }
   if (link !== null) sections.push(`<${link.replace(/[<>|]/g, "")}|Full spec>`);
+  if (verdict?.line) sections.push(`*${escapeSlack(verdict.line)}*`);
   const fitted = sections.map((t) => fitSection(t, whole, at));
   const buttons = [
     button("Approve with defaults", ACTION_SPEC_APPROVE, item.id, "primary"),
     ...(spec.decisions.length > 0 ? [button("Other…", ACTION_SPEC_OTHER, item.id)] : []),
     button("Reject…", ACTION_SPEC_REJECT, item.id),
+    ...verdictButtons(verdict),
   ];
   const blocks: unknown[] = [...fitted.map((t, i) => section(t, i === 0 && link === null ? item.id : undefined)), { type: "actions", elements: buttons }];
   return { text: fitted[0]!, blocks };
+}
+
+/**
+ * How a factory comment shows in Slack: the short spec message when it is a spec waiting for approval and `item` is
+ * its item, else the whole comment (`done`: after a state change). `verdict`: a result message's verdict buttons and line.
+ */
+export function renderFactoryComment(
+  body: string, item: { id: string; title: string | null } | null, d: { repo: RepoRef; dashboard_url?: string },
+  verdict?: VerdictShown, done?: { line: string; keep: readonly CommandName[] },
+): (bot: string) => SlackRendered {
+  const spec = waitingSpec(body);
+  if (spec && item) {
+    const base = dashboardBase(d.dashboard_url);
+    const link = base === null ? null : `${base}/app/items/${encodeURIComponent(item.id)}`;
+    return () => renderSpecMessage(spec, item, d.repo, link, verdict);
+  }
+  return (bot) => renderComment(body, d.repo, bot, done, verdict);
 }
 
 const plain = (text: string, max: number) => ({ type: "plain_text", text: text.slice(0, max) || " " });

@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { SourceNotice } from "../src/interfaces/source-adapter.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { postNotices } from "../src/impl/source/slack-notify.js";
 import { SlackSource } from "../src/impl/source/slack-source.js";
@@ -19,7 +20,7 @@ async function setup(notify_channel?: string) {
   const { store } = await newStore();
   const api = new FakeSlackApi();
   const slack = new SlackSource({
-    api, connect: new FakeSocket().connect, channels: [CHANNEL], scanner: new PatternEgressScanner(async () => []), store,
+    api, connect: new FakeSocket().connect, channels: [CHANNEL], scanner: new PatternEgressScanner(async () => []), store, auth: new LocalAuthProvider(store),
     repo: { owner: "o", name: "r" }, log: silent, ...(notify_channel ? { notify_channel } : {}),
   });
   return { store, api, slack };
@@ -89,6 +90,7 @@ describe("slack notices: a record that fails", () => {
     const slack = new SlackSource({
       api: f.api, connect: new FakeSocket().connect, channels: [CHANNEL], scanner: new PatternEgressScanner(async () => []),
       store: { ...f.store, recordNoticeMessage: () => Promise.reject(new Error("store down")) } as never,
+      auth: new LocalAuthProvider(f.store),
       repo: { owner: "o", name: "r" }, log: { ...silent, warn: (m: string) => void warned.push(m) },
     });
     await slack.notifyOwner([needs("wi_a")]);

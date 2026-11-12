@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { phaseLabel } from "../src/core/commands.js";
 import type { FactoryConfig } from "../src/core/config.js";
@@ -376,7 +377,7 @@ async function slackItem(o: { gate?: boolean; scanner?: EgressScanner } = {}) {
     log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(), prRef: (pr) => forge.prRef(pr),
   });
   const slack = new SlackSource({
-    api: new FakeSlackApi(), connect: new FakeSocket().connect, channels: [CHANNEL], scanner: cleanScanner, store, repo: { owner: "o", name: "r" }, log: silent,
+    api: new FakeSlackApi(), connect: new FakeSocket().connect, channels: [CHANNEL], scanner: cleanScanner, store, auth: new LocalAuthProvider(store), repo: { owner: "o", name: "r" }, log: silent,
   });
   const code = newLinkCode();
   await store.createLinkCode("local:1" as UserId, code);

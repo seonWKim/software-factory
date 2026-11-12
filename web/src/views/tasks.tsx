@@ -1,6 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useRef, useState } from "react";
-import { API, type DayRow, type EventRow, type TaskAction, type TaskRow, type TasksView, isEventRow, postTaskAction, postTaskAdd, postTaskBuild, useApi } from "../api.js";
+import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useRef, useState } from "react";
+import {
+  API, type DayRow, type EventRow, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postTaskAction, postTaskAdd, postTaskBuild, useApi,
+} from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -25,6 +27,10 @@ import { itemPath } from "../pages.js";
 // Each row's actions (design 02-tasks) post to the route that calls the CLI command's store method: the checkbox
 // completes it, `e` or Edit edits it in place (Enter saves, Esc cancels), and its overflow menu adds a sub-task (top-level
 // rows only) or deletes it through the danger Dialog. A sub-task shows indented under its parent, one level.
+// Inbox and Today end with today's timeline (design 02-tasks, schedule a task): the server places each timed task, drawn
+// its duration (30 minutes when none is stored), and each timed event, read-only. A task row dragged onto a
+// half-hour slot is scheduled there (POST /api/v1/tasks/schedule: today's date, the slot's time); typing a time in
+// the row's edit (3pm, 45m) does the same from the keyboard.
 
 const TABS = [
   { id: "inbox", label: t("tasks.inbox") },
@@ -266,6 +272,7 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
   const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
+  const minutes = task.due_time === null ? null : (task.duration_minutes ?? DEFAULT_MINUTES);
   const close = () => {
     setMode("view");
     action.setError(null);
@@ -298,6 +305,8 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
       data-key={token === null ? undefined : task.id}
       data-overdue={overdue ? "" : undefined}
       data-sub={sub ? "" : undefined}
+      draggable={token !== null && mode === "view"}
+      onDragStart={(e) => e.dataTransfer.setData(DRAG_TYPE, task.id)}
       className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
     >
       {token !== null && (
@@ -331,6 +340,7 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
           {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
           {parent !== null && !sub && titles.has(parent) && <span className="break-words">{t("tasks.subOf", { title: titles.get(parent)! })}</span>}
           {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>{t("tasks.due", { due })}</span>}
+          {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
           {task.priority !== null && <span>!{task.priority}</span>}
           {task.list !== null && <span className="break-all">#{task.list}</span>}
           {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
@@ -417,16 +427,103 @@ function Group({ title, tasks, overdue = false }: { title: string; tasks: readon
   );
 }
 
+/** What a task row carries when dragged: its ID. */
+const DRAG_TYPE = "text/plain";
+/** A timed task with no stored duration is drawn this long (the server plans it so too). */
+const DEFAULT_MINUTES = 30;
+/** The timeline's slots: one per half hour; each is h-6 (1.5rem) high, so a minute is 1.5/30 rem. */
+const SLOT_MINUTES = 30;
+const REM_PER_MINUTE = 1.5 / SLOT_MINUTES;
+const SLOTS = Array.from({ length: (24 * 60) / SLOT_MINUTES }, (_, i) => i * SLOT_MINUTES);
+const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
+/**
+ * Today's timeline: a half-hour slot per row, each a drop target for a task row, and the server's blocks drawn over
+ * it at their time and length. A drop schedules the task at the slot; its refusal shows above the timeline.
+ */
+function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow[] }) {
+  const { token } = useContext(Rows);
+  const action = useTaskAction(token);
+  const [over, setOver] = useState<string | null>(null);
+  const label = t("tasks.timeline", { day: dayLabel(date) });
+  const drop = async (e: DragEvent<HTMLLIElement>, time: string) => {
+    e.preventDefault();
+    setOver(null);
+    const id = e.dataTransfer.getData(DRAG_TYPE);
+    if (id === "") return;
+    if (await action.run("schedule", { id, date, time })) announceStatus(t("tasks.scheduled", { time }));
+  };
+  return (
+    <div className="space-y-1">
+      <h3 className="text-xs font-medium text-text-2">{label}</h3>
+      {token !== null && <p className={muted}>{t("tasks.timelineHint")}</p>}
+      {action.error !== null && (
+        <p role="alert" className={ALERT}>
+          {action.error}
+        </p>
+      )}
+      <div className="max-h-96 overflow-y-auto rounded-control border border-border">
+        <div className="relative">
+          <ol aria-label={label}>
+            {SLOTS.map((m) => {
+              const time = hhmm(m);
+              return (
+                <li
+                  key={time}
+                  data-slot={time}
+                  aria-label={time}
+                  onDragOver={token === null ? undefined : (e) => {
+                    e.preventDefault();
+                    setOver(time);
+                  }}
+                  onDragLeave={() => setOver((o) => (o === time ? null : o))}
+                  onDrop={token === null ? undefined : (e) => void drop(e, time)}
+                  className={cn("h-6 border-border pl-2 text-xs text-text-2 tabular-nums", m > 0 && "border-t", m % 60 !== 0 && "border-dashed", over === time && "bg-surface-2")}
+                >
+                  {m % 60 === 0 ? time : null}
+                </li>
+              );
+            })}
+          </ol>
+          <ul aria-label={t("tasks.timelineBlocks")}>
+            {blocks.map((b) => (
+              <li
+                key={`${b.kind}:${b.id}`}
+                data-block={b.id}
+                data-minutes={b.minutes}
+                className={cn(
+                  "pointer-events-none absolute right-2 left-16 overflow-hidden rounded-control border px-2 text-xs text-text-1",
+                  b.kind === "event" ? "border-dashed border-border bg-surface" : "border-border-strong bg-surface-2",
+                )}
+                style={{ top: `${b.offset * REM_PER_MINUTE}rem`, height: `${b.minutes * REM_PER_MINUTE}rem` }}
+              >
+                <span className="tabular-nums">{t("tasks.span", { start: b.start, end: b.end })}</span> <span className="break-words">{b.title}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
+  const timeline = <Timeline date={v.today_date} blocks={v.timeline ?? []} />;
   if (tab === "inbox") {
-    return v.inbox.length === 0 ? <Empty>{t("tasks.emptyInbox")}</Empty> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} />;
-  }
-  if (tab === "today") {
-    if (v.today.overdue.length + v.today.due.length === 0) return <Empty>{t("tasks.emptyToday")}</Empty>;
     return (
       <div className="space-y-3">
+        {v.inbox.length === 0 ? <Empty>{t("tasks.emptyInbox")}</Empty> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} />}
+        {timeline}
+      </div>
+    );
+  }
+  if (tab === "today") {
+    return (
+      <div className="space-y-3">
+        {v.today.overdue.length + v.today.due.length === 0 && <Empty>{t("tasks.emptyToday")}</Empty>}
         {v.today.overdue.length > 0 && <Group title={t("tasks.overdue")} tasks={v.today.overdue} overdue />}
         {v.today.due.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={v.today.due} />}
+        {timeline}
       </div>
     );
   }

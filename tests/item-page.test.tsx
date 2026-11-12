@@ -460,7 +460,7 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(document.querySelector("[data-commands-none]")).toBeNull();
   });
 
-  it("the verdict row: a Verdict severity select, then Accept, Changes, Reject and a ghost Done in one button row; Done hides the outcome", async () => {
+  it("the verdict row: a Verdict severity select, then Accept, Changes, Reject, Good, Bad, Feedback and a ghost Done in one button row; Done hides the outcome", async () => {
     const replies = [{ seq: 4, command: "verdict", created_at: AT, handled_at: AT, refusal: null }];
     serve({ commands: [cmd("verdict")], replies });
     mount("/app/items/wi_g");
@@ -469,7 +469,7 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(select.tagName).toBe("SELECT");
     const done = await waitFor(() => within(row).getByRole("button", { name: "Done" }));
     const group = done.parentElement!;
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Accept", "Changes", "Reject", "Done"]);
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Accept", "Changes", "Reject", "Good", "Bad", "Feedback", "Done"]);
     expect(group.className.split(" ")).toEqual(expect.arrayContaining(["flex-wrap", "gap-2"]));
     const cls = (name: string) => within(group).getByRole("button", { name }).className.split(" ");
     expect(cls("Accept")).toContain("border-border-strong");

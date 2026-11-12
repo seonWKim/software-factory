@@ -70,7 +70,7 @@ async function setup(llm: ScriptedLLM | null) {
   const socket = new FakeSocket();
   const log = recordingLog();
   const scanner = new PatternEgressScanner(async () => [SECRET]);
-  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, repo: { owner: "o", name: "r" }, log });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo: { owner: "o", name: "r" }, log });
   const gh = new FakeSource();
   // U0ALICE is linked to github:1, the local owner (may approve); U0BOB to github:2, who may only submit work.
   for (const [user, account] of [["github:1", "U0ALICE"], ["github:2", "U0BOB"]] as const) {
