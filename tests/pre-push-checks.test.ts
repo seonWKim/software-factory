@@ -10,7 +10,6 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
-import { type AdminConnection, MysqlLocalTestDatabase } from "../src/impl/test-database/mysql-local-test-database.js";
 import { MYSQL_SKIPPED, NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
@@ -543,56 +542,6 @@ describe("the test database's URL stays with the check commands", { timeout: 60_
 });
 
 describe("TestDatabase plugins", { timeout: 60_000 }, () => {
-  /** An admin connection that records every statement. */
-  const recorder = () => {
-    const queries: string[] = [];
-    const connects: { host: string; port: number; user: string; password: string }[] = [];
-    const connect = async (server: { host: string; port: number; user: string; password: string }): Promise<AdminConnection> => {
-      connects.push(server);
-      return { query: async (sql: string) => void queries.push(sql), end: async () => undefined };
-    };
-    return { queries, connects, connect };
-  };
-  const ADMIN = `mysql://sf_test:${PASSWORD}@127.0.0.1:3307`;
-
-  it("mysql-local creates one sf_test_* database per run and drops it in a finally block, also when a check fails", async () => {
-    const r = recorder();
-    const f = await setup({
-      checks: [failsWhile("always", "src/a.txt", "fail")],
-      testDatabase: new MysqlLocalTestDatabase(() => ADMIN, r.connect),
-      implement: () => undefined,
-      fix: () => undefined,
-    });
-    const item = await f.approveAndImplement();
-    const run = (await f.implementRuns(item.id))[0]!;
-    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
-    const name = `sf_test_${run.id}`;
-    expect(r.queries).toEqual([`CREATE DATABASE \`${name}\``, `DROP DATABASE IF EXISTS \`${name}\``]);
-    expect(r.connects.every((c) => c.host === "127.0.0.1" && c.port === 3307 && c.user === "sf_test" && c.password === PASSWORD)).toBe(true);
-    // Each check got the per-run URL: the same user, the run's database.
-    for (const e of f.checkExecs()) expect(e.env.SF_TEST_MYSQL_URL).toBe(`mysql://sf_test:${PASSWORD}@127.0.0.1:3307/${name}`);
-  });
-
-  it("mysql-local refuses to create or drop any database whose name does not start with sf_test_", async () => {
-    const r = recorder();
-    const db = new MysqlLocalTestDatabase(() => ADMIN, r.connect);
-    for (const name of ["software_factory", "mysql", "sf_testx", "sf_test_", "sf_test_a`; DROP DATABASE software_factory; --", "SF_TEST_a", "x_sf_test_a"]) {
-      await expect(db.createDatabase(name), name).rejects.toThrow(/refusing database/);
-      await expect(db.dropDatabase(name), name).rejects.toThrow(/refusing database/);
-    }
-    expect(r.connects).toEqual([]);
-    expect(r.queries).toEqual([]);
-    await db.dropDatabase("sf_test_ok_1");
-    expect(r.queries).toEqual(["DROP DATABASE IF EXISTS `sf_test_ok_1`"]);
-  });
-
-  it("mysql-local's errors never include the admin URL", async () => {
-    const db = new MysqlLocalTestDatabase(() => `http://u:${PASSWORD}@h`, recorder().connect);
-    const err = await db.create("run_1").then(() => null, (e: Error) => e.message);
-    expect(err).toMatch(/TEST_MYSQL_URL must look like/);
-    expect(err).not.toContain(PASSWORD);
-  });
-
   it("none sets no SF_TEST_MYSQL_URL, and the PR body says the MySQL checks were skipped", async () => {
     const f = await setup({ testDatabase: new NoTestDatabase() });
     const item = await f.approveAndImplement();

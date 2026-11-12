@@ -39,8 +39,9 @@ const TableMode = createContext<{ head: readonly string[]; cards: boolean }>({ h
 /**
  * A data table at `sm` and up; below it, one card per row with no horizontal scroll: the first cell is the
  * card's title, the next two sit under it, the rest are listed with their column names. Rows are `Tr`, cells `Td`.
+ * `numeric[i]` right-aligns the i-th column's heading to sit over its numbers.
  */
-export function Table({ head, children, label }: { head: readonly string[]; children: ReactNode; label: string }) {
+export function Table({ head, children, label, numeric }: { head: readonly string[]; children: ReactNode; label: string; numeric?: readonly boolean[] }) {
   const wide = useWide();
   if (!wide) {
     return (
@@ -56,8 +57,8 @@ export function Table({ head, children, label }: { head: readonly string[]; chil
       <table aria-label={label} className="w-full text-left text-sm">
         <thead className="bg-bg text-xs text-text-2">
           <tr>
-            {head.map((h) => (
-              <th key={h} scope="col" className="px-3 py-2 font-medium whitespace-nowrap">
+            {head.map((h, i) => (
+              <th key={h} scope="col" className={cn("px-3 py-2 font-medium whitespace-nowrap", numeric?.[i] && "text-right")}>
                 {h}
               </th>
             ))}
@@ -102,7 +103,8 @@ export function Td({ children, className }: { children: ReactNode; className?: s
   return <td className={cn("px-3 py-2 align-top", className)}>{children}</td>;
 }
 
-const LEVEL_TONE: Record<string, string> = {
+/** The one status colour map: a level name to its token classes. Badge and StatusBadge both read it. */
+export const LEVEL_TONE: Record<string, string> = {
   ready_to_merge: "bg-pill-ok-bg text-pill-ok-fg",
   needs_approval: "bg-pill-warn-bg text-pill-warn-fg",
   needs_you: "bg-pill-bad-bg text-pill-bad-fg",
@@ -112,12 +114,17 @@ const LEVEL_TONE: Record<string, string> = {
   blocked_by_task: "bg-surface-2 text-text-1",
 };
 
+/** The token classes for a level; a level with no tone is neutral. */
+export function toneOf(level: string | undefined): string {
+  return (level && LEVEL_TONE[level]) ?? "bg-surface-2 text-text-1";
+}
+
 export function Badge({ level, children }: { level?: string | undefined; children: ReactNode }) {
   return (
     <span
       className={cn(
         "inline-block rounded-control px-1.5 py-0.5 text-xs font-medium whitespace-nowrap",
-        (level && LEVEL_TONE[level]) ?? "bg-surface-2 text-text-1",
+        toneOf(level),
       )}
     >
       {children}
