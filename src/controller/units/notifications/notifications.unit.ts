@@ -3,7 +3,7 @@
 // and the state changes of each item whose wait or close may be new (one with a notice newer than its last update is
 // unchanged since); `decide` (src/core/notifications.ts) returns the notices to write, which the router commits, each
 // an insert that skips a stored (work item, wait key) in case another replica wrote it first. Each notice quiet hours
-// do not hold also gets one outbox intent per `notify_channels` adapter that has `notifyOwner` (design
+// do not hold also gets one outbox intent per `notify_channels` adapter that has `notifyOwner` (notifiers.ts, design
 // 12-notification-channels), keyed so a second pass or replica stores it once, and written before its notice. It
 // writes no state change or item field. The shell shows the notices; outbound sends the intents.
 
@@ -11,17 +11,17 @@ import {
   FINISHED_KIND, NOTIFY_REF, type ClosedItem, type NewNotice, type NoticeSettings, SUMMARY_ITEM, SUMMARY_KIND, type WaitingItem, WAIT_KINDS,
   closeOutcome, decideNotices, finishedSince, noticedSince, waitReason,
 } from "../../../core/notifications.js";
-import type { WorkItem } from "../../../core/types.js";
-import type { SourceAdapter } from "../../../interfaces/source-adapter.js";
 import type { NewAction } from "../../../outbound/index.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { ControllerReader, ControllerWrite } from "../kernel.js";
 import type { ControllerDecision, Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { type Notifier, notifiers } from "./notifiers.js";
 
 /** Items read per pass: far more than wait on one owner, or close in 7 days, at once. */
 const WAITING_LIMIT = 500;
 
+type WorkItem = Awaited<ReturnType<ControllerReader["listWorkItemsWhere"]>>[number];
 type Item = Pick<WorkItem, "id" | "title" | "source" | "close_reason">;
 
 interface Loaded {
@@ -35,7 +35,12 @@ interface Loaded {
 
 /** Writes the owner's notices, and their intents for the notify channels. */
 export class NotificationsUnit {
-  constructor(private readonly c: Ctx) {}
+  /** The `notify_channels` names that reach an adapter with notifyOwner, with its type. */
+  private readonly notifiers: (names: readonly string[]) => Notifier[];
+
+  constructor(private readonly c: Ctx) {
+    this.notifiers = notifiers(c.k);
+  }
 
   async load(r: ControllerReader, tick: Tick): Promise<Loaded> {
     const { notice_kinds, quiet_hours, notify_channels } = this.c.k.live.values();
@@ -53,37 +58,27 @@ export class NotificationsUnit {
 
   decide(l: Loaded, tick: Tick): ControllerDecision {
     const notices = decideNotices({ ...l, now: new Date(tick.now) });
-    const adapters = l.channels.map((name) => this.notifier(name)).filter((a) => a !== null);
+    const to = this.notifiers(l.channels);
     const writes: ControllerWrite[] = [];
     for (const notice of notices) {
       // Held by quiet hours: no intent; the summary that covers it gets one.
-      if (notice.held_until === null) for (const [name, adapter] of adapters) writes.push({ kind: "intent", action: intent(notice, l.items, name, adapter) });
+      if (notice.held_until === null) for (const n of to) writes.push({ kind: "intent", action: intent(notice, l.items, n) });
       writes.push({ kind: "notice", notice });
     }
     return { writes };
   }
-
-  /**
-   * The adapter a `notify_channels` name (a source plugin name) reaches, when it has `notifyOwner`: the configured source
-   * of that type, or whose type is the name and a suffix (the `slack` plugin's `slack_thread`). Availability is the
-   * presence of `notifyOwner`, never a source type the controller knows.
-   */
-  private notifier(name: string): [string, SourceAdapter] | null {
-    const adapter = this.c.k.byType.get(name) ?? this.c.k.sources.find((s) => s.type.startsWith(`${name}_`)) ?? null;
-    return adapter?.notifyOwner ? [name, adapter] : null;
-  }
 }
 
 /** One notice's intent for one channel: neutral args, keyed on (item, wait key, channel). */
-function intent(n: NewNotice, items: ReadonlyMap<string, Item>, channel: string, adapter: SourceAdapter): NewAction {
+function intent(n: NewNotice, items: ReadonlyMap<string, Item>, to: Notifier): NewAction {
   const item = items.get(n.work_item_id);
   const finished = n.kind === FINISHED_KIND;
   const wait = (WAIT_KINDS as readonly string[]).includes(n.kind) ? (n.kind as (typeof WAIT_KINDS)[number]) : null;
   return {
     action: "notify",
-    target: { type: adapter.type, id: NOTIFY_REF, link: "" },
+    target: { type: to.type, id: NOTIFY_REF, link: "" },
     work_item_id: n.work_item_id === SUMMARY_ITEM ? null : n.work_item_id,
-    key: `notify:${n.work_item_id}:${n.wait_key}:${channel}`,
+    key: `notify:${n.work_item_id}:${n.wait_key}:${to.channel}`,
     args: {
       kind: finished ? FINISHED_KIND : n.kind === SUMMARY_KIND ? SUMMARY_KIND : "needs_you",
       work_item_id: n.work_item_id === SUMMARY_ITEM ? null : n.work_item_id,

@@ -3,8 +3,6 @@
 // delay. The heuristics add a debounce only when it helps. Each rule is a pure function of (destination stats,
 // budget, batch, tick.now): no clock, no I/O, so tests drive them with tick times alone.
 
-import { NOTIFY_REF } from "../../core/notifications.js";
-
 /** `auto`: the heuristics below. `commit`: every commit is its own batch, sent at once. `fixed`: always `debounce`. */
 export type BatchingMode = "auto" | "commit" | "fixed";
 
@@ -19,11 +17,12 @@ export interface BatchingPolicy {
 export const DEFAULT_BATCHING: BatchingPolicy = { mode: "auto", debounce_ms: 2_000, max_wait_ms: 30_000, max_messages: 10 };
 
 /**
- * Owner notices for an adapter (design 12-notification-channels) wait in their own destination, `<type>:notify`
- * (NOTIFY_REF), so a channel's outage holds only its notices, and one 60 s window's go out as one batch.
+ * Owner notices for an adapter (design 12-notification-channels) wait in their own destination, `<type>:notify`, so
+ * a channel's outage holds only its notices, and one 60 s window's go out as one batch. The ref is the notifications
+ * unit's NOTIFY_REF (src/core/notifications.ts), repeated here since a component imports no legacy core module.
  */
 export function isNotifyDestination(destination: string): boolean {
-  return destination === `${destination.split(":")[0]}:${NOTIFY_REF}`;
+  return destination === `${destination.split(":")[0]}:notify`;
 }
 
 /** One notices tick (design 12-notification-channels): an adapter gets at most one notices message per window. */
