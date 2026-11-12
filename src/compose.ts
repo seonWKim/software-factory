@@ -6,7 +6,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
   coordinationConfig, retentionConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
@@ -89,11 +89,11 @@ export interface FileConfig {
   store?: StoreConfig;
   /**
    * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. check_commands: a list of
-   * argv, the pre-push checks (design §4); absent: [test_command].
+   * argv, the pre-push checks (design §4); absent: [test_command]. ui_check: the merge-time UI check (uiCheckConfig).
    */
   repo: {
     owner: string; name: string; path: string; base_branch: string;
-    install_command?: unknown; test_command?: unknown; check_commands?: unknown;
+    install_command?: unknown; test_command?: unknown; check_commands?: unknown; ui_check?: unknown;
   };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
@@ -345,12 +345,12 @@ export const FORGE_PLACEHOLDER = "{{forge}}";
 
 /** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
 export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
+export const UI_CHECK_PLACEHOLDER = "{{ui_check}}"; // the UI check sentence (uiCheckSentence): empty with no repo.ui_check
 
 /**
  * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
  * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
- * (`plugins.forge`, else "local"); and with a `toolchain` block, one sentence saying those checks run offline from
- * the read-only caches. No block: the toolchain placeholder is removed, so the text is what it was before the block existed.
+ * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "").
  */
 export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
@@ -358,7 +358,7 @@ export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: str
   const offline = toolchain
     ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
     : "";
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline);
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */
@@ -443,14 +443,14 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
 
   const home = process.env.HOME ?? "";
-  const { check_commands: rawChecks, ...fileRepo } = file.repo;
+  const { check_commands: rawChecks, ui_check: rawUiCheck, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
     repo: {
       ...fileRepo,
       path: repoPath,
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command: testCommand(file.repo.test_command),
-      ...checkCommandsConfig(rawChecks),
+      ...checkCommandsConfig(rawChecks), ...uiCheckConfig(rawUiCheck),
     },
     ...(local ? { local_only: true as const } : {}),
     intake_label: intakeLabel(file.intake_label),
