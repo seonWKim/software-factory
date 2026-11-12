@@ -218,20 +218,20 @@ describe("plugin registry: defaults", () => {
     await (ctx.store as FactoryStore).close();
   });
 
-  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local and Slack intake and the bm25 doc index, leaving awake to the platform", async () => {
+  it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local and Slack intake, the bm25 doc index and the agents-home tacit ledger, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, auth: _a, github_auth, sources, capability, forge, ...rest } = loaded.plugins;
+      const { store: _s, auth: _a, github_auth, sources, capability, tacit, forge, ...rest } = loaded.plugins;
       expect(github_auth).toBe("app");
+      expect(tacit).toBe("agents-home");
       expect(sources).toEqual(["github-issues", "local", "slack"]);
       expect(forge).toBe("github");
       expect(capability).toBe("bm25");
-      const { github_auth: _g, capability: _c, ...defaults } = defaultPlugins(platform);
+      const { github_auth: _g, capability: _c, tacit: _t, ...defaults } = defaultPlugins(platform);
       expect(rest).toEqual(defaults);
     }
-    // tacit is left out of the checked-in config: its default, `none`, applies.
-    const { awake: _w, tacit: _t, ...fixed } = defaultPlugins("darwin");
-    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25" });
+    const { awake: _w, ...fixed } = defaultPlugins("darwin");
+    expect(REAL.plugins).toEqual({ ...fixed, github_auth: "app", source: ["github-issues", "local", "slack"], capability: "bm25", tacit: "agents-home" });
   });
 
   it("awake defaults to caffeinate on macOS and none everywhere else", async () => {
