@@ -1,5 +1,5 @@
 // A calendar the factory reads (design 02-tasks, calendar): a neutral source of events, selected by name in the
-// top-level `calendar` config key (docs/plugins/calendar-source.md). No provider ships yet. The calendar component
+// top-level `calendar` config key (docs/plugins/calendar-source.md); none by default. The calendar component
 // (src/calendar/) stores what a source answers; the source never writes and is never asked to.
 
 /** One event as a source reports it. Times are ISO 8601 instants; an all-day event spans its whole days. */
