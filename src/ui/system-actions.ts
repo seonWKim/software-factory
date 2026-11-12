@@ -25,6 +25,11 @@ export interface SystemAction {
   until: string | null;
 }
 
+/** How many lines the actions take in Needs you: one each, but every open alarm together is one line (design 09). */
+export function oneLine(actions: readonly Pick<SystemAction, "code">[]): number {
+  return actions.filter((a) => a.code !== "alarm").length + (actions.some((a) => a.code === "alarm") ? 1 : 0);
+}
+
 /**
  * The checks of this process's last health run, kept as they finished: Needs you reads the token's days from
  * them, so a poll never asks GitHub. In-process on purpose, like HealthMonitor's own rate limit: another

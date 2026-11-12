@@ -106,6 +106,18 @@ One choice among a few views (`role=group` with an `aria-label`): a 32 px box wi
 
 The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, optional children and a one-line `consequence`, and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
 
+## CopyButton
+
+A small bordered `text-xs` button (`border-strong`, `text-2`, hover `surface-2`) that writes `value` to the clipboard; `what` names it in its accessible name and title ("Copy item ID"). States: default ("Copy"), done ("Copied" for 1.5 s), no clipboard (nothing happens; the text stays selectable).
+
+## CopyText
+
+A copy element: the shown text (`children`, else `value`) in `font-mono text-xs` that wraps, then a CopyButton that copies `value`.
+
+## IdDetails
+
+A readable name (`label`, e.g. "worker 3" or "you") as a details summary that opens to the full `id` in `font-mono text-xs` and a CopyButton. States: closed (the ID is not laid out), open. Pages use it so no raw ID shows in running text (design 09-dashboard-app).
+
 ## Markdown
 
 Renders a markdown string as safe elements. No variants or sizes.
