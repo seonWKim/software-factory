@@ -319,7 +319,6 @@ export class CommandsUnit {
         return r;
       }
       if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.c.unit("coordination").retryDependencies(it, actor, note, paths);
-      if (e.kind === "retry_requested" && commandPhase(it) === "phase_hold") return this.c.unit("phases").retryPhase(it, actor, note, paths);
       return this.c.unit("transitions").decide(id, async (x) =>
         withTag(await this.withSpecDecision(x, await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths)), tag));
     }
@@ -549,7 +548,7 @@ export class CommandsUnit {
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note, this.widen(it, paths));
     if (it.blocked_reason === RULE_OF_TWO) return this.c.unit("transitions").ruleOfTwoCommand(e, it, actor, note, paths);
-    if (e.kind === "retry_requested") return retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
+    if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
     if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it) || splitFilingFailed(it))) {
       // The same `/approve` delivered again (a second poll, another replica, or the one whose filing was given up):
       // the pass that claimed the filing answers it.

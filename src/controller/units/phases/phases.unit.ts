@@ -29,6 +29,12 @@ function phaseSpecPending(it: WorkItem): boolean {
   return it.parent_id !== null && it.stage === "READY" && it.blocked_on === "human" && it.blocked_reason === "spec_pending";
 }
 
+/** Held phase `it` released: its hold lifted and its triage queued under its intake key. */
+function release(it: WorkItem, actor: Actor, reason: string, detail: StateChangeDetail): NonNullable<Decision> {
+  const enqueue = { kind: "triage" as const, idempotency_key: `${it.source.type}:${it.source.id}:triage` };
+  return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason, detail, enqueue };
+}
+
 /** One phase of a split being filed: its place, its spec, and the ref of the phase before it. */
 type PhaseFiling = { index: number; phase: TriagePhase; total: number; prev: SourceRef | null };
 function phaseBody(it: WorkItem, f: PhaseFiling): string {
@@ -308,22 +314,25 @@ export class PhasesUnit {
     }
     const prev = await this.previousPhase(it);
     if (it.phase > 1 && !completed(prev)) return;
-    await this.release(id, SYSTEM, "phase_released", { parent_work_item_id: it.parent_id, phase: it.phase, depends_on: prev?.source.id ?? null });
+    const detail = { parent_work_item_id: it.parent_id, phase: it.phase, depends_on: prev?.source.id ?? null };
+    await this.c.unit("transitions").decide(id, (cur) => (phaseHeld(cur) ? release(cur, SYSTEM, "phase_released", detail) : null));
   }
 
   /**
    * `/retry` on held phase `it` (design 04-split-specs, 2026-11-12): releases it into triage unless the phase before
    * it is still open, so a phase whose previous phase closed without a merge (rejected, superseded) can start. The
-   * transition records that phase and its close reason. Returns the refusal, else null.
+   * transition records that phase and its close reason. Runs inside the command's conditional transition.
    */
-  async retryPhase(it: WorkItem, actor: Extract<Actor, { kind: "user" }>, note: string | null, paths: readonly string[]): Promise<string | null> {
-    if (paths.length > 0) return "`+paths` applies only to a failed implement run; reply `/retry` without `+paths`";
+  async retryPhase(it: WorkItem, actor: Actor, note: string | null, paths: readonly string[]): Promise<Decision | Refusal> {
+    if (paths.length > 0) return { refuse: "`+paths` applies only to a failed implement run; reply `/retry` without `+paths`" };
     const prev = await this.previousPhase(it);
     if (prev && prev.stage !== "CLOSED") {
-      return `the previous phase, phase ${prev.phase ?? "?"} (${prev.source.link}), is still open: it must close as completed first, which starts this phase, ` +
-        "or close without a merge, after which `/retry` releases this phase";
+      return {
+        refuse: `the previous phase, phase ${prev.phase ?? "?"} (${prev.source.link}), is still open: it must close as completed first, which starts this phase, ` +
+          "or close without a merge, after which `/retry` releases this phase",
+      };
     }
-    return this.release(it.id, actor, "retry_requested", {
+    return release(it, actor, "retry_requested", {
       released: PHASE_HOLD,
       parent_work_item_id: it.parent_id,
       phase: it.phase,
@@ -338,21 +347,6 @@ export class PhasesUnit {
     if (it.parent_id === null || it.phase === null || it.phase < 2) return null;
     const phase = it.phase;
     return (await this.recordedPhases(it.parent_id)).find((p) => p.phase === phase - 1) ?? null;
-  }
-
-  /** Lifts the hold of phase `id` and queues its triage under its intake key, conditional on it still being held. */
-  private release(id: WorkItemId, actor: Actor, reason: string, detail: StateChangeDetail): Promise<string | null> {
-    return this.c.unit("transitions").decide(id, (cur) =>
-      phaseHeld(cur)
-        ? {
-            patch: { blocked_on: "none", blocked_reason: null },
-            actor,
-            reason,
-            detail,
-            enqueue: { kind: "triage", idempotency_key: `${cur.source.type}:${cur.source.id}:triage` },
-          }
-        : null,
-    );
   }
 
   /**
