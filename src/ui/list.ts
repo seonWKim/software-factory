@@ -79,6 +79,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       tier: it.tier,
       since: blocked && it.stage !== "CLOSED" ? waitingSince(it, changes) : it.updated_at,
       run: run ? { kind: run.kind, status: run.status as "queued" | "running", heartbeat_at: run.updated_at, paused_at: run.paused_at } : null,
+      last_finished_at: runs.reduce<string | null>((a, r) => (r.finished_at && (!a || r.finished_at > a) ? r.finished_at : a), null),
       dependents: 0,
       ...waiting,
       ...holdOf(decision, run, waiting.waiting_on_number),
