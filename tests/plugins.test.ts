@@ -283,8 +283,7 @@ describe("plugin registry: every discovered plugin", () => {
         // A `slack` block too: the slack source needs its channels to build (it is off in the checked-in config).
         const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, slack: { channels: ["C0TEST0001"] } }));
         const ctx = await context(loaded);
-        const isMysql = d.kind === "store" && d.name === "mysql";
-        const run = () => createPlugin(REGISTRY, d.kind, d.name, (isMysql ? { ...ctx, loaded: mysqlLoaded(loaded) } : ctx) as never);
+        const run = () => createPlugin(REGISTRY, d.kind, d.name, ctx as never);
         try {
           const x = await run();
           expect(x).toBeTypeOf("object");
@@ -325,11 +324,6 @@ function implementationClasses(file: string): string[] {
     .filter((m) => join(dirname(file), m[2]!).startsWith(own))
     .flatMap((m) => m[1]!.split(",").map((x) => x.trim()))
     .filter((name) => constructed.has(name));
-}
-
-/** A loaded config whose store block is mysql (the mysql plugin checks it; the driver connects lazily). */
-function mysqlLoaded(loaded: Loaded): Loaded {
-  return { ...loaded, store: { type: "mysql", host: "127.0.0.1", port: 3306, database: "sf", user: "sf" } };
 }
 
 describe("plugin registry: unknown names fail at startup", () => {
@@ -796,7 +790,6 @@ describe("plugin registry: CapabilitySearch wiring", () => {
 describe("plugin registry: only plugin descriptors construct implementations", () => {
   it("compose.ts, canary.ts and setup.ts call new on none of them", () => {
     const classes = new Set(DESCRIPTORS.flatMap(({ file }) => implementationClasses(file)));
-    expect(classes).toContain("MysqlDriver");
     expect(classes).toContain("SqliteDriver");
     for (const f of ["compose.ts", "canary.ts", "setup.ts"]) {
       const text = readFileSync(join(REPO_ROOT, "src", f), "utf8");
