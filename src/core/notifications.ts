@@ -2,13 +2,27 @@ import type { StateChange, Timestamp, WorkItem, WorkItemId } from "./types.js";
 
 /**
  * Owner notices (design 09-notifications): one stored notice per wait, a wait being the state change that set an
- * item's blocked_on to `human`. Pure: what to write is decided here from the item's state changes, the stored
- * notices, the time and the two settings; the notifications unit writes it, and the shell (phase 2) delivers it.
+ * item's blocked_on to `human`, and one per close (`finished`), keyed on the close state change. Pure: what to write
+ * is decided here from the items' state changes, the stored notices, the time and the settings; the notifications
+ * unit writes it, and the shell and the `notify_channels` adapters deliver it.
  */
 
-/** What an item waits on the owner for, from its blocked_reason. Each kind is turned on or off by `notice_kinds`. */
-export const NOTICE_KINDS = ["spec", "merge", "failure", "other"] as const;
+/** What an item waits on the owner for, from its blocked_reason: the needs-you kinds. */
+export const WAIT_KINDS = ["spec", "merge", "failure", "other"] as const;
+export type WaitKind = (typeof WAIT_KINDS)[number];
+/** An item closed: merged, rejected or dropped. */
+export const FINISHED_KIND = "finished";
+/** Every kind `notice_kinds` turns on or off. */
+export const NOTICE_KINDS = [...WAIT_KINDS, FINISHED_KIND] as const;
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
+
+/** The ref of an adapter's notices destination (`<adapter type>:notify`): one per adapter in `notify_channels`. */
+export const NOTIFY_REF = "notify";
+
+/** Finished notices start here (owner decision 2026-11-12): a close before it raises none. */
+export const FINISHED_CUTOVER = "2026-11-12T00:00:00.000Z";
+/** How far back each pass reads closes (owner decision 2026-11-12): an older close raises no notice. */
+export const FINISHED_LOOKBACK_MS = 7 * 86_400_000;
 
 /** The kind of the one notice that covers the notices quiet hours held. */
 export const SUMMARY_KIND = "summary";
@@ -56,9 +70,15 @@ export interface WaitingItem {
   changes: readonly Pick<StateChange, "id" | "changes">[];
 }
 
+/** A closed item with its state changes, oldest first (none when the caller knew it unchanged since its notice). */
+export interface ClosedItem {
+  item: Pick<WorkItem, "id" | "stage">;
+  changes: readonly Pick<StateChange, "id" | "at" | "changes">[];
+}
+
 const FAILURE_REASONS = new Set(["max_attempts", "max_restart", "max_loops", "repeated_failure", "recurring_failure"]);
 
-export function noticeKind(blocked_reason: string | null): NoticeKind {
+export function noticeKind(blocked_reason: string | null): WaitKind {
   if (blocked_reason === "spec_pending") return "spec";
   if (blocked_reason === "merge_pending") return "merge";
   if (blocked_reason !== null && (blocked_reason.startsWith("run_failed:") || FAILURE_REASONS.has(blocked_reason))) return "failure";
@@ -69,6 +89,35 @@ export function noticeKind(blocked_reason: string | null): NoticeKind {
 export function waitKey(changes: WaitingItem["changes"]): string | null {
   for (let i = changes.length - 1; i >= 0; i--) if (changes[i]!.changes.blocked_on?.to === "human") return changes[i]!.id;
   return null;
+}
+
+/** The newest state change that closed the item, or null when none did. */
+export function closeChange(changes: ClosedItem["changes"]): ClosedItem["changes"][number] | null {
+  for (let i = changes.length - 1; i >= 0; i--) if (changes[i]!.changes.stage?.to === "CLOSED") return changes[i]!;
+  return null;
+}
+
+/** The earliest close a pass at `now` notices: the later of the cutover and the lookback. */
+export function finishedSince(now: Date): Timestamp {
+  return new Date(Math.max(Date.parse(FINISHED_CUTOVER), now.getTime() - FINISHED_LOOKBACK_MS)).toISOString() as Timestamp;
+}
+
+/** How a finished notice names the close: completed → merged, rejected → rejected, anything else → dropped. */
+export function closeOutcome(close_reason: string | null): "merged" | "rejected" | "dropped" {
+  return close_reason === "completed" ? "merged" : close_reason === "rejected" ? "rejected" : "dropped";
+}
+
+/** A needs-you notice's one-line reason, from its kind: fixed text, never the item's free text. */
+export function waitReason(kind: WaitKind): string {
+  return { spec: "spec to approve", merge: "ready to merge", failure: "a run failed", other: "waiting on you" }[kind];
+}
+
+/** `notify_channels`: distinct non-empty names (whether each is a source plugin is checked where the registry is). */
+export function parseNotifyChannels(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((c) => typeof c === "string" && c.trim() !== "") || new Set(value).size !== value.length) {
+    throw new Error("notify_channels must be a list of distinct source plugin names, e.g. [\"slack\"], or [] for none");
+  }
+  return value as string[];
 }
 
 const HHMM = "([01]\\d|2[0-3]):([0-5]\\d)";
@@ -116,12 +165,14 @@ export function quietUntil(quiet_hours: string, now: Date): Date | null {
 const summaryKey = (held_until: string) => `quiet:${held_until}`;
 
 /**
- * The notices to write at `now`: one per item whose current wait has none (held to the window's end inside quiet
- * hours, and none for a kind turned off), then one summary per ended window whose held notices have none yet.
- * A wait already stored, under any kind, is never noticed again, so an item is noticed once per wait.
+ * The notices to write at `now`: one per item whose current wait has none, one per close since `finishedSince(now)`
+ * with none (each held to the window's end inside quiet hours, and none for a kind turned off), then one summary per
+ * ended window whose held notices have none yet. A wait or close already stored, under any kind, is never noticed
+ * again, so an item is noticed once per wait and once per close.
  */
 export function decideNotices(input: {
   waiting: readonly WaitingItem[];
+  closed?: readonly ClosedItem[];
   stored: readonly Notice[];
   now: Date;
   settings: NoticeSettings;
@@ -132,6 +183,7 @@ export function decideNotices(input: {
   const byKey = new Map(input.stored.map((n) => [`${n.work_item_id}\n${n.wait_key}`, n]));
   const stored = new Set(byKey.keys());
   const quiet = quietUntil(settings.quiet_hours, now);
+  const held = quiet && (quiet.toISOString() as Timestamp);
   const out: NewNotice[] = [];
   for (const { item, changes } of input.waiting) {
     if (item.blocked_on !== "human") continue;
@@ -139,7 +191,13 @@ export function decideNotices(input: {
     if (key === null || stored.has(`${item.id}\n${key}`)) continue;
     const kind = noticeKind(item.blocked_reason);
     if (!settings.notice_kinds.includes(kind)) continue;
-    out.push({ work_item_id: item.id, wait_key: key, kind, created_at: at, held_until: quiet && (quiet.toISOString() as Timestamp), count: 1 });
+    out.push({ work_item_id: item.id, wait_key: key, kind, created_at: at, held_until: held, count: 1 });
+  }
+  const since = finishedSince(now);
+  for (const { item, changes } of settings.notice_kinds.includes(FINISHED_KIND) ? (input.closed ?? []) : []) {
+    const close = item.stage === "CLOSED" ? closeChange(changes) : null;
+    if (close === null || close.at < since || stored.has(`${item.id}\n${close.id}`)) continue;
+    out.push({ work_item_id: item.id, wait_key: close.id, kind: FINISHED_KIND, created_at: at, held_until: held, count: 1 });
   }
   const ended = new Map<Timestamp, number>();
   for (const n of byKey.values()) {

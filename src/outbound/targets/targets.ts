@@ -1,11 +1,11 @@
-// The delivery targets outbound runs (RFC 0015 §7): github-push, github-change, github-issue, github-comment,
+// The delivery targets outbound runs (RFC 0015 §7): notify (owner notices, design 12-notification-channels), github-push, github-change, github-issue, github-comment,
 // github-labels, slack-thread, local, tacit (the owner's ledger), and source for any other configured adapter. A process delivers only what one of its targets accepts; the rest
 // waits for a process that has the adapter.
 
 import type { SourceRef } from "../../core/types.js";
-import { GIT_TARGET, TACIT_TARGET } from "../intents.js";
+import { GIT_TARGET, TACIT_TARGET, type ActionRow } from "../intents.js";
 import { deliverGit, gitAccepts } from "./local-git.js";
-import { act, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
+import { act, sourceNotice, type Delivery, type DeliveryTarget, type TargetDeps } from "./target.js";
 
 const GITHUB = "github_issue";
 const SLACK = "slack_thread";
@@ -20,6 +20,11 @@ function filing(d: Delivery): boolean {
   return d.kind === "action" && d.row.action === "file_sub_issue";
 }
 
+/** An owner notice for an adapter in `notify_channels`: only the notify target takes it. */
+function notifying(d: Delivery): boolean {
+  return d.kind === "action" && d.row.action === "notify";
+}
+
 /** A PR's status label goes through the forge, where PRs live (issue #273), labelled for the item's source. */
 function prStatus(d: Delivery): { pr: number; item: SourceRef; status: string } | null {
   if (d.kind !== "action" || d.row.action !== "status" || typeof d.row.args.pr !== "number") return null;
@@ -30,7 +35,23 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
   const forge = t.forge;
   const adapter = (type: string) => t.byType.get(type) ?? null;
   const prOf = (target: SourceRef) => forge?.prNumberOf(target) ?? null;
+  const notify = async (rows: readonly ActionRow[]) => {
+    const to = adapter(rows[0]?.source_type ?? "");
+    if (!to?.notifyOwner) throw new Error("notify delivers to an adapter with notifyOwner only");
+    await to.notifyOwner(rows.map((r) => sourceNotice(to, r)));
+  };
   return [
+    {
+      // The owner's notices of one batch, one call to the adapter (one message); outbound calls deliverBatch.
+      name: "notify",
+      accepts: (d) => notifying(d) && adapter(typeOf(d))?.notifyOwner !== undefined,
+      async deliver(d) {
+        if (d.kind !== "action") throw new Error("notify delivers notices only");
+        await notify([d.row]);
+        return { url: null };
+      },
+      deliverBatch: notify,
+    },
     {
       // A run's commit, from the factory repo to its forge branch (RFC 0015 M7). The forge reconciles first.
       name: "github-push",
@@ -107,7 +128,7 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
     },
     {
       name: "slack-thread",
-      accepts: (d) => typeOf(d) === SLACK && prStatus(d) === null && adapter(SLACK) !== null,
+      accepts: (d) => typeOf(d) === SLACK && prStatus(d) === null && !notifying(d) && adapter(SLACK) !== null,
       deliver: (d) => (d.kind === "comment" ? adapter(SLACK)!.postComment(d.target, d.body, d.marker) : act(adapter(SLACK)!, d.row)),
     },
     {
@@ -136,7 +157,8 @@ export function buildTargets(t: TargetDeps): DeliveryTarget[] {
     },
     {
       name: "source",
-      accepts: (d) => ![GITHUB, SLACK, LOCAL, GIT_TARGET, TACIT_TARGET].includes(typeOf(d)) && prStatus(d) === null && adapter(typeOf(d)) !== null,
+      accepts: (d) =>
+        ![GITHUB, SLACK, LOCAL, GIT_TARGET, TACIT_TARGET].includes(typeOf(d)) && prStatus(d) === null && !notifying(d) && adapter(typeOf(d)) !== null,
       deliver: (d) => (d.kind === "comment" ? adapter(d.source_type)!.postComment(d.target, d.body, d.marker) : act(adapter(typeOf(d))!, d.row)),
     },
   ];

@@ -207,6 +207,10 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
       const refused = await scanRefusal(deps.scanner, key, String(parsed));
       if (refused) return fail(refused);
     }
+    if (key === "notify_channels") {
+      const refused = await unknownChannel(parsed as string[]);
+      if (refused) return fail(refused);
+    }
     if (key === "workers") {
       const cap = workersCap(deps.base);
       if ((parsed as number) > cap) {
@@ -254,6 +258,17 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
       `applies at ${(await loadSettingCatalog()).describe(key).applies}, with no restart`,
     ],
   };
+}
+
+/**
+ * `notify_channels` names source plugins (design 12-notification-channels): a name the plugin registry does not hold
+ * is refused here, where the registry is read, since the core reads none. Imported when asked: the registry loads
+ * every plugin, and the slack plugin imports this file.
+ */
+async function unknownChannel(names: readonly string[]): Promise<string | null> {
+  const known = Object.keys((await import("./plugins.js")).REGISTRY.source.plugins);
+  const bad = names.find((n) => !known.includes(n));
+  return bad === undefined ? null : `notify_channels names "${bad}", which is not a source plugin; the source plugins are ${known.join(", ")}`;
 }
 
 /** Why the egress scanner refuses `value` for `key`, naming the rules and never the text; null when it is clean. */

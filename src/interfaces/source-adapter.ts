@@ -214,6 +214,31 @@ interface SourceAdapterBase {
    * it is false again. Read-only, no request. Absent on sources without a budget.
    */
   lowBudget?(): boolean;
+  /**
+   * Sends the owner's notices of one tick (design 12-notification-channels) as one message, one line each, to the
+   * channel the adapter's config names. Called only for a source listed in `notify_channels`, by outbound, with at
+   * most 50 notices whose text was egress-scanned. Throws on a failure; the caller retries them with backoff. Absent:
+   * the source gets no notices, whatever `notify_channels` says. Agents never call this.
+   */
+  notifyOwner?(notices: readonly SourceNotice[]): Promise<void>;
+}
+
+/** One owner notice as an adapter renders it (design 09-notifications): neutral, with no source-specific field. */
+export interface SourceNotice {
+  /** `needs_you`: an item waits on the owner; `finished`: it closed; `summary`: what quiet hours held. */
+  kind: "needs_you" | "finished" | "summary";
+  /** The item; null for a summary, which covers several. */
+  work_item_id: string | null;
+  /** The item's title (empty for a summary). Untrusted text: the adapter escapes it. */
+  title: string;
+  /** One line: a needs-you notice's reason, or a finished one's outcome (`merged`, `rejected`, `dropped`). */
+  reason: string;
+  /** A finished item's close_reason; null otherwise. */
+  close_reason: string | null;
+  /** The item's thread on this adapter's own source, when it came from there; else null. */
+  thread_url: string | null;
+  /** 1 for an item's notice; for a summary, the notices it covers. */
+  count: number;
 }
 
 /** A source the controller polls on a timer (e.g. forge issues). */

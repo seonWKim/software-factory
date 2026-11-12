@@ -19,7 +19,9 @@ export default definePlugin({
       api: new HttpSlackApi(c.secrets),
       connect: webSocketConnector,
       channels: block.channels,
-      // A spec message's Full spec link: slack.dashboard_url, else the local dashboard on ui.port (imported when asked,
+      // The owner's notices (design 12-notification-channels): slack.notify_channel, else the first listed channel.
+      ...(block.notify_channel !== undefined ? { notify_channel: block.notify_channel } : {}),
+      // A spec message's Full spec link and each notice's link: slack.dashboard_url, else the local dashboard on ui.port (imported when asked,
       // as for settings below).
       dashboard: async () => block.dashboard_url ?? `http://127.0.0.1:${(await import("../../compose.js")).uiPort(c.loaded.file.ui)}`,
       scanner: c.scanner,
