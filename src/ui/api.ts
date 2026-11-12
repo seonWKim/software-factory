@@ -28,7 +28,7 @@ import { effectiveGlobal, readSettings } from "./settings-api.js";
 import { readStanding } from "./standing-api.js";
 import { type UsersDeps, readUsers } from "./users-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
-import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import { type SystemDeps, oneLine, parseRevision, systemActions } from "./system-actions.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
@@ -269,7 +269,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await s.countWorkItemsWhere({ blocked_on: "budget", exclude_closed: true })) + system_actions.length, // never Blocked by another task
+    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await s.countWorkItemsWhere({ blocked_on: "budget", exclude_closed: true })) + oneLine(system_actions), // never Blocked by another task
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
     github_token_days: token,

@@ -97,7 +97,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   ticks: { "time-based": TimeBasedTicks },
   engine: { journal: JournalEngines },
   tacit: { none: NoTacitLedger },
-  // Optional, selected as a list by the top-level `calendar` key, default []; no provider ships yet (design 02-tasks).
+  // Optional, selected as a list by the top-level `calendar` key, default []: no provider (google-calendar) is a default.
   calendar: {},
 };
 

@@ -82,3 +82,56 @@ export const LEVEL_LABELS: Record<string, string> = Object.fromEntries(
  * Levels that wait on the operator: the Floor lists them first. Never "Blocked by another task".
  */
 export const NEEDS_YOU_LEVELS = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage", "stuck"] as const;
+
+/** "worker 3" for a worker id `<host>:<pid>:<slot>` (its slot number); "a worker" for any other id; "–" for none. */
+export function workerName(id: string | null | undefined): string {
+  if (!id) return "–";
+  const slot = /:(\d+)$/.exec(id)?.[1];
+  return slot === undefined ? "a worker" : `worker ${slot}`;
+}
+
+/** True for a worker id `<host>:<pid>:<slot>`, as lease owners and attempt records name a worker loop. */
+export const isWorkerId = (id: string): boolean => /^[^:\s]+:\d+:\d+$/.test(id);
+
+/** The stage in words, for a row with no stored reason. */
+const STAGE_WORDS: Record<string, string> = {
+  NEW: "New, not triaged yet",
+  READY: "Specced, not started",
+  RUNNING: "Being built",
+  REVIEW: "In review",
+  CLOSED: "Closed",
+};
+
+/** "approve", "retry or reject", "approve, revise or reject". */
+function orList(words: readonly string[]): string {
+  return words.length <= 1 ? (words[0] ?? "") : `${words.slice(0, -1).join(", ")} or ${words.at(-1)}`;
+}
+
+/**
+ * A waiting row with no stored reason: the item's state and what moves it next (the commands the viewer may send
+ * now), never an empty or "no reason" text.
+ */
+export function stateAndNext(stage: string, commands: readonly { name: string; allowed: boolean }[] | undefined): string {
+  const names = (commands ?? []).filter((c) => c.allowed && c.name !== "verdict").map((c) => c.name);
+  const next = names.length > 0 ? `${orList(names)} it` : "open the item and send the next command";
+  return `${STAGE_WORDS[stage] ?? stage}; next: ${next}`;
+}
+
+/**
+ * The item page's state pill: the list's level words, from the item's stage, block and why code (the item API has
+ * no level). Running, queued and held come from the why code; an item nothing moves (`idle`) is "Stuck".
+ */
+export function detailLevel(i: { stage: string; blocked_on: string; blocked_reason: string | null; why?: { code: string } | undefined }): string {
+  if (i.stage === "CLOSED") return "closed";
+  if (i.blocked_on === "human" && i.blocked_reason === "merge_pending") return "ready_to_merge";
+  if (i.blocked_on === "human" && (i.blocked_reason === "spec_pending" || i.blocked_reason === "max_revisions")) return "needs_approval";
+  if (i.blocked_on === "human" || i.blocked_on === "budget") return "needs_you";
+  const code = i.why?.code;
+  if (code === "running") return "running";
+  if (code === "queued" || code === "not_before" || code === "paused") return "queued";
+  if (code === "dependency" || code === "phase" || code === "held" || code === "deadlock" || i.blocked_on === "dependency" || i.blocked_on === "upstream") {
+    return "blocked_by_task";
+  }
+  if (code === "idle") return "stuck";
+  return i.stage === "RUNNING" || i.stage === "REVIEW" ? "running" : "queued";
+}

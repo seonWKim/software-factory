@@ -224,7 +224,8 @@ export interface ItemDetail {
   timeline: {
     version: number;
     at: string;
-    actor: { kind: string; id: string | null };
+    /** `name`: the stored display name of a person, when the server has one. */
+    actor: { kind: string; id: string | null; name?: string | null };
     reason: string | null;
     changes: Record<string, { from: string | null; to: string | null }>;
     detail: Record<string, string | null> | null;

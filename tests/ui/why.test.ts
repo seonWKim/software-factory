@@ -33,6 +33,7 @@ describe("whyWaiting: every case", () => {
     ["merge conflict", input({ item: { blocked_on: "human", blocked_reason: "merge_conflict_pending" } }), "A merge conflict needs a person", "human", []],
     ["failed run", input({ item: { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" } }), "The run failed (run_failed:implement:diff_too_large): a person decides what happens next", "human", []],
     ["other human", input({ item: { blocked_on: "human", blocked_reason: "needs a decision on #7" } }), "Waiting for a person: needs a decision on #7", "human", [7]],
+    ["human, no stored reason", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: null } }), "Waiting for a person: the item is in review; next, a person retries, resolves or rejects it", "human", []],
     ["deadlock", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null } }), "Started past a deadlock with #92: a person checks the overlap", "factory", [92]],
     ["running", input({ run: running }), "Running implement", "factory", []],
     ["rate limit", input({ run: queued("triage"), pauses: { rate_limit: UNTIL } }), "Paused by a usage or rate limit until 2026-11-07 12:30 UTC", "factory", []],
@@ -55,6 +56,14 @@ describe("whyWaiting: every case", () => {
   ];
   it.each(cases)("%s", (_name, x, text, next_actor, refs) => {
     expect(whyWaiting(x)).toMatchObject({ text, next_actor, refs });
+  });
+
+  it("a person's block with no stored reason names the item's state and the next step, never \"no reason\"", () => {
+    for (const stage of ["NEW", "READY", "RUNNING", "REVIEW"] as const) {
+      const w = whyWaiting(input({ item: { stage, blocked_on: "human", blocked_reason: null } }));
+      expect(w.text).toMatch(/^Waiting for a person: the item is .+; next, /);
+      expect(w.text).not.toMatch(/no reason/i);
+    }
   });
 
   it("an approved hold, or a decision on an older run, is no hold", () => {
