@@ -23,7 +23,8 @@ export type Tighter =
   | readonly (string | boolean)[]
   | ((value: unknown, than: unknown) => string | null);
 
-export type SettingType = "integer" | "boolean" | "enum" | "object" | "list" | "string";
+/** `usd`: a decimal dollar amount, such as 12.50 (not cents); the spend budgets (design 06-spend). */
+export type SettingType = "integer" | "usd" | "boolean" | "enum" | "object" | "list" | "string";
 
 export interface SettingDescriptor<T = unknown> {
   readonly kind: "setting";

@@ -3,12 +3,14 @@
 // items, agent runs in a row that used no tokens, and a child crash loop. Each pattern is stored as one alert per
 // 6 hours through the store's conditional insert. A failed run whose pattern has an open filed item holds its item
 // for a person at once. A failure pattern that already alerted or was filed re-raises, at most once an hour, when it
-// keeps failing: its items are held and its filed item gets a comment. No forge, LLM or sandbox call; every text is
-// scanned first.
+// keeps failing: its items are held and its filed item gets a comment. The same step checks the spend budgets
+// (design 06-spend): 80% and 100% of a daily or weekly budget alert once each per period, and never stop, pause or
+// hold anything. No forge, LLM or sandbox call; every text is scanned first.
 
 import { groupFailures, normalizeDetail, patternKey } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, MODEL_STALL } from "./policy.js";
+import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
 import {
   type FailureGroup, type FiledPattern, RECURRING_FAILURE, type Run, type RunKind, type SourceRef, type StateChange, type Timestamp, type WorkItem, type WorkItemId,
   runTokenCount,
@@ -41,6 +43,16 @@ export interface AlarmSettings {
   alarm_window_minutes: number;
   alarm_restart_count: number;
 }
+
+/** The spend budgets in dollars (design 06-spend); null: no budget, no alert. */
+export interface SpendBudgets {
+  daily_usd: number | null;
+  weekly_usd: number | null;
+}
+/** The shares of a budget, in percent, that alert once each per period. */
+export const SPEND_THRESHOLDS = [80, 100] as const;
+/** Longer than the longest period: the key names its period, so the dedupe only has to outlast it. */
+const SPEND_DEDUPE_MS = 8 * DAY_MS;
 
 /** A pattern the detector found, before its detail is scanned and stored. */
 export interface AlarmFinding {
@@ -138,7 +150,7 @@ export interface AlarmDeps {
  * pattern re-raises first (`reraise`), then each failed run of an open filed pattern holds its item (`holdFiled`). Returns the alerts this call stored. Safe to run twice and on several
  * replicas at once: the store's conditional insert dedupes.
  */
-export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number }): Promise<Alert[]> {
+export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_interval_ms: number; spend?: SpendBudgets }): Promise<Alert[]> {
   const now = d.clock.now();
   const runs = await d.store.listRunsFinishedWithin(Math.max(settings.alarm_window_minutes * 60_000, RERAISE_WINDOW_MS));
   const restarts = d.restarts ? await d.restarts() : [];
@@ -156,6 +168,46 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
     if (f.pattern === "zero_tokens") {
       const pause = await d.store.pauseClaims(new Date(now.getTime() + settings.probe_interval_ms).toISOString() as Timestamp, MODEL_STALL);
       if (pause.started) d.log.warn(`agent runs use no tokens: all runs paused, first probe at ${pause.resume_at}`, { resume_at: pause.resume_at });
+    }
+  }
+  if (settings.spend) stored.push(...(await spendStep(d, settings.spend)));
+  return stored;
+}
+
+/** Whether an alert is a failure alarm, which stops auto mode (design 03-risk); a stop or a spend alert is not. */
+export const isFailureAlert = (a: Pick<Alert, "pattern">): boolean => a.pattern !== "auto_stopped" && a.pattern !== "spend_budget";
+
+/**
+ * The spend budget check (design 06-spend): the known cost of the runs finished in the current UTC day and ISO
+ * week (from Monday) against each budget set. Each threshold passed stores one `spend_budget` alert whose key
+ * names the period, its start and the threshold (`spend:daily:2026-11-13:80`), so repeated steps, replicas and a
+ * restarted controller store it once. Runs with no stored cost add nothing and are named in the detail. It only
+ * alerts: no pause, hold or stop. Returns the alerts this call stored.
+ */
+export async function spendStep(d: Pick<AlarmDeps, "store" | "scanner" | "clock" | "log">, budgets: SpendBudgets): Promise<Alert[]> {
+  const now = d.clock.now().getTime();
+  const periods = [
+    { name: "daily", budget: budgets.daily_usd, start: dayStart(now) },
+    { name: "weekly", budget: budgets.weekly_usd, start: weekStart(now) },
+  ].filter((p): p is { name: string; budget: number; start: number } => p.budget !== null);
+  if (periods.length === 0) return [];
+  const since = Math.min(...periods.map((p) => p.start));
+  const runs = await d.store.listRunsFinishedBetween(new Date(since).toISOString() as Timestamp, new Date(now + 1).toISOString() as Timestamp);
+  const stored: Alert[] = [];
+  for (const p of periods) {
+    const t = spendTotals(runs.filter((r) => Date.parse(r.finished_at!) >= p.start));
+    for (const pct of SPEND_THRESHOLDS) {
+      if (t.cost_usd * 100 < p.budget * pct) continue;
+      const unknown = t.unknown === 0 ? "" : `; ${t.unknown} run${t.unknown === 1 ? "" : "s"} with no stored cost not counted`;
+      const detail = `$${t.cost_usd.toFixed(2)} of the $${p.budget.toFixed(2)} ${p.name} budget spent (${p.name === "daily" ? "UTC day" : "week from"} ${utcDay(p.start)})${unknown}`;
+      const scan = await d.scanner.scan("ui", detail);
+      const r = await d.store.recordAlert(
+        { pattern: "spend_budget", pattern_key: `spend:${p.name}:${utcDay(p.start)}:${pct}`, error_code: `${p.name}_${pct}`, count: t.runs, detail: scan.clean ? detail : null },
+        SPEND_DEDUPE_MS,
+      );
+      if (!r.created) continue;
+      stored.push(r.alert);
+      d.log.warn(`alarm: spend passed ${pct}% of the ${p.name} budget`, { alert_id: r.alert.id });
     }
   }
   return stored;
