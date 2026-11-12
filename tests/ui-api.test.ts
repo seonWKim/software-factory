@@ -1433,8 +1433,8 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     expect(of(all, items.approve.id)).toEqual(["approve", "reject", "revise"].map((name) => ({ name, usage: expect.any(String), description: expect.any(String), allowed: true, reason: null })));
     expect(of(all, failed.id).map((c) => c.name)).toEqual(["reject", "revise", "retry"]);
     expect(of(all, checkpoint.id).map((c) => c.name)).toEqual(["reject"]);
-    // Waiting for its merge, with a PR: only verdict, which changes no state but has its own form in the row.
-    expect(of(all, items.merge.id).map((c) => c.name)).toEqual(["verdict"]);
+    // Waiting for its merge, with a PR: reject (any open phase), then verdict, which changes no state but has its own form in the row.
+    expect(of(all, items.merge.id).map((c) => c.name)).toEqual(["reject", "verdict"]);
     // approve_spec asked once for the whole list, approve_merge at most once.
     expect(asked.mock.calls.filter(([a]) => a === "approve_spec")).toHaveLength(1);
     expect(asked.mock.calls.filter(([a]) => a === "approve_merge").length).toBeLessThanOrEqual(1);
