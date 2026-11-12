@@ -5,6 +5,7 @@
 // opens every dashboard page in the system's headless Chrome over CDP (scripts/responsive/cdp.mjs) at each
 // VIEWPORT in light and dark, and applies the rules in scripts/responsive/rules.mjs. One line per failure; a
 // screenshot of each failing page/viewport/theme, failing elements outlined, under .playwright-mcp/responsive/.
+// A console error or a failed request (scripts/responsive/console.mjs) at a page/viewport/theme fails it too.
 //
 // Usage: npm run check:responsive [-- --page settings]   (needs `npm run build` first; the npm script builds)
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -82,8 +83,10 @@ async function main() {
           await page.eval(`document.querySelectorAll("[data-responsive-fail]").forEach((e) => e.removeAttribute("data-responsive-fail"))`);
           const found = await page.eval(`(${checkLayout.toString()})(${JSON.stringify(LIMITS)})`);
           checks++;
-          if (found.length === 0) continue;
           const where = `${p.name || "floor"} ${vp.width}x${vp.height} ${theme}`;
+          // What the page logged since its load (at the first viewport) or the previous viewport.
+          for (const message of page.takeConsole()) failures.push(`${where}  console  ${message}`);
+          if (found.length === 0) continue;
           const shot = join(SHOTS, `${p.name}-${vp.width}x${vp.height}-${theme}.png`);
           // Failing elements outlined in red, the first one scrolled into view.
           await page.eval(`(() => {
