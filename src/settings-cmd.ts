@@ -10,6 +10,7 @@ import {
   GATE_SETTABLE_KEYS,
   type GateSettableKey,
   MODES,
+  OWNER_KEYS,
   PROJECT_SETTABLE_KEYS,
   SETTABLE_KEYS,
   type SettableKey,
@@ -119,6 +120,8 @@ export interface SettingsDeps {
    * of `mode` or `auto_merge_max_tier`, before one that loosens a tighten-only key, and before a learned reset that loosens the value in force; the refusal, or null. Solo: the local owner holds it with no setup. Absent: no check.
    */
   mayApproveMerge?(): Promise<string | null>;
+  /** Whether `actor` is the owner, asked before a set or reset of an owner-only key (OWNER_KEYS, `integrations`); the refusal, or null. Absent: no check. */
+  mayOwn?(): Promise<string | null>;
   /**
    * The configured egress scanner (G5): a set of a free-text key that reaches a model's prompt (SCANNED_SETTABLE_KEYS,
    * `message_style`) is refused when it flags the value. Absent: such a set is refused, never stored unscanned.
@@ -175,6 +178,10 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   const refused = keyRefusal(a.key);
   if (refused) return fail(refused);
   const key = a.key as SettableKey;
+  if (OWNER_KEYS.includes(key) && deps.mayOwn) {
+    const refused = await deps.mayOwn();
+    if (refused !== null) return fail(`${key} changes only by the owner: ${refused}`);
+  }
   if (APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {
     const refused = await deps.mayApproveMerge();
     if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
@@ -209,6 +216,10 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
     }
     if (key === "notify_channels") {
       const refused = await unknownChannel(parsed as string[]);
+      if (refused) return fail(refused);
+    }
+    if (key === "integrations") {
+      const refused = await integrationRefusal(parsed);
       if (refused) return fail(refused);
     }
     if (key === "workers") {
@@ -269,6 +280,20 @@ async function unknownChannel(names: readonly string[]): Promise<string | null> 
   const known = Object.keys((await import("./plugins.js")).REGISTRY.source.plugins);
   const bad = names.find((n) => !known.includes(n));
   return bad === undefined ? null : `notify_channels names "${bad}", which is not a source plugin; the source plugins are ${known.join(", ")}`;
+}
+
+/**
+ * `integrations` names interfaces and plugins (design 08-settings): only an interface marked `integration`, never a
+ * guard, and only a plugin registered for it. Imported when asked, as for unknownChannel.
+ */
+async function integrationRefusal(value: unknown): Promise<string | null> {
+  const { REGISTRY, checkIntegrations } = await import("./plugins.js");
+  try {
+    checkIntegrations(REGISTRY, value);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
 }
 
 /** Why the egress scanner refuses `value` for `key`, naming the rules and never the text; null when it is clean. */

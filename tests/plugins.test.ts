@@ -54,6 +54,7 @@ import {
   REGISTRY,
   type Registry,
   GRANTS,
+  INTEGRATION_KINDS,
   createPlugin,
   declaredSecrets,
   selectedSetups,
@@ -283,8 +284,7 @@ describe("plugin registry: every discovered plugin", () => {
         // A `slack` block too: the slack source needs its channels to build (it is off in the checked-in config).
         const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, slack: { channels: ["C0TEST0001"] } }));
         const ctx = await context(loaded);
-        const isMysql = d.kind === "store" && d.name === "mysql";
-        const run = () => createPlugin(REGISTRY, d.kind, d.name, (isMysql ? { ...ctx, loaded: mysqlLoaded(loaded) } : ctx) as never);
+        const run = () => createPlugin(REGISTRY, d.kind, d.name, ctx as never);
         try {
           const x = await run();
           expect(x).toBeTypeOf("object");
@@ -325,11 +325,6 @@ function implementationClasses(file: string): string[] {
     .filter((m) => join(dirname(file), m[2]!).startsWith(own))
     .flatMap((m) => m[1]!.split(",").map((x) => x.trim()))
     .filter((name) => constructed.has(name));
-}
-
-/** A loaded config whose store block is mysql (the mysql plugin checks it; the driver connects lazily). */
-function mysqlLoaded(loaded: Loaded): Loaded {
-  return { ...loaded, store: { type: "mysql", host: "127.0.0.1", port: 3306, database: "sf", user: "sf" } };
 }
 
 describe("plugin registry: unknown names fail at startup", () => {
@@ -444,6 +439,26 @@ describe("plugin registry: guards cannot be disabled", () => {
 
   it("a guard plugin cannot be registered under a disabling name", () => {
     expect(() => withPlugin(REGISTRY, "secrets", "none", () => new MapSecrets())).toThrow(/means disabled/);
+  });
+});
+
+describe("plugin registry: integrations switch at runtime, and nothing else does", () => {
+  // The interfaces the owner may switch from the dashboard (design 08-settings). Adding one here is a reviewed choice;
+  // a guard never joins it.
+  const ALLOWED_INTEGRATIONS: readonly PluginKind[] = ["tacit"];
+
+  it("marks tacit (TacitLedger) as an integration", () => {
+    expect(INTEGRATION_KINDS).toContain("tacit");
+    expect(REGISTRY.tacit.interface).toBe("TacitLedger");
+  });
+
+  it("marks no other interface, and never a guard (SecretStore, EgressScanner, ToolBroker)", () => {
+    for (const kind of INTEGRATION_KINDS) expect(ALLOWED_INTEGRATIONS, kind).toContain(kind);
+    for (const guard of GUARDS) {
+      expect(REGISTRY[guard].guard, guard).toBe(true);
+      expect(INTEGRATION_KINDS, guard).not.toContain(guard);
+    }
+    expect(GUARDS.map((g) => REGISTRY[g].interface).sort()).toEqual(["EgressScanner", "SecretStore", "ToolBroker"]);
   });
 });
 
@@ -796,7 +811,6 @@ describe("plugin registry: CapabilitySearch wiring", () => {
 describe("plugin registry: only plugin descriptors construct implementations", () => {
   it("compose.ts, canary.ts and setup.ts call new on none of them", () => {
     const classes = new Set(DESCRIPTORS.flatMap(({ file }) => implementationClasses(file)));
-    expect(classes).toContain("MysqlDriver");
     expect(classes).toContain("SqliteDriver");
     for (const f of ["compose.ts", "canary.ts", "setup.ts"]) {
       const text = readFileSync(join(REPO_ROOT, "src", f), "utf8");

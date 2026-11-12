@@ -62,12 +62,14 @@ import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
+import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
+import { LiveTacit } from "./runtime/live-tacit.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createCalendars, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
+  type BaseContext, GRANTS, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createCalendars, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
@@ -839,7 +841,7 @@ export async function build(
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
-  const tacit = await createPlugin(registry, "tacit", sel.tacit, base);
+  const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
 
@@ -860,7 +862,7 @@ export async function build(
   const learned = new StoredLearnedSettings(store, new ConsoleLogger(clock, "settings"));
   const settings = new LiveSettings({
     config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, learned,
-    log: new ConsoleLogger(clock, "settings"),
+    log: new ConsoleLogger(clock, "settings"), integrations: [tacit],
   });
   await settings.refresh();
 
@@ -1050,6 +1052,7 @@ export interface UiParts {
   pauses: UiPauses;
   /** Display names by user id from Identity's identity_profiles (M9), only to show. */
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
+  tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
   close(): Promise<void>;
 }
 
@@ -1074,14 +1077,10 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const store = await p.store(secrets, clock);
   await store.migrate();
   const scanner = await p.scanner(secrets);
-  const { owner, name } = loaded.config.repo;
-  const token = newCsrfToken();
+  const { owner, name } = loaded.config.repo, token = newCsrfToken();
   const settings: UiSettings = {
-    base: settingsBase(loaded),
-    repo: { owner, name },
-    actor: opts.identity.user,
-    resolveProject: storeProjectResolver(store, { owner, name }),
-    csrfToken: token,
+    base: settingsBase(loaded), repo: { owner, name }, actor: opts.identity.user, resolveProject: storeProjectResolver(store, { owner, name }), csrfToken: token,
+    integrations: INTEGRATION_KINDS.map((kind) => ({ kind, interface: loaded.registry[kind].interface, configured: String(loaded.plugins[kind]) })),
   };
   // The owner check for "Resume now" and the page's command checks (approve_spec, approve_merge): the configured auth plugin over the
   // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
@@ -1120,7 +1119,8 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   const profiles = new ProfileStore(storeSql(store));
   const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
-  return { clock, store, scanner, settings, commands, pauses, displayNames, close: () => identity.stop().then(() => store.close()) };
+  const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
+  return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, close: () => identity.stop().then(() => store.close()) };
 }
 
 function refusalOf(d: AuthDecision): string | null {

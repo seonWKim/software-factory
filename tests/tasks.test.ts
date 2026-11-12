@@ -167,8 +167,8 @@ describe("migration: controller_tasks", () => {
     const { store } = await newStore();
     const { item } = await store.createWorkItem(issue(1), system);
     await store.db.run("DROP TABLE controller_tasks");
-    // The later column migration (#607) on this table runs again too, as it would after this one on an older store.
-    await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id IN (?, ?)`, [ID, "20261112T1500-controller-tasks-work-item"]);
+    // The later column migrations on this table (#607, sub-tasks) run again too, as they would after this one on an older store.
+    await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id IN (?, ?, ?)`, [ID, "20261112T1500-controller-tasks-work-item", "20261112T1800-controller-sub-tasks"]);
     expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(false);
     await store.migrate();
     expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(true);

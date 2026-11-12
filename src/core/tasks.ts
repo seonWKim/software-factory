@@ -42,7 +42,26 @@ export interface Task extends Omit<TaskFields, "due"> {
   parent_id: string | null;
   /** The work item `task build` made from it (design 02-tasks, issue #607); null until then. Set once. */
   work_item_id: WorkItemId | null;
+  /** The task this is a sub-task of (one level: never itself a sub-task); null for a top-level task. */
+  parent_task_id: string | null;
 }
+
+/** The fields an edit names (`parseQuickEdit`); every field left out keeps its stored value. */
+export type TaskEdit = Partial<TaskFields>;
+
+export type UpdateTaskResult =
+  | { ok: true; task: Task }
+  | { ok: false; reason: "not_found" | "done" }
+  /** The edit leaves a recurring task with no due date, which quick-add refuses too. */
+  | { ok: false; reason: "needs_due_date"; recurrence: Recurrence };
+
+export type DeleteTaskResult =
+  /** `detached`: its done sub-tasks, now plain tasks (parent_task_id null). */
+  | { ok: true; task: Task; detached: Task[] }
+  | { ok: false; reason: "not_found" }
+  | { ok: false; reason: "open_sub_tasks"; sub_tasks: Task[] };
+
+export type AddSubTaskResult = { ok: true; task: Task } | { ok: false; reason: "not_found" | "nested" };
 
 export type CompleteTaskResult =
   | { ok: false; reason: "not_found" }
@@ -65,6 +84,15 @@ export interface TaskStore {
   linkTask(id: string, work_item_id: WorkItemId): Promise<Task | null>;
   /** Completes every open task linked to `work_item_id`, as completeTask does each; the tasks it completed. */
   closeLinkedTasks(work_item_id: WorkItemId): Promise<Task[]>;
+  /** Sets the fields `edit` names on an open task, conditional on done_at unset; a refusal writes nothing. */
+  updateTask(id: string, edit: TaskEdit): Promise<UpdateTaskResult>;
+  /**
+   * Deletes the row. Refused while it has open sub-tasks; its done sub-tasks are detached (parent_task_id null) in the
+   * same transaction. A work item linked to it is not touched.
+   */
+  deleteTask(id: string): Promise<DeleteTaskResult>;
+  /** Inserts `t` as a sub-task of `parent_task_id` unless its ID is stored; refused under a sub-task (one level). */
+  addSubTask(parent_task_id: string, t: NewTask): Promise<AddSubTaskResult>;
 }
 
 const pad = (n: number) => String(n).padStart(2, "0");
@@ -73,6 +101,23 @@ const pad = (n: number) => String(n).padStart(2, "0");
 export function localDate(now: Date, days = 0): string {
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** A due day as a date: today and tomorrow against `now`, the store's injected Clock. */
+export function dueDate(due: DueDay, now: Date): string {
+  return "date" in due ? due.date : localDate(now, due.days_from_today);
+}
+
+/**
+ * `task` with the fields `edit` names (today and tomorrow against `now`), as quick-add would store them: a due time
+ * on an undated task makes it due today; a recurrence needs a due date. Pure.
+ */
+export function applyTaskEdit(task: Task, edit: TaskEdit, now: Date): Task | { refused: "needs_due_date"; recurrence: Recurrence } {
+  const { due, ...fields } = edit;
+  const named = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
+  const next: Task = { ...task, ...named, due_date: due === undefined ? task.due_date : due === null ? null : dueDate(due, now) };
+  if (next.due_date === null && next.due_time !== null) next.due_date = localDate(now);
+  return next.recurrence !== null && next.due_date === null ? { refused: "needs_due_date", recurrence: next.recurrence } : next;
 }
 
 /** The next occurrence's due date: a day or a week later, or a month later on the same day (the month's last day when shorter). */
@@ -87,11 +132,12 @@ export function nextDueDate(date: string, every: Recurrence): string {
   return next.toISOString().slice(0, 10);
 }
 
-/** One line per task: ID, title, due, priority, list (as `#label`) and recurrence, `-` for each unset. */
+/** One line per task: ID, title, due, priority, list (as `#label`) and recurrence, `-` for each unset; a sub-task's parent last. */
 export function taskLine(t: Task): string {
   const due = t.due_date === null ? "-" : t.due_time === null ? t.due_date : `${t.due_date} ${t.due_time}`;
   const list = t.list === null ? "-" : "#" + t.list;
-  return [t.id, t.title, due, t.priority === null ? "-" : `!${t.priority}`, list, t.recurrence === null ? "-" : `every ${t.recurrence}`].join("\t");
+  return [t.id, t.title, due, t.priority === null ? "-" : `!${t.priority}`, list, t.recurrence === null ? "-" : `every ${t.recurrence}`,
+    ...(t.parent_task_id === null ? [] : [`sub of ${t.parent_task_id}`])].join("\t");
 }
 
 /** How many days after today the Upcoming view shows. */

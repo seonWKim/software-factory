@@ -24,6 +24,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `hooks` | runtime | review | global | tighten-only |  | `[]` | Hook names the owner enabled; a hook runs only when listed here. Empty: no hook runs. |
 | `hotspot_weight` | controller | runtime | global | tighten-only |  | `3` | Weight of a shared hotspot path in the coordination cost of two runs side by side. |
 | `intake_label` | inbound | runtime | global | free |  |  | Label that takes a forge issue in as a new work item; an open item keeps the label it has. |
+| `integrations` | runtime | runtime | global | free |  | `{}` | Which plugin each integration uses, over the plugins key in factory.config.json. |
 | `lease_ms` | worker | runtime | global | free |  | `300000` | How long a claimed step stays held by a worker without a lease renewal. |
 | `max_attempts` | controller | runtime | project | tighten-only |  | `3` | Task failures of one step before the work item blocks on a human. |
 | `max_coordination_cost` | controller | runtime | global | tighten-only |  | `2.5` | Coordination cost at or above which an implement run waits for the work it shares files with. |

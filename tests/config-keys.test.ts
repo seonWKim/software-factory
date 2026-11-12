@@ -299,7 +299,7 @@ describe("coordination config (design §5, 2026-11-03)", () => {
   it("mechanical_paths and mechanical_weight load with their defaults, and compose passes them into the coordination config", async () => {
     const { coordinationConfig } = await import("../src/core/config.js");
     const { DEFAULT_MECHANICAL } = await import("../src/core/coordination.js");
-    const defaults = ["src/impl/store/mysql/migrations.ts", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"];
+    const defaults = ["docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"];
     expect(DEFAULT_MECHANICAL).toEqual(defaults);
     expect(coordinationConfig({})).toMatchObject({ mechanical: defaults, mechanical_weight: 0.25 });
     expect(REAL).toMatchObject({ mechanical_paths: defaults, mechanical_weight: 0.25 });
