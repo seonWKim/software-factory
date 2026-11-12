@@ -21,7 +21,7 @@ import { newStore, w1 } from "./helpers/store.js";
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
 const SCHEMA: PathCompanion[] = [
-  { when: "src/impl/store/sqlite/schema.ts", also: ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
+  { when: "src/impl/store/sqlite/schema.ts", also: ["src/impl/store/sql/sql-factory-store.ts", "tests/store-contract.test.ts"] },
 ];
 
 const answer = (over: Record<string, unknown>) => ({ ...triageSpec, ...over });
@@ -34,12 +34,12 @@ describe("applyCompanions", () => {
     );
     expect((a as { allowed_paths: string[] }).allowed_paths).toEqual([
       "src/impl/store/sqlite/",
-      "migrations/mysql/",
-      "src/impl/store/mysql/migrations.ts",
+      "src/impl/store/sql/sql-factory-store.ts",
+      "tests/store-contract.test.ts",
     ]);
     expect(added).toEqual([
-      { path: "migrations/mysql/", because: "src/impl/store/sqlite/schema.ts" },
-      { path: "src/impl/store/mysql/migrations.ts", because: "src/impl/store/sqlite/schema.ts" },
+      { path: "src/impl/store/sql/sql-factory-store.ts", because: "src/impl/store/sqlite/schema.ts" },
+      { path: "tests/store-contract.test.ts", because: "src/impl/store/sqlite/schema.ts" },
     ]);
   });
 
@@ -83,26 +83,26 @@ describe("applyCompanions", () => {
   });
 
   it("does not add a path an allowed path already covers, nor one twice", () => {
-    const both: PathCompanion[] = [...SCHEMA, { when: "src/impl/store/mysql/schema.ts", also: SCHEMA[0]!.also }];
+    const both: PathCompanion[] = [...SCHEMA, { when: "src/interfaces/factory-store.ts", also: SCHEMA[0]!.also }];
     const out = applyCompanions(
       answer({
-        allowed_paths: ["src/impl/store/", "migrations/"],
-        files_to_change: ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts"],
+        allowed_paths: ["src/impl/store/", "src/interfaces/", "tests/"],
+        files_to_change: ["src/impl/store/sqlite/schema.ts", "src/interfaces/factory-store.ts"],
       }),
       both,
     );
     expect(out.added).toEqual([]);
     const twice = applyCompanions(
-      answer({ allowed_paths: ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts"], files_to_change: ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts"] }),
+      answer({ allowed_paths: ["src/impl/store/sqlite/schema.ts", "src/interfaces/factory-store.ts"], files_to_change: ["src/impl/store/sqlite/schema.ts", "src/interfaces/factory-store.ts"] }),
       both,
     );
-    expect(twice.added.map((a) => a.path)).toEqual(["migrations/mysql/", "src/impl/store/mysql/migrations.ts"]);
+    expect(twice.added.map((a) => a.path)).toEqual(["src/impl/store/sql/sql-factory-store.ts", "tests/store-contract.test.ts"]);
   });
 
   it("a companion path listed only in files_to_change is accepted by parseTriage", () => {
     const raw = answer({
       allowed_paths: ["src/impl/store/sqlite/schema.ts"],
-      files_to_change: ["src/impl/store/sqlite/schema.ts", "migrations/mysql/0009_x.sql"],
+      files_to_change: ["src/impl/store/sqlite/schema.ts", "tests/store-contract.test.ts"],
     });
     expect(parseTriage(raw).ok).toBe(false);
     expect(parseTriage(applyCompanions(raw, SCHEMA).answer).ok).toBe(true);
@@ -169,8 +169,6 @@ describe("path_companions load check", () => {
     it("the repo's own entries load", async () => {
       const loaded = await loadConfig(root(SQLITE));
       expect(loaded.config.path_companions).toEqual(expect.arrayContaining([
-        { when: "src/impl/store/sqlite/schema.ts", also: ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
-        { when: "src/impl/store/mysql/schema.ts", also: ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
         { when: "docs/design.md", also: ["docs/design/"] },
         { when: "docs/plugins.md", also: ["docs/plugins/"] },
       ]));
@@ -183,15 +181,14 @@ describe("path_companions load check", () => {
       return (out.answer as { allowed_paths: string[] }).allowed_paths;
     };
 
-    it("naming the store interface adds the SQL store, both schemas, the contract test and the MySQL migrations", async () => {
-      expect(await allowedFor("src/interfaces/factory-store.ts")).toEqual(expect.arrayContaining([
+    it("naming the store interface adds the SQL store, the SQLite schema and the contract test", async () => {
+      const paths = await allowedFor("src/interfaces/factory-store.ts");
+      expect(paths).toEqual(expect.arrayContaining([
         "src/impl/store/sql/sql-factory-store.ts",
         "src/impl/store/sqlite/schema.ts",
-        "src/impl/store/mysql/schema.ts",
         "tests/store-contract.test.ts",
-        "migrations/mysql/",
-        "src/impl/store/mysql/migrations.ts",
       ]));
+      expect(paths.filter((p) => p.includes("mysql"))).toEqual([]);
     });
 
     it("naming the config keys adds their test; naming a design topic file adds the design index", async () => {
@@ -241,14 +238,14 @@ describe("the controller's triage branch", () => {
     await f.triage(answer({
       tier: 3,
       allowed_paths: ["src/impl/store/sqlite/schema.ts"],
-      files_to_change: ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/migrations.ts"],
+      files_to_change: ["src/impl/store/sqlite/schema.ts", "src/impl/store/sql/sql-factory-store.ts"],
     }));
     const it1 = await f.get(it0);
     expect(it1).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    expect(it1.allowed_paths).toEqual(["src/impl/store/sqlite/schema.ts", "migrations/mysql/", "src/impl/store/mysql/migrations.ts"]);
+    expect(it1.allowed_paths).toEqual(["src/impl/store/sqlite/schema.ts", "src/impl/store/sql/sql-factory-store.ts", "tests/store-contract.test.ts"]);
     const body = f.specBody();
-    expect(body).toContain("- `migrations/mysql/`: added because the spec names `src/impl/store/sqlite/schema.ts`");
-    expect(body).toContain("- `src/impl/store/mysql/migrations.ts`: added because the spec names `src/impl/store/sqlite/schema.ts`");
+    expect(body).toContain("- `src/impl/store/sql/sql-factory-store.ts`: added because the spec names `src/impl/store/sqlite/schema.ts`");
+    expect(body).toContain("- `tests/store-contract.test.ts`: added because the spec names `src/impl/store/sqlite/schema.ts`");
   });
 
   it("an added path under a floor raises the tier", async () => {
@@ -271,7 +268,7 @@ describe("the controller's triage branch", () => {
       files_to_change: ["src/impl/store/sqlite/schema.ts"],
       phases: [phase(1), phase(2)],
     }));
-    expect((await f.get(parent)).allowed_paths).toEqual(["src/impl/store/sqlite/schema.ts", "migrations/mysql/", "src/impl/store/mysql/migrations.ts"]);
+    expect((await f.get(parent)).allowed_paths).toEqual(["src/impl/store/sqlite/schema.ts", "src/impl/store/sql/sql-factory-store.ts", "tests/store-contract.test.ts"]);
     expect(f.specBody()).toContain("#### Phase 1 of 2: Part 1\np\n\nDone when:\n- d\n\nAllowed to change:\n- `src/impl/store/sqlite/schema.ts`\n");
     f.source.queue.push({ kind: "spec_approved", source: issueRef(3), comment_id: "9001", approver: alice });
     await f.controller.tickIntake();

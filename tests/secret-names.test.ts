@@ -83,7 +83,6 @@ describe("registry: each plugin declares its secrets", () => {
     expect(names("broker", "github")).toEqual([]);
     expect(names("github_auth", "token")).toEqual(["GITHUB_TOKEN"]);
     expect(names("github_auth", "app")).toEqual(["GITHUB_APP_ID"]);
-    expect(names("store", "mysql")).toEqual(["MYSQL_PASSWORD"]);
     expect(names("store", "sqlite")).toEqual([]);
     expect(names("runner", "claude-code")).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
     expect(names("llm", "claude-cli")).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);

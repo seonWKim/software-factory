@@ -43,7 +43,6 @@
     "factory": "dist/main.js"
   },
   "dependencies": {
-    "mysql2": "^3.24.6",
     "react-aria-components": "1.22.1"
   }
 }
