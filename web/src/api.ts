@@ -565,15 +565,43 @@ export interface TaskRow {
 }
 
 /**
- * `/api/v1/tasks`: the open tasks placed by due date at the server's local midnight; `csrf_token` and `can_build` for
- * Build this (null and false when the page has no commands actor).
+ * A stored calendar event placed on one day beside the tasks (design 02-tasks, calendar views). `time`: the local
+ * `HH:MM` it starts that day ("00:00" when it began earlier); null for an all-day event.
+ */
+export interface EventRow {
+  kind: "event";
+  source: string;
+  id: string;
+  title: string;
+  all_day: boolean;
+  time: string | null;
+}
+
+/** One entry of a day in Today and Upcoming: a task, or an event. */
+export type DayRow = TaskRow | EventRow;
+
+export const isEventRow = (r: DayRow): r is EventRow => "kind" in r && r.kind === "event";
+
+/** A calendar source's last sync: when it last succeeded (null: never) and whether its last read failed. */
+export interface CalendarSync {
+  source: string;
+  synced_at: string | null;
+  failed: boolean;
+}
+
+/**
+ * `/api/v1/tasks`: the open tasks placed by due date at the server's local midnight, with the stored calendar events
+ * in Today and Upcoming (all-day first, then timed tasks and events by time, then untimed tasks); `calendar`, each
+ * source's last sync (absent from an older server); `csrf_token` and `can_build` for Build this (null and false when
+ * the page has no commands actor).
  */
 export interface TasksView {
   today_date: string;
   inbox: TaskRow[];
-  today: { overdue: TaskRow[]; due: TaskRow[] };
-  upcoming: { date: string; tasks: TaskRow[] }[];
+  today: { overdue: TaskRow[]; due: DayRow[] };
+  upcoming: { date: string; tasks: DayRow[] }[];
   projects: { list: string | null; tasks: TaskRow[] }[];
+  calendar?: CalendarSync[];
   csrf_token: string | null;
   can_build: boolean;
 }
