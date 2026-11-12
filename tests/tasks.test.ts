@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import migration from "../src/controller/migrations/20261111T1610-controller-tasks.migration.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
-import { type NewTask, localDate } from "../src/core/tasks.js";
+import { DEFAULT_DURATION_MINUTES, type NewTask, localDate, planDay, taskDuration, taskViews } from "../src/core/tasks.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableExists } from "../src/state/index.js";
@@ -122,6 +122,46 @@ describe("factory task done and recurring completion", () => {
   });
 });
 
+describe("schedule a task: duration and recurrence (design 02-tasks)", () => {
+  it("a timed task with no stored duration is planned as 30 minutes; a stored duration replaces it", async () => {
+    const { store, clock } = await setup();
+    const today = localDate(clock.now());
+    const plain = await store.addTask(task({ id: "tk_a", due: { date: today }, due_time: "15:00" }));
+    const long = await store.addTask(task({ id: "tk_b", due: { date: today }, due_time: "16:00", duration_minutes: 90 }));
+    expect(plain.duration_minutes).toBeNull();
+    expect(taskDuration(plain)).toBe(DEFAULT_DURATION_MINUTES);
+    expect(DEFAULT_DURATION_MINUTES).toBe(30);
+    expect(taskDuration(long)).toBe(90);
+    const views = taskViews(await store.listTasks(10), clock.now());
+    expect(views.timeline).toEqual([
+      { kind: "task", id: "tk_a", title: "water plants", start: "15:00", end: "15:30", offset: 900, minutes: 30 },
+      { kind: "task", id: "tk_b", title: "water plants", start: "16:00", end: "17:30", offset: 960, minutes: 90 },
+    ]);
+  });
+
+  it("the timeline leaves untimed tasks and all-day events out, draws a timed event its length, and cuts a block at midnight", () => {
+    const day = "2026-11-11";
+    const at = (h: number, m = 0) => new Date(2026, 10, 11, h, m).toISOString();
+    const late = { ...task({ due: { date: day } }), id: "tk_late", due_date: day, due_time: "23:45", created_at: at(1), done_at: null, parent_id: null,
+      work_item_id: null, parent_task_id: null, duration_minutes: null, reminded_at: null } as const;
+    const untimed = { ...late, id: "tk_untimed", due_time: null };
+    const event = { kind: "event" as const, source: "work", id: "ev1", title: "standup", starts_at: at(9), ends_at: at(9, 15), all_day: false, time: "09:00" };
+    const allDay = { ...event, id: "ev2", all_day: true, time: null };
+    expect(planDay([allDay, event, late, untimed], day)).toEqual([
+      { kind: "event", id: "work:ev1", title: "standup", start: "09:00", end: "09:15", offset: 540, minutes: 15 },
+      { kind: "task", id: "tk_late", title: "water plants", start: "23:45", end: "00:15", offset: 1425, minutes: 15 },
+    ]);
+  });
+
+  it("a recurring task's next occurrence keeps its due time and duration, its date counted from the old due date", async () => {
+    const { store, clock } = await setup();
+    await store.addTask(task({ due: { date: "2026-11-11" }, due_time: "15:00", duration_minutes: 45, recurrence: "week" }));
+    clock.advance(3 * DAY);
+    const r = await store.completeTask("tk_1");
+    expect(r.ok && r.next).toMatchObject({ due_date: "2026-11-18", due_time: "15:00", duration_minutes: 45, reminded_at: null });
+  });
+});
+
 describe("task writes are conditional and idempotent", () => {
   it("adding the same task twice stores one row and returns the stored one", async () => {
     const { store, clock } = await setup();
@@ -167,8 +207,9 @@ describe("migration: controller_tasks", () => {
     const { store } = await newStore();
     const { item } = await store.createWorkItem(issue(1), system);
     await store.db.run("DROP TABLE controller_tasks");
-    // The later column migrations on this table (#607, sub-tasks) run again too, as they would after this one on an older store.
-    await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id IN (?, ?, ?)`, [ID, "20261112T1500-controller-tasks-work-item", "20261112T1800-controller-sub-tasks"]);
+    // The later column migrations on this table (#607, sub-tasks, schedule) run again too, as they would after this one on an older store.
+    const later = ["20261112T1500-controller-tasks-work-item", "20261112T1800-controller-sub-tasks", "20261113T0900-controller-task-schedule"];
+    await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id IN (?, ?, ?, ?)`, [ID, ...later]);
     expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(false);
     await store.migrate();
     expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(true);
