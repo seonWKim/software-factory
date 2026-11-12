@@ -41,6 +41,7 @@ the `05-*` files.
 ## 6. Measurement
 - [06-measurement.md](design/06-measurement.md): the feedback rate, revert and fix-forward tracking, `factory stats`, and the reviewer's golden set.
 - [06-token-budget.md](design/06-token-budget.md): per-tier token budget checkpoints, and what a run's tokens and cost count.
+- [06-spend.md](design/06-spend.md): spend per UTC day, week and item from the stored run costs, unknown cost apart, and daily and weekly dollar budgets that alert once per period and threshold and stop nothing.
 
 ## 7. Self-improvement
 - [07-self-improvement.md](design/07-self-improvement.md): how the factory changes its own behaviour, and the doc index in the prompt.
