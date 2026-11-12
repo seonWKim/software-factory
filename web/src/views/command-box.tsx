@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ProposalView } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { t } from "../i18n/index.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Field } from "../components/ui/field.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -53,22 +54,22 @@ export function CommandBox({ enabled, busy, outcome, send }: { enabled: boolean;
       }}
     >
       <Field
-        label="Say it in your own words"
+        label={t("command.label")}
         htmlFor="command-box"
-        help="The factory answers in the thread below with the commands it read. Nothing changes until you confirm them."
+        help={t("command.note")}
       >
         <Textarea
           id="command-box"
           rows={2}
           value={words}
           onChange={(e) => setWords(e.target.value)}
-          placeholder="e.g. looks good, approve it but keep it small"
+          placeholder={t("command.placeholder")}
           className="w-full"
         />
       </Field>
       <ButtonRow>
         <Button type="submit" variant="secondary" disabled={!enabled || busy || words.trim() === ""}>
-          Read it
+          {t("command.submit")}
         </Button>
         <OutcomeText outcome={outcome} />
       </ButtonRow>
@@ -82,23 +83,23 @@ export function PendingProposals({
 }: { proposals: readonly ProposalView[]; enabled: boolean; busy: boolean; outcomes: (id: string) => Outcome; send: Send }) {
   if (proposals.length === 0) return null;
   return (
-    <ul aria-label="Proposed commands" className="mt-3 space-y-2">
+    <ul aria-label={t("command.proposals")} className="mt-3 space-y-2">
       {proposals.map((p) => (
         <li key={p.id} data-proposal={p.id} className="max-w-xl min-w-0 rounded-control border border-border-strong p-2">
-          <p className="text-xs text-text-2">Proposed, not applied yet:</p>
+          <p className="text-xs text-text-2">{t("command.pending")}</p>
           <ul className="my-1 space-y-0.5">
             {p.commands.map((c) => (
               <li key={c.index} className="min-w-0 text-sm break-words">
-                <code className="break-all">{c.line}</code> <span className="text-xs text-text-2">on {c.work_item_id}</span>
+                <code className="break-all">{c.line}</code> <span className="text-xs text-text-2">{t("command.on", { id: c.work_item_id })}</span>
               </li>
             ))}
           </ul>
           <ButtonRow className="mt-3">
             <Button variant="secondary" disabled={!enabled || busy} onClick={() => void send(CANCEL, "", p.id)}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button variant="secondary" disabled={!enabled || busy} onClick={() => void send(CONFIRM_ALL, "", p.id)}>
-              Confirm all
+              {t("command.confirmAll")}
             </Button>
             <OutcomeText outcome={outcomes(p.id)} />
           </ButtonRow>
