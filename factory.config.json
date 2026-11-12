@@ -4,7 +4,8 @@
   "repo": {
     "owner": "seonWKim", "name": "software-factory", "path": ".", "base_branch": "main",
     "install_command": ["npm", "ci"], "test_command": ["npm", "test"],
-    "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]]
+    "check_commands": [["npm", "run", "typecheck"], ["npm", "test"]],
+    "ui_check": { "command": ["npm", "run", "-s", "check:responsive"], "paths": ["web/", "src/ui/"] }
   },
   "toolchain": {
     "warm_command": ["sh", "-c", "npm ci && if [ -f node_modules/electron/install.js ]; then node node_modules/electron/install.js; fi"]
