@@ -448,8 +448,6 @@ export async function loadConfig(
       dirname(secretsFile),
       join(stateDir, "db"),
       join(stateDir, "storage"),
-      // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
-      join(stateDir, "test-mysql.url"),
       // The solo passport key (Identity): an agent that read it could mint passports.
       join(stateDir, LOCAL_KEY_FILE),
       join(home, ".ssh"),
@@ -719,9 +717,6 @@ export class Plugins {
     for (const name of names) members.push({ name, impl: await createPlugin(this.loaded.registry, "runner", name, { ...this.base, sandbox, secrets, ...tools }) });
     return members.length === 1 ? members[0]!.impl : new FallbackRunner(members);
   }
-  testDatabase(secrets: SecretStore) {
-    return createPlugin(this.loaded.registry, "test_database", this.loaded.plugins.test_database, { ...this.base, secrets });
-  }
   /**
    * The selected forge (`plugins.forge`, or the one `plugins.source` implies; issue #273), or null when config
    * selects none: then nothing is built. `sync`: the store, Clock and log build() also hands it, so the GitHub forge
@@ -800,8 +795,6 @@ export async function build(
   }
   const storage = await createPlugin(registry, "storage", sel.storage, base);
   const awake = await createPlugin(registry, "awake", sel.awake, { ...base, clock });
-  // The pre-push checks' database (design §4): its URL reaches only the check commands, never an agent.
-  const testDatabase = await p.testDatabase(secrets);
   // list-all lists the packs' skills (design 11-packs.md); with none it finds nothing and the prompt gets no index.
   const capability = await createPlugin(registry, "capability", sel.capability, { ...base, capabilities: packSkills(loaded.packs) });
   // The network pause's probe (design §5 Restarts): only the endpoints of the plugins selected above.
@@ -891,7 +884,6 @@ export async function build(
     cpus: availableParallelism(),
     models: { table: loaded.model_by, names: loaded.models },
     awake, capability, guidance: joinGuidance([new PackGuidance(loaded.packs), new LearnedRules(tacit)]), // packs' rules, then promoted rules (design 07)
-    testDatabase,
     settings, learned,
     engines,
     ticks,

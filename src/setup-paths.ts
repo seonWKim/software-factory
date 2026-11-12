@@ -28,7 +28,6 @@ export const STATE_PATHS: readonly StatePath[] = [
   { path: "storage", what: "shared storage (transcripts, artifacts)" },
   { path: "sessions", what: "interactive session records" },
   { path: "golden", what: "golden set results" },
-  { path: "test-mysql.url", what: "the test MySQL login (SET_UP.md)" },
 ];
 
 /** The state folder's subfolder whose entries are git worktrees of the repository (the updater's version copies). */

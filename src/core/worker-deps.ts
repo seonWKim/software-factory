@@ -20,7 +20,6 @@ import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import type { SharedStorage } from "../interfaces/shared-storage.js";
-import type { TestDatabase } from "../interfaces/test-database.js";
 import type { RunPassportIssuer, ToolBroker } from "../interfaces/tool-broker.js";
 
 /** Where a local item's runs go: the local broker (no remote, no PR) and a sandbox on the local base branch. */
@@ -170,11 +169,6 @@ export interface WorkerDeps {
    * factory.config.json (design §4). Absent: the default table, and outcomes record the model name as null.
    */
   models?: { table: ModelTable; names?: ModelNames };
-  /**
-   * The pre-push checks' throwaway database (design §4): one per run, made the first time a check runs and
-   * dropped when the run ends. Its env reaches only the check commands. Absent: no database and no skip line.
-   */
-  testDatabase?: TestDatabase;
   /**
    * The live settings (design 2026-11-03): refreshed before each claim and each lease renewal. A run reads the
    * values it started with, so a diff, timeout or model change applies at the next run. Absent: `config` and

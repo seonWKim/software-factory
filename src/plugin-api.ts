@@ -27,7 +27,6 @@ export { secretName } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { TacitLedger } from "./interfaces/tacit-ledger.js";
-import type { TestDatabase } from "./interfaces/test-database.js";
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { ChildLauncher, CommandRunner, Updater } from "./interfaces/updater.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials } from "./interfaces/github-credentials.js";
@@ -52,7 +51,6 @@ export interface Instances {
   awake: KeepAwake;
   /** The credentials and the one forge client over them (docs/plugins/github-credentials.md). */
   github_auth: GitHubAccess;
-  test_database: TestDatabase;
   forge: Forge;
   network_probe: NetworkProbe;
   /** Builds each component's EventBus and the retry scheduler (docs/plugins/event-bus.md). */
@@ -113,7 +111,6 @@ export interface Contexts {
   awake: BaseContext & { clock: Clock };
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
   /** The pre-push checks' throwaway database (design §4); `none` is its one plugin. */
-  test_database: BaseContext & { secrets: SecretStore };
   /** `credentials`: what a run's push needs; only outbound's targets call the forge's writes (RFC 0015 M7, G2). */
   forge: BaseContext & { github: GitHubApi; credentials?: GitHubCredentials };
   /** The network pause's probe (design §5 Restarts): the selection and the config name its endpoints. */

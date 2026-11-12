@@ -101,7 +101,7 @@ export function exitText(r: Pick<ExecResult, "exit_code" | "signal" | "timed_out
 
 /**
  * Runs `commands` in order in the run folder (or `cwd` inside it), each with `env` and the run timeout, and stops at the first
- * failure. Output is redacted before it is kept: the env may hold a database URL with a password.
+ * failure. Output is redacted before it is kept: `redact` lists values that must never leave the worker.
  */
 export async function runChecks(o: {
   sandbox: Sandbox;
@@ -157,13 +157,10 @@ function cutTail(text: string, values: readonly string[]): string {
 }
 
 /**
- * The PR body's lines (design §4): one "Checked before push" line per command with its result, then the test
- * database's skip line, if any.
+ * The PR body's lines (design §4): one "Checked before push" line per command with its result.
  */
-export function checkedLines(results: readonly CheckResult[], o: { fixed: boolean; skipped: string | null }): string[] {
-  const lines = results.map(
+export function checkedLines(results: readonly CheckResult[], o: { fixed: boolean }): string[] {
+  return results.map(
     (r) => `Checked before push: \`${commandText(r.command)}\` ${r.how}${o.fixed ? " (after one fix step)" : ""}`,
   );
-  if (o.skipped) lines.push(o.skipped);
-  return lines;
 }
