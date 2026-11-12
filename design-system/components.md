@@ -4,7 +4,7 @@ The shared pieces in `web/src/components/ui`: plain React and Tailwind on the to
 
 ## Section
 
-A titled block of a page: an h2, an optional count and an optional action at the end. No variants or sizes.
+A block of a page: an optional h2 `title`, an optional count and an optional action at the end. With no `title` the count shows alone and the `label` prop gives the region its name (`aria-label`); a caller that passes a `title` is unchanged. No variants or sizes.
 
 ## Table
 
@@ -12,7 +12,7 @@ A data table at `sm` and up; below it, one card per row. Props: `head`, `label`,
 
 ## Tr
 
-One row of a `Table`: a `<tr>`, or a card below `sm` (first cell the title, next two under it, the rest with their column names).
+One row of a `Table`: a `<tr>`, or a card below `sm` (first cell the title, the second alone under it, the rest with their column names from the third column; a cell with nothing in it is not listed).
 
 ## Td
 
