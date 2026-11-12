@@ -180,6 +180,40 @@ describe("GitHub code stays in src/impl/github/", () => {
   });
 });
 
+// Google code lives in the google-calendar plugin's folder (docs/plugins/calendar-source.md): no other src/ file names
+// Google, in code, strings or comments, so the provider stays one plugin the factory can drop.
+
+const GOOGLE_DIR = "calendar/plugins/google-calendar/";
+
+/** Each line of `sources` (paths relative to src/) outside GOOGLE_DIR that names Google. */
+function googleWordViolations(sources: readonly { path: string; text: string }[]): string[] {
+  const out: string[] = [];
+  for (const { path, text } of sources) {
+    if (path.split("\\").join("/").startsWith(GOOGLE_DIR)) continue;
+    text.split("\n").forEach((line, i) => {
+      if (/google/i.test(line)) out.push(`${path}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  return out;
+}
+
+describe("Google stays in src/calendar/plugins/google-calendar/", () => {
+  it("no src/ file outside it names google", () => {
+    expect(googleWordViolations(srcSources())).toEqual([]);
+  });
+
+  it("fails on a fixture file outside it that names google, and passes the same file inside it", () => {
+    const text = 'const url = "https://www.googleapis.com/calendar/v3";\n// reads Google Calendar\nconst ok = 1;';
+    for (const path of ["core/fixture.ts", "calendar/fixture.ts", "calendar/plugins/other/fixture.ts", "impl/source/fixture.ts"]) {
+      expect(googleWordViolations([{ path, text }])).toEqual([
+        `${path}:1: const url = "https://www.googleapis.com/calendar/v3";`,
+        `${path}:2: // reads Google Calendar`,
+      ]);
+    }
+    expect(googleWordViolations([{ path: `${GOOGLE_DIR}fixture.ts`, text }])).toEqual([]);
+  });
+});
+
 // Core, interfaces, the status page server (src/ui/) and the dashboard (web/) have no platform branches and no OS
 // paths: platform code lives in a plugin (KeepAwake) or a desktop shell (desktop/, docs/design/09-desktop-app.md).
 // Full-line comments may name a path. The exemptions below (decision 2 of issue #573) are the known platform code,

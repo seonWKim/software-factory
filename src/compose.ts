@@ -115,7 +115,7 @@ export interface FileConfig {
    * `source` may be a list of names, one adapter each (design 2026-11-01).
    */
   plugins?: Record<string, unknown>;
-  calendar?: unknown; // CalendarSource plugin names, in order (docs/plugins/calendar-source.md). Absent or []: none.
+  calendar?: unknown; calendar_ids?: unknown; // CalendarSource plugin names, in order, and the calendars a provider reads (docs/plugins/calendar-source.md). Absent or []: none.
   models: { cheap: string; standard: string; strong: string };
   /**
    * Model class per run kind and tier, plus `retry_up` (design §4, 2026-11-02). Absent: DEFAULT_MODEL_BY.
@@ -876,7 +876,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
-    calendar: await createCalendars(registry, sel, { ...base, secrets }), // synced every 5 minutes (design 02-tasks); [] unless `calendar` lists some
+    calendar: await createCalendars(registry, sel, { ...base, secrets, clock }), // synced every 5 minutes (design 02-tasks); [] unless `calendar` lists some
     network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,

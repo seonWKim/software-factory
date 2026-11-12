@@ -22,6 +22,8 @@ import type { NetworkProbe } from "./interfaces/network-probe.js";
 import type { ExecutionEngines } from "./worker/engine/index.js";
 import type { Sandbox } from "./interfaces/sandbox.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
+// Re-exported so a component's plugin declares its secret names without importing a legacy folder (RFC 0015 §9).
+export { secretName } from "./interfaces/secret-store.js";
 import type { SharedStorage } from "./interfaces/shared-storage.js";
 import type { SourceAdapter } from "./interfaces/source-adapter.js";
 import type { TacitLedger } from "./interfaces/tacit-ledger.js";
@@ -123,8 +125,8 @@ export interface Contexts {
   engine: BaseContext & { store: FactoryStore };
   /** Built for the controller only; the plugin finds its own home. */
   tacit: BaseContext;
-  /** `secrets`: what a provider reads its credentials from (none ships yet). */
-  calendar: BaseContext & { secrets: SecretStore };
+  /** `secrets`: what a provider reads its credentials from. `clock`: "now", for the provider's own window. */
+  calendar: BaseContext & { secrets: SecretStore; clock: Clock };
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */
