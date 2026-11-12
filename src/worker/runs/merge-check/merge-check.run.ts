@@ -1,8 +1,10 @@
 // The merge-check run (RFC 0015 §7 Merge queue, M8): checks a merge queue entry as it will land. No agent, no push,
 // no forge call. In a fresh run folder at the base it merges the branches of the entries ahead and then this
-// change's branch, in queue order, and runs the install command and then the checks on the result. A conflict or a
-// failing check is a result (`red`), not a run failure: the merge queue decides. Git and sandbox errors fail the run.
+// change's branch, in queue order, and runs the install command and then the checks on the result, then the UI check
+// (`repo.ui_check`, design §4) when the merged result changes one of its paths. A conflict or a failing check is a
+// result (`red`), not a run failure: the merge queue decides. Git and sandbox errors fail the run.
 
+import { isCovered } from "../../../core/policy.js";
 import { NO_HOOKS, RunFailure, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
@@ -38,8 +40,12 @@ async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Re
       return { result: "red", why: "conflict", branch, conflicts, base_sha };
     }
     const merged_sha = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-    // The install command first, then the configured checks (runCheckList's default list), as the local merge ran them.
-    for (const round of [{ commands: [[...w.cfg.repo.install_command]] }, {}]) {
+    // The install command first, then the configured checks (runCheckList's default list), as the local merge ran them,
+    // then the UI check where Chrome can start (not in the agent sandbox) when the merged result changes its paths.
+    const ui = w.cfg.repo.ui_check;
+    const changed = ui ? (await w.git(handle, ["diff", "--name-only", "-z", "--no-renames", base_sha, merged_sha])).split("\0").filter(Boolean) : [];
+    const uiRound = ui && changed.some((f) => isCovered(f, ui.paths)) ? [{ commands: [[...ui.command]] }] : [];
+    for (const round of [{ commands: [[...w.cfg.repo.install_command]] }, {}, ...uiRound]) {
       const r = await w.runCheckList(run, handle, signal, round);
       if (r.failed) return { result: "red", why: "checks", command: r.failed.command.join(" "), how: r.failed.how, base_sha, merged_sha };
     }

@@ -16,7 +16,7 @@ import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { autoResolveKey } from "../src/core/policy.js";
-import { FakeAuth, FakeSandbox, FakeSource, alice, cleanScanner, config, fakeRepoLookup, silent } from "./helpers/fakes.js";
+import { FakeAuth, FakeSandbox, FakeSource, alice, cleanScanner, config, fakeRepoLookup, pipeline, silent } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const PR = 7;
@@ -432,5 +432,64 @@ describe("merge check: composition", () => {
     } finally {
       await built.close();
     }
+  });
+});
+
+// The UI check at merge (design §4, issue: run check:responsive at merge, not in the sandbox): a merge-check run whose
+// merged result changes a path under `repo.ui_check.paths` runs `repo.ui_check.command` after the install command and
+// the checks; one that does not, or with no `repo.ui_check`, runs nothing more.
+describe("merge check run: the UI check (fake sandbox)", () => {
+  const ui_check = { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] };
+
+  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number> }) {
+    const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}) };
+    const f = await pipeline({ config: { repo } });
+    f.sandbox.changedFiles = o.changed;
+    Object.assign(f.sandbox.exits, o.exits ?? {});
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
+      enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    expect(await f.w1.tick()).toBe(true);
+    const run = (await f.runs(moved.item, "merge-check"))[0]!;
+    const diffs = f.sandbox.gitCalls.filter((c) => c.startsWith("diff --name-only") && !c.includes("--diff-filter=U"));
+    return { commands: f.sandbox.commands, diffs, outcome: run.outcome };
+  }
+
+  it("a merged result touching web/ runs the UI check after the install command and the checks", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["README.md", "web/src/App.tsx"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test", "npm run check:responsive"]);
+    expect(r.diffs).toEqual([expect.stringMatching(/^diff --name-only -z --no-renames \S+ \S+$/)]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("a merged result touching src/ui/ runs it too", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["src/ui/page.ts"] });
+    expect(r.commands.at(-1)).toBe("npm run check:responsive");
+  });
+
+  it("a merged result touching neither web/ nor src/ui/ does not run the UI check", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["src/core/policy.ts", "webby.md", "docs/web/x.md"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("with no repo.ui_check, no extra command runs and the changed files are not read", async () => {
+    const r = await mergeCheckRun({ changed: ["web/src/App.tsx"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.diffs).toEqual([]);
+  });
+
+  it("a failing UI check is a red result naming the command", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm run check:responsive": 1 } });
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm run check:responsive" } });
+  });
+
+  it("a failing check stops the run before the UI check", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm test": 1 } });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.outcome).toMatchObject({ data: { result: "red", command: "npm test" } });
   });
 });
