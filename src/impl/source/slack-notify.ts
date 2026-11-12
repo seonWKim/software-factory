@@ -1,28 +1,32 @@
 // The owner's notices in Slack (design 12-notification-channels): the `notify` capability of the `slack` source.
 // Outbound hands it the notices of one 60 s batch, already egress-scanned; they go out as one top-level message in
 // `slack.notify_channel` (default the first of `slack.channels`), one line each. The main text of a line is the item's
-// title, never a display name or an ID; the title links to the item's dashboard page, and a needs-you line also
-// links the item's Slack thread when it has one.
+// title, never a display name or an ID. With an https `slack.dashboard_url` the title links to the item's dashboard
+// page; without one the title stays plain text and the line is a section with a View button (design 05-sources,
+// "View in Slack"). A needs-you line also links the item's Slack thread when it has one.
 
 import type { SourceNotice } from "../../interfaces/source-adapter.js";
 import type { SlackPost } from "./slack-api.js";
-import { escapeSlack } from "./slack-format.js";
+import { SECTION_MAX, dashboardBase, escapeSlack, section } from "./slack-format.js";
 
 /**
  * What a notices message needs of the source's deps: chat.postMessage with no thread (a top-level message), the
- * notices channel or else the first listed one, and the dashboard's base URL (absent: no dashboard link).
+ * notices channel or else the first listed one, and the dashboard's https URL (absent: View buttons).
  */
 export interface SlackNotifyDeps {
   api: { postMessage(m: Omit<SlackPost, "thread_ts">): Promise<{ ts: string }> };
   channels: readonly string[];
   notify_channel?: string | undefined;
-  dashboard?: (() => Promise<string>) | undefined;
+  dashboard_url?: string | undefined;
 }
+
+/** Slack's block limit for a message: past it, the remaining lines share one last section with no buttons. */
+const MESSAGE_BLOCKS_MAX = 50;
 
 /** `<url|text>`, or the text alone with no URL. */
 const linked = (url: string | null, text: string) => (url ? `<${url}|${text}>` : text);
 
-/** One notice's line. `base`: the dashboard's URL with no trailing slash, or null. */
+/** One notice's line. `base`: the dashboard's https URL with no trailing slash, or null. */
 export function noticeLine(n: SourceNotice, base: string | null): string {
   if (n.kind === "summary") return `🌙 ${linked(base && `${base}/app/`, `${n.count} update${n.count === 1 ? "" : "s"} during quiet hours`)}`;
   const page = base && n.work_item_id ? `${base}/app/items/${encodeURIComponent(n.work_item_id)}` : null;
@@ -35,6 +39,11 @@ export function noticeLine(n: SourceNotice, base: string | null): string {
 /** Posts the notices as one message, one line each; nothing for none. Throws on a Slack failure (outbound retries). */
 export async function postNotices(d: SlackNotifyDeps, notices: readonly SourceNotice[]): Promise<void> {
   if (notices.length === 0) return;
-  const base = d.dashboard ? (await d.dashboard()).replace(/\/+$/, "") : null;
-  await d.api.postMessage({ channel: d.notify_channel ?? d.channels[0]!, text: notices.map((n) => noticeLine(n, base)).join("\n") });
+  const base = dashboardBase(d.dashboard_url);
+  const lines = notices.map((n) => noticeLine(n, base));
+  const channel = d.notify_channel ?? d.channels[0]!;
+  if (base !== null) return void (await d.api.postMessage({ channel, text: lines.join("\n") }));
+  const own = notices.slice(0, MESSAGE_BLOCKS_MAX - 1).map((n, i) => section(lines[i]!.slice(0, SECTION_MAX), n.work_item_id ?? undefined));
+  const rest = lines.slice(MESSAGE_BLOCKS_MAX - 1).join("\n").slice(0, SECTION_MAX);
+  await d.api.postMessage({ channel, text: lines.join("\n"), blocks: rest === "" ? own : [...own, section(rest)] });
 }

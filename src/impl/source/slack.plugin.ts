@@ -21,9 +21,9 @@ export default definePlugin({
       channels: block.channels,
       // The owner's notices (design 12-notification-channels): slack.notify_channel, else the first listed channel.
       ...(block.notify_channel !== undefined ? { notify_channel: block.notify_channel } : {}),
-      // A spec message's Full spec link and each notice's link: slack.dashboard_url, else the local dashboard on ui.port (imported when asked,
-      // as for settings below).
-      dashboard: async () => block.dashboard_url ?? `http://127.0.0.1:${(await import("../../compose.js")).uiPort(c.loaded.file.ui)}`,
+      // A spec message's Full spec link and each notice's link go to slack.dashboard_url (https) when set; without it
+      // they are View buttons that open the item in a Slack modal, never a link to the local dashboard (a phone cannot open it).
+      ...(block.dashboard_url !== undefined ? { dashboard_url: block.dashboard_url } : {}),
       scanner: c.scanner,
       store: c.store,
       repo: c.repo,
