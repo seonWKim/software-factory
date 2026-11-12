@@ -40,10 +40,14 @@ export function CopyText({ value, what, children }: { value: string; what: strin
   );
 }
 
-/** A readable name that opens to the full ID and a Copy button. The ID is the element's own text, so it reads as one. */
+// A closed details is as narrow as its summary ("worker 3"), and Chrome still lays out its hidden content when a
+// script measures it, so the ID would break letter by letter there: while closed, its content is not laid out at all.
+const ID_DETAILS = "inline-block max-w-full align-baseline font-mono text-xs break-words [&:not([open])::details-content]:hidden";
+
+/** A readable name that opens to the full ID and a Copy button, both inside the details element. */
 export function IdDetails({ label, id, what }: { label: string; id: string; what: string }) {
   return (
-    <details data-id className="inline-block max-w-full align-baseline font-mono text-xs break-words">
+    <details data-id className={ID_DETAILS}>
       <summary className="cursor-pointer font-sans text-sm">{label}</summary>
       {id}
       <CopyButton value={id} what={what} />

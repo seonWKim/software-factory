@@ -144,6 +144,26 @@ describe("raw IDs", () => {
   });
 });
 
+describe("narrow windows (check:responsive at 390px)", () => {
+  it("a closed name keeps its ID out of the layout, so the summary-wide box never breaks it letter by letter", async () => {
+    await mountAt("workers", "Being built");
+    const names = [...document.querySelectorAll("details[data-id]")];
+    expect(names.length).toBeGreaterThan(0);
+    for (const d of names) {
+      expect(d.className).toContain("[&:not([open])::details-content]:hidden");
+      expect(d.querySelector(":scope > button")).not.toBeNull();
+    }
+  });
+
+  it("a long short id in the breadcrumb is cut to one line, with the full id as its title", async () => {
+    await mountAt("items/wi_local3", "A local task");
+    const crumb = screen.getByRole("navigation", { name: "Breadcrumb" }).querySelector("[aria-current=page]")!;
+    expect(crumb.className).toContain("truncate");
+    expect(crumb.className).toContain("max-w-[16ch]");
+    expect(crumb.getAttribute("title")).toBe(LOCAL);
+  });
+});
+
 describe("item links", () => {
   it("the breadcrumb and every item link point to /app/items/<id>; no link has a local: or other non-web address", async () => {
     await mountAt("items/wi_local3", "A local task");

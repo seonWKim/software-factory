@@ -359,7 +359,7 @@ export function ItemPage({ id }: { id: string }) {
       <nav aria-label="Breadcrumb" className="mb-1 text-sm">
         <Link href={`${BASE}items`} className={LINK_CLASS}>Work items</Link>
         <span className="text-text-3"> / </span>
-        <Link href={itemPath(item.id)} aria-current="page" className={cn("tabular-nums", LINK_CLASS)}>{short}</Link>
+        <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", LINK_CLASS)}>{short}</Link>
       </nav>
       <h2 className="text-balance text-base font-semibold break-words">{item.title ?? short}</h2>
       {item.parent_id && (
