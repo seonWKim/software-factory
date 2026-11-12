@@ -7,7 +7,7 @@ import { BASE } from "./pages.js";
 /** One shortcut for the help list: the keys as typed, and the catalog key of what they do. */
 export interface Shortcut {
   keys: string;
-  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open";
+  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.addTask";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
@@ -19,13 +19,17 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "j", what: "keys.next" },
   { keys: "k", what: "keys.prev" },
   { keys: "Enter", what: "keys.open" },
+  { keys: "q", what: "keys.addTask" },
 ];
 
 /**
  * After `g`, the page a key goes to. `g i`, `g t` and `g u` (Inbox, Today, Upcoming) have no view until the task
- * views exist, so they are not listed and do nothing; `q` (quick add) likewise has nothing to open.
+ * views exist, so they are not listed and do nothing;.
  */
 export const GO_KEYS: Readonly<Record<string, string>> = { n: BASE, w: `${BASE}items`, a: `${BASE}activity` };
+
+/** The Tasks page's quick-add field: `q` focuses it, so the key does nothing on a page without one. */
+export const QUICK_ADD_ATTR = "data-quick-add";
 
 /** How long `g` waits for its second key. */
 const G_MS = 1000;
@@ -97,7 +101,13 @@ export function useShortcuts({ navigate, openSearch, openHelp, path }: { navigat
       }
       if (e.key === "g") g.current = Date.now();
       else if (e.key === "?") h.openHelp();
-      else if (e.key === "j") moveSelection(1);
+      else if (e.key === "q") {
+        const field = document.querySelector<HTMLElement>(`[${QUICK_ADD_ATTR}]`);
+        if (field) {
+          e.preventDefault();
+          field.focus();
+        }
+      } else if (e.key === "j") moveSelection(1);
       else if (e.key === "k") moveSelection(-1);
       else if (e.key === "Enter" && !(e.target as HTMLElement | null)?.closest?.("a, button") && openSelection()) e.preventDefault();
     };

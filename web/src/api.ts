@@ -1,7 +1,7 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
-// /api/v1/tasks/build (postTaskBuild), each with the per-process CSRF token (from GET /api/v1/settings,
+// /api/v1/tasks/build (postTaskBuild) and POST /api/v1/tasks (postTaskAdd), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules or /api/v1/tasks) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
@@ -736,6 +736,12 @@ export async function postTaskBuild(token: string, id: string): Promise<{ ok: tr
   const r = await postJson<{ work_item_id?: string; error?: string }>(API.taskBuild, token, { id });
   if (r.ok) return { ok: true, work_item_id: r.value.work_item_id ?? "" };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/tasks: quick-add words under the page's own `tk_` ID (a resend stores one task). A refusal comes back as `{ ok: false, error }`. */
+export async function postTaskAdd(token: string, id: string, words: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.tasks, token, { id, words });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
 /**

@@ -114,4 +114,69 @@ describe("Tasks page", () => {
     await show();
     expect(screen.queryByRole("button", { name: /Build this/ })).toBeNull();
   });
+
+  describe("quick add", () => {
+    const field = () => screen.getByPlaceholderText("Add a task, e.g. pay rent friday p1 #home") as HTMLInputElement;
+    const type = (v: string) => fireEvent.change(field(), { target: { value: v } });
+    const enter = () => fireEvent.submit(field().closest("form")!);
+
+    it("Enter posts { id, words } with the token; the field clears, keeps focus and the new task shows", async () => {
+      await show();
+      answer = { status: 200, body: { id: "tk_new" } };
+      type("pay rent friday p1 #home");
+      current = view({ today: { overdue: [], due: [row("tk_rent", { title: "pay rent" })] } });
+      enter();
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(posts[0]!.url).toBe("/api/v1/tasks");
+      expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+      const body = JSON.parse(String(posts[0]!.init.body));
+      expect(body.words).toBe("pay rent friday p1 #home");
+      expect(body.id).toMatch(/^tk_[A-Za-z0-9_-]{8,64}$/);
+      await waitFor(() => expect(card("tk_rent")).not.toBeNull(), SLOW);
+      await waitFor(() => expect(field().value).toBe(""));
+      expect(document.activeElement).toBe(field());
+    });
+
+    it("a refusal shows its message beside the field, keeps the text and adds nothing; a retry sends the same id", async () => {
+      await show();
+      answer = { status: 400, body: { error: "no title" } };
+      type("p1");
+      enter();
+      expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("no title");
+      expect(field().value).toBe("p1");
+      expect(document.querySelectorAll("[data-task]")).toHaveLength(2);
+      enter();
+      await waitFor(() => expect(posts).toHaveLength(2));
+      expect(JSON.parse(String(posts[1]!.init.body)).id).toBe(JSON.parse(String(posts[0]!.init.body)).id);
+    });
+
+    it("a network error shows its message and keeps the text", async () => {
+      await show();
+      const ok = fetch;
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+        if (init?.method === "POST") throw new Error("offline");
+        return ok(url, init);
+      }));
+      type("call bank");
+      enter();
+      expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("offline");
+      expect(field().value).toBe("call bank");
+    });
+
+    it("the Add button submits, and Esc clears the field", async () => {
+      await show();
+      type("buy milk");
+      fireEvent.keyDown(field(), { key: "Escape" });
+      expect(field().value).toBe("");
+      type("buy milk");
+      fireEvent.click(screen.getByRole("button", { name: "Add" }));
+      await waitFor(() => expect(posts).toHaveLength(1));
+    });
+
+    it("no longer hints at factory task add, and keeps the Build this line", async () => {
+      await show();
+      expect(document.body.textContent).not.toContain("factory task add");
+      expect(document.body.textContent).toContain("Build this sends a task to the factory.");
+    });
+  });
 });

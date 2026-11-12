@@ -9,9 +9,9 @@ force.
 
 - **Every table carries its owner's prefix** (since 2026-11-08): `bus_`, `inbound_`, `controller_`, `worker_`,
   `outbound_`, `identity_`/`authz_`, `runtime_`, `ui_`, `ext_<name>_`. A component's code names only its own
-  tables (`tests/architecture/table-ownership.test.ts`). The generated `schema/sqlite.sql` and
-  `schema/mysql.sql` are the full table list; `npm run schema:snapshot` rewrites them, and
-  `tests/architecture/schema-snapshot.test.ts` fails when they are stale.
+  tables (`tests/architecture/table-ownership.test.ts`). The generated `schema/sqlite.sql` is
+  the full table list; `npm run schema:snapshot` rewrites it, and
+  `tests/architecture/schema-snapshot.test.ts` fails when it is stale.
 - **Schema changes are timestamped migrations** (since 2026-11-08): `<yyyymmddThhmm>-<component>-<slug>.migration.ts`
   in the owning component's `migrations/` folder, found by discovery, recorded in `runtime_schema_migrations`.
   They run after the frozen numbered baseline (SQLite's list in `src/impl/store/sqlite/schema.ts`, MySQL steps
@@ -667,3 +667,4 @@ force.
   component no role consumes (worker, identity) passed the dispatch check and its messages piled up with no
   error; and a failed `build()` or discovery stayed cached as a rejected promise, so every later call failed the
   same way for the life of the object.
+- Decision changed 2026-11-12 (issue #646): the generated table list is `schema/sqlite.sql` only; the unread `schema/mysql.sql` snapshot is deleted.
