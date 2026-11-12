@@ -21,6 +21,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `heartbeat_ms` | worker | runtime | global | free |  | `60000` | How often a worker renews the lease on the step it runs. |
 | `hold_policy` | controller | runtime | global | free |  | `{"mode":"hold"}` | What a run held by coordination cost does: wait for /approve, start after some minutes, or start. |
 | `hooks` | runtime | review | global | tighten-only |  | `[]` | Hook names the owner enabled; a hook runs only when listed here. Empty: no hook runs. |
+| `integrations` | runtime | runtime | global | free |  | `{}` | Which plugin each integration uses, over the plugins key in factory.config.json. |
 | `lease_ms` | worker | runtime | global | free |  | `300000` | How long a claimed step stays held by a worker without a lease renewal. |
 | `max_attempts` | controller | runtime | project | tighten-only |  | `3` | Task failures of one step before the work item blocks on a human. |
 | `max_diff_files` | worker | runtime | project | tighten-only |  | `40` | Most changed files a branch diff may have before push. |

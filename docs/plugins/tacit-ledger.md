@@ -9,7 +9,7 @@ Plugins:
 - `none`: `NoTacitLedger`. No ledger: nothing is captured and no outbound intent is recorded. `pending` and `rules` return nothing; `verdict` does nothing.
   - Enable: `"plugins": { "tacit": "none", ... }`, or leave `tacit` out (the default on every platform). Secrets: none. Settings: none.
 - `agents-home`: `AgentsHomeTacitLedger`. Runs the ledger's CLIs in the owner's agents home on this machine. The home is the `AGENTS_HOME` environment variable when set, else `~/.agents`; the path is found by the plugin only, never by core or controller code.
-  - Enable: `"plugins": { "tacit": "agents-home", ... }`. Secrets: none. Settings: `AGENTS_HOME` (optional; default `~/.agents`).
+  - Enable: the Rules page's **Turn on** (below), or `"plugins": { "tacit": "agents-home", ... }`. Secrets: none. Settings: `integrations` (runtime, owner only), `AGENTS_HOME` (optional; default `~/.agents`).
   - `capture` runs `<home>/bin/tacit capture --agent software-factory` with one JSON record on stdin, never in argv: `session` (the work item ID), `proposal` (the stored summary of the item's latest finished run: its spec, change or review), `pushback` (the owner's words, verbatim), and `root_reason`, `hypothesis`, `improvement` and `rule_draft` empty (the ledger distils those itself).
   - The other calls use the owner's real CLI forms (checked 2026-11-12 with `--help`). Each value is its own argv item, nothing goes through a shell, and only `capture` uses stdin.
     - `pending` runs `<home>/bin/evolve pending`, which prints text, not JSON, and reads it (`src/impl/tacit/ledger-text.ts`): each `- P-id [kind] target — title` row under `## proposals (open)` or `## proposals (held)`, and each `- C-id title` row under `## tacit Pending` or `## tacit Held`, is one entry whose state is the heading's word in lower case (`open`, `held`, `pending`). Rows under any other heading are skipped.
@@ -17,14 +17,21 @@ Plugins:
     - `rules` reads `<home>/private/tacit/rules.md` (the CLIs have no JSON listing of it): each `## C-xxx <name>` section gives its `- 기본값:` (the rule), `- 예외` (exceptions) and `- 범위:` (scope) values as written; an indented line under one continues it. No file: no rules, not an error. `AGENTS_PRIVATE` is not honoured yet: only `<home>/private` is read.
   - Each CLI call is stopped after 30 seconds and counts as a failure; a call that exits non-zero or times out throws `<cli> <subcommand> exited <code>: <stderr>` or `<cli> <subcommand> stopped after <ms> ms`. A failed capture is retried with outbound's backoff (`retry_base_ms`, `retry_max_ms`) and holds only the `tacit:ledger` destination: GitHub, Slack and the factory repo keep sending.
   - The pushback and the proposal pass the egress scanner (G5) before the CLI is called; a flagged text is replaced by the notice that names the rules.
-  - The factory never writes under the home: it only runs the CLIs there and reads the rules file. The plugin is built in the controller process only; an agent run never gets it, and no agent environment holds the home.
-  - No `bin/tacit` at the home: the plugin behaves as `none` and startup goes on.
+  - The factory never writes under the home: it only runs the CLIs there and reads the rules file. The plugin is built in the factory's processes only (the controller and worker pool, and `factory ui` for the Rules page); an agent run never gets it, and no agent environment holds the home.
+  - The home is found only when `bin/tacit` and `bin/evolve` are both executable files there (`checkAgentsHome`). Otherwise the plugin behaves as `none` and startup goes on.
 
 Not captured: a "Request changes" PR review, implicit verdicts and reverts (a follow-up issue covers the review), and pushbacks stored before the plugin was selected (no backfill). A ledger shared between people is not built (one owner, `docs/design/08-enterprise.md`).
 
-Turn on / off: set `plugins.tacit` to `agents-home` (on) or `none` (off); delete the key to go back to `none`. Captures already recorded and not delivered stay in outbound until a process with the plugin flushes them.
+Turn on / off (since 2026-11-12): TacitLedger is an integration (`integration: true` in `src/plugins.ts`, [selection.md](selection.md)), switched at runtime by the `integrations` setting, with no restart.
+
+- **Turn on.** With the ledger off, the Rules page checks the agents home (`AGENTS_HOME`, else `~/.agents`). Found: it reads "Found your agents home at <path>" with one primary **Turn on** button, which stores `{ "tacit": "agents-home" }` in `integrations` through POST /api/v1/settings (the settings route's guards and the owner check), and the page then lists the rules with no reload. Not found: it names the missing file and says to put the CLIs in `<home>/bin` or start the factory and `factory ui` with `AGENTS_HOME` set. A runtime setting never names a path: the entry is only the plugin name. From a terminal: `factory settings set integrations '{"tacit":"agents-home"}'`.
+- **Turn off.** The Settings page's Integrations section lists TacitLedger with its plugin and whether the setting or the config chose it; its Switch removes the entry (`settings reset integrations` when no other entry is left), so `plugins.tacit` in factory.config.json decides again.
+- **Config.** `plugins.tacit` stays the default when `integrations` has no `tacit` entry: `agents-home` (on) or `none` (off, the default when left out).
+- **When it applies.** The controller and the worker pool rebuild the plugin by their next tick, `factory ui` by its next Rules request. Captures already recorded and not delivered stay in outbound until a process with the plugin on flushes them.
 
 ## History
+
+- 2026-11-12: the ledger turns on and off at runtime from the dashboard (`integrations`), and the home needs both CLIs executable. Before, it turned on only by setting `plugins.tacit` to `agents-home` in factory.config.json and restarting the factory and `factory ui`, the Rules page listed those steps, and a home with only `bin/tacit` counted as found.
 
 - 2026-11-12: `agents-home` uses the owner's real CLI forms; `list` became `pending`, `verdict` takes a reason and an optional rule, and `rules` was added. Before: `list` ran `tacit list --agent software-factory --state <state> --json` and `verdict` ran `evolve verdict --agent software-factory` with `{ id, verdict, reason, by, text? }` as JSON on stdin, forms written against stub CLIs that the real `tacit` and `evolve` do not have, so the Rules page and the learned rules read nothing and every verdict failed.
 - 2026-11-11 (issue #570): the interface and both plugins added, `none` the default. Before, a pushback was stored only in the factory's own store and left no trace the owner's ledger could read.

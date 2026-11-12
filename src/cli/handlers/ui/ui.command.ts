@@ -77,8 +77,9 @@ export default defineCommand({
         pauses: parts.pauses,
         // The Users page (GET and POST /api/v1/users): local roles through the CLI's `users` actions, as this machine's CLI identity.
         users,
-        // The Rules page (GET /api/v1/rules, POST /api/v1/rules/verdict): the tacit ledger's list and verdict, owner only.
-        tacit: await createPlugin(loaded.registry, "tacit", loaded.plugins.tacit, new Plugins(loaded).base),
+        // The Rules page (GET /api/v1/rules, POST /api/v1/rules/verdict): the tacit ledger's list and verdict, owner only;
+        // a live holder, switched by the `integrations` setting before each Rules request.
+        tacit: parts.tacit,
       },
       uiPort(loaded.file.ui),
     );

@@ -260,7 +260,7 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
-  "message_style", "notice_kinds", "quiet_hours", "notify_channels",
+  "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -279,6 +279,8 @@ export type Mode = (typeof MODES)[number];
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
+/** Keys only the owner changes, free and with no grant (design 08-settings): `integrations` switches a plugin the factory runs. */
+export const OWNER_KEYS: readonly SettableKey[] = ["integrations"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -292,10 +294,8 @@ export type PrOnlyKey = (typeof PR_ONLY_KEYS)[number];
 
 export interface SettableValues {
   max_attempts: number;
-  max_loops: number;
-  max_restart: number;
-  retry_base_ms: number;
-  retry_max_ms: number;
+  max_loops: number; max_restart: number;
+  retry_base_ms: number; retry_max_ms: number;
   max_diff_lines: number;
   max_diff_files: number;
   run_timeout_ms: number;
@@ -317,6 +317,7 @@ export interface SettableValues {
   auto_merge_max_tier: number;
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
+  integrations: Readonly<Record<string, string>>; // interface → plugin name; no entry: the config's choice (design 08-settings)
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -344,27 +345,16 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
-  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [],
+  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {},
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
 export const RETRY_ORDER_MESSAGE = "retry_base_ms must not exceed retry_max_ms";
 
-export function isSettableKey(key: string): key is SettableKey {
-  return (SETTABLE_KEYS as readonly string[]).includes(key);
-}
-
-export function isProjectSettableKey(key: string): key is ProjectSettableKey {
-  return (PROJECT_SETTABLE_KEYS as readonly string[]).includes(key);
-}
-
-export function isGateSettableKey(key: string): key is GateSettableKey {
-  return (GATE_SETTABLE_KEYS as readonly string[]).includes(key);
-}
-
-export function isPrOnlyKey(key: string): boolean {
-  return (PR_ONLY_KEYS as readonly string[]).includes(key);
-}
+export const isSettableKey = (key: string): key is SettableKey => (SETTABLE_KEYS as readonly string[]).includes(key);
+export const isProjectSettableKey = (key: string): key is ProjectSettableKey => (PROJECT_SETTABLE_KEYS as readonly string[]).includes(key);
+export const isGateSettableKey = (key: string): key is GateSettableKey => (GATE_SETTABLE_KEYS as readonly string[]).includes(key);
+export const isPrOnlyKey = (key: string): boolean => (PR_ONLY_KEYS as readonly string[]).includes(key);
 
 /** Why `settings set` / `reset` refuses `key`, or null when it is settable. */
 export function keyRefusal(key: string): string | null {
@@ -438,9 +428,16 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
+    case "integrations": return integrationEntries(value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
+}
+
+/** `integrations` as stored: interface → plugin name. Which are valid is the registry's to say (plugins.ts checkIntegrations, on set). */
+function integrationEntries(v: unknown): Record<string, string> {
+  if (v === null || typeof v !== "object" || Array.isArray(v) || Object.values(v).some((n) => typeof n !== "string" || n.trim() === "")) throw new Error("integrations must be an object from interface to plugin name");
+  return { ...(v as Record<string, string>) };
 }
 
 /** A ModelTable back in the form `model_by` is written in, so it can be checked and stored like any value. */
@@ -669,9 +666,9 @@ export interface OverrideSource {
 
 /**
  * The settings a running process acts on. refresh() re-reads the stored overrides and learned values (the controller each tick,
- * the worker pool each tick, a worker before each claim and each lease renewal); the getters return the last
- * resolved values without I/O. Only a cache of store rows: no replica needs it, and a restart rebuilds it.
- * A failed read keeps the values in use; an override that fails a check is logged once and ignored.
+ * the worker pool each tick, a worker before each claim and each lease renewal) and hands `integrations` to the plugin holders
+ * (src/runtime/live-tacit.ts); the getters return the last resolved values without I/O. Only a cache of store rows: no replica
+ * needs it, and a restart rebuilds it. A failed read keeps the values in use; an override that fails a check is logged once and ignored.
  */
 export class LiveSettings {
   private current: ResolvedSettings;
@@ -679,7 +676,9 @@ export class LiveSettings {
   private readonly reported = new Set<string>();
 
   constructor(
-    private readonly opts: { config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger },
+    private readonly opts: {
+      config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger; integrations?: readonly { apply(e: Readonly<Record<string, string>>): Promise<void> }[];
+    },
   ) {
     this.current = resolveSettings(opts.base, [], this.label);
     this.view = this.viewOf(this.current);
@@ -705,6 +704,7 @@ export class LiveSettings {
     }
     this.current = resolveSettings(this.opts.base, rows, this.label);
     this.view = this.viewOf(this.current);
+    for (const h of this.opts.integrations ?? []) await h.apply(this.current.values.integrations);
     for (const i of this.current.ignored) {
       const sig = JSON.stringify([i.key, i.project, i.value]);
       if (this.reported.has(sig)) continue;

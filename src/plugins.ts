@@ -65,6 +65,11 @@ interface KindInfo {
   guard: boolean;
   /** Optional kinds take no default; an absent value or "none" selects nothing. Never a guard. */
   optional: boolean;
+  /**
+   * An integration (design 08-settings, 2026-11-12): the runtime `integrations` setting may switch it without a restart,
+   * over its config key. Never a guard; every other interface changes only by a reviewed PR to factory.config.json.
+   */
+  integration?: true;
 }
 
 /** The interfaces, in order. A new interface is the only reason to edit this file. */
@@ -90,11 +95,40 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   bus: { interface: "EventBus", configKey: "plugins.bus", guard: false, optional: false },
   ticks: { interface: "TickGenerator", configKey: "plugins.ticks", guard: false, optional: false },
   engine: { interface: "ExecutionEngine", configKey: "plugins.engine", guard: false, optional: false },
-  tacit: { interface: "TacitLedger", configKey: "plugins.tacit", guard: false, optional: false },
+  tacit: { interface: "TacitLedger", configKey: "plugins.tacit", guard: false, optional: false, integration: true },
   calendar: { interface: "CalendarSource", configKey: "calendar", guard: false, optional: true },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];
+
+/** The interfaces marked `integration`: the only ones the runtime `integrations` setting switches. Never a guard. */
+export const INTEGRATION_KINDS: readonly PluginKind[] = PLUGIN_KINDS.filter((k) => KINDS[k].integration === true);
+for (const k of INTEGRATION_KINDS) if (KINDS[k].guard) throw new Error(`plugin registry: ${KINDS[k].interface} is a guard and cannot be an integration`);
+
+/**
+ * The runtime `integrations` setting checked against `registry` (design 08-settings): an object from an integration
+ * interface to one of its registered plugin names. A guard, any other interface or an unknown name throws, naming it.
+ */
+export function checkIntegrations(registry: Registry, value: unknown): Record<string, string> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("integrations must be an object from interface to plugin name");
+  const out: Record<string, string> = {};
+  for (const [key, name] of Object.entries(value)) {
+    const known = Object.hasOwn(KINDS, key);
+    const info = known ? KINDS[key as PluginKind] : null;
+    if (info?.guard) throw new Error(`integrations: ${info.interface} (${key}) is a guard; it changes only by a reviewed PR to factory.config.json`);
+    if (info?.integration !== true) {
+      const which = info ? `${info.interface} (${key}) is not an integration; it changes only by a reviewed PR to factory.config.json` : `unknown interface "${key}"`;
+      throw new Error(`integrations: ${which}; the integrations are ${INTEGRATION_KINDS.join(", ")}`);
+    }
+    const names = Object.keys(registry[key as PluginKind].plugins);
+    if (typeof name !== "string" || !names.includes(name)) {
+      const hint = typeof name === "string" ? suggestion(name, names) : "";
+      throw new Error(`integrations: unknown ${info.interface} plugin ${JSON.stringify(name)} for ${key}; available: ${names.join(", ")}${hint}`);
+    }
+    out[key] = name;
+  }
+  return out;
+}
 
 /** Store, auth and calendar are selected by their own top-level config keys, so they take no default. */
 const TOP_LEVEL_KINDS: readonly PluginKind[] = ["store", "auth", "calendar"];
