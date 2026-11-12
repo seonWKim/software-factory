@@ -13,6 +13,7 @@ import { StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
+import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
@@ -25,17 +26,18 @@ import { transcriptPath } from "./transcript.js";
 import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, summaryCounts, useExpanded } from "./tree.js";
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
-export const sleptText = (gap_ms: number): string => `host slept ${Math.max(1, Math.round(gap_ms / 60_000))} min`;
+export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
 
 const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
 /** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
 function pauseLine(p: PauseRow, now: number): string {
-  const what = PAUSE_LABELS[p.name] ?? p.name;
-  if (p.name !== "model_stall") return `Paused (${p.name}): ${what}; until ${p.ends_at}.`;
-  const began = p.since ? ` since ${p.since}` : "";
-  const next = Date.parse(p.ends_at) <= now ? "the next check is due" : `next check at ${p.ends_at}`;
-  return `Paused (${p.name}): ${what}${began}; ${next}.`;
+  const what = pauseLabel(p.name);
+  if (p.name !== "model_stall") return t("pause.line", { name: p.name, what, end: p.ends_at });
+  const due = Date.parse(p.ends_at) <= now;
+  const vars = { name: p.name, what, end: p.ends_at, since: p.since ?? "" };
+  if (p.since) return t(due ? "pause.stallSinceDue" : "pause.stallSinceAt", vars);
+  return t(due ? "pause.stallDue" : "pause.stallAt", vars);
 }
 
 /** The supervisor banner: what the factory process is doing (the status page's words, shorter). */
@@ -48,7 +50,7 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
   let text: string;
   if (factory === null || factory.state === "stopped") {
     tone = bad;
-    text = "Factory stopped. No runs start. Start it with npm run factory -- dev.";
+    text = t("factory.stopped");
   } else {
     const rev = shortRev(factory.rev);
     const target = shortRev(factory.target_rev);
@@ -59,36 +61,36 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
           break;
         }
         tone = ok;
-        text = `Factory running: revision ${rev}, since ${ago(factory.since, now)} ago.`;
+        text = t("factory.running", { rev, time: ago(factory.since, now) });
         break;
       case "building":
-        text = `Building ${target}; runs continue on ${rev} meanwhile.`;
+        text = t("factory.building", { target, rev });
         break;
       case "draining":
-        text = `Updating to ${target}: new runs are paused until the running process finishes its in-flight runs.`;
+        text = t("factory.draining", { target });
         break;
       case "restarting":
-        text = `Starting ${target}. New runs start in a moment.`;
+        text = t("factory.restarting", { target });
         break;
       case "build_failed":
         tone = bad;
-        text = `Revision ${target} failed to build. Still running ${rev}.`;
+        text = t("factory.buildFailed", { target, rev });
         break;
       case "crashed":
         tone = bad;
-        text = `Factory not running: ${factory.error ?? "the process exited"}.`;
+        text = t("factory.crashed", { error: factory.error ?? t("factory.exited") });
         break;
       case "migration_pending":
-        text = `Update to ${target} waits for npm run migrate${factory.pending.length ? ` (pending: ${factory.pending.join(", ")})` : ""}.`;
+        text = factory.pending.length ? t("factory.migrationPendingList", { target, pending: factory.pending.join(", ") }) : t("factory.migrationPending", { target });
         break;
       case "migration_draining":
-        text = `Migrating to ${target}: new runs are paused.`;
+        text = t("factory.migrationDraining", { target });
         break;
       case "migration_ready":
-        text = `Migrating to ${target}: the steps are being applied.`;
+        text = t("factory.migrationReady", { target });
         break;
       default:
-        text = `Factory: ${factory.state}.`;
+        text = t("factory.other", { state: factory.state });
     }
   }
   return (
@@ -99,11 +101,15 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
 }
 
 /** What each claim pause stops (design §5 Restarts). */
-const PAUSE_LABELS: Record<string, string> = {
-  rate_limit: "Usage or rate limit: no run starts",
-  forge_auth: "Forge refused the credentials: no implement or update run starts",
-  preflight_access: "Push or PR access check failed: no implement or update run starts",
-  model_stall: "Model not answering: no run starts until a probe answers",
+const PAUSE_LABELS: Record<string, MessageKey> = {
+  rate_limit: "pause.rate_limit",
+  forge_auth: "pause.forge_auth",
+  preflight_access: "pause.preflight_access",
+  model_stall: "pause.model_stall",
+};
+const pauseLabel = (name: string): string => {
+  const key = PAUSE_LABELS[name];
+  return key ? t(key) : name;
 };
 
 /** One pause with its "Resume now" button; the endpoint's refusal shows next to the button. */
@@ -126,17 +132,17 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
     }
   };
   const ends = Date.parse(pause.ends_at);
-  const label = pause.name === "model_stall" ? "next probe" : "ends";
+  const when = t(pause.name === "model_stall" ? "pause.nextProbe" : "pause.ends", { time: pause.ends_at });
   return (
     <li data-pause={pause.name} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm">
       <span className="font-mono text-xs">{pause.name}</span>
-      <span className="min-w-0 text-pretty text-text-1">{PAUSE_LABELS[pause.name] ?? pause.name}</span>
+      <span className="min-w-0 text-pretty text-text-1">{pauseLabel(pause.name)}</span>
       <span className="min-w-0 tabular-nums break-words text-text-2" title={pause.ends_at}>
-        {label} at {pause.ends_at}{ends > now ? ` (in ${ago(new Date(now).toISOString(), ends)})` : ""}
+        {when}{ends > now ? ` (${t("format.in", { time: ago(new Date(now).toISOString(), ends) })})` : ""}
       </span>
       {token !== null && (
         <Button variant="secondary" disabled={busy} onClick={() => void resume()}>
-          Resume now
+          {t("pause.resume")}
         </Button>
       )}
       {error && <span role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{error}</span>}
@@ -150,8 +156,8 @@ export function ClaimPauses({ now }: { now: number }) {
   if (q.isError) return <ErrorNote error={q.error} />;
   if (!q.data || q.data.pauses.length === 0) return null;
   return (
-    <Section title="Claim pauses" count={q.data.pauses.length}>
-      <ul aria-label="Claim pauses" className="space-y-1">
+    <Section title={t("pause.title")} count={q.data.pauses.length}>
+      <ul aria-label={t("pause.title")} className="space-y-1">
         {q.data.pauses.map((p) => <PauseItem key={p.name} pause={p} token={q.data.csrf_token} now={now} />)}
       </ul>
     </Section>
@@ -175,9 +181,9 @@ export function NeedsYouPage() {
   return (
     <>
       <FactoryBanner factory={o?.factory} now={now} pauses={pauses.data?.pauses} />
-      <Section title="Needs you" count={items.data ? needs.length + notes : undefined}>
+      <Section title={t("page.needs")} count={items.data ? needs.length + notes : undefined}>
         {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : (
-          <ItemsTable items={needs} now={now} label="Needs you" plugins={o?.plugins} actions empty="Nothing waits for you. New specs, failed runs and PRs ready to merge show up here." />
+          <ItemsTable items={needs} now={now} label={t("page.needs")} plugins={o?.plugins} actions empty={t("needs.empty")} />
         )}
         <FloorNotes actions={actions} deadlocks={deadlocks} />
       </Section>
@@ -196,23 +202,23 @@ export function ActivityPage() {
   const o = overview.data;
   return (
     <>
-      <Section title="Running now" count={runs.data?.runs.filter((r) => r.status === "running").length}>
+      <Section title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Section>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
         <p data-testid="unreviewed-merges-line" className="mb-4 text-sm">
-          {o.unreviewed_merges_7d} PRs merged without review in the last 7 days.{" "}
-          <Link href={`${BASE}health`} className={LINK_CLASS}>See them on Health</Link>
+          {t("activity.unreviewed", { count: o.unreviewed_merges_7d ?? 0 })}{" "}
+          <Link href={`${BASE}health`} className={LINK_CLASS}>{t("activity.unreviewedLink")}</Link>
         </p>
       )}
       {o && (
-        <Section title="Last 24 hours">
+        <Section title={t("activity.last24h")}>
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              ["Runs succeeded", String(o.last_24h.succeeded)],
-              ["Runs failed", String(o.last_24h.failed), `${BASE}failures?window=24h`],
-              ["Tokens", tokens(o.last_24h.tokens)],
-              ["Open items", String(Object.entries(o.stages).filter(([s]) => s !== "CLOSED").reduce((n, [, v]) => n + v, 0))],
+              [t("activity.succeeded"), String(o.last_24h.succeeded)],
+              [t("activity.failed"), String(o.last_24h.failed), `${BASE}failures?window=24h`],
+              [t("col.tokens"), tokens(o.last_24h.tokens)],
+              [t("activity.openItems"), String(Object.entries(o.stages).filter(([s]) => s !== "CLOSED").reduce((n, [, v]) => n + v, 0))],
             ].map(([k, v, href]) => (
               <div key={k} className="rounded-control border border-border px-3 py-2">
                 <dt className="text-xs text-text-2">{k}</dt>
@@ -229,7 +235,7 @@ export function ActivityPage() {
 }
 
 const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
-const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: "Needs you", held: "Held" };
+const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: t("page.needs"), held: t("items.held") };
 
 /** The saved view: the tree unless the browser chose the list. */
 function savedView(): View {
@@ -244,19 +250,19 @@ function savedView(): View {
 function rateLimitText(pauses: PausesView | undefined): string {
   if (!pauses) return "–";
   const p = pauses.pauses.find((x) => x.name === "rate_limit");
-  return p ? `paused until ${p.ends_at}` : "ok";
+  return p ? t("items.ratePaused", { time: p.ends_at }) : t("items.rateOk");
 }
 
 /** The tree's summary line; each count is a button that sets the matching state filter. */
 function Summary({ rows, rateLimit, onFilter }: { rows: readonly ItemRow[]; rateLimit: string; onFilter: (s: string) => void }) {
   const c = summaryCounts(rows);
-  const parts: [string, number, string][] = [["running", c.running, "running"], ["queued", c.queued, "queued"], ["held", c.held, HELD], ["needs you", c.needs, "needs"]];
+  const parts: [string, number, string][] = [[t("items.running"), c.running, "running"], [t("items.queued"), c.queued, "queued"], [t("items.heldLower"), c.held, HELD], [t("items.needs"), c.needs, "needs"]];
   return (
     <p data-testid="summary" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       {parts.map(([label, n, filter]) => (
-        <Button key={filter} variant="ghost" size="sm" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{n} {label}</Button>
+        <Button key={filter} variant="ghost" size="sm" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{t("items.count", { count: n, label })}</Button>
       ))}
-      <span>rate limit: {rateLimit}</span>
+      <span>{t("items.rateLimit", { state: rateLimit })}</span>
     </p>
   );
 }
@@ -302,37 +308,37 @@ export function ItemsPage() {
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
-          placeholder="Search by title or issue number"
-          aria-label="Search work items"
+          placeholder={t("items.searchPlaceholder")}
+          aria-label={t("items.searchLabel")}
           className="w-full max-w-sm"
         />
-        <ButtonRow role="group" aria-label="View">
+        <ButtonRow role="group" aria-label={t("items.view")}>
           {(["tree", "list"] as const).map((v) => (
-            <Button key={v} size="sm" aria-pressed={view === v} onClick={() => setView(v)}>{v === "tree" ? "Tree" : "List"}</Button>
+            <Button key={v} size="sm" aria-pressed={view === v} onClick={() => setView(v)}>{v === "tree" ? t("items.tree") : t("items.list")}</Button>
           ))}
         </ButtonRow>
         {tree && (
           <ButtonRow>
-            <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>Show closed</Button>
-            <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>Expand all</Button>
-            <Button size="sm" onClick={() => setExpanded([])}>Collapse all</Button>
+            <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>{t("items.showClosed")}</Button>
+            <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>{t("items.expandAll")}</Button>
+            <Button size="sm" onClick={() => setExpanded([])}>{t("items.collapseAll")}</Button>
           </ButtonRow>
         )}
       </div>
       {tree && items.data && <Summary rows={rows} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
-      <ButtonRow role="group" aria-label="Filter by state" className="mb-3">
+      <ButtonRow role="group" aria-label={t("items.filterByState")} className="mb-3">
         {[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => (
           <Button key={s ?? "all"} size="sm" aria-pressed={state === s} onClick={() => setState(s)} className="tabular-nums">
-            {s === null ? "All" : FILTER_LABELS[s]} {s === null ? allCount : counted(s)}
+            {t("items.filterCount", { label: s === null ? t("items.all") : FILTER_LABELS[s]!, count: s === null ? allCount : counted(s) })}
           </Button>
         ))}
       </ButtonRow>
       {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
-        nodes.length === 0 ? <Empty>No work item matches this filter.</Empty> : (
+        nodes.length === 0 ? <Empty>{t("items.noMatch")}</Empty> : (
           <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
         )
       ) : (
-        <ItemsTable items={items.data.items} now={now} label="Work items" plugins={overview.data?.plugins} empty="No work item matches this filter." />
+        <ItemsTable items={items.data.items} now={now} label={t("items.label")} plugins={overview.data?.plugins} empty={t("items.noMatch")} />
       )}
     </>
   );
@@ -357,15 +363,15 @@ export function ItemPage({ id }: { id: string }) {
   const level = detailLevel(item);
   return (
     <>
-      <nav aria-label="Breadcrumb" className="mb-1 text-sm">
-        <Link href={`${BASE}items`} className={LINK_CLASS}>Work</Link>
+      <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">
+        <Link href={`${BASE}items`} className={LINK_CLASS}>{t("page.work")}</Link>
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", LINK_CLASS)}>{short}</Link>
       </nav>
       <h2 className="text-balance text-base font-semibold break-words">{item.title ?? short}</h2>
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
-          Phase {item.phase ?? "?"} of <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>its split parent</Link>
+          {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
         </p>
       )}
       <ItemCommands
@@ -380,15 +386,15 @@ export function ItemPage({ id }: { id: string }) {
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-sm sm:grid-cols-4">
         {([
-          ["State", <StatusBadge level={level} size="sm">{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</StatusBadge>],
-          ["Source", isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
-          ["Tier", item.tier ?? "–"],
-          ["PR", item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
-          ["Spec comment", item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text="spec comment" /> : "–"],
-          ["Review loops", item.loop_count],
-          ["Restarts", item.restart_count],
-          ["Tokens", tokens(item.token_cost)],
-          ["Updated", `${ago(item.updated_at, now)} ago`],
+          [t("col.state"), <StatusBadge level={level} size="sm">{LEVEL_LABELS[level] ?? level}{item.close_reason ? ` (${item.close_reason.replace(/_/g, " ")})` : ""}</StatusBadge>],
+          [t("item.source"), isHttpUrl(item.source.link) ? <SourceLink source={item.source} className="inline-block align-bottom" /> : short],
+          [t("item.tier"), item.tier ?? "–"],
+          [t("col.pr"), item.change_ref === null ? "–" : <UrlOrText url={item.change_url} text={`#${item.change_ref}`} />],
+          [t("item.specComment"), item.spec_comment_url ? <UrlOrText url={item.spec_comment_url} text={t("item.specCommentLink")} /> : "–"],
+          [t("item.reviewLoops"), item.loop_count],
+          [t("item.restarts"), item.restart_count],
+          [t("col.tokens"), tokens(item.token_cost)],
+          [t("item.updated"), t("time.ago", { time: ago(item.updated_at, now) })],
         ] as const).map(([k, v]) => (
           <div key={k} className="min-w-0">
             <dt className="text-xs text-text-2">{k}</dt>
@@ -408,42 +414,42 @@ export function ItemPage({ id }: { id: string }) {
       <Thread entries={q.data.thread ?? []} now={now} />
       <Phases phases={item.phases ?? []} />
       {item.merge_check && (
-        <Section title="Merge check">
+        <Section title={t("item.mergeCheck")}>
           <p className="text-sm" data-merge-check-detail>
             <MergeCheckNote check={item.merge_check} />
             {item.merge_check.base_sha && item.merge_check.checked_at && (
               <span className="ml-2 text-text-2">
-                against base <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>, checked {ago(item.merge_check.checked_at, now)} ago
+                {t("item.againstBase")} <code className="font-mono text-xs" title={item.merge_check.base_sha}>{item.merge_check.base_sha.slice(0, 12)}</code>{t("item.checkedAgo", { time: ago(item.merge_check.checked_at, now) })}
               </span>
             )}
           </p>
           {item.merge_check.conflicts.length > 0 && (
-            <ul aria-label="Conflicting files" className="mt-1 list-disc pl-6 font-mono text-xs">
+            <ul aria-label={t("item.conflicting")} className="mt-1 list-disc pl-6 font-mono text-xs">
               {item.merge_check.conflicts.map((f) => <li key={f}>{f}</li>)}
             </ul>
           )}
         </Section>
       )}
-      <Section title="Runs" count={runs.length}>
-        {runs.length === 0 ? <Empty>No run yet.</Empty> : (
-          <Table label="Runs" head={["Kind", "Attempt", "Status", "Error", "Worker", "Started", "Took", "Tokens", "Transcript"]}>
+      <Section title={t("item.runs")} count={runs.length}>
+        {runs.length === 0 ? <Empty>{t("item.noRun")}</Empty> : (
+          <Table label={t("item.runs")} head={[t("item.kind"), t("col.attempt"), t("item.status"), t("item.error"), t("col.worker"), t("item.started"), t("item.took"), t("col.tokens"), t("item.transcript")]}>
             {[...runs].reverse().map((r) => (
               <Tr key={r.id} data-run={r.id}>
                 <Td className="min-w-40">
                   {r.kind} <code className="font-mono text-xs break-all text-text-2">{r.id}</code>
                 </Td>
-                <Td className="tabular-nums">attempt {r.attempt}</Td>
+                <Td className="tabular-nums">{t("item.attempt", { attempt: r.attempt })}</Td>
                 <Td><Badge level={r.status === "running" ? "running" : r.status === "failed" ? "stuck" : undefined}>{r.status}</Badge></Td>
                 <Td className="max-w-md min-w-40 text-xs break-words text-text-1">
                   {r.error ? <><span className="font-medium">{r.error.code}</span>{r.error.detail ? `: ${r.error.detail}` : ""}</> : "–"}
                 </Td>
                 <Td><WorkerName id={r.attempts?.at(-1)?.worker_id} /></Td>
-                <Td className="tabular-nums whitespace-nowrap">{r.started_at ? `${ago(r.started_at, now)} ago` : "–"}</Td>
+                <Td className="tabular-nums whitespace-nowrap">{r.started_at ? t("time.ago", { time: ago(r.started_at, now) }) : "–"}</Td>
                 <Td className="tabular-nums">{r.started_at && r.finished_at ? ago(r.started_at, Date.parse(r.finished_at)) : "–"}</Td>
                 <Td className="tabular-nums">{tokens(r.tokens)}</Td>
                 <Td className="whitespace-nowrap">
                   {(transcripts[r.id]?.length ?? 0) > 0 ? (
-                    <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>Open</Link>
+                    <Link href={transcriptPath(item.id, r.id)} className={LINK_CLASS}>{t("item.open")}</Link>
                   ) : "–"}
                 </Td>
               </Tr>
@@ -451,7 +457,7 @@ export function ItemPage({ id }: { id: string }) {
           </Table>
         )}
       </Section>
-      <Section title="Timeline" count={entries.length}>
+      <Section title={t("item.timeline")} count={entries.length}>
         <ol className="space-y-1 text-sm">
           {entries.map((e) => {
             if (e.kind === "sleep") return (
@@ -459,7 +465,7 @@ export function ItemPage({ id }: { id: string }) {
                 <span className="w-12 shrink-0 text-right text-text-3 tabular-nums">{ago(e.h.woke_at, now)}</span>
                 <span className="min-w-0">
                   <span className="font-medium">{sleptText(e.h.gap_ms)}</span>
-                  <span className="text-text-3"> on </span>
+                  <span className="text-text-3">{t("item.on")}</span>
                   <WorkerName id={e.h.worker_id} />
                 </span>
               </li>
@@ -476,8 +482,8 @@ export function ItemPage({ id }: { id: string }) {
 function Phases({ phases }: { phases: readonly PhaseRow[] }) {
   if (phases.length === 0) return null;
   return (
-    <Section title="Phases" count={phases.length}>
-      <ol aria-label="Phases" className="space-y-1 text-sm">
+    <Section title={t("item.phases")} count={phases.length}>
+      <ol aria-label={t("item.phases")} className="space-y-1 text-sm">
         {phases.map((p) => (
           <li key={p.id} data-phase={p.phase} className="flex min-w-0 items-baseline gap-2">
             <span className="shrink-0 text-text-3 tabular-nums">{p.phase}.</span>
@@ -500,12 +506,12 @@ type TimelineEntry = ItemDetail["timeline"][number];
 
 /** The spec fields triage writes: shown behind "spec written (show)" and rendered as markdown, never as JSON. */
 const SPEC_FIELDS: Record<string, string> = {
-  problem: "Problem",
-  scope: "Scope",
-  desired_output: "Desired output",
-  done_criteria: "Done criteria",
-  files_to_change: "Files to change",
-  allowed_paths: "Allowed paths",
+  problem: t("spec.problem"),
+  scope: t("spec.scope"),
+  desired_output: t("spec.desired_output"),
+  done_criteria: t("spec.done_criteria"),
+  files_to_change: t("spec.files_to_change"),
+  allowed_paths: t("spec.allowed_paths"),
 };
 
 /** A change value from the API's JSON text; text that is not JSON (a withheld marker) as it is. */
@@ -532,18 +538,18 @@ function specMarkdown(v: unknown): string {
   return shortValue(v);
 }
 
-function TimelineRow({ entry: t, now, viewer }: { entry: TimelineEntry; now: number; viewer: string | null }) {
+function TimelineRow({ entry, now, viewer }: { entry: TimelineEntry; now: number; viewer: string | null }) {
   const [open, setOpen] = useState(false);
-  const changes = Object.entries(t.changes);
+  const changes = Object.entries(entry.changes);
   const short = changes.filter(([f]) => !(f in SPEC_FIELDS));
   const spec = changes.filter(([f]) => f in SPEC_FIELDS);
   return (
     <li className="flex gap-3">
-      <span className="w-12 shrink-0 text-right text-text-3 tabular-nums">{ago(t.at, now)}</span>
+      <span className="w-12 shrink-0 text-right text-text-3 tabular-nums">{ago(entry.at, now)}</span>
       <div className="min-w-0 flex-1 break-words">
-        <span className="font-medium">{t.reason ?? "change"}</span>
-        <span className="text-text-3"> by </span>
-        <PersonName id={t.actor.kind === "system" ? null : t.actor.id} name={t.actor.name} viewer={viewer} />
+        <span className="font-medium">{entry.reason ?? t("item.change")}</span>
+        <span className="text-text-3">{t("item.by")}</span>
+        <PersonName id={entry.actor.kind === "system" ? null : entry.actor.id} name={entry.actor.name} viewer={viewer} />
         {short.length > 0 && (
           <span className="text-text-2">
             {" "}— {short.map(([f, c]) => `${f}: ${shortValue(parseValue(c.from))} → ${shortValue(parseValue(c.to))}`).join(", ")}
@@ -552,7 +558,7 @@ function TimelineRow({ entry: t, now, viewer }: { entry: TimelineEntry; now: num
         {spec.length > 0 && (
           <div className="mt-1">
             <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} className={LINK_CLASS}>
-              spec written ({open ? "hide" : "show"})
+              {open ? t("item.specHide") : t("item.specShow")}
             </Button>
             {open && (
               <div data-spec className="mt-2 space-y-3 rounded-control border border-border p-3">
@@ -578,15 +584,15 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
     <li data-testid="worker-process" className="rounded-control border border-border px-3 py-2">
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-sm">
         <span className="font-mono text-xs font-semibold">{p.host}</span>
-        <span className="tabular-nums">pid {p.pid}</span>
-        <span className="tabular-nums text-text-2">started {ago(p.started_at, now)} ago</span>
-        {draining && <Badge level="needs_approval">draining</Badge>}
+        <span className="tabular-nums">{t("runners.pid", { pid: p.pid })}</span>
+        <span className="tabular-nums text-text-2">{t("runners.started", { time: ago(p.started_at, now) })}</span>
+        {draining && <Badge level="needs_approval">{t("runners.draining")}</Badge>}
         <span className="tabular-nums" data-slots>
-          {p.busy} busy, {p.idle} idle, {p.slots} slots, max {p.max_slots}
+          {t("runners.slots", { busy: p.busy, idle: p.idle, slots: p.slots, max: p.max_slots })}
         </span>
       </div>
       {p.runs.length > 0 && (
-        <ul aria-label={`Runs of ${p.host} ${p.pid}`} className="mt-1 space-y-0.5 text-xs">
+        <ul aria-label={t("runners.runsOf", { host: p.host, pid: p.pid })} className="mt-1 space-y-0.5 text-xs">
           {p.runs.map((r) => (
             <li key={r.id} className="flex flex-wrap gap-x-3">
               <Link href={itemPath(r.work_item_id)} className={LINK_CLASS}>{items.get(r.work_item_id)?.title || r.work_item_id}</Link>
@@ -601,7 +607,7 @@ function ProcessRow({ p, items, now }: { p: WorkerProcess; items: ReadonlyMap<st
   );
 }
 
-const WORKERS_SOURCE: Record<string, string> = { override: "override", file: "config file", default: "default" };
+const WORKERS_SOURCE: Record<string, string> = { override: t("runners.sourceOverride"), file: t("runners.sourceFile"), default: t("runners.sourceDefault") };
 
 export function RunnersPage() {
   const now = useNow();
@@ -617,21 +623,21 @@ export function RunnersPage() {
       <FactoryBanner factory={f} now={now} />
       {f && (
         <p data-testid="effective-workers" className="mb-4 text-sm">
-          Worker setting: <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
+          {t("runners.setting")} <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
         </p>
       )}
-      <Section title="Worker processes" count={workers.data?.processes ? processes.length : undefined}>
+      <Section title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
         {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
           <ErrorNote error={new Error(workers.data.processes_error)} />
         ) : processes.length === 0 ? (
-          <Empty>No worker process is reporting.</Empty>
+          <Empty>{t("runners.none")}</Empty>
         ) : (
-          <ul aria-label="Worker processes" className="space-y-2">
+          <ul aria-label={t("runners.processes")} className="space-y-2">
             {processes.map((p) => <ProcessRow key={p.process_id} p={p} items={map} now={now} />)}
           </ul>
         )}
       </Section>
-      <Section title="Running now">
+      <Section title={t("running.label")}>
         {runs.data ? <RunningTable runs={runs.data.runs} items={map} now={now} /> : <Loading rows={2} />}
       </Section>
     </>
@@ -644,7 +650,7 @@ export function QueuePage() {
   const items = useApi<Items>(API.items);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   return (
-    <Section title="Queued runs" count={queue.data?.queue.length}>
+    <Section title={t("queue.title")} count={queue.data?.queue.length}>
       {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={map} now={now} />}
     </Section>
   );
@@ -683,24 +689,24 @@ export function HealthPage() {
   return (
     <>
       <ClaimPauses now={now} />
-      <Section title={`Checks (as of ${ago(health.data.checked_at, now)} ago)`} count={checks.length}>
+      <Section title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
         <CheckList checks={open} />
         {fine.length > 0 && (
           <details data-testid="ok-checks" className="mt-2 text-sm">
-            <summary className="cursor-pointer text-text-2">{fine.length} ok</summary>
+            <summary className="cursor-pointer text-text-2">{t("health.okCount", { count: fine.length })}</summary>
             <CheckList checks={fine} />
           </details>
         )}
       </Section>
-      <Section title="Host sleeps" count={sleeps.length}>
+      <Section title={t("health.sleeps")} count={sleeps.length}>
         {sleeps.length === 0 ? (
-          <Empty>No host sleep recorded.</Empty>
+          <Empty>{t("health.noSleep")}</Empty>
         ) : (
           <ul className="space-y-1 text-sm">
             {sleeps.map((h) => (
               <li key={`${h.worker_id}:${h.woke_at}`} className="flex items-baseline gap-3" data-testid="host-sleep">
                 <span className="font-medium">{sleptText(h.gap_ms)}</span>
-                <span className="tabular-nums text-text-2">{h.woke_at.slice(0, 16).replace("T", " ")} UTC ({ago(h.woke_at, now)} ago)</span>
+                <span className="tabular-nums text-text-2">{t("health.sleepWhen", { when: h.woke_at.slice(0, 16).replace("T", " "), time: ago(h.woke_at, now) })}</span>
                 <span className="min-w-0 text-text-3"><WorkerName id={h.worker_id} /></span>
               </li>
             ))}
@@ -708,19 +714,19 @@ export function HealthPage() {
         )}
       </Section>
       <div id="unreviewed-merges">
-        <Section title="Merged without review" count={merges.data?.merges.length}>
+        <Section title={t("health.merges")} count={merges.data?.merges.length}>
           {merges.isError ? <ErrorNote error={merges.error} /> : !merges.data ? <Loading rows={2} /> : merges.data.merges.length === 0 ? (
-            <Empty>No PR has merged without review.</Empty>
+            <Empty>{t("health.noMerges")}</Empty>
           ) : (
-            <Table label="Merged without review" head={["PR", "Merged by", "Merge commit", "When"]}>
+            <Table label={t("health.merges")} head={[t("col.pr"), t("health.mergedBy"), t("health.mergeCommit"), t("col.when")]}>
               {merges.data.merges.map((m) => (
                 <Tr key={`${m.project}#${m.change_ref}`}>
                   <Td className="tabular-nums">
                     {m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`}
                   </Td>
-                  <Td className="text-xs break-words">{m.merged_by && m.merged_by !== "unknown" ? <PersonName id={m.merged_by} viewer={viewer} /> : "unknown"}</Td>
+                  <Td className="text-xs break-words">{m.merged_by && m.merged_by !== "unknown" ? <PersonName id={m.merged_by} viewer={viewer} /> : t("format.unknown")}</Td>
                   <Td className="font-mono text-xs">{m.merge_sha}</Td>
-                  <Td className="tabular-nums whitespace-nowrap">{ago(m.recorded_at, now)} ago</Td>
+                  <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(m.recorded_at, now) })}</Td>
                 </Tr>
               ))}
             </Table>

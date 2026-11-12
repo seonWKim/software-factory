@@ -9,6 +9,7 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { QUICK_ADD_ATTR } from "../keys.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -21,10 +22,10 @@ import { itemPath } from "../pages.js";
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
 
 const TABS = [
-  { id: "inbox", label: "Inbox" },
-  { id: "today", label: "Today" },
-  { id: "upcoming", label: "Upcoming" },
-  { id: "project", label: "Project" },
+  { id: "inbox", label: t("tasks.inbox") },
+  { id: "today", label: t("tasks.today") },
+  { id: "upcoming", label: t("tasks.upcoming") },
+  { id: "project", label: t("tasks.project") },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -51,7 +52,7 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
         setError(r.error);
         return;
       }
-      announceStatus(`${task.title} is in intake as ${r.work_item_id}.`);
+      announceStatus(t("tasks.inIntake", { title: task.title, id: r.work_item_id }));
       await client.invalidateQueries({ queryKey: [API.tasks] });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -61,8 +62,8 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   };
   return (
     <span className="flex flex-col items-start gap-1">
-      <Button variant="secondary" disabled={busy} aria-label={`Build this: ${task.title}`} onClick={() => void build()}>
-        Build this
+      <Button variant="secondary" disabled={busy} aria-label={t("tasks.buildLabel", { title: task.title })} onClick={() => void build()}>
+        {t("tasks.build")}
       </Button>
       {error !== null && (
         <span role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">
@@ -117,8 +118,8 @@ function QuickAdd({ token }: { token: string | null }) {
           ref={input}
           {...{ [QUICK_ADD_ATTR]: "" }}
           className="flex-1"
-          aria-label="Add a task"
-          placeholder="Add a task, e.g. pay rent friday p1 #home"
+          aria-label={t("tasks.addLabel")}
+          placeholder={t("tasks.addPlaceholder")}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
@@ -129,7 +130,7 @@ function QuickAdd({ token }: { token: string | null }) {
           }}
         />
         <Button type="submit" disabled={token === null || busy}>
-          Add
+          {t("tasks.add")}
         </Button>
       </div>
       {error !== null && (
@@ -148,11 +149,11 @@ function TaskCard({ task, overdue = false, token }: { task: TaskRow; overdue?: b
       <div className="min-w-0 flex-1 space-y-1">
         <p className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg")}>{task.title}</p>
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
-          {overdue && <Badge level="stuck">Overdue</Badge>}
-          {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>due {due}</span>}
+          {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
+          {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>{t("tasks.due", { due })}</span>}
           {task.priority !== null && <span>!{task.priority}</span>}
           {task.list !== null && <span className="break-all">#{task.list}</span>}
-          {task.recurrence !== null && <span>every {task.recurrence}</span>}
+          {task.recurrence !== null && <span>{t("tasks.every", { recurrence: task.recurrence })}</span>}
         </p>
       </div>
       {task.work_item_id !== null ? (
@@ -173,8 +174,8 @@ function EventCard({ event }: { event: EventRow }) {
       <div className="min-w-0 flex-1 space-y-1">
         <p className="text-sm text-pretty break-words">{event.title}</p>
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
-          <Badge>Event</Badge>
-          <span className="tabular-nums">{event.time ?? "all day"}</span>
+          <Badge>{t("tasks.event")}</Badge>
+          <span className="tabular-nums">{event.time ?? t("tasks.allDay")}</span>
           <span className="break-all">{event.source}</span>
         </p>
       </div>
@@ -204,19 +205,19 @@ function Group({ title, tasks, token, overdue = false }: { title: string; tasks:
 
 function TabBody({ tab, v, token }: { tab: Tab; v: TasksView; token: string | null }) {
   if (tab === "inbox") {
-    return v.inbox.length === 0 ? <Empty>No open task without a due date.</Empty> : <TaskList label="Inbox" tasks={v.inbox} token={token} />;
+    return v.inbox.length === 0 ? <Empty>{t("tasks.emptyInbox")}</Empty> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} token={token} />;
   }
   if (tab === "today") {
-    if (v.today.overdue.length + v.today.due.length === 0) return <Empty>Nothing is due, overdue or on the calendar today.</Empty>;
+    if (v.today.overdue.length + v.today.due.length === 0) return <Empty>{t("tasks.emptyToday")}</Empty>;
     return (
       <div className="space-y-3">
-        {v.today.overdue.length > 0 && <Group title="Overdue" tasks={v.today.overdue} token={token} overdue />}
-        {v.today.due.length > 0 && <Group title={`Today, ${dayLabel(v.today_date)}`} tasks={v.today.due} token={token} />}
+        {v.today.overdue.length > 0 && <Group title={t("tasks.overdue")} tasks={v.today.overdue} token={token} overdue />}
+        {v.today.due.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={v.today.due} token={token} />}
       </div>
     );
   }
   if (tab === "upcoming") {
-    if (v.upcoming.length === 0) return <Empty>Nothing is due or on the calendar from today through the next 7 days.</Empty>;
+    if (v.upcoming.length === 0) return <Empty>{t("tasks.emptyUpcoming")}</Empty>;
     return (
       <div className="space-y-3">
         {v.upcoming.map((d) => (
@@ -225,11 +226,11 @@ function TabBody({ tab, v, token }: { tab: Tab; v: TasksView; token: string | nu
       </div>
     );
   }
-  if (v.projects.length === 0) return <Empty>No open task.</Empty>;
+  if (v.projects.length === 0) return <Empty>{t("tasks.emptyProject")}</Empty>;
   return (
     <div className="space-y-3">
       {v.projects.map((p) => (
-        <Group key={p.list ?? ""} title={p.list === null ? "No list" : `#${p.list}`} tasks={p.tasks} token={token} />
+        <Group key={p.list ?? ""} title={p.list === null ? t("tasks.noList") : `#${p.list}`} tasks={p.tasks} token={token} />
       ))}
     </div>
   );
@@ -239,13 +240,13 @@ function TabBody({ tab, v, token }: { tab: Tab; v: TasksView; token: string | nu
 function StaleCalendars({ v }: { v: TasksView }) {
   const failed = (v.calendar ?? []).filter((c) => c.failed);
   if (failed.length === 0) return null;
-  const when = (at: string | null) => (at === null ? "never synced" : `last synced ${new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`);
+  const when = (at: string | null) => (at === null ? t("tasks.neverSynced") : t("tasks.lastSynced", { at: new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }));
   return (
     <div className="mb-3">
-      <Notice tone="warn" title="Calendar sync failed">
+      <Notice tone="warn" title={t("tasks.calendarSyncFailed")}>
         {failed.map((c) => (
           <p key={c.source} data-calendar-stale={c.source} className="text-pretty break-words">
-            {c.source}: showing the stored events, {when(c.synced_at)}.
+            {t("tasks.staleCalendar", { source: c.source, when: when(c.synced_at) })}
           </p>
         ))}
       </Notice>
@@ -267,12 +268,12 @@ export function TasksPage() {
   return (
     <>
       <QuickAdd token={v?.csrf_token ?? null} />
-      <SegmentedControl label="Task view" options={TABS} value={tab} onChange={setTab} className="mb-6" />
+      <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} className="mb-6" />
       <Section title={TABS.find((t) => t.id === tab)!.label} count={v ? count(v, tab) : undefined}>
         {v && (tab === "today" || tab === "upcoming") && <StaleCalendars v={v} />}
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <TabBody tab={tab} v={v} token={token} />}
         <p className={`mt-3 ${muted}`}>
-          Build this sends a task to the factory.
+          {t("tasks.buildNote")}
         </p>
       </Section>
     </>
