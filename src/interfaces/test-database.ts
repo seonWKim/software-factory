@@ -1,7 +1,6 @@
 // A throwaway database for the checks a run runs before it pushes (design §4, pre-push checks). The worker
 // asks for one per run, lazily, the first time a check command runs, and drops it when the run ends,
-// whatever happened. Prod for this repo: `mysql-local` (a local test-only MySQL server). Fresh installs:
-// `none` (no database; the MySQL tests skip themselves).
+// whatever happened. The one plugin is `none` (no database; the MySQL tests skip themselves).
 
 /** One run's database. Its values reach only the check commands' environment, never an agent or the store. */
 export interface TestDatabaseLease {

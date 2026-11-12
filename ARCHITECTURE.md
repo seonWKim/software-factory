@@ -113,7 +113,7 @@ graph TB
     LLMP["LLMProvider<br/><b>claude-cli</b>, openai-compatible"]
     SBX["Sandbox<br/><b>noop</b> (git worktree)"]
     CAP["CapabilitySearch<br/><b>bm25</b>, list-all"]
-    TDB["TestDatabase<br/><b>none</b>, mysql-local"]
+    TDB["TestDatabase<br/><b>none</b>"]
   end
 
   subgraph SYNC["Sync plugins"]

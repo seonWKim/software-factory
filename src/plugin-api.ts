@@ -10,6 +10,7 @@ import { ConfigKeyError, suggestion } from "./config-keys.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
 import type { AuthProvider, GrantSource } from "./interfaces/auth-provider.js";
+import type { CalendarSource } from "./interfaces/calendar-source.js";
 import type { Capability, CapabilitySearch } from "./interfaces/capability-search.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -60,15 +61,17 @@ export interface Instances {
   engine: ExecutionEngines;
   /** The owner's tacit-knowledge ledger, where pushbacks are captured (docs/plugins/tacit-ledger.md). */
   tacit: TacitLedger;
+  /** A calendar the factory reads (docs/plugins/calendar-source.md); selected as a list by the top-level `calendar` key. */
+  calendar: CalendarSource;
 }
 
 export type PluginKind = keyof Instances;
 
 /**
  * Kinds config may leave unselected (issue #172): no plugin is their default, and an absent value or "none"
- * selects nothing. Never a guard.
+ * selects nothing. Never a guard. `calendar` is selected as a list (`calendars` in the Selection), never one name.
  */
-export type OptionalKind = "forge";
+export type OptionalKind = "forge" | "calendar";
 
 /** Everything a plugin may read: the loaded config, plus the extra values a canary run adds to the scan. */
 export interface BaseContext {
@@ -107,7 +110,7 @@ export interface Contexts {
   updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
   awake: BaseContext & { clock: Clock };
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
-  /** The pre-push checks' throwaway database (design §4); mysql-local reads its admin URL from the secret file. */
+  /** The pre-push checks' throwaway database (design §4); `none` is its one plugin. */
   test_database: BaseContext & { secrets: SecretStore };
   /** `credentials`: what a run's push needs; only outbound's targets call the forge's writes (RFC 0015 M7, G2). */
   forge: BaseContext & { github: GitHubApi; credentials?: GitHubCredentials };
@@ -120,6 +123,8 @@ export interface Contexts {
   engine: BaseContext & { store: FactoryStore };
   /** Built for the controller only; the plugin finds its own home. */
   tacit: BaseContext;
+  /** `secrets`: what a provider reads its credentials from (none ships yet). */
+  calendar: BaseContext & { secrets: SecretStore };
 }
 
 /** What a plugin's setup hook gets: the forge client (no credentials), and where to print its progress lines. */
@@ -216,6 +221,8 @@ export type Selection = { [K in Exclude<PluginKind, OptionalKind>]: string } & {
   local_auth?: string;
   /** The auth plugin for Slack thread commands, when `auth.slack_thread` names one (issue #486). Absent: the `local` origin's (issue #498). */
   slack_auth?: string;
+  /** The CalendarSource plugins the top-level `calendar` key lists, in config order; absent when it lists none. */
+  calendars?: readonly string[];
 };
 
 /**
@@ -260,6 +267,11 @@ export function selectedSources(selection: Selection): readonly string[] {
   return selection.sources ?? [selection.source];
 }
 
+/** Every selected CalendarSource plugin name, in config order: none unless the top-level `calendar` key lists some. */
+export function selectedCalendars(selection: Selection): readonly string[] {
+  return selection.calendars ?? [];
+}
+
 /** The AgentRunner fallback chain, in config order: `runners`, or `[runner]` when one is selected. */
 export function selectedRunners(selection: Selection): readonly string[] {
   return selection.runners ?? [selection.runner];
@@ -274,6 +286,7 @@ function selectedNames(selection: Selection, kind: PluginKind): readonly string[
   if (kind === "source") return selectedSources(selection);
   if (kind === "runner") return selectedRunners(selection);
   if (kind === "llm") return selectedLlms(selection);
+  if (kind === "calendar") return selectedCalendars(selection);
   const name = selection[kind];
   return name === undefined ? [] : [name];
 }

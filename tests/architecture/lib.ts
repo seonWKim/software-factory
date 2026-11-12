@@ -18,7 +18,7 @@ const UPDATE = process.env.SF_RATCHET_UPDATE === "1";
  * The components of the target layout (RFC 0015 §6.1) that exist so far. Folders under src/ not listed here
  * are legacy. `ui` joins when src/ui/ is rebuilt as a component (today's src/ui/ is legacy).
  */
-export const COMPONENTS = ["shared", "bus", "state", "runtime", "identity", "inbound", "controller", "worker", "outbound", "guards", "cli"] as const;
+export const COMPONENTS = ["shared", "bus", "state", "runtime", "identity", "inbound", "controller", "worker", "outbound", "guards", "cli", "calendar"] as const;
 
 /** Table prefixes and the component that owns each (RFC 0015 §6.3). `legacy_` is kept until contract. */
 export const TABLE_PREFIXES: Readonly<Record<string, string>> = {
@@ -32,6 +32,7 @@ export const TABLE_PREFIXES: Readonly<Record<string, string>> = {
   runtime_: "runtime",
   ui_: "ui",
   ext_: "extension",
+  calendar_: "calendar",
   legacy_: "runtime",
 };
 

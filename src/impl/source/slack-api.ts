@@ -47,6 +47,11 @@ export interface SlackApi {
   threadReplies(channel: string, thread_ts: string): Promise<SlackMessage[]>;
   /** reactions.add as the bot (scope `reactions:write`); a reaction already there counts as added. */
   react(channel: string, ts: string, name: string): Promise<void>;
+  /**
+   * views.open with the bot token (no scope needed): a modal for the person who pressed a button, by the press's
+   * `trigger_id`, which Slack honours for about 3 seconds.
+   */
+  openView(trigger_id: string, view: unknown): Promise<void>;
 }
 
 /**
@@ -141,6 +146,10 @@ export class HttpSlackApi implements SlackApi {
       // A redelivered event reacts again: the reaction is there, which is what was asked.
       if (!(err instanceof SlackApiError && err.code === "already_reacted")) throw err;
     }
+  }
+
+  async openView(trigger_id: string, view: unknown): Promise<void> {
+    await this.call(SLACK_BOT_TOKEN, "views.open", { trigger_id, view }, "json");
   }
 
   /** One call; throws SlackApiError on an HTTP error, a rate limit or `ok: false`. */

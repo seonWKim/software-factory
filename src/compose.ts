@@ -67,7 +67,7 @@ import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import {
-  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
+  type BaseContext, GRANTS, REGISTRY, type Registry, type Selection, createCalendars, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
@@ -115,6 +115,7 @@ export interface FileConfig {
    * `source` may be a list of names, one adapter each (design 2026-11-01).
    */
   plugins?: Record<string, unknown>;
+  calendar?: unknown; // CalendarSource plugin names, in order (docs/plugins/calendar-source.md). Absent or []: none.
   models: { cheap: string; standard: string; strong: string };
   /**
    * Model class per run kind and tier, plus `retry_up` (design §4, 2026-11-02). Absent: DEFAULT_MODEL_BY.
@@ -432,7 +433,7 @@ export async function loadConfig(
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
   const sharedStore = store.type === "mysql";
   const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
-  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
+  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
   const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore, builtin: opts.registry ?? REGISTRY });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
@@ -745,9 +746,7 @@ export class Plugins {
   async runner(sandbox: Sandbox, secrets: SecretStore, tools?: { broker: ToolBroker; scanner: EgressScanner }): Promise<AgentRunner> {
     const names = selectedRunners(this.loaded.plugins);
     const members = [];
-    for (const name of names) {
-      members.push({ name, impl: await createPlugin(this.loaded.registry, "runner", name, { ...this.base, sandbox, secrets, ...tools }) });
-    }
+    for (const name of names) members.push({ name, impl: await createPlugin(this.loaded.registry, "runner", name, { ...this.base, sandbox, secrets, ...tools }) });
     return members.length === 1 ? members[0]!.impl : new FallbackRunner(members);
   }
   testDatabase(secrets: SecretStore) {
@@ -877,6 +876,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
+    calendar: await createCalendars(registry, sel, { ...base, secrets }), // synced every 5 minutes (design 02-tasks); [] unless `calendar` lists some
     network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
