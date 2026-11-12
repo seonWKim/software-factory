@@ -31,6 +31,7 @@ export const en = {
   "keys.next": "Select the next row",
   "keys.prev": "Select the previous row",
   "keys.open": "Open the selected row",
+  "keys.addTask": "Add a task",
   "topbar.needsYou": "Needs you ({count})",
   "topbar.settings": "Settings",
   "topbar.notUpdated": "not updated yet",
