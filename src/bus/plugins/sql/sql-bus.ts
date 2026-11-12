@@ -1,4 +1,4 @@
-// The sql EventBus (RFC 0015 §5): the default bus, on SQLite or MySQL through the state component's driver.
+// The sql EventBus (RFC 0015 §5): the default bus, on SQLite through the state component's driver.
 //
 // One instance per component in a process. It writes that component's outbox (publish) and inbox (claim),
 // relays the outbox to the topic tables on the component's `relay` tick, and consumes any topic.
@@ -126,7 +126,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
 
   /**
    * Takes the `bus_topics` rows of `names` until the transaction ends, before it inserts into their tables: inserts
-   * into one topic then commit in seq order. MySQL assigns AUTO_INCREMENT at insert, not at commit, so without it a
+   * into one topic then commit in seq order. A driver that assigns seq at insert, not at commit, would otherwise let a
    * cursor (`seq > last_seq`) could pass a lower seq whose transaction commits later and skip it for good. One
    * statement in key order, so two writers never take two topics in opposite orders. SQLite has one writer.
    */

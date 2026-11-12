@@ -26,8 +26,8 @@ export async function pruneDeliveredOutbox(db: SqlDriver, before: Timestamp, lim
 export async function pruneHandledCommands(db: SqlDriver, before: Timestamp, limit: number): Promise<Record<string, number>> {
   const guard =
     "seq <= ? AND created_at < ? AND NOT (mirror = 1 AND mirrored_at IS NULL) AND (origin <> 'app' OR legacy_table = 'command_inbox' OR handled_at IS NOT NULL)";
-  // The legacy check is in the select only (MySQL's DELETE cannot name its own table in a subquery); a gone row never returns.
-  const own = db.dialect.name === "mysql" ? "CONCAT('app:', inbound_commands.legacy_seq)" : "'app:' || inbound_commands.legacy_seq";
+  // The legacy check is in the select only; a gone row never returns.
+  const own = "'app:' || inbound_commands.legacy_seq";
   const legacy = ` AND (legacy_table IS NULL OR legacy_table <> 'app_command_requests' OR NOT EXISTS (SELECT 1 FROM inbound_commands c WHERE c.command_key = ${own}))`;
   const [cursor] = await db.all("SELECT value FROM inbound_cursors WHERE name = ?", [COMMANDS_CURSOR]);
   const params = [Number(cursor?.value ?? 0), before];

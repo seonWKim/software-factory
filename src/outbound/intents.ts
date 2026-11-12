@@ -139,8 +139,8 @@ interface Pending {
 }
 
 /** Intents no DeliveryRequested named yet, oldest first: thread entries, then actions. */
-async function unannounced(tx: SqlExecutor, dialect: SqlDriver["dialect"]["name"]): Promise<Pending[]> {
-  const id = (prefix: string, col: string) => (dialect === "mysql" ? `CONCAT('${prefix}', ${col})` : `'${prefix}' || ${col}`);
+async function unannounced(tx: SqlExecutor): Promise<Pending[]> {
+  const id = (prefix: string, col: string) => `'${prefix}' || ${col}`;
   const threads = await tx.all(
     `SELECT o.seq, o.target FROM outbound_intents o
      WHERE o.delivered_at IS NULL AND NOT EXISTS (SELECT 1 FROM outbound_requests r WHERE r.intent_id = ${id(THREAD_INTENT, "o.seq")})
@@ -166,7 +166,7 @@ async function unannounced(tx: SqlExecutor, dialect: SqlDriver["dialect"]["name"
  */
 export async function announce(db: SqlDriver, bus: EventBus, project_id: string, now: string, producer: string): Promise<number> {
   return db.transaction(async (tx) => {
-    const pending = await unannounced(tx, db.dialect.name);
+    const pending = await unannounced(tx);
     if (pending.length === 0) return 0;
     const commit_id = newMessageId();
     const groups = new Map<string, Pending[]>();

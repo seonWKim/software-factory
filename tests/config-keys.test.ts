@@ -67,14 +67,12 @@ describe("config keys: unknown keys fail at load", () => {
     expect(err.message).toContain('did you mean "type"?');
   });
 
-  it('a mysql store fails at startup with one problem line that names "store": { "type": "sqlite" }', async () => {
+  it("a mysql store fails at startup through the unknown FactoryStore plugin error that names store.type", async () => {
     const mysql = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
-    const err = (await loadError({ ...REAL, store: mysql })) as ConfigKeyError;
-    expect(err).toBeInstanceOf(ConfigKeyError);
-    expect(err.problems).toHaveLength(1);
-    expect(err.problems[0]).toContain('"store": { "type": "sqlite" }');
-    expect(err.problems[0]).toContain("mysql");
-    // The mysql keys are not reported as unknown on top of the refusal.
+    const err = await loadError({ ...REAL, store: mysql });
+    expect(err).not.toBeInstanceOf(ConfigKeyError);
+    expect(err.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
+    // Its keys are not reported as unknown store keys: a type not in STORE_KEYS skips that check.
     expect(err.message).not.toContain("store.host");
   });
 
@@ -100,7 +98,7 @@ describe("config keys: unknown keys fail at load", () => {
     });
   }
 
-  it('a sqlite store with the mysql-only key "host" fails', async () => {
+  it('a sqlite store with the key "host" fails', async () => {
     const err = await loadError({ ...REAL, store: { type: "sqlite", host: "localhost" } });
     expect(err.message).toContain("store.host");
   });

@@ -16,10 +16,7 @@ export interface Fingerprint extends TableSummary {
 }
 
 async function tables(db: MigrationDb): Promise<string[]> {
-  const rows =
-    db.dialect === "sqlite"
-      ? await db.all("SELECT name AS t FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name")
-      : await db.all("SELECT table_name AS t FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY 1");
+  const rows = await db.all("SELECT name AS t FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name");
   return rows.map((r) => String(r.t)).filter((t) => !BOOKKEEPING.has(t));
 }
 
