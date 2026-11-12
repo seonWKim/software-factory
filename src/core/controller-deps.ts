@@ -63,7 +63,7 @@ export interface ControllerDeps {
    */
   links?: Pick<Forge, "parseLinks">;
   /**
-   * Authorizes every person's command, from any surface (GitHub, Slack, the CLI, the dashboard): the owner check
+   * Authorizes every person's command, from any surface (the forge, chat, the CLI, the dashboard): the owner check
    * (`OwnerAuth`, src/core/authorize.ts; design 08-permissions, issue #575). Also resolves mergers, closers and authors.
    */
   auth: AuthProvider;

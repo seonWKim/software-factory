@@ -9,7 +9,6 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `alarm_repeat_count` | controller | runtime | global | free |  | `3` | Matching failed runs on distinct items, or zero-token agent runs in a row, that raise an alert. |
 | `alarm_restart_count` | controller | runtime | global | free |  | `5` | Child restarts within 30 minutes that raise an alert. |
 | `alarm_window_minutes` | controller | runtime | global | free |  | `60` | Minutes over which the alarm counts matching failed runs and zero-token runs. |
-| `auth` | identity | review | global | tighten-only | dial |  | Which auth plugin checks who a request comes from. |
 | `auth_pause_ms` | worker | runtime | global | free |  | `1800000` | How long a forge 401 or 403 pauses implement-type claims; with no value, it follows retry_max_ms. |
 | `auto_merge_max_tier` | controller | runtime | global | tighten-only | dial (approve_merge) | `0` | In auto mode, the highest tier (0 to 3) a reviewed local change merges at by itself; 0 is none. |
 | `broker` | guards | review | global | tighten-only | guard |  | Which tool broker runs the forge actions agents ask for, such as a push. |
@@ -42,7 +41,6 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `notify_channels` | controller | runtime | global | free |  | `[]` | Source plugins that also get the owner's notices, e.g. slack; one without notifyOwner gets none. |
 | `outbound.batching` | outbound | review | global | free |  | `{}` | Per destination kind or `*`: batching mode (auto, commit, fixed), debounce, max_wait, max_messages. |
 | `packs.auto_approve_read_only` | worker | review | global | tighten-only |  | `false` | Whether a read-only pack tool with no credential is approved without the owner's approval. |
-| `permissions` | identity | review | global | tighten-only | dial |  | Which grant sources decide who may act on the factory, and their settings. |
 | `phases_auto_approve` | controller | runtime | global | tighten-only |  | `false` | Whether a phase spec of an approved split needs no approval of its own. |
 | `plugins` | runtime | review | global | free |  |  | Which named implementation the factory uses for each interface. |
 | `poll_interval_ms` | inbound | runtime | global | free |  | `30000` | How often the factory polls the forge for new work items and comments. |

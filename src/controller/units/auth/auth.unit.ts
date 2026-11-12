@@ -3,8 +3,7 @@
 // dashboard. The controller's automatic steps are authorized under its service passport. Each is a check through the
 // kernel's reader.
 
-import type { AuthAction, CommandPassport, ExternalIdentity, Principal } from "../../../interfaces/auth-provider.js";
-import { NOT_OWNER, NOT_OWNER_REPLY } from "../../../core/authorize.js";
+import { NOT_OWNER, NOT_OWNER_REPLY, type AuthAction, type CommandPassport, type ExternalIdentity, type Principal } from "../../../interfaces/auth-provider.js";
 import { type Refusal } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";

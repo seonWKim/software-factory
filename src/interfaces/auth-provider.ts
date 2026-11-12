@@ -45,6 +45,10 @@ export interface AuthResource {
 
 export type AuthDecision = { allow: true } | { allow: false; reason: string };
 
+/** The owner check's refusal reason for anyone but the owner (design 08-permissions, issue #575), and the reply the command gets. */
+export const NOT_OWNER = "not_owner";
+export const NOT_OWNER_REPLY = "only the owner may send this command";
+
 export interface AuthProvider {
   resolve(identity: ExternalIdentity): Promise<Principal | null>;
   /**

@@ -2,7 +2,7 @@
 // runtime"). Every check goes through resolveSettings, the same function the running controller and worker pool
 // read settings through, so a value this command accepts is a value they use. A refused command writes nothing.
 
-import { NOT_OWNER, NOT_OWNER_REPLY } from "./core/authorize.js";
+import { NOT_OWNER, NOT_OWNER_REPLY } from "./interfaces/auth-provider.js";
 import { COMMAND_TABLE, cliUsageOf, topWords } from "./core/command-table.js";
 import { type ProjectRef, rekeyProjectSettings } from "./core/project.js";
 import { readProjectLabel } from "./core/project-labels.js";
