@@ -1,8 +1,8 @@
 // `npm run build:icons -- <folder>`: the Gongbang mark (design-system/icon.svg) as PNG files of every size in SIZES,
 // and on macOS also icon.icns made with iconutil (docs/design/09-brand-and-tokens.md).
 // No rasterizer is installed, so this script draws the SVG itself. It reads only what the mark uses: <rect> (with
-// rx), <circle> and <path> with absolute M, L, H, V, C and Z, each with a hex fill and an optional fill-rule. An
-// element with data-min-px="N" is drawn only at N px and up (the ember dot).
+// rx), <circle> and <path> with absolute M, L, H, V, C and Z, each with a hex fill and an optional fill-rule. A
+// <circle> with data-small-r="N" is drawn with a radius of at least N px at the size rendered (the ember dot).
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,7 +25,7 @@ const ICONSET = [16, 32, 128, 256, 512].flatMap((n) => [
 const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w-]+)="([^"]*)"/g)].map((m) => [m[1], m[2]]));
 const num = (v) => Number.parseFloat(v ?? "0");
 
-/** The SVG's view box and its drawable shapes, in order: `{ fill: [r, g, b], evenodd, minPx, polys }`. */
+/** The SVG's view box and its drawable shapes, in order: `{ fill: [r, g, b], evenodd, dot, polys }`. */
 export function parseSvg(text) {
   const box = /viewBox="([^"]+)"/.exec(text)?.[1].trim().split(/[\s,]+/).map(Number);
   if (!box || box.length !== 4) throw new Error("the SVG has no viewBox");
@@ -38,7 +38,7 @@ export function parseSvg(text) {
     shapes.push({
       fill: [0, 2, 4].map((i) => Number.parseInt(fill[1].slice(i, i + 2), 16)),
       evenodd: a["fill-rule"] === "evenodd",
-      minPx: num(a["data-min-px"]),
+      dot: a["data-small-r"] ? { cx: num(a.cx), cy: num(a.cy), r: num(a.r), minPx: num(a["data-small-r"]) } : null,
       polys: flatten(d ?? ""),
     });
   }
@@ -153,9 +153,11 @@ export function render(svg, size) {
   const scale = size / Math.max(svg.box[2], svg.box[3]);
   const rgba = new Float64Array(size * size * 4);
   for (const shape of svg.shapes) {
-    if (size < shape.minPx) continue;
+    const polys = shape.dot
+      ? flatten(circlePath(shape.dot.cx, shape.dot.cy, Math.max(shape.dot.r, (shape.dot.minPx * Math.max(svg.box[2], svg.box[3])) / size)))
+      : shape.polys;
     const cov = coverage(
-      { ...shape, polys: shape.polys.map((p) => p.map(([x, y]) => [x - svg.box[0], y - svg.box[1]])) },
+      { ...shape, polys: polys.map((p) => p.map(([x, y]) => [x - svg.box[0], y - svg.box[1]])) },
       scale,
       size,
     );
