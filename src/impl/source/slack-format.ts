@@ -37,6 +37,11 @@ export const ACTION_MAKE_TASK = "sf_make_task";
 export const ACTION_SPEC_APPROVE = "sf_spec_approve";
 export const ACTION_SPEC_OTHER = "sf_spec_other";
 export const ACTION_SPEC_REJECT = "sf_spec_reject";
+/**
+ * View (design 05-sources, "View in Slack"): on a spec message's first section and on each notice line when no https
+ * `slack.dashboard_url` is set. Its value is the item ID; a press opens the item modal (slack-modals.ts).
+ */
+export const ACTION_VIEW = "sf_view";
 /** The two modals' callback IDs; each input's element has the action ID MODAL_INPUT. */
 export const VIEW_SPEC_ANSWERS = "sf_spec_answers";
 export const VIEW_SPEC_REJECT = "sf_spec_reject";
@@ -52,7 +57,7 @@ export const SLACK_VALUE_MAX = 2000;
 
 const FOOTER_HEADING = "Commands you can reply with now:";
 export const SECTION_MAX = 3000;
-const MAX_SECTIONS = 45;
+export const MAX_SECTIONS = 45;
 
 export interface SlackRendered {
   text: string;
@@ -188,7 +193,7 @@ export function prUrl(repo: RepoRef, n: number | string): string {
 }
 
 /** Splits mrkdwn into chunks of at most `max` characters, at line breaks where it can. */
-function chunks(text: string, max = SECTION_MAX): string[] {
+export function chunks(text: string, max = SECTION_MAX): string[] {
   const out: string[] = [];
   let cur = "";
   for (const line of text.split("\n")) {
@@ -214,7 +219,7 @@ const LABELS: Record<string, string> = { approve: "Approve", retry: "Retry", res
  * `body` without its command footer (the heading, its list and the "No command changes" line after it): what an
  * earlier message keeps once its commands no longer apply (issue #586).
  */
-function withoutFooter(body: string): string {
+export function withoutFooter(body: string): string {
   const lines = body.split(/\r?\n/);
   const at = lines.findIndex((l) => l.trim() === FOOTER_HEADING);
   if (at < 0) return body;
@@ -300,6 +305,16 @@ export function button(label: string, action_id: string, value: string, style?: 
   return { type: "button", text: { type: "plain_text", text: label }, action_id, value, ...(style ? { style } : {}) };
 }
 
+/** A section of mrkdwn `text`, with the View button of item `view` as its accessory when given. */
+export function section(text: string, view?: string): unknown {
+  return { type: "section", text: { type: "mrkdwn", text }, ...(view ? { accessory: button("View", ACTION_VIEW, view) } : {}) };
+}
+
+/** The dashboard's base for links: `url` with no trailing slash when it is https, else null (View buttons instead). */
+export function dashboardBase(url: string | undefined): string | null {
+  return url !== undefined && /^https:\/\//.test(url) ? url.replace(/\/+$/, "") : null;
+}
+
 /** One numbered decision of a spec: its text and its proposed default (null: none proposed). */
 export interface SpecDecisionLine {
   n: number;
@@ -351,8 +366,8 @@ function fitSection(text: string, whole: string, link?: string): string {
 
 /**
  * The Slack message for a spec waiting for approval: "Needs your approval: <title>", In short (at most 3 lines),
- * Decisions (one line each, with its proposed default), and a Full spec link to the dashboard item page (`link`;
- * null: none). Problem, Applied defaults, Done when and the rest stay in the store and on the dashboard. Each section is
+ * Decisions (one line each, with its proposed default), and a Full spec link to the dashboard item page (`link`; null:
+ * a View button on the first section instead, which opens the item modal). Problem, Applied defaults, Done when and the rest stay in the store and on the dashboard. Each section is
  * at most SECTION_MAX characters, a longer one cut with the note naming `factory task show <id>`. Buttons: Approve
  * with defaults, Other… when there is a decision, and Reject….
  */
@@ -372,14 +387,16 @@ export function renderSpecMessage(spec: SpecSummary, item: { id: string; title: 
     ...(spec.decisions.length > 0 ? [button("Other…", ACTION_SPEC_OTHER, item.id)] : []),
     button("Reject…", ACTION_SPEC_REJECT, item.id),
   ];
-  const blocks: unknown[] = [...fitted.map((t) => ({ type: "section", text: { type: "mrkdwn", text: t } })), { type: "actions", elements: buttons }];
+  const blocks: unknown[] = [...fitted.map((t, i) => section(t, i === 0 && link === null ? item.id : undefined)), { type: "actions", elements: buttons }];
   return { text: fitted[0]!, blocks };
 }
 
 const plain = (text: string, max: number) => ({ type: "plain_text", text: text.slice(0, max) || " " });
 
-function modal(callback_id: string, title: string, submit: string, private_metadata: string, blocks: unknown[]): Record<string, unknown> {
-  return { type: "modal", callback_id, private_metadata, title: plain(title, 24), submit: plain(submit, 24), close: plain("Cancel", 24), blocks };
+/** A modal; `submit` null: a read-only one, closed with Close. */
+export function modal(callback_id: string, title: string, submit: string | null, private_metadata: string, blocks: unknown[]): Record<string, unknown> {
+  const buttons = submit === null ? { close: plain("Close", 24) } : { submit: plain(submit, 24), close: plain("Cancel", 24) };
+  return { type: "modal", callback_id, private_metadata, title: plain(title, 24), ...buttons, blocks };
 }
 
 /**
