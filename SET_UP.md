@@ -173,8 +173,11 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
 - `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
 - `factory task add <words>`: Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, `HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title. Who: anyone who may submit work. Prints: the task: ID, title, due, priority, list and recurrence.
 - `factory task done <task_id>`: Complete a plain task; a recurring one gets its next occurrence once, however often it is completed. Who: anyone who may submit work. Prints: that it is done (or already was), and the next occurrence.
+- `factory task edit <task_id> <words>`: Edit an open plain task with quick-add words: only the fields they name change, and words with no title keep the title. Who: anyone who may submit work. Prints: the edited task.
+- `factory task delete <task_id>`: Delete a plain task for good; refused while it has open sub-tasks, and its done sub-tasks become plain tasks. Who: anyone who may submit work. Prints: that it is deleted, and the done sub-tasks it detached.
+- `factory task sub <parent_id> <words>`: Add a sub-task under a plain task from quick-add words, one level deep: a sub-task cannot have sub-tasks. Who: anyone who may submit work. Prints: the sub-task, with its parent's ID.
 - `factory task build <task_id>`: Send an open plain task to intake as one local work item, linked to the task; building it again makes no second item, and a merge of that item completes the task. Who: anyone who may submit work. Prints: the work item's ID (or that the task was already built as it).
-- `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task.
+- `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task (a sub-task with its parent's ID).
 - `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
 - `factory approve <id> [notes]`: Store `/approve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
 - `factory retry <id> [text]`: Store `/retry` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
@@ -426,6 +429,9 @@ In Slack a command follows a mention of the bot, in the item's thread and with n
 - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
 - `@bot task add <words>`: as `factory task add <words>`. Who: anyone who may submit work.
 - `@bot task done <task_id>`: as `factory task done <task_id>`. Who: anyone who may submit work.
+- `@bot task edit <task_id> <words>`: as `factory task edit <task_id> <words>`. Who: anyone who may submit work.
+- `@bot task delete <task_id>`: as `factory task delete <task_id>`. Who: anyone who may submit work.
+- `@bot task sub <parent_id> <words>`: as `factory task sub <parent_id> <words>`. Who: anyone who may submit work.
 - `@bot task build <task_id>`: as `factory task build <task_id>`. Who: anyone who may submit work.
 - `@bot list`: as `factory task list`. Who: anyone.
 - `@bot show <id>`: as `factory task show <id>`. Who: anyone.

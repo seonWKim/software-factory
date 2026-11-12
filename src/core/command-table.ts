@@ -79,6 +79,21 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     prints: "that it is done (or already was), and the next occurrence", chat: "task done <task_id>", chat_args: "id", item: false, edge: false,
   },
   {
+    name: "task edit", args: "<task_id> <words>", who: "submit_work", group: "task",
+    does: "Edit an open plain task with quick-add words: only the fields they name change, and words with no title keep the title",
+    prints: "the edited task", chat: "task edit <task_id> <words>", chat_args: "any", item: false, edge: false,
+  },
+  {
+    name: "task delete", args: "<task_id>", who: "submit_work", group: "task",
+    does: "Delete a plain task for good; refused while it has open sub-tasks, and its done sub-tasks become plain tasks",
+    prints: "that it is deleted, and the done sub-tasks it detached", chat: "task delete <task_id>", chat_args: "id", item: false, edge: false,
+  },
+  {
+    name: "task sub", args: "<parent_id> <words>", who: "submit_work", group: "task",
+    does: "Add a sub-task under a plain task from quick-add words, one level deep: a sub-task cannot have sub-tasks",
+    prints: "the sub-task, with its parent's ID", chat: "task sub <parent_id> <words>", chat_args: "any", item: false, edge: false,
+  },
+  {
     name: "task build", args: "<task_id>", who: "submit_work", group: "task",
     does: "Send an open plain task to intake as one local work item, linked to the task; building it again makes no second item, " +
       "and a merge of that item completes the task",
@@ -86,7 +101,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   },
   {
     name: "task list", args: "", who: "anyone", group: "task", does: "List local work items, then open plain tasks",
-    prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task", chat: "list", chat_args: "none", item: false, edge: false,
+    prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task (a sub-task with its parent's ID)", chat: "list", chat_args: "none", item: false, edge: false,
   },
   {
     name: "task show", args: "<id>", who: "anyone", group: "task", does: "Show one work item",
