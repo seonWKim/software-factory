@@ -26,6 +26,7 @@ import {
 } from "../src/core/settings.js";
 import type { UserId } from "../src/core/types.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
+import { LiveIntakeLabel } from "../src/impl/github/intake-label.js";
 import { settingsChecks } from "../src/setup.js";
 import { config } from "./helpers/fakes.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
@@ -510,7 +511,7 @@ describe("settings: the live timing, coordination and intake keys (design 08-set
   it("a new item is taken in and filed under the intake label in force; an open item keeps the label it has", async () => {
     const { store } = await newStore();
     const client = new RecordingGitHubClient();
-    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, new LiveIntakeLabel("factory", store), "factory/", "main", undefined, store);
     // Issue 7 is an open item, taken in under "factory".
     client.responses["/repos/o/r/issues"] = [{ number: 7, title: "t", body: "", user: { id: 1, login: "a", type: "User" }, labels: [{ name: "factory" }], updated_at: "2026-11-01T00:00:01Z" }];
     await source.poll(null);
