@@ -21,7 +21,7 @@ beforeEach(() => {
   HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
   HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };
   posts = [];
-  vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     // A re-read of the session (the row's own query) keeps commands on.
     if (init?.method !== "POST") {
       const body = String(url).startsWith("/api/v1/session") ? { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" } : {};
@@ -173,9 +173,11 @@ describe("the verdict dialog on a Needs-you row", () => {
     for (const kind of ["Changes", "Reject"]) {
       fireEvent.click(screen.getByRole("radio", { name: kind }));
       expect(send().disabled, kind).toBe(true);
+      // Submitting the form directly (Enter) with no reason, then with a blank one, sends nothing either.
       fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
       fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "  " } });
       expect(send().disabled, kind).toBe(true);
+      fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
     }
     await new Promise((r) => setTimeout(r, 10));
     expect(posts).toEqual([]);
@@ -183,7 +185,7 @@ describe("the verdict dialog on a Needs-you row", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "Verdict severity" }), { target: { value: "major" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: "wrong approach" } });
     fireEvent.click(send());
-        await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(posts.map((p) => p.body)).toEqual([{ command: "verdict", note: "reject major wrong approach" }]);
     expect(document.activeElement).toBe(more);
     // Accept sends with no reason.
