@@ -117,6 +117,7 @@ import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
 import * as notices from "./notices.js";
+import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
 
 /**
@@ -407,6 +408,11 @@ export class SqlFactoryStore implements FactoryStore {
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }
   listHeldNotices() { return notices.listHeldNotices(this.db); }
   listPendingNotices() { return notices.listPendingNotices(this.db); }
+  // The Slack source's notice records (design 05-sources, "Replies under a notice"): notice-messages.ts
+  recordNoticeMessage(m: Parameters<FactoryStore["recordNoticeMessage"]>[0]) { return noticeMessages.recordNoticeMessage(this.db, m, this.now()); }
+  getNoticeMessage(channel: string, ts: string) { return noticeMessages.getNoticeMessage(this.db, channel, ts); }
+  recordNoticeQuestion(q: Parameters<FactoryStore["recordNoticeQuestion"]>[0]) { return noticeMessages.recordNoticeQuestion(this.db, q, this.now()); }
+  getNoticeQuestion(id: string) { return noticeMessages.getNoticeQuestion(this.db, id); }
 
   // Budget checkpoints
 
@@ -2630,14 +2636,8 @@ export class SqlFactoryStore implements FactoryStore {
     detail: StateChangeDetail | null = null,
   ): Promise<StateChange> {
     const change: StateChange = {
-      id: newId("sc") as StateChangeId,
-      work_item_id: workItemId,
-      version,
-      at: this.now(),
-      actor,
-      reason,
-      changes,
-      detail,
+      id: newId("sc") as StateChangeId, work_item_id: workItemId, version, at: this.now(),
+      actor, reason, changes, detail,
     };
     await tx.run(
       "INSERT INTO controller_state_changes (id, work_item_id, version, at, actor, reason, changes, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
