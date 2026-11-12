@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
-import { ItemsTable } from "../web/src/views/common.js";
+import { NeedsGroups } from "../web/src/views/common.js";
 
 // The Floor's Needs-you list (design 09-status-page): one list first, one row per item that waits on the operator,
 // with its title, a one-line reason and the buttons that apply now. Items started past a deadlock are one summary
@@ -68,16 +68,15 @@ describe("Needs you on the Floor", () => {
     const rows = [...table.querySelectorAll("tbody tr")] as HTMLElement[];
     expect(rows.map((r) => r.getAttribute("data-key"))).toEqual(["wi_30"]);
     expect(within(rows[0]!).getByRole("link", { name: "Spec waiting for you" })).toBeTruthy();
-    // Its buttons sit in its own row: the primary approve and the menu with the others.
-    expect(within(rows[0]!).getByRole("button", { name: "approve" })).toBeTruthy();
+    // Its actions sit in its own row: the primary Approve and the menu with the others.
+    expect(within(rows[0]!).getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(within(rows[0]!).getByRole("button", { name: "More commands" })).toBeTruthy();
-    // Needs you is the first section of the page: only the one-line factory banner may come before it.
+    // The page's one h1 is its header, with the count; the factory banner is gone and the group is the first section.
     const main = document.querySelector("main")!;
+    expect(main.querySelectorAll("h1")).toHaveLength(1);
+    expect(screen.queryByTestId("factory-banner")).toBeNull();
     const firstSection = main.querySelector("section")!;
-    expect(firstSection.getAttribute("aria-label")).toBe("Needs you");
-    for (let el = firstSection.previousElementSibling; el; el = el.previousElementSibling) {
-      expect(["H1", "P"]).toContain(el.tagName);
-    }
+    expect(firstSection.getAttribute("aria-label")).toBe("Approve");
     // The deadlocks are one line after the list, linking to Work items; no row and no count of their own.
     const notes = screen.getByRole("list", { name: "System actions" });
     expect(table.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -85,8 +84,7 @@ describe("Needs you on the Floor", () => {
     expect(notes.querySelectorAll("li")).toHaveLength(1);
     expect(line.textContent).toContain("Started past a deadlock: 5.");
     expect(within(line).getByRole("link").getAttribute("href")).toBe("/app/items");
-    const region = screen.getByRole("region", { name: "Needs you" });
-    expect(region.querySelector("h2 + span")!.textContent).toBe("1");
+    expect(screen.getByText("1 waiting")).toBeTruthy();
     for (const n of [1, 2, 3, 4, 5]) expect(table.textContent).not.toContain(`Overlapping ${n}`);
   });
 
@@ -111,7 +109,7 @@ describe("Needs you on the Floor", () => {
     });
     const bare = { ...waiting, id: "wi_41", title: "No commands", stage: "NEW", commands: [] };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<QueryClientProvider client={client}><ItemsTable items={[waiting, bare]} now={Date.parse(AT)} label="Needs you" empty="none" actions /></QueryClientProvider>);
+    render(<QueryClientProvider client={client}><NeedsGroups items={[waiting, bare]} now={Date.parse(AT)} titles={new Map()} empty="none" /></QueryClientProvider>);
     const [first, second] = [...document.querySelectorAll("[data-need]")].map((e) => e.textContent);
     expect(first).toBe("In review; next: retry or reject it");
     expect(second).toBe("New, not triaged yet; next: open the item and send the next command");

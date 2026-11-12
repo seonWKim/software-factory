@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
+import { ItemsTable, NeedsGroups, QueueTable, RunningTable } from "../web/src/views/common.js";
 import { FactoryBanner } from "../web/src/views/pages.js";
 import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
 import { API, type Items, type ItemRow, useApi } from "../web/src/api.js";
@@ -394,10 +394,12 @@ describe("top bar on a narrow screen", () => {
 });
 
 describe("app pages", () => {
-  it("Needs you shows the factory banner and what needs you; Activity shows what runs", async () => {
+  it("Needs you shows its status in the header and what needs you; Activity shows what runs", async () => {
     mount();
-    expect((await screen.findByTestId("factory-banner")).textContent).toContain("Update to bbbbbbb waits for npm run migrate (pending: schema 12)");
-    expect(screen.getByRole("heading", { level: 1, name: "Needs you" })).toBeTruthy();
+    // An update in progress is no page banner: only the header's one-word status, with its sentence on hover.
+    expect((await screen.findByTestId("factory-status")).textContent).toContain("Updating");
+    expect(screen.queryByTestId("factory-banner")).toBeNull();
+    expect(screen.getAllByRole("heading", { level: 1, name: "Needs you" })).toHaveLength(1);
     const needs = await screen.findByRole("table", { name: "Needs you" });
     expect(within(needs).getByText("Spec waiting")).toBeTruthy();
     expect(within(needs).queryByText("Being built")).toBeNull();
@@ -946,9 +948,8 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
       expect(rows[0]!.querySelector("code")!.textContent).toBe("npm run migrate");
       expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
-      // The section counts the item row and both actions.
-      const needs = screen.getByRole("region", { name: "Needs you" });
-      expect(within(needs).getByText("3")).toBeTruthy();
+      // The header counts the rows that wait on the owner; the notes are lines under them.
+      expect(screen.getByText("1 waiting")).toBeTruthy();
     } finally {
       delete (overview as Record<string, unknown>).system_actions;
     }
@@ -1010,7 +1011,7 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
   it("the Why column shows the need's reason, not the badges, and no command to type", () => {
     const need = { reason: "failed: diff_too_large" };
     const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", badges: ["failed"], need };
-    render(<ItemsTable items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} now={NOW} label="Needs you" empty="none" />);
+    render(<QueryClientProvider client={new QueryClient()}><NeedsGroups items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} now={NOW} titles={new Map()} empty="none" /></QueryClientProvider>);
     const cell = document.querySelector("[data-need]")!.closest("td")!;
     expect(cell.textContent).toBe("failed: diff_too_large");
   });
@@ -1025,7 +1026,7 @@ describe("Needs-you command buttons (issue #453)", () => {
     const it = row(1, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", need: { reason: "spec ready", anchor: null }, commands, ...extra });
     return render(
       <QueryClientProvider client={client}>
-        <ItemsTable items={[it as unknown as ItemRow]} now={Date.parse(AT)} label="Needs you" empty="none" actions />
+        <NeedsGroups items={[it as unknown as ItemRow]} now={Date.parse(AT)} titles={new Map()} empty="none" />
       </QueryClientProvider>,
     );
   }
@@ -1038,17 +1039,16 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("one primary button and one ⋯ menu per row, holding the other commands; Work items has none", () => {
     mountNeeds(["approve", "reject", "revise"].map(cmd));
-    expect([...document.querySelectorAll("[data-need-commands] > [data-command] > button")].map((b) => b.textContent)).toEqual(["approve"]);
-    expect(document.querySelectorAll("[data-need-commands] > span > button, [data-need-commands] > button")).toHaveLength(2);
+    expect([...document.querySelectorAll("[data-need-commands] [data-command] > * > button")].map((b) => b.textContent)).toEqual(["Approve"]);
     expect(screen.queryByRole("menuitem")).toBeNull();
     fireEvent.click(menu());
-    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["reject", "revise"]);
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Reject", "Revise"]);
     cleanup();
     mountNeeds([cmd("retry"), cmd("reject")]);
-    expect(rowOf("retry").textContent).toBe("retry");
+    expect(rowOf("retry").textContent).toBe("Retry");
     cleanup();
     mountNeeds([cmd("reject")]);
-    expect(document.querySelector("[data-need-commands] [data-command] > button:not([role])")).toBeNull();
+    expect(rowOf("open").textContent).toBe("Open");
     cleanup();
     const it = row(1, "needs_approval", "Spec waiting", { need: { reason: "spec ready" }, commands: [cmd("approve")] });
     render(<ItemsTable items={[it as unknown as ItemRow]} now={Date.parse(AT)} label="Work items" empty="none" />);
@@ -1056,10 +1056,10 @@ describe("Needs-you command buttons (issue #453)", () => {
   });
 
   it("approve, retry and resolve send at once, with no note; the row shows no sent text, a status message does", async () => {
-    for (const name of ["approve", "retry", "resolve"]) {
+    for (const [name, label] of [["approve", "Approve"], ["retry", "Retry"], ["resolve", "Answer"]] as const) {
       posts = [];
       mountNeeds([cmd(name)]);
-      fireEvent.click(button(name));
+      fireEvent.click(button(label));
       await settle();
       expect(posts.map((p) => [p.url, p.body]), name).toEqual([["/api/v1/items/wi_1/commands", { command: name }]]);
       expect(posts[0]!.headers["x-csrf-token"]).toBe("tok-123");
@@ -1076,7 +1076,7 @@ describe("Needs-you command buttons (issue #453)", () => {
     client.setQueryData(["/api/v1/items"], { ...items, items: [it] });
     function Listed() {
       const list = useApi<Items>(API.items, false).data;
-      return <ItemsTable items={list?.items ?? []} now={Date.parse(AT)} label="Needs you" empty="none" actions />;
+      return <NeedsGroups items={list?.items ?? []} now={Date.parse(AT)} titles={new Map()} empty="none" />;
     }
     const saved = RESPONSES["/api/v1/items"];
     RESPONSES["/api/v1/items"] = { ...items, items: [] };
@@ -1086,7 +1086,7 @@ describe("Needs-you command buttons (issue #453)", () => {
           <Listed />
         </QueryClientProvider>,
       );
-      fireEvent.click(button("approve"));
+      fireEvent.click(button("Approve"));
       await settle();
       expect(posts.map((p) => p.body)).toEqual([{ command: "approve" }]);
       expect(document.querySelector("[data-need-commands]")).toBeNull();
@@ -1102,7 +1102,7 @@ describe("Needs-you command buttons (issue #453)", () => {
     mountNeeds(["approve", "reject", "revise", "verdict"].map(cmd));
     const tr = document.querySelector("tr")!;
     const before = [...tr.querySelectorAll("*")];
-    for (const [name, title] of [["reject", "Reject wi_1"], ["revise", "Revise wi_1"], ["verdict", "Record a verdict on wi_1"]] as const) {
+    for (const [name, title] of [["Reject", "Reject wi_1"], ["Revise", "Revise wi_1"], ["Verdict", "Record a verdict on wi_1"]] as const) {
       pick(name);
       const dialog = screen.getByRole("dialog", { name: title });
       expect(tr.contains(dialog), name).toBe(false);
@@ -1114,7 +1114,7 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("reject opens the dialog and asks to confirm, naming the PR it closes; nothing is sent before the confirm", async () => {
     mountNeeds(["approve", "reject"].map(cmd), { change_ref: "42" });
-    pick("reject");
+    pick("Reject");
     const dialog = screen.getByRole("dialog", { name: "Reject wi_1" });
     expect(dialog.textContent).toContain("Rejecting closes this item and its PR #42, without a merge.");
     fireEvent.click(within(dialog).getByRole("radio", { name: "duplicate" }));
@@ -1128,13 +1128,13 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("revise opens its note fields and sends only once a section has text; Cancel sends nothing", async () => {
     mountNeeds([cmd("approve"), cmd("revise")]);
-    pick("revise");
+    pick("Revise");
     const dialog = screen.getByRole("dialog", { name: "Revise wi_1" });
     expect((within(dialog).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await settle();
     expect(posts).toEqual([]);
-    pick("revise");
+    pick("Revise");
     fireEvent.change(screen.getByRole("textbox", { name: "Comment on Problem" }), { target: { value: "narrower" } });
     fireEvent.click(button("Send revise"));
     await settle();
@@ -1143,7 +1143,7 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("verdict opens a one-line dialog; Send verdict sends what was typed", async () => {
     mountNeeds([cmd("approve"), cmd("verdict")]);
-    pick("verdict");
+    pick("Verdict");
     expect((button("Send verdict")).disabled).toBe(true);
     fireEvent.change(screen.getByRole("textbox", { name: "Verdict" }), { target: { value: " accept none ok " } });
     fireEvent.click(button("Send verdict"));
@@ -1153,17 +1153,16 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("a command the viewer may not send stays in the menu, disabled, with its reason in plain text", async () => {
     mountNeeds(["approve", "reject"].map((n) => ({ ...cmd(n), allowed: false, reason: NO_ROLE })));
-    // Nothing allowed is primary, so approve is in the menu too.
-    expect(document.querySelectorAll("[data-need-commands] [data-command] > button:not([role])")).toHaveLength(0);
+    // Nothing allowed is primary, so the row gets Open, and approve is in the menu too.
+    expect(rowOf("open").textContent).toBe("Open");
     fireEvent.click(menu());
-    for (const name of ["approve", "reject"]) {
-      const item = screen.getByRole("menuitem", { name }) as HTMLButtonElement;
+    for (const name of ["Approve", "Reject"]) {
+      const item = screen.getByRole("menuitem", { name: new RegExp(`^${name}`) }) as HTMLButtonElement;
       expect(item.disabled, name).toBe(true);
-      const li = item.closest("li")!;
-      expect(li.textContent).toContain("local:me has no role that allows it (no_role)");
-      expect(li.textContent).not.toContain("`");
+      expect(item.textContent).toContain("local:me has no role that allows it (no_role)");
+      expect(item.textContent).not.toContain("`");
     }
-    fireEvent.click(screen.getByRole("menuitem", { name: "approve" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /^Approve/ }));
     await settle();
     expect(posts).toEqual([]);
   });
