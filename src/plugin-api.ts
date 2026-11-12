@@ -137,6 +137,35 @@ export interface SetupContext extends BaseContext {
 
 export type SetupHook = (ctx: SetupContext) => Promise<void>;
 
+/**
+ * What a plugin's connect hook gets (`factory setup <kind> <command>`): plain values and functions only. `secrets`
+ * reads the secret file as if the plugin were selected; it stays read-only, so the hook writes through
+ * `storeSecrets` (every value at once, after all its checks) and `removeSecrets`. `ask.hidden` reads a value
+ * without echoing it. Nothing a hook prints may carry a secret value.
+ */
+export interface ConnectContext {
+  secretsFile: string;
+  secrets: SecretStore;
+  ask: { yesNo(question: string, dflt: boolean): Promise<boolean>; hidden(prompt: string): Promise<string> };
+  print: (line: string) => void;
+  openBrowser: (url: string) => Promise<void>;
+  storeSecrets: (values: ReadonlyMap<SecretName, string>) => Promise<void>;
+  removeSecrets: (names: readonly SecretName[]) => Promise<void>;
+  clock: Clock;
+}
+
+/**
+ * A plugin's account connection: `factory setup <kind> <command>` runs `connect`, and `--disconnect` runs
+ * `disconnect`; the CLI then lists or unlists the plugin in its kind's config key. A failure throws; its message is
+ * printed, so it never holds a secret value. Only the calendar kind, selected by a top-level list, takes one.
+ */
+export interface ConnectHook {
+  /** The word after `factory setup <kind>`; unique within the kind. */
+  command: string;
+  connect(ctx: ConnectContext): Promise<void>;
+  disconnect(ctx: ConnectContext): Promise<void>;
+}
+
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
 
 /** One secret a plugin reads from the SecretStore, with one line on what it is for. */
@@ -167,6 +196,8 @@ export interface PluginDescriptor<K extends PluginKind = PluginKind> {
   secrets?: readonly SecretDeclaration[];
   /** One-time work `npm run setup` does for this plugin when it is selected (the github-issues labels); see selectedSetups. */
   setup?: SetupHook;
+  /** How `factory setup <kind> <command>` connects this plugin's account; see connectHooks. */
+  connect?: ConnectHook;
   /**
    * Absent: not a default. store and auth take none: their top-level config keys always pick one. Optional
    * kinds (forge) take none either: leaving their key out selects nothing.
@@ -202,6 +233,8 @@ export interface InterfaceEntry<K extends PluginKind> {
   secrets: Readonly<Record<string, readonly SecretDeclaration[]>>;
   /** The setup hook of each plugin that has one. */
   setups: Readonly<Record<string, SetupHook>>;
+  /** The connect hook of each plugin that has one. */
+  connects: Readonly<Record<string, ConnectHook>>;
   /** From the descriptors' `default` fields. */
   defaults: KindDefaults;
 }
@@ -317,6 +350,13 @@ export function selectedSetups(registry: Registry, selection: Selection): { kind
       const setup = registry[kind].setups[name];
       return setup ? [{ kind, name, setup }] : [];
     }),
+  );
+}
+
+/** Every plugin's connect hook, selected or not, in interface order: what `factory setup <kind> <command>` runs. */
+export function connectHooks(registry: Registry): { kind: PluginKind; name: string; hook: ConnectHook }[] {
+  return (Object.keys(registry) as PluginKind[]).flatMap((kind) =>
+    Object.entries(registry[kind].connects).map(([name, hook]) => ({ kind, name, hook })),
   );
 }
 

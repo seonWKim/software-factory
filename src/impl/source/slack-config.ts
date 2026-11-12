@@ -7,7 +7,7 @@ export const SLACK_KEYS = ["channels", "dashboard_url", "notify_channel"] as con
 export interface SlackConfig {
   /** Slack channel IDs (`C…`, or `G…` for an older private channel), never channel names. */
   channels: string[];
-  /** Where a spec message's Full spec link and each notice's link point (an https URL); absent: the local dashboard. */
+  /** Where a spec message's Full spec link and each notice's link point (an https URL); absent: View buttons, no link. */
   dashboard_url?: string;
   /** The channel ID the owner's notices are posted in (design 12-notification-channels); absent: the first of `channels`. */
   notify_channel?: string;

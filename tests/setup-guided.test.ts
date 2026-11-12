@@ -4,7 +4,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultsAsk, terminalAsk } from "../src/cli/handlers/setup/ask.js";
 import {
   applyChoices,
@@ -14,6 +14,8 @@ import {
   parseSlackChannels,
 } from "../src/cli/handlers/setup/config-edit.js";
 import { registerMe } from "../src/cli/handlers/setup/me.js";
+import setupCommand from "../src/cli/handlers/setup/setup.command.js";
+import { REGISTRY, connectHooks } from "../src/plugins.js";
 import { loadConfig } from "../src/compose.js";
 import { cliIdentity, runLocalCli } from "../src/core/local-cli.js";
 import { ProfileStore } from "../src/identity/index.js";
@@ -107,6 +109,39 @@ describe("setup: the shared choices in factory.config.json", () => {
   it("checks Slack channel IDs", () => {
     expect(parseSlackChannels("C0123456789, G0ABC")).toEqual({ ok: true, channels: ["C0123456789", "G0ABC"] });
     expect(parseSlackChannels("#general")).toEqual({ ok: false, bad: "#general" });
+  });
+});
+
+describe("setup <kind> <command>: the CLI", () => {
+  const COMMAND_FILE = join(REPO_ROOT, "src", "cli", "handlers", "setup", "setup.command.ts");
+
+  it("lists every connect command from the registry in its usage, and hard-codes none", () => {
+    const hooks = connectHooks(REGISTRY);
+    expect(hooks.length).toBeGreaterThan(0);
+    for (const h of hooks) expect(setupCommand.usage).toContain(`setup ${h.kind} ${h.hook.command} [--disconnect]`);
+    const text = readFileSync(COMMAND_FILE, "utf8");
+    for (const h of hooks) {
+      expect(text).not.toContain(h.name);
+      expect(text).not.toContain(`"${h.hook.command}"`);
+    }
+  });
+
+  it("does not import src/setup.ts: the connect flow lives in guided.ts", () => {
+    const specs = [...readFileSync(COMMAND_FILE, "utf8").matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]);
+    expect(specs.filter((s) => /(^|\/)setup\.js$/.test(s!) && !s!.startsWith("./"))).toEqual([]);
+  });
+
+  it("refuses an unknown connect command or argument before loading anything", async () => {
+    const errors: string[] = [];
+    const ctx = { name: "setup", usage: "USAGE", load: async () => { throw new Error("not loaded"); } };
+    const spy = vi.spyOn(console, "error").mockImplementation((l: string) => void errors.push(l));
+    try {
+      expect(await setupCommand.run(["calendar", "nowhere"], ctx)).toBe(1);
+      expect(await setupCommand.run(["calendar", connectHooks(REGISTRY)[0]!.hook.command, "--force"], ctx)).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(errors.every((e) => e.startsWith("setup: unknown arguments") && e.endsWith("USAGE"))).toBe(true);
   });
 });
 

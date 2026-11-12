@@ -80,13 +80,13 @@ describe("the slack block's notify keys at load", () => {
   });
 });
 
-/** The `slack` source on a fake Slack; `dashboard: null` gives it none. */
+/** The `slack` source on a fake Slack, with an https slack.dashboard_url; `dashboard: null` gives it none. */
 function slack(over: { notify_channel?: string; dashboard?: null } = {}) {
   const api = new FakeSlackApi();
   const socket = new FakeSocket();
   const source = new SlackSource({
     api, connect: socket.connect, channels: [CHANNEL, "C0SECOND"], scanner: cleanScanner, store: {} as SlackSourceDeps["store"], repo: REPO, log: silent,
-    ...(over.dashboard === null ? {} : { dashboard: async () => "https://factory.example.com/" }),
+    ...(over.dashboard === null ? {} : { dashboard_url: "https://factory.example.com/" }),
     ...(over.notify_channel ? { notify_channel: over.notify_channel } : {}),
   });
   return { api, source };
@@ -142,15 +142,54 @@ describe("Slack notifyOwner (fake Slack)", () => {
     expect(api.messages).toHaveLength(1);
   });
 
-  it("with no dashboard sends no dashboard link; the plugin's default is the local dashboard (approver's note)", async () => {
-    const { api, source } = slack({ dashboard: null });
-    await source.notifyOwner([notice({})]);
-    expect(api.messages[0]!.text).toBe("✅ Finished: Add dark mode (merged)");
+  /** A message's sections as [text, the View accessory's action ID and value, or null]. */
+  const sectionsOf = (m: { blocks?: readonly unknown[] }) =>
+    (m.blocks ?? []).map((b) => {
+      const s = b as { type: string; text: { type: string; text: string }; accessory?: { action_id: string; value: string; text: { text: string } } };
+      expect([s.type, s.text.type]).toEqual(["section", "mrkdwn"]);
+      return [s.text.text, s.accessory ? [s.accessory.text.text, s.accessory.action_id, s.accessory.value] : null];
+    });
 
-    const built = slackPlugin.create({ loaded: { file: { slack: { channels: [CHANNEL] }, ui: { port: 5555 } } }, secrets: {}, scanner: cleanScanner, store: {}, repo: REPO, log: recordingLog() } as never);
+  it("with no dashboard_url each notice line is a section with its title as plain text and a View button (design 05-sources)", async () => {
+    const { api, source } = slack({ dashboard: null, notify_channel: NOTIFY });
+    const thread = "https://slack.com/archives/C0LISTED/p1800000000000100";
+    await source.notifyOwner([
+      notice({}), notice({ kind: "needs_you", work_item_id: "wi_2", title: "Fix <login>", reason: "a run failed", close_reason: null, thread_url: thread }),
+      notice({ kind: "summary", work_item_id: null, title: "", count: 2 }),
+    ]);
+    expect(api.messages.map((m) => m.channel)).toEqual([NOTIFY]);
+    expect(sectionsOf(api.messages[0]!)).toEqual([
+      ["✅ Finished: Add dark mode (merged)", ["View", "sf_view", "wi_1"]],
+      [`🙋 Needs you: Fix &lt;login&gt;: a run failed (<${thread}|thread>)`, ["View", "sf_view", "wi_2"]],
+      ["🌙 2 updates during quiet hours", null],
+    ]);
+    expect(api.messages[0]!.text).toBe(sectionsOf(api.messages[0]!).map(([t]) => t).join("\n"));
+    expect(JSON.stringify(api.messages)).not.toMatch(/127\.0\.0\.1|\/app\//);
+  });
+
+  it("the plugin with no slack.dashboard_url posts View buttons, never a 127.0.0.1 link, also when the notify channel is not listed", async () => {
+    const file = { slack: { channels: [CHANNEL], notify_channel: NOTIFY }, ui: { port: 5555 } };
+    const built = slackPlugin.create({ loaded: { file }, secrets: {}, scanner: cleanScanner, store: {}, repo: REPO, log: recordingLog() } as never) as SlackSource;
     const fake = new FakeSlackApi();
-    (built as unknown as { d: SlackSourceDeps }).d.api = fake;
-    await (built as SlackSource).notifyOwner([notice({})]);
-    expect(fake.messages.map((m) => [m.channel, m.text])).toEqual([[CHANNEL, "✅ Finished: <http://127.0.0.1:5555/app/items/wi_1|Add dark mode> (merged)"]]);
+    built.d.api = fake;
+    await built.notifyOwner([notice({})]);
+    expect(fake.messages.map((m) => m.channel)).toEqual([NOTIFY]);
+    expect(sectionsOf(fake.messages[0]!)).toEqual([["✅ Finished: Add dark mode (merged)", ["View", "sf_view", "wi_1"]]]);
+    expect(JSON.stringify(fake.messages)).not.toContain("127.0.0.1");
+  });
+
+  it("past Slack's 50 blocks, the remaining lines share one last section with no button", async () => {
+    const { api, source } = slack({ dashboard: null });
+    await source.notifyOwner(Array.from({ length: 52 }, (_, i) => notice({ work_item_id: `wi_${i}`, title: `T${i}` })));
+    const s = sectionsOf(api.messages[0]!);
+    expect(s.length).toBeLessThanOrEqual(50);
+    expect(s.at(-1)).toEqual([["T49", "T50", "T51"].map((t) => `✅ Finished: ${t} (merged)`).join("\n"), null]);
+  });
+
+  it("with an https dashboard_url the message has no blocks and no View button: the title links stay", async () => {
+    const { api, source } = slack();
+    await source.notifyOwner([notice({})]);
+    expect(api.messages[0]!.blocks).toBeUndefined();
+    expect(api.messages[0]!.text).toBe("✅ Finished: <https://factory.example.com/app/items/wi_1|Add dark mode> (merged)");
   });
 });
