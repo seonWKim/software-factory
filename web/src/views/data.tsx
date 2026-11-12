@@ -7,6 +7,7 @@ import { Input } from "../components/ui/input.js";
 import { Empty, ErrorNote, Loading } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Select } from "../components/ui/select.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -35,7 +36,7 @@ export function DataPage() {
     <div className="min-w-0 space-y-3">
       <AutonomyLine />
       <div className="flex min-w-0 gap-4 max-md:flex-col">
-        <nav aria-label="Tables" className="w-56 shrink-0 max-md:w-full">
+        <nav aria-label={t("data.tables")} className="w-56 shrink-0 max-md:w-full">
           {tables.isError ? <ErrorNote error={tables.error} /> : !tables.data ? <Loading rows={6} /> : (
             <ul className="space-y-0.5 text-sm">
               {tables.data.tables.map((t) => (
@@ -57,7 +58,7 @@ export function DataPage() {
         </nav>
         <div className="min-w-0 flex-1">
           {table === null ? (
-            <Empty>Choose a table to see its rows, newest first.</Empty>
+            <Empty>{t("data.choose")}</Empty>
           ) : (
             <TableRows key={`${table}|${page}|${filter?.column ?? ""}|${filter?.value ?? ""}`} table={table} page={page} setPage={setPage} filter={filter} setFilter={(f) => { setFilter(f); setPage(1); }} />
           )}
@@ -75,14 +76,14 @@ function AutonomyLine() {
   const a = q.data;
   return (
     <p className="text-sm" data-testid="data-autonomy">
-      <span className="font-medium">Autonomy:</span>{" "}
+      <span className="font-medium">{t("data.autonomy")}</span>{" "}
       {a.autonomy === null ? (
-        <span className="text-text-3">not enough data</span>
+        <span className="text-text-3">{t("data.notEnough")}</span>
       ) : (
         <span className="tabular-nums">
           {a.autonomy.toFixed(2)}{" "}
           <span className="text-text-3">
-            ({a.merged - a.with_push} of {a.merged} merged factory items with no person's push)
+            {t("data.autonomyDetail", { count: a.merged - a.with_push, merged: a.merged })}
           </span>
         </span>
       )}
@@ -121,34 +122,34 @@ function TableRows({
   };
 
   return (
-    <section aria-label={`Table ${d.table}`}>
+    <section aria-label={t("data.table", { name: d.table })}>
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <h2 className="font-mono text-sm font-semibold">{d.table}</h2>
         <span className="text-sm text-text-3 tabular-nums" data-testid="data-range">
-          {first}–{last} of {d.total}
+          {t("data.range", { first, last, total: d.total })}
         </span>
         <FilterForm columns={d.columns.filter((c) => !d.hidden.includes(c))} filter={filter} setFilter={setFilter} />
         <ButtonRow className="ml-auto">
           <Button size="sm" disabled={d.page <= 1} onClick={() => setPage(d.page - 1)}>
-            Previous
+            {t("data.previous")}
           </Button>
           <span className="text-xs text-text-3 tabular-nums">
-            Page {d.page} of {pages}
+            {t("data.page", { page: d.page, pages })}
           </span>
           <Button size="sm" disabled={d.page >= pages} onClick={() => setPage(d.page + 1)}>
-            Next
+            {t("data.next")}
           </Button>
         </ButtonRow>
       </div>
       {d.rows.length === 0 ? (
-        <Empty>{filter ? "No row matches this filter." : "This table is empty."}</Empty>
+        <Empty>{filter ? t("data.noMatch") : t("data.empty")}</Empty>
       ) : (
         <div className="max-h-[75vh] overflow-auto rounded-control border border-border">
           <table aria-label={d.table} className="text-left text-xs">
             <thead>
               <tr>
                 <th scope="col" className="sticky top-0 z-10 bg-bg px-2 py-2">
-                  <span className="sr-only">Copy</span>
+                  <span className="sr-only">{t("data.copyColumn")}</span>
                 </th>
                 {d.columns.map((c) => (
                   <th key={c} scope="col" className="sticky top-0 z-10 bg-bg px-2 py-2 font-mono font-medium whitespace-nowrap text-text-2">
@@ -164,8 +165,8 @@ function TableRows({
                     <Button
                       variant="ghost"
                       size="sm"
-                      aria-label="Copy row as JSON"
-                      title={copied === i ? "Copied" : "Copy row as JSON"}
+                      aria-label={t("data.copyRow")}
+                      title={copied === i ? t("copy.done") : t("data.copyRow")}
                       onClick={() => copy(i, row)}
                       className="text-text-3"
                     >
@@ -209,18 +210,18 @@ function FilterForm({
     if (column) setFilter({ column, value });
   };
   return (
-    <form role="search" aria-label="Filter rows" onSubmit={submit} className="flex flex-wrap items-center gap-2">
-      <Select aria-label="Filter column" value={column} onChange={(e) => setColumn(e.target.value)} className="font-mono">
+    <form role="search" aria-label={t("data.filterRows")} onSubmit={submit} className="flex flex-wrap items-center gap-2">
+      <Select aria-label={t("data.filterColumn")} value={column} onChange={(e) => setColumn(e.target.value)} className="font-mono">
         {columns.map((c) => (
           <option key={c} value={c}>{c}</option>
         ))}
       </Select>
-      <Input aria-label="Filter value" value={value} onChange={(e) => setValue(e.target.value)} placeholder="equals…" className="w-40" />
+      <Input aria-label={t("data.filterValue")} value={value} onChange={(e) => setValue(e.target.value)} placeholder={t("data.equals")} className="w-40" />
       <ButtonRow>
         {filter && (
-          <Button size="sm" onClick={() => setFilter(null)}>Clear</Button>
+          <Button size="sm" onClick={() => setFilter(null)}>{t("data.clear")}</Button>
         )}
-        <Button type="submit" size="sm">Filter</Button>
+        <Button type="submit" size="sm">{t("data.filter")}</Button>
       </ButtonRow>
     </form>
   );
@@ -228,18 +229,18 @@ function FilterForm({
 
 /** One cell: NULL muted, markers emphasised, item and run ids linked, long text cut with "Show all". */
 function CellView({ value, runItems, open, onOpen }: { value: DataCell; runItems: Record<string, string>; open: boolean; onOpen: () => void }) {
-  if (value === null) return <span className="text-text-3">NULL</span>;
+  if (value === null) return <span className="text-text-3">{t("data.null")}</span>;
   if (typeof value === "number") return <span className="tabular-nums">{value}</span>;
   if (value === "[hidden]" || value.startsWith("[withheld: ")) return <em className="text-pill-warn-fg">{value}</em>;
   if (/^wi_[A-Za-z0-9]+$/.test(value)) return <Link href={itemPath(value)} className={LINK_CLASS}>{value}</Link>;
   const owner = /^run_[A-Za-z0-9]+$/.test(value) ? runItems[value] : undefined;
-  if (owner) return <Link href={itemPath(owner)} title={`Run of ${owner}`} className={LINK_CLASS}>{value}</Link>;
+  if (owner) return <Link href={itemPath(owner)} title={t("data.runOf", { owner })} className={LINK_CLASS}>{value}</Link>;
   if (value.length <= CELL_MAX || open) return <>{value}</>;
   return (
     <>
       {value.slice(0, CELL_MAX)}…{" "}
       <Button variant="ghost" size="sm" onClick={onOpen} className={cn("font-sans", LINK_CLASS)}>
-        Show all ({value.length} characters)
+        {t("data.showAll", { count: value.length })}
       </Button>
     </>
   );
