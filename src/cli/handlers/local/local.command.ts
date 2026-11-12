@@ -8,6 +8,7 @@ import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import { CLI_TOP_WORDS, HELP_WORD, cliIdentity, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
+import { lastRefusedLines, refusalHint } from "./refused.js";
 import { cliEnvironment } from "../../support.js";
 
 /**
@@ -60,6 +61,9 @@ export default defineCommand({
         },
         action,
       );
+      // A refused command's answer for the CLI sender (design 04-gate-commands, 2026-11-13).
+      if (r.code === 0 && action.action === "show") r.lines.push(...lastRefusedLines(await store.listItemMessages(action.id)));
+      if (r.code === 0 && action.action === "command") r.lines.push(refusalHint(action.id));
       for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
       return r.code;
     } finally {

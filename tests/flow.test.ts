@@ -2352,7 +2352,7 @@ describe("approval notes, unknown commands, /help and footers", () => {
     expect(lastLines(spec.body, 1)[0]).toMatch(/^- `\/help`/);
   });
 
-  it("the max-loops comment lists /retry, /revise, /reject and ends with /help; the merge comment ends with a line saying no command changes the state", async () => {
+  it("the max-loops comment lists /retry, /revise, /reject and ends with /help; the merge comment lists /reject, which closes at any open phase", async () => {
     const f = await atSpecGate(80, { review: "bug" });
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "8001", approver: alice });
     await f.step();
@@ -2366,8 +2366,9 @@ describe("approval notes, unknown commands, /help and footers", () => {
     await g.step();
     const merge = g.source.comments.find((c) => c.marker.startsWith("<!-- factory:merge:"))!;
     expect(merge.body).toContain("human merge is required");
-    expect(lastLines(merge.body, 2)[0]).toMatch(/^- `\/help`/);
-    expect(lastLines(merge.body, 1)[0]).toBe("No command changes this item's state now.");
+    expect(merge.body).toContain("- `/reject <reason>`");
+    expect(lastLines(merge.body, 1)[0]).toMatch(/^- `\/help`/);
+    expect(merge.body).not.toContain("No command changes this item's state now.");
   });
 
   it("failure comments that wait for a human end with /retry and /help", async () => {

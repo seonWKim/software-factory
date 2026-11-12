@@ -5,8 +5,8 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 /**
- * The git revision the app is built from (`git rev-parse HEAD` of the checkout), the same command the UI server
- * runs at start (src/ui/system-actions.ts serverRevision). Null when git cannot say.
+ * The git revision the app is built from (`git rev-parse HEAD` of the checkout), the same revision scripts/build.mjs
+ * stamps into dist/ for the UI server (src/ui/system-actions.ts serverRevision). Null when git cannot say.
  */
 export function buildRevision(root: string): string | null {
   try {

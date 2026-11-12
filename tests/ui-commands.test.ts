@@ -403,13 +403,13 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
   const names = (l: Listed) => l.commands.map((c) => c.name);
 
   const STAGES: [string, WorkItemPatch, string[]][] = [
-    ["NEW (triaging)", {}, []],
+    ["NEW (triaging)", {}, ["reject"]],
     ["READY at the spec gate", SPEC_PENDING, ["approve", "reject", "revise"]],
     ["READY at the revision limit", { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" }, ["approve", "reject"]],
-    ["RUNNING (implementing)", IMPLEMENTING, []],
+    ["RUNNING (implementing)", IMPLEMENTING, ["reject"]],
     ["RUNNING after a failed implement run", { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" }, ["reject", "revise", "retry"]],
-    ["REVIEW (reviewing)", { stage: "REVIEW", change_ref: "42" }, ["verdict"]],
-    ["REVIEW waiting for a merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" }, ["verdict"]],
+    ["REVIEW (reviewing)", { stage: "REVIEW", change_ref: "42" }, ["reject", "verdict"]],
+    ["REVIEW waiting for a merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" }, ["reject", "verdict"]],
     ["CLOSED, merged", { stage: "CLOSED", close_reason: "completed", change_ref: "42", merge_sha: "abc" }, ["verdict"]],
     ["CLOSED without a merge", { stage: "CLOSED", close_reason: "rejected" }, []],
   ];
@@ -445,8 +445,8 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     await controller.tickCommands();
     const [row] = await h.store.listAppCommandRequestsForItem(it1.id, 10);
     expect(row!.refusal).toBe(refusalText("/approve", l.commands[0]!.reason!));
-    // A stage with nothing to send lists nothing.
-    expect((await listed(page(h, helper), await h.itemIn(IMPLEMENTING, 2))).commands).toEqual([]);
+    // A closed stage with nothing to send lists nothing.
+    expect((await listed(page(h, helper), await h.itemIn({ stage: "CLOSED", close_reason: "rejected" }, 2))).commands).toEqual([]);
   });
 
   it("solo: with no link and no grants, the dashboard and the CLI both offer and take approve", async () => {
@@ -463,7 +463,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     for (const it of [byPage, byCli]) expect((await h.store.getWorkItem(it.id))!.stage).toBe("RUNNING");
   });
 
-  it("an item that left the spec gate lists no approve, reject or revise: the actions follow the item's state now (issue #586)", async () => {
+  it("an item that left the spec gate lists no approve or revise, only reject: the actions follow the item's state now (issue #586)", async () => {
     const h = await harness({ localAuth: true });
     const me = "local:me@example.com" as UserId;
     const it1 = await h.itemIn(SPEC_PENDING, 1);
@@ -471,7 +471,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     await h.request("app-586", me, "approve", { work_item_id: it1.id });
     await h.controller.tickCommands();
     expect((await h.store.getWorkItem(it1.id))!.stage).toBe("RUNNING");
-    expect(names(await listed(page(h, me), it1))).toEqual([]);
+    expect(names(await listed(page(h, me), it1))).toEqual(["reject"]);
   });
 });
 
