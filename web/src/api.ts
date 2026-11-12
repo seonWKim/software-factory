@@ -2,7 +2,7 @@
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
-// /api/v1/tasks (postTaskAction: edit, done, delete, sub), each with the per-process CSRF token (from GET /api/v1/settings,
+// /api/v1/tasks (postTaskAction: edit, done, delete, sub, and schedule, the timeline's drop), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules or /api/v1/tasks) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
@@ -560,6 +560,8 @@ export interface TaskRow {
   /** `YYYY-MM-DD`, or null. */
   due_date: string | null;
   due_time: string | null;
+  /** How long it takes, in minutes; null: planned as 30 minutes (absent from an older server). */
+  duration_minutes?: number | null;
   recurrence: string | null;
   /** The work item Build this made from it, or null. */
   work_item_id: string | null;
@@ -585,6 +587,21 @@ export type DayRow = TaskRow | EventRow;
 
 export const isEventRow = (r: DayRow): r is EventRow => "kind" in r && r.kind === "event";
 
+/**
+ * One block on today's timeline (design 02-tasks, schedule a task): a timed task, drawn its duration (30 minutes when
+ * none is stored), or a read-only timed event. `offset`: minutes after midnight it starts; `minutes`: how long it is
+ * drawn. `id`: the task's ID, or `<source>:<id>` for an event.
+ */
+export interface TimelineRow {
+  kind: "task" | "event";
+  id: string;
+  title: string;
+  start: string;
+  end: string;
+  offset: number;
+  minutes: number;
+}
+
 /** A calendar source's last sync: when it last succeeded (null: never) and whether its last read failed. */
 export interface CalendarSync {
   source: string;
@@ -604,6 +621,8 @@ export interface TasksView {
   today: { overdue: TaskRow[]; due: DayRow[] };
   upcoming: { date: string; tasks: DayRow[] }[];
   projects: { list: string | null; tasks: TaskRow[] }[];
+  /** Today's timed tasks and events, placed by the server (absent from an older server). */
+  timeline?: TimelineRow[];
   calendar?: CalendarSync[];
   csrf_token: string | null;
   can_build: boolean;
@@ -793,10 +812,11 @@ export async function postTaskAdd(token: string, id: string, words: string): Pro
 }
 
 /** A Tasks page row action: the path segment of its route. */
-export type TaskAction = "edit" | "done" | "delete" | "sub";
+export type TaskAction = "edit" | "done" | "delete" | "sub" | "schedule";
 
 /**
- * POST /api/v1/tasks/<action>: a row action (edit `{ id, words }`, done and delete `{ id }`, sub `{ parent, id, words }`).
+ * POST /api/v1/tasks/<action>: a row action (edit `{ id, words }`, done and delete `{ id }`, sub `{ parent, id, words }`),
+ * or a drop on the timeline (schedule `{ id, date, time }`).
  * A refusal (400, 404, 409, …) comes back as `{ ok: false, error }` with the server's reason.
  */
 export async function postTaskAction(token: string, action: TaskAction, body: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
