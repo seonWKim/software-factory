@@ -29,3 +29,21 @@ export function t(key: MessageKey, vars: Record<string, string | number> = {}): 
   const text = CATALOGS[locale()]?.[key] ?? en[key];
   return text.replace(/\{(\w+)\}/g, (m, name: string) => (name in vars ? String(vars[name]) : m));
 }
+
+/** A whole number in the active locale, with no digit grouping ("1500"). */
+export function formatInteger(n: number): string {
+  return new Intl.NumberFormat(locale(), { useGrouping: false, maximumFractionDigits: 0 }).format(n);
+}
+
+/** A number with one decimal in the active locale ("38.5"). */
+export function formatDecimal(n: number): string {
+  return new Intl.NumberFormat(locale(), { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(n);
+}
+
+/** The unit keys of the catalog: time units and the compact thousand and million suffixes. */
+export type UnitKey = "d" | "h" | "m" | "s" | "ms" | "million" | "thousand";
+
+/** `n` with its unit suffix in the active locale: (12, "s") → "12s"; `decimal` shows one decimal: (2, "thousand", true) → "2.0k". */
+export function withUnit(n: number, unit: UnitKey, decimal = false): string {
+  return t(`unit.${unit}`, { n: decimal ? formatDecimal(n) : formatInteger(n) });
+}

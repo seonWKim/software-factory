@@ -52,7 +52,8 @@
     "network_probe": "http",
     "bus": "sql",
     "ticks": "time-based",
-    "engine": "journal"
+    "engine": "journal",
+    "tacit": "agents-home"
   },
   "models": { "cheap": "haiku", "standard": "sonnet", "strong": "opus" },
   "model_by": {

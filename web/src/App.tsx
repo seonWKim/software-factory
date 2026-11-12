@@ -6,7 +6,7 @@ import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
 import { LINK_CLASS } from "./components/ui/link-style.js";
 import { type MessageKey } from "./i18n/en.js";
-import { t } from "./i18n/index.js";
+import { t, withUnit } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
@@ -30,7 +30,7 @@ function Ago({ at }: { at: number }) {
   return (
     <>
       <span className="max-sm:sr-only">{t("topbar.updated")}</span>
-      {Math.max(0, Math.floor((now - at) / 1000))}s<span className="max-sm:sr-only">{t("topbar.ago")}</span>
+      {withUnit(Math.max(0, Math.floor((now - at) / 1000)), "s")}<span className="max-sm:sr-only">{t("topbar.ago")}</span>
     </>
   );
 }
@@ -141,7 +141,7 @@ export function App() {
   useEffect(() => {
     // The Needs you count leads the tab title, so a background tab shows it: "(4) Needs you · Gongbang".
     const count = needs ? `(${needs}) ` : "";
-    document.title = `${count}${transcript ? "Run transcript" : route.itemId ? "Work item" : pageLabel(route.page)} · ${t("app.name")}`;
+    document.title = `${count}${transcript ? t("app.runTranscript") : route.itemId ? t("app.workItem") : pageLabel(route.page)} · ${t("app.name")}`;
   }, [route.page, route.itemId, transcript, needs]);
 
   return (
