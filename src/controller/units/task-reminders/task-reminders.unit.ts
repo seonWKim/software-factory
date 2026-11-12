@@ -6,12 +6,12 @@
 // the conditional update of the task's sent-marker (reminded_at) and its desktop notice, so a second pass or another
 // replica finds no task to remind.
 
-import { NOTIFY_REF } from "../../../core/notifications.js";
 import type { NewAction } from "../../../outbound/index.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { ControllerReader, ControllerWrite } from "../kernel.js";
 import type { ControllerDecision, Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
+import { notifyTarget } from "../notifications/notifications.unit.js";
 import { type Notifier, notifiers } from "../notifications/notifiers.js";
 
 type Task = Awaited<ReturnType<ControllerReader["listDueReminders"]>>[number];
@@ -59,7 +59,7 @@ const waitKey = (at: { due_date: string; due_time: string }) => `task:${at.due_d
 function intent(id: string, title: string, at: { due_date: string; due_time: string }, to: Notifier): NewAction {
   return {
     action: "notify",
-    target: { type: to.type, id: NOTIFY_REF, link: "" },
+    target: notifyTarget(to),
     work_item_id: null,
     key: `notify:${id}:${waitKey(at)}:${to.channel}`,
     args: {
