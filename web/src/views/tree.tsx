@@ -7,6 +7,7 @@ import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import type { ItemRow } from "../api.js";
 import { Badge } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
@@ -136,20 +137,20 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
       <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
       {waits && (
         waits.id ? (
-          <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>waits for {waits.label}</Link>
+          <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</Link>
         ) : (
-          <span className={CHIP} data-waits-for>waits for {waits.label}</span>
+          <span className={CHIP} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</span>
         )
       )}
       {run && (
         <span className="text-xs whitespace-nowrap tabular-nums" data-run>
           {run.kind} #{run.attempt}
-          {run.status === "queued" && run.position !== null && ` · queue ${run.position}`}
+          {run.status === "queued" && run.position !== null && t("tree.queue", { position: run.position })}
           {run.started_at && run.status === "running" && ` · ${ago(run.started_at, now)}`}
         </span>
       )}
       {it.change_ref !== null && (
-        it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>PR #{it.change_ref}</a> : <span className="text-xs tabular-nums">PR #{it.change_ref}</span>
+        it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>{t("tree.pr", { ref: it.change_ref })}</a> : <span className="text-xs tabular-nums">{t("tree.pr", { ref: it.change_ref })}</span>
       )}
       <span className="text-xs whitespace-nowrap tabular-nums text-text-2">{ago(it.updated_at, now)}</span>
       <span className="flex basis-full flex-wrap gap-x-2 text-xs text-text-2 sm:basis-auto sm:text-sm">
@@ -172,7 +173,7 @@ function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<nu
         {({ hasChildItems, isExpanded, level }) => (
           <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? "Collapse" : "Expand"}>
+              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
                 {isExpanded ? "▾" : "▸"}
               </Button>
             ) : (
@@ -225,7 +226,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
   }
   return (
     <Tree
-      aria-label="Work items"
+      aria-label={t("tree.label")}
       selectionMode="none"
       expandedKeys={expanded}
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}

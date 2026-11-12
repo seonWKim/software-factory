@@ -6,6 +6,8 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
+import type { MessageKey } from "../i18n/en.js";
+import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
@@ -21,11 +23,11 @@ export const TEXT_LINES = 5;
 /** Filtered pages read in a row while they match nothing, before "Load more" asks. */
 const AUTO_PAGES = 20;
 
-const FILTERS: readonly { value: StepFilter | null; label: string }[] = [
-  { value: null, label: "All steps" },
-  { value: "edits", label: "Edits" },
-  { value: "commands", label: "Commands" },
-  { value: "reads", label: "Reads" },
+const FILTERS: readonly { value: StepFilter | null; label: MessageKey }[] = [
+  { value: null, label: "transcript.filterAll" },
+  { value: "edits", label: "transcript.filterEdits" },
+  { value: "commands", label: "transcript.filterCommands" },
+  { value: "reads", label: "transcript.filterReads" },
 ];
 
 export const transcriptPath = (item: string, run: string) => `${itemPath(item)}/runs/${encodeURIComponent(run)}`;
@@ -62,7 +64,7 @@ function LongText({ text }: { text: string }) {
   return (
     <>
       <p className="text-sm whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{long && !open ? lines.slice(0, TEXT_LINES).join("\n") : text}</p>
-      {long && <Toggle open={open} onClick={() => setOpen(!open)}>{open ? "Show less" : `Show all ${lines.length} lines`}</Toggle>}
+      {long && <Toggle open={open} onClick={() => setOpen(!open)}>{open ? t("transcript.showLess") : t("transcript.showAll", { n: lines.length })}</Toggle>}
     </>
   );
 }
@@ -74,23 +76,23 @@ function ToolResult({ step }: { step: TranscriptStep }) {
   return (
     <>
       <Toggle open={open} onClick={() => setOpen(!open)}>
-        {open ? "Hide result" : `Show result (${lines} ${lines === 1 ? "line" : "lines"})`}
+        {open ? t("transcript.hideResult") : t(lines === 1 ? "transcript.showResultOne" : "transcript.showResult", { n: lines })}
       </Toggle>
       {open && <pre className={cn(PRE, "mt-1 rounded-control bg-bg p-2")}>{step.text}</pre>}
     </>
   );
 }
 
-const KIND_LABEL: Record<TranscriptStep["kind"], string> = {
-  text: "Assistant",
-  tool_use: "Tool call",
-  tool_result: "Tool result",
-  result: "Result",
-  system: "System",
-  error: "Error",
-  plain: "Line",
-  other: "Event",
-  oversize: "Skipped",
+const KIND_LABEL: Record<TranscriptStep["kind"], MessageKey> = {
+  text: "transcript.kindText",
+  tool_use: "transcript.kindToolUse",
+  tool_result: "transcript.kindToolResult",
+  result: "transcript.kindResult",
+  system: "transcript.kindSystem",
+  error: "transcript.kindError",
+  plain: "transcript.kindPlain",
+  other: "transcript.kindOther",
+  oversize: "transcript.kindOversize",
 };
 
 export function StepView({ step }: { step: TranscriptStep }) {
@@ -113,10 +115,10 @@ export function StepView({ step }: { step: TranscriptStep }) {
       )}
     >
       <p className="mb-1 flex flex-wrap items-center gap-2 text-xs text-text-2">
-        <span className="font-medium">{KIND_LABEL[step.kind]}</span>
+        <span className="font-medium">{t(KIND_LABEL[step.kind])}</span>
         {step.tool && <Badge>{step.tool}</Badge>}
-        {step.is_error && <Badge level="needs_you">error</Badge>}
-        {step.truncated && <span>(cut to fit one page)</span>}
+        {step.is_error && <Badge level="needs_you">{t("transcript.error")}</Badge>}
+        {step.truncated && <span>{t("transcript.truncated")}</span>}
       </p>
       {body}
     </li>
@@ -129,20 +131,20 @@ function Outcome({ run, now }: { run: TranscriptPage["run"]; now: number }) {
   return (
     <div
       role="status"
-      aria-label="Run outcome"
+      aria-label={t("transcript.outcome")}
       className={cn(
         "mt-3 rounded-control px-3 py-2 text-sm break-words [overflow-wrap:anywhere]",
         failed ? "bg-pill-bad-bg text-pill-bad-fg" : o ? "bg-pill-ok-bg text-pill-ok-fg" : "bg-surface-2",
       )}
     >
       <p className="font-medium">
-        {failed ? `Failed: ${o.error_code ?? "unknown"}` : o ? "Succeeded" : `No outcome yet (${run.status})`}
+        {failed ? t("transcript.failed", { code: o.error_code ?? t("transcript.unknown") }) : o ? t("transcript.succeeded") : t("transcript.noOutcome", { status: run.status })}
       </p>
       {failed && o.detail && <p>{o.detail}</p>}
       {!failed && o?.summary && <p>{o.summary}</p>}
       <p className="mt-1 text-xs opacity-80 tabular-nums">
-        {run.kind}, attempt {run.attempt} · worker {run.worker_id ?? "–"} · started {run.started_at ? `${ago(run.started_at, now)} ago` : "–"}
-        {run.started_at && run.finished_at ? ` · took ${ago(run.started_at, Date.parse(run.finished_at))}` : ""}
+        {t("transcript.runLine", { kind: run.kind, attempt: run.attempt, worker: run.worker_id ?? "–", started: run.started_at ? `${ago(run.started_at, now)}${t("topbar.ago")}` : "–" })}
+        {run.started_at && run.finished_at ? t("transcript.took", { time: ago(run.started_at, Date.parse(run.finished_at)) }) : ""}
       </p>
     </div>
   );
@@ -202,43 +204,43 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
   return (
     <>
       <Back itemId={itemId} />
-      <h2 className="text-balance text-base font-semibold break-words">Transcript of the {run.kind} run, attempt {run.attempt}</h2>
+      <h2 className="text-balance text-base font-semibold break-words">{t("transcript.title", { kind: run.kind, attempt: run.attempt })}</h2>
       <Outcome run={run} now={now} />
-      <ButtonRow className="mt-6" role="group" aria-label="Step type">
+      <ButtonRow className="mt-6" role="group" aria-label={t("transcript.stepType")}>
         {FILTERS.map((f) => (
           <Button key={f.label} aria-pressed={filter === f.value} onClick={() => setFilter(f.value)}>
-            {f.label}
+            {t(f.label)}
           </Button>
         ))}
         {run.status === "failed" && !tail && (
-          <Button variant="ghost" onClick={() => setTail(true)} className={cn("ml-auto", LINK_CLASS)}>Jump to the last 20 steps</Button>
+          <Button variant="ghost" onClick={() => setTail(true)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.jumpTail")}</Button>
         )}
         {tail && (
-          <Button variant="ghost" onClick={() => setTail(false)} className={cn("ml-auto", LINK_CLASS)}>Show from the start</Button>
+          <Button variant="ghost" onClick={() => setTail(false)} className={cn("ml-auto", LINK_CLASS)}>{t("transcript.fromStart")}</Button>
         )}
       </ButtonRow>
       {first.parts.length > 1 && (
-        <ButtonRow className="mt-2" role="group" aria-label="Agent step">
+        <ButtonRow className="mt-2" role="group" aria-label={t("transcript.agentStep")}>
           {first.parts.map((p) => (
             <Button key={p || "main"} aria-pressed={first.part === p} onClick={() => setPart(p)}>
-              {p || "main step"}
+              {p || t("transcript.mainStep")}
             </Button>
           ))}
         </ButtonRow>
       )}
-      <Section title="Steps" count={steps.length}>
-        {first.format === "plain" && <p className="mb-2 text-xs text-text-2">Not stream-json: shown as plain lines.</p>}
-        {tail && first.earlier && <p className="mb-2 text-xs text-text-2">The last steps of the transcript; earlier ones are not loaded.</p>}
+      <Section title={t("transcript.steps")} count={steps.length}>
+        {first.format === "plain" && <p className="mb-2 text-xs text-text-2">{t("transcript.plainFormat")}</p>}
+        {tail && first.earlier && <p className="mb-2 text-xs text-text-2">{t("transcript.tailNote")}</p>}
         {steps.length === 0 && !hasNextPage ? (
-          <Empty>{filter ? "No step of this type." : "The transcript has no steps."}</Empty>
+          <Empty>{filter ? t("transcript.noneOfType") : t("transcript.noSteps")}</Empty>
         ) : (
-          <ol aria-label="Transcript steps" className="min-w-0 space-y-2">
+          <ol aria-label={t("transcript.stepsList")} className="min-w-0 space-y-2">
             {steps.map((s) => <StepView key={s.id} step={s} />)}
           </ol>
         )}
         {hasNextPage && (
           <Button disabled={isFetchingNextPage} onClick={() => void fetchNextPage()} className="mt-3">
-            {isFetchingNextPage ? "Loading…" : "Load more"}
+            {isFetchingNextPage ? t("transcript.loading") : t("transcript.loadMore")}
           </Button>
         )}
       </Section>
@@ -249,7 +251,7 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
 function Back({ itemId }: { itemId: string }) {
   return (
     <p className="mb-1 text-sm">
-      <Link href={itemPath(itemId)} className={LINK_CLASS}>Back to the work item</Link>
+      <Link href={itemPath(itemId)} className={LINK_CLASS}>{t("transcript.back")}</Link>
     </p>
   );
 }

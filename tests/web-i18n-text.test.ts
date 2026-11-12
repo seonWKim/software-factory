@@ -10,15 +10,6 @@ const WEB = join(import.meta.dirname, "..", "web", "src");
 const ATTRIBUTES = new Set(["aria-label", "title", "placeholder"]);
 const WORD = /[A-Za-z]{2,}/;
 
-/** The files still holding English text, to be converted by later phases. Delete a line when its file is clean. */
-const BASELINE: readonly string[] = [
-  "web/src/views/item-commands.tsx",
-  "web/src/views/item-decisions.tsx",
-  "web/src/views/rules.tsx",
-  "web/src/views/transcript.tsx",
-  "web/src/views/tree.tsx",
-];
-
 /** The English texts in one .tsx source: JSX text, and the three attributes with a literal value. */
 function englishTexts(source: string): string[] {
   const file = ts.createSourceFile("sample.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -53,11 +44,11 @@ describe("web text", () => {
     expect(englishTexts(sample)).toEqual([]);
   });
 
-  it("finds English text only in the files on the baseline", () => {
+  it("finds no English text outside the catalog in any file of web/src", () => {
     const dirty = tsxFiles(WEB)
       .filter((f) => englishTexts(readFileSync(f, "utf8")).length > 0)
       .map((f) => relative(join(WEB, "..", ".."), f).split("\\").join("/"))
       .sort();
-    expect(dirty).toEqual([...BASELINE].sort());
+    expect(dirty).toEqual([]);
   });
 });
