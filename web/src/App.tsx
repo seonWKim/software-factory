@@ -15,6 +15,7 @@ import { HelpDialog, SearchDialog } from "./search.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
+import { DesignPage } from "./views/design.js";
 import { FailuresPage } from "./views/failures.js";
 import { ActivityPage, HealthPage, ItemPage, ItemsPage, NeedsYouPage, QueuePage, RunnersPage } from "./views/pages.js";
 import { ModeSwitch, SettingsPage } from "./views/settings.js";
@@ -47,6 +48,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   rules: RulesPage,
   settings: SettingsPage,
   data: DataPage,
+  design: DesignPage,
 };
 
 /** A page's name in the active locale: its menu name and its heading. */

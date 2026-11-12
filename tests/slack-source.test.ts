@@ -14,7 +14,7 @@ import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
-import { cutNote, escapeSlack, proposalButtons, renderSpecMessage, toMrkdwn } from "../src/impl/source/slack-format.js";
+import { ACTION_MAKE_TASK, cutNote, escapeSlack, proposalButtons, renderSpecMessage, toMrkdwn } from "../src/impl/source/slack-format.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
 import { commentEvent } from "../src/core/comment-event.js";
@@ -150,9 +150,21 @@ async function finishAll(f: F, kind: "triage" | "implement" | "review", data: Re
   await f.controller.tickRuns();
 }
 
+/**
+ * A top-level mention made an item: the mention gets its reply, then `user` presses its Make this a task button
+ * (design 04-gate-commands, "a mention creates an item only on a press").
+ */
+async function requested(f: F, ts: string, text: string, over: Record<string, unknown> = {}): Promise<void> {
+  await deliver(f, eventEnvelope(mention(ts, text, over)));
+  await deliver(f, press(ts, ACTION_MAKE_TASK, text, typeof over.user === "string" ? over.user : "U0ALICE"));
+}
+
+/** The factory's messages in a thread after the item exists: the mention's reply and the "Task created" line left out. */
+const itemThread = (f: F, ts: string) => f.api.thread(ts).slice(2);
+
 /** A mention that became an item, triaged: its spec is waiting in the thread. */
 async function specPending(f: F, ts = "1800000001.000100", spec: Record<string, unknown> = triageSpec): Promise<WorkItem> {
-  await deliver(f, eventEnvelope(mention(ts, "please add a scope gate")));
+  await requested(f, ts, "please add a scope gate");
   await finishAll(f, "triage", { spec });
   const item = (await itemOf(f, ts))!;
   expect(item.blocked_reason).toBe("spec_pending");
@@ -162,9 +174,9 @@ async function specPending(f: F, ts = "1800000001.000100", spec: Record<string, 
 const fields = (it: WorkItem | null) => it && { stage: it.stage, blocked_on: it.blocked_on, blocked_reason: it.blocked_reason };
 
 describe("slack source: intake", () => {
-  it("a mention of the bot in a listed channel creates exactly one work item, keyed slack:<team>:<channel>:<thread ts>", async () => {
+  it("a mention of the bot in a listed channel and a press of its button create exactly one work item, keyed slack:<team>:<channel>:<thread ts>", async () => {
     const f = await setup();
-    await deliver(f, eventEnvelope(mention("1800000001.000100", "please add a scope gate")));
+    await requested(f, "1800000001.000100", "please add a scope gate");
     const items = await f.store.listWorkItems(10);
     expect(items).toHaveLength(1);
     expect(items[0]!.source).toEqual({
@@ -173,8 +185,24 @@ describe("slack source: intake", () => {
     expect(items[0]!.title).toBe("please add a scope gate");
     expect(items[0]!.requester_id).toBe("github:1");
     expect(parseSlackSourceId(items[0]!.source.id)).toEqual({ team: TEAM, channel: CHANNEL, thread_ts: "1800000001.000100" });
-    // The status message is the thread's acknowledgement.
-    expect(f.api.thread("1800000001.000100").map((m) => m.text)).toEqual(["Status: *triaging*"]);
+    // The mention's reply, the press's one line, then the status message.
+    expect(f.api.thread("1800000001.000100").map((m) => m.text?.split("\n")[0])).toEqual([
+      "I couldn't read that. Make it a task?", "Task created: please add a scope gate", "Status: *triaging*",
+    ]);
+  });
+
+  it("a top-level mention is marked classify, never offered; only a Make this a task press is marked offered", async () => {
+    const f = await setup();
+    const me = { team_id: TEAM, user_id: BOT };
+    const ts = "1800000001.000300";
+    const said = await f.slack.toEvent(eventEnvelope(mention(ts, "please add a scope gate")), me);
+    expect(said?.event).toMatchObject({ kind: "item_requested", classify: true });
+    expect(said?.event).not.toHaveProperty("offered");
+    const pressed = await f.slack.toEvent(press(ts, ACTION_MAKE_TASK, "please add a scope gate", "U0BOB"), me);
+    expect(pressed?.event).toEqual({
+      kind: "item_requested", source: { type: "slack_thread", id: sourceId(ts), link: slackLink(CHANNEL, ts) }, requester: { provider: "slack", subject: "U0BOB" },
+      title: "please add a scope gate", body: "please add a scope gate", offered: true,
+    });
   });
 
   it("a mention inside a thread starts the item from the thread root", async () => {
@@ -183,7 +211,7 @@ describe("slack source: intake", () => {
     expect((await itemOf(f, "1800000002.000100"))?.source.id).toBe(sourceId("1800000002.000100"));
   });
 
-  it("the message + app_mention pair Slack sends for one mention creates one item (owner's live test)", async () => {
+  it("the message + app_mention pair Slack sends for one mention gets one reply (owner's live test)", async () => {
     const f = await setup();
     const ts = "1794038471.990329";
     await deliver(
@@ -191,7 +219,8 @@ describe("slack source: intake", () => {
       eventEnvelope(message(ts, `<@${BOT}> small request`), "Ev0CFTHQ6TA5"),
       eventEnvelope(mention(ts, "small request"), "Ev0CFTHQ8WBB"),
     );
-    expect(await f.store.listWorkItems(10)).toHaveLength(1);
+    expect(await f.store.listWorkItems(10)).toEqual([]);
+    expect(f.api.thread(ts)).toHaveLength(1);
     expect((await f.store.listInboxAfter("slack_thread", 0, 10)).map((r) => r.dedupe_key)).toEqual(["event:Ev0CFTHQ8WBB"]);
   });
 
@@ -232,7 +261,7 @@ describe("slack source: intake", () => {
     const f = await setup();
     const ts = "1800000005.000100";
     const profile = { user_profile: { real_name: "Alice Example-Realname", display_name: "alice-display", name: "alice-handle" } };
-    await deliver(f, eventEnvelope(mention(ts, "add a gate", profile)));
+    await requested(f, ts, "add a gate", profile);
     await finishAll(f, "triage", { spec: triageSpec });
     await deliver(f, press(ts, "sf_cmd:approve", "/approve"));
     const item = (await itemOf(f, ts))!;
@@ -306,7 +335,7 @@ describe("slack source: ack after store, replay", () => {
     await f.controller.tickIntake();
 
     expect(await f.store.listWorkItems(10)).toHaveLength(1);
-    expect((await f.store.listInboxAfter("slack_thread", 0, 50)).map((r) => r.dedupe_key.split(":")[0])).toEqual(["event"]);
+    expect((await f.store.listInboxAfter("slack_thread", 0, 50)).map((r) => r.dedupe_key.split(":")[0])).toEqual(["event", "action"]);
     expect((await f.store.listCliCommandsAfter(0, 50)).map((c) => [c.command, c.actor])).toEqual([["approve", "github:1"]]);
     const after = await f.store.listStateChanges(item.id);
     expect(after.length).toBe(changes + 1);
@@ -446,7 +475,7 @@ describe("slack source: replies, buttons and commands", () => {
     const f = await setup();
     const ts = "1800000008.000100";
     const item = await specPending(f, ts);
-    const spec = f.api.thread(ts).find((m) => FakeSlackApi.buttons(m).length > 0)!;
+    const spec = itemThread(f, ts).find((m) => FakeSlackApi.buttons(m).length > 0)!;
     expect(spec.text).toBe("Needs your approval: please add a scope gate");
     expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject"]);
     expect(JSON.stringify(spec.blocks)).not.toContain("<!--");
@@ -779,7 +808,7 @@ describe("slack source: egress", () => {
   it("the GitHub token planted in spec text never reaches Slack posts, events, logs or the store", async () => {
     const f = await setup();
     const ts = "1800000018.000100";
-    await deliver(f, eventEnvelope(mention(ts, "add a gate")));
+    await requested(f, ts, "add a gate");
     await finishAll(f, "triage", { spec: { ...triageSpec, problem: `Use ${FAKE_GITHUB_TOKEN} to push`, scope: `token ${FAKE_GITHUB_TOKEN}` } });
     const item = (await itemOf(f, ts))!;
     const slackOut = JSON.stringify([f.api.messages, f.api.calls]);
@@ -1077,9 +1106,11 @@ describe("slack source: factory commands (issue #498)", () => {
     expect((await f.store.listStateChanges(item.id)).at(-1)).toMatchObject({ reason: "spec_approved", actor: { kind: "user", id: "github:1" } });
   });
 
-  it("a mention in plain words outside an item's thread is a request: it starts a work item, as `task create` does", async () => {
+  it("a mention in plain words outside an item's thread is a request: a press of its button starts a work item, as `task create` does", async () => {
     const f = await setup();
     await deliver(f, eventEnvelope(mention("1800000038.000100", "list the open bugs in the parser")));
+    expect(await itemOf(f, "1800000038.000100")).toBeNull();
+    await deliver(f, press("1800000038.000100", ACTION_MAKE_TASK, "list the open bugs in the parser"));
     expect((await itemOf(f, "1800000038.000100"))?.title).toBe("list the open bugs in the parser");
   });
 });
@@ -1151,7 +1182,7 @@ describe("slack source: one help and refusal text (issue #528)", () => {
       ["approve", { item: slashed.id, text: "ship it" }],
       ["approve", { item: bare.id, text: "ship it" }],
     ]);
-    await deliver(f, eventEnvelope(mention("1800000062.000500", "approve")));
+    await requested(f, "1800000062.000500", "approve");
     expect((await itemOf(f, "1800000062.000500"))?.title).toBe("approve");
   });
   it("the same command refused for the same reason reads the same on GitHub, the CLI, Slack and the dashboard", async () => {
@@ -1161,7 +1192,7 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     const gh = (await f.store.createWorkItem(issue(71), system)).item;
     const cli = (await f.store.createWorkItem(issue(72), system)).item;
     const app = (await f.store.createWorkItem(issue(73), system)).item;
-    await deliver(f, eventEnvelope(mention("1800000063.000100", "please add a scope gate")));
+    await requested(f, "1800000063.000100", "please add a scope gate");
     f.gh.queue.push(commentEvent(issueRef(71), "101", { provider: "github", subject: "1" }, "/approve")!);
     await f.store.recordAppCommandRequest({ key: "app-528", actor: "github:1" as UserId, command: "approve", args: { work_item_id: app.id } });
     await deliver(f, eventEnvelope(mention("1800000063.000200", "/approve", { thread_ts: "1800000063.000100" })));
@@ -1273,10 +1304,10 @@ describe("slack source: commands with no slash after a mention (issue #541)", ()
     expect((await f.store.getWorkItem(item.id))?.blocked_reason).toBe("spec_pending");
   });
 
-  it("outside an item's thread, a bare command word starts a work item; the slash form gets the refusal naming the bare form", async () => {
+  it("outside an item's thread, a bare command word is a request (a press starts its item); the slash form gets the refusal naming the bare form", async () => {
     const f = await setup();
-    await deliver(f, eventEnvelope(mention("1800000090.000100", "reject duplicate emails")));
-    await deliver(f, eventEnvelope(mention("1800000090.000200", "budget the parser work")));
+    await requested(f, "1800000090.000100", "reject duplicate emails");
+    await requested(f, "1800000090.000200", "budget the parser work");
     expect((await itemOf(f, "1800000090.000100"))?.title).toBe("reject duplicate emails");
     expect((await itemOf(f, "1800000090.000200"))?.title).toBe("budget the parser work");
     await deliver(f, eventEnvelope(mention("1800000090.000300", "/reject duplicate emails")));

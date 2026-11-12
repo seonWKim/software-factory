@@ -1,4 +1,4 @@
-import { Activity, CalendarCheck, Database, HeartPulse, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
+import { Activity, CalendarCheck, Database, Palette, HeartPulse, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
 /** Where a page sits in the sidebar: the Tasks group, the Factory group, the collapsed System group, or only the top bar (Settings). */
 export type PageGroup = "tasks" | "factory" | "system" | null;
@@ -23,6 +23,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "system" },
   { path: "runners", label: "Runners", key: "runners", icon: Waypoints, group: "system" },
   { path: "queue", label: "Queue", key: "queue", icon: ListOrdered, group: "system" },
+  { path: "design", label: "Design system", key: "design", icon: Palette, group: "system" },
   { path: "data", label: "Data", key: "data", icon: Database, group: "system" },
   { path: "settings", label: "Settings", key: "settings", icon: Settings, group: null },
 ];

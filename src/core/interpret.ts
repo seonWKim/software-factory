@@ -5,7 +5,7 @@ import { withMessageStyle } from "./message-style.js";
 import type { SourceRef, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
-import type { SourceEvent } from "../interfaces/source-adapter.js";
+import { type SourceEvent, taskOfferMarker } from "../interfaces/source-adapter.js";
 
 /**
  * Reads one plain-language message against the open items (design §4, 2026-11-11, issues #583 and the chat answer).
@@ -13,8 +13,8 @@ import type { SourceEvent } from "../interfaces/source-adapter.js";
  * reply on an item, that item's state label and block reason as read-only facts. The answer is checked against that
  * list and the command table and turned into one reply: zero or more proposed commands as typed lines, a direct
  * answer to a read ("show 566"), one question listing the readings, or a chat answer in plain words. A top-level
- * chat message (no item yet) may also be a work request, or one the model is unsure of, answered with an offer to
- * make it a task. Nothing here changes state: the model's output is never applied by itself; the person types a
+ * chat message (no item yet) may also be a work request, or one the model is unsure of, each answered with an offer
+ * to make it a task. Nothing here changes state: the model's output is never applied by itself; the person types a
  * proposed line, or presses its button where the surface has buttons (Slack, issue #584), and either goes through
  * the normal command path with that person's check.
  */
@@ -56,16 +56,17 @@ export interface Proposal {
 
 /**
  * What a message means. `chat`: a plain-words answer, with the item it was asked on (null for a top-level message).
- * `request` and `unsure` come only for a top-level message: a work request, or one the model cannot tell is one
- * (`text` answers it, and `message` is the message, for the offer to make it a task). `none`: no usable answer (a
- * failed call, malformed output, or entries that all fail the checks).
+ * `request` and `unsure` come only for a top-level message: a work request (`text` says what a task would do), or
+ * one the model cannot tell is one (`text` says so); `message` is the message, for the offer to make it a task.
+ * `none`: no usable answer (a failed call, malformed output, a request with no text, or entries that all fail the
+ * checks).
  */
 export type Interpretation =
   | { kind: "commands"; proposals: Proposal[] }
   | { kind: "show"; items: OpenItem[] }
   | { kind: "question"; readings: Proposal[] }
   | { kind: "chat"; text: string; item: OpenItem | null }
-  | { kind: "request" }
+  | { kind: "request"; text: string; message: string }
   | { kind: "unsure"; text: string; message: string }
   | { kind: "none" };
 
@@ -130,12 +131,12 @@ export function interpretRequest(text: string, items: readonly OpenItem[], at: M
     '- `kind: "chat"`: the message is a question or remark for the factory, not a command; `text` answers it in plain words, at most a few sentences, from the facts given only. No entries.',
     ...(top
       ? [
-        '- `kind: "request"`: the message asks for new work to be done (a feature, a fix, a change); no entries, `text` empty.',
+        '- `kind: "request"`: the message asks for new work to be done (a feature, a fix, a change); `text` says in 1 to 3 plain sentences what you understood and what a task would do (for example "I can make this a task: send a Slack message when a task finishes or needs you."). No entries.',
         '- `kind: "unsure"`: you cannot tell whether the message asks for new work or only chats; `text` says so in plain words. No entries.',
       ]
       : []),
     "- The facts given are all you know. When they do not answer the question, `text` says plainly that you cannot tell; never guess.",
-    "- `text` is an empty string for every kind but `chat` and `unsure`.",
+    `- \`text\` is an empty string for every kind but \`chat\`${top ? ", `request`" : ""} and \`unsure\`.`,
     'Answer only with JSON: {"kind": string, "entries": [{"item": string, "command": string, "args": string}], "text": string}.',
   ].join("\n");
   const system = withMessageStyle(rules, style);
@@ -249,7 +250,7 @@ function unique<T>(xs: readonly (T | null)[], key: (x: T) => string): T[] {
 /**
  * What `text`, posted `at`, means against `items`: proposals, items to show, one question with its readings, a chat
  * answer, or (top-level only) a request or an unsure answer. None for no LLM answer, a refusal or error, malformed
- * output, or an answer whose entries all fail the checks. On an item, a `request` or `unsure` answer with text is
+ * output, a request with no text, or an answer whose entries all fail the checks. On an item, a `request` or `unsure` answer with text is
  * read as chat (an item's thread is already an item).
  */
 export async function interpret(text: string, items: readonly OpenItem[], llm: LLMProvider, at: MessageAt, style = ""): Promise<Interpretation> {
@@ -279,7 +280,7 @@ export async function interpret(text: string, items: readonly OpenItem[], llm: L
     case "request":
     case "unsure":
     case "chat":
-      if (at === "top_level" && out.kind === "request") return { kind: "request" };
+      if (at === "top_level" && out.kind === "request") return out.text ? { kind: "request", text: out.text, message: text } : { kind: "none" };
       if (at === "top_level" && out.kind === "unsure") return { kind: "unsure", text: out.text || UNSURE_TEXT, message: text };
       // On an item, a request or unsure answer with text is read as chat.
       return out.text ? { kind: "chat", text: out.text, item: at === "top_level" ? null : at.item } : { kind: "none" };
@@ -308,12 +309,12 @@ function typedLines(ps: readonly Proposal[]): string[] {
 }
 
 /**
- * The one reply to an interpretation, or null for `none` (the caller answers that with the command list) and
- * `request` (the caller takes the message in). Plain text, applied by typing a line on its item. With `proposal`
+ * The one reply to an interpretation, or null for `none` (the caller answers that: the command list on an item, the
+ * unread line and the offer at the top level). Plain text, applied by typing a line on its item. With `proposal`
  * (the stored proposal's ID, issue #584) a `commands` reply ends with its hidden marker, from which a surface with
  * buttons (Slack) builds one per command; the forge and any other surface show the same plain text. A chat answer
- * on an item ends with the item's state label, from the store; an unsure answer ends with the offer to make the
- * message a task and its hidden marker, from which Slack draws the "Make this a task" button.
+ * on an item ends with the item's state label, from the store; a request or unsure answer ends with the offer to make
+ * the message a task, its hidden marker, from which Slack draws the "Make this a task" button.
  */
 export function interpretReply(r: Interpretation, proposal: string | null = null): string | null {
   switch (r.kind) {
@@ -335,6 +336,7 @@ export function interpretReply(r: Interpretation, proposal: string | null = null
     case "unsure":
       return [r.text, "", "Nothing has changed: your message is not a work item yet.", taskOfferMarker(r.message)].join("\n");
     case "request":
+      return [r.text, taskOfferMarker(r.message)].join("\n");
     case "none":
       return null;
   }
@@ -342,27 +344,14 @@ export function interpretReply(r: Interpretation, proposal: string | null = null
 
 /** Every text of `r` the model wrote that a reply would carry (proposed arguments, a chat answer), for the egress scan. */
 export function interpretTexts(r: Interpretation): string[] {
-  if (r.kind === "chat" || r.kind === "unsure") return [r.text];
+  if (r.kind === "chat" || r.kind === "unsure" || r.kind === "request") return [r.text];
   const ps = r.kind === "commands" ? r.proposals : r.kind === "question" ? r.readings : [];
   return ps.map((p) => p.args).filter((a) => a !== "");
 }
 
-// The offer to make a top-level message a task (design §4, decision 1 of the chat answer): the message text rides in
-// the reply's hidden marker, base64url so no text can close the comment, and Slack puts it in the button's value. No
-// store table holds it; the press takes the message in through intake, keyed on the message's source id.
-
-const TASK_OFFER = /^<!-- factory:make-task:([A-Za-z0-9_-]*) -->$/m;
-
-/** The hidden line that ends an unsure answer: the message to make a task of. */
-export function taskOfferMarker(message: string): string {
-  return `<!-- factory:make-task:${Buffer.from(message, "utf8").toString("base64url")} -->`;
-}
-
-/** The message an unsure answer offers to make a task of (its marker), or null. */
-export function parseTaskOfferMarker(body: string): string | null {
-  const m = TASK_OFFER.exec(body);
-  return m ? Buffer.from(m[1]!, "base64url").toString("utf8") : null;
-}
+// The offer marker lives in interfaces/source-adapter.ts, beside the `offered` press it leads to; re-exported here for
+// the Slack renderer that reads it.
+export { parseTaskOfferMarker } from "../interfaces/source-adapter.js";
 
 // Stored proposals (design §4, issue #584): one row per proposed command of a `commands` reply, keyed by the reply's
 // proposal ID and the command's index, so storing the same reply again writes nothing. A press confirms or cancels

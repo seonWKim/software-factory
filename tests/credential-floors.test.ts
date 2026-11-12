@@ -27,7 +27,6 @@ const EXEMPT: Record<string, string> = {
   "src/impl/llm/claude-cli-llm-provider.ts": "follow-up: reads the Claude model credential",
   "src/impl/llm/openai-compatible-llm-provider.ts": "follow-up: reads OPENAI_COMPATIBLE_API_KEY",
   "src/impl/source/slack-api.ts": "follow-up: reads the Slack bot and app tokens",
-  "src/impl/store/mysql/mysql.plugin.ts": "follow-up: reads MYSQL_PASSWORD",
   "src/cli/handlers/setup/setup.command.ts": "follow-up: names the secrets to rotate (moved from src/main.ts)",
   "src/setup.ts": "follow-up: writes and checks secrets during setup",
 };
