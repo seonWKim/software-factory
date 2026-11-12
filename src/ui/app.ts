@@ -15,7 +15,7 @@ import type { UiResponse } from "./server.js";
 export const DEFAULT_APP_DIR = fileURLToPath(new URL("../../web/dist/", import.meta.url));
 
 export const APP_CSP =
-  "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; " +
+  "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; " +
   "form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
 const APP_HEADERS: Record<string, string> = {

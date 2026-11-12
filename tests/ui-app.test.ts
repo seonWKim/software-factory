@@ -2,7 +2,7 @@
 // outside web/dist (encoded .. included), the request guards, and a 503 while the app is not built. A temp
 // directory stands in for web/dist; respond() is the server's whole request handling without a socket.
 
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -140,8 +140,11 @@ describe("ui app: serving web/dist", () => {
 describe("ui app: CSP and guards", () => {
   it("every /app response carries the app's CSP: 'self' only, no unsafe-inline, no hash", async () => {
     expect(APP_CSP).toBe(
-      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     );
+    // The favicon (/app/favicon.png) needs img-src; everything else stays at default-src 'none'.
+    expect(APP_CSP.startsWith("default-src 'none';")).toBe(true);
+    expect(APP_CSP.split("; ")).toContain("img-src 'self'");
     expect(APP_CSP).not.toMatch(/unsafe-inline|sha256-|unsafe-eval|https?:/);
     const d = await deps(builtApp().dist);
     for (const path of ["/app/", "/app/x", "/app/assets/index-abc.js", "/app/assets/nope.js", "/app/..%2fx"]) {
@@ -151,6 +154,27 @@ describe("ui app: CSP and guards", () => {
       expect(r.headers["x-frame-options"], path).toBe("DENY");
       expect(r.headers["referrer-policy"], path).toBe("no-referrer");
     }
+  });
+
+  it("react-aria's inline <style> stays out: main.tsx marks it present before render and index.css carries its rule", () => {
+    // usePress prepends a <style id=STYLE_ID> unless an element with that id exists; style-src 'self' refuses it.
+    const usePress = readFileSync(join(process.cwd(), "node_modules/react-aria/dist/private/interactions/usePress.mjs"), "utf8");
+    const styleId = /STYLE_ID = '([^']+)'/.exec(usePress)?.[1];
+    const touchAction = /\[\$\{[^}]*PRESSABLE_ATTRIBUTE\}\] \{\s*touch-action: ([^;]+);/.exec(usePress)?.[1];
+    expect(styleId).toBe("react-aria-pressable-style");
+    expect(touchAction).toBeDefined();
+    expect(usePress).toContain("PRESSABLE_ATTRIBUTE = 'data-react-aria-pressable'");
+
+    const main = readFileSync(join(process.cwd(), "web/src/main.tsx"), "utf8");
+    const marker = main.indexOf(`.id = "${styleId}"`);
+    expect(marker).toBeGreaterThan(-1);
+    expect(marker).toBeLessThan(main.indexOf("createRoot("));
+    // The marker is an empty <meta>: it carries no style text of its own.
+    expect(main).toContain(`document.createElement("meta")`);
+    expect(main).not.toMatch(/createElement\("style"\)|textContent|innerHTML|\.style\b/);
+
+    const css = readFileSync(join(process.cwd(), "web/src/index.css"), "utf8");
+    expect(css).toMatch(new RegExp(`\\[data-react-aria-pressable\\] \\{\\s*touch-action: ${touchAction};`));
   });
 
   it("the HTML page keeps its hash-based CSP", async () => {
