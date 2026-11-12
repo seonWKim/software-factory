@@ -135,7 +135,7 @@ describe("app shell", () => {
     const factory = screen.getByRole("navigation", { name: "Factory" });
     expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you", "Work", "Activity"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Rules", "Runners", "Queue", "Data"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Rules", "Runners", "Queue", "Design system", "Data"]);
     fireEvent.click(within(nav).getByText("Queue"));
     expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
     expect(location.pathname).toBe("/app/queue");
