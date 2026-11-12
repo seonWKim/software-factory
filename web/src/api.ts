@@ -246,7 +246,7 @@ export interface ItemDetail {
   }[];
   /** Host sleeps recorded during one of the item's runs, newest first. */
   sleeps?: HostSleepRow[];
-  /** The item's thread (src/ui/thread.ts), oldest first; every body already through the Withholder. */
+  /** The item's thread (src/ui/thread.ts), owner commands included, oldest first; every body already through the Withholder. */
   thread?: ThreadEntry[];
   /** The commands that apply in the item's current state, each allowed or not for the viewer, in the order to show them. */
   commands?: ItemCommand[];
@@ -260,12 +260,17 @@ export interface ItemDetail {
   transcripts?: Record<string, string[]>;
 }
 
-/** One entry of an item's thread: `author` is `factory` or `unknown` (no author is stored), `channel` the item's source type. */
+/**
+ * One entry of an item's thread. `role` `owner` is anything the owner sent (a command, a verdict, a message from a
+ * source): `author` is then the stored user ID (`unknown` when the entry stores none), `kind` a command's name,
+ * `channel` the item's source type or `cli` / `app` (the dashboard) for a command.
+ */
 export interface ThreadEntry {
   seq: number;
   at: string;
   kind: string;
   author: string;
+  role: "factory" | "owner";
   channel: string;
   /** The entry's id on the item page: `msg-<seq>`. */
   anchor: string;

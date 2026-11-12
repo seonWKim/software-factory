@@ -987,11 +987,11 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   markAppCommandRequest(seq: number, refusal: string | null): Promise<boolean>;
   /** The request with `seq` (a number) or idempotency key (a string), or null. Read-only. */
   getAppCommandRequest(ref: number | string): Promise<AppCommandRequest | null>;
-  /**
-   * The requests whose `args.work_item_id` is `id`, oldest (lowest seq) first: the newest `limit` of them.
-   * Pending and handled alike. Read-only (the item API's `replies`, issue #227).
-   */
+  /** The requests whose `args.work_item_id` is `id`, oldest first, the newest `limit`; handled or not. Read-only (the item API's `replies`). */
   listAppCommandRequestsForItem(id: WorkItemId, limit: number): Promise<AppCommandRequest[]>;
+  /** The CLI's (args `item`) and the dashboard's (args `work_item_id`) commands for item `id`, oldest first, the newest `limit`.
+   *  A comment's command is left out: its comment is a thread entry. Read-only. */
+  listItemCommands(id: WorkItemId, limit: number): Promise<CliCommand[]>;
 
   // Raw table reads for the dashboard's Data page (design §9, issue #239). Read-only. Table and column names
   // come from the database's own catalog, never from the caller: an unknown name is refused, not built into
