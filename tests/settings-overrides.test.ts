@@ -146,7 +146,7 @@ describe("key refusals", () => {
     for (const k of ["plugins", "repo", "store", "floors", "dials", "auth", "secrets", "egress", "broker"]) {
       expect(keyRefusal(k)).toContain("changes by PR only");
     }
-    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "intake_label", "branch_prefix", "nope"]) {
+    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "branch_prefix", "nope"]) {
       expect(keyRefusal(k)).toContain("is not settable");
     }
     for (const k of SETTABLE_KEYS) expect(keyRefusal(k)).toBeNull();

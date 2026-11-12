@@ -4,8 +4,11 @@ import { join, relative } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { alarmConfig, loadConfig } from "../src/compose.js";
 import { ConfigKeyError, unknownConfigKeys } from "../src/config-keys.js";
+import { DEFAULT_COORDINATION } from "../src/core/coordination.js";
 import {
   BUILT_IN_SETTINGS,
+  LiveSettings,
+  baseFromConfig,
   type LearnedSettingsSource,
   PROJECT_SETTING_KEYS,
   SETTABLE_DEFAULTS,
@@ -21,7 +24,12 @@ import {
   settingsFor,
   settingsLayers,
 } from "../src/core/settings.js";
+import type { UserId } from "../src/core/types.js";
+import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { settingsChecks } from "../src/setup.js";
+import { config } from "./helpers/fakes.js";
+import { RecordingGitHubClient } from "./helpers/github.js";
+import { newStore } from "./helpers/store.js";
 
 // Design 2026-11-01, "Settings resolve in layers": learned → project → defaults → built-in, and a project
 // may only tighten a gate.
@@ -419,5 +427,107 @@ describe("settings: standing_approvals.threshold", () => {
 
   it("is not a config file key: the file cannot hold a second value for it", () => {
     expect(unknownConfigKeys({ standing_approvals: { threshold: 10 } })).toHaveLength(1);
+  });
+});
+
+describe("settings: the live timing, coordination and intake keys (design 08-settings, phase 1)", () => {
+  const KEYS = ["stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label"] as const;
+  const empty = { file: {}, layers: { defaults: {}, projects: {} } };
+  const row = (key: string, value: unknown) => ({ key, project: "", value: JSON.stringify(value) });
+
+  it("are settable; branch_prefix stays file-only", () => {
+    for (const k of KEYS) {
+      expect(SETTABLE_KEYS).toContain(k);
+      expect(keyRefusal(k)).toBeNull();
+      expect(isProjectSettableKey(k)).toBe(false);
+    }
+    expect(SETTABLE_KEYS).not.toContain("branch_prefix");
+    expect(keyRefusal("branch_prefix")).toContain('"branch_prefix" is not settable');
+  });
+
+  it("with no override and no file value: the stall defaults, the coordination defaults, auth_pause_ms following retry_max_ms", () => {
+    const r = resolveSettings(empty, []);
+    expect(r.values).toMatchObject({
+      stall_ms: 300_000,
+      probe_interval_ms: 600_000,
+      max_coordination_cost: DEFAULT_COORDINATION.max_cost,
+      hotspot_weight: DEFAULT_COORDINATION.hotspot_weight,
+      mechanical_weight: DEFAULT_COORDINATION.mechanical_weight,
+      auth_pause_ms: r.values.retry_max_ms,
+      intake_label: null,
+    });
+    for (const k of KEYS) expect(r.global[k].source, k).toBe("default");
+    // auth_pause_ms follows a retry_max_ms from the file, and one from an override.
+    expect(resolveSettings({ ...empty, file: { retry_max_ms: 900_000 } }, []).values.auth_pause_ms).toBe(900_000);
+    expect(resolveSettings(empty, [row("retry_max_ms", 700_000)]).global.auth_pause_ms).toMatchObject({ value: 700_000, source: "default" });
+    // A value of its own wins over retry_max_ms.
+    expect(resolveSettings({ ...empty, file: { auth_pause_ms: 5_000 } }, [row("retry_max_ms", 700_000)]).values.auth_pause_ms).toBe(5_000);
+  });
+
+  it("a file value of each key applies with source file; an override sits above it", () => {
+    const file = { stall_ms: 1_000, probe_interval_ms: 2_000, auth_pause_ms: 3_000, max_coordination_cost: 2, hotspot_weight: 4, mechanical_weight: 0.5, intake_label: "triage" };
+    const r = resolveSettings({ ...empty, file }, []);
+    for (const k of KEYS) expect(r.global[k], k).toMatchObject({ value: file[k], source: "file" });
+    const o = resolveSettings({ ...empty, file }, [row("stall_ms", 9_000), row("intake_label", "next")]);
+    expect(o.global.stall_ms).toMatchObject({ value: 9_000, source: "override" });
+    expect(o.global.intake_label).toMatchObject({ value: "next", source: "override" });
+  });
+
+  it("a bad stored override is ignored with the config loader's message, and the key keeps its value", () => {
+    const r = resolveSettings(empty, [row("mechanical_weight", 1), row("max_coordination_cost", 0), row("stall_ms", 0), row("intake_label", "")]);
+    expect(r.values).toMatchObject({ mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, max_coordination_cost: DEFAULT_COORDINATION.max_cost, stall_ms: 300_000 });
+    expect(r.ignored.map((i) => i.reason)).toEqual([
+      "mechanical_weight must be a number above 0 and below 1.0 (got 1)",
+      "max_coordination_cost must be a number above 0 (got 0)",
+      "stall_ms must be a positive integer",
+      'intake_label must be a non-empty string (got "")',
+    ]);
+  });
+
+  it("a running process's view takes a new value on its next refresh, with no restart", async () => {
+    const { store } = await newStore();
+    const cfg = { ...config, coordination: DEFAULT_COORDINATION };
+    const live = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
+    await live.refresh();
+    expect(live.config()).toMatchObject({ intake_label: "factory", coordination: { max_cost: 2.5, hotspot_weight: 3, mechanical_weight: 0.25 } });
+    for (const [k, v] of [
+      ["stall_ms", 1_000], ["probe_interval_ms", 2_000], ["auth_pause_ms", 3_000],
+      ["max_coordination_cost", 2], ["hotspot_weight", 4], ["mechanical_weight", 0.5], ["intake_label", "next"],
+    ] as const) {
+      await store.setSettingOverride({ key: k, project: "", value: JSON.stringify(v), actor: "local:t" });
+    }
+    await live.refresh();
+    expect(live.config()).toMatchObject({
+      stall_ms: 1_000, probe_interval_ms: 2_000, auth_pause_ms: 3_000, intake_label: "next",
+      coordination: { ...DEFAULT_COORDINATION, max_cost: 2, hotspot_weight: 4, mechanical_weight: 0.5 },
+    });
+    // A config with no coordination block gets one once an override sets a coordination key.
+    const bare = new LiveSettings({ config, base: baseFromConfig(config), source: store });
+    await bare.refresh();
+    expect(bare.config().coordination).toMatchObject({ max_cost: 2, hotspot_weight: 4, mechanical_weight: 0.5, hotspots: DEFAULT_COORDINATION.hotspots });
+  });
+
+  it("a new item is taken in and filed under the intake label in force; an open item keeps the label it has", async () => {
+    const { store } = await newStore();
+    const client = new RecordingGitHubClient();
+    const source = new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store);
+    // Issue 7 is an open item, taken in under "factory".
+    client.responses["/repos/o/r/issues"] = [{ number: 7, title: "t", body: "", user: { id: 1, login: "a", type: "User" }, labels: [{ name: "factory" }], updated_at: "2026-11-01T00:00:01Z" }];
+    await source.poll(null);
+    expect(client.calls[0]!.path).toContain("state=open&labels=factory&");
+
+    await store.setSettingOverride({ key: "intake_label", project: "", value: '"triage-me"', actor: "local:t" });
+    client.calls = [];
+    await source.poll(null);
+    const reads = client.calls.map((c) => c.path);
+    expect(reads.find((p) => p.includes("state=open"))).toContain("labels=triage-me&");
+    expect(reads.some((p) => p.includes("labels=factory"))).toBe(false);
+    // The open item's comments are read repo-wide, not by label, and nothing relabels its issue.
+    expect(reads.find((p) => p.startsWith("/repos/o/r/issues/comments?"))).not.toContain("labels=");
+    expect(client.calls.filter((c) => c.method !== "GET")).toEqual([]);
+
+    client.calls = [];
+    await source.fileIssue({ project: "p", requester_id: "system:improver" as UserId, title: "t", body: "b", marker: "<!-- m -->" });
+    expect(client.calls.find((c) => c.method === "POST")!.body).toMatchObject({ labels: ["triage-me"] });
   });
 });

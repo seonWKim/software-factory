@@ -28,7 +28,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
@@ -451,7 +451,7 @@ export async function loadConfig(
       ...checkCommandsConfig(rawChecks),
     },
     ...(local ? { local_only: true as const } : {}),
-    intake_label: file.intake_label,
+    intake_label: intakeLabel(file.intake_label),
     status_label_prefix: file.status_label_prefix ?? DEFAULT_STATUS_LABEL_PREFIX,
     branch_prefix: file.branch_prefix,
     dials: { spec_gate_min_tier: file.dials.spec_gate_min_tier as Tier, auto_merge_max_tier: 0 },

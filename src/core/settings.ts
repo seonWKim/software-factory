@@ -1,5 +1,5 @@
 import type { Budgets } from "./budget.js";
-import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, coordinationProblems } from "./config.js";
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
@@ -261,6 +261,9 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "notify_channels",
+  "stall_ms", "probe_interval_ms", "auth_pause_ms",
+  "max_coordination_cost", "hotspot_weight", "mechanical_weight",
+  "intake_label",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -317,6 +320,14 @@ export interface SettableValues {
   auto_merge_max_tier: number;
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
+  stall_ms: number;
+  probe_interval_ms: number;
+  auth_pause_ms: number;
+  max_coordination_cost: number;
+  hotspot_weight: number;
+  mechanical_weight: number;
+  /** Null: no built-in default, and neither the file nor an override says; the config's own label stays. */
+  intake_label: string | null;
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -345,6 +356,15 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auto_merge_max_tier: 0,
   message_style: "",
   notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [],
+  stall_ms: STALL_DEFAULTS.stall_ms,
+  probe_interval_ms: STALL_DEFAULTS.probe_interval_ms,
+  // Shown as the default; with no override and no file value auth_pause_ms follows the effective retry_max_ms.
+  auth_pause_ms: 1_800_000,
+  max_coordination_cost: DEFAULT_COORDINATION.max_cost,
+  hotspot_weight: DEFAULT_COORDINATION.hotspot_weight,
+  mechanical_weight: DEFAULT_COORDINATION.mechanical_weight,
+  // No built-in default: the config file must say, and its value applies.
+  intake_label: null,
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -407,6 +427,12 @@ export function positiveInteger(key: string, value: unknown): number {
   return value;
 }
 
+/** `intake_label`: a non-empty string, or the config loader's message. */
+export function intakeLabel(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`intake_label must be a non-empty string (got ${JSON.stringify(value) ?? String(value)})`);
+  return value;
+}
+
 /** Checks one settable value; throws the message the config loader gives for that key. */
 export function parseSettable<K extends SettableKey>(key: K, value: unknown): SettableValues[K] {
   switch (key) {
@@ -438,6 +464,15 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
+    case "max_coordination_cost":
+    case "hotspot_weight":
+    case "mechanical_weight": {
+      const problem = coordinationProblems({ [key]: value ?? null })[0];
+      if (problem) throw new Error(problem);
+      return value as SettableValues[K];
+    }
+    // null is the key's built-in default: none, so the file's label applies.
+    case "intake_label": return (value === null ? null : intakeLabel(value)) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -552,6 +587,8 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
       const ov = globalOv.get(k);
       g[k] = ov ? { value: ov.value as SettableValues[typeof k], raw: ov.raw, source: "override" } : fromFile(k);
     }
+    // auth_pause_ms with no override and no file value follows the effective retry_max_ms (design §5 Restarts).
+    if (g.auth_pause_ms.source === "default") g.auth_pause_ms = { ...g.retry_max_ms, source: "default" };
     return g as ResolvedSettings["global"];
   };
   const valuesOf = (g: ResolvedSettings["global"]) =>
@@ -656,10 +693,33 @@ export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTab
     alarm_window_minutes: config.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
     alarm_restart_count: config.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
   };
-  if (config.coordination) file.hold_policy = config.coordination.hold_policy;
+  if (config.stall_ms !== undefined) file.stall_ms = config.stall_ms;
+  if (config.probe_interval_ms !== undefined) file.probe_interval_ms = config.probe_interval_ms;
+  if (config.auth_pause_ms !== undefined) file.auth_pause_ms = config.auth_pause_ms;
+  file.intake_label = config.intake_label;
+  if (config.coordination) {
+    file.hold_policy = config.coordination.hold_policy;
+    file.max_coordination_cost = config.coordination.max_cost;
+    file.hotspot_weight = config.coordination.hotspot_weight;
+    file.mechanical_weight = config.coordination.mechanical_weight;
+  }
   if (models) file.model_by = modelByRaw(models.table);
   if (models?.names) file.models = models.names;
   return { file, layers: config.settings, ...(config.max_workers !== undefined ? { max_workers: config.max_workers } : {}) };
+}
+
+/**
+ * One global key's stored override when it passes its check, else undefined. For a reader that has no LiveSettings
+ * (a source plugin reading `intake_label` when it takes in new items); resolveSettings gives the same value.
+ */
+export function storedOverride<K extends GlobalSettableKey>(rows: readonly OverrideRow[], key: K): SettableValues[K] | undefined {
+  const row = rows.find((o) => o.key === key && o.project === "");
+  if (!row) return undefined;
+  try {
+    return parseSettable(key, JSON.parse(row.value)) ?? undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Reads the stored overrides; the store's FactoryStore.listSettingOverrides. */
@@ -747,12 +807,23 @@ export class LiveSettings {
   private viewOf(r: ResolvedSettings): FactoryConfig {
     const v = r.values;
     const coordination = this.opts.config.coordination;
+    const live = COORDINATION_SETTABLE.some((k) => r.global[k].source !== "default");
     return {
       ...this.opts.config,
-      // `hold_policy` lives in the claim's coordination settings; a config with none and no override keeps none.
-      ...(coordination || r.global.hold_policy.source !== "default"
-        ? { coordination: { ...(coordination ?? DEFAULT_COORDINATION), hold_policy: v.hold_policy } }
+      // The settable coordination keys live in the claim's coordination settings; a config with none and no override keeps none.
+      ...(coordination || live
+        ? {
+            coordination: {
+              ...(coordination ?? DEFAULT_COORDINATION),
+              hold_policy: v.hold_policy,
+              max_cost: v.max_coordination_cost,
+              hotspot_weight: v.hotspot_weight,
+              mechanical_weight: v.mechanical_weight,
+            },
+          }
         : {}),
+      // No built-in default: with neither a file value nor an override the config's own label stays.
+      intake_label: v.intake_label ?? this.opts.config.intake_label,
       settings: r.layers,
       max_loops: v.max_loops,
       max_restart: v.max_restart,
@@ -769,6 +840,12 @@ export class LiveSettings {
       alarm_repeat_count: v.alarm_repeat_count,
       alarm_window_minutes: v.alarm_window_minutes,
       alarm_restart_count: v.alarm_restart_count,
+      stall_ms: v.stall_ms,
+      probe_interval_ms: v.probe_interval_ms,
+      auth_pause_ms: v.auth_pause_ms,
     };
   }
 }
+
+/** The settable keys the claim reads from its coordination settings (design §5). */
+const COORDINATION_SETTABLE = ["hold_policy", "max_coordination_cost", "hotspot_weight", "mechanical_weight"] as const satisfies readonly SettableKey[];

@@ -3,6 +3,7 @@ import { type CommandPr, githubCommand, githubCommentKey, syncedCommand } from "
 import { parseComment } from "../../core/commands.js";
 import { type DependencyLink, type DependencySource, parseDependsOn } from "../../core/coordination.js";
 import { incompleteLabel } from "../../core/pr-body.js";
+import { storedOverride } from "../../core/settings.js";
 import { workItemIdFromBranch } from "../../core/policy.js";
 import { type ListedReaction, REACTION_WINDOW_MS, changeComments, newReactionEvents } from "../../core/reaction-verdict.js";
 import { WORK_STATUSES, type WorkStatus } from "../../core/status-label.js";
@@ -225,14 +226,33 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     private readonly store: FactoryStore | null = null,
   ) {}
 
+  /** The intake label read when an override failed to load, so a failed read keeps the label in use. */
+  private labelInUse: string | null = null;
+
+  /**
+   * The intake label in force (design 08-settings): a stored `intake_label` override, else the file's label. Read
+   * when new issues are taken in or filed; an open item keeps the label its issue already carries. A failed store
+   * read keeps the label in use.
+   */
+  private async intakeLabel(): Promise<string> {
+    if (!this.store) return this.label;
+    try {
+      this.labelInUse = storedOverride(await this.store.listSettingOverrides(), "intake_label") ?? this.label;
+    } catch {
+      // The store is down: keep the label in use; the next poll reads it again.
+    }
+    return this.labelInUse ?? this.label;
+  }
+
   async poll(cursor: string | null): Promise<PollResult> {
     const c: Cursor = cursor ? (JSON.parse(cursor) as Cursor) : { issues: null, comments: null };
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const events: SourceEvent[] = [];
     const next: Cursor = { ...c, last_comment_id: c.last_comment_id ?? null };
+    const label = await this.intakeLabel();
 
     const issues = await this.client.list<GhIssue>(
-      `${base}/issues?state=open&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
+      `${base}/issues?state=open&labels=${encodeURIComponent(label)}&sort=updated&direction=asc` +
         (c.issues ? `&since=${c.issues}` : ""),
     );
     for (const i of issues) {
@@ -250,7 +270,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
 
     // Closed factory issues, delivered last. The controller polls the forge after this read (a merge that closes its
     // issue happens before the close, so the forge's read already sees it) and handles its events first.
-    const closes = await this.closedIssues(c, next);
+    const closes = await this.closedIssues(c, next, label);
 
     const comments = await this.client.list<GhComment>(
       `${base}/issues/comments?sort=updated&direction=asc` + (c.comments ? `&since=${c.comments}` : ""),
@@ -394,10 +414,10 @@ export class GitHubIssueSource implements PollSource, DependencySource {
    * (no cursor) is a catch-up: each issue's full read takes the client's catch-up allowance, and when it runs out the
    * cursor stops at the last issue read, so the backlog is spread over several polls (design §5, GitHub call budget).
    */
-  private async closedIssues(c: Cursor, next: Cursor): Promise<SourceEvent[]> {
+  private async closedIssues(c: Cursor, next: Cursor, label: string): Promise<SourceEvent[]> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const issues = await this.client.list<GhIssue>(
-      `${base}/issues?state=closed&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
+      `${base}/issues?state=closed&labels=${encodeURIComponent(label)}&sort=updated&direction=asc` +
         (c.closed ? `&since=${c.closed}` : ""),
     );
     const catchUp = c.closed == null || c.closed_catch_up === true;
@@ -506,12 +526,13 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   /** The newest 300 factory-labelled issues (open or closed) carrying the marker, else a new issue with the label. */
   private async findOrFile(input: Pick<IssueInput, "title" | "body" | "marker">): Promise<GhIssueRef> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
-    const filter = `&labels=${encodeURIComponent(this.label)}`;
+    const label = await this.intakeLabel();
+    const filter = `&labels=${encodeURIComponent(label)}`;
     const filed = (await this.client.list<GhIssueRef>(`${base}/issues?state=all${filter}&sort=created&direction=desc`, 3)).find(carries(input.marker));
     return filed ?? await this.client.request<GhIssueRef>("POST", `${base}/issues`, {
       title: input.title,
       body: `${input.body}\n\n${input.marker}`,
-      labels: [this.label],
+      labels: [label],
     });
   }
 
