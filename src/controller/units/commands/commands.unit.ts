@@ -319,6 +319,7 @@ export class CommandsUnit {
         return r;
       }
       if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.c.unit("coordination").retryDependencies(it, actor, note, paths);
+      if (e.kind === "retry_requested" && commandPhase(it) === "phase_hold") return this.c.unit("phases").retryPhase(it, actor, note, paths);
       return this.c.unit("transitions").decide(id, async (x) =>
         withTag(await this.withSpecDecision(x, await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths)), tag));
     }

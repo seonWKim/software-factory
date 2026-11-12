@@ -2,6 +2,7 @@ import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js"
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
+import { PHASE_HOLD } from "./split.js";
 import { RECURRING_FAILURE, type Run, type RunKind, type WorkItem } from "./types.js";
 
 /**
@@ -20,6 +21,8 @@ export type CommandPhase =
   | "implementing"
   | "dependency_hold"
   | "dependency_closed"
+  /** A later phase of a split, held until the phase before it closes (design 04-split-specs). */
+  | "phase_hold"
   | "floor_tier"
   /** A run whose role holds all three Rule of Two facts, waiting for a person's `/approve` (auto mode approved its spec). */
   | "rule_of_two"
@@ -41,7 +44,7 @@ export type CommandPhase =
   | "closed";
 
 export const COMMAND_PHASES: readonly CommandPhase[] = [
-  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "floor_tier",
+  "triaging", "spec_pending", "budget_checkpoint", "max_revisions", "implementing", "dependency_hold", "dependency_closed", "phase_hold", "floor_tier",
   "rule_of_two", "too_large",
   "failed_implement", "failed_review", "failed_run", "agent_needs_human", "repeated_failure", "recurring_failure", "reviewing", "merge_pending", "max_loops", "merge_conflict", "other_blocked", "merged", "closed",
 ];
@@ -135,9 +138,11 @@ export const COMMANDS: readonly CommandSpec[] = [
       "`/retry +paths <path>...` (at most 10, notes on the lines below) after a failed implement run also adds those paths to the allowed paths. " +
       "At a dependency closed without a merge, it reads the dependencies again and starts the implement run if none is still closed. " +
       "At the review loop limit, it starts an implement run with the loop count reset; `+paths` applies there too. " +
-      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start",
+      "On an item held for a recurring failure, it lifts the hold so the item's queued runs start. " +
+      "On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge",
     // At a dependency closed unmerged it reads the dependencies again and releases the item if they merged (design §5).
-    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure"],
+    // At a phase hold it releases the phase unless the phase before it is still open (design 04-split-specs).
+    phases: ["failed_run", "failed_review", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "dependency_closed", "max_loops", "recurring_failure", "phase_hold"],
     needs_pr: false,
     changes_state: true,
   },
@@ -250,6 +255,7 @@ export function commandPhase(it: ItemState): CommandPhase {
   if (it.blocked_reason === "max_loops") return "max_loops";
   if (it.blocked_reason === "merge_conflict_pending") return "merge_conflict";
   if (it.blocked_on === "dependency") return "dependency_hold";
+  if (it.stage === "NEW" && it.blocked_on === "upstream" && it.blocked_reason === PHASE_HOLD) return "phase_hold";
   if (it.blocked_on !== "none") return "other_blocked";
   if (it.stage === "NEW") return "triaging";
   if (it.stage === "REVIEW") return "reviewing";
@@ -361,7 +367,8 @@ export function helpReply(s: CommandState | null): string {
 const PHASE_LABELS: Record<CommandPhase, string> = {
   triaging: "triaging", spec_pending: "spec waiting for approval", budget_checkpoint: "paused at a budget checkpoint",
   max_revisions: "spec at the revision limit", implementing: "implementing", dependency_hold: "waiting for a dependency to merge",
-  dependency_closed: "blocked: a dependency was closed without a merge", floor_tier: "blocked by the floor check",
+  dependency_closed: "blocked: a dependency was closed without a merge", phase_hold: "held: waiting for the previous phase of its split",
+  floor_tier: "blocked by the floor check",
   rule_of_two: "waiting for a person to approve its run (Rule of Two)", too_large: "blocked: the change was too large",
   failed_implement: "blocked by a failed implement run", failed_review: "blocked by a failed review run", failed_run: "blocked by a failed run",
   agent_needs_human: "blocked: the agent asked for a human", repeated_failure: "blocked: a run failed the same way twice",
