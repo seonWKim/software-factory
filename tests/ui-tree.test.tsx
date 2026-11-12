@@ -49,6 +49,8 @@ const ROWS = [
   }),
 ];
 const overview = { as_of: AT, stages: {}, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, unreviewed_merges_7d: 0, plugins: { issues: null } };
+// One queued run: the Work summary's "queued" counts runs like the Queue page and overview.queued, not items at level queued.
+const queueBody = { as_of: AT, queue: [{ position: 1, id: "run_q", kind: "implement", work_item_id: "wi_20", attempt: 0, created_at: AT, not_before: null }] };
 const itemsBody = { as_of: AT, total: ROWS.length, items: ROWS, facets: { allStates: ROWS.length, state: {} } };
 let fetched: string[] = [];
 
@@ -70,7 +72,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     fetched.push(url);
     const path = url.split("?")[0];
-    const body = path === "/api/v1/items" ? itemsBody : path === "/api/v1/overview" ? overview : path === "/api/v1/pauses" ? { as_of: AT, csrf_token: null, pauses: [] } : undefined;
+    const body = path === "/api/v1/items" ? itemsBody : path === "/api/v1/overview" ? overview : path === "/api/v1/pauses" ? { as_of: AT, csrf_token: null, pauses: [] } : path === "/api/v1/queue" ? queueBody : undefined;
     return new Response(JSON.stringify(body ?? { error: "Not found." }), { status: body ? 200 : 404 });
   }));
 });
@@ -136,7 +138,8 @@ describe("items tree", () => {
     await mount();
     const summary = screen.getByTestId("summary");
     expect(within(summary).getByRole("button", { name: "1 running" })).toBeTruthy();
-    expect(within(summary).getByRole("button", { name: "0 queued" })).toBeTruthy();
+    expect(await within(summary).findByRole("button", { name: `${overview.queued} queued` })).toBeTruthy();
+    expect(queueBody.queue.length).toBe(overview.queued);
     expect(within(summary).getByRole("button", { name: "3 held" })).toBeTruthy();
     expect(within(summary).getByRole("button", { name: "3 needs you" })).toBeTruthy();
     expect(summary.textContent).toContain("rate limit: ok");

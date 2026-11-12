@@ -136,7 +136,7 @@ describe("contrast", () => {
         return m![1]!;
       };
       const pairs: [string, string][] = [];
-      for (const fg of ["text", "text-2", "text-3"]) for (const bg of ["bg", "surface", "surface-2"]) pairs.push([fg, bg]);
+      for (const fg of ["text", "text-2", "text-3"]) for (const bg of ["bg", "surface", "surface-2", "sidebar"]) pairs.push([fg, bg]);
       for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "surface"]);
       for (const s of ["ok", "warn", "bad", "info"]) pairs.push([`pill-${s}-fg`, `pill-${s}-bg`]);
       // Text on a filled accent or failed background (a primary button, a destructive confirm).

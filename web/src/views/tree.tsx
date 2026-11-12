@@ -102,12 +102,11 @@ export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
   return nodes.flatMap((n) => (n.children.some((c) => c.item.level !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
 }
 
-/** The counts of the summary line, over the open items: each is also a state filter. */
+/** The item counts of the summary line, over the open items: each is also a state filter. Queued is a run count (pages.tsx, useQueuedRuns). */
 export function summaryCounts(rows: readonly ItemRow[]) {
   const open = rows.filter((r) => r.level !== "closed");
   return {
     running: open.filter((r) => r.level === "running").length,
-    queued: open.filter((r) => r.level === "queued").length,
     held: open.filter(isHeld).length,
     needs: open.filter((r) => needsYou(r)).length,
   };
@@ -161,13 +160,17 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
   );
 }
 
+/** The left padding of a row by its depth: none at the top level, 1rem more per level, the last step for anything deeper. */
+const INDENT = ["pl-0", "pl-4", "pl-8", "pl-12", "pl-16"] as const;
+const indentFor = (level: number) => INDENT[Math.min(Math.max(level, 1), INDENT.length) - 1];
+
 function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
   const { node } = props;
   return (
     <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus">
       <TreeItemContent>
-        {({ hasChildItems, isExpanded }) => (
-          <div className="flex items-start gap-1 border-b border-border px-1" style={{ paddingLeft: "calc(var(--tree-item-level, 1) * 1rem - 1rem)" }}>
+        {({ hasChildItems, isExpanded, level }) => (
+          <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
               <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? "Collapse" : "Expand"}>
                 {isExpanded ? "▾" : "▸"}

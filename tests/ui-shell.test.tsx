@@ -19,7 +19,7 @@ import { VIEW_KEY } from "../web/src/views/tree.js";
 
 const AT = "2026-11-07T00:00:00.000Z";
 const overview = {
-  as_of: AT, stages: { NEW: 1, RUNNING: 2 }, needs_you: 4, running: 1, queued: 2, last_24h: { succeeded: 3, failed: 1, tokens: 1500 },
+  as_of: AT, stages: { NEW: 1, RUNNING: 2 }, needs_you: 4, running: 1, queued: 1, last_24h: { succeeded: 3, failed: 1, tokens: 1500 },
   unreviewed_merges_7d: 2,
   factory: { state: "migration_pending", rev: "aaaaaaa1111", target_rev: "bbbbbbb2222", child_pid: 7, since: AT, workers: 3, error: null, pending: ["schema 12"] },
 };
@@ -286,6 +286,65 @@ describe("app shell", () => {
     mount();
     expect(screen.getByRole("radio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+  });
+});
+
+describe("sidebar", () => {
+  it("is sticky, full height and scrolls by itself on its own tint; the page behind it is the bg token", () => {
+    mount();
+    const side = screen.getByRole("complementary", { name: "Sidebar" });
+    for (const c of ["sticky", "top-0", "h-dvh", "overflow-y-auto", "bg-(--sidebar)"]) expect(side.className.split(" ")).toContain(c);
+    const wrapper = side.parentElement!.className.split(" ");
+    expect(wrapper).toContain("bg-bg");
+    expect(wrapper).not.toContain("bg-surface");
+  });
+
+  it("the Tasks and Factory groups show small grey titles that name them; the System chevron is hidden from screen readers", () => {
+    mount();
+    for (const name of ["Tasks", "Factory"]) {
+      const nav = screen.getByRole("navigation", { name });
+      const title = document.getElementById(nav.getAttribute("aria-labelledby")!)!;
+      expect(title.textContent).toBe(name);
+      expect(nav.firstElementChild).toBe(title);
+      for (const c of ["text-xs", "text-text-3"]) expect(title.className.split(" ")).toContain(c);
+    }
+    const chevron = document.querySelector("aside summary [data-chevron]")!;
+    expect(chevron.getAttribute("aria-hidden")).toBe("true");
+    // Points right while closed and turns down when the group opens.
+    expect(chevron.getAttribute("class")!.split(" ")).toContain("group-open:rotate-90");
+    expect(chevron.closest("details")!.className.split(" ")).toContain("group");
+  });
+
+  it("Settings is a row at the bottom of the sidebar, selected while open, and no longer a top-bar link", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(within(document.querySelector("header")!).queryByRole("link", { name: "Settings" })).toBeNull();
+    const side = screen.getByRole("complementary", { name: "Sidebar" });
+    const row = within(side).getByRole("link", { name: "Settings" });
+    expect(row.getAttribute("href")).toBe("/app/settings");
+    expect(row.hasAttribute("aria-current")).toBe(false);
+    expect(side.querySelector("details")!.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "System" }).contains(row)).toBe(false);
+    fireEvent.click(row);
+    expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
+    const open = within(side).getByRole("link", { name: "Settings" });
+    expect(open.getAttribute("aria-current")).toBe("page");
+    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface-2", "font-medium"]));
+  });
+});
+
+describe("one queued count", () => {
+  it("Work's queued count, the Queue page's count and overview.queued are the same number of queued runs", async () => {
+    history.replaceState(null, "", "/app/items");
+    mount();
+    const summary = await screen.findByTestId("summary");
+    expect(await within(summary).findByRole("button", { name: `${overview.queued} queued` })).toBeTruthy();
+    cleanup();
+    history.replaceState(null, "", "/app/queue");
+    mount();
+    const section = await screen.findByRole("region", { name: "Queued runs" });
+    await vi.waitFor(() => expect(section.querySelector("h2 + span")?.textContent).toBe(String(overview.queued)));
+    expect(queue.queue.length).toBe(overview.queued);
   });
 });
 
