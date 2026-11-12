@@ -5,7 +5,7 @@
 
 import { defineMigration } from "../../state/index.js";
 
-const SQLITE = [
+const TABLES = [
   `CREATE TABLE IF NOT EXISTS controller_signals (
     id            TEXT PRIMARY KEY,
     source        TEXT NOT NULL,
@@ -21,27 +21,10 @@ const SQLITE = [
   "CREATE INDEX IF NOT EXISTS controller_signals_item ON controller_signals (work_item_id, at)",
 ];
 
-// Indexes inline, so the statement is whole and a rerun after a failure (MySQL DDL is not transactional) is a no-op.
-const MYSQL = [
-  `CREATE TABLE IF NOT EXISTS controller_signals (
-    id            VARCHAR(191) NOT NULL PRIMARY KEY,
-    source        VARCHAR(64) NOT NULL,
-    source_ref    VARCHAR(191) NOT NULL,
-    kind          VARCHAR(64) NOT NULL,
-    work_item_id  VARCHAR(191) NOT NULL,
-    role          VARCHAR(64) NULL,
-    rule          VARCHAR(64) NULL,
-    at            CHAR(24) NOT NULL,
-    UNIQUE KEY controller_signals_ref (source, source_ref),
-    KEY controller_signals_source_at (source, at),
-    KEY controller_signals_item (work_item_id, at)
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
-];
-
 export default defineMigration({
   change: "additive",
   tables: [],
   async up(db) {
-    for (const sql of db.dialect === "sqlite" ? SQLITE : MYSQL) await db.run(sql);
+    for (const sql of TABLES) await db.run(sql);
   },
 });

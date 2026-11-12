@@ -57,11 +57,13 @@ export default definePlugin({
   kind: "forge",
   name: "github",
   create: async (ctx) => {
-    const [{ GitHubIssueSource, githubHistorySince }, { GitHubForge }] = await Promise.all([import("./github-issue-source.js"), import("./github-forge.js")]);
+    const [{ GitHubIssueSource, githubHistorySince }, { GitHubForge }, { LiveIntakeLabel }] = await Promise.all([
+      import("./github-issue-source.js"), import("./github-forge.js"), import("./intake-label.js"),
+    ]);
     const c = ctx as GitHubForgeContext;
     const cfg = c.loaded.config;
     const issues = new GitHubIssueSource(
-      c.github, c.repo, cfg.intake_label, cfg.branch_prefix, cfg.repo.base_branch, cfg.status_label_prefix, c.store ?? null,
+      c.github, c.repo, new LiveIntakeLabel(cfg.intake_label, c.store ?? null), cfg.branch_prefix, cfg.repo.base_branch, cfg.status_label_prefix, c.store ?? null,
     );
     const poll = c.clock && c.log ? { clock: c.clock, history_since: githubHistorySince(c.loaded.file.github), log: c.log } : null;
     return new GitHubForge(c.github, c.repo, cfg.branch_prefix, cfg.repo.base_branch, issues, poll, c.credentials ?? null);

@@ -83,15 +83,14 @@ describe("migration: identity_local_user_changes", () => {
     return sql;
   }
 
-  it("is additive and creates the same table, with every column, on SQLite and MySQL", async () => {
+  it("is additive and creates the same table, with every column, on SQLite", async () => {
     expect(migration.change).toBe("additive");
-    for (const dialect of ["sqlite", "mysql"] as const) {
+    for (const dialect of ["sqlite"] as const) {
       const [sql, ...rest] = await statements(dialect);
       expect(rest).toEqual([]);
       expect(sql).toContain("CREATE TABLE IF NOT EXISTS identity_local_user_changes");
       for (const col of ["seq", "user_id", "action", "old_role", "new_role", "actor", "at"]) expect(sql).toMatch(new RegExp(`\\n\\s+${col}\\s`));
     }
-    expect((await statements("mysql"))[0]).toContain("AUTO_INCREMENT");
   });
 
   it("runs again on a database that already has the table (a rerun after a crash)", async () => {

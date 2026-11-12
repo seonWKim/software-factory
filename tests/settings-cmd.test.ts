@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { stallConfig } from "../src/compose.js";
+import { retryConfig, stallConfig } from "../src/compose.js";
+import { coordinationConfig } from "../src/core/config.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
-import { SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
+import { SETTABLE_KEYS, type SettingsBase, intakeLabel } from "../src/core/settings.js";
 import type { Timestamp } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -112,7 +113,7 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
       expect(r.lines[0]).toContain(`"${k}" changes by PR only`);
       expect((await run(d, "reset", k)).lines[0]).toContain("changes by PR only");
     }
-    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "intake_label", "branch_prefix", "max_loop"]) {
+    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "branch_prefix", "max_loop"]) {
       const r = await run(d, "set", k, "1");
       expect(r.ok).toBe(false);
       expect(r.lines[0]).toContain(`"${k}" is not settable`);
@@ -431,5 +432,96 @@ describe("factory settings reset --learned and the Settings page: one check (des
     const cli = await cliReset(store, NO);
     expect(cli.ok).toBe(true);
     expect(await store.getLearnedSetting(PROJECT.key, "max_diff_lines")).toBeNull();
+  });
+});
+
+describe.each(BACKENDS)("factory settings: the live timing, coordination and intake keys (design 08-settings): $name", ({ make }) => {
+  /** The config loader's own message for `value` of `key`: the coordination, stall, retry and intake label checks. */
+  const loaderMessage = (key: string, value: unknown): string => {
+    try {
+      if (key === "stall_ms" || key === "probe_interval_ms") stallConfig({ [key]: value as number });
+      else if (key === "auth_pause_ms") retryConfig({ auth_pause_ms: value as number });
+      else if (key === "intake_label") intakeLabel(value);
+      else coordinationConfig({ [key]: value });
+    } catch (err) {
+      return (err as Error).message;
+    }
+    throw new Error(`the loader accepts ${key} ${JSON.stringify(value)}`);
+  };
+  const VALID: [string, string][] = [
+    ["stall_ms", "120000"], ["probe_interval_ms", "60000"], ["auth_pause_ms", "900000"],
+    ["max_coordination_cost", "2"], ["hotspot_weight", "4"], ["mechanical_weight", "0.5"], ["intake_label", '"triage-me"'],
+  ];
+
+  it("each key is stored as one override and listed with source override", async () => {
+    const { store } = await make();
+    const d = deps(store);
+    for (const [k, v] of VALID) {
+      const r = await run(d, "set", k, v);
+      expect(r.ok, k).toBe(true);
+      expect(r.lines[0]!.startsWith(`${k} = ${v} (override; was `), r.lines[0]).toBe(true);
+    }
+    const rows = await store.listSettingOverrides();
+    for (const [k, v] of VALID) expect(rows.filter((o) => o.key === k), k).toEqual([expect.objectContaining({ project: "", value: v })]);
+    expect((await store.listSettingChanges(50)).map((c) => c.key).filter((k) => VALID.some(([v]) => v === k)).sort()).toEqual(VALID.map(([k]) => k).sort());
+    const list = (await run(d, "list")).lines;
+    for (const [k, v] of VALID) {
+      expect(list.find((l) => l.trimStart().startsWith(`${k} `))!.trim().split(/\s+/), k).toEqual([k, "override", v]);
+    }
+  });
+
+  it("branch_prefix stays file-only: refused as not settable, no override and no audit row", async () => {
+    const { store } = await make();
+    const r = await run(deps(store), "set", "branch_prefix", '"x/"');
+    expect(r.ok).toBe(false);
+    expect(r.lines[0]).toContain('"branch_prefix" is not settable');
+    expect(await store.listSettingOverrides()).toEqual([]);
+    expect(await store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("a refused value gets the config loader's own message and writes nothing", async () => {
+    const { store } = await make();
+    const d = deps(store);
+    const bad: [string, unknown][] = [
+      ["stall_ms", 0], ["stall_ms", 1.5], ["probe_interval_ms", -1], ["auth_pause_ms", 0], ["auth_pause_ms", "x"],
+      ["max_coordination_cost", 0], ["max_coordination_cost", "x"], ["hotspot_weight", -1],
+      ["mechanical_weight", 0], ["mechanical_weight", 1], ["mechanical_weight", 1.5], ["intake_label", ""], ["intake_label", 7],
+    ];
+    for (const [k, v] of bad) {
+      expect(await run(d, "set", k, JSON.stringify(v)), `${k} ${JSON.stringify(v)}`).toEqual({ ok: false, lines: [`refused: ${loaderMessage(k, v)}`] });
+    }
+    expect(await store.listSettingOverrides()).toEqual([]);
+    expect(await store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("timing keys and intake_label are free; tightening a coordination key needs no grant, loosening one asks approve_merge", async () => {
+    const { store } = await make();
+    let refusal: string | null = "the requester role cannot approve_merge";
+    let asked = 0;
+    const d: SettingsDeps = { ...deps(store, "local:dev"), mayApproveMerge: async () => (asked++, refusal) };
+    // Free in both directions, and tighter coordination: never asked.
+    for (const [k, v] of [
+      ["stall_ms", "1"], ["stall_ms", "9000000"], ["probe_interval_ms", "1"], ["probe_interval_ms", "9000000"],
+      ["auth_pause_ms", "1"], ["auth_pause_ms", "9000000"], ["intake_label", '"a"'], ["intake_label", '"b"'],
+      ["max_coordination_cost", "2"], ["hotspot_weight", "4"], ["mechanical_weight", "0.5"],
+    ] as const) {
+      expect((await run(d, "set", k, v)).ok, `${k} ${v}`).toBe(true);
+    }
+    expect(asked).toBe(0);
+    const written = (await store.listSettingChanges(50)).length;
+    // Looser: a higher cost, lower weights, and a reset back to the looser default.
+    for (const args of [
+      ["set", "max_coordination_cost", "3"], ["set", "hotspot_weight", "3.5"], ["set", "mechanical_weight", "0.3"], ["reset", "hotspot_weight"],
+    ]) {
+      const r = await run(d, ...args);
+      expect(r.ok, args.join(" ")).toBe(false);
+      expect(r.lines[0]).toMatch(/^refused: loosening \S+ from .* needs approve_merge on the project: the requester role cannot approve_merge$/);
+    }
+    expect(asked).toBe(4);
+    expect(await store.listSettingChanges(50)).toHaveLength(written);
+    expect(await store.listSettingOverrides()).toContainEqual(expect.objectContaining({ key: "max_coordination_cost", value: "2" }));
+    // With the grant: allowed.
+    refusal = null;
+    expect((await run(d, "set", "max_coordination_cost", "3")).ok).toBe(true);
   });
 });

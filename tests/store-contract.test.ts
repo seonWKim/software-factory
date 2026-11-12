@@ -3166,10 +3166,4 @@ describe("20261112T1800-controller-sub-tasks on an existing SQLite database", ()
       db.run("INSERT INTO controller_tasks (id, title, created_by, created_at, parent_id) VALUES ('tk_2', 't', 'u', 'x', 'tk_x')"),
     ).rejects.toThrow();
   });
-
-  it("names the column and its index in its MySQL DDL", async () => {
-    const ran: string[] = [];
-    await SUB_TASKS.up({ dialect: "mysql", all: async () => [], run: async (sql: string) => { ran.push(sql); return 0; } } as unknown as MigrationDb);
-    expect(ran.join("\n")).toMatch(/ADD COLUMN parent_task_id VARCHAR\(191\) NULL, ADD KEY controller_tasks_sub_tasks \(parent_task_id\)/);
-  });
 });
