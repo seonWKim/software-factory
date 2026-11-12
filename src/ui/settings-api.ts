@@ -1,7 +1,8 @@
 // The Settings page's API (design §8 and §9, issue #236): GET /api/v1/settings reads every settable key with its
 // description, effective value, source, file value, project values, learned values (each resolved through settingsFor,
 // with its evidence run IDs and set time) and "applies at", the PR-only keys with their
-// descriptions and the last 50 audit rows; POST /api/v1/settings sets or resets one key. Every write goes through runSettings (src/settings-cmd.ts),
+// descriptions and the last 50 audit rows; POST /api/v1/settings sets or resets one key, or (`"action": "edit-file"`)
+// sets one file-only key of factory.config.json on a new local branch (design 08-settings). Every write goes through runSettings (src/settings-cmd.ts),
 // the same function `factory settings` runs, so the page accepts and refuses exactly what the CLI does.
 //
 // The UI process has no forge client and no forge credential: `--project` finds the configured repo's project
@@ -24,6 +25,7 @@ import {
 import type { RunId, Timestamp } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import { loadSettingCatalog } from "../runtime/index.js";
+import type { ConfigEditRequest, ConfigEditResult } from "../core/config-writer.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
 import type { UiDeps } from "./pages.js";
 import type { PauseDeps } from "./pause-api.js";
@@ -56,6 +58,8 @@ export interface UiSettings {
   mayApproveMerge?: () => Promise<string | null>;
   /** Each integration interface (src/plugins.ts INTEGRATION_KINDS) and the plugin factory.config.json selects for it. Absent: none listed. */
   integrations?: readonly { kind: string; interface: string; configured: string }[];
+  /** The file-only key writer `factory settings edit-file` runs (compose.ts configWriter). Absent: an edit-file write is refused. */
+  editFile?: (r: ConfigEditRequest) => Promise<ConfigEditResult>;
 }
 
 /** A fresh CSRF token: 32 random bytes, base64url. Never stored or written to disk. */
@@ -244,19 +248,26 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
 
 export type SettingsWrite =
   | { action: "set"; key: string; value: string; project?: string }
-  | { action: "reset"; key: string; project?: string; learned?: true };
+  | { action: "reset"; key: string; project?: string; learned?: true }
+  | ({ action: "edit-file" } & ConfigEditRequest);
 
 /** The POST body, or why it is not one. */
 export function parseWrite(body: unknown): SettingsWrite | { error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
-  const allowed = new Set(["action", "key", "value", "project", "learned"]);
+  const allowed = new Set(["action", "key", "value", "project", "learned", "confirm"]);
   const extra = Object.keys(b).find((k) => !allowed.has(k));
   if (extra) return { error: `unknown field "${extra}"` };
   if (typeof b.key !== "string" || b.key === "") return { error: "key must be a non-empty string" };
   if (b.project !== undefined && typeof b.project !== "string") return { error: "project must be a string (owner/name)" };
   const project = typeof b.project === "string" ? { project: b.project } : {};
   if (b.learned !== undefined && (b.learned !== true || b.action !== "reset")) return { error: "learned is only true, and only on a reset" };
+  if (b.confirm !== undefined && (typeof b.confirm !== "boolean" || b.action !== "edit-file")) return { error: "confirm is only true or false, and only on an edit-file" };
+  if (b.action === "edit-file") {
+    if (typeof b.value !== "string") return { error: "value must be JSON text, as `factory settings edit-file` takes it" };
+    if (b.project !== undefined) return { error: "edit-file takes no project: the file is global" };
+    return { action: "edit-file", key: b.key, value: b.value, confirm: b.confirm === true };
+  }
   if (b.action === "set") {
     if (typeof b.value !== "string") return { error: "value must be JSON text, as `factory settings set` takes it" };
     return { action: "set", key: b.key, value: b.value, ...project };
@@ -268,7 +279,7 @@ export function parseWrite(body: unknown): SettingsWrite | { error: string } {
     if (b.project === undefined) return { error: "reset --learned needs --project <owner/name>: a learned value is per project" };
     return { action: "reset", key: b.key, ...project, learned: true };
   }
-  return { error: 'action must be "set" or "reset"' };
+  return { error: 'action must be "set", "reset" or "edit-file"' };
 }
 
 class NoStoredProject extends Error {}
@@ -284,7 +295,7 @@ export function noLabelMessage(repo: { owner: string; name: string }): string {
 
 /**
  * POST /api/v1/settings, after the request guards: 200 with the CLI's lines, 422 with the CLI's refusal in
- * `error` (nothing stored), 400 for a body that is not a set or reset.
+ * `error` (nothing stored), 400 for a body that is not a set, reset or edit-file.
  */
 export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown): Promise<{ status: number; value: unknown }> {
   const w = new Withholder(d.scanner);
@@ -299,6 +310,7 @@ export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown):
     // The same scanner the page's reads withhold through: a flagged message_style is refused, as on the CLI.
     scanner: d.scanner,
     ...(s.mayApproveMerge ? { mayApproveMerge: s.mayApproveMerge } : {}),
+    ...(s.editFile ? { editFile: s.editFile } : {}),
     // An owner-only key needs the local owner; a page with no owner check refuses it.
     mayOwn: async () => {
       if (!d.pauses) return "this page has no owner check";

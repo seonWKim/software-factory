@@ -119,6 +119,8 @@ import * as tasks from "./tasks.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
+import * as configFile from "./config-file-changes.js";
+import type { NewConfigFileChange } from "../../../core/config-writer.js";
 
 /**
  * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -189,6 +191,37 @@ export class SqlFactoryStore implements FactoryStore {
       if (opts?.enqueue) await this.insertRun(tx, { ...opts.enqueue, work_item_id: item.id });
       return { item, created: true };
     });
+  }
+
+  /**
+   * A file-only key edit (design 08-settings): the local item, created waiting for the owner's merge (REVIEW,
+   * blocked on human, merge_pending, tier 4: never merged automatically), and its audit row, in one transaction.
+   */
+  async fileConfigEdit(input: NewConfigFileChange) {
+    assertProjectKey(input.project);
+    const source = { type: "local" as const, id: `config-edit-${input.id}`, link: `local:config-edit-${input.id}` };
+    return this.db.transaction(async (tx) => {
+      const existing = await this.selectItem(tx, input.id);
+      if (existing) return { item: existing, change: (await configFile.configFileChangeOf(tx, input.id))!, created: false };
+      const fresh = newWorkItem(
+        { source, title: input.title, requester_id: input.actor, project: input.project, problem: input.problem, resources: [source.link] },
+        await changeFields(tx, input.project, null), this.now(),
+      );
+      const item: WorkItem = {
+        ...fresh, id: input.id, stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", tier: 4,
+        allowed_paths: [input.path], pr_files: [input.path],
+      };
+      const { columns, values } = workItemInsert(item);
+      await tx.run(`INSERT INTO controller_work_items (${columns}) VALUES (${placeholders(values.length)})`, values);
+      await this.insertStateChange(tx, item.id, 1, { kind: "user", id: input.actor }, "config_file_edit", {
+        stage: { from: null as never, to: "REVIEW" }, blocked_on: { from: "none", to: "human" }, blocked_reason: { from: null, to: "merge_pending" },
+      }, { key: input.key, branch: input.branch });
+      return { item, change: await configFile.insertConfigFileChange(tx, input, this.now()), created: true };
+    });
+  }
+
+  listConfigFileChanges(limit: number) {
+    return configFile.listConfigFileChanges(this.db, limit);
   }
 
   async getWorkItem(id: WorkItemId): Promise<WorkItem | null> {

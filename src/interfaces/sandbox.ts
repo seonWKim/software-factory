@@ -70,6 +70,20 @@ export interface Sandbox {
    * unknown commit, no merge base). Absent: the controller's merge check is off (design §5 Merge check).
    */
   mergeCheck?(spec: { repo: string; head_sha: string; base_sha: string }): Promise<{ mergeable: boolean; conflicts: string[] }>;
+  /**
+   * Trusted, from objects only (no checkout, no fetch): the text of `path` in the factory repo's local branch `ref`,
+   * with that branch's commit; null when the branch or the file is missing. Absent: the file-only key writer is off
+   * (design 08-settings).
+   */
+  readLocalFile?(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null>;
+  /**
+   * Trusted: one commit on a new local branch without a checkout (design 08-settings, the file-only key writer).
+   * The commit's parent is `parent`, the local `base_ref`'s commit, and its tree is the parent's with only `path`
+   * set to `content`. `refs/heads/<branch>` is then created by a conditional ref update that fails when it exists.
+   * Only objects and that one ref are written: the repo's HEAD, index, working tree and every other ref stay as
+   * they are. `exists`: the branch was there; `base_moved`: the base is no longer at `parent`; nothing moved.
+   */
+  commitNewBranch?(spec: NewBranchCommit): Promise<NewBranchResult>;
   exec(handle: SandboxHandle, cmd: readonly string[], opts: ExecOptions): Promise<ExecResult>;
   copyIn(handle: SandboxHandle, hostPath: string, sandboxPath: string): Promise<void>;
   copyOut(handle: SandboxHandle, sandboxPath: string, hostPath: string): Promise<void>;
@@ -83,3 +97,19 @@ export interface Sandbox {
   /** Idempotent. Safe on an already-destroyed handle. */
   destroy(handle: SandboxHandle): Promise<void>;
 }
+
+export interface NewBranchCommit {
+  repo: string;
+  base_ref: string;
+  /** The base's commit the content was made from: a base at another commit moves nothing. */
+  parent: string;
+  branch: string;
+  /** Path of the one file the commit changes, relative to the repo root. */
+  path: string;
+  content: string;
+  message: string;
+  /** The commit's author and committer: the factory's git identity, never a person's display name. */
+  identity: { name: string; email: string };
+}
+
+export type NewBranchResult = { created: true; sha: string } | { created: false; reason: "exists" | "base_moved" };
