@@ -8,15 +8,25 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { build, loadConfig } from "../src/compose.js";
+import { build, loadConfig, localProject } from "../src/compose.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import type { SourceType, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { SourceType, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
+import type { FactoryConfig } from "../src/core/config.js";
+import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
+import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
+import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
+import { StaticGrant } from "../src/impl/grant/static.js";
+import { LocalSource } from "../src/impl/source/local-source.js";
+import { Worker } from "../src/worker/index.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { autoResolveKey } from "../src/core/policy.js";
-import { FakeAuth, FakeSandbox, FakeSource, alice, cleanScanner, config, fakeRepoLookup, silent } from "./helpers/fakes.js";
+import {
+  FakeAuth, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent, triageSpec,
+} from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
 const PR = 7;
@@ -432,5 +442,142 @@ describe("merge check: composition", () => {
     } finally {
       await built.close();
     }
+  });
+});
+
+// The UI check at merge (design §4, issue: run check:responsive at merge, not in the sandbox): a merge-check run whose
+// merged result changes a path under `repo.ui_check.paths` runs `repo.ui_check.command` after the install command and
+// the checks; one that does not, or with no `repo.ui_check`, runs nothing more.
+describe("merge check run: the UI check (fake sandbox)", () => {
+  const ui_check = { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] };
+
+  async function mergeCheckRun(o: { ui_check?: typeof ui_check; changed: string[]; exits?: Record<string, number> }) {
+    const repo = { ...config.repo, check_commands: [["npm", "run", "typecheck"], ["npm", "test"]], ...(o.ui_check ? { ui_check: o.ui_check } : {}) };
+    const f = await pipeline({ config: { repo } });
+    f.sandbox.changedFiles = o.changed;
+    Object.assign(f.sandbox.exits, o.exits ?? {});
+    const { item } = await f.store.createWorkItem(issue(7), system);
+    const moved = await f.store.transition({
+      id: item.id, expected_version: item.version, actor: system, reason: "test_setup", patch: {},
+      enqueue: { kind: "merge-check", idempotency_key: "mc-1", input: { merge_check: { base_ref: "main", branches: [`factory/${item.id}`] } } },
+    });
+    if (!moved.ok) throw new Error("setup");
+    expect(await f.w1.tick()).toBe(true);
+    const run = (await f.runs(moved.item, "merge-check"))[0]!;
+    const diffs = f.sandbox.gitCalls.filter((c) => c.startsWith("diff --name-only") && !c.includes("--diff-filter=U"));
+    return { commands: f.sandbox.commands, diffs, outcome: run.outcome };
+  }
+
+  it("a merged result touching web/ runs the UI check after the install command and the checks", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["README.md", "web/src/App.tsx"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test", "npm run check:responsive"]);
+    expect(r.diffs).toEqual([expect.stringMatching(/^diff --name-only -z --no-renames \S+ \S+$/)]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("a merged result touching src/ui/ runs it too", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["src/ui/page.ts"] });
+    expect(r.commands.at(-1)).toBe("npm run check:responsive");
+  });
+
+  it("a merged result touching neither web/ nor src/ui/ does not run the UI check", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["src/core/policy.ts", "webby.md", "docs/web/x.md"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "green" } });
+  });
+
+  it("with no repo.ui_check, no extra command runs and the changed files are not read", async () => {
+    const r = await mergeCheckRun({ changed: ["web/src/App.tsx"] });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.diffs).toEqual([]);
+  });
+
+  it("a failing UI check is a red result naming the command", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm run check:responsive": 1 } });
+    expect(r.outcome).toMatchObject({ status: "succeeded", data: { result: "red", why: "checks", command: "npm run check:responsive" } });
+  });
+
+  it("a failing check stops the run before the UI check", async () => {
+    const r = await mergeCheckRun({ ui_check, changed: ["web/a.css"], exits: { "npm test": 1 } });
+    expect(r.commands).toEqual(["npm ci", "npm run typecheck", "npm test"]);
+    expect(r.outcome).toMatchObject({ data: { result: "red", command: "npm test" } });
+  });
+});
+
+// End to end over a real git repo (as tests/merge-queue-flow.test.ts): a local change to web/ whose merged commit fails
+// the UI check leaves the merge queue, `main` does not move, and the item's thread names the check.
+describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () => {
+  const ME = "local:me@example.com" as UserId;
+  const ident = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+  const sh = (cwd: string, ...args: string[]) => git(cwd, ...args).trim();
+
+  it("keeps main where it was, removes the entry and names check:responsive in the thread", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sf-ui-check-"));
+    const repo = join(root, "repo");
+    sh(root, "init", "--quiet", "-b", "main", repo);
+    // The UI check fails on any merged commit.
+    writeFileSync(join(repo, "package.json"), JSON.stringify({ name: "x", private: true, scripts: { "check:responsive": "exit 1" } }));
+    sh(repo, "add", "-A");
+    sh(repo, ...ident, "commit", "--quiet", "-m", "init");
+    sh(repo, "checkout", "--quiet", "--detach");
+
+    const project = localProject({ owner: "o", name: "r" });
+    const pass = ["sh", "-c", "exit 0"];
+    const cfg: FactoryConfig = {
+      ...config, project, local_only: true, merge_queue_depth: 1,
+      repo: { ...config.repo, path: repo, install_command: pass, test_command: pass, ui_check: { command: ["npm", "run", "check:responsive"], paths: ["web/", "src/ui/"] } },
+    };
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
+    const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
+    const controller = new ControllerRole({
+      store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+    });
+    const runner = new FakeRunner({
+      triage: () => ({ output: { ...triageSpec, allowed_paths: ["web/"], files_to_change: ["web/app.css"] } }),
+      implement: (spec) => {
+        mkdirSync(join(spec.sandbox.workdir, "web"), { recursive: true });
+        writeFileSync(join(spec.sandbox.workdir, "web", "app.css"), "body {}\n");
+        sh(spec.sandbox.workdir, "add", "-A");
+        sh(spec.sandbox.workdir, ...ident, "commit", "--quiet", "-m", "web change");
+        return { output: { summary: "web change", next_steps: "none" } };
+      },
+      review: () => ({ output: { verdict: "pass", tier: 2, findings: [], summary: "s" } }),
+    });
+    const broker = new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo });
+    const worker = new Worker({
+      id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config: cfg, prompts,
+      log: silent, scanner: cleanScanner, toolEnv: { PATH: process.env.PATH ?? "", HOME: root, GIT_CONFIG_GLOBAL: "/dev/null" }, awake: new NoKeepAwake(),
+    });
+    const step = async () => {
+      await controller.tickIntake();
+      while (await worker.tick()) await controller.tickRuns();
+      await controller.tickRuns();
+    };
+    let n = 0;
+    const cli = (a: CliAction) =>
+      runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => project.key, read: async () => "the body", newId: () => `id${++n}` }, a);
+
+    const id = (await cli({ action: "create", title: "Web change", bodyFile: "body.md" })).lines[0] as WorkItemId;
+    await step();
+    await cli({ action: "command", command: "approve", id, text: "" });
+    await step();
+    await step();
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
+    const mainBefore = sh(repo, "rev-parse", "main");
+
+    await cli({ action: "command", command: "merge", id, text: "" });
+    await step();
+
+    expect(sh(repo, "rev-parse", "main")).toBe(mainBefore);
+    expect(await store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", merge_sha: null });
+    const queue = await controller.unit("merge-queue");
+    expect((await queue.entries(id)).map((e) => e.state)).toEqual(["removed"]);
+    const check = (await store.listRuns(id)).find((r) => r.kind === "merge-check")!;
+    expect(check.outcome).toMatchObject({ status: "succeeded", data: { result: "red", command: "npm run check:responsive" } });
+    const refused = (await store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
+    expect(refused.join("\n")).toContain("`npm run check:responsive`");
+    expect(refused.join("\n")).toContain("did not move and the change left the merge queue");
   });
 });
