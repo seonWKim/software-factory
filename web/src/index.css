@@ -45,3 +45,11 @@
     transition: none !important;
   }
 }
+
+/* react-aria's usePress rule (no double-tap zoom delay on presses). It ships it as an inline <style>, which the CSP's
+   style-src 'self' refuses, so it lives here and main.tsx marks react-aria's style as present. A low layer, as upstream. */
+@layer base {
+  [data-react-aria-pressable] {
+    touch-action: pan-x pan-y pinch-zoom;
+  }
+}
