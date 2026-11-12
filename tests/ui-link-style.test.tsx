@@ -60,7 +60,8 @@ async function mountAt(path: string, ready: string) {
 }
 /** The links outside the sidebar navigation. */
 function contentLinks(root: HTMLElement): HTMLAnchorElement[] {
-  return [...root.querySelectorAll<HTMLAnchorElement>("a")].filter((a) => !a.closest("nav") && a.dataset.testid !== "needs-you");
+  // A Needs-you row's title and PR links are quiet (text-1 and muted, design 09-dashboard-app), not the accent link.
+  return [...root.querySelectorAll<HTMLAnchorElement>("a")].filter((a) => !a.closest("nav") && a.dataset.testid !== "needs-you" && !(a.closest("[data-key]") && /\btext-text-[12]\b/.test(a.className)));
 }
 function expectShared(links: HTMLAnchorElement[]) {
   expect(links.length).toBeGreaterThan(0);

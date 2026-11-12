@@ -1,19 +1,22 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
+import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
+import { OverflowMenu, Tooltip } from "../components/ui/menu.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { cn } from "../lib/cn.js";
 import { shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
-import { PAGE_COMMANDS_PATH } from "../pages.js";
+import { PAGE_COMMANDS_PATH, itemPath } from "../pages.js";
 import { CommandBox, type Outcome, OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import { PersonName } from "./common.js";
 import {
@@ -109,7 +112,7 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
  * command (`local`), and on success re-reads the item and the list, so the controller's reply shows. `on`: commands
  * are on for this page's session.
  */
-function useCommandSend(id: string) {
+export function useCommandSend(id: string) {
   const client = useQueryClient();
   const session = useApi<Session>(API.session, false);
   const [busy, setBusy] = useState(false);
@@ -136,7 +139,7 @@ function useCommandSend(id: string) {
 }
 
 /** The command the state asks for: the first of approve, retry and resolve the viewer may send. */
-const primaryOf = (commands: readonly ItemCommand[]) => commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
+export const primaryOf = (commands: readonly ItemCommand[]) => commands.find((c) => PRIMARY.includes(c.name) && c.allowed);
 
 /**
  * `factory <command> <short number>` for a terminal: the item's short number on the page, the full command (with the
@@ -459,47 +462,85 @@ function VerdictDialog({ id, busy, error, returnFocusTo, onSend, onClose }: Comm
   );
 }
 
+/** A Needs-you row's primary button label, in sentence case; `resolve` answers what the item asked. */
+const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove", retry: "needs.actRetry", resolve: "needs.actAnswer" };
+/** The key that presses a row's primary button when the row is selected (never Merge). */
+export const PRIMARY_KEY = "p";
+
+const sentence = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1);
+
+/** What a Needs-you row's Actions cell needs of the row: its group, the merge state and the commands the Why text names. */
+export interface NeedActionsProps {
+  id: string;
+  commands: readonly ItemCommand[];
+  pr: string | null;
+  /** "merge": the primary button is Merge (disabled with the reason, or "Checking…" while the merge check runs). */
+  group: "merge" | "approve" | "answer";
+  merge?: MergeReadiness | undefined;
+  source: string;
+  checking: boolean;
+  /** The row's command sender, shared with its Why text. */
+  cmd: ReturnType<typeof useCommandSend>;
+  /** Overflow entries from the Why text (`Allow x and retry`): each sends `retry` with `note`. */
+  allow: readonly { label: string; note: string }[];
+}
+
 /**
- * A Needs-you row's commands (design §9, issues #453, #513): at most one primary button, the command the state asks
- * for (approve, retry or resolve, the first the viewer may send), and one "⋯" menu with every other command of the
- * row's `commands`. One the viewer may not send stays in the menu, disabled, with its reason. Reject, revise and
- * verdict open a dialog (outside the row, so the row never grows); the others send at once. A send re-reads the list,
- * so the row moves on; a failed send shows its error in the row, a sent one in a short status message that
- * outlives the row (announceStatus).
+ * A Needs-you row's actions (design §9, issues #453, #513): always one primary button, then the "⋯" menu last. The
+ * primary is Merge on a merge row, else the command the state asks for (Approve, Retry or Answer, the first the
+ * viewer may send), else "Open" to the item page. The menu holds every other command and the Why text's allow
+ * entries; one the viewer may not send stays, disabled, with its reason. Reject, revise and verdict open a dialog
+ * (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
+ * a failed send shows its error in the row, a sent one in a short status message that outlives the row.
  */
-export function NeedCommands({ id, commands, pr }: { id: string; commands: readonly ItemCommand[]; pr: string | null }) {
-  const { on, busy, local, send: post } = useCommandSend(id);
+export function NeedActions({ id, commands, pr, group, merge, source, checking, cmd, allow }: NeedActionsProps) {
+  const { on, busy, local, send: post } = cmd;
   const [open, setOpen] = useState<"reject" | "revise" | "verdict" | null>(null);
-  const moreButton = useRef<HTMLButtonElement>(null);
-  const primary = primaryOf(commands);
+  const wrap = useRef<HTMLSpanElement>(null);
+  // The OverflowMenu owns its button, so the dialogs hand focus back to it by looking it up when they close.
+  const moreButton = { get current() { return wrap.current?.querySelector<HTMLElement>("[aria-haspopup=menu]") ?? null; } } as RefObject<HTMLElement | null>;
+  const primary = group === "merge" ? undefined : primaryOf(commands);
   const others = commands.filter((c) => c !== primary);
+  const off = !on || busy;
   const send = async (command: string, note: string) => {
     if (!(await post(command, note))) return;
-    // The row may have left the list by now (the send re-read it); the status line outlives it.
     announceStatus(t("commands.commandSent", { command }));
     setOpen(null);
   };
-  const failed = commands.flatMap((c) => {
-    const l = local[c.name];
-    return l && "error" in l ? [l.error] : [];
-  });
+  const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
+  const items = [
+    ...others.map((c) => ({
+      label: c.allowed ? sentence(c.name) : `${sentence(c.name)}: ${plainRefusal(c.reason ?? "not allowed")}`,
+      disabled: off || !c.allowed,
+      onSelect: () => (NEED_FORMS.includes(c.name) ? setOpen(c.name as "reject" | "revise" | "verdict") : void send(c.name, "")),
+    })),
+    ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
+  ];
+  const failed = Object.values(local).flatMap((l) => ("error" in l ? [l.error] : []));
   return (
-    <span data-need-commands className="inline-flex flex-wrap items-center gap-2">
-      {primary && (
-        <span data-command={primary.name} className="inline-flex">
-          <Button variant="secondary" disabled={!on || busy} title={`${primary.usage}: ${primary.description}`} onClick={() => void send(primary.name, "")}>
-            {primary.name}
-          </Button>
+    <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
+      {group === "merge" ? (
+        <span data-command="merge" className="inline-flex">
+          <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
+            <Button variant="secondary" disabled={off || checking || !merge?.enabled} onClick={() => void send("merge", "")}>
+              {checking ? t("needs.checking") : t("commands.merge")}
+            </Button>
+          </Tooltip>
         </span>
+      ) : primary ? (
+        <span data-command={primary.name} className="inline-flex">
+          <Tooltip text={t("needs.withKey", { label: t(PRIMARY_LABEL[primary.name]!), key: PRIMARY_KEY })}>
+            <Button variant="secondary" data-shortcut={PRIMARY_KEY} disabled={off} onClick={() => void send(primary.name, "")}>
+              {t(PRIMARY_LABEL[primary.name]!)}
+            </Button>
+          </Tooltip>
+        </span>
+      ) : (
+        <Link href={itemPath(id)} data-command="open" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
+          {t("needs.actOpen")}
+        </Link>
       )}
-      {others.length > 0 && (
-        <MoreMenu
-          buttonRef={moreButton}
-          commands={others}
-          disabled={!on || busy}
-          onPick={(name) => (NEED_FORMS.includes(name) ? setOpen(name as "reject" | "revise" | "verdict") : void send(name, ""))}
-        />
-      )}
+      <OverflowMenu label={t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
       {failed.map((text) => (
         <OutcomeText key={text} outcome={{ tone: "error", text }} />
       ))}
@@ -508,81 +549,12 @@ export function NeedCommands({ id, commands, pr }: { id: string; commands: reado
           command={open}
           id={id}
           pr={pr}
-          busy={!on || busy}
+          busy={off}
           error={local[open] && "error" in local[open] ? local[open].error : null}
           returnFocusTo={moreButton}
           onSend={(t) => void send(open, t)}
           onClose={() => setOpen(null)}
         />
-      )}
-    </span>
-  );
-}
-
-/** The "⋯" menu: the row's other commands, each disabled with its reason when the viewer may not send it. */
-function MoreMenu({
-  buttonRef, commands, disabled, onPick,
-}: { buttonRef: RefObject<HTMLButtonElement | null>; commands: readonly ItemCommand[]; disabled: boolean; onPick: (name: string) => void }) {
-  const [shown, setShown] = useState(false);
-  const wrap = useRef<HTMLSpanElement>(null);
-  const uid = useId();
-  useEffect(() => {
-    if (!shown) return;
-    const away = (e: Event) => {
-      if (e.type === "keydown" ? (e as KeyboardEvent).key === "Escape" : !wrap.current?.contains(e.target as Node)) setShown(false);
-    };
-    document.addEventListener("pointerdown", away);
-    document.addEventListener("keydown", away);
-    return () => {
-      document.removeEventListener("pointerdown", away);
-      document.removeEventListener("keydown", away);
-    };
-  }, [shown]);
-  return (
-    <span ref={wrap} className="relative inline-flex">
-      <Button
-        ref={buttonRef}
-        variant="secondary"
-        aria-label={t("commands.more")}
-        aria-haspopup="menu"
-        aria-expanded={shown}
-        onClick={() => setShown(!shown)}
-      >
-        ⋯
-      </Button>
-      {shown && (
-        <ul
-          role="menu"
-          className="absolute top-full right-0 z-20 mt-1 w-max max-w-[calc(100vw-2rem)] rounded-control border border-border-strong bg-surface p-1 text-sm"
-        >
-          {commands.map((c) => {
-            const off = disabled || !c.allowed;
-            const why = !c.allowed ? plainRefusal(c.reason ?? "not allowed") : null;
-            return (
-              <li key={c.name} role="none" data-command={c.name}>
-                <Button
-                  variant="ghost"
-                  role="menuitem"
-                  disabled={off}
-                  title={why ?? `${c.usage}: ${c.description}`}
-                  aria-describedby={why ? `${uid}-why-${c.name}` : undefined}
-                  className="w-full text-left"
-                  onClick={() => {
-                    setShown(false);
-                    onPick(c.name);
-                  }}
-                >
-                  {c.name}
-                </Button>
-                {why && (
-                  <span id={`${uid}-why-${c.name}`} className="block max-w-xs px-2 pb-1 text-xs text-pretty break-words text-text-2">
-                    {why}
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
       )}
     </span>
   );

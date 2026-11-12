@@ -7,7 +7,7 @@ import { BASE } from "./pages.js";
 /** One shortcut for the help list: the keys as typed, and the catalog key of what they do. */
 export interface Shortcut {
   keys: string;
-  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.addTask" | "keys.editTask" | "keys.deleteTask";
+  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
@@ -19,6 +19,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "j", what: "keys.next" },
   { keys: "k", what: "keys.prev" },
   { keys: "Enter", what: "keys.open" },
+  { keys: "p", what: "keys.primary" },
   { keys: "q", what: "keys.addTask" },
   { keys: "e", what: "keys.editTask" },
   { keys: "Delete", what: "keys.deleteTask" },
@@ -77,6 +78,14 @@ function openSelection(): boolean {
   return true;
 }
 
+/** Presses the selected row's primary action (a Needs-you row's button marked `data-shortcut="p"`; Merge has none). */
+function pressPrimary(): boolean {
+  const button = document.querySelector<HTMLButtonElement>(`${ROWS}[data-selected="true"] [data-shortcut="p"]`);
+  if (!button || button.disabled) return false;
+  button.click();
+  return true;
+}
+
 /** Installs the shortcuts. `path` clears the row selection on a page change. */
 export function useShortcuts({ navigate, openSearch, openHelp, path }: { navigate: (to: string) => void; openSearch: () => void; openHelp: () => void; path: string }): void {
   const g = useRef(0);
@@ -113,7 +122,8 @@ export function useShortcuts({ navigate, openSearch, openHelp, path }: { navigat
           e.preventDefault();
           field.focus();
         }
-      } else if (e.key === "j") moveSelection(1);
+      } else if (e.key === "p") pressPrimary();
+      else if (e.key === "j") moveSelection(1);
       else if (e.key === "k") moveSelection(-1);
       else if (e.key === "Enter" && !(e.target as HTMLElement | null)?.closest?.("a, button") && openSelection()) e.preventDefault();
     };

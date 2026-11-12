@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Dialog } from "../web/src/components/ui/dialog.js";
-import { ItemsTable } from "../web/src/views/common.js";
+import { NeedsGroups } from "../web/src/views/common.js";
 
 // The shared native dialog (design §9): Esc and a click outside cancel without sending, focus goes in and comes
 // back to the button that opened it, Enter in the verdict field sends once, the reject confirm is in the failed colour.
@@ -129,7 +129,7 @@ describe("the verdict dialog on a Needs-you row", () => {
     };
     return render(
       <QueryClientProvider client={client}>
-        <ItemsTable items={[item]} now={Date.parse(AT)} label="Needs you" empty="none" actions />
+        <NeedsGroups items={[item]} now={Date.parse(AT)} titles={new Map()} empty="none" />
       </QueryClientProvider>,
     );
   }
@@ -138,7 +138,7 @@ describe("the verdict dialog on a Needs-you row", () => {
     mountRow();
     const more = screen.getByRole("button", { name: "More commands" });
     fireEvent.click(more);
-    fireEvent.click(screen.getByRole("menuitem", { name: "verdict" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Verdict" }));
     const field = screen.getByRole("textbox", { name: "Verdict" });
     expect(screen.getByRole("dialog").contains(document.activeElement)).toBe(true);
     fireEvent.change(field, { target: { value: "changes minor tighten the tests" } });
@@ -151,7 +151,7 @@ describe("the verdict dialog on a Needs-you row", () => {
   it("Esc in the verdict dialog sends nothing", async () => {
     mountRow();
     fireEvent.click(screen.getByRole("button", { name: "More commands" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "verdict" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Verdict" }));
     fireEvent.change(screen.getByRole("textbox", { name: "Verdict" }), { target: { value: "accept none" } });
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();

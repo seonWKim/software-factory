@@ -12,9 +12,9 @@ import { describe, expect, it, vi } from "vitest";
 import { type ItemDetail, type ItemRow, type MergeCheckView, type MergeReadiness, API, mergeCheckLabel, postCommand } from "../web/src/api.js";
 // TS6142: tsconfig.test.json has no JSX, so these .tsx views stay untyped here; web/tsconfig.json checks them.
 // @ts-expect-error -- see above
-import { ItemsTable } from "../web/src/views/common.js";
+import { ItemsTable, NeedsGroups } from "../web/src/views/common.js";
 // @ts-expect-error -- see above
-import { NeedCommands, VERDICT_PLACEHOLDER } from "../web/src/views/item-commands.js";
+import { VERDICT_PLACEHOLDER } from "../web/src/views/item-commands.js";
 // @ts-expect-error -- see above
 import { ItemPage } from "../web/src/views/pages.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -368,7 +368,7 @@ describe("ui app: the Merge button", () => {
     }
   });
 
-  it("Needs you shows the Merge button or its reason beside a ready-to-merge row, and no `merge the PR` text", () => {
+  it("Needs you gives a ready-to-merge row the Merge button, disabled with its reason on hover; Work items has none", () => {
     const client = new QueryClient();
     client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
     const row = (id: string, merge: MergeReadiness): ItemRow => ({
@@ -377,18 +377,15 @@ describe("ui app: the Merge button", () => {
       change_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge,
       need: { reason: "mergeable", anchor: null },
     });
-    const table = (actions: boolean) => renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemsTable, {
-      items: [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })], now: Date.parse(AT), label: "Needs you", empty: "none", actions,
-    })));
-    const html = table(true);
+    const items = [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })];
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(NeedsGroups, { items, now: Date.parse(AT), titles: new Map(), empty: "none" })));
     const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</tr>", html.indexOf(`data-key="${id}"`)));
-    expect(cell("1")).toMatch(/<span data-merge="enabled"[^>]*><button[^>]*>Merge<\/button>/);
+    expect(cell("1")).toMatch(/<span data-command="merge"[^>]*><span[^>]*><button[^>]*>Merge<\/button>/);
     expect(cell("1")).not.toContain("disabled=\"\"");
-    expect(cell("2")).toMatch(/<span data-merge="disabled"[^>]*><button[^>]*disabled=""[^>]*>Merge<\/button>/);
-    expect(cell("2")).toContain("1 conflicting file");
+    expect(cell("2")).toMatch(/<span data-command="merge"[^>]*><span[^>]*><button[^>]*disabled=""[^>]*>Merge<\/button>/);
     expect(html).not.toContain("merge the PR");
-    // Work items uses the same table with no Merge button.
-    expect(table(false)).not.toContain("data-merge=");
+    // Work items uses its own table, with no Merge button.
+    expect(renderToStaticMarkup(createElement(ItemsTable, { items, now: Date.parse(AT), label: "Work items", empty: "none" }))).not.toContain("data-command=");
   });
 
   it("shows the latest merge refusal beside the button", () => {
@@ -422,22 +419,28 @@ describe("ui app: the Needs-you commands and the verdict control", () => {
   };
   const VERDICT = { name: "verdict", usage: "/verdict accept|changes|reject <severity> <reason>", description: "Record a verdict", allowed: true, reason: null };
   const APPROVE = { name: "approve", usage: "/approve", description: "Approve", allowed: true, reason: null };
-  const render = (commands: unknown[]) =>
-    renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedCommands, { id: "wi_1", commands: commands as never, pr: "42" })));
+  const render = (commands: unknown[]) => {
+    const it = {
+      id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://example.invalid/1" }, title: "Item", level: "needs_approval", badges: [], stage: "READY",
+      tier: 2, kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: "42", change_url: null, issue: null, since: AT,
+      updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "spec ready", anchor: null }, commands,
+    } as unknown as ItemRow;
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedsGroups, { items: [it], now: Date.parse(AT), titles: new Map(), empty: "none" })));
+  };
 
   it("a row shows its primary button and one ⋯ menu, no inline form and no dialog", () => {
     const html = render([APPROVE, VERDICT]);
-    expect(html).toMatch(/<span data-command="approve"[^>]*><button[^>]*>approve<\/button>/);
-    expect(html).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"[^>]*>⋯<\/button>/);
-    expect(html).not.toContain("verdict</button>");
+    expect(html).toMatch(/<span data-command="approve"[^>]*><span[^>]*><button[^>]*>Approve<\/button>/);
+    expect(html).toMatch(/<button[^>]*aria-label="More commands"[^>]*aria-expanded="false"[^>]*>/);
+    expect(html).not.toContain("Verdict</button>");
     expect(html).not.toContain("<dialog");
     expect(html).not.toContain("data-verdict-form");
   });
 
-  it("a row with no primary command has only the menu", () => {
+  it("a row with no primary command gets Open to the item page, then the menu", () => {
     const html = render([VERDICT]);
-    expect(html).not.toContain("data-command=");
-    expect(html).toContain('aria-label="More commands"');
+    expect(html).toMatch(/<a [^>]*href="\/app\/items\/wi_1"[^>]*data-command="open"[^>]*>Open<\/a>/);
+    expect(html.indexOf('data-command="open"')).toBeLessThan(html.indexOf('aria-label="More commands"'));
   });
 
   it("the verdict dialog's placeholder is the verdict as typed after /verdict", () => {
