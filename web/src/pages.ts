@@ -1,7 +1,7 @@
-import { Activity, Archive, CalendarDays, Database, FolderKanban, HeartPulse, Inbox, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
+import { Activity, CalendarCheck, Database, HeartPulse, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
-/** Where a page sits in the sidebar: the Factory group, the collapsed System group, or only the top bar (Settings). */
-export type PageGroup = "factory" | "system" | null;
+/** Where a page sits in the sidebar: the Tasks group, the Factory group, the collapsed System group, or only the top bar (Settings). */
+export type PageGroup = "tasks" | "factory" | "system" | null;
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
 export interface PageDef {
@@ -14,6 +14,7 @@ export interface PageDef {
 
 /** The pages, in sidebar order. Literal `path` then `label` per entry: scripts/responsive-check.mjs reads them. */
 export const PAGES: readonly PageDef[] = [
+  { path: "tasks", label: "Tasks", key: "tasks", icon: CalendarCheck, group: "tasks" },
   { path: "", label: "Needs you", key: "needs", icon: Siren, group: "factory" },
   { path: "items", label: "Work", key: "work", icon: ListTodo, group: "factory" },
   { path: "activity", label: "Activity", key: "activity", icon: Activity, group: "factory" },
@@ -24,19 +25,6 @@ export const PAGES: readonly PageDef[] = [
   { path: "queue", label: "Queue", key: "queue", icon: ListOrdered, group: "system" },
   { path: "data", label: "Data", key: "data", icon: Database, group: "system" },
   { path: "settings", label: "Settings", key: "settings", icon: Settings, group: null },
-];
-
-/** A Tasks entry whose view #569 has not added yet: shown disabled with "coming", never a link. */
-export interface ComingDef {
-  key: string;
-  icon: LucideIcon;
-}
-
-export const TASK_ENTRIES: readonly ComingDef[] = [
-  { key: "inbox", icon: Inbox },
-  { key: "today", icon: CalendarDays },
-  { key: "upcoming", icon: Archive },
-  { key: "projects", icon: FolderKanban },
 ];
 
 export const pagesIn = (group: PageGroup): readonly PageDef[] => PAGES.filter((p) => p.group === group);
@@ -62,6 +50,7 @@ export function redirectFor(pathname: string): string | null {
 }
 
 const WORK = PAGES.find((p) => p.path === "items")!;
+const NEEDS_YOU = PAGES.find((p) => p.path === "")!;
 
 /** Where a location path under /app/ leads: a sidebar page, or one work item (`items/<id>`, under Work). */
 export interface Route {
@@ -82,7 +71,7 @@ export function routeFor(pathname: string): Route {
     }
     if (id) return { page: WORK, itemId: id };
   }
-  return { page: PAGES.find((p) => p.path === rest) ?? PAGES[0]!, itemId: null };
+  return { page: PAGES.find((p) => p.path === rest) ?? NEEDS_YOU, itemId: null };
 }
 
 export const itemPath = (id: string) => `${BASE}items/${encodeURIComponent(id)}`;

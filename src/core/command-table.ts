@@ -79,6 +79,12 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     prints: "that it is done (or already was), and the next occurrence", chat: "task done <task_id>", chat_args: "id", item: false, edge: false,
   },
   {
+    name: "task build", args: "<task_id>", who: "submit_work", group: "task",
+    does: "Send an open plain task to intake as one local work item, linked to the task; building it again makes no second item, " +
+      "and a merge of that item completes the task",
+    prints: "the work item's ID (or that the task was already built as it)", chat: "task build <task_id>", chat_args: "id", item: false, edge: false,
+  },
+  {
     name: "task list", args: "", who: "anyone", group: "task", does: "List local work items, then open plain tasks",
     prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task", chat: "list", chat_args: "none", item: false, edge: false,
   },

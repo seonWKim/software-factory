@@ -341,12 +341,10 @@ describe("app pages", () => {
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
 
-  it("the sidebar has Tasks entries disabled with 'coming', a collapsed System group, and no Users", () => {
+  it("the sidebar's Tasks group links the Tasks page, the System group is collapsed, and there is no Users", () => {
     mount();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect(tasks.querySelectorAll("a")).toHaveLength(0);
-    const entries = [...tasks.querySelectorAll("[aria-disabled=true]")].map((e) => e.textContent);
-    expect(entries).toEqual(["Inboxcoming", "Todaycoming", "Upcomingcoming", "Projectscoming"]);
+    expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks"]);
     expect(document.querySelector("aside details")!.hasAttribute("open")).toBe(false);
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
   });

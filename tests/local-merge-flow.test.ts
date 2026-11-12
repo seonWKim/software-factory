@@ -184,6 +184,28 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(await f.store.getBasePush(id)).toBeNull();
   });
 
+  it("a task built with `factory task build` is closed as done by its item's local merge; an unlinked task stays open", async () => {
+    const f = await localFactory();
+    await f.cli(ME, { action: "add", task: { title: "Add a scope gate", list: null, priority: null, due: null, due_time: null, recurrence: null } });
+    await f.cli(ME, { action: "add", task: { title: "other", list: null, priority: null, due: null, due_time: null, recurrence: null } });
+    const [built, other] = await f.store.listTasks(10);
+    const r = await f.cli(ME, { action: "build", id: built!.id });
+    const id = (await f.store.getTask(built!.id))!.work_item_id!;
+    expect(r.lines).toEqual([`built ${built!.id} as ${id}`]);
+    await f.step();
+    await f.cli(ME, { action: "command", command: "approve", id, text: "" });
+    await f.step();
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_reason: "merge_pending" });
+    expect((await f.store.getTask(built!.id))!.done_at).toBeNull();
+
+    await f.cli(ME, { action: "command", command: "merge", id, text: "" });
+    await f.step();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect((await f.store.getTask(built!.id))!.done_at).toBe(f.clock.now().toISOString());
+    expect(await f.store.getTask(other!.id)).toMatchObject({ done_at: null, work_item_id: null });
+  });
+
   it("factory merge is refused for an item not waiting for a merge, and for a requester (naming factory users add)", async () => {
     const f = await localFactory();
     const id = (await f.cli(ME, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;

@@ -399,6 +399,9 @@ export class SqlFactoryStore implements FactoryStore {
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); }
+  getTask(id: string) { return tasks.getTask(this.db, id); }
+  linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
+  closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
   // Owner notices (design 09-notifications): notices.ts
   recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }

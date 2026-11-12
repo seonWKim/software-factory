@@ -599,7 +599,7 @@ CREATE TABLE controller_tasks (
     created_at  TEXT NOT NULL,
     done_at     TEXT,
     parent_id   TEXT UNIQUE
-  );
+  , work_item_id TEXT);
 
 CREATE TABLE "controller_unreviewed_merges" (
     id          TEXT PRIMARY KEY,
