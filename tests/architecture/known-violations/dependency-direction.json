@@ -1,4 +1,5 @@
 [
+  "component-imports-legacy|calendar/plugins/google-calendar/google-calendar.plugin.ts|plugin-api.ts",
   "component-imports-legacy|cli/command.ts|compose.ts",
   "component-imports-legacy|cli/handlers/canary/canary.command.ts|canary.ts",
   "component-imports-legacy|cli/handlers/dev/dev.command.ts|compose.ts",
