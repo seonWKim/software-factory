@@ -140,8 +140,11 @@ describe("ui app: serving web/dist", () => {
 describe("ui app: CSP and guards", () => {
   it("every /app response carries the app's CSP: 'self' only, no unsafe-inline, no hash", async () => {
     expect(APP_CSP).toBe(
-      "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     );
+    // The favicon (/app/favicon.png) needs img-src; everything else stays at default-src 'none'.
+    expect(APP_CSP.startsWith("default-src 'none';")).toBe(true);
+    expect(APP_CSP.split("; ")).toContain("img-src 'self'");
     expect(APP_CSP).not.toMatch(/unsafe-inline|sha256-|unsafe-eval|https?:/);
     const d = await deps(builtApp().dist);
     for (const path of ["/app/", "/app/x", "/app/assets/index-abc.js", "/app/assets/nope.js", "/app/..%2fx"]) {
