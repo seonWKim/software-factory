@@ -155,4 +155,10 @@ describe("noticePoller", () => {
     }
     expect(new Set(["spec", "merge", "failure", "other"].map((kind) => noticeText({ ...spec, kind }).body)).size).toBe(4);
   });
+
+  it("a task's reminder (design 02-tasks) reads as a task due now, never its title or ID, and opens the Tasks page", () => {
+    const reminder: PendingNotice = { work_item_id: "tk_secret_title", wait_key: "task:2026-11-13T15:00", kind: "task", count: 1, created_at: at };
+    expect(noticeText(reminder)).toEqual({ title: NOTICE_TITLE, body: "A task is due now" });
+    expect(noticeTarget(reminder, DASHBOARD)).toBe(`${DASHBOARD}tasks`);
+  });
 });

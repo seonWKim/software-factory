@@ -5,13 +5,16 @@
 
 import {
   type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type NewTask, type Recurrence, type Task, type TaskEdit, type TaskPriority,
-  type UpdateTaskResult, applyTaskEdit, dueDate, nextDueDate,
+  type TaskTime, type UpdateTaskResult, applyTaskEdit, dueDate, nextDueDate, reminderDays, reminderDue,
 } from "../../../core/tasks.js";
+import type { NewNotice } from "../../../core/notifications.js";
 import type { Timestamp, UserId, WorkItemId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
+import { recordNotice } from "./notices.js";
 import { newId } from "./rows.js";
 
-const COLUMNS = "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id, work_item_id, parent_task_id";
+const COLUMNS =
+  "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id, work_item_id, parent_task_id, duration_minutes, reminded_at";
 
 const text = (v: unknown): string | null => (v == null ? null : String(v));
 
@@ -21,6 +24,7 @@ function rowToTask(r: Row): Task {
     due_date: text(r.due_date), due_time: text(r.due_time), recurrence: text(r.recurrence) as Recurrence | null,
     created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, done_at: text(r.done_at) as Timestamp | null,
     parent_id: text(r.parent_id), work_item_id: text(r.work_item_id) as WorkItemId | null, parent_task_id: text(r.parent_task_id),
+    duration_minutes: r.duration_minutes == null ? null : Number(r.duration_minutes), reminded_at: text(r.reminded_at) as Timestamp | null,
   };
 }
 
@@ -32,9 +36,9 @@ async function select(db: SqlExecutor, column: "id" | "parent_id", value: string
 /** Inserts `t` unless a row has its ID (or, for an occurrence, its parent); false when it inserted nothing. */
 async function insert(db: SqlDriver, tx: SqlExecutor, t: Task): Promise<boolean> {
   try {
-    await tx.run(`INSERT INTO controller_tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+    await tx.run(`INSERT INTO controller_tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
       t.id, t.title, t.list, t.priority, t.due_date, t.due_time, t.recurrence, t.created_by, t.created_at, t.done_at, t.parent_id, t.work_item_id,
-      t.parent_task_id,
+      t.parent_task_id, t.duration_minutes, t.reminded_at,
     ]);
     return true;
   } catch (err) {
@@ -48,7 +52,7 @@ function newRow(t: NewTask, now: Date, parent_task_id: string | null): Task {
   return {
     id: t.id, title: t.title, list: t.list, priority: t.priority, due_date: t.due === null ? null : dueDate(t.due, now), due_time: t.due_time,
     recurrence: t.recurrence, created_by: t.created_by, created_at: now.toISOString() as Timestamp, done_at: null, parent_id: null,
-    work_item_id: null, parent_task_id,
+    work_item_id: null, parent_task_id, duration_minutes: t.duration_minutes ?? null, reminded_at: null,
   };
 }
 
@@ -81,8 +85,9 @@ export async function updateTask(db: SqlDriver, id: string, edit: TaskEdit, now:
     const next = applyTaskEdit(task, edit, now);
     if ("refused" in next) return { ok: false, reason: next.refused, recurrence: next.recurrence } as const;
     await tx.run(
-      "UPDATE controller_tasks SET title = ?, list = ?, priority = ?, due_date = ?, due_time = ?, recurrence = ? WHERE id = ? AND done_at IS NULL",
-      [next.title, next.list, next.priority, next.due_date, next.due_time, next.recurrence, id],
+      `UPDATE controller_tasks SET title = ?, list = ?, priority = ?, due_date = ?, due_time = ?, recurrence = ?, duration_minutes = ?, reminded_at = ?
+        WHERE id = ? AND done_at IS NULL`,
+      [next.title, next.list, next.priority, next.due_date, next.due_time, next.recurrence, next.duration_minutes, next.reminded_at, id],
     );
     return { ok: true, task: (await select(tx, "id", id))! } as const;
   });
@@ -115,6 +120,7 @@ async function complete(db: SqlDriver, tx: SqlExecutor, id: string, now: Timesta
   if (completed && task.recurrence !== null && task.due_date !== null) {
     await insert(db, tx, {
       ...task, id: newId("tk"), due_date: nextDueDate(task.due_date, task.recurrence), created_at: now, done_at: null, parent_id: id, work_item_id: null,
+      reminded_at: null,
     });
   }
   return { ok: true, task: (await select(tx, "id", id))!, completed, next: await select(tx, "parent_id", id) } as const;
@@ -122,6 +128,34 @@ async function complete(db: SqlDriver, tx: SqlExecutor, id: string, now: Timesta
 
 export async function completeTask(db: SqlDriver, id: string, now: Timestamp): Promise<CompleteTaskResult> {
   return db.transaction((tx) => complete(db, tx, id, now));
+}
+
+/** Read-only: the open, timed, unreminded tasks of the lookback's days, then those whose time has come (reminderDue). */
+export async function listDueReminders(db: SqlDriver, now: Date): Promise<Task[]> {
+  const { from, to } = reminderDays(now);
+  const rows = await db.all(
+    `SELECT ${COLUMNS} FROM controller_tasks WHERE done_at IS NULL AND reminded_at IS NULL AND due_time IS NOT NULL AND due_date >= ? AND due_date <= ?
+      ORDER BY due_date, due_time, id`,
+    [from, to],
+  );
+  return rows.map(rowToTask).filter((t) => reminderDue(t, now));
+}
+
+/**
+ * The sent-marker's conditional write, then the notice, in one transaction: a second pass, another replica, a done,
+ * deleted or moved task changes no row, so stores no notice either.
+ */
+export async function remindTask(db: SqlDriver, id: string, at: TaskTime, notice: NewNotice): Promise<boolean> {
+  return db.transaction(async (tx) => {
+    const marked = await tx.run(
+      "UPDATE controller_tasks SET reminded_at = ? WHERE id = ? AND done_at IS NULL AND reminded_at IS NULL AND due_date = ? AND due_time = ?",
+      [notice.created_at, id, at.due_date, at.due_time],
+    );
+    if (marked !== 1) return false;
+    // A task moved back to a time it was reminded at already has that notice: it is not stored twice.
+    await recordNotice(db, notice, tx);
+    return true;
+  });
 }
 
 export function getTask(db: SqlDriver, id: string): Promise<Task | null> {

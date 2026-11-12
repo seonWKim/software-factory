@@ -1,7 +1,9 @@
 // Owner notices in the shell (docs/design/09-notifications.md): on each status tick that reached the dashboard, read
 // GET /api/v1/notices and show each pending notice once. The notices the shell has shown are kept in a file in its
 // app data folder, so a restart shows none of them again; the store's delivered_at stays unset. Every effect (fetch,
-// fs, notify) comes in as an argument. A notice's text is its kind and count only: the API carries no free text.
+// fs, notify) comes in as an argument. A notice's text is its kind and count only: the API carries no free text. A
+// `task` notice is a plain task's reminder at its time (design 02-tasks): it opens the Tasks page, and only the app
+// shows it (owner answer 3: no OS notification when the app is not running; it shows once the app runs again).
 
 import { PRODUCT_NAME } from "./product.js";
 
@@ -17,6 +19,7 @@ const BODY = {
   merge: "A change waits for your merge",
   failure: "A failed item needs you",
   other: "An item needs you",
+  task: "A task is due now",
 };
 
 /** A notice as the route lists it: a summary (quiet hours) has a null work_item_id. */
@@ -31,8 +34,9 @@ export function noticeText(n) {
   return { title: NOTICE_TITLE, body: BODY[n.kind] ?? BODY.other };
 }
 
-/** Where a click on the notice goes: a summary opens the dashboard root, an item notice its item page. */
-export const noticeTarget = (n, dashboard) => (n.work_item_id === null ? dashboard : `${dashboard}items/${encodeURIComponent(n.work_item_id)}`);
+/** Where a click on the notice goes: a summary opens the dashboard root, a task's reminder the Tasks page, an item notice its item page. */
+export const noticeTarget = (n, dashboard) =>
+  n.work_item_id === null ? dashboard : n.kind === "task" ? `${dashboard}tasks` : `${dashboard}items/${encodeURIComponent(n.work_item_id)}`;
 
 const keyOf = (n) => JSON.stringify([n.work_item_id, n.wait_key]);
 

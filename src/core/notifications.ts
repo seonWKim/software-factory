@@ -34,8 +34,11 @@ export interface Notice {
   work_item_id: string;
   /** The ID of the state change that set blocked_on to `human`; for a summary, `quiet:<held_until of what it covers>`. */
   wait_key: string;
-  /** `backfill`: a wait the notices migration found already shown on the Needs-you list, stored as delivered. */
-  kind: NoticeKind | typeof SUMMARY_KIND | "backfill";
+  /**
+   * `backfill`: a wait the notices migration found already shown on the Needs-you list, stored as delivered. `task`: a
+   * plain task's reminder (design 02-tasks), its work_item_id the task's ID, its wait key the task's time; desktop only.
+   */
+  kind: NoticeKind | typeof SUMMARY_KIND | "backfill" | "task";
   created_at: Timestamp;
   /** Set when quiet hours held the notice: the end of the window. A held notice is shown only through its summary. */
   held_until: Timestamp | null;

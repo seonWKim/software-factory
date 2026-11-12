@@ -89,6 +89,20 @@ describe("factory task edit", () => {
     expect(await rows()).toEqual(before);
   });
 
+  it("edits the duration (45m, 1h30m) and the time (3pm); a refused duration or time writes nothing (design 02-tasks)", async () => {
+    const { store, cli, rows } = await setup();
+    await cli("add", "call", "the", "bank", "at", "3pm");
+    expect(await store.getTask("tk_id1")).toMatchObject({ title: "call the bank", due_time: "15:00", duration_minutes: null });
+    expect((await cli("edit", "tk_id1", "45m")).code).toBe(0);
+    expect(await store.getTask("tk_id1")).toMatchObject({ title: "call the bank", due_time: "15:00", duration_minutes: 45 });
+    expect((await cli("edit", "tk_id1", "at", "4:30pm", "1h30m")).code).toBe(0);
+    expect(await store.getTask("tk_id1")).toMatchObject({ title: "call the bank", due_time: "16:30", duration_minutes: 90 });
+    const before = await rows();
+    expect(parseLocalCliArgs("task", ["edit", "tk_id1", "0m"])).toMatchObject({ error: expect.stringContaining("a duration must be 1 to 1440 minutes") });
+    expect(parseLocalCliArgs("task", ["edit", "tk_id1", "13pm"])).toMatchObject({ error: expect.stringContaining("not a time: 13pm") });
+    expect(await rows()).toEqual(before);
+  });
+
   it("chat `task edit <task_id> <words>` does the same", async () => {
     const { store, cli, chat } = await setup();
     await cli("add", "pay", "rent");
