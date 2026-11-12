@@ -73,7 +73,7 @@ afterEach(async () => {
   }
 });
 
-async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[]; llm?: LLMProvider; dashboard?: string } = {}) {
+async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[]; llm?: LLMProvider; dashboard_url?: string; notify_channel?: string } = {}) {
   const clock = new FakeClock();
   const { store: real } = await newStore(clock);
   const store = opts.store ? opts.store(real) : real;
@@ -88,9 +88,9 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
     if ("error" in a) return { ok: false, lines: [a.error] };
     return runSettings({ store: real, base: { file: {}, layers: config.settings }, repo, resolveProject: () => Promise.reject(new Error("no")), actor: "" }, a);
   };
-  // The Full spec link's base, as slack.plugin.ts gives it with no slack.dashboard_url (the default ui.port).
-  const dashboard = async () => opts.dashboard ?? "http://127.0.0.1:4310";
-  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings, dashboard });
+  // slack.dashboard_url and slack.notify_channel as slack.plugin.ts passes them: absent unless the test sets them.
+  const optional = { ...(opts.dashboard_url ? { dashboard_url: opts.dashboard_url } : {}), ...(opts.notify_channel ? { notify_channel: opts.notify_channel } : {}) };
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings, ...optional });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();
@@ -449,7 +449,8 @@ describe("slack source: replies, buttons and commands", () => {
     expect(spec.text).toBe("Needs your approval: please add a scope gate");
     expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject"]);
     expect(JSON.stringify(spec.blocks)).not.toContain("<!--");
-    expect(JSON.stringify(spec.blocks)).toContain(`<http://127.0.0.1:4310/app/items/${item.id}|Full spec>`);
+    expect(JSON.stringify(spec.blocks)).not.toContain("Full spec");
+    expect((spec.blocks![0] as { accessory: unknown }).accessory).toEqual({ type: "button", text: { type: "plain_text", text: "View" }, action_id: "sf_view", value: item.id });
     // The thread's status message, if any, was posted before (triaging) and edited in place: no second one.
     expect(f.api.thread(ts).filter((m) => m.text?.startsWith("Status:")).length).toBeLessThanOrEqual(1);
     expect(f.api.calls.filter((c) => c.method === "postMessage" && c.text === "Status: *needs approval*")).toEqual([]);
@@ -1524,7 +1525,7 @@ describe("slack source: spec messages and their modals", () => {
   };
   const viewOf = (f: F, i = 0) => f.api.views[i]!.view as { callback_id: string; private_metadata: string; title: { text: string }; submit: { text: string }; blocks: Input[] };
 
-  it("renders the first line, In short, one Decisions line each with its proposed default, and the Full spec link, for 0, 1 and 3 decisions", async () => {
+  it("renders the first line with a View button, In short and one Decisions line each with its proposed default, for 0, 1 and 3 decisions", async () => {
     for (const n of [0, 1, 3]) {
       const f = await setup();
       const ts = `18000003${n}0.000100`;
@@ -1540,7 +1541,9 @@ describe("slack source: spec messages and their modals", () => {
           ...D3.slice(0, n).map((d, i) => `${i + 1}. ${escapeSlack(d.question)} _Proposed default: ${d.default}_`),
         ]);
       }
-      expect(s.at(-1)).toBe(`<http://127.0.0.1:4310/app/items/${item.id}|Full spec>`);
+      // No dashboard_url: no Full spec link and no 127.0.0.1 anywhere; the first section's View button names the item.
+      expect(JSON.stringify(m.blocks)).not.toMatch(/Full spec|127\.0\.0\.1/);
+      expect((m.blocks![0] as { accessory: { action_id: string; value: string } }).accessory).toMatchObject({ action_id: "sf_view", value: item.id });
       // Buttons: Approve with defaults, Other… with a decision, Reject…; no per-decision "Default: …" button.
       expect(labels(m)).toEqual(n === 0 ? ["Approve with defaults", "Reject…"] : ["Approve with defaults", "Other…", "Reject…"]);
       expect(JSON.stringify(m.blocks)).not.toContain("Default:");
@@ -1557,11 +1560,12 @@ describe("slack source: spec messages and their modals", () => {
     for (const h of ["Problem", "Applied defaults", "Done when", "In scope", "Out of scope", "Files", "Risk"]) expect(text).not.toContain(h);
   });
 
-  it("the Full spec link goes to slack.dashboard_url when set", async () => {
-    const f = await setup({ dashboard: "https://factory.example.com/" });
+  it("the Full spec link goes to an https slack.dashboard_url when set, with no View button", async () => {
+    const f = await setup({ dashboard_url: "https://factory.example.com/" });
     const ts = "1800000341.000100";
     const item = await specPending(f, ts);
     expect(sections(specMsg(f, ts)).at(-1)).toBe(`<https://factory.example.com/app/items/${item.id}|Full spec>`);
+    expect(JSON.stringify(specMsg(f, ts).blocks)).not.toContain("sf_view");
   });
 
   it("Approve with defaults stores one approve with no answer lines, keyed on the press, as the linked user, and posts nothing", async () => {
