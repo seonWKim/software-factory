@@ -1,7 +1,6 @@
 // Takes a requested item in: authorize, create, status, edges, links.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { INTERPRET_MAX_CHARS, UNREAD_TEXT, taskOfferMarker } from "../../../core/interpret.js";
 import { PHASE_MARKER } from "../../../core/split.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { scanClean } from "../commands/scan.js";
@@ -14,6 +13,14 @@ type ItemRequested = Extract<SourceEvent, { kind: "item_requested" }>;
 const EMPTY_TEXT = "I couldn't read that.";
 /** The reply to a top-level mention the egress scan flags: quotes nothing from it, and offers nothing. */
 const FLAGGED_TEXT = "I can't use that message: it looks like it holds a secret. Remove it and mention me again.";
+
+/**
+ * The reply to a top-level mention not read (no model, no `approve_spec`, too long, a `none` answer): the line, then
+ * the offer's hidden marker, from which Slack draws the "Make this a task" button. The marker is written as
+ * `taskOfferMarker` in core/interpret.ts writes it; a unit may not import core (tests/architecture), and
+ * tests/chat-intake.test.ts reads the button's value back from it.
+ */
+const unreadOffer = (text: string) => `I couldn't read that. Make it a task?\n<!-- factory:make-task:${Buffer.from(text, "utf8").toString("base64url")} -->`;
 
 /** Takes a requested item in: authorize, create, status, edges, links. */
 export class IntakeUnit {
@@ -84,12 +91,11 @@ export class IntakeUnit {
     const text = e.body.trim();
     if (text === "") return EMPTY_TEXT;
     if (!(await scanClean(this.c, where, "message", [text]))) return FLAGGED_TEXT;
-    const offer = `${UNREAD_TEXT}\n${taskOfferMarker(text)}`;
-    if (!this.c.k.reader.llm || text.length > INTERPRET_MAX_CHARS) return offer;
-    if ("refuse" in (await this.c.unit("auth").authorize(e.requester, "approve_spec", e.source.id))) return offer;
+    if ("refuse" in (await this.c.unit("auth").authorize(e.requester, "approve_spec", e.source.id))) return unreadOffer(text);
+    // No model or a message too long: `unread`, with no model call. A `none` answer: no reply of its own.
     const read = await this.c.unit("commands").readMessage(text, where, null);
     if (read === "blocked") return null;
-    if (read === "unread" || read.body === null) return offer;
+    if (read === "unread" || read.body === null) return unreadOffer(text);
     this.c.k.d.log.info("chat message answered", { ...where, kind: read.kind });
     return read.body;
   }

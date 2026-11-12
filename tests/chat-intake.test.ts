@@ -46,8 +46,10 @@ class ScriptedLLM implements LLMProvider {
     if (a === "throw") throw new Error("model unavailable");
     const usage = { input_tokens: 1, output_tokens: 1, cost_usd: null };
     if (a === "malformed") return { text: "not json", stop_reason: "end", usage };
+    // A token-limit stop cuts off an answer that would otherwise be read.
+    if (a === "max_tokens") return { text: "", parsed: { kind: "request", entries: [], text: "I can make this a task." }, stop_reason: "max_tokens", usage };
     const parsed = { kind: a.kind, entries: [], text: a.text ?? "" };
-    return { text: JSON.stringify(parsed), parsed, stop_reason: a === "max_tokens" ? "max_tokens" : "end", usage };
+    return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage };
   }
 }
 
@@ -176,12 +178,15 @@ describe("chat intake: top-level Slack mentions", () => {
     });
   }
 
-  it("with no model configured: the unread line with the button, and no item", async () => {
+  it("with no model configured: the unread line with the button, whose value is the message, and no item", async () => {
     const f = await setup(null);
     await deliver(f, eventEnvelope(mention(TS, "build a Today view for tasks")));
     const reply = await onlyReply(f);
     expect(reply.text.startsWith(UNREAD)).toBe(true);
     expect(reply.buttons).toEqual([ACTION_MAKE_TASK]);
+    expect(f.api.thread(TS)[0]!.blocks).toContainEqual({
+      type: "actions", elements: [expect.objectContaining({ action_id: ACTION_MAKE_TASK, value: "build a Today view for tasks" })],
+    });
   });
 
   it("a message over 1000 characters: no model call, the unread line with the button, and no item", async () => {

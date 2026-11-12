@@ -29,8 +29,6 @@ const MAX_ENTRIES = 20;
 const MAX_ARG_CHARS = 300;
 /** Characters of a chat answer kept (the length cap on the answer). */
 export const MAX_CHAT_CHARS = 1500;
-/** The answer to a top-level message the model did not read (`none`, no model, too long): the offer to make it a task follows. */
-export const UNREAD_TEXT = "I couldn't read that. Make it a task?";
 /** The answer to an `unsure` message that came with no text of its own. */
 const UNSURE_TEXT = "I can't tell whether you want this as a work item or were only asking.";
 /** The commands a proposal may name: the item commands a person types with a short text, never `/verdict` (structured args). */
