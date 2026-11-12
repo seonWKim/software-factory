@@ -25,7 +25,8 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
 import { autoResolveKey } from "../src/core/policy.js";
 import {
-  FakeAuth, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent, triageSpec,
+  FakeAuth, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, fakeRepoLookup, pipeline, prompts, silent,
+  triageSpec,
 } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
@@ -88,12 +89,14 @@ async function readyItem(store: FactoryStore, n: number, type: SourceType = "git
   return r.item;
 }
 
-async function setup(opts: { sandbox: Sandbox; repo?: string; source?: FakeSource; local_only?: true }) {
+async function setup(opts: { sandbox: Sandbox; repo?: string; source?: FakeSource; local_only?: true; forge?: FakeForge }) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const source = opts.source ?? new FakeSource();
   const cfg = { ...config, repo: { ...config.repo, path: opts.repo ?? "/repo" }, ...(opts.local_only ? { local_only: true as const } : {}) };
-  const controller = new ControllerRole({ store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, sandbox: opts.sandbox });
+  const controller = new ControllerRole({
+    store, source, auth: new FakeAuth(), clock, config: cfg, log: silent, scanner: cleanScanner, sandbox: opts.sandbox, ...(opts.forge ? { forge: opts.forge } : {}),
+  });
   return { clock, store, source, controller };
 }
 
@@ -299,10 +302,19 @@ describe("merge check: caching, throttling and the update run", () => {
   });
 });
 
-/** The counting sandbox with the local merge's probe: `localConflicts` reports `local` for every branch. */
+/**
+ * The counting sandbox with the local merge's probe: `localConflicts` reports `local` for every branch, and
+ * `localBranch` reads `locals` (the factory repo's local branches; a forge selected reads them there).
+ */
 class LocalSandbox extends CountingSandbox {
   local: string[] = ["src/x.ts"];
+  locals: Record<string, string | null> = {};
   probes = 0;
+  localReads: string[] = [];
+  async localBranch(spec: { repo: string; branch: string }): Promise<string | null> {
+    this.localReads.push(spec.branch);
+    return this.locals[spec.branch] ?? null;
+  }
   async localConflicts(): Promise<string[] | null> {
     this.probes++;
     return this.local;
@@ -315,7 +327,8 @@ class LocalSandbox extends CountingSandbox {
 /** A local item (no PR) waiting for a merge, under a controller whose sandbox reads local refs (`local_only`). */
 async function localItem(opts: { local_only?: boolean } = {}) {
   const sandbox = new LocalSandbox();
-  const s = await setup({ sandbox, source: new FakeSource("local"), ...(opts.local_only === false ? {} : { local_only: true as const }) });
+  const source = new FakeSource("local");
+  const s = await setup({ sandbox, source, ...(opts.local_only === false ? { forge: new FakeForge(source) } : { local_only: true as const }) });
   const item = await readyItem(s.store, 1, "local", null);
   sandbox.heads[`factory/${item.id}`] = "a".repeat(40);
   const resolves = async () => (await s.store.listRuns(item.id)).filter((r) => r.kind === "resolve");
@@ -353,12 +366,70 @@ describe("merge check: a local item (no PR)", () => {
     expect(sandbox.calls.mergeCheck).toBe(1);
   });
 
-  it("with a forge selected (not local_only) a local item is not checked: no fetch of a branch origin does not have", async () => {
-    const { controller, sandbox, store, item } = await localItem({ local_only: false });
+  it("with a forge selected, a conflict with the local base starts the automatic resolve keyed on the local base's commit; nothing is fetched for it", async () => {
+    const { controller, sandbox, store, item, resolves } = await localItem({ local_only: false });
+    const [main, head] = ["c".repeat(40), "d".repeat(40)];
+    sandbox.locals = { main, [`factory/${item.id}`]: head };
+    await controller.tickMergeCheck();
     await controller.tickMergeCheck();
     expect(sandbox.calls.fetchBranch).toBe(0);
+    expect(sandbox.calls.mergeCheck).toBe(1);
+    expect(sandbox.localReads).toEqual(expect.arrayContaining(["main", `factory/${item.id}`]));
+    expect(await store.getWorkItem(item.id)).toMatchObject({ stage: "RUNNING", blocked_on: "none", change_ref: null });
+    expect((await resolves()).map((r) => r.idempotency_key)).toEqual([autoResolveKey(item.id, main, 1)]);
+    expect(await updates(store, item.id)).toEqual([]);
+    expect((await store.listStateChanges(item.id)).at(-1)).toMatchObject({ reason: "auto_resolve_started", detail: { cause: "merge_check", base_sha: main, attempt: 1 } });
+    expect(await store.getMergeCheck(item.id)).toMatchObject({ mergeable: false, head_sha: head, base_sha: main });
+  });
+
+  it("with a forge selected, a local item that merges cleanly runs no resolve and nothing changes", async () => {
+    const { controller, sandbox, store, item } = await localItem({ local_only: false });
+    sandbox.locals = { main: "c".repeat(40), [`factory/${item.id}`]: "d".repeat(40) };
+    sandbox.result = { mergeable: true, conflicts: [] };
+    await controller.tickMergeCheck();
+    expect(await store.getWorkItem(item.id)).toEqual(item);
+    expect(await store.listRuns(item.id)).toEqual([]);
+    expect(await store.getMergeCheck(item.id)).toMatchObject({ mergeable: true });
+  });
+
+  it("with a forge selected, a local item with no local branch is not checked", async () => {
+    const { controller, sandbox, store, item } = await localItem({ local_only: false });
+    sandbox.locals = { main: "c".repeat(40) };
+    await controller.tickMergeCheck();
+    expect(sandbox.calls.mergeCheck).toBe(0);
     expect(await store.getMergeCheck(item.id)).toBeNull();
     expect(await store.getWorkItem(item.id)).toEqual(item);
+  });
+
+  it("with a forge selected, at the limit of 2 automatic resolve runs for the local base, the item waits on merge_conflict_pending", async () => {
+    const { controller, sandbox, store, item, resolves } = await localItem({ local_only: false });
+    const main = "c".repeat(40);
+    sandbox.locals = { main, [`factory/${item.id}`]: "d".repeat(40) };
+    let v = item.version;
+    for (const attempt of [1, 2]) {
+      const r = await store.transition({
+        id: item.id, expected_version: v, patch: {}, actor: system, reason: "seed",
+        enqueue: { kind: "resolve", idempotency_key: autoResolveKey(item.id, main, attempt) },
+      });
+      if (!r.ok) throw new Error(r.reason);
+      v = r.item.version;
+    }
+    await controller.tickMergeCheck();
+    expect(await store.getWorkItem(item.id)).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_conflict_pending" });
+    expect(await resolves()).toHaveLength(2);
+    expect((await store.listStateChanges(item.id)).at(-1)).toMatchObject({ reason: "update_conflict", detail: { cause: "merge_check", auto_resolve_attempts: 2 } });
+  });
+
+  it("with a forge selected, a PR item's conflict still starts its update run, not a resolve", async () => {
+    const sandbox = new LocalSandbox();
+    const source = new FakeSource();
+    const { controller, store } = await setup({ sandbox, source, forge: new FakeForge(source) });
+    const pr = await readyItem(store, 2);
+    sandbox.heads[`factory/${pr.id}`] = "a".repeat(40);
+    await controller.tickMergeCheck();
+    expect((await updates(store, pr.id)).map((r) => r.idempotency_key)).toEqual([`${pr.id}:update:${PR}:${"a".repeat(40)}:${sandbox.base}`]);
+    expect((await store.listRuns(pr.id)).filter((r) => r.kind === "resolve")).toEqual([]);
+    expect(sandbox.localReads).toEqual([]);
   });
 
   it("at the limit of 2 automatic resolve runs for the base, the item waits on merge_conflict_pending; the comment is on its thread", async () => {

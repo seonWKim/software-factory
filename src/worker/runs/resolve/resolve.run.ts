@@ -35,7 +35,9 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
   const branch = branchFor(item, branch_prefix);
   const baseRef = `origin/${repo.base_branch}`;
   const identity = gitIdentity(w.cfg.agent_git_identity);
-  const handle = await w.route(item).sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
+  // A local item's sandbox reads the factory repo's local base and branch, also with a forge selected (its route).
+  const { sandbox } = w.route(item);
+  const handle = await sandbox.create({ repo: repo.path, branch, base_ref: repo.base_branch }).catch((err: unknown) => {
     throw new RunFailure("git_failed", `worktree: ${err instanceof Error ? err.message : "unknown"}`, true);
   });
   try {
@@ -59,7 +61,7 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
       w.prRefresh(item, checkedLines(passed, { fixed: false, skipped: null })));
     return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha, ...(push_intent ? { push_intent } : {}) };
   } finally {
-    await w.d.sandbox.destroy(handle);
+    await sandbox.destroy(handle);
   }
 }
 
