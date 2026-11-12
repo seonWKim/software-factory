@@ -107,11 +107,11 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "reject",
     usage: "/reject <reason>",
-    description: "Close the item without a merge, giving your reason",
-    phases: [
-      "spec_pending", "max_revisions", "floor_tier", "rule_of_two", "budget_checkpoint", "too_large", "failed_implement", "agent_needs_human", "repeated_failure",
-      "max_loops",
-    ],
+    description:
+      "Close the item at any open phase without a merge, giving your reason; its queued and running runs are stopped. " +
+      "Not once its change is in the merge queue or merged: then it says why",
+    // Any open phase (design 04-gate-commands, 2026-11-13); the controller refuses an item whose change is in the merge queue.
+    phases: OPEN_PHASES,
     needs_pr: false,
     changes_state: true,
   },

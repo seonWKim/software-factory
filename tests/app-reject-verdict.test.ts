@@ -148,20 +148,20 @@ describe("dashboard reject", () => {
     expect(await h.refusals(it1, r)).toEqual([]);
   });
 
-  it("where /reject is refused (waiting for a merge): one reply naming the state, and nothing changes", async () => {
+  it("at the merge wait: the item closes as rejected with its open PR, and gets no refusal", async () => {
     const h = await harness();
-    for (const [n, ref] of [[1, issueRef(1)], [2, localRef(2)]] as const) {
-      const it1 = await h.itemIn(ref, MERGE_PENDING);
+    for (const [n, ref, patch] of [[1, issueRef(1), MERGE_PENDING], [2, localRef(2), { ...MERGE_PENDING, change_ref: null }]] as const) {
+      const it1 = await h.itemIn(ref, patch);
       const r = await h.request(it1, "reject", "no");
       await h.apply();
       await h.apply();
-      expect(await h.get(it1), `item ${n}`).toEqual(it1);
-      expect(await h.refusals(it1, r)).toEqual([
-        "`/reject` was not applied: the spec is not waiting for approval (the item is waiting for a human merge).",
-      ]);
-      expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe((await h.refusals(it1, r))[0]);
+      expect(await h.get(it1), `item ${n}`).toMatchObject({ stage: "CLOSED", close_reason: "rejected", spec_feedback: "no", blocked_on: "none", blocked_reason: null });
+      expect(await h.refusals(it1, r)).toEqual([]);
+      expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBeNull();
     }
-    expect(h.forge.prCloseCalls).toEqual([]);
+    expect(h.forge.prStates.get(42)).toBe("closed");
+    expect(h.forge.mergeCalls).toEqual([]);
+    expect(h.forge.prComments).toEqual([expect.objectContaining({ pr_number: 42, body: expect.stringContaining("> no") })]);
   });
 
   it("a reason the egress scan flags is refused with one reply, and nothing changes", async () => {

@@ -3,8 +3,8 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
-  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal, failedRunKind, helpReply,
-  latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
+  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal,
+  failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
@@ -544,10 +544,11 @@ export class CommandsUnit {
     if (e.kind === "revise_requested" && (e.pr || asFeedback)) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
-    if (it.stage === "CLOSED") return { refuse: CLOSED_REFUSAL };
+    if (it.stage === "CLOSED") return e.kind === "spec_rejected" && it.merge_sha ? this.reject(e, it, actor) : { refuse: CLOSED_REFUSAL };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
     if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note, this.widen(it, paths));
     if (it.blocked_reason === RULE_OF_TWO) return this.c.unit("transitions").ruleOfTwoCommand(e, it, actor, note, paths);
+    if (e.kind === "spec_rejected") return this.reject(e, it, actor);
     if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
     if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it) || splitFilingFailed(it))) {
       // The same `/approve` delivered again (a second poll, another replica, or the one whose filing was given up):
@@ -564,26 +565,13 @@ export class CommandsUnit {
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
       phase === "max_loops";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
-    if (!awaitingSpec(it) && !(afterFailure && e.kind === "spec_rejected")) {
+    if (!awaitingSpec(it)) {
       const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
         ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}`
         : "";
       return { refuse: `${specNotWaiting(phase)}${onPr}` };
     }
     switch (e.kind) {
-      case "spec_rejected":
-        // Recorded first; the comment and the close follow (finishReject), and survive a stop in between.
-        return {
-          patch: {
-            stage: "CLOSED",
-            close_reason: "rejected",
-            blocked_on: "upstream",
-            blocked_reason: SOURCE_CLOSE_PENDING,
-            spec_feedback: e.reason.trim() || null,
-          },
-          actor,
-          reason: "spec_rejected",
-        };
       case "revise_requested": {
         const feedback = e.feedback.trim();
         if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
@@ -629,6 +617,18 @@ export class CommandsUnit {
         };
       }
     }
+  }
+
+  /**
+   * `/reject <reason>` at any open phase (design 04-gate-commands, 2026-11-13): closes as `rejected` without a merge, its queued and
+   * running runs stopped in the same transition as a source close does; then the comment, issue close and an open PR's close
+   * (finishReject). Refused, saying why, when its change is merged or in the merge queue (the closes unit's rejectRefusal).
+   */
+  async reject(e: Extract<ItemCommandEvent, { kind: "spec_rejected" }>, it: WorkItem, actor: Actor): Promise<Decision | Refusal> {
+    const refuse = await this.c.unit("closes").rejectRefusal(it);
+    if (refuse !== null) return { refuse };
+    const patch = { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING, spec_feedback: e.reason.trim() || null } as const;
+    return { patch, actor, reason: "spec_rejected", cancel_queued_runs: true, cancel_running_runs: true };
   }
 
   /**
