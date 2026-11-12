@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CALENDAR_SYNC_MS, syncCalendars } from "../../src/calendar/index.js";
-import descriptor from "../../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
+import descriptor, { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } from "../../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
 import {
   CALENDAR_READONLY_SCOPE,
   EVENTS_API,
@@ -27,7 +27,7 @@ import { newStore } from "../helpers/store.js";
 const REPO_ROOT = join(import.meta.dirname, "..", "..");
 const SOURCE_FILE = join(REPO_ROOT, "src", "calendar", "plugins", "google-calendar", "google-calendar-source.ts");
 const SECRETS = { GOOGLE_REFRESH_TOKEN: "refresh-secret-value", GOOGLE_CLIENT_ID: "client-id-value", GOOGLE_CLIENT_SECRET: "client-secret-value" };
-const NAMES = { refreshToken: "GOOGLE_REFRESH_TOKEN", clientId: "GOOGLE_CLIENT_ID", clientSecret: "GOOGLE_CLIENT_SECRET" } as const;
+const NAMES = { refreshToken: GOOGLE_REFRESH_TOKEN, clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET };
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -372,7 +372,7 @@ describe("google-calendar: startup", () => {
     const loaded = await loadConfig(root({ ...SQLITE, calendar: ["google-calendar"], calendar_ids: ["work@example.com"] }));
     const built = await build(loaded, { clock: new FakeClock(NOW), repoLookup: fakeRepoLookup });
     try {
-      const [entry] = built.controller.kernel.d.calendar;
+      const [entry] = built.controller.kernel.d.calendar ?? [];
       expect(entry!.name).toBe("google-calendar");
       expect((entry!.source as GoogleCalendarSource<string>).calendars).toEqual(["work@example.com"]);
     } finally {
