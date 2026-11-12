@@ -6,7 +6,7 @@ import { SM_PX, Table, Td, Tr } from "../web/src/components/ui/parts.js";
 import { ItemsTable } from "../web/src/views/common.js";
 
 // The shared Table (design §9): a table at sm and up; below sm one card per row, with no table element and no
-// horizontal scroll. The first cell is the card's title, the next two sit under it, the rest carry their column name.
+// horizontal scroll. The first cell is the card's title, the second sits under it, the rest carry their column name.
 
 const AT = "2026-11-07T00:00:00.000Z";
 const NOW = Date.parse(AT);
@@ -44,7 +44,7 @@ describe("Table", () => {
     expect(table.querySelector('tr[data-key="a"]')!.querySelectorAll("td")).toHaveLength(5);
   });
 
-  it("below sm each row is a card: title first, the next two under it, the rest named by their column", () => {
+  it("below sm each row is a card: title first, the second cell alone under it, the rest named by their column from the third", () => {
     width(390);
     render(sample);
     expect(document.querySelector("table")).toBeNull();
@@ -53,9 +53,25 @@ describe("Table", () => {
     const card = list.querySelector<HTMLElement>('li[data-key="a"]')!;
     const [title, under, rest] = [...card.children] as HTMLElement[];
     expect(title!.textContent).toBe("Alpha");
-    expect([...under!.children].map((c) => c.textContent)).toEqual(["running", "building it"]);
-    expect([...rest!.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Since", "PR"]);
-    expect([...rest!.querySelectorAll("dd")].map((d) => d.textContent)).toEqual(["4m", "#9"]);
+    expect(under!.textContent).toBe("running");
+    expect([...rest!.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Why", "Since", "PR"]);
+    expect([...rest!.querySelectorAll("dd")].map((d) => d.textContent)).toEqual(["building it", "4m", "#9"]);
+  });
+
+  it("below sm a cell with nothing in it is not listed, and the next one keeps its own column name", () => {
+    width(390);
+    render(
+      <Table label="Gaps" head={["Name", "State", "Why", "Reset"]}>
+        <Tr data-key="g">
+          <Td>Gamma</Td>
+          <Td>idle</Td>
+          <Td>{false}</Td>
+          <Td>x</Td>
+        </Tr>
+      </Table>,
+    );
+    const rest = screen.getByRole("list", { name: "Gaps" }).querySelector<HTMLElement>("dl")!;
+    expect([...rest.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Reset"]);
   });
 
   it("switches when the window crosses sm", () => {
@@ -95,7 +111,7 @@ describe("Needs you at 390px", () => {
     // The title wraps in a card; it is cut off only in the table.
     expect(within(title!).getByRole("link").className).not.toMatch(/(^|\s)truncate(\s|$)/);
     expect(under!.textContent).toContain("Needs approval");
-    expect(under!.textContent).toContain("Waits for your /approve on the spec.");
+    expect(cards[0]!.querySelector("dl")!.textContent).toContain("Waits for your /approve on the spec.");
     for (const el of document.querySelectorAll("*")) expect(el.className).not.toMatch(/overflow-x-(auto|scroll)/);
   });
 });

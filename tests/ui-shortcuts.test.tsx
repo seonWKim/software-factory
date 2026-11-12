@@ -136,7 +136,7 @@ describe("shortcuts", () => {
     expect(document.activeElement).toBe(document.body);
     history.pushState(null, "", "/app/tasks");
     dispatchEvent(new PopStateEvent("popstate"));
-    const quick = await screen.findByPlaceholderText(/Add a task/);
+    const quick = await screen.findByPlaceholderText("e.g. rent friday p1 #home");
     const other = screen.getByLabelText("field");
     other.focus();
     press("q", {}, other);

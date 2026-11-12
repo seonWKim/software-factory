@@ -1,15 +1,16 @@
-import { Children, Fragment, type ReactNode, createContext, useContext, useEffect, useState } from "react";
+import { Children, Fragment, type ReactNode, createContext, isValidElement, useContext, useEffect, useState } from "react";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 
 // Small shared pieces for the pages: a section with a heading, a data table, a level badge and the loading
 // and error states. Plain Tailwind; no component library.
 
-export function Section({ title, count, children, action }: { title: string; count?: number | undefined; children: ReactNode; action?: ReactNode }) {
+/** A titled block. With no `title` the count shows alone and `label` names the region (`title` wins when both are given). */
+export function Section({ title, label, count, children, action }: { title?: string; label?: string; count?: number | undefined; children: ReactNode; action?: ReactNode }) {
   return (
-    <section aria-label={title} className="mt-6 first:mt-0">
+    <section aria-label={title ?? label} className="mt-6 first:mt-0">
       <div className="mb-2 flex items-baseline gap-2">
-        <h2 className="text-balance text-sm font-semibold">{title}</h2>
+        {title !== undefined && <h2 className="text-balance text-sm font-semibold">{title}</h2>}
         {count !== undefined && <span className="text-sm text-text-3 tabular-nums">{count}</span>}
         {action && <div className="ml-auto">{action}</div>}
       </div>
@@ -38,7 +39,7 @@ const TableMode = createContext<{ head: readonly string[]; cards: boolean }>({ h
 
 /**
  * A data table at `sm` and up; below it, one card per row with no horizontal scroll: the first cell is the
- * card's title, the next two sit under it, the rest are listed with their column names. Rows are `Tr`, cells `Td`.
+ * card's title, the second sits under it, the rest are listed with their column names. Rows are `Tr`, cells `Td`.
  * `numeric[i]` right-aligns the i-th column's heading to sit over its numbers.
  */
 export function Table({ head, children, label, numeric }: { head: readonly string[]; children: ReactNode; label: string; numeric?: readonly boolean[] }) {
@@ -76,19 +77,21 @@ export function Tr({ children, ...attrs }: { children: ReactNode } & { [data: `d
   if (!cards) return <tr {...attrs}>{children}</tr>;
   // Cells left out with `cond && <Td>` are dropped here, as they are from `head`.
   const [title, ...cells] = Children.toArray(children);
-  const under = cells.slice(0, 2);
-  const rest = cells.slice(2);
+  const [under, ...rest] = cells;
   return (
     <li {...attrs} className="min-w-0 px-3 py-2 text-sm">
       <div className="min-w-0 font-medium break-words">{title}</div>
-      {under.length > 0 && <div className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">{under}</div>}
+      {under !== undefined && <div className="mt-1 min-w-0">{under}</div>}
       {rest.length > 0 && (
         <dl className="mt-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs">
           {rest.map((cell, i) => (
-            <Fragment key={i}>
-              <dt className="text-text-2">{head[i + 3] ?? ""}</dt>
-              <dd className="min-w-0">{cell}</dd>
-            </Fragment>
+            // A cell with nothing in it (a reset that does not apply) is not listed, so no label stands alone.
+            isValidElement<{ children?: ReactNode }>(cell) && (cell.props.children === undefined || typeof cell.props.children === "boolean" || cell.props.children === null) ? null : (
+              <Fragment key={i}>
+                <dt className="text-text-2">{head[i + 2] ?? ""}</dt>
+                <dd className="min-w-0">{cell}</dd>
+              </Fragment>
+            )
           ))}
         </dl>
       )}
