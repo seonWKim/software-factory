@@ -299,14 +299,17 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
       className={cn("flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3", FOCUS, "focus-visible:-outline-offset-2", sub && "pl-10")}
     >
       {token !== null && (
-        <input
-          type="checkbox"
+        // The shared Button as a checkbox: components/ui has no checkbox, and a raw input is not used outside it.
+        <Button
+          size="icon"
+          role="checkbox"
+          aria-checked={checked}
           aria-label={t("tasks.complete", { title: task.title })}
-          checked={checked}
           disabled={action.busy}
-          onChange={() => void complete()}
-          className={cn("mt-0.5 size-4 shrink-0 accent-accent", FOCUS)}
-        />
+          onClick={() => void complete()}
+        >
+          <span aria-hidden>{checked ? "✓" : ""}</span>
+        </Button>
       )}
       <div className="min-w-0 flex-1 space-y-1">
         {mode === "edit" ? (
