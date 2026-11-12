@@ -2,10 +2,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { API, type TaskRow, type TasksView, postTaskBuild, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
-import { ButtonRow } from "../components/ui/button-row.js";
 import { announceStatus } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -160,13 +160,7 @@ export function TasksPage() {
   const token = v?.can_build ? v.csrf_token : null;
   return (
     <>
-      <ButtonRow role="group" aria-label="Task view" className="mb-6">
-        {TABS.map((t) => (
-          <Button key={t.id} aria-pressed={t.id === tab} onClick={() => setTab(t.id)}>
-            {t.label}
-          </Button>
-        ))}
-      </ButtonRow>
+      <SegmentedControl label="Task view" options={TABS} value={tab} onChange={setTab} className="mb-6" />
       <Section title={TABS.find((t) => t.id === tab)!.label} count={v ? count(v, tab) : undefined}>
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <TabBody tab={tab} v={v} token={token} />}
         <p className={`mt-3 ${muted}`}>

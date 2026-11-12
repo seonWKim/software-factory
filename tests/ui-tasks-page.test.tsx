@@ -72,6 +72,18 @@ describe("Tasks page", () => {
     expect(PAGES.map((p) => p.path)).toContain("tasks");
   });
 
+  it("the view picker is one segmented control in one row, Today selected first, the clicked view selected next", async () => {
+    await show();
+    const group = screen.getByRole("group", { name: "Task view" });
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Inbox", "Today", "Upcoming", "Project"]);
+    expect(group.className.split(" ")).toContain("flex-nowrap");
+    expect(group.className.split(" ")).not.toContain("flex-wrap");
+    const selected = () => [...group.querySelectorAll("button[aria-pressed=true]")].map((b) => b.textContent);
+    expect(selected()).toEqual(["Today"]);
+    tab("Project");
+    expect(selected()).toEqual(["Project"]);
+  });
+
   it("Today lists overdue tasks first, in red, then today's", async () => {
     await show();
     const cards = [...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task);
