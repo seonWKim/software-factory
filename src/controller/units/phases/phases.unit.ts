@@ -29,6 +29,12 @@ function phaseSpecPending(it: WorkItem): boolean {
   return it.parent_id !== null && it.stage === "READY" && it.blocked_on === "human" && it.blocked_reason === "spec_pending";
 }
 
+/** Held phase `it` released: its hold lifted and its triage queued under its intake key. */
+function release(it: WorkItem, actor: Actor, reason: string, detail: StateChangeDetail): NonNullable<Decision> {
+  const enqueue = { kind: "triage" as const, idempotency_key: `${it.source.type}:${it.source.id}:triage` };
+  return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason, detail, enqueue };
+}
+
 /** One phase of a split being filed: its place, its spec, and the ref of the phase before it. */
 type PhaseFiling = { index: number; phase: TriagePhase; total: number; prev: SourceRef | null };
 function phaseBody(it: WorkItem, f: PhaseFiling): string {
@@ -306,21 +312,41 @@ export class PhasesUnit {
       this.c.k.d.log.warn("held phase has no parent link; left held", { work_item_id: id });
       return;
     }
-    const parentId = it.parent_id;
+    const prev = await this.previousPhase(it);
+    if (it.phase > 1 && !completed(prev)) return;
+    const detail = { parent_work_item_id: it.parent_id, phase: it.phase, depends_on: prev?.source.id ?? null };
+    await this.c.unit("transitions").decide(id, (cur) => (phaseHeld(cur) ? release(cur, SYSTEM, "phase_released", detail) : null));
+  }
+
+  /**
+   * `/retry` on held phase `it` (design 04-split-specs, 2026-11-12): releases it into triage unless the phase before
+   * it is still open, so a phase whose previous phase closed without a merge (rejected, superseded) can start. The
+   * transition records that phase and its close reason. Runs inside the command's conditional transition.
+   */
+  async retryPhase(it: WorkItem, actor: Actor, note: string | null, paths: readonly string[]): Promise<Decision | Refusal> {
+    if (paths.length > 0) return { refuse: "`+paths` applies only to a failed implement run; reply `/retry` without `+paths`" };
+    const prev = await this.previousPhase(it);
+    if (prev && prev.stage !== "CLOSED") {
+      return {
+        refuse: `the previous phase, phase ${prev.phase ?? "?"} (${prev.source.link}), is still open: it must close as completed first, which starts this phase, ` +
+          "or close without a merge, after which `/retry` releases this phase",
+      };
+    }
+    return release(it, actor, "retry_requested", {
+      released: PHASE_HOLD,
+      parent_work_item_id: it.parent_id,
+      phase: it.phase,
+      depends_on: prev?.source.id ?? null,
+      close_reason: prev?.close_reason ?? null,
+      ...(note ? { note } : {}),
+    });
+  }
+
+  /** The phase before held phase `it`, among those its parent's approval recorded; null for phase 1 or no parent link. */
+  private async previousPhase(it: WorkItem): Promise<WorkItem | null> {
+    if (it.parent_id === null || it.phase === null || it.phase < 2) return null;
     const phase = it.phase;
-    const prev = phase > 1 ? (await this.recordedPhases(parentId)).find((p) => p.phase === phase - 1) : null;
-    if (phase > 1 && !completed(prev)) return;
-    await this.c.unit("transitions").decide(id, (cur) =>
-      phaseHeld(cur)
-        ? {
-            patch: { blocked_on: "none", blocked_reason: null },
-            actor: SYSTEM,
-            reason: "phase_released",
-            detail: { parent_work_item_id: parentId, phase, depends_on: prev?.source.id ?? null },
-            enqueue: { kind: "triage", idempotency_key: `${cur.source.type}:${cur.source.id}:triage` },
-          }
-        : null,
-    );
+    return (await this.recordedPhases(it.parent_id)).find((p) => p.phase === phase - 1) ?? null;
   }
 
   /**

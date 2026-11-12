@@ -5,6 +5,7 @@ import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { PHASE_HOLD, PHASES_OPEN, SPLIT_FILING, phaseMarker } from "../src/core/split.js";
 import { REFUSED_ATTEMPTS } from "../src/outbound/outbound.js";
 import type { RunOutcome, SourceRef, UserId, WorkItem } from "../src/core/types.js";
+import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { SourceCloseReason } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, triageSpec } from "./helpers/fakes.js";
@@ -339,6 +340,99 @@ describe("split spec flow", () => {
     expect(await f.bySource(s2!.ref)).toMatchObject({ blocked_reason: PHASE_HOLD });
     expect(await f.get(parent)).toMatchObject({ stage: "READY", blocked_reason: PHASES_OPEN });
     expect(f.source.closed.map((s) => s.id)).not.toContain(issueRef(74).id);
+  });
+
+  describe("/retry on a held phase (design 04-split-specs, 2026-11-12)", () => {
+    /** A split of two approved on issue `n`, phase 1's triage done: phase 1 waits at the spec gate, phase 2 is held. */
+    async function heldSplit(n: number) {
+      const f = await setup();
+      const parent = await f.intake(n);
+      await f.finish("triage", f.triaged(bigSpec(2)));
+      await f.approve(issueRef(n));
+      const [s1, s2] = f.source.subIssues;
+      await f.finish("triage", f.triaged(smallSpec));
+      const p1 = await f.bySource(s1!.ref);
+      const p2 = await f.bySource(s2!.ref);
+      expect(p1).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
+      expect(p2).toMatchObject({ stage: "NEW", blocked_on: "upstream", blocked_reason: PHASE_HOLD });
+      let comment = 20_000_000;
+      const say = async (event: (comment_id: string) => SourceEvent) => {
+        const id = String(++comment);
+        f.source.queue.push(event(id));
+        await f.controller.tickIntake();
+        return id;
+      };
+      const retry = (src: SourceRef) => say((comment_id) => ({ kind: "retry_requested", source: src, comment_id, requester: alice }));
+      const reject = (src: SourceRef) => say((comment_id) => ({ kind: "spec_rejected", source: src, comment_id, approver: alice, reason: "superseded by other work" }));
+      const refusal = (id: string) => f.source.comments.find((c) => c.marker === `<!-- factory:refused:${id} -->`);
+      return { f, parent, s1: s1!, s2: s2!, p1, p2, retry, reject, refusal };
+    }
+
+    it("previous phase rejected: the automatic pass keeps it held; /retry releases it into triage and records the closed phase", async () => {
+      const { f, s1, s2, p1, p2, retry, reject, refusal } = await heldSplit(90);
+      await reject(s1.ref);
+      expect(await f.get(p1)).toMatchObject({ stage: "CLOSED", close_reason: "rejected" });
+      // The automatic release is unchanged: only a completed previous phase releases the next.
+      await f.controller.tickPhases();
+      expect(await f.get(p2)).toMatchObject({ blocked_on: "upstream", blocked_reason: PHASE_HOLD, version: p2.version });
+      expect(await f.runsOf(p2)).toEqual([]);
+
+      const id = await retry(s2.ref);
+      expect(refusal(id)).toBeUndefined();
+      expect(await f.get(p2)).toMatchObject({ stage: "NEW", blocked_on: "none", blocked_reason: null });
+      const runs = await f.runsOf(p2);
+      expect(runs.map((r) => [r.kind, r.idempotency_key])).toEqual([["triage", `${s2.ref.type}:${s2.ref.id}:triage`]]);
+      const change = (await f.store.listStateChanges(p2.id)).at(-1)!;
+      expect(change).toMatchObject({
+        reason: "retry_requested",
+        actor: { kind: "user" },
+        detail: { released: PHASE_HOLD, depends_on: s1.ref.id, close_reason: "rejected", phase: 2 },
+      });
+      // A second pass and a second /retry release nothing more.
+      await f.controller.tickPhases();
+      await retry(s2.ref);
+      expect((await f.store.listStateChanges(p2.id)).filter((c) => c.detail?.released === PHASE_HOLD)).toHaveLength(1);
+      expect(await f.runsOf(p2)).toHaveLength(1);
+    });
+
+    it("previous phase still open: /retry changes nothing, queues nothing, and says that phase must close as completed first", async () => {
+      const { f, s1, s2, p2, retry, refusal } = await heldSplit(91);
+      const id = await retry(s2.ref);
+      const after = await f.get(p2);
+      expect([after.stage, after.blocked_on, after.blocked_reason, after.version]).toEqual([p2.stage, p2.blocked_on, p2.blocked_reason, p2.version]);
+      expect(await f.runsOf(p2)).toEqual([]);
+      const reply = refusal(id)!.body;
+      expect(reply).toContain("must close as completed first");
+      expect(reply).toContain(`phase 1 (${s1.ref.link})`);
+    });
+
+    it("previous phase completed: the automatic pass releases it as before, and a /retry after it releases nothing more", async () => {
+      const { f, parent, s1, s2, p2, retry } = await heldSplit(92);
+      await f.closeSource(s1.ref, "completed");
+      expect(await f.get(p2)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+      const released = (await f.store.listStateChanges(p2.id)).at(-1)!;
+      expect(released).toMatchObject({ reason: "phase_released", actor: { kind: "system" } });
+      expect(released.detail).toEqual({ parent_work_item_id: parent.id, phase: 2, depends_on: s1.ref.id });
+      const v = (await f.get(p2)).version;
+      await retry(s2.ref);
+      expect((await f.get(p2)).version).toBe(v);
+      expect(await f.runsOf(p2)).toHaveLength(1);
+    });
+
+    it("previous phase completed with no pass yet: /retry releases it once, and the automatic pass after it releases nothing more", async () => {
+      const { f, p1, s2, p2, retry } = await heldSplit(93);
+      const r = await f.store.transition({
+        id: p1.id, expected_version: (await f.get(p1)).version, actor: system, reason: "setup",
+        patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null },
+      });
+      expect(r.ok).toBe(true);
+      await retry(s2.ref);
+      expect(await f.get(p2)).toMatchObject({ blocked_on: "none", blocked_reason: null });
+      await f.controller.tickPhases();
+      const releases = (await f.store.listStateChanges(p2.id)).filter((c) => c.reason === "phase_released" || c.detail?.released === PHASE_HOLD);
+      expect(releases.map((c) => [c.reason, c.detail?.close_reason])).toEqual([["retry_requested", "completed"]]);
+      expect(await f.runsOf(p2)).toHaveLength(1);
+    });
   });
 
   it("a split parent closed as completed counts as merged for its dependents (no merge sha of its own)", async () => {

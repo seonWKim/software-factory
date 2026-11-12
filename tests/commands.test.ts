@@ -271,6 +271,21 @@ describe("command table", () => {
     expect(helpReply(s("failed_implement"))).not.toContain("failed_implement");
   });
 
+  it("a held phase of a split is its own phase, where /retry applies and says it releases the phase (design 04-split-specs)", () => {
+    expect(commandPhase({ stage: "NEW", blocked_on: "upstream", blocked_reason: "phase_hold", change_ref: null })).toBe("phase_hold");
+    // Another upstream block is still "other blocked".
+    expect(commandPhase({ stage: "NEW", blocked_on: "upstream", blocked_reason: "something", change_ref: null })).toBe("other_blocked");
+    expect(phaseLabel("phase_hold")).toBe("held: waiting for the previous phase of its split");
+    const retry = commandSpec("retry");
+    expect(applies(retry, s("phase_hold"))).toBe(true);
+    expect(retry.description).toContain("On a held phase of a split, it releases the phase into triage once the previous phase closed without a merge");
+    expect(helpReply(s("phase_hold"))).toContain("(held: waiting for the previous phase of its split)");
+    expect(helpReply(s("phase_hold"))).toContain("`/retry` **(now)**");
+    const row = commandTableMarkdown().split("\n").find((l) => l.startsWith("| `/retry` |"))!;
+    expect(row).toContain("held: waiting for the previous phase of its split");
+    expect(commandsFor(s("other_blocked")).map((c) => c.name)).not.toContain("retry");
+  });
+
   it("SET_UP.md has the command table from code", () => {
     const setup = readFileSync(new URL("../SET_UP.md", import.meta.url), "utf8");
     expect(setup).toContain(commandTableMarkdown());
@@ -317,6 +332,7 @@ describe("footers match what the controller accepts", () => {
     implementing: { stage: "RUNNING" },
     dependency_hold: { stage: "RUNNING", blocked_on: "dependency", blocked_reason: "waiting for #1 to merge" },
     dependency_closed: { stage: "RUNNING", blocked_on: "human", blocked_reason: "dependency_closed:#1" },
+    phase_hold: { stage: "NEW", blocked_on: "upstream", blocked_reason: "phase_hold" },
     floor_tier: { stage: "RUNNING", blocked_on: "human", blocked_reason: "floor_tier" },
     rule_of_two: { stage: "RUNNING", blocked_on: "human", blocked_reason: "rule_of_two" },
     failed_review: { stage: "REVIEW", blocked_on: "human", blocked_reason: "max_attempts" },
