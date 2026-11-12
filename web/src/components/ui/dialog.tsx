@@ -1,5 +1,6 @@
 import { type FormEvent, type ReactNode, type RefObject, useEffect, useId, useRef } from "react";
 import { createPortal } from "react-dom";
+import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
 import { ButtonRow } from "./button-row.js";
@@ -102,7 +103,7 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
         )}
         <ButtonRow className="justify-end">
           <Button variant="secondary" onClick={() => close.current()}>
-            Cancel
+            {t("common.cancel")}
           </Button>
           <Button type="submit" variant={danger ? "danger" : "primary"} solid={danger} disabled={confirmDisabled}>
             {confirmLabel}
