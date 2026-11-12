@@ -1,6 +1,6 @@
-// The file-only key writer's text edit of factory.config.json (design 08-settings): it changes only the value it
-// sets, so every other byte of the file stays as it was written. Pure: text in, text out. `factory setup` still has
-// its own top-level edit (src/cli/handlers/setup/config-edit.ts): the cli component may not import core yet.
+// The text edit of factory.config.json that keeps the file's own layout: it changes only the value it sets or
+// removes, so every other byte of the file stays as it was written. Pure: text in, text out. Used by the file-only
+// key writer (design 08-settings) and by `factory setup` (src/cli/handlers/setup/config-edit.ts).
 
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
@@ -70,7 +70,7 @@ function members(t: string, from = 0): { members: Member[]; close: number } {
 }
 
 /** One line when short (`{ "a": 1 }`), else one member per line, each member's value on one line. */
-function formatValue(v: Json, indent = "  "): string {
+export function formatValue(v: Json, indent = "  "): string {
   const one = compact(v);
   if (one.length <= 100 || !isJsonObject(v)) return one;
   return `{\n${Object.entries(v).map(([k, x]) => `${indent}  ${JSON.stringify(k)}: ${compact(x)}`).join(",\n")}\n${indent}}`;
@@ -114,4 +114,13 @@ export function setConfigKey(text: string, path: readonly string[], value: Json)
       : `${text.slice(0, close)}\n${indent}${entry}\n${pad}${text.slice(close)}`;
   }
   throw new Error("factory.config.json: an empty key path");
+}
+
+/** `text` without the top-level member `key` and the separator before it (or after it, when it is the first). */
+export function removeConfigKey(text: string, key: string): string {
+  const { members: ms } = members(text);
+  const at = ms.findIndex((m) => m.key === key);
+  const m = ms[at];
+  if (!m) return text;
+  return at > 0 ? text.slice(0, ms[at - 1]!.end) + text.slice(m.end) : text.slice(0, m.start) + text.slice(ms[1] ? ms[1].start : m.end);
 }
