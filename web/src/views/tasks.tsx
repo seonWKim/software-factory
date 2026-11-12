@@ -1,9 +1,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useRef, useState } from "react";
-import { API, type TaskRow, type TasksView, postTaskAdd, postTaskBuild, useApi } from "../api.js";
+import { API, type DayRow, type EventRow, type TaskRow, type TasksView, isEventRow, postTaskAdd, postTaskBuild, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { announceStatus } from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
+import { Notice } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
@@ -14,9 +15,10 @@ import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's open plain tasks, read through GET
-// /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then due today. Upcoming: the next 7
-// days, by day. Project: every task under its #list. The server places each task by its due date at its own local
-// midnight, so the page does no date arithmetic. Build this sends a task to intake once (POST /api/v1/tasks/build); a
+// /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then today's tasks and calendar
+// events. Upcoming: today through 7 days ahead, by day, tasks and events. Project: every task under its #list. The
+// server places each task and event and orders each day (all-day events, then timed items by time, then untimed
+// tasks), so the page does no date arithmetic. A source whose last sync failed is named with its last sync time. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
 
 const TABS = [
@@ -165,18 +167,34 @@ function TaskCard({ task, overdue = false, token }: { task: TaskRow; overdue?: b
   );
 }
 
-function TaskList({ label, tasks, token, overdue = false }: { label: string; tasks: readonly TaskRow[]; token: string | null; overdue?: boolean }) {
+/** A calendar event: its title, its time that day or "all day", and its source's name. Read-only. */
+function EventCard({ event }: { event: EventRow }) {
+  return (
+    <li data-event={`${event.source}:${event.id}`} className="flex flex-wrap items-start gap-x-3 gap-y-2 p-3">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="text-sm text-pretty break-words">{event.title}</p>
+        <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
+          <Badge>{t("tasks.event")}</Badge>
+          <span className="tabular-nums">{event.time ?? t("tasks.allDay")}</span>
+          <span className="break-all">{event.source}</span>
+        </p>
+      </div>
+    </li>
+  );
+}
+
+function TaskList({ label, tasks, token, overdue = false }: { label: string; tasks: readonly DayRow[]; token: string | null; overdue?: boolean }) {
   return (
     <ul aria-label={label} className="divide-y divide-border rounded-control border border-border">
-      {tasks.map((t) => (
-        <TaskCard key={t.id} task={t} overdue={overdue} token={token} />
-      ))}
+      {tasks.map((t) =>
+        isEventRow(t) ? <EventCard key={`event:${t.source}:${t.id}`} event={t} /> : <TaskCard key={t.id} task={t} overdue={overdue} token={token} />,
+      )}
     </ul>
   );
 }
 
 /** One heading and its list, for the groups of Today, Upcoming and Project. */
-function Group({ title, tasks, token, overdue = false }: { title: string; tasks: readonly TaskRow[]; token: string | null; overdue?: boolean }) {
+function Group({ title, tasks, token, overdue = false }: { title: string; tasks: readonly DayRow[]; token: string | null; overdue?: boolean }) {
   return (
     <div className="space-y-1">
       <h3 className={cn("text-xs font-medium", overdue ? "text-pill-bad-fg" : "text-text-2")}>{title}</h3>
@@ -218,6 +236,24 @@ function TabBody({ tab, v, token }: { tab: Tab; v: TasksView; token: string | nu
   );
 }
 
+/** The sources whose last sync failed, each with its last sync time: their events shown are the last stored ones. */
+function StaleCalendars({ v }: { v: TasksView }) {
+  const failed = (v.calendar ?? []).filter((c) => c.failed);
+  if (failed.length === 0) return null;
+  const when = (at: string | null) => (at === null ? t("tasks.neverSynced") : t("tasks.lastSynced", { at: new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }));
+  return (
+    <div className="mb-3">
+      <Notice tone="warn" title={t("tasks.calendarSyncFailed")}>
+        {failed.map((c) => (
+          <p key={c.source} data-calendar-stale={c.source} className="text-pretty break-words">
+            {t("tasks.staleCalendar", { source: c.source, when: when(c.synced_at) })}
+          </p>
+        ))}
+      </Notice>
+    </div>
+  );
+}
+
 const count = (v: TasksView, tab: Tab): number =>
   tab === "inbox" ? v.inbox.length
   : tab === "today" ? v.today.overdue.length + v.today.due.length
@@ -234,6 +270,7 @@ export function TasksPage() {
       <QuickAdd token={v?.csrf_token ?? null} />
       <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} className="mb-6" />
       <Section title={TABS.find((t) => t.id === tab)!.label} count={v ? count(v, tab) : undefined}>
+        {v && (tab === "today" || tab === "upcoming") && <StaleCalendars v={v} />}
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <TabBody tab={tab} v={v} token={token} />}
         <p className={`mt-3 ${muted}`}>
           {t("tasks.buildNote")}

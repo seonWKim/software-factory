@@ -140,24 +140,47 @@ export function taskLine(t: Task): string {
     ...(t.parent_task_id === null ? [] : [`sub of ${t.parent_task_id}`])].join("\t");
 }
 
-/** How many days after today the Upcoming view shows. */
+/** How many days after today the Upcoming view runs to; it starts today. */
 export const UPCOMING_DAYS = 7;
+
+/** A stored calendar event as the views take it (the calendar component's read, design 02-tasks). Times are ISO instants. */
+export interface CalendarEventInput {
+  source: string;
+  id: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  all_day: boolean;
+}
+
+/** An event placed on one day beside the tasks. `time`: local `HH:MM` it starts that day ("00:00" when it began on an earlier day); null all day. */
+export interface DayEvent extends CalendarEventInput {
+  kind: "event";
+  time: string | null;
+}
+
+/** One entry of a day: a task, or an event (`kind: "event"`). */
+export type DayEntry = Task | DayEvent;
+
+export const isEvent = (e: DayEntry): e is DayEvent => "kind" in e && e.kind === "event";
 
 export interface TaskDay {
   date: string;
-  tasks: Task[];
+  /** The day's tasks and events, in the order dayEntries gives. */
+  tasks: DayEntry[];
 }
 
 /**
- * The dashboard's views of the open tasks (design 02-tasks), each task placed by its due date against `now`'s
- * calendar date in this process's time zone, so the day ends at local midnight. Inbox: no due date. Today: overdue
- * (due before today) first, then due today. Upcoming: due in the UPCOMING_DAYS days after today, one entry per day
- * that has a task. Projects: every open task by its list label (unlabelled last), each by due date (undated last).
+ * The dashboard's views of the open tasks and the stored calendar events (design 02-tasks), each task placed by its
+ * due date and each event by the local days it overlaps, against `now`'s calendar date in this process's time zone,
+ * so the day ends at local midnight. Inbox: no due date. Today: overdue tasks (due before today) first, then today's
+ * tasks and events. Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an
+ * event. Projects: every open task by its list label (unlabelled last), each by due date (undated last).
  */
 export interface TaskViews {
   today_date: string;
   inbox: Task[];
-  today: { overdue: Task[]; due: Task[] };
+  today: { overdue: Task[]; due: DayEntry[] };
   upcoming: TaskDay[];
   projects: { list: string | null; tasks: Task[] }[];
 }
@@ -168,22 +191,47 @@ function byDue(a: Task, b: Task): number {
   return key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
 }
 
-export function taskViews(open: readonly Task[], now: Date): TaskViews {
+/** The events that overlap the local day `date`, in the given order, each with its start time on that day. */
+function eventsOn(events: readonly CalendarEventInput[], date: string): DayEvent[] {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  const from = new Date(y, m - 1, d).getTime();
+  const to = new Date(y, m - 1, d + 1).getTime();
+  const out: DayEvent[] = [];
+  for (const e of events) {
+    const start = Date.parse(e.starts_at);
+    const end = Date.parse(e.ends_at);
+    if (!(start < to && (end > from || start >= from))) continue;
+    const s = new Date(Math.max(start, from));
+    out.push({ ...e, kind: "event", time: e.all_day ? null : `${pad(s.getHours())}:${pad(s.getMinutes())}` });
+  }
+  return out;
+}
+
+/**
+ * One day's entries: all-day events first, then timed tasks and events by time (a task before an event at the same
+ * minute), then the untimed tasks in the order given. `tasks` comes sorted by byDue.
+ */
+function dayEntries(tasks: readonly Task[], events: readonly DayEvent[]): DayEntry[] {
+  const time = (e: DayEntry) => (isEvent(e) ? e.time : e.due_time) ?? "";
+  const timed = [...tasks.filter((t) => t.due_time !== null), ...events.filter((e) => e.time !== null)].sort((a, b) => time(a).localeCompare(time(b)));
+  return [...events.filter((e) => e.time === null), ...timed, ...tasks.filter((t) => t.due_time === null)];
+}
+
+export function taskViews(open: readonly Task[], now: Date, events: readonly CalendarEventInput[] = []): TaskViews {
   const today = localDate(now);
-  const last = localDate(now, UPCOMING_DAYS);
   const sorted = [...open].sort(byDue);
+  const day = (date: string) => dayEntries(sorted.filter((t) => t.due_date === date), eventsOn(events, date));
   const upcoming: TaskDay[] = [];
-  for (const t of sorted) {
-    if (t.due_date === null || t.due_date <= today || t.due_date > last) continue;
-    const day = upcoming.at(-1);
-    if (day?.date === t.due_date) day.tasks.push(t);
-    else upcoming.push({ date: t.due_date, tasks: [t] });
+  for (let n = 0; n <= UPCOMING_DAYS; n++) {
+    const date = localDate(now, n);
+    const entries = day(date);
+    if (entries.length > 0) upcoming.push({ date, tasks: entries });
   }
   const lists = [...new Set(sorted.map((t) => t.list))].sort((a, b) => (a === null ? 1 : b === null ? -1 : a.localeCompare(b)));
   return {
     today_date: today,
     inbox: sorted.filter((t) => t.due_date === null),
-    today: { overdue: sorted.filter((t) => t.due_date !== null && t.due_date < today), due: sorted.filter((t) => t.due_date === today) },
+    today: { overdue: sorted.filter((t) => t.due_date !== null && t.due_date < today), due: day(today) },
     upcoming,
     projects: lists.map((list) => ({ list, tasks: sorted.filter((t) => t.list === list) })),
   };

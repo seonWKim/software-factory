@@ -203,7 +203,10 @@ describe("GET /api/v1/tasks", () => {
     expect(v.inbox.map((t: { title: string }) => t.title)).toEqual(["inbox"]);
     expect(v.today.overdue.map((t: { title: string }) => t.title)).toEqual(["late"]);
     expect(v.today.due.map((t: { title: string }) => t.title)).toEqual(["now"]);
-    expect(v.upcoming).toEqual([{ date: "2026-11-13", tasks: [expect.objectContaining({ title: "soon", work_item_id: null })] }]);
+    expect(v.upcoming).toEqual([
+      { date: "2026-11-12", tasks: [expect.objectContaining({ title: "now" })] },
+      { date: "2026-11-13", tasks: [expect.objectContaining({ title: "soon", work_item_id: null })] },
+    ]);
     expect(v.projects.map((p: { list: string | null }) => p.list)).toEqual(["home", null]);
   });
 });

@@ -9,12 +9,8 @@ export default defineMigration({
   tables: [],
   async up(db) {
     if (!(await tableColumns(db, "controller_merge_queue_entries")).includes("heads")) {
-      await db.run(
-        db.dialect === "mysql"
-          ? "ALTER TABLE controller_merge_queue_entries ADD COLUMN heads TEXT NULL, ADD KEY controller_merge_queue_entries_run (run_key)"
-          : "ALTER TABLE controller_merge_queue_entries ADD COLUMN heads TEXT",
-      );
+      await db.run("ALTER TABLE controller_merge_queue_entries ADD COLUMN heads TEXT");
     }
-    if (db.dialect === "sqlite") await db.run("CREATE INDEX IF NOT EXISTS controller_merge_queue_entries_run ON controller_merge_queue_entries (run_key)");
+    await db.run("CREATE INDEX IF NOT EXISTS controller_merge_queue_entries_run ON controller_merge_queue_entries (run_key)");
   },
 });

@@ -1,5 +1,5 @@
 import type { Budgets } from "./budget.js";
-import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS } from "./config.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, coordinationProblems } from "./config.js";
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
@@ -261,6 +261,7 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations",
+  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -318,6 +319,9 @@ export interface SettableValues {
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; // interface → plugin name; no entry: the config's choice (design 08-settings)
+  stall_ms: number; probe_interval_ms: number; auth_pause_ms: number;
+  max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number;
+  intake_label: string | null; // null: no built-in default, and neither the file nor an override says
 }
 
 /** The built-in default of each settable key, in the form factory.config.json writes it. */
@@ -346,6 +350,10 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   auto_merge_max_tier: 0,
   message_style: "",
   notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {},
+  stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms,
+  auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
+  max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight,
+  intake_label: null, // no built-in default: the config file must say, and its value applies
 });
 
 export const HEARTBEAT_LEASE_MESSAGE = "heartbeat_ms must be well under lease_ms";
@@ -397,6 +405,12 @@ export function positiveInteger(key: string, value: unknown): number {
   return value;
 }
 
+/** `intake_label`: a non-empty string, or the config loader's message. */
+export function intakeLabel(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`intake_label must be a non-empty string (got ${JSON.stringify(value) ?? String(value)})`);
+  return value;
+}
+
 /** Checks one settable value; throws the message the config loader gives for that key. */
 export function parseSettable<K extends SettableKey>(key: K, value: unknown): SettableValues[K] {
   switch (key) {
@@ -429,6 +443,12 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     case "integrations": return integrationEntries(value) as SettableValues[K];
+    case "max_coordination_cost": case "hotspot_weight": case "mechanical_weight": {
+      const problem = coordinationProblems({ [key]: value ?? null })[0];
+      if (problem) throw new Error(problem);
+      return value as SettableValues[K];
+    }
+    case "intake_label": return (value === null ? null : intakeLabel(value)) as SettableValues[K]; // null: none, the file's applies
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }
@@ -549,6 +569,7 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
       const ov = globalOv.get(k);
       g[k] = ov ? { value: ov.value as SettableValues[typeof k], raw: ov.raw, source: "override" } : fromFile(k);
     }
+    if (g.auth_pause_ms.source === "default") g.auth_pause_ms = { ...g.retry_max_ms, source: "default" }; // follows retry_max_ms (05-restarts)
     return g as ResolvedSettings["global"];
   };
   const valuesOf = (g: ResolvedSettings["global"]) =>
@@ -636,28 +657,20 @@ export function workersCap(base: SettingsBase): number {
 
 /** The base a FactoryConfig alone gives: every key from the config, as if the file set it. For tests and lone loops. */
 export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTable; names?: ModelNames | undefined }): SettingsBase {
-  const file: Partial<Record<GlobalSettableKey, unknown>> = {
-    max_loops: config.max_loops,
-    max_restart: config.max_restart,
-    retry_base_ms: config.retry_base_ms,
-    retry_max_ms: config.retry_max_ms,
-    run_timeout_ms: config.run_timeout_ms,
-    first_output_ms: config.first_output_ms,
-    poll_interval_ms: config.poll_interval_ms,
-    tick_ms: config.tick_ms,
-    heartbeat_ms: config.heartbeat_ms,
-    lease_ms: config.lease_ms,
-    workers: config.workers,
-    phases_auto_approve: config.phases_auto_approve ?? false,
-    alarm_repeat_count: config.alarm_repeat_count ?? ALARM_DEFAULTS.alarm_repeat_count,
-    alarm_window_minutes: config.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
-    alarm_restart_count: config.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
-  };
-  if (config.coordination) file.hold_policy = config.coordination.hold_policy;
+  const file: Partial<Record<GlobalSettableKey, unknown>> = { intake_label: config.intake_label };
+  for (const k of CONFIG_KEYS) if (config[k] !== undefined) file[k] = config[k];
+  const c = config.coordination;
+  if (c) Object.assign(file, { hold_policy: c.hold_policy, max_coordination_cost: c.max_cost, hotspot_weight: c.hotspot_weight, mechanical_weight: c.mechanical_weight });
   if (models) file.model_by = modelByRaw(models.table);
   if (models?.names) file.models = models.names;
   return { file, layers: config.settings, ...(config.max_workers !== undefined ? { max_workers: config.max_workers } : {}) };
 }
+
+/** The settable keys a FactoryConfig holds under their own name: baseFromConfig reads them, the live view writes them. */
+const CONFIG_KEYS = [
+  "max_loops", "max_restart", "retry_base_ms", "retry_max_ms", "run_timeout_ms", "first_output_ms", "poll_interval_ms", "tick_ms", "heartbeat_ms",
+  "lease_ms", "workers", "phases_auto_approve", "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count", "stall_ms", "probe_interval_ms", "auth_pause_ms",
+] as const satisfies readonly (GlobalSettableKey & keyof FactoryConfig)[];
 
 /** Reads the stored overrides; the store's FactoryStore.listSettingOverrides. */
 export interface OverrideSource {
@@ -746,29 +759,16 @@ export class LiveSettings {
 
   private viewOf(r: ResolvedSettings): FactoryConfig {
     const v = r.values;
-    const coordination = this.opts.config.coordination;
+    const c = this.opts.config.coordination;
+    // The settable coordination keys live in the claim's coordination settings; a config with none and no override keeps none.
+    const live = c || (["hold_policy", "max_coordination_cost", "hotspot_weight", "mechanical_weight"] as const).some((k) => r.global[k].source !== "default");
+    const coordination = { ...(c ?? DEFAULT_COORDINATION), hold_policy: v.hold_policy, max_cost: v.max_coordination_cost, hotspot_weight: v.hotspot_weight, mechanical_weight: v.mechanical_weight };
     return {
       ...this.opts.config,
-      // `hold_policy` lives in the claim's coordination settings; a config with none and no override keeps none.
-      ...(coordination || r.global.hold_policy.source !== "default"
-        ? { coordination: { ...(coordination ?? DEFAULT_COORDINATION), hold_policy: v.hold_policy } }
-        : {}),
+      ...(live ? { coordination } : {}),
+      intake_label: v.intake_label ?? this.opts.config.intake_label, // null: no file value and no override, the config's own stays
       settings: r.layers,
-      max_loops: v.max_loops,
-      max_restart: v.max_restart,
-      retry_base_ms: v.retry_base_ms,
-      retry_max_ms: v.retry_max_ms,
-      run_timeout_ms: v.run_timeout_ms,
-      first_output_ms: v.first_output_ms,
-      poll_interval_ms: v.poll_interval_ms,
-      tick_ms: v.tick_ms,
-      heartbeat_ms: v.heartbeat_ms,
-      lease_ms: v.lease_ms,
-      phases_auto_approve: v.phases_auto_approve,
-      workers: v.workers,
-      alarm_repeat_count: v.alarm_repeat_count,
-      alarm_window_minutes: v.alarm_window_minutes,
-      alarm_restart_count: v.alarm_restart_count,
+      ...(Object.fromEntries(CONFIG_KEYS.map((k) => [k, v[k]])) as Pick<SettableValues, (typeof CONFIG_KEYS)[number]>),
     };
   }
 }

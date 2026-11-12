@@ -45,6 +45,8 @@ import type { ToolBroker, ToolDescriptor, ToolResult } from "../src/interfaces/t
 import {
   type Contexts,
   PLUGIN_ROOT,
+  connectHooks,
+  loadRegistry,
   type PluginDescriptor,
   defaultPlugins,
   findPluginFiles,
@@ -909,6 +911,41 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     expect(posted).toContain(`POST /repos/${owner}/${name}/labels ${loaded.config.status_label_prefix}triaging`);
     expect(posted).toContain(`POST /repos/${owner}/${name}/labels ${loaded.config.status_label_prefix}incomplete`);
     expect(lines[0]).toBe(`   "${loaded.config.intake_label}": created`);
+  });
+});
+
+describe("connect hooks (factory setup <kind> <command>)", () => {
+  const API_URL = pathToFileURL(join(REPO_ROOT, "src", "plugin-api.ts")).href;
+  /** A temp folder with one calendar (or `kind`) descriptor whose `connect` field is `connect`. */
+  const descriptorDir = (connect: string, kind = "calendar", name = "fixture-cal"): string => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-connect-"));
+    writeFileSync(
+      join(dir, `${name}.plugin.ts`),
+      `import { definePlugin } from ${JSON.stringify(API_URL)};\n` +
+        `export default definePlugin({ kind: ${JSON.stringify(kind)}, name: ${JSON.stringify(name)}, create: () => ({}), connect: ${connect} });\n`,
+    );
+    return dir;
+  };
+  const hook = (command: string) => `{ command: ${JSON.stringify(command)}, connect: async () => {}, disconnect: async () => {} }`;
+  const failure = (p: Promise<unknown>) => p.then(() => null, (e: Error) => e.message);
+
+  it("the registry lists each kind's connect hooks by plugin name, as it lists setups", () => {
+    for (const kind of PLUGIN_KINDS) expect(typeof REGISTRY[kind].connects, kind).toBe("object");
+    expect(REGISTRY.calendar.connects["google-calendar"]?.command).toBe("google");
+    expect(connectHooks(REGISTRY).map((h) => `${h.kind}/${h.name}/${h.hook.command}`)).toContain("calendar/google-calendar/google");
+    for (const h of connectHooks(REGISTRY)) expect(Object.keys(REGISTRY[h.kind].plugins), h.name).toContain(h.name);
+  });
+
+  it("a descriptor's connect field is loaded into its kind's entry", async () => {
+    const registry = await loadRegistry([PLUGIN_ROOT, descriptorDir(hook("fixture"))]);
+    expect(registry.calendar.connects["fixture-cal"]?.command).toBe("fixture");
+    expect(connectHooks(registry).map((h) => h.name)).toEqual(expect.arrayContaining(["google-calendar", "fixture-cal"]));
+  });
+
+  it("a bad connect field, a kind other than calendar, or a command taken twice fails startup", async () => {
+    expect(await failure(loadRegistry([PLUGIN_ROOT, descriptorDir("{ command: 'Bad Word', connect: async () => {} }")]))).toMatch(/connect must be/);
+    expect(await failure(loadRegistry([PLUGIN_ROOT, descriptorDir(hook("x"), "clock", "fixture-clock")]))).toMatch(/clock plugins take no connect hook/);
+    expect(await failure(loadRegistry([PLUGIN_ROOT, descriptorDir(hook("google"))]))).toMatch(/two connect hooks for "setup calendar google": google-calendar and fixture-cal/);
   });
 });
 

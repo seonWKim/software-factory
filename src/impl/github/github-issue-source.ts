@@ -17,6 +17,7 @@ import type {
 import type { GitHubApi } from "../../interfaces/github-credentials.js";
 import { DEFAULT_STATUS_LABEL_PREFIX } from "../../interfaces/forge.js";
 import { GitHubError, type RepoRef, issueNumberFromSourceId } from "./github-client.js";
+import { type LiveIntakeLabel, labelOf } from "./intake-label.js";
 
 export interface GhUser {
   id: number;
@@ -213,7 +214,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   constructor(
     private readonly client: GitHubApi,
     private readonly repo: RepoRef,
-    private readonly label: string,
+    /** `intake_label`: fixed, or the label in force when new issues are listed or filed (design 08-settings). */
+    private readonly label: string | LiveIntakeLabel,
     private readonly branchPrefix: string,
     private readonly baseBranch: string,
     /** `status_label_prefix`: the forge-neutral default (src/interfaces/forge.ts) when left out. */
@@ -231,10 +233,8 @@ export class GitHubIssueSource implements PollSource, DependencySource {
     const events: SourceEvent[] = [];
     const next: Cursor = { ...c, last_comment_id: c.last_comment_id ?? null };
 
-    const issues = await this.client.list<GhIssue>(
-      `${base}/issues?state=open&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
-        (c.issues ? `&since=${c.issues}` : ""),
-    );
+    const open = `${base}/issues?state=open&labels=${encodeURIComponent(await labelOf(this.label))}&sort=updated&direction=asc`;
+    const issues = await this.client.list<GhIssue>(open + (c.issues ? `&since=${c.issues}` : ""));
     for (const i of issues) {
       next.issues = max(next.issues, i.updated_at);
       if (i.pull_request) continue;
@@ -397,7 +397,7 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   private async closedIssues(c: Cursor, next: Cursor): Promise<SourceEvent[]> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
     const issues = await this.client.list<GhIssue>(
-      `${base}/issues?state=closed&labels=${encodeURIComponent(this.label)}&sort=updated&direction=asc` +
+      `${base}/issues?state=closed&labels=${encodeURIComponent(await labelOf(this.label))}&sort=updated&direction=asc` +
         (c.closed ? `&since=${c.closed}` : ""),
     );
     const catchUp = c.closed == null || c.closed_catch_up === true;
@@ -506,12 +506,12 @@ export class GitHubIssueSource implements PollSource, DependencySource {
   /** The newest 300 factory-labelled issues (open or closed) carrying the marker, else a new issue with the label. */
   private async findOrFile(input: Pick<IssueInput, "title" | "body" | "marker">): Promise<GhIssueRef> {
     const base = `/repos/${this.repo.owner}/${this.repo.name}`;
-    const filter = `&labels=${encodeURIComponent(this.label)}`;
-    const filed = (await this.client.list<GhIssueRef>(`${base}/issues?state=all${filter}&sort=created&direction=desc`, 3)).find(carries(input.marker));
+    const label = await labelOf(this.label);
+    const filed = (await this.client.list<GhIssueRef>(`${base}/issues?state=all&labels=${encodeURIComponent(label)}&sort=created&direction=desc`, 3)).find(carries(input.marker));
     return filed ?? await this.client.request<GhIssueRef>("POST", `${base}/issues`, {
       title: input.title,
       body: `${input.body}\n\n${input.marker}`,
-      labels: [this.label],
+      labels: [label],
     });
   }
 
