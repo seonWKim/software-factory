@@ -266,6 +266,20 @@ describe.each(["implement", "review"])("prompts/%s.md names the configured check
   });
 });
 
+// The UI check runs at merge (design §4): the sandbox cannot start a browser, so neither agent reports it.
+describe.each(["implement", "review"])("prompts/%s.md: the UI check runs at merge", (name) => {
+  const line = prompt(name).split("\n").find((l) => l.includes("UI check")) ?? "";
+
+  it("says the UI check runs at merge, on the merged commit, not in the sandbox", () => {
+    expect(line).toMatch(/UI check .*runs at merge, on the merged commit/);
+    expect(line).toMatch(/never in this sandbox/);
+  });
+
+  it("says not running it is not work to report as missing or as unverified", () => {
+    expect(line).toMatch(/not work to report as missing or as unverified/);
+  });
+});
+
 describe("on this repo", () => {
   const root = join(import.meta.dirname, "..");
   const config = JSON.parse(readFileSync(join(root, "factory.config.json"), "utf8")) as FactoryConfig;
