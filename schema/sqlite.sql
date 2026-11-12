@@ -543,6 +543,22 @@ CREATE TABLE controller_merge_queues (
     updated_at   TEXT NOT NULL
   );
 
+CREATE TABLE controller_notice_messages (
+    channel        TEXT NOT NULL,
+    ts             TEXT NOT NULL,
+    work_item_ids  TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    PRIMARY KEY (channel, ts)
+  );
+
+CREATE TABLE controller_notice_questions (
+    id          TEXT PRIMARY KEY,
+    channel     TEXT NOT NULL,
+    notice_ts   TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+  );
+
 CREATE TABLE controller_notices (
     work_item_id  TEXT NOT NULL,
     wait_key      TEXT NOT NULL,

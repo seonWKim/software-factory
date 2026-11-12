@@ -343,7 +343,41 @@ export interface SessionUpdate { note?: string; tokens?: number; transcript_url?
 /** `applied`: the highest migration recorded in the database (0 when none). `latest`: the highest this code has. */
 export interface SchemaVersion { applied: number; latest: number }
 
-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore {
+/**
+ * A notice message the Slack source posted (design 05-sources, "Replies under a notice"): its channel and ts, and the
+ * work item IDs its lines name, in line order (none for a summary). A reply in its thread acts on those items.
+ */
+export interface NoticeMessage {
+  channel: string;
+  ts: string;
+  work_item_ids: string[];
+  /** Store clock's now when it was first recorded. */
+  created_at: Timestamp;
+}
+
+/** A reply under a notice naming several items, kept until its which-item press: the reply's words after the mention. */
+export interface NoticeQuestion {
+  /** The reply's ID (its Slack event ID): the press finds the question by it. */
+  id: string;
+  channel: string;
+  notice_ts: string;
+  text: string;
+  created_at: Timestamp;
+}
+
+/** The notice records of the Slack source (controller_notice_messages, controller_notice_questions). */
+export interface NoticeMessageStore {
+  /** Stores the notice message, or skips one already stored at (channel, ts); true when it inserted. */
+  recordNoticeMessage(m: Omit<NoticeMessage, "created_at">): Promise<boolean>;
+  /** The notice message at (channel, ts), or null when none was recorded. Read-only. */
+  getNoticeMessage(channel: string, ts: string): Promise<NoticeMessage | null>;
+  /** Stores the question, or skips one already stored with its ID; true when it inserted. */
+  recordNoticeQuestion(q: Omit<NoticeQuestion, "created_at">): Promise<boolean>;
+  /** The question with this ID, or null. Read-only. */
+  getNoticeQuestion(id: string): Promise<NoticeQuestion | null>;
+}
+
+export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads, NoticeStore, NoticeMessageStore {
   migrate(): Promise<void>;
   /**
    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
