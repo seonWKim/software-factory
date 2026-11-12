@@ -265,10 +265,10 @@ export type BudgetCheckpointResult =
 /** Read-only filter for listWorkItemsWhere. Absent fields do not filter. */
 export interface WorkItemFilter {
   stage?: Stage | undefined;
-  blocked_on?: BlockedOn | undefined;
-  blocked_reason?: string | undefined;
-  /** Leave out CLOSED items. Ignored when `stage` is given. */
-  exclude_closed?: boolean | undefined;
+  blocked_on?: BlockedOn | undefined; blocked_reason?: string | undefined;
+  exclude_closed?: boolean | undefined; // Leave out CLOSED items. Ignored when `stage` is given.
+  /** Only items updated at or after this time (with `stage: "CLOSED"`, the closes since then: owner notices). */
+  updated_since?: Timestamp | undefined;
   limit: number;
 }
 

@@ -2,13 +2,15 @@
 // checks it (checkConfigKeys, src/config-keys.ts), and the plugin reads it again when it is built, so a selected
 // `slack` source without the block fails at startup. A format check only: the bot token has no `channels:read`.
 
-export const SLACK_KEYS = ["channels", "dashboard_url"] as const;
+export const SLACK_KEYS = ["channels", "dashboard_url", "notify_channel"] as const;
 
 export interface SlackConfig {
   /** Slack channel IDs (`C…`, or `G…` for an older private channel), never channel names. */
   channels: string[];
-  /** Where a spec message's Full spec link points (an https URL); absent: the local dashboard. */
+  /** Where a spec message's Full spec link and each notice's link point (an https URL); absent: the local dashboard. */
   dashboard_url?: string;
+  /** The channel ID the owner's notices are posted in (design 12-notification-channels); absent: the first of `channels`. */
+  notify_channel?: string;
 }
 
 /** Whether `v` is an absolute https URL. */
@@ -46,6 +48,9 @@ export function slackConfigProblems(raw: unknown): string[] {
     }
   });
   if (new Set(ch).size !== ch.length) problems.push("slack.channels lists the same channel twice");
+  if (block.notify_channel !== undefined && (typeof block.notify_channel !== "string" || !SLACK_CHANNEL_ID.test(block.notify_channel))) {
+    problems.push(`slack.notify_channel is not a Slack channel ID (got ${JSON.stringify(block.notify_channel) ?? String(block.notify_channel)}); use the ID, e.g. C0123456789, not the channel name`);
+  }
   if (block.dashboard_url !== undefined && !isHttpsUrl(block.dashboard_url)) {
     problems.push(`slack.dashboard_url must be an https URL such as https://factory.example.com (got ${JSON.stringify(block.dashboard_url) ?? String(block.dashboard_url)})`);
   }
@@ -59,6 +64,10 @@ export function slackConfig(file: unknown): SlackConfig {
   }
   const problems = slackConfigProblems(file);
   if (problems.length > 0) throw new Error(problems.join("\n"));
-  const block = file.slack as { channels: string[]; dashboard_url?: string };
-  return { channels: [...block.channels], ...(block.dashboard_url !== undefined ? { dashboard_url: block.dashboard_url } : {}) };
+  const block = file.slack as SlackConfig;
+  return {
+    channels: [...block.channels],
+    ...(block.dashboard_url !== undefined ? { dashboard_url: block.dashboard_url } : {}),
+    ...(block.notify_channel !== undefined ? { notify_channel: block.notify_channel } : {}),
+  };
 }
