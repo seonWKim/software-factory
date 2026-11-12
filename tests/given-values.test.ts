@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { givenValues, missingValues, specText } from "../src/core/given-values.js";
+import { givenValues, missingAnswers, missingValues, specText } from "../src/core/given-values.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { renderSpec } from "../src/core/spec-comment.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
@@ -56,6 +56,31 @@ describe("missingValues", () => {
 
   it("is empty for a request with no given values", () => {
     expect(missingValues("Make the page faster.", "")).toEqual([]);
+  });
+
+  it("ignores the decision answer syntax, and still reports a real dropped value", () => {
+    const request = "Answer with `N: <answer>` lines, e.g. `1: <answer>` or `N: answer`.";
+    expect(givenValues(request)).toEqual([]);
+    expect(missingValues(request, "")).toEqual([]);
+    expect(missingValues(`${request} Use \`#60A5FA\`.`, "")).toEqual(["#60A5FA"]);
+  });
+});
+
+describe("missingAnswers", () => {
+  it("passes an answer the spec keeps verbatim, in any letter case and spacing", () => {
+    expect(missingAnswers(["Upcoming 7 days"], "List the Upcoming 7 days.")).toEqual([]);
+    expect(missingAnswers(["Upcoming 7 days"], "List the upcoming\n  7 DAYS.")).toEqual([]);
+  });
+
+  it("reports each answer the spec does not hold whole, by its decision number; no fuzzy match", () => {
+    expect(missingAnswers(["Upcoming 7 days", "yes", "no link"], "Upcoming 7 events. yes.")).toEqual([
+      { n: 1, answer: "Upcoming 7 days" },
+      { n: 3, answer: "no link" },
+    ]);
+  });
+
+  it("skips a decision with no answer", () => {
+    expect(missingAnswers([null, ""], "")).toEqual([]);
   });
 });
 
