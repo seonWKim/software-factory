@@ -501,6 +501,16 @@ export async function setSecret(file: string, name: SecretName, value: string): 
   await rename(tmp, file);
 }
 
+/** Drops every `name=` line, keeping every other line. A name not in the file writes nothing. Atomic rename, mode 600. */
+export async function removeSecret(file: string, name: SecretName): Promise<void> {
+  const lines = (await readFile(file, "utf8")).split("\n");
+  const kept = lines.filter((l) => !l.replace(/^export\s+/, "").startsWith(`${name}=`));
+  if (kept.length === lines.length) return;
+  const tmp = `${file}.tmp-${process.pid}`;
+  await writeFile(tmp, kept.join("\n"), { mode: 0o600 });
+  await rename(tmp, file);
+}
+
 export async function openBrowser(url: string): Promise<void> {
   const cmd = process.platform === "darwin" ? "open" : "xdg-open";
   await runProcess([cmd, url], { cwd: process.cwd(), env: baseEnv() }).catch(() => undefined);
