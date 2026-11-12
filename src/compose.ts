@@ -1,10 +1,10 @@
 // Composition root: the only place that reads env/files for config and picks implementations.
 // Environment (local / cloud) is chosen here; core code never branches on it.
 
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
   coordinationConfig, retentionConfig, toolGrantsConfig, toolchainCacheOverlaps,
@@ -18,8 +18,7 @@ import { errorText, type Logger } from "./core/log.js";
 import type { CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal } from "./core/local-merge.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
-import type { Tier, UserId, VerdictSeverity, WorkItemId } from "./core/types.js";
-import { type ConfigEditRequest, type ConfigEditResult, editConfigFile } from "./core/config-writer.js";
+import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
 import { budgetConfig } from "./core/budget.js";
 import { type ModelNames, type ModelTable, parseModelBy, parseModels } from "./core/model-choice.js";
 import { gitHost, hostId } from "./runtime/host-id.js";
@@ -35,7 +34,7 @@ import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
 import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
-import { checkConfigKeys, configFailLines } from "./config-keys.js";
+import { checkConfigKeys } from "./config-keys.js";
 import { checkStatePaths } from "./state-paths.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
@@ -61,7 +60,7 @@ import type { RepoRef } from "./impl/github/github-client.js";
 import { type RepoLookup, resolveProject } from "./impl/github/forge.plugin.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
-import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
+import { type UiSettings, configWriter, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
@@ -277,9 +276,9 @@ const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "too
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Reads and parses one config file; a missing, unreadable or invalid file fails naming the path. */
-async function readConfigFile(path: string): Promise<unknown> {
+async function readConfigFile(path: string, text?: string): Promise<unknown> {
   try {
-    return JSON.parse(await readFile(path, "utf8")) as unknown;
+    return JSON.parse(text ?? (await readFile(path, "utf8"))) as unknown;
   } catch (err) {
     throw new Error(`cannot load the config file ${path}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
@@ -391,7 +390,7 @@ export function withForgeDefault(registry: Registry, selection: Selection, plugi
  * `--config` / FACTORY_CONFIG, see cliConfig) replaces the code root's checked-in factory.config.json, and its
  * folder becomes where `state_dir` and `worktrees_dir` resolve; without it they resolve from `root`.
  * `repo.path` always resolves from `root`. `platform` picks the platform-dependent plugin defaults
- * (docs/plugins.md); the host's unless a test passes one.
+ * (docs/plugins.md); the host's unless a test passes one. `text` is read instead of the file (a new text checked before it is written).
  */
 export async function loadConfig(
   root = process.cwd(),
@@ -401,9 +400,7 @@ export async function loadConfig(
   const checkedIn = join(codeRoot, CONFIG_FILE);
   const externalConfig = opts.configFile === undefined ? null : resolve(root, opts.configFile);
   const configFile = externalConfig ?? checkedIn;
-  // `text`: the file's new text, checked before it is written (the file-only key writer, configTextRefusal).
-  const own = opts.text === undefined ? await readConfigFile(configFile) : (JSON.parse(opts.text) as unknown);
-  const raw = externalConfig === null ? own : await withReviewedKeys(own, checkedIn);
+  const raw = externalConfig === null ? await readConfigFile(checkedIn, opts.text) : await withReviewedKeys(await readConfigFile(externalConfig, opts.text), checkedIn);
   checkConfigKeys(raw);
   const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
@@ -511,41 +508,6 @@ export async function loadConfig(
   // prompt no layer has fails startup; owner-defaults is appended to triage.
   const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain));
   return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, pack_tools, grants, stats, models, model_by };
-}
-
-/**
- * The config loader's checks on a new text of the config file (design 08-settings, the file-only key writer):
- * checkConfigKeys, then loadConfig as this process loaded the file. The problems in one line, or null.
- */
-export async function configTextRefusal(loaded: Loaded, text: string): Promise<string | null> {
-  try {
-    checkConfigKeys(JSON.parse(text));
-    await loadConfig(loaded.root, { codeRoot: loaded.codeRoot, configFile: loaded.externalConfig ?? undefined, text });
-    return null;
-  } catch (err) {
-    return `the config loader refuses the new file: ${configFailLines(err).map((l) => l.replace(/^FAIL {2}/, "")).join("; ")}`;
-  }
-}
-
-/**
- * The file-only key writer (core/config-writer.ts) as `factory settings edit-file` and the Settings write route run
- * it: the configured sandbox, the factory repo's local base, the checked-in config file's path in that repo (null
- * when the file is outside it), the factory's git identity and the loader's checks. `project` gives the project key.
- */
-export async function configWriter(
-  loaded: Loaded, store: FactoryStore, actor: UserId, project: () => Promise<string | null>,
-): Promise<(r: ConfigEditRequest) => Promise<ConfigEditResult>> {
-  const sandbox = await new Plugins(loaded).sandbox();
-  const { repo } = loaded.config;
-  const rel = relative(repo.path, loaded.externalConfig ?? join(loaded.root, CONFIG_FILE));
-  const file = rel === "" || rel.startsWith("..") || isAbsolute(rel) ? null : rel.split(sep).join("/");
-  const deps = {
-    store, sandbox, repo: { path: repo.path, base_branch: repo.base_branch }, file, branch_prefix: loaded.config.branch_prefix,
-    identity: loaded.config.agent_git_identity, actor, project,
-    newId: () => `wi_${randomUUID().replaceAll("-", "")}` as WorkItemId,
-    check: (text: string) => configTextRefusal(loaded, text),
-  };
-  return (r) => editConfigFile(deps, r);
 }
 
 /**
@@ -1099,13 +1061,12 @@ const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
- * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only
- * because a store plugin may declare secrets and the scanner needs the known secret values; neither reaches
- * the page. The Settings page finds the configured repo's project key from the stored project label
- * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `identity` is the
- * CLI identity main.ts resolves (cliIdentity); its user is the Settings writer. The CSRF token is made here, per
- * process, and kept only in memory. The commands route acts as uiCommandsActor says and takes the same token. The pause route's owner
- * check uses the auth plugin over the local grants only, with a client that makes no forge call.
+ * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only because a store plugin may
+ * declare secrets and the scanner needs the known secret values; neither reaches the page. The Settings page finds the configured repo's
+ * project key from the stored project label (storeProjectResolver), so the UI process never calls the forge or reads a forge credential.
+ * `identity` is the CLI identity main.ts resolves (cliIdentity); its user is the Settings writer, also of file-only keys (configWriter).
+ * The CSRF token is made here, per process, and kept only in memory. The commands route acts as uiCommandsActor says and takes the same
+ * token. The pause route's owner check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
 export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -1146,8 +1107,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
-  // The file-only key writer `factory settings edit-file` runs (design 08-settings); the project key from the store only.
-  settings.editFile = await configWriter(loaded, store, opts.identity.user, async () => (await settings.resolveProject())?.key ?? null);
+  settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.

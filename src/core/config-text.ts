@@ -1,6 +1,6 @@
-// Text edits of factory.config.json that keep the file's own layout (moved from the setup handler, design
-// 08-settings): `factory setup` and the file-only key writer (config-writer.ts) change only the value they set, so
-// every other byte of the file stays as it was written. Pure: text in, text out.
+// The file-only key writer's text edit of factory.config.json (design 08-settings): it changes only the value it
+// sets, so every other byte of the file stays as it was written. Pure: text in, text out. `factory setup` still has
+// its own top-level edit (src/cli/handlers/setup/config-edit.ts): the cli component may not import core yet.
 
 export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
@@ -70,7 +70,7 @@ function members(t: string, from = 0): { members: Member[]; close: number } {
 }
 
 /** One line when short (`{ "a": 1 }`), else one member per line, each member's value on one line. */
-export function formatValue(v: Json, indent = "  "): string {
+function formatValue(v: Json, indent = "  "): string {
   const one = compact(v);
   if (one.length <= 100 || !isJsonObject(v)) return one;
   return `{\n${Object.entries(v).map(([k, x]) => `${indent}  ${JSON.stringify(k)}: ${compact(x)}`).join(",\n")}\n${indent}}`;
@@ -83,24 +83,6 @@ function compact(v: Json): string {
     return e.length === 0 ? "{}" : `{ ${e.map(([k, x]) => `${JSON.stringify(k)}: ${compact(x)}`).join(", ")} }`;
   }
   return JSON.stringify(v);
-}
-
-/** `text` with each top-level key set to its new value (`undefined`: removed); new keys go last. */
-export function editConfigText(text: string, changes: ReadonlyMap<string, Json | undefined>): string {
-  let t = text;
-  for (const [key, value] of changes) {
-    const { members: ms } = members(t);
-    const at = ms.findIndex((m) => m.key === key);
-    const m = ms[at];
-    if (value === undefined) {
-      if (!m) continue;
-      // Drop the member and the separator before it (or after it, when it is the first).
-      t = at > 0 ? t.slice(0, ms[at - 1]!.end) + t.slice(m.end) : t.slice(0, m.start) + t.slice(ms[1] ? ms[1].start : m.end);
-    } else {
-      t = setConfigKey(t, [key], value);
-    }
-  }
-  return t;
 }
 
 /**

@@ -1,10 +1,10 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { Plugins, approveMergeCheck, buildStatsStore, configWriter, localProject, resolveProject, settingsBase } from "../../../compose.js";
+import { Plugins, approveMergeCheck, buildStatsStore, loadConfig, localProject, resolveProject, settingsBase } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
 import { cliIdentity } from "../../../core/local-cli.js";
 import { MODE_USAGE, SETTINGS_TOP_WORDS, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "../../../settings-cmd.js";
-import { storeProjectResolver } from "../../../ui/settings-api.js";
+import { configWriter, storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 import { cliEnvironment } from "../../support.js";
 
@@ -41,6 +41,7 @@ export default defineCommand({
     try {
       // The configured egress scanner (G5): a message_style it flags is refused before anything is stored.
       const plugins = new Plugins(loaded);
+      const clock = await plugins.clock();
       const scanner = await plugins.scanner(await plugins.secrets());
       // Refuses on MySQL while schema steps are pending, as the other commands do.
       await store.migrate();
@@ -64,7 +65,9 @@ export default defineCommand({
           mayApproveMerge: await approveMergeCheck(loaded, store, identity.user),
           scanner,
           // The file-only key writer, the same one the Settings write route runs (design 08-settings).
-          ...(action.action === "edit-file" ? { editFile: await configWriter(loaded, store, identity.user, async () => (await project()).key) } : {}),
+          ...(action.action === "edit-file"
+            ? { editFile: configWriter({ loaded, store, sandbox: await plugins.sandbox(), now: () => clock.now().toISOString(), actor: identity.user, loadConfig, project: async () => (await project()).key }) }
+            : {}),
         },
         action,
       );

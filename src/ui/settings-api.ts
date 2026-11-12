@@ -13,7 +13,10 @@
 // user to be the local owner (rules-api.ts ownerOf); with no owner check wired it is refused. GET lists each
 // integration (design 08-settings, 2026-11-12) with the plugin in force and whether a setting or the config chose it.
 
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
+import type { Loaded } from "../compose.js";
+import { checkConfigKeys, configFailLines } from "../config-keys.js";
 import { type LearnedSetting, learnedFromRows } from "../core/learned-settings.js";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
 import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
@@ -22,10 +25,13 @@ import {
   type GlobalSettableKey, type LearnedSettingsSource, type SettableValues, type SettingsBase, type SettingSource,
   effectiveSetting, isGateSettableKey, isProjectSettableKey, resolveSettings, settingsFor,
 } from "../core/settings.js";
-import type { RunId, Timestamp } from "../core/types.js";
+import type { RunId, Timestamp, UserId, WorkItemId } from "../core/types.js";
+import { ConfigFileChangesSql } from "../impl/store/sql/config-file-changes.js";
+import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { Sandbox } from "../interfaces/sandbox.js";
 import { loadSettingCatalog } from "../runtime/index.js";
-import type { ConfigEditRequest, ConfigEditResult } from "../core/config-writer.js";
+import { type ConfigEditRequest, type ConfigEditResult, editConfigFile } from "../core/config-writer.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
 import type { UiDeps } from "./pages.js";
 import type { PauseDeps } from "./pause-api.js";
@@ -60,6 +66,49 @@ export interface UiSettings {
   integrations?: readonly { kind: string; interface: string; configured: string }[];
   /** The file-only key writer `factory settings edit-file` runs (compose.ts configWriter). Absent: an edit-file write is refused. */
   editFile?: (r: ConfigEditRequest) => Promise<ConfigEditResult>;
+}
+
+/** What the file-only key writer is built from: the CLI handler and compose.ts buildUiParts pass the same parts. */
+export interface ConfigWriterParts {
+  loaded: Pick<Loaded, "root" | "codeRoot" | "configFile" | "externalConfig" | "config">;
+  store: FactoryStore;
+  sandbox: Sandbox;
+  /** The time, ISO (the injected Clock). */
+  now(): string;
+  /** Who asks, as an ID, never a display name. */
+  actor: string;
+  /** The configured repo's project key, or null when none is known here. */
+  project(): Promise<string | null>;
+  /** compose.ts loadConfig: the loader runs on the new text as on the file. */
+  loadConfig(root: string, opts: { codeRoot: string; configFile: string | undefined; text: string }): Promise<unknown>;
+}
+
+/**
+ * The file-only key writer (core/config-writer.ts, design 08-settings) that `factory settings edit-file` and the
+ * Settings write route both run: the configured sandbox, the factory repo's local base, the config file's path in
+ * that repo (null when it is outside it), the factory's git identity, and the loader's checks (checkConfigKeys, then
+ * loadConfig) on the whole new text.
+ */
+export function configWriter(p: ConfigWriterParts): (r: ConfigEditRequest) => Promise<ConfigEditResult> {
+  const { repo } = p.loaded.config;
+  const rel = relative(repo.path, p.loaded.externalConfig ?? join(p.loaded.root, basename(p.loaded.configFile)));
+  const file = rel === "" || rel.startsWith("..") || isAbsolute(rel) ? null : rel.split(sep).join("/");
+  const check = async (text: string): Promise<string | null> => {
+    try {
+      checkConfigKeys(JSON.parse(text));
+      await p.loadConfig(p.loaded.root, { codeRoot: p.loaded.codeRoot, configFile: p.loaded.externalConfig ?? undefined, text });
+      return null;
+    } catch (err) {
+      return `the config loader refuses the new file: ${configFailLines(err).map((l) => l.replace(/^FAIL {2}/, "")).join("; ")}`;
+    }
+  };
+  const deps = {
+    store: new ConfigFileChangesSql(storeSql(p.store), () => p.now() as Timestamp),
+    sandbox: p.sandbox, repo: { path: repo.path, base_branch: repo.base_branch }, file, branch_prefix: p.loaded.config.branch_prefix,
+    identity: p.loaded.config.agent_git_identity, actor: p.actor as UserId, project: p.project, check,
+    newId: () => `wi_${randomUUID().replaceAll("-", "")}` as WorkItemId,
+  };
+  return (r) => editConfigFile(deps, r);
 }
 
 /** A fresh CSRF token: 32 random bytes, base64url. Never stored or written to disk. */
