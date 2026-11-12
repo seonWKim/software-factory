@@ -1,11 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { API, type TaskRow, type TasksView, postTaskBuild, useApi } from "../api.js";
+import { type FormEvent, useRef, useState } from "react";
+import { API, type TaskRow, type TasksView, postTaskAdd, postTaskBuild, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { announceStatus } from "../components/ui/dialog.js";
+import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { QUICK_ADD_ATTR } from "../keys.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -66,6 +68,74 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
         </span>
       )}
     </span>
+  );
+}
+
+/** A new task ID: `tk_` and 32 hex characters, inside the route's 8 to 64 URL-safe ones. */
+const newTaskId = (): string => `tk_${crypto.randomUUID().replaceAll("-", "")}`;
+
+/**
+ * Quick add: Enter or Add posts the words under an ID the page chose. The field keeps that ID, for those words, until
+ * the add succeeds, so a retry after an error stores one task. Esc clears the field.
+ */
+function QuickAdd({ token }: { token: string | null }) {
+  const client = useQueryClient();
+  const input = useRef<HTMLInputElement>(null);
+  const attempt = useRef<{ id: string; words: string } | null>(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    const words = text.trim();
+    if (token === null || busy || words === "") return;
+    if (attempt.current?.words !== words) attempt.current = { id: newTaskId(), words };
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postTaskAdd(token, attempt.current.id, words);
+      if (!r.ok) {
+        setError(r.error);
+        return;
+      }
+      attempt.current = null;
+      setText("");
+      await client.invalidateQueries({ queryKey: [API.tasks] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+      input.current?.focus();
+    }
+  };
+  return (
+    <form onSubmit={(e) => void submit(e)} className="mb-6 space-y-1">
+      <div className="flex gap-2">
+        <Input
+          ref={input}
+          {...{ [QUICK_ADD_ATTR]: "" }}
+          className="flex-1"
+          aria-label="Add a task"
+          placeholder="Add a task, e.g. pay rent friday p1 #home"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setText("");
+              setError(null);
+            }
+          }}
+        />
+        <Button type="submit" disabled={token === null || busy}>
+          Add
+        </Button>
+      </div>
+      {error !== null && (
+        <p role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">
+          {error}
+        </p>
+      )}
+    </form>
   );
 }
 
@@ -160,6 +230,7 @@ export function TasksPage() {
   const token = v?.can_build ? v.csrf_token : null;
   return (
     <>
+      <QuickAdd token={v?.csrf_token ?? null} />
       <ButtonRow role="group" aria-label="Task view" className="mb-6">
         {TABS.map((t) => (
           <Button key={t.id} aria-pressed={t.id === tab} onClick={() => setTab(t.id)}>
@@ -170,8 +241,7 @@ export function TasksPage() {
       <Section title={TABS.find((t) => t.id === tab)!.label} count={v ? count(v, tab) : undefined}>
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <TabBody tab={tab} v={v} token={token} />}
         <p className={`mt-3 ${muted}`}>
-          Add a task with <code className="font-mono break-all">factory task add &lt;words&gt;</code>. Build this sends one to intake as a work item; its
-          merge marks the task done.
+          Build this sends a task to the factory.
         </p>
       </Section>
     </>
