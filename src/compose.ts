@@ -6,7 +6,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig,
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, type UiCheck, cliUserConfig,
   coordinationConfig, retentionConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
@@ -87,11 +87,12 @@ export interface FileConfig {
   store?: StoreConfig;
   /**
    * install_command, test_command: argv, defaults ["npm", "ci"] and ["npm", "test"]. check_commands: a list of
-   * argv, the pre-push checks (design §4); absent: [test_command].
+   * argv, the pre-push checks (design §4); absent: [test_command]. ui_check: `{ command, paths? }`, the UI check the
+   * merge check runs on a merged result touching `paths` (design §4); absent: off.
    */
   repo: {
     owner: string; name: string; path: string; base_branch: string;
-    install_command?: unknown; test_command?: unknown; check_commands?: unknown;
+    install_command?: unknown; test_command?: unknown; check_commands?: unknown; ui_check?: unknown;
   };
   intake_label: string;
   /** Prefix of the status labels (docs/plugins.md, SourceAdapter). Absent: "sf: ". */
@@ -440,7 +441,7 @@ export async function loadConfig(
   const secretsFile = defaultSecretsFile();
 
   const home = process.env.HOME ?? "";
-  const { check_commands: rawChecks, ...fileRepo } = file.repo;
+  const { check_commands: rawChecks, ui_check: rawUiCheck, ...fileRepo } = file.repo;
   const config: LoadedConfig = {
     repo: {
       ...fileRepo,
@@ -448,6 +449,7 @@ export async function loadConfig(
       install_command: argvConfig("repo.install_command", file.repo.install_command, ["npm", "ci"]),
       test_command: testCommand(file.repo.test_command),
       ...checkCommandsConfig(rawChecks),
+      ...uiCheckConfig(rawUiCheck),
     },
     ...(local ? { local_only: true as const } : {}),
     intake_label: file.intake_label,
@@ -1230,6 +1232,34 @@ export function checkCommandsConfig(value: unknown): { check_commands?: string[]
     throw new Error('repo.check_commands must be a non-empty list of argv, e.g. [["npm", "run", "typecheck"], ["npm", "test"]]');
   }
   return { check_commands: value.map((v, i) => argvConfig(`repo.check_commands[${i}]`, v, ["npm", "test"])) };
+}
+
+/** The paths a `repo.ui_check` without `paths` watches: the dashboard's sources. */
+export const UI_CHECK_DEFAULT_PATHS: readonly string[] = ["web/", "src/ui/"];
+
+/**
+ * `repo.ui_check` (design §4, UI check at merge): absent → nothing (off). Otherwise an object with `command`, an argv,
+ * and `paths`, a non-empty list of non-empty path prefixes (absent: UI_CHECK_DEFAULT_PATHS), and no other key; any
+ * other value fails startup naming the key.
+ */
+export function uiCheckConfig(value: unknown): { ui_check?: UiCheck } {
+  if (value === undefined) return {};
+  const example = '{ "command": ["npm", "run", "check:responsive"], "paths": ["web/", "src/ui/"] }';
+  if (typeof value !== "object" || value === null || Array.isArray(value) || (value as { command?: unknown }).command === undefined) {
+    throw new Error(`repo.ui_check must be an object with an argv command and optional path prefixes, e.g. ${example}`);
+  }
+  const { command, paths, ...rest } = value as { command: unknown; paths?: unknown };
+  const extra = Object.keys(rest);
+  if (extra.length > 0) throw new Error(`repo.ui_check has unknown keys ${extra.join(", ")}; valid keys: command, paths`);
+  if (paths !== undefined && (!Array.isArray(paths) || paths.length === 0 || !paths.every((p) => typeof p === "string" && p !== ""))) {
+    throw new Error(`repo.ui_check.paths must be a non-empty list of non-empty path prefixes, e.g. ${JSON.stringify(UI_CHECK_DEFAULT_PATHS)}`);
+  }
+  return {
+    ui_check: {
+      command: argvConfig("repo.ui_check.command", command, ["npm", "run", "check:responsive"]),
+      paths: [...((paths as string[] | undefined) ?? UI_CHECK_DEFAULT_PATHS)],
+    },
+  };
 }
 
 /**

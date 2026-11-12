@@ -89,6 +89,12 @@ export function toolGrantsConfig(raw: unknown, broker: Pick<ToolBroker, "allTool
   return out;
 }
 
+/** `repo.ui_check`: an argv command and the path prefixes whose change makes the merge check run it. */
+export interface UiCheck {
+  command: string[];
+  paths: string[];
+}
+
 /**
  * The config as loaded from factory.config.json, before startup resolves the configured repo to its project
  * key. `settings.projects` is still keyed by `owner/name` here; the composition root re-keys it.
@@ -99,6 +105,8 @@ export interface LoadedConfig {
    * ["npm", "test"]. `check_commands`: the pre-push checks, a list of argv run in order before every push
    * (design §4): the implement run before push (and in its merge-conflict step), the update run on the merged
    * branch, the resolve run after install. Absent: `[test_command]` (checkCommands in src/core/checks.ts).
+   * `ui_check`: the UI check (design §4), run only by the merge-check run, after the install command and the checks,
+   * on a merged result that changes a path under one of its `paths` prefixes. Absent: off.
    */
   repo: {
     owner: string;
@@ -108,6 +116,7 @@ export interface LoadedConfig {
     install_command: string[];
     test_command: string[];
     check_commands?: string[][];
+    ui_check?: UiCheck;
   };
   /**
    * True when config selects no forge plugin (design 05-sources, Local startup; set by the composition root from
