@@ -18,7 +18,9 @@ export function useLocationPath(): [string, (to: string, replace?: boolean) => v
     if (replace) history.replaceState(null, "", to);
     else history.pushState(null, "", to);
     setPath(to);
-    scrollTo?.(0, 0);
+    // The app's content column scrolls, not the window (App.tsx); a new page starts at its top.
+    const root = document.querySelector("[data-scroll-root]");
+    if (root) root.scrollTop = 0;
   };
   return [path, navigate];
 }
