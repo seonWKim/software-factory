@@ -13,9 +13,10 @@ import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi, type SlackMessage } from "./slack-api.js";
 import { commentEvent } from "../../core/comment-event.js";
 import {
-  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, ACTION_MAKE_TASK, BUTTON_COMMANDS, buttonApplies, doneLine, escapeSlack, footerCommands, prUrl, renderComment, renderLines, unescapeSlack, type SlackRendered,
+  ACTION_CANCEL, ACTION_COMMAND, ACTION_CONFIRM, ACTION_MAKE_TASK, ACTION_SPEC_APPROVE, ACTION_SPEC_OTHER, ACTION_SPEC_REJECT, BUTTON_COMMANDS, answersModal, buttonApplies, doneLine,
+  escapeSlack, footerCommands, modalCommand, prUrl, rejectModal, renderComment, renderLines, renderSpecMessage, unescapeSlack, waitingSpec, type SlackRendered,
 } from "./slack-format.js";
-import { type ChatAnswer, type ChatDeps, type ChatStore, type ProposalPress, proposalPress, runChatCommand, runProposalPress } from "./slack-commands.js";
+import { type ChatAnswer, type ChatDeps, type ChatStore, type ProposalPress, UNLINKED, proposalPress, runChatCommand, runProposalPress } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
 
 /** Metadata event types on the factory's own messages: a comment (by marker hash) and the one status message. */
@@ -61,6 +62,11 @@ export interface SlackSourceDeps {
   settings?: ChatDeps["settings"];
   /** Where PR links point. */
   repo: RepoRef;
+  /**
+   * The dashboard's base URL, for a spec message's Full spec link (`<base>/app/items/<id>`): `slack.dashboard_url`, else
+   * the local dashboard (slack.plugin.ts). Absent: the spec message has no Full spec link.
+   */
+  dashboard?: () => Promise<string>;
   log: Logger;
 }
 
@@ -99,6 +105,12 @@ const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v
 /** A marker as it is stored in Slack metadata: a hash, so no marker text is posted. */
 function markerHash(marker: string): string {
   return createHash("sha256").update(marker).digest("hex").slice(0, 32);
+}
+
+/** The one notice a withheld message or modal leaves in the thread: the scan's rules, none of its content. */
+function withheldNotice(rules: string): SlackRendered {
+  const text = `A factory message for this thread was withheld by the leak scanner (${escapeSlack(rules)}). It is not posted in any form.`;
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
 }
 
 const STATUS_WORDS: Record<WorkStatus, string> = {
@@ -292,6 +304,7 @@ export class SlackSource implements StreamSource {
    * and index, and the controller reads the command and its args from the store.
    */
   private async fromInteraction(p: Record<string, unknown>, me: { team_id: string; user_id: string }): Promise<Mapped | null> {
+    if (p.type === "view_submission") return this.fromSubmission(p, me);
     if (p.type !== "block_actions") return null;
     const user = str(obj(p.user).id);
     const team = str(obj(p.team).id) ?? str(obj(p.user).team_id) ?? me.team_id;
@@ -311,6 +324,9 @@ export class SlackSource implements StreamSource {
       const source = threadRef({ team, channel, thread_ts });
       const requester: ExternalIdentity = { provider: "slack", subject: user };
       return { event: { kind: "item_requested", source, requester, title: titleOf(text), body: text }, key: `action:${team}:${user}:${action_ts}` };
+    }
+    if (action_id === ACTION_SPEC_APPROVE || action_id === ACTION_SPEC_OTHER || action_id === ACTION_SPEC_REJECT) {
+      return this.specPress(action_id, threadRef({ team, channel, thread_ts }), user, `${team}-${user}-${action_ts}`, str(p.trigger_id));
     }
     const proposal = proposalPress(action_id, str(action.value));
     if (proposal) {
@@ -340,6 +356,67 @@ export class SlackSource implements StreamSource {
   }
 
   /**
+   * A press on a spec message (design 05-sources, "Slack spec messages"), by the proposal press rules: an unlinked
+   * presser gets the one refusal, a spec no longer waiting the stale reply, and neither stores anything or opens a
+   * modal. Approve with defaults stores the typed `/approve`'s command row as the linked user, keyed on the press.
+   * Other… and Reject… open their modal here, before the envelope is acked, since a trigger_id lasts about 3 seconds:
+   * the modal is egress-scanned first (a blocked one is withheld, with the notice), and a failed views.open is logged
+   * once and not retried. The submit is what stores (fromSubmission).
+   */
+  private async specPress(action: string, source: SourceRef, user: string, id: string, trigger: string | null): Promise<null> {
+    const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
+    if (!item) return null;
+    if ((await this.d.store.resolveLink("slack", user)) === null) return this.reply(source, { markdown: UNLINKED }, id);
+    if (!buttonApplies("approve", item)) return this.stale(source, item, id);
+    if (action === ACTION_SPEC_APPROVE) return this.chat(parseChatCommand("/approve")!, source, user, id, item);
+    if (trigger === null) return null;
+    const spec = action === ACTION_SPEC_OTHER ? await this.specOf(item) : null;
+    const view = spec ? answersModal(spec.decisions, source.id) : rejectModal(source.id);
+    const scan = await this.d.scanner.scan("comment", JSON.stringify(view));
+    if (!scan.clean) {
+      const rules = [...new Set(scan.findings.map((f) => f.rule))].join(",");
+      this.d.log.warn("slack modal blocked by the egress scan; withheld", { source_id: source.id, rules });
+      await this.post(source, () => withheldNotice(rules), `<!-- factory:modal:${id} -->`);
+      return null;
+    }
+    try {
+      await this.d.api.openView(trigger, view);
+    } catch (err) {
+      this.d.log.warn("slack views.open failed; no modal opened", { source_id: source.id, code: err instanceof SlackApiError ? err.code : "unknown_error" });
+    }
+    return null;
+  }
+
+  /** The item's last spec waiting for approval, read from its thread entries. */
+  private async specOf(item: WorkItem) {
+    const specs = (await this.d.store.listItemMessages(item.id)).flatMap((m) => (m.actor ? [] : [waitingSpec(m.body)])).filter((s) => s !== null);
+    return specs.at(-1) ?? { in_short: [], decisions: [] };
+  }
+
+  /**
+   * A modal submit (`view_submission`): the thread is the view's private_metadata, the command the one typed in the
+   * thread (`modalCommand`), run as the linked user by the same rules as the press, keyed on the view ID, so a
+   * repeated submit stores nothing more.
+   */
+  private async fromSubmission(p: Record<string, unknown>, me: { user_id: string }): Promise<null> {
+    const view = obj(p.view);
+    const view_id = str(view.id);
+    const user = str(obj(p.user).id);
+    const t = parseSlackSourceId(str(view.private_metadata) ?? "");
+    const text = modalCommand(str(view.callback_id) ?? "", obj(obj(view.state).values));
+    if (view_id === null || user === null || t === null || text === null) return null;
+    if (!this.d.channels.includes(t.channel) || user === me.user_id) return null;
+    const source = threadRef(t);
+    const item = await this.d.store.getWorkItemBySource("slack_thread", source.id);
+    const cmd = parseChatCommand(text);
+    if (!item || !cmd) return null;
+    const id = `view-${view_id}`;
+    if ((await this.d.store.resolveLink("slack", user)) === null) return this.reply(source, { markdown: UNLINKED }, id);
+    if (!buttonApplies("approve", item)) return this.stale(source, item, id);
+    return this.chat(cmd, source, user, id, item);
+  }
+
+  /**
    * A chat command (issue #498) or a proposal press (issue #584): run through slack-commands.ts, which stores what it
    * stores with no Slack call; then its answer, if any, is posted in the thread under a marker keyed on `id`, so a
    * redelivery posts nothing more. Nothing goes to the inbox: the stored command row is what the controller applies.
@@ -348,6 +425,11 @@ export class SlackSource implements StreamSource {
     const deps = { store: this.d.store, ...(this.d.settings ? { settings: this.d.settings } : {}) };
     const ctx = { user, item, id: `slack-${id}`, origin: this.type };
     const answer = "press" in cmd ? await runProposalPress(deps, cmd.press, ctx) : await runChatCommand(deps, cmd, ctx);
+    return this.reply(source, answer, id);
+  }
+
+  /** Posts `answer`, if any, in the thread under a marker keyed on `id`. */
+  private async reply(source: SourceRef, answer: ChatAnswer, id: string): Promise<null> {
     if (answer !== null) await this.post(source, (bot) => this.rendered(answer, bot), `<!-- factory:chat:${id} -->`);
     return null;
   }
@@ -372,7 +454,17 @@ export class SlackSource implements StreamSource {
     return "markdown" in a ? renderComment(a.markdown, this.d.repo, bot) : renderLines(a.lines, a.whole, a.link);
   }
 
+  /**
+   * A spec waiting for approval is the short spec message (renderSpecMessage), its first line naming the item's title
+   * from the store; any other comment is rendered whole.
+   */
   async postComment(source: SourceRef, body: string, marker: string): Promise<{ url: string | null }> {
+    const spec = waitingSpec(body);
+    const item = spec ? await this.d.store.getWorkItemBySource("slack_thread", source.id) : null;
+    if (spec && item) {
+      const link = this.d.dashboard ? `${(await this.d.dashboard()).replace(/\/+$/, "")}/app/items/${encodeURIComponent(item.id)}` : null;
+      return this.post(source, () => renderSpecMessage(spec, item, this.d.repo, link), marker, body);
+    }
     return this.post(source, (bot) => renderComment(body, this.d.repo, bot), marker, body);
   }
 
@@ -449,7 +541,8 @@ export class SlackSource implements StreamSource {
     const t = this.thread(source);
     let line: string | null = null;
     for (const m of await this.d.store.listItemMessages(item.id)) {
-      if (m.actor) continue;
+      // A spec message keeps its buttons: a press after approval gets the stale reply.
+      if (m.actor || waitingSpec(m.body)) continue;
       const had = footerCommands(m.body);
       const keep = had.filter((c) => buttonApplies(c, item));
       if (keep.length === had.length) continue;
@@ -489,6 +582,8 @@ export class SlackSource implements StreamSource {
       await this.record(source, marker, ts, slackLink(t.channel, ts, t.thread_ts), text);
     };
     const ts = (await this.statusTs(source)) ?? (await this.legacyStatusTs(source, t));
+    // The spec message's first line says it needs approval: no status message is posted just for that.
+    if (ts === null && status === "needs_approval") return;
     if (ts === null) return postNew(STATUS_MARKER);
     try {
       await this.d.api.updateMessage({ channel: t.channel, ts, text, metadata });
@@ -530,8 +625,7 @@ export class SlackSource implements StreamSource {
     if (scan.clean) return { msg, withheld: false };
     const rules = [...new Set(scan.findings.map((f) => f.rule))].join(",");
     this.d.log.warn("slack message blocked by the egress scan; withheld", { source_id: source.id, marker_hash: markerHash(marker), rules });
-    const text = `A factory message for this thread was withheld by the leak scanner (${escapeSlack(rules)}). It is not posted in any form.`;
-    return { msg: { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] }, withheld: true };
+    return { msg: withheldNotice(rules), withheld: true };
   }
 
   /** A message the bot posted (by its user ID; other bots cannot pass for it). */

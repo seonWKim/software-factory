@@ -18,7 +18,7 @@ import { cutNote, escapeSlack, proposalButtons, toMrkdwn } from "../src/impl/sou
 import { runLocalCli } from "../src/core/local-cli.js";
 import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
 import { commentEvent } from "../src/core/comment-event.js";
-import { chatForm, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
+import { chatForm, commandFooter, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { autoApprovedFooter, renderSpec, utcMinute } from "../src/core/spec-comment.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -73,7 +73,7 @@ afterEach(async () => {
   }
 });
 
-async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[]; llm?: LLMProvider } = {}) {
+async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels?: string[]; llm?: LLMProvider; dashboard?: string } = {}) {
   const clock = new FakeClock();
   const { store: real } = await newStore(clock);
   const store = opts.store ? opts.store(real) : real;
@@ -88,7 +88,9 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
     if ("error" in a) return { ok: false, lines: [a.error] };
     return runSettings({ store: real, base: { file: {}, layers: config.settings }, repo, resolveProject: () => Promise.reject(new Error("no")), actor: "" }, a);
   };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings });
+  // The Full spec link's base, as slack.plugin.ts gives it with no slack.dashboard_url (the default ui.port).
+  const dashboard = async () => opts.dashboard ?? "http://127.0.0.1:4310";
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, repo, log, settings, dashboard });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();
@@ -439,22 +441,18 @@ describe("slack source: people's replies in the item thread (issue #480)", () =>
 });
 
 describe("slack source: replies, buttons and commands", () => {
-  it("posts the spec in the thread with buttons for the commands that apply now, from the command table", async () => {
+  it("posts a spec waiting for approval as the short spec message, with no separate needs-approval status message", async () => {
     const f = await setup();
     const ts = "1800000008.000100";
-    await specPending(f, ts);
-    const spec = f.api.thread(ts).find((m) => m.text?.includes("Factory spec") || FakeSlackApi.buttons(m).length > 0)!;
-    expect(spec).toBeTruthy();
-    // spec_pending: approve, reject, revise, help apply; reject and revise take text, so they stay typed.
-    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_cmd:approve", "sf_cmd:help"]);
-    const text = JSON.stringify(spec.blocks);
-    expect(text).not.toContain("<!--");
-    expect(text).toContain(`<@${BOT}> revise`);
-    expect(text).toContain(`<@${BOT}> approve`);
-    expect(text).toContain(`<@${BOT}> help`);
-    // The hint shows no slash form of a command.
-    expect(text).not.toContain(`<@${BOT}> /`);
-    expect(f.api.thread(ts).find((m) => m.text?.startsWith("Status:"))!.text).toBe("Status: *needs approval*");
+    const item = await specPending(f, ts);
+    const spec = f.api.thread(ts).find((m) => FakeSlackApi.buttons(m).length > 0)!;
+    expect(spec.text).toBe("Needs your approval: please add a scope gate");
+    expect(FakeSlackApi.buttons(spec)).toEqual(["sf_spec_approve", "sf_spec_reject"]);
+    expect(JSON.stringify(spec.blocks)).not.toContain("<!--");
+    expect(JSON.stringify(spec.blocks)).toContain(`<http://127.0.0.1:4310/app/items/${item.id}|Full spec>`);
+    // The thread's status message, if any, was posted before (triaging) and edited in place: no second one.
+    expect(f.api.thread(ts).filter((m) => m.text?.startsWith("Status:")).length).toBeLessThanOrEqual(1);
+    expect(f.api.calls.filter((c) => c.method === "postMessage" && c.text === "Status: *needs approval*")).toEqual([]);
   });
 
   it("an Approve press moves the item to the same state as a typed /approve", async () => {
@@ -638,25 +636,32 @@ describe("slack source: buttons after a state change (issue #586)", () => {
     const f = await setup();
     const ts = "1800000019.000100";
     const item = await specPending(f, ts);
-    const spec = specMessage(f, ts);
+    // A factory message with the spec gate's command buttons (its footer), kept on the item's thread and posted.
+    const body = `Waiting for the spec.\n\n${commandFooter(commandState(item))}`;
+    await f.store.recordItemMessage({ work_item_id: item.id, marker: "<!-- factory:note -->", body });
+    await f.slack.postComment(item.source, body, "<!-- factory:note -->");
+    const note = specMessage(f, ts);
+    const spec = f.api.thread(ts).find((m) => FakeSlackApi.buttons(m).includes("sf_spec_approve"))!;
     const seen = updates(f);
     await deliver(f, eventEnvelope(mention("1800000019.000200", "/approve", { thread_ts: ts })));
     await f.controller.tickCommands();
     await f.controller.tickOutbox();
     expect((await f.store.getWorkItem(item.id))!.stage).toBe("RUNNING");
-    const edits = seen.filter((u) => u.ts === spec.ts);
+    const edits = seen.filter((u) => u.ts === note.ts);
     expect(edits).toHaveLength(1);
     expect(buttonsOf(edits[0]!.blocks)).toEqual(["sf_cmd:help"]);
     const text = JSON.stringify(edits[0]!.blocks);
     const approved = (await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!;
     expect(text).toContain(`Done: spec approved by ${approved.actor.id} at ${utcMinute(approved.at)}. The item is now implementing.`);
     expect(text).not.toContain("Commands you can reply with now");
-    expect(text).toContain("Factory spec");
+    expect(text).toContain("Waiting for the spec.");
+    // The spec message keeps its buttons (a press gets the stale reply): never edited.
+    expect(seen.filter((u) => u.ts === spec.ts)).toEqual([]);
 
     // The same update again (a redelivered status, the next state change with the same buttons left): no call.
     await f.slack.setStatus(item.source, "implementing", null);
     await f.slack.setStatus(item.source, "implementing", null);
-    expect(seen.filter((u) => u.ts === spec.ts)).toHaveLength(1);
+    expect(seen.filter((u) => u.ts === note.ts)).toHaveLength(1);
   });
 
   it("a press of a stale Approve says what already happened and when, with the current buttons, and no error wording", async () => {
