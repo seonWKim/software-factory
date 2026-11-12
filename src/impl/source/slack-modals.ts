@@ -5,10 +5,9 @@ import { noticeKind, waitReason } from "../../core/notifications.js";
 import type { SourceRef, WorkItem, WorkItemId } from "../../core/types.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi } from "./slack-api.js";
 import { type ChatAnswer, type ChatStore, UNLINKED, runChatCommand } from "./slack-commands.js";
-import { parseSlackSourceId } from "./slack-source.js";
+import { type SlackSourceDeps, parseSlackSourceId } from "./slack-source.js";
 import {
   ACTION_SPEC_APPROVE, ACTION_SPEC_OTHER, ACTION_SPEC_REJECT, ACTION_VIEW, MAX_SECTIONS, SECTION_MAX, type SlackRendered, button, buttonApplies,
   chunks, cutNote, escapeSlack, modal, modalCommand, section, specModal, toMrkdwn, waitingSpec, withheldNotice, withoutFooter,
@@ -38,7 +37,7 @@ export interface ModalHost {
     notify_channel?: string;
     scanner: EgressScanner;
     store: ChatStore & Pick<FactoryStore, "getWorkItemBySource">;
-    repo: RepoRef;
+    repo: SlackSourceDeps["repo"];
     log: Logger;
   };
   /** Runs `cmd` as the presser and posts its answer, if any, in the item's thread. */
@@ -91,7 +90,7 @@ function oneLine(a: NonNullable<ChatAnswer>): string {
  * under Slack's 100 blocks. Buttons that apply now: Approve, Other… (with a decision) and Reject… for a waiting spec;
  * Merge for a ready-to-merge item; none otherwise.
  */
-export function itemModal(item: WorkItem, bodies: readonly string[], repo: RepoRef): Record<string, unknown> {
+export function itemModal(item: WorkItem, bodies: readonly string[], repo: SlackSourceDeps["repo"]): Record<string, unknown> {
   const phase = commandPhase(item);
   const waits = item.blocked_on === "human" || item.blocked_on === "budget";
   const reason = waits ? waitReason(noticeKind(item.blocked_reason)) : "nothing: it does not wait on you";
