@@ -239,6 +239,21 @@ export class LocalMergeUnit {
   }
 
   /**
+   * With a forge selected (design §5 Merge conflict): the local items of `items` (source `local`, no PR; an item of
+   * another source with no PR has no branch in the factory repo) and a reader of the factory repo's local branches
+   * (`localBranch`, no fetch), for the merge check. Null when this controller's sandbox cannot read them.
+   */
+  localReads(items: readonly WorkItem[]): { items: WorkItem[]; read: (branch: string) => Promise<string | null> } | null {
+    const sandbox = this.c.k.d.sandbox;
+    if (!canReadLocal(sandbox)) return null;
+    const repo = this.c.k.cfg.repo.path;
+    return {
+      items: items.filter((it) => it.change_ref === null && it.source.type === LOCAL_SOURCE),
+      read: (branch) => sandbox.localBranch({ repo, branch }),
+    };
+  }
+
+  /**
    * Whether `it` is a local item waiting for a merge whose branch conflicts with the local base (design §5 Merge
    * conflict, `/resolve`): the local merge's own probe (`localConflicts`, objects only). False with no sandbox for it.
    */

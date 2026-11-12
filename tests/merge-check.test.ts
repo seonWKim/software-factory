@@ -293,16 +293,16 @@ describe("merge check: caching, throttling and the update run", () => {
 
 /**
  * The counting sandbox with the local merge's probe: `localConflicts` reports `local` for every branch, and
- * `localBranch` reads `refs` (the factory repo's local branches; a forge selected reads them there).
+ * `localBranch` reads `locals` (the factory repo's local branches; a forge selected reads them there).
  */
 class LocalSandbox extends CountingSandbox {
   local: string[] = ["src/x.ts"];
-  refs: Record<string, string | null> = {};
+  locals: Record<string, string | null> = {};
   probes = 0;
   localReads: string[] = [];
   async localBranch(spec: { repo: string; branch: string }): Promise<string | null> {
     this.localReads.push(spec.branch);
-    return this.refs[spec.branch] ?? null;
+    return this.locals[spec.branch] ?? null;
   }
   async localConflicts(): Promise<string[] | null> {
     this.probes++;
@@ -358,7 +358,7 @@ describe("merge check: a local item (no PR)", () => {
   it("with a forge selected, a conflict with the local base starts the automatic resolve keyed on the local base's commit; nothing is fetched for it", async () => {
     const { controller, sandbox, store, item, resolves } = await localItem({ local_only: false });
     const [main, head] = ["c".repeat(40), "d".repeat(40)];
-    sandbox.refs = { main, [`factory/${item.id}`]: head };
+    sandbox.locals = { main, [`factory/${item.id}`]: head };
     await controller.tickMergeCheck();
     await controller.tickMergeCheck();
     expect(sandbox.calls.fetchBranch).toBe(0);
@@ -373,7 +373,7 @@ describe("merge check: a local item (no PR)", () => {
 
   it("with a forge selected, a local item that merges cleanly runs no resolve and nothing changes", async () => {
     const { controller, sandbox, store, item } = await localItem({ local_only: false });
-    sandbox.refs = { main: "c".repeat(40), [`factory/${item.id}`]: "d".repeat(40) };
+    sandbox.locals = { main: "c".repeat(40), [`factory/${item.id}`]: "d".repeat(40) };
     sandbox.result = { mergeable: true, conflicts: [] };
     await controller.tickMergeCheck();
     expect(await store.getWorkItem(item.id)).toEqual(item);
@@ -383,7 +383,7 @@ describe("merge check: a local item (no PR)", () => {
 
   it("with a forge selected, a local item with no local branch is not checked", async () => {
     const { controller, sandbox, store, item } = await localItem({ local_only: false });
-    sandbox.refs = { main: "c".repeat(40) };
+    sandbox.locals = { main: "c".repeat(40) };
     await controller.tickMergeCheck();
     expect(sandbox.calls.mergeCheck).toBe(0);
     expect(await store.getMergeCheck(item.id)).toBeNull();
@@ -393,7 +393,7 @@ describe("merge check: a local item (no PR)", () => {
   it("with a forge selected, at the limit of 2 automatic resolve runs for the local base, the item waits on merge_conflict_pending", async () => {
     const { controller, sandbox, store, item, resolves } = await localItem({ local_only: false });
     const main = "c".repeat(40);
-    sandbox.refs = { main, [`factory/${item.id}`]: "d".repeat(40) };
+    sandbox.locals = { main, [`factory/${item.id}`]: "d".repeat(40) };
     let v = item.version;
     for (const attempt of [1, 2]) {
       const r = await store.transition({

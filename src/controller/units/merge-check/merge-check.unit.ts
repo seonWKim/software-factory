@@ -2,7 +2,6 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { MERGE_CHECK_BATCH, MergeChecker, type OnConflict, canMergeCheck } from "../../../core/merge-check.js";
-import { LOCAL_SOURCE, canReadLocal } from "../../../core/local-merge.js";
 import { awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -37,11 +36,8 @@ export class MergeCheckUnit {
     };
     if (local_only === true) return this.merges.step(ready, target, onConflict);
     await this.merges.step(ready.filter((it) => it.change_ref !== null), target, onConflict);
-    const sandbox = this.c.k.d.sandbox;
-    if (!canReadLocal(sandbox)) return;
-    // A local item's branch is in the factory repo; an item of another source with no PR has no branch to check here.
-    const local = ready.filter((it) => it.change_ref === null && it.source.type === LOCAL_SOURCE);
-    await this.merges.stepLocal(local, target, (branch) => sandbox.localBranch({ repo: repo.path, branch }), onConflict);
+    const local = this.c.unit("local-merge").localReads(ready);
+    if (local) await this.merges.stepLocal(local.items, target, local.read, onConflict);
   }
 }
 
