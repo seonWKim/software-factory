@@ -96,7 +96,7 @@ export class MergeQueueStore {
   /** The queue of `project` and `base_ref`, made idle on first use. */
   async queue(project: string, base_ref: string): Promise<MergeQueue> {
     const id = queueId(project, base_ref);
-    await insertOrSkip(this.db, this.db.dialect.name, "controller_merge_queues (queue_id, project_id, base_ref, state, version, updated_at) VALUES (?, ?, ?, 'idle', 1, ?)", [
+    await insertOrSkip(this.db, "controller_merge_queues (queue_id, project_id, base_ref, state, version, updated_at) VALUES (?, ?, ?, 'idle', 1, ?)", [
       id, project, base_ref, this.now(),
     ]);
     return queueOf((await this.db.all("SELECT * FROM controller_merge_queues WHERE queue_id = ?", [id]))[0]!);

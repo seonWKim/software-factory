@@ -76,13 +76,8 @@ import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles,
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 
-/**
- * The store is SQLite (design 05-coordination.md, 2026-11-11): a config with type "mysql" fails at startup
- * (checkConfigKeys). The mysql variant stays only while the MySQL driver and plugin do.
- */
-export type StoreConfig =
-  | { type: "sqlite" }
-  | { type: "mysql"; host: string; port: number; database: string; user: string };
+/** The store is SQLite (design 05-coordination.md): another type fails at startup as an unknown FactoryStore plugin. */
+export type StoreConfig = { type: "sqlite" };
 
 export interface FileConfig {
   env: "local" | "cloud";
@@ -231,7 +226,7 @@ export interface FileConfig {
   /**
    * Packs (design 11-packs.md): `order`, the layers in order (absent: base, org, project, learned; base first,
    * learned last), `org`, the org pack's folder (absent: no org layer), and `auto_approve_read_only` (absent: false).
-   * Checked by packsProblems. A reviewed key.
+   * Checked by packsProblems.
    */
   packs?: { order?: unknown; org?: unknown; auto_approve_read_only?: unknown };
 }
@@ -265,14 +260,6 @@ export function cliConfig(
   return { args, configFile: chosen === undefined ? undefined : resolve(cwd, chosen) };
 }
 
-/**
- * Keys a reviewed PR sets (floors, dials, plugins, permissions, auth, `toolchain`: what agents may read and
- * the env they get, `hooks`: the owner's checks, such as a `before_merge` veto, and `packs`: where the org
- * pack's prompts and plugins come from). On a shared store (MySQL: the
- * enterprise case) they come only from the checked-in file, so a user's own config cannot loosen them; solo use may set any key.
- */
-const REVIEWED_KEYS = ["dials", "floors", "plugins", "permissions", "auth", "toolchain", "hooks", "packs"] as const;
-
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Reads and parses one config file; a missing, unreadable or invalid file fails naming the path. */
@@ -282,25 +269,6 @@ async function readConfigFile(path: string): Promise<unknown> {
   } catch (err) {
     throw new Error(`cannot load the config file ${path}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
-}
-
-/** An external config on a shared store, with REVIEWED_KEYS (and `defaults.floors`) taken from the checked-in file. */
-async function withReviewedKeys(raw: unknown, checkedIn: string): Promise<unknown> {
-  if (!isRecord(raw) || !isRecord(raw.store) || raw.store.type !== "mysql") return raw;
-  const reviewed = await readConfigFile(checkedIn);
-  if (!isRecord(reviewed)) return raw; // checkConfigKeys reports the external file's own shape
-  const out: Record<string, unknown> = { ...raw };
-  const take = (to: Record<string, unknown>, from: Record<string, unknown>, k: string) => {
-    if (k in from) to[k] = from[k];
-    else delete to[k];
-  };
-  for (const k of REVIEWED_KEYS) take(out, reviewed, k);
-  if (isRecord(out.defaults) || isRecord(reviewed.defaults)) {
-    const defaults = { ...(isRecord(out.defaults) ? out.defaults : {}) };
-    take(defaults, isRecord(reviewed.defaults) ? reviewed.defaults : {}, "floors");
-    out.defaults = defaults;
-  }
-  return out;
 }
 
 export interface Loaded {
@@ -400,7 +368,7 @@ export async function loadConfig(
   const checkedIn = join(codeRoot, CONFIG_FILE);
   const externalConfig = opts.configFile === undefined ? null : resolve(root, opts.configFile);
   const configFile = externalConfig ?? checkedIn;
-  const raw = externalConfig === null ? await readConfigFile(checkedIn) : await withReviewedKeys(await readConfigFile(externalConfig), checkedIn);
+  const raw = await readConfigFile(configFile);
   checkConfigKeys(raw);
   const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
@@ -433,10 +401,10 @@ export async function loadConfig(
   // The pack layers (design 11-packs.md): base (the code root), org (`packs.org`), project (`.factory/` in the
   // repo's main checkout) and learned (under the state dir). A missing layer is off. Their plugins and tools join a registry copy.
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
-  const sharedStore = store.type === "mysql";
-  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore }));
+  // No shared store (design 05-coordination.md, 2026-11-13): sharedStore stays false until phase 2 removes the option.
+  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore: false }));
   const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
-  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore, builtin: opts.registry ?? REGISTRY });
+  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore: false, builtin: opts.registry ?? REGISTRY });
   const grants = selectGrants(GRANTS, file.permissions);
   const local = !selectsGitHub(plugins, grants);
   if (!local) await checkGitHubSettings(file.github);
@@ -853,7 +821,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
-  const checks = packChecks(loaded.packs, config.hooks ?? [], { sharedStore: loaded.store.type === "mysql", toolHooks: runner.supports_tool_hooks === true });
+  const checks = packChecks(loaded.packs, config.hooks ?? [], { sharedStore: false, toolHooks: runner.supports_tool_hooks === true });
   await checkEnabledHooks((config.hooks ?? []).filter((n) => !checks.some((c) => c.name === n)));
   shareGitHubBudget(loaded, github, store, config);
 

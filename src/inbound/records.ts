@@ -30,7 +30,7 @@ export async function readCursor(q: SqlExecutor, name: string): Promise<string |
 
 /** Moves cursor `name` from `expected` to `next`; false when another writer moved it first. */
 export async function moveCursor(tx: SqlExecutor, dialect: Dialect, name: string, expected: string | null, next: string): Promise<boolean> {
-  if (expected === null) return insertOrSkip(tx, dialect, "inbound_cursors (name, value) VALUES (?, ?)", [name, next]);
+  if (expected === null) return insertOrSkip(tx, "inbound_cursors (name, value) VALUES (?, ?)", [name, next]);
   return (await tx.run("UPDATE inbound_cursors SET value = ? WHERE name = ? AND value = ?", [next, name, expected])) === 1;
 }
 
@@ -54,7 +54,7 @@ export async function storeRecord(
   dialect: Dialect,
   r: { source_type: SourceType; dedupe_key: string; event: InboundEvent; received_at: string },
 ): Promise<string> {
-  await insertOrSkip(tx, dialect, "inbound_raw_records (source_type, dedupe_key, event, received_at) VALUES (?, ?, ?, ?)", [
+  await insertOrSkip(tx, "inbound_raw_records (source_type, dedupe_key, event, received_at) VALUES (?, ?, ?, ?)", [
     r.source_type,
     r.dedupe_key,
     JSON.stringify(r.event),

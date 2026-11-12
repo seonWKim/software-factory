@@ -5,6 +5,7 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
+import { Select } from "../components/ui/select.js";
 import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
@@ -39,6 +40,25 @@ function stringOf(text: string): string {
   } catch {
     return text;
   }
+}
+
+/** hold_policy (design 03-risk): the server's modes, the select's choices, and the minutes `run_after_minutes` takes (default 20). */
+const HOLD_CHOICES = ["hold", "start", "wait"] as const;
+type HoldChoice = (typeof HOLD_CHOICES)[number];
+type HoldMode = "hold" | "run" | "run_after_minutes";
+const HOLD_MODES: Record<HoldChoice, HoldMode> = { hold: "hold", start: "run", wait: "run_after_minutes" };
+const HOLD_CHOICE: Record<HoldMode, HoldChoice> = { hold: "hold", run: "start", run_after_minutes: "wait" };
+const DEFAULT_HOLD_MINUTES = "20";
+interface HoldDraft {
+  mode: HoldMode;
+  minutes: string;
+}
+
+/** The stored hold_policy JSON as a mode and minutes; anything else reads as hold. */
+function holdOf(text: string): HoldDraft {
+  const obj = asObject(text);
+  const mode = obj?.mode === "run" || obj?.mode === "run_after_minutes" ? obj.mode : "hold";
+  return { mode, minutes: typeof obj?.minutes === "number" ? String(obj.minutes) : DEFAULT_HOLD_MINUTES };
 }
 
 /** A write and its outcome for one field: the refusal stays next to the field until the next try. */
@@ -143,12 +163,14 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
   const { busy, error, done, write } = useWrite(token);
   const [draft, setDraft] = useState<string | null>(null);
   const [tiers, setTiers] = useState<Record<string, string> | null>(null);
+  const [hold, setHold] = useState<HoldDraft | null>(null);
   const uid = useId();
   const target = project === undefined ? {} : { project };
   const save = async (text: string) => {
     if (await write({ action: "set", key: row.key, value: text, ...target })) {
       setDraft(null);
       setTiers(null);
+      setHold(null);
     }
   };
 
@@ -169,7 +191,7 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
     control = (
       // Two columns, tier | 7rem field, so the three fields start at one x; Save in its own row 12px below.
       <form className="space-y-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
-        <div data-tiers className="grid grid-cols-[auto_7rem] items-center gap-x-2 gap-y-3">
+        <div data-tiers className="grid grid-cols-[max-content_7rem] items-center gap-x-2 gap-y-3">
           {TIERS.map((t) => (
             <Fragment key={t}>
               <label htmlFor={`${uid}-${t}`} className="text-xs text-text-2">
@@ -186,13 +208,38 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
         </ButtonRow>
       </form>
     );
+  } else if (row.key === "hold_policy") {
+    const cur = holdOf(value);
+    const mode = hold?.mode ?? cur.mode;
+    const minutes = hold?.minutes ?? cur.minutes;
+    const holdSave = () => void save(JSON.stringify(mode === "hold" ? { mode: "hold" } : mode === "run" ? { mode: "run" } : { mode: "run_after_minutes", minutes: Number(minutes) }));
+    control = (
+      <form className="flex flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), holdSave())}>
+        <Select aria-label={label} value={HOLD_CHOICE[mode]} onChange={(e) => setHold({ mode: HOLD_MODES[e.target.value as HoldChoice], minutes })}>
+          {HOLD_CHOICES.map((c) => (
+            <option key={c} value={c}>
+              {t(`settings.hold.${c}`)}
+            </option>
+          ))}
+        </Select>
+        {mode === "run_after_minutes" && (
+          <label className="flex items-center gap-2 text-xs text-text-2">
+            {t("settings.holdMinutes")}
+            <Input aria-label={t("settings.holdMinutesLabel", { label })} type="number" className="w-24 tabular-nums" value={minutes} onChange={(e) => setHold({ mode, minutes: e.target.value })} />
+          </label>
+        )}
+        <Button type="submit" variant="secondary" disabled={busy || hold === null} aria-label={t("settings.saveLabel", { label })}>
+          {t("settings.save")}
+        </Button>
+      </form>
+    );
   } else if (row.kind === "text") {
     // Free text: shown and edited as plain text, sent as a JSON string, as `factory settings set` takes it.
     const shown = draft ?? stringOf(value);
     control = (
       <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), void save(JSON.stringify(shown)))}>
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_HINT}</p>
-        <Textarea aria-label={label} rows={3} placeholder={STYLE_EXAMPLE} className="w-full min-w-48" value={shown} onChange={(e) => setDraft(e.target.value)} />
+        <Textarea aria-label={label} rows={3} className="w-full min-w-48" value={shown} onChange={(e) => setDraft(e.target.value)} />
         <p className="max-w-md text-xs text-pretty text-text-2">{STYLE_EXAMPLE}</p>
         <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
           {t("settings.save")}
@@ -271,6 +318,12 @@ function ResetButton({ row, label, token, project, learned = false }: { row: Set
 function Duration({ settingKey, value }: { settingKey: string; value: string }) {
   if (!settingKey.endsWith("_ms") || !/^\d+$/.test(value.trim())) return null;
   return <p data-duration className="mt-1 text-xs tabular-nums text-text-2">{duration(Number(value))}</p>;
+}
+
+/** A file value or default as text: a millisecond key as its duration ("30m"), a blank or empty-string value as "empty". */
+function shownValue(settingKey: string, text: string): string {
+  if (stringOf(text).trim() === "") return t("settings.empty");
+  return settingKey.endsWith("_ms") && /^\d+$/.test(text.trim()) ? duration(Number(text)) : text;
 }
 
 /** What a key controls, under its name; always shown, narrow screens included. */
@@ -461,7 +514,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         {row.project_settable && (
           <div className="mt-2 border-t border-border pt-2">
             <p className="mb-1 text-xs text-text-2">
-              {t("settings.forValue", { project: view.project ?? view.repo, value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
+              {t("settings.forValue", { value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
               {view.project === null && ` · ${t("settings.noProjectLabel")}`}
             </p>
             <div className="flex flex-wrap items-start gap-2">
@@ -478,14 +531,11 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
       </Td>
       <Td className="min-w-40">
         {row.file_value !== null ? (
-          <JsonValue text={row.file_value} />
-        ) : asObject(row.default_value) === null ? (
-          <span className="font-mono text-xs wrap-anywhere text-text-3">{t("settings.notSetDefault", { value: row.default_value })}</span>
+          <JsonValue text={shownValue(row.key, row.file_value)} />
         ) : (
-          <>
-            <span className="text-xs text-text-3">{t("settings.notSetDefaultColon")}</span>
-            <JsonValue text={row.default_value} />
-          </>
+          <span className="text-xs text-text-3">
+            {withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}
+          </span>
         )}
       </Td>
       <Td className="min-w-24 text-text-2">{row.applies_at}</Td>
@@ -494,10 +544,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   );
 }
 
-/**
- * Who the page's item commands act as, and what to set when they are off (design 09): the item page's "Commands
- * are off" notice links here (#page-commands). `ui.user_id` is a config-file key, not a settable one (#445).
- */
+/** Who the page's item commands act as (design 09): the item page's "Commands are off" notice links here (#page-commands). */
 function PageCommands() {
   const session = useApi<Session>(API.session, false);
   const ref = useRef<HTMLDivElement>(null);
@@ -510,20 +557,10 @@ function PageCommands() {
       <Section title={t("settings.commandsTitle")}>
         <p className="text-sm text-pretty text-text-2">
           {s?.actor ? (
-            <>
-              {withNodes("settings.cmdActsAs", { actor: <code>{s.actor}</code> }, { source: t(s.actor_source === "config" ? "settings.sourceConfig" : "settings.sourceEnvironment") })}{" "}
-            </>
+            withNodes("settings.cmdActsAs", { actor: <code>{s.actor}</code> }, { source: t(s.actor_source === "config" ? "settings.sourceConfig" : "settings.sourceEnvironment") })
           ) : (
-            <>{t("settings.cmdOff")} </>
+            t("settings.cmdOff")
           )}
-          {withNodes("settings.cmdHowTo", {
-            userId: <code>{"ui.user_id"}</code>,
-            file: <code>{"factory.config.json"}</code>,
-            example: <code>{'"ui": { "user_id": "github:12345" }'}</code>,
-            ui: <code>{"factory ui"}</code>,
-            cliUser: <code>{"cli_user"}</code>,
-            email: <code>{"user.email"}</code>,
-          })}
         </p>
       </Section>
     </div>
@@ -604,7 +641,7 @@ export function SettingsPage() {
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.settableIntro", { command: <code>{"factory settings"}</code> })}
         </p>
-        <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.colSource"), t("settings.colFileValue"), t("settings.colAppliesAt"), ""]}>
+        <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.colSource"), t("settings.colFileValue"), t("settings.colAppliesAt"), t("settings.colReset")]}>
           {v.keys.map((row) => (
             <KeyRow key={row.key} row={row} view={v} />
           ))}

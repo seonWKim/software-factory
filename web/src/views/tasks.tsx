@@ -7,10 +7,10 @@ import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
-import { Notice } from "../components/ui/notice.js";
+import { EmptyState, Notice, StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
-import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR } from "../keys.js";
@@ -337,7 +337,7 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
           <p className={cn("text-sm text-pretty break-words", overdue && "font-medium text-pill-bad-fg")}>{task.title}</p>
         )}
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
-          {overdue && <Badge level="stuck">{t("tasks.overdue")}</Badge>}
+          {overdue && <StatusBadge level="stuck" size="sm">{t("tasks.overdue")}</StatusBadge>}
           {parent !== null && !sub && titles.has(parent) && <span className="break-words">{t("tasks.subOf", { title: titles.get(parent)! })}</span>}
           {due !== null && <span className={cn("tabular-nums", overdue && "text-pill-bad-fg")}>{t("tasks.due", { due })}</span>}
           {minutes !== null && <span className="tabular-nums">{t("tasks.minutes", { minutes })}</span>}
@@ -398,7 +398,7 @@ function EventCard({ event }: { event: EventRow }) {
       <div className="min-w-0 flex-1 space-y-1">
         <p className="text-sm text-pretty break-words">{event.title}</p>
         <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
-          <Badge>{t("tasks.event")}</Badge>
+          <StatusBadge size="sm">{t("tasks.event")}</StatusBadge>
           <span className="tabular-nums">{event.time ?? t("tasks.allDay")}</span>
           <span className="break-all">{event.source}</span>
         </p>
@@ -507,12 +507,27 @@ function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow
   );
 }
 
+/** An empty tab: its message and one next step, which puts the cursor in the quick-add field. */
+function EmptyTab({ title }: { title: string }) {
+  const focus = () => document.querySelector<HTMLElement>(`[${QUICK_ADD_ATTR}]`)?.focus();
+  return (
+    <EmptyState
+      title={title}
+      action={
+        <Button variant="secondary" onClick={focus}>
+          {t("tasks.emptyAction")}
+        </Button>
+      }
+    />
+  );
+}
+
 function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
   const timeline = <Timeline date={v.today_date} blocks={v.timeline ?? []} />;
   if (tab === "inbox") {
     return (
       <div className="space-y-3">
-        {v.inbox.length === 0 ? <Empty>{t("tasks.emptyInbox")}</Empty> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} />}
+        {v.inbox.length === 0 ? <EmptyTab title={t("tasks.emptyInbox")} /> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} />}
         {timeline}
       </div>
     );
@@ -520,7 +535,7 @@ function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
   if (tab === "today") {
     return (
       <div className="space-y-3">
-        {v.today.overdue.length + v.today.due.length === 0 && <Empty>{t("tasks.emptyToday")}</Empty>}
+        {v.today.overdue.length + v.today.due.length === 0 && <EmptyTab title={t("tasks.emptyToday")} />}
         {v.today.overdue.length > 0 && <Group title={t("tasks.overdue")} tasks={v.today.overdue} overdue />}
         {v.today.due.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={v.today.due} />}
         {timeline}
@@ -528,7 +543,7 @@ function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
     );
   }
   if (tab === "upcoming") {
-    if (v.upcoming.length === 0) return <Empty>{t("tasks.emptyUpcoming")}</Empty>;
+    if (v.upcoming.length === 0) return <EmptyTab title={t("tasks.emptyUpcoming")} />;
     return (
       <div className="space-y-3">
         {v.upcoming.map((d) => (
@@ -537,7 +552,7 @@ function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
       </div>
     );
   }
-  if (v.projects.length === 0) return <Empty>{t("tasks.emptyProject")}</Empty>;
+  if (v.projects.length === 0) return <EmptyTab title={t("tasks.emptyProject")} />;
   return (
     <div className="space-y-3">
       {v.projects.map((p) => (
@@ -571,6 +586,14 @@ const count = (v: TasksView, tab: Tab): number =>
   : tab === "upcoming" ? v.upcoming.reduce((n, d) => n + d.tasks.length, 0)
   : v.projects.reduce((n, p) => n + p.tasks.length, 0);
 
+/** True when the tab lists at least one task; calendar events alone do not count. */
+const hasTasks = (v: TasksView, tab: Tab): boolean =>
+  (tab === "inbox" ? v.inbox
+  : tab === "today" ? [...v.today.overdue, ...v.today.due]
+  : tab === "upcoming" ? v.upcoming.flatMap((d) => d.tasks)
+  : v.projects.flatMap((p) => p.tasks)
+  ).some((x) => !isEventRow(x));
+
 export function TasksPage() {
   const [tab, setTab] = useState<Tab>("today");
   const q = useApi<TasksView>(API.tasks);
@@ -581,15 +604,13 @@ export function TasksPage() {
   return (
     <>
       <QuickAdd token={v?.csrf_token ?? null} />
-      <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} className="mb-6" />
-      <Section title={TABS.find((t) => t.id === tab)!.label} count={v ? count(v, tab) : undefined}>
+      <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
+      <Section label={TABS.find((x) => x.id === tab)!.label} count={v ? count(v, tab) : undefined}>
         {v && (tab === "today" || tab === "upcoming") && <StaleCalendars v={v} />}
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles }}>
             <TabBody tab={tab} v={v} />
           </Rows.Provider>}
-        <p className={`mt-3 ${muted}`}>
-          {t("tasks.buildNote")}
-        </p>
+        {v?.can_build && hasTasks(v, tab) && <p className={`mt-3 ${muted}`}>{t("tasks.buildNote")}</p>}
       </Section>
     </>
   );
