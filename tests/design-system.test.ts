@@ -170,6 +170,19 @@ describe("the Gongbang mark in the dashboard", () => {
     expect(html).toContain("<title>Gongbang</title>");
   });
 
+  it("icon.svg's ember dot has the ember token's colour, is drawn at every size, and the sidebar draws it", () => {
+    const tokens = JSON.parse(readFileSync(join(ROOT, "design-system", "tokens.json"), "utf8")) as { colors: Record<string, Record<string, string>> };
+    const hex = /<circle id="ember"[^>]* fill="(#[0-9A-Fa-f]{6})"/.exec(svg)![1]!;
+    expect(hex.toUpperCase()).toBe(tokens.colors.light!.ember!.toUpperCase());
+    expect(hex.toUpperCase()).toBe(tokens.colors.dark!.ember!.toUpperCase());
+    expect(svg).not.toContain("data-min-px");
+    const css = readFileSync(join(WEB_SRC, "tokens.css"), "utf8");
+    expect(css).toMatch(/:root \{[^}]*--ember: #FB923C;/);
+    expect(css).toMatch(/\.dark \{[^}]*--ember: #FB923C;/);
+    expect(readFileSync(join(WEB_SRC, "index.css"), "utf8")).toContain("--color-ember: var(--ember);");
+    expect(readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8")).toContain("fill-ember");
+  });
+
   it("the sidebar mark draws icon.svg's square and 공", () => {
     // Read as text: this suite is type-checked without JSX.
     const brand = readFileSync(join(WEB_SRC, "components", "ui", "brand.tsx"), "utf8");
