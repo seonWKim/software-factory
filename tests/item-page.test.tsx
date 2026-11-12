@@ -478,6 +478,19 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     fireEvent.click(done);
     expect(within(row).queryByRole("button", { name: "Done" })).toBeNull();
   });
+
+  it("Merge is its own block 24 px (space-6) below the verdict row, after it; Reject has the danger border", async () => {
+    serve({ item: base("wi_g", 50, "Grants", { merge: { enabled: true, reason: null } }), commands: [cmd("verdict")] });
+    mount("/app/items/wi_g");
+    const merge = await found('[data-command="merge"]');
+    const verdict = document.querySelector<HTMLElement>('[data-command="verdict"]')!;
+    expect(verdict.nextElementSibling).toBe(merge);
+    expect(merge.className.split(" ")).toContain("not-first:mt-6");
+    expect(verdict.className.split(" ")).not.toContain("not-first:mt-6");
+    expect(within(merge).getByRole("button", { name: "Merge" })).toBeTruthy();
+    const reject = within(verdict).getByRole("button", { name: "Reject" }).className.split(" ");
+    expect(reject).toEqual(expect.arrayContaining(["border", "border-border-strong", "text-failed"]));
+  });
 });
 
 describe("item page: the command box and pending proposals (design 09-dashboard-app)", () => {
