@@ -34,7 +34,7 @@ export interface SystemAction {
 /** `/api/v1/overview`: the page's numbers. */
 export interface Overview {
   as_of: string;
-  /** The git revision the UI server runs; compared with WEB_REV. Null: unknown. */
+  /** The revision the UI server's build was made from (its dist/ stamp); compared with WEB_REV. Null: unknown. */
   server_rev?: string | null;
   stages: Record<string, number>;
   /** Open items blocked on a person plus the system actions: "Needs you (N)". */
