@@ -33,7 +33,7 @@ describe("design tokens", () => {
   it("index.css imports the tokens and maps the Tailwind names", () => {
     const css = readFileSync(join(WEB_SRC, "index.css"), "utf8");
     expect(css).toContain('@import "./tokens.css"');
-    for (const name of ["--color-border:", "--color-surface:", "--color-text-2:", "--color-accent:", "--radius-card:"]) {
+    for (const name of ["--color-border:", "--color-surface:", "--color-text-2:", "--color-accent:", "--color-failed:", "--color-on-solid:", "--radius-card:"]) {
       expect(css).toContain(name);
     }
     expect(css).toContain("prefers-reduced-motion: reduce");
@@ -62,6 +62,51 @@ describe("design tokens", () => {
     expect(palette.test("text-blue-700")).toBe(true);
     expect(palette.test("bg-white")).toBe(true);
     expect(palette.test("bg-surface text-text-2 border-border")).toBe(false);
+  });
+
+  it("no raw button, select, textarea or input element appears under web/src outside components/ui", () => {
+    // A JSX tag opens with `<name` and whitespace, `>` or `/`, so a tag spread over several lines is caught too.
+    const raw = /<(?:button|select|textarea|input)(?=[\s/>])/;
+    const ui = join(WEB_SRC, "components", "ui");
+    const hits = files(WEB_SRC)
+      .filter((f) => /\.tsx?$/.test(f) && !f.startsWith(ui))
+      .filter((f) => raw.test(readFileSync(f, "utf8")));
+    expect(hits).toEqual([]);
+    // Self-check: a multi-line raw tag and a radio are caught; the components and words in text are not.
+    expect(raw.test('<button\n  type="button"\n  onClick={go}\n>')).toBe(true);
+    expect(raw.test('<input type="radio" name="r" />')).toBe(true);
+    expect(raw.test("<select>")).toBe(true);
+    expect(raw.test('<Button variant="ghost" /> <Select /> <Textarea /> <Input /> <Radio />')).toBe(false);
+    expect(raw.test("<buttons> and <inputs>")).toBe(false);
+  });
+
+  it("components/ui has the control set, and every control shares the focus ring and the disabled look", () => {
+    const ui = (name: string) => readFileSync(join(WEB_SRC, "components", "ui", name), "utf8");
+    const control = ui("control.ts");
+    expect(control).toMatch(/focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-2 focus-visible:outline-focus/);
+    expect(control).toMatch(/outline-none/);
+    expect(control).toMatch(/disabled:cursor-not-allowed disabled:opacity-50/);
+    const button = ui("button.tsx");
+    for (const v of ["primary:", "secondary:", "ghost:", "danger:"]) expect(button).toContain(v);
+    expect(button).toMatch(/md: "min-h-8 px-3 text-sm"/);
+    expect(button).toMatch(/sm: "min-h-7 px-2 text-xs"/);
+    expect(button).toMatch(/icon: "size-8/);
+    // Hover only on an enabled button, so a disabled one keeps its border and text colours.
+    expect(button).not.toMatch(/(?<![\w:-])hover:/);
+    for (const [file, name] of [["select.tsx", "Select"], ["input.tsx", "Input"], ["textarea.tsx", "Textarea"], ["radio.tsx", "Radio"], ["field.tsx", "Field"], ["button-row.tsx", "ButtonRow"]] as const) {
+      expect(ui(file)).toContain(`export function ${name}(`);
+    }
+    for (const file of ["button.tsx", "select.tsx", "input.tsx", "textarea.tsx", "radio.tsx"]) expect(ui(file)).toMatch(/\b(FOCUS|FIELD)\b/);
+    expect(ui("select.tsx")).toMatch(/h-8 [^"]*appearance-none[^"]*pr-8 pl-3/);
+    expect(ui("input.tsx")).toContain("h-8 min-w-0 px-3");
+    expect(ui("textarea.tsx")).toContain("px-3 py-2");
+    expect(ui("button-row.tsx")).toContain("flex flex-wrap items-center gap-2");
+    expect(ui("field.tsx")).toContain("flex-col gap-1");
+    const dialog = ui("dialog.tsx");
+    expect(dialog).not.toMatch(/\bconst (BUTTON|DANGER)\b/);
+    expect(dialog).toMatch(/rounded-card/);
+    expect(dialog).toMatch(/\bp-6\b/);
+    expect(dialog).toMatch(/<ButtonRow className="justify-end">/);
   });
 
   it("no file under web/src uses a default radius or an arbitrary type size", () => {
@@ -94,6 +139,8 @@ describe("contrast", () => {
       for (const fg of ["text", "text-2", "text-3"]) for (const bg of ["bg", "surface", "surface-2"]) pairs.push([fg, bg]);
       for (const fg of ["accent", "running", "done", "failed"]) pairs.push([fg, "surface"]);
       for (const s of ["ok", "warn", "bad", "info"]) pairs.push([`pill-${s}-fg`, `pill-${s}-bg`]);
+      // Text on a filled accent or failed background (a primary button, a destructive confirm).
+      for (const bg of ["accent", "failed"]) pairs.push(["on-solid", bg]);
       for (const [fg, bg] of pairs) expect(ratio(t(fg), t(bg)), `${theme} ${fg} on ${bg}`).toBeGreaterThanOrEqual(4.5);
     });
   }

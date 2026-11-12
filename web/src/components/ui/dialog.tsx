@@ -3,17 +3,15 @@ import { createPortal } from "react-dom";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
+import { ButtonRow } from "./button-row.js";
 
 // A native <dialog> opened with showModal (design §9: no UI library). Mount it to open it, unmount it to close it.
 // It renders into document.body, so a table row that opens one keeps its own children. Esc and a click on the
 // backdrop (the dialog element itself; the content sits in an inner box) cancel without confirming; Enter in a
 // single-line field submits the form, which is the confirm button. Focus moves into the dialog when it opens and
-// goes back to `returnFocusTo` (else the element focused when it opened) when it closes. Colours are token classes, and the failed
-// colour variable for a destructive confirm.
-
-const BUTTON = "h-8 w-auto px-2";
-/** The destructive confirm: the theme's failed (red) colour variable. */
-const DANGER = "border-transparent bg-(--color-red-700) text-(--color-white) hover:bg-(--color-red-800)";
+// goes back to `returnFocusTo` (else the element focused when it opened) when it closes. It is built from the
+// components/ui set: radius card, padding space-6, a text-base font-semibold title, and a right-aligned ButtonRow footer
+// with Cancel (secondary) before the confirm (primary, or danger filled with the failed colour).
 
 export interface DialogProps {
   /** The title: the action and the item it acts on. */
@@ -83,12 +81,12 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
         if (e.target === ref.current) close.current();
       }}
       className={cn(
-        "m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-control p-0",
+        "m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-card p-0",
         "border border-border-strong bg-surface text-text-1",
         "backdrop:bg-text-1/50",
       )}
     >
-      <form onSubmit={submit} className="flex flex-col gap-3 p-4">
+      <form onSubmit={submit} className="flex flex-col gap-3 p-6">
         <h2 id={titleId} className="text-base font-semibold text-pretty break-words">
           {title}
         </h2>
@@ -103,14 +101,14 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
             {error}
           </p>
         )}
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" className={BUTTON} onClick={() => close.current()}>
+        <ButtonRow className="justify-end">
+          <Button variant="secondary" onClick={() => close.current()}>
             {t("common.cancel")}
           </Button>
-          <Button type="submit" variant="outline" className={cn(BUTTON, danger && DANGER)} disabled={confirmDisabled}>
+          <Button type="submit" variant={danger ? "danger" : "primary"} solid={danger} disabled={confirmDisabled}>
             {confirmLabel}
           </Button>
-        </div>
+        </ButtonRow>
       </form>
     </dialog>,
     document.body,

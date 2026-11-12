@@ -2,9 +2,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { API, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { Field } from "../components/ui/field.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
-import { field } from "./item-decisions.js";
+import { Textarea } from "../components/ui/textarea.js";
 
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571): the owner's tacit ledger entries
 // waiting for a verdict (candidate classes `C-…` and structure proposals `P-…`), each with its title, state and ID, read
@@ -14,7 +16,6 @@ import { field } from "./item-decisions.js";
 // One card per entry at every width, so no table turns into cards.
 
 const muted = "text-xs text-pretty text-text-2";
-const BUTTON = "h-8 w-auto px-2";
 
 const STATE_LABEL: Record<string, string> = { open: "Open", pending: "Pending", held: "Held" };
 /** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal takes none. */
@@ -70,16 +71,13 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
       onClose={onClose}
     >
       {promote && (
-        <label className="flex flex-col gap-1 text-sm font-medium">
-          Rule wording
-          <textarea aria-label="Rule wording" className={`${field} min-h-20 font-normal`} value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} />
-          <span className={muted}>The ledger stores this wording as the promoted rule.</span>
-        </label>
+        <Field label="Rule wording" htmlFor={`${entry.id}-wording`} help="The ledger stores this wording as the promoted rule.">
+          <Textarea id={`${entry.id}-wording`} aria-label="Rule wording" className="min-h-20" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} />
+        </Field>
       )}
-      <label className="flex flex-col gap-1 text-sm font-medium">
-        Why?
-        <textarea aria-label="Reason" className={`${field} min-h-16 font-normal`} value={reason} maxLength={1000} onChange={(e) => setReason(e.target.value)} />
-      </label>
+      <Field label="Why?" htmlFor={`${entry.id}-reason`}>
+        <Textarea id={`${entry.id}-reason`} aria-label="Reason" className="min-h-16" value={reason} maxLength={1000} onChange={(e) => setReason(e.target.value)} />
+      </Field>
     </Dialog>
   );
 }
@@ -96,13 +94,13 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
         {entry.title}
       </p>
       {token !== null && (
-        <div className="flex flex-wrap gap-2">
+        <ButtonRow className="pt-1">
           {VERDICTS.map((v) => (
-            <Button key={v.verdict} variant="outline" className={BUTTON} onClick={() => setOpen(v.verdict)}>
+            <Button key={v.verdict} variant={v.verdict === "reject" ? "danger" : "secondary"} onClick={() => setOpen(v.verdict)}>
               {v.label}
             </Button>
           ))}
-        </div>
+        </ButtonRow>
       )}
       {open !== null && token !== null && <VerdictDialog entry={entry} verdict={open} token={token} onClose={() => setOpen(null)} />}
     </li>
@@ -115,7 +113,7 @@ function LedgerOff() {
   return (
     <div className="space-y-2">
       <Empty>No tacit ledger is on, so there are no rules to review.</Empty>
-      <Button variant="outline" className={BUTTON} aria-expanded={shown} aria-controls="rules-enable" onClick={() => setShown(!shown)}>
+      <Button variant="secondary" aria-expanded={shown} aria-controls="rules-enable" onClick={() => setShown(!shown)}>
         How to turn on the ledger
       </Button>
       {shown && (

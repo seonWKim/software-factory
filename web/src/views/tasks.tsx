@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { API, type TaskRow, type TasksView, postTaskBuild, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { announceStatus } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
@@ -56,7 +57,7 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   };
   return (
     <span className="flex flex-col items-start gap-1">
-      <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} aria-label={`Build this: ${task.title}`} onClick={() => void build()}>
+      <Button variant="secondary" disabled={busy} aria-label={`Build this: ${task.title}`} onClick={() => void build()}>
         Build this
       </Button>
       {error !== null && (
@@ -159,13 +160,13 @@ export function TasksPage() {
   const token = v?.can_build ? v.csrf_token : null;
   return (
     <>
-      <div role="group" aria-label="Task view" className="mb-4 flex flex-wrap gap-2">
+      <ButtonRow role="group" aria-label="Task view" className="mb-6">
         {TABS.map((t) => (
-          <Button key={t.id} variant="outline" aria-pressed={t.id === tab} className={cn("size-auto px-3 py-1.5", t.id === tab && "bg-surface-2")} onClick={() => setTab(t.id)}>
+          <Button key={t.id} aria-pressed={t.id === tab} onClick={() => setTab(t.id)}>
             {t.label}
           </Button>
         ))}
-      </div>
+      </ButtonRow>
       <Section title={TABS.find((t) => t.id === tab)!.label} count={v ? count(v, tab) : undefined}>
         {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <TabBody tab={tab} v={v} token={token} />}
         <p className={`mt-3 ${muted}`}>

@@ -93,9 +93,11 @@ function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c:
           key={c}
           role="radio"
           aria-checked={choice === c}
+          variant="ghost"
+          size="icon"
           aria-label={t(label)}
           title={t(label)}
-          className={cn("shrink-0", choice === c && "bg-surface-2")}
+          className="shrink-0"
           onClick={() => onChoose(c)}
         >
           <Icon aria-hidden className="size-4" />
@@ -182,10 +184,10 @@ export function App() {
             <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2 tabular-nums" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : <Ago at={overview.dataUpdatedAt} />}
             </span>
-            <Button aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
+            <Button variant="ghost" size="icon" aria-label={t("search.open")} className="shrink-0" onClick={() => setDialog("search")}>
               <Search aria-hidden className="size-4" />
             </Button>
-            <Button aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
+            <Button variant="ghost" size="icon" aria-label={t("topbar.refresh")} className="shrink-0" onClick={() => void client.invalidateQueries()}>
               <RefreshCw aria-hidden className="size-4" />
             </Button>
             <ThemeControl choice={choice} onChoose={choose} />

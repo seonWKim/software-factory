@@ -2,15 +2,18 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type RefObject, useEffect, useId, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Section } from "../components/ui/parts.js";
-import { cn } from "../lib/cn.js";
+import { Select } from "../components/ui/select.js";
+import { Textarea } from "../components/ui/textarea.js";
 import { Link } from "../nav.js";
 import { PAGE_COMMANDS_PATH } from "../pages.js";
 import { CommandBox, type Outcome, OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import {
-  ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approveNote, approvePhase, chosenAnswers, field, initialChoices, textButton, type CommandDialogProps,
+  ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approveNote, approvePhase, chosenAnswers, initialChoices, type CommandDialogProps,
 } from "./item-decisions.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
@@ -177,19 +180,16 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
         )}
         <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
         {usesNote && (
-          <textarea
+          <Textarea
             aria-label="Note"
             rows={3}
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="Tokens for budget, a verdict's reason, or a note"
-            className={cn(
-              "mb-2 w-full max-w-xl rounded-control border border-border-strong bg-surface px-2 py-1 text-sm",
-              "focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus",
-            )}
+            className="mb-3 block w-full max-w-xl"
           />
         )}
-        <ul className="space-y-1.5">
+        <ul className="space-y-2">
           {commands.map((c) => {
             const disabled = !enabled || busy || !c.allowed;
             const outcome = c.allowed ? commandOutcome(replies, c.name, local[c.name]) : notAllowed(c);
@@ -197,22 +197,21 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
             const confirms = c.name === "approve" && phase !== null;
             if (c.name === "verdict") {
               return (
-                <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
+                <li key={c.name} data-command={c.name}>
                   <VerdictButtons
                     title={`${c.usage}: ${c.description}`}
                     disabled={disabled}
                     reason={note}
+                    outcome={outcome}
                     onSend={(text) => void post("verdict", text).then((ok) => ok && setNote(""))}
                   />
-                  <OutcomeText outcome={outcome} />
                 </li>
               );
             }
             return (
               <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
                 <Button
-                  variant="outline"
-                  className={textButton}
+                  variant="secondary"
                   disabled={disabled || confirming === c.name}
                   title={`${c.usage}: ${c.description}`}
                   {...(hasForm ? { "aria-haspopup": "dialog" as const } : {})}
@@ -228,12 +227,14 @@ export function ItemCommands({ id, commands, replies }: { id: string; commands: 
                 {confirming === c.name && phase !== null && (
                   <>
                     <ApproveConfirm phase={phase} answers={answers} note={note} />
-                    <Button variant="outline" className={textButton} disabled={disabled} onClick={() => void send(c.name)}>
-                      Confirm {c.name}
-                    </Button>
-                    <Button variant="outline" className={textButton} onClick={() => setConfirming(null)}>
-                      Cancel
-                    </Button>
+                    <ButtonRow>
+                      <Button variant="secondary" onClick={() => setConfirming(null)}>
+                        Cancel
+                      </Button>
+                      <Button variant="primary" disabled={disabled} onClick={() => void send(c.name)}>
+                        Confirm {c.name}
+                      </Button>
+                    </ButtonRow>
                   </>
                 )}
                 <OutcomeText outcome={outcome} />
@@ -271,41 +272,60 @@ function CommandDialog({ command, pr, ...props }: CommandDialogProps & { command
   return <VerdictDialog {...props} />;
 }
 
+/** The verdict buttons' variants: Accept secondary, Changes secondary, Reject danger text. */
+const VERDICT_VARIANT = { accept: "secondary", changes: "secondary", reject: "danger" } as const;
+
 /**
- * The verdict buttons (issue #523): a severity choice, then Accept, Changes and Reject, each sending verdictNote with
- * `reason` (the note box's text). Changes and reject need a reason, so they wait for one.
+ * The verdict buttons (issue #523): a severity choice, then one ButtonRow of Accept, Changes and Reject, each sending
+ * verdictNote with `reason` (the note box's text), and the outcome. Changes and reject need a reason, so they wait for
+ * one. A handled verdict shows Done as a ghost button, which hides it; a newer verdict's outcome shows again.
  */
-function VerdictButtons({ title, disabled, reason, onSend }: { title: string; disabled: boolean; reason: string; onSend: (note: string) => void }) {
+function VerdictButtons({
+  title, disabled, reason, outcome, onSend,
+}: { title: string; disabled: boolean; reason: string; outcome: Outcome; onSend: (note: string) => void }) {
   const [severity, setSeverity] = useState<VerdictSeverityChoice>("none");
+  const [doneHidden, setDoneHidden] = useState(false);
+  const done = outcome?.tone === "status" && outcome.text === "Done";
+  // A new send (its outcome "sent") shows the next Done again.
+  if (!done && doneHidden) setDoneHidden(false);
   return (
-    <span data-verdict className="inline-flex flex-wrap items-center gap-2">
-      <select
+    <div data-verdict className="flex flex-wrap items-center gap-2">
+      <Select
         aria-label="Verdict severity"
         value={severity}
         disabled={disabled}
         onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}
-        className="h-8 rounded-control border border-border-strong bg-surface px-1 text-sm"
       >
         {SEVERITIES.map((s) => (
           <option key={s} value={s}>
             {s}
           </option>
         ))}
-      </select>
-      {VERDICTS.map(([kind, label]) => (
-        <Button
-          key={kind}
-          variant="outline"
-          className={textButton}
-          data-verdict-kind={kind}
-          disabled={disabled || (kind !== "accept" && reason.trim() === "")}
-          title={kind === "accept" ? title : `${title} (write the reason in the note box first)`}
-          onClick={() => onSend(verdictNote(kind, severity, reason))}
-        >
-          {label}
-        </Button>
-      ))}
-    </span>
+      </Select>
+      <ButtonRow>
+        {VERDICTS.map(([kind, label]) => (
+          <Button
+            key={kind}
+            variant={VERDICT_VARIANT[kind]}
+            data-verdict-kind={kind}
+            disabled={disabled || (kind !== "accept" && reason.trim() === "")}
+            title={kind === "accept" ? title : `${title} (write the reason in the note box first)`}
+            onClick={() => onSend(verdictNote(kind, severity, reason))}
+          >
+            {label}
+          </Button>
+        ))}
+        {done ? (
+          !doneHidden && (
+            <Button variant="ghost" data-outcome title="The verdict was handled; hide this" onClick={() => setDoneHidden(true)}>
+              Done
+            </Button>
+          )
+        ) : (
+          <OutcomeText outcome={outcome} />
+        )}
+      </ButtonRow>
+    </div>
   );
 }
 
@@ -322,8 +342,7 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
   return (
     <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
       <Button
-        variant="outline"
-        className={textButton}
+        variant="secondary"
         disabled={!merge.enabled || !on || busy}
         title={source === "local"
           ? "Merge the item's local branch into the local base branch (factory merge), after the install and checks pass"
@@ -354,13 +373,7 @@ function VerdictDialog({ id, busy, error, returnFocusTo, onSend, onClose }: Comm
       onConfirm={() => onSend(text.trim())}
       onClose={onClose}
     >
-      <input
-        aria-label="Verdict"
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder={VERDICT_PLACEHOLDER}
-        className={cn(field, "w-full min-w-0")}
-      />
+      <Input aria-label="Verdict" value={text} onChange={(e) => setText(e.target.value)} placeholder={VERDICT_PLACEHOLDER} className="w-full" />
     </Dialog>
   );
 }
@@ -393,7 +406,7 @@ export function NeedCommands({ id, commands, pr }: { id: string; commands: reado
     <span data-need-commands className="inline-flex flex-wrap items-center gap-2">
       {primary && (
         <span data-command={primary.name} className="inline-flex">
-          <Button variant="outline" className={textButton} disabled={!on || busy} title={`${primary.usage}: ${primary.description}`} onClick={() => void send(primary.name, "")}>
+          <Button variant="secondary" disabled={!on || busy} title={`${primary.usage}: ${primary.description}`} onClick={() => void send(primary.name, "")}>
             {primary.name}
           </Button>
         </span>
@@ -446,21 +459,16 @@ function MoreMenu({
   }, [shown]);
   return (
     <span ref={wrap} className="relative inline-flex">
-      <button
+      <Button
         ref={buttonRef}
-        type="button"
-        className={cn(
-          "inline-flex items-center justify-center rounded-control border border-border-strong text-sm font-medium hover:bg-surface-2",
-          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus",
-          textButton,
-        )}
+        variant="secondary"
         aria-label="More commands"
         aria-haspopup="menu"
         aria-expanded={shown}
         onClick={() => setShown(!shown)}
       >
         ⋯
-      </button>
+      </Button>
       {shown && (
         <ul
           role="menu"
@@ -471,20 +479,20 @@ function MoreMenu({
             const why = !c.allowed ? plainRefusal(c.reason ?? "not allowed") : null;
             return (
               <li key={c.name} role="none" data-command={c.name}>
-                <button
-                  type="button"
+                <Button
+                  variant="ghost"
                   role="menuitem"
                   disabled={off}
                   title={why ?? `${c.usage}: ${c.description}`}
                   aria-describedby={why ? `${uid}-why-${c.name}` : undefined}
-                  className="block w-full rounded-control px-2 py-1 text-left hover:bg-surface-2 disabled:opacity-50"
+                  className="w-full text-left"
                   onClick={() => {
                     setShown(false);
                     onPick(c.name);
                   }}
                 >
                   {c.name}
-                </button>
+                </Button>
                 {why && (
                   <span id={`${uid}-why-${c.name}`} className="block max-w-xs px-2 pb-1 text-xs text-pretty break-words text-text-2">
                     {why}

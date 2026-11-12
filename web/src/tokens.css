@@ -14,6 +14,7 @@
   --done: #15803D;
   --failed: #B91C1C;
   --focus: #1D4ED8;
+  --on-solid: #FFFFFF;
   --pill-ok-bg: #E8F2EC;
   --pill-ok-fg: #0E5328;
   --pill-ok-border: #ADD3BB;
@@ -63,6 +64,7 @@
   --done: #4ADE80;
   --failed: #F87171;
   --focus: #60A5FA;
+  --on-solid: #17171A;
   --pill-ok-bg: #284335;
   --pill-ok-fg: #4ADE80;
   --pill-ok-border: #33764E;

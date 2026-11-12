@@ -82,7 +82,7 @@
   "hotspot_weight": 3.0,
   "hotspot_paths": ["src/impl/store/sqlite/schema.ts", "src/impl/store/mysql/schema.ts", "src/core/controller.ts", "src/core/worker.ts", "docs/design.md", "SET_UP.md"],
   "mechanical_weight": 0.25,
-  "mechanical_paths": ["src/impl/store/mysql/migrations.ts", "migrations/mysql/", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
+  "mechanical_paths": ["src/impl/store/mysql/migrations.ts", "docs/design/", "docs/design.md", "docs/plugins.md", "docs/plugins/"],
   "path_companions": [
     { "when": "src/impl/store/sqlite/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
     { "when": "src/impl/store/mysql/schema.ts", "also": ["migrations/mysql/", "src/impl/store/mysql/migrations.ts"] },
