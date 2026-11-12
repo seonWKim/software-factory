@@ -128,4 +128,28 @@ describe("shortcuts", () => {
       }
     });
   });
+
+  it("q focuses the Tasks page's quick-add field when no field has focus, and does nothing elsewhere or in a field", async () => {
+    RESPONSES["/api/v1/tasks"] = { today_date: "2026-11-12", inbox: [], today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "t", can_build: true };
+    mount();
+    press("q");
+    expect(document.activeElement).toBe(document.body);
+    history.pushState(null, "", "/app/tasks");
+    dispatchEvent(new PopStateEvent("popstate"));
+    const quick = await screen.findByPlaceholderText(/Add a task/);
+    const other = screen.getByLabelText("field");
+    other.focus();
+    press("q", {}, other);
+    expect(document.activeElement).toBe(other);
+    (document.activeElement as HTMLElement).blur();
+    press("q");
+    expect(document.activeElement).toBe(quick);
+    delete RESPONSES["/api/v1/tasks"];
+  });
+
+  it("lists q in the shortcuts help", async () => {
+    mount();
+    press("?");
+    expect(await screen.findByText("Add a task")).toBeTruthy();
+  });
 });

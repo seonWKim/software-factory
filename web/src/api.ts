@@ -1,10 +1,11 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
-// /api/v1/tasks/build (postTaskBuild), each with the per-process CSRF token (from GET /api/v1/settings,
+// /api/v1/tasks/build (postTaskBuild) and POST /api/v1/tasks (postTaskAdd), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules or /api/v1/tasks) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
+import { t } from "./i18n/index.js";
 
 /** The supervisor's status (the status page's banner); null when the factory is stopped. */
 export interface FactoryState {
@@ -69,9 +70,9 @@ export interface MergeCheckView {
 
 /** The short label shown next to a ready-to-merge item's state. */
 export function mergeCheckLabel(m: MergeCheckView): string {
-  if (m.state === "mergeable") return "Mergeable";
-  if (m.state === "checking") return "Checking…";
-  return `Conflicts: ${m.conflicts.length} ${m.conflicts.length === 1 ? "file" : "files"}`;
+  if (m.state === "mergeable") return t("api.mergeable");
+  if (m.state === "checking") return t("api.checking");
+  return t(m.conflicts.length === 1 ? "api.conflictsOne" : "api.conflictsMany", { count: m.conflicts.length });
 }
 
 /**
@@ -688,7 +689,7 @@ async function postJson<T extends { error?: string }>(url: string, token: string
 export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
   const r = await postJson<{ ok?: boolean; lines?: string[]; error?: string }>(API.settings, token, body);
   if (r.ok && r.value.ok) return { ok: true, lines: r.value.lines ?? [] };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /**
@@ -700,14 +701,14 @@ export async function postCommand(token: string, id: string, command: string, no
   const body = proposal !== undefined ? { command, proposal } : text ? { command, note: text } : { command };
   const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, body);
   if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** POST /api/v1/pauses/resume: ends one pause now. A refusal (403, 400, …) comes back as `{ ok: false, error }`. */
 export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
   if (r.ok) return { ok: true, ended: r.value.ended === true };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** POST /api/v1/standing: a rule on or off, naming the proposal it answers if any. A refusal comes back as `{ ok: false, error }`. */
@@ -717,7 +718,7 @@ export async function postStanding(
 ): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ changed?: boolean; error?: string }>(API.standing, token, body);
   if (r.ok) return { ok: true, changed: r.value.changed === true };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording. */
@@ -727,14 +728,20 @@ export async function postRuleVerdict(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
   if (r.ok) return { ok: true };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** POST /api/v1/tasks/build: Build this. The work item's ID; a refusal (409, 503, …) comes back as `{ ok: false, error }`. */
 export async function postTaskBuild(token: string, id: string): Promise<{ ok: true; work_item_id: string } | { ok: false; error: string }> {
   const r = await postJson<{ work_item_id?: string; error?: string }>(API.taskBuild, token, { id });
   if (r.ok) return { ok: true, work_item_id: r.value.work_item_id ?? "" };
-  return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/tasks: quick-add words under the page's own `tk_` ID (a resend stores one task). A refusal comes back as `{ ok: false, error }`. */
+export async function postTaskAdd(token: string, id: string, words: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.tasks, token, { id, words });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
 /**
