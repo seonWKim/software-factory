@@ -50,7 +50,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 
 ## UI changes
 
-A change to the dashboard (`web/`) follows `design-system/dx.md`: its build steps, its checks and its PR checklist.
+A change to the dashboard (`web/`) reads `design-system/components.md` and `design-system/patterns.md`, composes from `web/src/components/ui/`, and follows `design-system/dx.md` for its build steps, checks and PR checklist.
 
 ## Rules for agents working on this repo
 
