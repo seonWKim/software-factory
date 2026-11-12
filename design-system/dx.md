@@ -25,7 +25,7 @@ Run each through its npm script, never the test runner directly.
 
 ## Existing pages
 
-The checks apply to every file under `web/src`; a page that still has a raw control or inline text is not on a list of exceptions. Moving existing pages onto the components is done in follow-up issues, one page each. The first is the Needs you redesign (wi_fc2c).
+The raw-controls check applies to every file under `web/src` outside `components/ui/`, with no list of exceptions. The text check keeps a `BASELINE` list in `tests/web-i18n-text.test.ts` of the files that still hold English text; it must match exactly, so a new file with inline text fails, and when you move a listed file's text into the catalog you delete its line. Moving existing pages onto the components is done in follow-up issues, one page each. The first is the Needs you redesign (wi_fc2c).
 
 ## PR checklist for UI changes
 
