@@ -171,4 +171,22 @@ describe("ui priority", () => {
     expect(LEVEL_LABELS).toMatchObject({ needs_you: "Needs you", needs_triage: "Needs triage", blocked_by_task: "Blocked by another task" });
     expect(NEEDS_YOU).not.toContain("blocked_by_task");
   });
+
+  it("an item waiting for CI is running with the badge waiting for CI, unless its running run is past its lease", () => {
+    const ci = item("ci", { stage: "REVIEW", blocked_on: "ci", blocked_reason: "checks_pending" });
+    expect(levelOf(ci, NOW, LEASE)).toBe("running");
+    expect(rank([ci], NOW, LEASE)[0]!.badges).toEqual(["waiting for CI"]);
+    expect(levelOf({ ...ci, run: running("implement", 2) }, NOW, LEASE)).toBe("stuck");
+  });
+
+  it("the gap after a run finished is queued for one lease, then stuck", () => {
+    const gap = (finished: string | null) => item("gap", { last_finished_at: finished, since: at(10) });
+    const within = gap(new Date(NOW.getTime() - LEASE + 1).toISOString());
+    expect(levelOf(within, NOW, LEASE)).toBe("queued");
+    expect(rank([within], NOW, LEASE)[0]!.badges).toEqual(["next run queued"]);
+    for (const g of [gap(new Date(NOW.getTime() - LEASE).toISOString()), gap(null)]) {
+      expect(levelOf(g, NOW, LEASE)).toBe("stuck");
+      expect(rank([g], NOW, LEASE)[0]!.badges).toEqual(["stuck 10 min"]);
+    }
+  });
 });
