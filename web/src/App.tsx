@@ -1,10 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Monitor, Moon, RefreshCw, Search, Sun, Wrench } from "lucide-react";
-import { type JSX, useEffect, useState } from "react";
+import { ChevronRight, Monitor, Moon, RefreshCw, Search, Sun, Wrench } from "lucide-react";
+import { type JSX, useEffect, useId, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
 import { Button } from "./components/ui/button.js";
-import { LINK_CLASS } from "./components/ui/link-style.js";
 import { type MessageKey } from "./i18n/en.js";
 import { t, withUnit } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
@@ -54,10 +53,12 @@ const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
 
 const LINK_ROW = "flex items-center gap-2 px-2 py-1.5 text-sm";
 
-/** One sidebar group of page links. */
-function SideLinks({ label, pages, current }: { label: string; pages: readonly PageDef[]; current: PageDef }) {
+/** One sidebar group of page links; with `titled`, its label shows above it as a small grey title and names it. */
+function SideLinks({ label, pages, current, titled = false }: { label: string; pages: readonly PageDef[]; current: PageDef; titled?: boolean }) {
+  const id = useId();
   return (
-    <nav aria-label={label}>
+    <nav aria-label={titled ? undefined : label} aria-labelledby={titled ? id : undefined}>
+      {titled && <p id={id} className="px-2 pb-1 text-xs text-text-3 max-sm:sr-only">{label}</p>}
       <ul className="space-y-1">
         {pages.map((p) => (
           <li key={p.path}>
@@ -146,25 +147,36 @@ export function App() {
 
   return (
     <NavProvider value={navigate}>
-      <div className="flex min-h-dvh bg-surface font-sans text-text-1">
-        <aside aria-label={t("nav.sidebar")} className="w-44 shrink-0 border-r border-border p-3 max-sm:w-14">
+      {/* A window-high shell: the content column scrolls, so the sidebar stays in view without sticky or fixed. */}
+      <div className="flex h-dvh bg-bg font-sans text-text-1">
+        {/* Scrolls by itself when it is taller than the window. */}
+        <aside
+          aria-label={t("nav.sidebar")}
+          className="flex w-44 shrink-0 flex-col overflow-y-auto border-r border-border bg-(--sidebar) p-3 max-sm:w-14"
+        >
           <Brand />
-          <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} />
+          <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} titled />
           <div className="mt-3 border-t border-border pt-3">
-            <SideLinks label={t("nav.factory")} pages={pagesIn("factory")} current={current} />
+            <SideLinks label={t("nav.factory")} pages={pagesIn("factory")} current={current} titled />
           </div>
-          {/* Collapsed until opened, or while one of its pages shows. */}
-          <details className="mt-3 border-t border-border pt-3" open={current.group === "system" || undefined}>
+          {/* Collapsed until opened, or while one of its pages shows; the chevron points right when closed, down when open. */}
+          <details className="group mt-3 border-t border-border pt-3" open={current.group === "system" || undefined}>
             <summary className={cn(LINK_ROW, "cursor-pointer list-none rounded-control text-text-2 hover:bg-surface-2")}>
               <Wrench aria-hidden className="size-4 shrink-0" />
               <span className="max-sm:sr-only">{t("nav.system")}</span>
+              <ChevronRight aria-hidden data-chevron className="ml-auto size-4 shrink-0 group-open:rotate-90 max-sm:hidden" />
             </summary>
             <div className="mt-1">
               <SideLinks label={t("nav.system")} pages={pagesIn("system")} current={current} />
             </div>
           </details>
+          <div className="mt-auto pt-3">
+            <div className="border-t border-border pt-3">
+              <SideLinks label={t("page.settings")} pages={pagesIn("bottom")} current={current} />
+            </div>
+          </div>
         </aside>
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           {/* Wraps instead of widening the page on a narrow screen. */}
           <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
             <Link
@@ -178,9 +190,6 @@ export function App() {
               {t("topbar.needsYou", { count: needs ?? "…" })}
             </Link>
             <ModeSwitch floating />
-            <Link href={`${BASE}settings`} className={cn("shrink-0 text-sm whitespace-nowrap", LINK_CLASS)}>
-              {t("topbar.settings")}
-            </Link>
             <span className="ml-auto shrink-0 text-sm whitespace-nowrap text-text-2 tabular-nums" aria-live="polite">
               {overview.isError ? t("topbar.updateFailed") : <Ago at={overview.dataUpdatedAt} />}
             </span>

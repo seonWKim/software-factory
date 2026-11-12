@@ -93,8 +93,13 @@ describe("Data page", () => {
   it("the Data entry is last in the System group and shows the table list beside the rows", async () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
-    const links = [...side.querySelectorAll("a")].map((a) => a.textContent);
-    expect(links.slice(-1)).toEqual(["Data"]);
+    // The System group ends with Queue then Data; the Settings row sits below it, outside the group.
+    const system = within(side).getByRole("navigation", { name: "System" });
+    const links = [...system.querySelectorAll("a")].map((a) => a.textContent);
+    expect(links.slice(links.indexOf("Queue"))).toEqual(["Queue", "Data"]);
+    const settings = within(side).getByRole("link", { name: "Settings" });
+    expect(system.contains(settings)).toBe(false);
+    expect(system.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     fireEvent.click(within(side).getByText("Data"));
     expect(location.pathname).toBe("/app/data");
     expect(await screen.findByRole("heading", { name: "Data" })).toBeTruthy();
