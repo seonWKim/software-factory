@@ -370,6 +370,7 @@ describe("ui api: item thread (issue #286)", () => {
       at: m.created_at,
       kind: ["spec", "comment", "refused"][i],
       author: i === 1 ? "unknown" : "factory",
+      role: i === 1 ? "owner" : "factory",
       channel: "github_issue",
       anchor: `msg-${m.seq}`,
       body: i === 1 ? "[withheld: github_token]" : m.body,
@@ -377,6 +378,30 @@ describe("ui api: item thread (issue #286)", () => {
     expect(JSON.stringify(body)).not.toContain(SECRET);
     // An item with no entries has an empty thread.
     expect((await json<{ thread: unknown[] }>(d, `/api/v1/items/${encodeURIComponent(items.done.id)}`)).thread).toEqual([]);
+  });
+
+  it("the thread lists the owner's CLI and dashboard commands with their text, withheld; no other item's, no GitHub origin", async () => {
+    const { d, store, clock, items } = await seeded();
+    const it = items.secretive;
+    await store.appendCliCommand({ key: "app:n1", actor: "local:me", command: "approve", args: { work_item_id: it.id, note: `go ${SECRET}` } });
+    clock.advance(1_000);
+    await store.appendCliCommand({ key: "cli:n2", actor: "local:me", command: "revise", args: { item: it.id, text: "split it" } });
+    await store.appendCliCommand({ key: "cli:n3", actor: "local:me", command: "approve", args: { item: items.approve.id, text: "other item" } });
+    await store.appendCliCommand({ key: "github:9", actor: "github:7", command: "retry", args: { item: it.id } });
+    await store.appendCliCommand({ key: "cli:n4", actor: "local:me", command: "confirm", args: { item: it.id, proposal: "p" } });
+    const body = await json<{ thread: Record<string, unknown>[] }>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
+    expect(body.thread.map((e) => [e.kind, e.author, e.role, e.channel, e.body])).toEqual([
+      ["approve", "local:me", "owner", "app", "[withheld: github_token]"],
+      ["revise", "local:me", "owner", "cli", "split it"],
+    ]);
+    expect(JSON.stringify(body)).not.toContain(SECRET);
+  });
+
+  it("the thread's non-factory entries are the owner's, with the stored actor ID when there is one", async () => {
+    const { d, store, items } = await seeded();
+    await store.recordItemMessage({ work_item_id: items.secretive.id, marker: "github:5", body: "from github", actor: "github:42" });
+    const body = await json<{ thread: Record<string, unknown>[] }>(d, `/api/v1/items/${encodeURIComponent(items.secretive.id)}`);
+    expect(body.thread.map((e) => [e.author, e.role])).toEqual([["github:42", "owner"]]);
   });
 
   it("the thread shows each verdict with its kind, actor ID and feedback text (withheld like any body)", async () => {
@@ -394,9 +419,9 @@ describe("ui api: item thread (issue #286)", () => {
     const body = await json<{ thread: Record<string, unknown>[] }>(d, `/api/v1/items/${encodeURIComponent(it.id)}`);
     const verdicts = body.thread.filter((e) => e.kind === "verdict");
     expect(verdicts).toEqual([
-      { seq: 0, at: good.verdict.at, kind: "verdict", author: actor.id, channel: "github_issue", anchor: `verdict-${good.verdict.id}`, body: "Verdict **accept**, severity none" },
+      { seq: 0, at: good.verdict.at, kind: "verdict", author: actor.id, role: "owner", channel: "github_issue", anchor: `verdict-${good.verdict.id}`, body: "Verdict **accept**, severity none" },
       {
-        seq: 0, at: fb.verdict.at, kind: "verdict", author: actor.id, channel: "github_issue", anchor: `verdict-${fb.verdict.id}`,
+        seq: 0, at: fb.verdict.at, kind: "verdict", author: actor.id, role: "owner", channel: "github_issue", anchor: `verdict-${fb.verdict.id}`,
         body: "Verdict **changes**, severity none\n\n[withheld: github_token]",
       },
     ]);
@@ -929,7 +954,7 @@ describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227
     expect(done.commands.map((c) => c.name)).not.toContain("approve");
   });
 
-  it("replies are the item's stored requests with seq, command, times and the withheld refusal; never the note", async () => {
+  it("replies are the item's stored requests with seq, command, times and the withheld refusal; the note is only in the thread", async () => {
     const { d, store, items, clock } = await seeded();
     const note = "private note text";
     const a = (await store.recordAppCommandRequest({ key: "a", actor: "github:7" as UserId, command: "approve", args: { work_item_id: items.approve.id, note } })).request;
@@ -938,9 +963,10 @@ describe("ui api: item commands and replies on GET /api/v1/items/:id (issue #227
     clock.advance(1000);
     await store.markAppCommandRequest(b.seq, `\`retry\` was not applied: ${SECRET}.`);
     const r = await get(d, `/api/v1/items/${encodeURIComponent(items.approve.id)}`);
-    expect(r.body).not.toContain(note);
     expect(r.body).not.toContain(SECRET);
-    const body = JSON.parse(r.body) as Detail;
+    const body = JSON.parse(r.body) as Detail & { thread: { kind: string; body: string }[] };
+    expect(JSON.stringify(body.replies)).not.toContain(note);
+    expect(body.thread.filter((e) => e.kind === "approve").map((e) => e.body)).toEqual([note]);
     expect(body.replies).toEqual([
       { seq: a.seq, command: "approve", created_at: a.created_at, handled_at: null, refusal: null },
       { seq: b.seq, command: "retry", created_at: b.created_at, handled_at: clock.now().toISOString(), refusal: "[withheld: github_token]" },

@@ -4,13 +4,20 @@
 // `<!-- factory:<kind>:… -->`) have author `factory`, every other entry `unknown`. The item's verdicts are in the
 // thread too (kind `verdict`, design §9): the verdict's kind and severity, its actor ID (from its state change) as
 // author, and its reason (a Feedback text) as the body. The channel is the item's source type. Store reads only, no
-// forge or source call.
+// forge or source call. Owner entries (`role` owner): the item's CLI and dashboard commands (listItemCommands) with
+// their text, the command's name as kind, its stored actor ID as author and its origin (`cli`, `app`) as channel;
+// the item's non-factory thread entries (a GitHub or Slack message, already stored once) and its verdicts are the
+// owner's too. The factory's own entries have role `factory`.
 
-import type { SourceType, StateChange, Verdict, WorkItemId } from "../core/types.js";
+import { MERGE_COMMAND } from "../core/local-merge.js";
+import type { StateChange, Verdict, WorkItemId } from "../core/types.js";
 import type { FactoryStore, ItemMessage } from "../interfaces/factory-store.js";
 
 const FACTORY_MARKER = "<!-- factory:";
 const GITHUB_COMMENT = /^github:\d+$/;
+/** The owner commands the thread shows with their text. */
+const OWNER_COMMANDS: readonly string[] = ["approve", "revise", "retry", "reject", MERGE_COMMAND, "verdict"];
+const COMMANDS_LIMIT = 200;
 
 /** The page anchor of a thread entry: `msg-<seq>`, the id the item page gives the entry. */
 export const threadAnchor = (seq: number): string => `msg-${seq}`;
@@ -24,10 +31,12 @@ export interface ThreadRow {
   at: string;
   /** From the marker: the factory entry's word (`spec`, `refused`, …), `comment` for a GitHub comment, else `message`; `verdict` for a verdict. */
   kind: string;
-  /** `factory` for the factory's own entries; `unknown` for any other, since the entry stores no author; a verdict's actor ID. */
+  /** `factory` for the factory's own entries; the owner's stored user ID for a command or a verdict; an entry from a source stores its actor's ID when it has one, else `unknown`. */
   author: string;
-  /** The item's source type: where the thread lives. */
-  channel: SourceType;
+  /** `factory` for the factory's own entries, `owner` for everything the owner sent. */
+  role: "factory" | "owner";
+  /** The item's source type for an entry or a verdict; `cli` or `app` (the dashboard) for a command. */
+  channel: string;
   anchor: string;
   body: string;
 }
@@ -40,11 +49,12 @@ function kindOf(m: ItemMessage): string {
 }
 
 /**
- * The item's thread, oldest first: its entries, then its verdicts (the page orders them by time); `text` is the
- * Withholder's plain text; `changes` the item's state changes, for each verdict's actor.
+ * The item's thread, oldest first: its entries, its verdicts, then its owner commands (the page orders them by
+ * time); `text` is the Withholder's plain text, which every body and note passes; `changes` the item's state
+ * changes, for each verdict's actor.
  */
 export async function threadRows(
-  store: Pick<FactoryStore, "listItemMessages" | "listVerdicts">, id: WorkItemId, channel: SourceType, text: (v: string) => Promise<string>,
+  store: Pick<FactoryStore, "listItemMessages" | "listVerdicts" | "listItemCommands">, id: WorkItemId, channel: string, text: (v: string) => Promise<string>,
   changes: readonly StateChange[],
 ): Promise<ThreadRow[]> {
   const out: ThreadRow[] = [];
@@ -53,7 +63,8 @@ export async function threadRows(
       seq: m.seq,
       at: m.created_at,
       kind: kindOf(m),
-      author: isFactory(m) ? "factory" : "unknown",
+      author: isFactory(m) ? "factory" : (m.actor ?? "unknown"),
+      role: isFactory(m) ? "factory" : "owner",
       channel,
       anchor: threadAnchor(m.seq),
       body: await text(m.body),
@@ -66,9 +77,24 @@ export async function threadRows(
       at: v.at,
       kind: "verdict",
       author: changes.find((c) => c.id === v.state_change_id)?.actor.id ?? "unknown",
+      role: "owner",
       channel,
       anchor: verdictAnchor(v),
       body: v.reason === null ? head : `${head}\n\n${await text(v.reason)}`,
+    });
+  }
+  for (const c of await store.listItemCommands(id, COMMANDS_LIMIT)) {
+    if (!OWNER_COMMANDS.includes(c.command)) continue;
+    const note = c.args.text ?? c.args.note;
+    out.push({
+      seq: 0,
+      at: c.created_at,
+      kind: c.command,
+      author: c.actor,
+      role: "owner",
+      channel: c.origin,
+      anchor: `command-${c.id}`,
+      body: typeof note === "string" ? await text(note) : "",
     });
   }
   return out;
