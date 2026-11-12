@@ -7,7 +7,6 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { GitHubForge } from "../src/impl/github/github-forge.js";
 import { GitHubClient, GitHubError, GitHubRateLimitError } from "../src/impl/github/github-client.js";
-import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
 import { OpaqueSecret } from "../src/impl/secrets/env-file-secret-store.js";
 import type { GitHubCredentials } from "../src/interfaces/github-credentials.js";
 import { secretName } from "../src/interfaces/secret-store.js";
@@ -259,24 +258,5 @@ describe("store: claimRun honours github_rate_limit (SQLite)", () => {
     clock.advance(60_000);
     while ((r = await store.claimRun({ worker_id: w1, kinds: [...kinds], lease_ms: 60_000 }))) claimed.push(r.kind);
     expect(claimed.sort()).toEqual([...kinds].sort());
-  });
-});
-
-describe("permission lookup during a rate limit", () => {
-  const grantWith = (answer: () => Answer) => {
-    const clock = new FakeClock();
-    const { client } = clientWith(clock, (_m, p) => (p.startsWith("/user/") ? { status: 200, body: JSON.stringify({ login: "alice" }) } : answer()));
-    return new GitHubPermissionGrant(client, { owner: "o", name: "r" });
-  };
-  const subject = { accounts: [{ provider: "github", subject: "1" }] } as never;
-
-  it("throws on a rate-limit 403 instead of returning none", async () => {
-    const grant = grantWith(() => primary(Math.floor(new FakeClock().now().getTime() / 1000) + 600));
-    await expect(grant.roles(subject, null)).rejects.toBeInstanceOf(GitHubRateLimitError);
-  });
-
-  it("a plain 403 still means no access", async () => {
-    const grant = grantWith(() => ({ status: 403, body: JSON.stringify({ message: "Must have push access to view collaborator permission." }) }));
-    expect(await grant.roles(subject, null)).toEqual([]);
   });
 });

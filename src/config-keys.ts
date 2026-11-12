@@ -29,8 +29,6 @@ export const TOP_LEVEL_KEYS = [
   "branch_prefix",
   "dials",
   "floors",
-  "auth",
-  "permissions",
   "plugins",
   "models",
   "model_by",

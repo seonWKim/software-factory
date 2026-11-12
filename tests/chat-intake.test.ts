@@ -4,15 +4,14 @@
 // reply with a "Make this a task" button whose press takes the message in as the presser. End to end on a fake
 // Slack, through the real listener and inbox.
 
+import { OwnerAuth } from "../src/core/authorize.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Listener } from "../src/core/listener.js";
 import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
 import { taskOfferMarker } from "../src/interfaces/source-adapter.js";
 import type { UserId } from "../src/core/types.js";
-import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { ACTION_MAKE_TASK, SLACK_VALUE_MAX, renderComment } from "../src/impl/source/slack-format.js";
@@ -23,16 +22,6 @@ import { newStore } from "./helpers/store.js";
 
 /** A known secret value: the scanner catches it only as such. */
 const SECRET = "fake-secret-value-for-the-chat-leak-test-01";
-
-/** The forge's auth plugin; Slack accounts are judged by the local auth plugin over the store's links and users. */
-class TestAuth implements AuthProvider {
-  async resolve(identity: ExternalIdentity): Promise<Principal | null> {
-    return { user_id: `github:${identity.subject}` as UserId, attributes: {} };
-  }
-  async authorize(_p: Principal, action: AuthAction): Promise<AuthDecision> {
-    return action === "submit_work" ? { allow: true } : { allow: false, reason: "no_role" };
-  }
-}
 
 /**
  * The fake LLM: answers each call with the next scripted answer (the last repeats), throws, stops on its token limit,
@@ -70,7 +59,7 @@ async function setup(llm: ScriptedLLM | null) {
   const socket = new FakeSocket();
   const log = recordingLog();
   const scanner = new PatternEgressScanner(async () => [SECRET]);
-  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo: { owner: "o", name: "r" }, log });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new OwnerAuth({ store, claimer: null }), repo: { owner: "o", name: "r" }, log });
   const gh = new FakeSource();
   // U0ALICE is linked to github:1, the local owner (may approve); U0BOB to github:2, who may only submit work.
   for (const [user, account] of [["github:1", "U0ALICE"], ["github:2", "U0BOB"]] as const) {
@@ -79,7 +68,7 @@ async function setup(llm: ScriptedLLM | null) {
   }
   await store.claimLocalOwner("github:1" as UserId);
   const controller = new ControllerRole({
-    store, sources: [gh, slack], forge: new FakeForge(gh), auth: new TestAuth(), local_auth: new LocalAuthProvider(store), clock, config, log, scanner, ...(llm ? { llm } : {}),
+    store, sources: [gh, slack], forge: new FakeForge(gh), auth: new OwnerAuth({ store, claimer: null }), clock, config, log, scanner, ...(llm ? { llm } : {}),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log, owner: "replica-a" });

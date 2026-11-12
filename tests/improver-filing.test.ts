@@ -2,6 +2,7 @@
 // through the first source that can file (local solo, GitHub enterprise), or one comment on the open item filed
 // for it before. No live model and no remote service: the worker has no LLM and GitHub is a recording client.
 
+import { OwnerAuth } from "../src/core/authorize.js";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPROVER, MAX_FILED_ISSUES, SYSTEM_ITEM, enqueueImprove, fileReport, issueMarker, manualWindow, patternKey, systemSource } from "../src/core/improver.js";
@@ -14,9 +15,7 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, alice, config, issueRef, pipeline, prompts, silent, triageSpec } from "./helpers/fakes.js";
@@ -118,7 +117,7 @@ const local = () => setup((store) => [new LocalSource(store)]);
 async function github() {
   const client = new IssuesClient();
   const sources = (store: FactoryStore) => [new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store)];
-  const auth = (store: FactoryStore) => new GitHubAuthProvider(store, [new StaticGrant({ roles: { "github:1": { "*": ["approver"] } }, deny: {} })]);
+  const auth = (store: FactoryStore) => new OwnerAuth({ store: store, claimer: "github:1" as UserId });
   return { client, ...(await setup(sources, auth)) };
 }
 

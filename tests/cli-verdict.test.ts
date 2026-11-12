@@ -2,13 +2,13 @@
 // write, so a malformed verdict prints the usage line and stores nothing; a valid one is one command row, which the
 // controller applies as the comment `/verdict`: one verdict row, no change to stage, blocked_on or blocked_reason.
 
+import { OwnerAuth } from "../src/core/authorize.js";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { commandFooter, commandState, commandsFor } from "../src/core/commands.js";
 import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { VERDICT_USAGE } from "../src/core/verdict.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
@@ -22,7 +22,7 @@ async function setup(patch: WorkItemPatch) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   const controller = new ControllerRole({
-    store, sources: [new LocalSource(store)], auth: new LocalAuthProvider(store), clock, config, log: silent, scanner: cleanScanner,
+    store, sources: [new LocalSource(store)], auth: new OwnerAuth({ store: store, claimer: null }), clock, config, log: silent, scanner: cleanScanner,
     repeated_failure_rule: false,
   });
   let n = 0;

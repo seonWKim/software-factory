@@ -3,7 +3,6 @@ import { lastRefusedLines } from "../src/cli/handlers/local/refused.js";
 import { MergeQueueStore } from "../src/controller/actors/merge-queue/merge-queue.store.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { RunKind, SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch, WorkerId } from "../src/core/types.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SqlDriver } from "../src/state/index.js";
 import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
@@ -23,10 +22,9 @@ async function harness() {
   const { store, clock } = await newStore();
   const source = new FakeSource();
   const forge = new FakeForge(source);
-  const local = new LocalAuthProvider(store);
   await store.claimLocalOwner(ME);
   const controller = new ControllerRole({
-    store, sources: [source], forge, auth: new FakeAuth(), local_auth: local, clock, config, log: silent, scanner: cleanScanner,
+    store, sources: [source], forge, auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };
   /** An item at `ref` moved to `patch`, with one queued run per kind in `runs`. */

@@ -1,6 +1,7 @@
 // The `slack` stream source (issue #109), end to end on a fake Slack: Socket Mode envelopes through the real
 // listener and inbox into the controller, and the thread replies back out. docs/plugins/source-adapter.md, `slack`.
 
+import { OwnerAuth } from "../src/core/authorize.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Listener } from "../src/core/listener.js";
@@ -10,7 +11,6 @@ import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principa
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { Secret, SecretName } from "../src/interfaces/secret-store.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
@@ -36,26 +36,6 @@ import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
 /** Not shaped like any token the scanner's patterns know: it is caught only as a known secret value. */
 const FAKE_GITHUB_TOKEN = "fake-github-token-for-the-leak-test-0001";
-
-/**
- * The forge's auth plugin, for GitHub identities only: Slack accounts are judged by the local auth plugin over the
- * store's links and local users (setup links U0ALICE to github:1, the owner, and U0BOB to github:2, a requester).
- */
-class SlackAuth implements AuthProvider {
-  calls: { user_id: string; action: AuthAction }[] = [];
-  denyAll = false;
-  async resolve(identity: ExternalIdentity): Promise<Principal | null> {
-    const links: Record<string, string> = { U0ALICE: "github:1", U0BOB: "github:2" };
-    const user = identity.provider === "slack" ? links[identity.subject] : `github:${identity.subject}`;
-    return user ? { user_id: user as UserId, attributes: {} } : null;
-  }
-  async authorize(p: Principal, action: AuthAction): Promise<AuthDecision> {
-    this.calls.push({ user_id: p.user_id, action });
-    if (this.denyAll) return { allow: false, reason: "denied" };
-    if (action === "submit_work" || p.user_id === "github:1") return { allow: true };
-    return { allow: false, reason: "no_role" };
-  }
-}
 
 /** Reads a top-level mention as a work request; proposes `/approve` on the first open item listed for any plain reply. */
 class ApproveLLM implements LLMProvider {
@@ -93,25 +73,24 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   };
   // slack.dashboard_url and slack.notify_channel as slack.plugin.ts passes them: absent unless the test sets them.
   const optional = { ...(opts.dashboard_url ? { dashboard_url: opts.dashboard_url } : {}), ...(opts.notify_channel ? { notify_channel: opts.notify_channel } : {}) };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo, log, settings, ...optional });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, auth: new OwnerAuth({ store, claimer: null }), repo, log, settings, ...optional });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
-  const auth = new SlackAuth();
-  // Slack users: U0ALICE is linked to github:1 (the local owner: may approve), U0BOB to github:2 (no role: never
-  // allowed to approve), anyone else is not linked.
+  // Slack users: U0ALICE is linked to github:1 (the owner: may approve), U0BOB to github:2 (not the owner: never
+  // allowed to approve), anyone else is not linked. One owner check judges every surface.
   for (const [user, account] of [["github:1", "U0ALICE"], ["github:2", "U0BOB"]] as const) {
     await real.createLinkCode(user as UserId, `code-${account}`);
     await real.redeemLinkCode(`code-${account}`, { provider: "slack", subject: account });
   }
   await real.claimLocalOwner("github:1" as UserId);
   const controller = new ControllerRole({
-    store: real, sources: [gh, slack], forge, auth, local_auth: new LocalAuthProvider(real), clock, config, log, scanner, llm: opts.llm ?? new ApproveLLM(),
+    store: real, sources: [gh, slack], forge, auth: new OwnerAuth({ store: real, claimer: null }), clock, config, log, scanner, llm: opts.llm ?? new ApproveLLM(),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log: silentLike(log), owner: "replica-a" });
   const done = listener.run(ac.signal);
   running.push({ ac, done });
-  return { clock, store: real, api, socket, log, slack, gh, forge, auth, controller, scanner };
+  return { clock, store: real, api, socket, log, slack, gh, forge, controller, scanner };
 }
 
 /** The listener's own lines go to the same recorder, so the "nothing names a person" checks see them too. */
@@ -1122,9 +1101,9 @@ describe("slack source: one help and refusal text (issue #528)", () => {
   /** The thread's replies that start with `prefix`. */
   const replies = (f: F, ts: string, prefix: string) => f.api.thread(ts).filter((m) => m.text?.startsWith(prefix)).map((m) => m.text!);
 
-  /** The item API as the page of `actor` reads it, its approve_spec checked by the local auth plugin on the project, as compose.ts wires it. */
+  /** The item API as the page of `actor` reads it, its approve_spec checked by the owner check on the project, as compose.ts wires it. */
   async function dashboard(f: F, actor: string, id: string) {
-    const auth = new LocalAuthProvider(f.store);
+    const auth = new OwnerAuth({ store: f.store, claimer: null });
     const d: ApiDeps = {
       store: f.store, scanner: f.scanner, clock: f.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], f.clock),
       commands: {

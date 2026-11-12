@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // A merged change closes the plain task `task build` linked to it (design 02-tasks, issue #607), on each merge path:
@@ -17,7 +17,7 @@ class OwnerOnly implements AuthProvider {
     return null;
   }
   async authorize(p: Principal): Promise<AuthDecision> {
-    return p.user_id === OWNER ? { allow: true } : { allow: false, reason: "no_role" };
+    return p.user_id === OWNER ? { allow: true } : { allow: false, reason: "not_owner" };
   }
 }
 
@@ -25,7 +25,7 @@ async function harness() {
   const { store, clock } = await newStore();
   const forge = new FakeForge();
   const controller = new ControllerRole({
-    store, sources: [new FakeSource()], forge, sandbox: new FakeSandbox(), auth: new FakeAuth(), local_auth: new OwnerOnly(),
+    store, sources: [new FakeSource()], forge, sandbox: new FakeSandbox(), auth: new OwnerOnly(),
     clock, config, log: silent, scanner: cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };

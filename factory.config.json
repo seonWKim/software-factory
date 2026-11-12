@@ -24,8 +24,7 @@
     { "prefix": "src/impl/egress/", "tier": 4 },
     { "prefix": "src/impl/secrets/", "tier": 4 },
     { "prefix": "src/impl/auth/", "tier": 4 },
-    { "prefix": "src/impl/github/github-auth-provider.ts", "tier": 4 },
-    { "prefix": "src/impl/github/github.plugin.ts", "tier": 4 },
+    { "prefix": "src/core/authorize.ts", "tier": 4 },
     { "prefix": "src/impl/github/app-credentials.ts", "tier": 4 },
     { "prefix": "src/impl/github/token-credentials.ts", "tier": 4 },
     { "prefix": "src/impl/github/app.plugin.ts", "tier": 4 },
@@ -33,7 +32,6 @@
     { "prefix": "src/calendar/plugins/google-calendar/", "tier": 4 },
     { "prefix": ".claude/", "tier": 4 }
   ],
-  "auth": "github",
   "cli_user": "github:69591622",
   "workers": 5,
   "max_workers": 10,
@@ -98,10 +96,6 @@
   ],
   "state_dir": ".factory",
   "worktrees_dir": ".worktrees",
-  "permissions": {
-    "grants": ["github-permission", "static"],
-    "static": { "roles": { "github:69591622": { "*": ["approver"] } } }
-  },
   "ui": { "port": 4310 },
   "stats": { "weights": { "none": 0, "minor": 1, "major": 3, "critical": 10 }, "min_sample": 10 },
   "agent_git_identity": { "name": "software-factory implementer", "email": "software-factory@users.noreply.github.com" },

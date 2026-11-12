@@ -21,10 +21,8 @@ const REAL = JSON.parse(readFileSync(join(import.meta.dirname, "..", "factory.co
 
 afterEach(() => vi.unstubAllEnvs());
 
-/** The solo default: the local source, local auth, the local broker, static grants only. */
+/** The solo default: the local source and the local broker. */
 const SOLO = {
-  auth: "local",
-  permissions: { grants: ["static"] },
   plugins: { ...(REAL.plugins as object), awake: "none", updater: "none", source: ["local"], broker: "local", github_auth: "recording" },
 };
 
@@ -57,20 +55,17 @@ function recordingRegistry() {
 }
 
 describe("the one rule: is a GitHub plugin selected", () => {
-  const sel = (over: Partial<Selection>): Selection => ({ ...({ source: "local", auth: "local", broker: "local" } as Selection), ...over });
+  const sel = (over: Partial<Selection>): Selection => ({ ...({ source: "local", broker: "local" } as Selection), ...over });
 
-  it("no GitHub source, auth, broker, forge or grant: the local path", () => {
-    expect(selectsGitHub(sel({}), ["static"])).toBe(false);
+  it("no GitHub source, broker or forge: the local path", () => {
+    expect(selectsGitHub(sel({}))).toBe(false);
   });
 
-  it("any one GitHub plugin or grant selects GitHub", () => {
-    expect(selectsGitHub(sel({ sources: ["local", "github-issues"] }), ["static"])).toBe(true);
-    expect(selectsGitHub(sel({ source: "github-issues" }), ["static"])).toBe(true);
-    expect(selectsGitHub(sel({ auth: "github" }), ["static"])).toBe(true);
-    expect(selectsGitHub(sel({ local_auth: "github" }), ["static"])).toBe(true);
-    expect(selectsGitHub(sel({ broker: "github" }), ["static"])).toBe(true);
-    expect(selectsGitHub(sel({ forge: "github" }), ["static"])).toBe(true);
-    expect(selectsGitHub(sel({}), ["static", "github-permission"])).toBe(true);
+  it("any one GitHub plugin selects GitHub", () => {
+    expect(selectsGitHub(sel({ sources: ["local", "github-issues"] }))).toBe(true);
+    expect(selectsGitHub(sel({ source: "github-issues" }))).toBe(true);
+    expect(selectsGitHub(sel({ broker: "github" }))).toBe(true);
+    expect(selectsGitHub(sel({ forge: "github" }))).toBe(true);
   });
 
   it("loadConfig marks the solo config local_only, and leaves a GitHub config as it was", async () => {
@@ -118,7 +113,7 @@ describe("build() with a GitHub config", () => {
     const { registry } = recordingRegistry();
     let localForges = 0;
     const counting = withPlugin(registry, "forge", "local", (c) => (localForges++, REGISTRY.forge.plugins.local!(c)));
-    const github = { ...SOLO, auth: "github", plugins: { ...SOLO.plugins, source: ["github-issues"], broker: "github" } };
+    const github = { ...SOLO, plugins: { ...SOLO.plugins, source: ["github-issues"], broker: "github" } };
     const loaded = await loadConfig(root(github), { registry: counting });
     const repoLookup = { repoIdentity: async (r: { owner: string; name: string }) => ({ node_id: "R_1", ...r, host: "github.com" }) };
     const built = await build(loaded, { clock: new FakeClock(), repoLookup });

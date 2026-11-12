@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -25,7 +26,6 @@ import type { AuthAction, AuthDecision, AuthProvider, AuthResource, Principal } 
 import { type FactoryConfig, toolGrantsConfig } from "../src/core/config.js";
 import { PR_ONLY_KEYS } from "../src/core/settings.js";
 import { ROLE_ACTIONS as IDENTITY_ROLE_ACTIONS } from "../src/identity/index.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval } from "../src/packs/pack-approvals.store.js";
 import { PACK_TOOL_REFUSED, checkPackGrants, packMcpServer } from "../src/packs/pack-grants.js";
 import { loadSettingCatalog } from "../src/runtime/index.js";
@@ -800,7 +800,7 @@ describe("packs: approvals, the pin and the grant check", () => {
 
   it("approve_tool is the owner's only: the local owner is allowed, an approver and anonymous are not_owner", async () => {
     const { store } = await newStore();
-    const auth = new LocalAuthProvider(store);
+    const auth = new OwnerAuth({ store: store, claimer: null });
     const ask = (user_id: string) => auth.authorize({ user_id: user_id as UserId, attributes: {} }, "approve_tool", { kind: "tool", id: GRANT });
     expect(await ask("local:anonymous")).toEqual({ allow: false, reason: "not_owner" });
     // Solo: the first local identity becomes the owner with no setup.

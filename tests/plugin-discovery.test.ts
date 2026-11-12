@@ -140,7 +140,7 @@ describe("plugin discovery: a new plugin file", () => {
     expect(Object.keys(registry.clock.plugins)).toContain("temp-clock");
     const sel = selectPlugins(
       registry,
-      { store: { type: "sqlite" }, auth: "none", plugins: { ...(REAL.plugins as object), clock: "temp-clock" } },
+      { store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), clock: "temp-clock" } },
       { platform: "linux" },
     );
     expect(sel.clock).toBe("temp-clock");
@@ -219,10 +219,10 @@ describe("plugin discovery: bad descriptors fail startup", () => {
     expect(err).toContain(join(dir, "a.plugin.ts"));
   });
 
-  it("store and auth take no default: their config keys pick one", async () => {
-    const dir = tree({ "s.plugin.ts": `export default { kind: "auth", name: "x", create: () => ({}), default: true };\n` });
+  it("store takes no default: its config key picks one", async () => {
+    const dir = tree({ "s.plugin.ts": `export default { kind: "store", name: "x", create: () => ({}), default: true };\n` });
     const err = await failure(loadRegistry([PLUGIN_ROOT, dir]));
-    expect(err).toMatch(/auth/);
+    expect(err).toMatch(/store plugins take no default/);
     expect(err).toContain(join(dir, "s.plugin.ts"));
   });
 

@@ -51,6 +51,7 @@ import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE
 import { autoMigrate } from "./impl/updater/auto-migrate.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { AuditedAuthProvider, PluginIdentityProvider, controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
+import { OwnerAuth } from "./core/authorize.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { type PackTool, packToolBrokers, withPackTools } from "./impl/broker/pack-tools.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
@@ -69,7 +70,7 @@ import { baseEnv } from "./impl/process/run-process.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
 import {
-  type BaseContext, GRANTS, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createCalendars, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
+  type BaseContext, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createCalendars, createPlugin, selectPlugins, selectedLlms, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
@@ -97,16 +98,6 @@ export interface FileConfig {
   dials: { spec_gate_min_tier: number; auto_merge_max_tier: number };
   /** Human floors (design §3). A per-project setting: may move into `defaults`, and a project may add to it. */
   floors?: { prefix: string; tier: number }[];
-  /**
-   * AuthProvider plugin name (docs/plugins.md) for GitHub comments, or one per command origin (issue #318):
-   * `{ "github_issue": "github", "local": "local" }`. Local commands use `local` unless `auth.local` says otherwise.
-   */
-  auth: unknown;
-  /**
-   * Who may act (design 2026-11-01): `grants`, the grant plugins whose union decides (absent: github-permission),
-   * and grant settings such as `static` (docs/plugins.md, GrantSource). Checked by selectGrants and each grant.
-   */
-  permissions?: { grants?: unknown; static?: unknown };
   /**
    * Plugin name per interface (docs/plugins.md). Absent: today's defaults. Guards can never be disabled.
    * `source` may be a list of names, one adapter each (design 2026-11-01).
@@ -296,8 +287,6 @@ export interface Loaded {
   /** The pack layers that are on, in order (design 11-packs.md): where prompts, skills, pack plugins and pack_tools (#592) came from. */
   packs: readonly Pack[];
   pack_tools: readonly PackTool[];
-  /** The checked `permissions.grants`: grant plugin names, in config order. */
-  grants: readonly string[];
   /** The checked `stats` key. Read only by `factory stats`; no dial uses it. */
   stats: StatsConfig;
   /** The checked `models`: a model name for cheap, standard and strong. */
@@ -403,10 +392,9 @@ export async function loadConfig(
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
   // No shared store (design 05-coordination.md, 2026-11-13): sharedStore stays false until phase 2 removes the option.
   const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore: false }));
-  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: file.auth, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
+  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
   const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore: false, builtin: opts.registry ?? REGISTRY });
-  const grants = selectGrants(GRANTS, file.permissions);
-  const local = !selectsGitHub(plugins, grants);
+  const local = !selectsGitHub(plugins);
   if (!local) await checkGitHubSettings(file.github);
   const secretsFile = defaultSecretsFile();
 
@@ -475,26 +463,24 @@ export async function loadConfig(
   // Each prompt through the pack layers, placeholders filled after the merge (design 11-packs.md). A required
   // prompt no layer has fails startup; owner-defaults is appended to triage.
   const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain));
-  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, pack_tools, grants, stats, models, model_by };
+  return { root, codeRoot, configFile, externalConfig, worktreesDir, file, config, prompts, secretsFile, stateDir, store, plugins, registry, packs, pack_tools, stats, models, model_by };
 }
 
 /**
- * The plugins that call GitHub, per interface, and the grants that do (design 05-sources, Local startup). The
- * `github_auth` credentials are not on the list: they are read only for a plugin that is.
+ * The plugins that call GitHub, per interface (design 05-sources, Local startup). The `github_auth` credentials are
+ * not on the list: they are read only for a plugin that is.
  */
 const GITHUB_PLUGINS: Readonly<Partial<Record<keyof Selection, readonly string[]>>> = {
-  auth: ["github"], local_auth: ["github"], slack_auth: ["github"], broker: ["github"], forge: ["github"],
+  broker: ["github"], forge: ["github"],
 };
 const GITHUB_SOURCES: readonly string[] = ["github-issues"];
-const GITHUB_GRANTS: readonly string[] = ["github-permission"];
 
 /**
- * Whether config selects any GitHub plugin: a GitHub source, auth, broker, forge or grant. The one rule for the
- * local path (`local_only`): none selected means no GitHub credential, repo lookup, origin fetch or PR, whether or not the factory repo has a remote.
+ * Whether config selects any GitHub plugin: a GitHub source, broker or forge. The one rule for the local path
+ * (`local_only`): none selected means no GitHub credential, repo lookup, origin fetch or PR, whether or not the factory repo has a remote.
  */
-export function selectsGitHub(sel: Selection, grants: readonly string[]): boolean {
+export function selectsGitHub(sel: Selection): boolean {
   if (selectedSources(sel).some((s) => GITHUB_SOURCES.includes(s))) return true;
-  if (grants.some((g) => GITHUB_GRANTS.includes(g))) return true;
   return Object.entries(GITHUB_PLUGINS).some(([kind, names]) => {
     const name = sel[kind as keyof Selection];
     return typeof name === "string" && names!.includes(name);
@@ -767,16 +753,11 @@ export async function build(
   // PR events, facts, comments and status (issue #273), else null; with no forge, the local forge reads links only.
   const forge = await p.forge(github, { store, clock, log: new ConsoleLogger(clock, "forge"), credentials });
   const links = forge ?? (await createPlugin(registry, "forge", "local", { ...base, github }));
-  // Grant sources first: the auth plugin's authorize asks them (src/core/authorize.ts, design 2026-11-01).
-  const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
-  const authPlugin = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
-  // Local commands (CLI, local UI) by their own plugin, `local` by default (#318), never GitHub's; Slack by `auth.slack_thread` (#486).
-  const localAuthPlugin = await createPlugin(registry, "auth", selectedLocalAuth(sel), { ...base, github, store, grants });
+  // The one owner check (design 08-permissions, issue #575): every surface's gate command, no remote call.
+  const owner = ownerAuth(loaded, store);
   // Identity (RFC 0015 §8, M9): edge, service and run passports, and the audit of every authorize decision.
-  const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
-  const auth = new AuditedAuthProvider(authPlugin, identity.passports);
-  const local_auth = new AuditedAuthProvider(localAuthPlugin, identity.passports);
-  const slack_auth = sel.slack_auth && new AuditedAuthProvider(await createPlugin(registry, "auth", sel.slack_auth, { ...base, github, store, grants }), identity.passports);
+  const identity = await startProcessIdentity(loaded, store, clock, owner);
+  const auth = new AuditedAuthProvider(owner, identity.passports);
   // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
@@ -838,7 +819,7 @@ export async function build(
     identity,
     store,
     sources, forge, links,
-    auth, local_auth, ...(slack_auth ? { slack_auth } : {}),
+    auth,
     service_auth: controllerServiceAuth(identity.passports),
     outbound_auth: outboundServiceAuth(identity.passports),
     clock,
@@ -905,7 +886,7 @@ export async function build(
 
 /**
  * This process's Identity on the store's database, its key in the state folder (denied to agents). Forge and chat
- * accounts resolve through the selected auth plugin's mapping; local ones through Identity's own.
+ * accounts resolve through the owner check's mapping (linked accounts first); local ones through Identity's own.
  */
 export async function startProcessIdentity(loaded: Loaded, store: FactoryStore, clock: Clock, auth?: AuthProvider): Promise<IdentityRuntime> {
   const log = new ConsoleLogger(clock, "identity");
@@ -1000,7 +981,7 @@ export function isLoopback(bind: string): boolean {
  * Who the page's commands act as (design 09, 2026-11-08): `ui.user_id` when set (source `config`); else, on a
  * loopback server, the CLI identity of this machine (`cli_user` is `config`, git user.email or the OS user is
  * `environment`), so a solo setup needs no key. A server on any other address needs `ui.user_id`: null.
- * Commands are then authorized as any local command is (the auth plugin; `local:anonymous` holds no role).
+ * Commands are then authorized as any command is (the owner check; `local:anonymous` is never the owner).
  */
 export function uiCommandsActor(uiUser: UserId | null, cli: CliIdentity, bind: string): Pick<UiCommands, "actor" | "source"> {
   if (uiUser !== null) return { actor: uiUser, source: "config" };
@@ -1024,9 +1005,6 @@ export interface UiParts {
   close(): Promise<void>;
 }
 
-/** The UI process makes no forge call (design §8): the grants and the auth plugin get a client that refuses each one. */
-const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
-
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
  * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only because a store plugin may
@@ -1034,7 +1012,8 @@ const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
  * project key from the stored project label (storeProjectResolver), so the UI process never calls the forge or reads a forge credential.
  * `identity` is the CLI identity main.ts resolves (cliIdentity); its user is the Settings writer, also of file-only keys (configWriter).
  * The CSRF token is made here, per process, and kept only in memory. The commands route acts as uiCommandsActor says and takes the same
- * token. The pause route's owner check uses the auth plugin over the local grants only, with a client that makes no forge call.
+ * token. The pause route's owner
+ * check is the owner check, which makes no forge call.
  */
 export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -1049,15 +1028,12 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     base: settingsBase(loaded), repo: { owner, name }, actor: opts.identity.user, resolveProject: storeProjectResolver(store, { owner, name }), csrfToken: token,
     integrations: INTEGRATION_KINDS.map((kind) => ({ kind, interface: loaded.registry[kind].interface, configured: String(loaded.plugins[kind]) })),
   };
-  // The owner check for "Resume now" and the page's command checks (approve_spec, approve_merge): the configured auth plugin over the
-  // local grants only (a remote grant such as github-permission would call the forge, so it is left out here;
-  // `factory resume` needs no grant). A remote-only grant therefore shows no Merge button.
-  const base = { ...p.base, github: NO_FORGE };
-  const grants = (await createGrants(GRANTS, loaded.grants, base)).filter((g) => !g.remote);
-  const authPlugin = await createPlugin(loaded.registry, "auth", loaded.plugins.auth, { ...base, store, grants });
+  // The owner check for "Resume now" and the page's command checks (approve_spec, approve_merge): the page's own
+  // identity claims the owner while the store has none, as the CLI's first writing command does.
+  const ownerCheck = ownerAuth(loaded, store, opts.identity.user);
   // Identity (M9): the page's commands carry the actor's edge passport, and every decision here is audited.
-  const identity = await startProcessIdentity(loaded, store, clock, authPlugin);
-  const auth = new AuditedAuthProvider(authPlugin, identity.passports);
+  const identity = await startProcessIdentity(loaded, store, clock, ownerCheck);
+  const auth = new AuditedAuthProvider(ownerCheck, identity.passports);
   const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
     const project = await settings.resolveProject();
     if (!project) return { allow: false, reason: "no project is stored yet" };
@@ -1095,20 +1071,26 @@ function refusalOf(d: AuthDecision): string | null {
   return d.allow ? null : d.reason;
 }
 
-/** The local auth plugin over the local grants, with no forge call: how a CLI command is authorized (solo: the owner). */
+/**
+ * The owner check over this store (design 08-permissions, issue #575): the store's local owner, claimed while there is
+ * none by `claimer` (default: `cli_user`). No forge call.
+ */
+export function ownerAuth(loaded: Pick<Loaded, "file">, store: FactoryStore, claimer: UserId | null = cliUserConfig(loaded.file)): AuthProvider {
+  return new OwnerAuth({ store, claimer });
+}
+
+/** How a CLI command is authorized: the owner check, with no forge call. */
 export async function localAuth(loaded: Loaded, store: FactoryStore): Promise<AuthProvider> {
-  const base = { ...new Plugins(loaded).base, github: NO_FORGE };
-  const grants = (await createGrants(GRANTS, loaded.grants, base)).filter((g) => !g.remote);
-  return createPlugin(loaded.registry, "auth", selectedLocalAuth(loaded.plugins), { ...base, store, grants });
+  return ownerAuth(loaded, store);
 }
 
 /**
  * The approve_merge check of `factory settings` and `factory mode` for `mode`, `auto_merge_max_tier` and a loosening change (design
- * 08-settings): `user` on the configured project, through the local auth plugin over the local grants, with no forge
- * call. Solo: the first local identity is the owner and holds it with no setup. The refusal, or null.
+ * 08-settings): `user` on the configured project, through the owner check, with no forge call. Solo: the CLI identity
+ * is the owner and holds it with no setup. The refusal, or null.
  */
 export async function approveMergeCheck(loaded: Loaded, store: FactoryStore, user: UserId): Promise<() => Promise<string | null>> {
-  const auth = await localAuth(loaded, store);
+  const auth = ownerAuth(loaded, store, user);
   const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
   return async () => {
     const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);
@@ -1133,8 +1115,7 @@ export async function buildSessionParts(loaded: Loaded): Promise<SessionParts> {
   const store = await p.store(secrets, clock);
   await store.migrate();
   const [scanner, { credentials, api: github }, sandbox] = [await p.scanner(secrets), await p.githubAccess({ secrets, clock }), await p.sandbox()];
-  const grants = await createGrants(GRANTS, loaded.grants, { ...base, github });
-  const auth = await createPlugin(registry, "auth", sel.auth, { ...base, github, store, grants });
+  const auth = ownerAuth(loaded, store);
   const brokerDeps: BrokerDeps = { github, credentials, secrets, store, scanner, clock };
   const broker = await createPlugin(registry, "broker", sel.broker, { ...base, ...brokerDeps });
   const local = await p.localRoute({ broker, sandbox }, brokerDeps);

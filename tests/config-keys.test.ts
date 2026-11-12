@@ -54,6 +54,16 @@ describe("config keys: unknown keys fail at load", () => {
     expect(err.message).not.toContain("did you mean");
   });
 
+  it("the removed auth and permissions keys (issue #575) are refused as unknown keys", async () => {
+    for (const removed of [{ auth: "github" }, { permissions: { grants: ["static"] } }]) {
+      const err = await loadError({ ...REAL, ...removed });
+      expect(err).toBeInstanceOf(ConfigKeyError);
+      expect(err.message).toContain(`"${Object.keys(removed)[0]}"`);
+    }
+    expect(TOP_LEVEL_KEYS).not.toContain("auth");
+    expect(TOP_LEVEL_KEYS).not.toContain("permissions");
+  });
+
   it('"plugin" suggests "plugins"', async () => {
     const { plugins, ...rest } = REAL;
     const err = await loadError({ ...rest, plugin: plugins });

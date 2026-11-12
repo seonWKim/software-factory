@@ -129,10 +129,10 @@ graph TB
   end
 
   subgraph IDP["Identity plugins"]
-    AUTH["AuthProvider<br/><b>github</b>, local, none"]
-    GRT["GrantSource<br/><b>github-permission</b>, static"]
     GHC["GitHubCredentials<br/><b>app</b>, token"]
   end
+
+  AUTH["AuthProvider: the owner check<br/>built in, not a plugin"]
 
   subgraph INFRA["Infrastructure plugins"]
     STO["FactoryStore (legacy)<br/><b>sqlite</b>"]
@@ -181,11 +181,10 @@ graph TB
   CTL -- "call: triage helpers, improve drafts" --> LLMP
   CTL -- "call: network pause" --> NET
   BRK -- "call: branch scan" --> EGR
-  IDN -- "call: role half" --> AUTH
-  AUTH -- call --> GRT
+  IDN -- "call: owner check" --> AUTH
+  AUTH -- "store: local owner, links" --> STO
   SRC -- "call: GitHub client" --> GHC
   FORGE -- "call: GitHub client" --> GHC
-  GRT -- "call: GitHub client" --> GHC
   BRK -- "call: GitHub client" --> GHC
   GHC -- call --> SEC
   BUS -- "store: bus tables" --> EB
@@ -221,8 +220,7 @@ graph TB
 | `EgressScanner` (G5) | Scans every text before it leaves (stored branches, tool results, outbound texts, alerts, UI fields) | none (pure) |
 | `SecretStore` (G1) | Holds credentials; only plugin implementations read it | `~/.config/software-factory/.env` |
 | `GitHubCredentials` | Mints the GitHub token for the GitHub client (App installation token or PAT). A required kind, even with no GitHub plugin (RFC 0011) | GitHub App API |
-| `AuthProvider` | The role half of a command decision, per origin (`auth` for forge comments, `local_auth` for CLI and UI, `slack_auth` for Slack threads, default `local_auth`); Identity checks the passport half | GitHub permissions through grants; local users and roles in the store |
-| `GrantSource` | Roles a subject holds (`permissions.grants`) | GitHub collaborator permission; `static` from config |
+| `AuthProvider` | The owner half of a command decision: one built-in owner check (`OwnerAuth`, not a plugin) for every surface, GitHub, Slack, the CLI and the dashboard; anyone but the owner is refused as `not_owner`. Identity checks the passport half | the store's local owner and linked accounts; no remote call |
 | `CapabilitySearch` | Finds docs and skills for an agent (finding is not permission) | none (local index) |
 | `TestDatabase` | A throwaway database for pre-push checks | local MySQL |
 | `SharedStorage` | Run transcripts and step bundles | local filesystem |
@@ -384,7 +382,7 @@ sequenceDiagram
   C->>DB: spec_pending, thread entry (no outbox row: the store is the surface)
   P->>DB: factory approve id (command row with passport)
   I->>C: relay, CommandReceived
-  C->>DB: authorize via local_auth, enqueue implement
+  C->>DB: authorize via the owner check, enqueue implement
   W->>LB: git.store_branch (forge false, no intent)
   LB->>R: refs/heads/factory/item
   C->>DB: REVIEW, enqueue review (against the local base)
@@ -446,7 +444,7 @@ graph LR
 
   PPL -- "edge passport (CLI, UI rows; comment at the relay)" --> INBP
   INBP --> UNIT
-  UNIT -- "call: authorize(passport) + auth plugin role" --> PS
+  UNIT -- "call: authorize(passport) + owner check" --> PS
   RPI -- "call: narrow (run passport)" --> PS
   AG -- "tool RPC only: no credentials" --> GATE
   GATE --> PBRK
@@ -466,7 +464,7 @@ graph LR
 - **G3, G4** The sandbox's file view and the harness deny rules keep the secret file out of reach (details in `docs/architecture.md` §5).
 - **G5** Every text is egress-scanned before it leaves: the stored branch (broker), tool results (`ToolGate`), every outbound text at the flush (a flagged text is delivered once as a withheld notice), alert details and UI fields.
 - **G6** The canary test plants a secret and checks that a run cannot find it or is stopped by G5.
-- **Passports** (RFC 0015 M9). A person's command carries an edge passport: the CLI and UI write it on the command row, inbound mints one for a comment command at the relay. The controller decides a command under its passport (Identity checks chain, expiry, revocation and caveats; the origin's auth plugin decides the role) and auto mode under `service:controller`. A run gets a narrowed run passport at its start, held in the worker process by run id; `PassportToolBroker` checks it on every broker call. Outbound delivers under `service:outbound`, `use_tool` per target; a denial retries the batch. Every decision is a row in `authz_audit`. Solo: the signing key is `<state>/passport.key` (0600, on `deny_paths`); enterprise: `SF_PASSPORT_KEY` through the SecretStore is not wired yet.
+- **Passports** (RFC 0015 M9). A person's command carries an edge passport: the CLI and UI write it on the command row, inbound mints one for a comment command at the relay. The controller decides a command under its passport (Identity checks chain, expiry, revocation and caveats; the owner check decides who) and auto mode under `service:controller`. A run gets a narrowed run passport at its start, held in the worker process by run id; `PassportToolBroker` checks it on every broker call. Outbound delivers under `service:outbound`, `use_tool` per target; a denial retries the batch. Every decision is a row in `authz_audit`. Solo: the signing key is `<state>/passport.key` (0600, on `deny_paths`); enterprise: `SF_PASSPORT_KEY` through the SecretStore is not wired yet.
 - **Gates.** Floors (paths that force tier 4) and the protected paths (`PROTECTED_PATHS` in `src/core/standing.ts`: the controller, hooks, roles, broker, tools and every component's `settings/`) decide when a person must merge. Hooks may only veto after the guards allowed an action, and fail closed. Guards can be switched to another implementation, never turned off.
 
 ## 7. Review notes: where the architecture could improve
@@ -482,7 +480,7 @@ Open proposals and pressure points, for the reviewer to weigh. The RFCs are the 
 | Human waits | Some `blocked_reason` values list no command that moves the item | RFC 0007: Every human wait has a way forward |
 | Triage scope | A missed caller or test file fails implement with `spec_conflict` and a second approval | RFC 0008: Triage scopes the blast radius |
 | Merge safety | Local changes land through the merge queue on a checked merged result; a GitHub PR's `test` check can still be stale against a newer main | RFC 0009: Test the merged result before merging |
-| Local first | Still on the core path: plugin defaults pick `github-issues`, the `github` broker, `github-permission` and `token` (their descriptors' `default: true`); `GitHubCredentials` is a required kind; "is this item local" is the broker's tool list (`hasTool(broker, "github.preflight")` in the review run, the implement run and the session); `update` and `resolve` fail an item with no `change_ref` (`no_pr`). Resolved since the RFC 0011 audit: the base push reaches origin (a `push_base` delivery), and no behaviour keys on `github.push_branch` (gone) | RFC 0011: Local-first audit: is the forge plugin off the core path? |
+| Local first | Still on the core path: plugin defaults pick `github-issues`, the `github` broker and `token` (their descriptors' `default: true`); `GitHubCredentials` is a required kind; "is this item local" is the broker's tool list (`hasTool(broker, "github.preflight")` in the review run, the implement run and the session); `update` and `resolve` fail an item with no `change_ref` (`no_pr`). Resolved since the RFC 0011 audit: the base push reaches origin (a `push_base` delivery), and no behaviour keys on `github.push_branch` (gone) | RFC 0011: Local-first audit: is the forge plugin off the core path? |
 | Dashboard | The app shows the facts but the owner can't act from it everywhere | RFC 0012: Dashboard enhancements for the overnight owner |
 | Sandbox isolation | `noop`: a host worktree; writes limited by the runner's rules | Container sandboxes; toolchain caches read-only, modelled on frontier harnesses (#334) |
 | One process, four components | The controller role wires inbound, the controller, outbound and the retry scheduler into one process (`controller-role.ts`); outbound cannot be scaled or restarted apart from the decisions | A process role per component (`runtime/roles/<role>/` in RFC 0015 §6.1), so each scales and restarts on its own |

@@ -10,7 +10,7 @@ Plugins:
   - Enable: `"plugins": { "broker": "github", ... }`, or no `plugins` object.
   - Secrets: none of its own; the push uses the token from `GitHubCredentials`. Settings: `branch_prefix`, `repo`.
 - `local`: `LocalToolBroker` (since 2026-11-07), the solo default with no GitHub plugin (design `05-sources.md`, Local startup).
-  - Enable: `"plugins": { "broker": "local", ... }`. Selecting it with no other GitHub plugin (no `github-issues` source, no `github` auth, no `github-permission` grant, no forge) is the local path: no GitHub credential, no origin fetch, no PR.
+  - Enable: `"plugins": { "broker": "local", ... }`. Selecting it with no other GitHub plugin (no `github-issues` source, no forge) is the local path: no GitHub credential, no origin fetch, no PR.
   - Secrets: none. Settings: `branch_prefix`, `repo.path`, `repo.base_branch`.
   - Tools: `git.store_branch` (every run's push and `factory session finish`, RFC 0015 M7; content `forge: false`). It writes the run's HEAD to the local branch `refs/heads/<branch>` of the factory repo with git's local transport, never to a remote and never forced; the scanned diff starts at the factory repo's local `refs/heads/<base_branch>`. No `forge.preflight`: the worker skips the preflight's forge checks when the broker has no such tool. No broker comments on anything: a run's comments are thread entries that outbound delivers (RFC 0015 M7), and a local item's thread is its surface.
 
@@ -18,7 +18,7 @@ Tool names are forge-neutral (decision changed 2026-11-12, the github.* aliases 
 
 Granted tools: each tool descriptor sets `read_only`, true only for a tool that changes nothing (`github` marks `forge.preflight` read-only; `git.store_branch` is not). A broker lists every tool it serves through `allTools()`. `tool_grants` in `factory.config.json` grants read-only tools to agent runs per run kind (`triage`, `implement`, `review`, `update`, `resolve`, `manual`), for example `{"tool_grants": {"triage": ["forge.preflight"]}}`; absent, no grants. Startup checks it when the broker is built and fails on an unknown run kind, an unknown tool or one that is not read-only, listing the valid names. Only a runner with `exposes_tools` (`claude-code`) can take grants. How the guards hold: `docs/architecture.md` §5.
 
-Switch back: `"broker": "github"` (with the GitHub source and auth, the enterprise setting). The local branches stay in the factory repo; nothing is pushed for them.
+Switch back: `"broker": "github"` (with the GitHub source, the enterprise setting). The local branches stay in the factory repo; nothing is pushed for them.
 
 Why it cannot be disabled: without the broker the only way to push or comment would be to hand the agent a token, which G2 forbids (architecture §5). Config that selects no `ToolBroker` fails at startup.
 

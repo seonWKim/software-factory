@@ -186,8 +186,7 @@ describe("external config: keys", () => {
   const loosened = {
     dials: { spec_gate_min_tier: 5, auto_merge_max_tier: 0 },
     floors: [],
-    auth: "local",
-    permissions: { grants: ["static"], static: { "local:me": ["owner"] } },
+    plugins: { ...(REAL.plugins as object), awake: "none" },
   };
 
   it("a user config may set any key", async () => {
@@ -195,7 +194,7 @@ describe("external config: keys", () => {
     const loaded = await loadConfig(main, { configFile: external({ ...SOLO, ...loosened }) });
     expect(loaded.file.dials).toEqual(loosened.dials);
     expect(loaded.file.floors).toEqual([]);
-    expect(loaded.file.auth).toBe("local");
+    expect(loaded.file.plugins).toEqual(loosened.plugins);
   });
 
   it("an external config that selects a mysql store is refused at startup as an unknown FactoryStore plugin", async () => {

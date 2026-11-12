@@ -4,24 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, renderItem } from "../src/ui/pages.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { Forge } from "../src/interfaces/forge.js";
 import { autoResolveKey } from "../src/core/policy.js";
-import { FakeGitHubClient, FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeRunner, MemoryStorage, cleanScanner, config, prompts, silent, triageSpec } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // A local task from create to merge with no GitHub plugin (design 05-sources, Local startup): the local source,
@@ -75,15 +73,13 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  // Recording fakes: a GitHub client behind the (remote) GitHub permission grant, and a forge. Neither may be called.
-  const github = new FakeGitHubClient();
+  // A recording fake forge: it may never be called.
   const forgeCalls: string[] = [];
   const forge = new Proxy({}, { get: (_t, k) => (k === "then" ? undefined : () => (forgeCalls.push(String(k)), Promise.reject(new Error("forge")))) }) as Forge;
-  const grants = [new StaticGrant({ roles: {}, deny: {} }), new GitHubPermissionGrant(github, { owner: "o", name: "r" })];
-  const auth = new LocalAuthProvider(store, grants);
+  const auth = new OwnerAuth({ store, claimer: null });
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
-    store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+    store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
@@ -136,7 +132,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
     return git(repo, "rev-parse", "main");
   };
   const resolves = async (id: WorkItemId) => (await store.listRuns(id)).filter((r) => r.kind === "resolve");
-  return { repo, origin, owner, remoteRefs, store, runner, github, forgeCalls, step, cli, messages, toMergePending, appMerge, controller, clock, gates, conflictOnMain, resolves };
+  return { repo, origin, owner, remoteRefs, store, runner, forgeCalls, step, cli, messages, toMergePending, appMerge, controller, clock, gates, conflictOnMain, resolves };
 }
 
 describe("a local task from create to merge, no GitHub plugin", { timeout: 60_000 }, () => {
@@ -179,7 +175,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     // No push, no forge: the remote and the owner's checkout are as they were; the fakes saw no call.
     expect(f.remoteRefs()).toBe(remoteBefore);
     expect(f.owner()).toEqual(ownerBefore);
-    expect(f.github.calls).toEqual([]);
     expect(f.forgeCalls).toEqual([]);
     expect(await f.store.getBasePush(id)).toBeNull();
   });
@@ -226,7 +221,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain(`factory users add ${DEV} --role approver`);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
-    expect(f.github.calls).toEqual([]);
   });
 
   it("factory merge on a conflict names the files and starts the automatic resolve: local base merged into the local branch, gates run, committed, nothing pushed, reviewed, merge_pending", async () => {
@@ -274,7 +268,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     await f.cli(ME, { action: "command", command: "merge", id, text: "" });
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "CLOSED", close_reason: "completed", merge_sha: git(f.repo, "rev-parse", "main") });
-    expect(f.github.calls).toEqual([]);
     expect(f.forgeCalls).toEqual([]);
   });
 
@@ -421,7 +414,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(merged.actor).toEqual({ kind: "user", id: ME });
     expect((await f.messages(id, "<!-- factory:local-merged:")).join("")).toContain(main.slice(0, 12));
 
-    expect(f.github.calls).toEqual([]);
     expect(f.forgeCalls).toEqual([]);
   });
 });

@@ -1,7 +1,6 @@
 // Local users on the dashboard (design 08-permissions and 09-dashboard-app, issue #445). GET /api/v1/users lists the
-// local users (role, added by, added at), the users the `static` grant names (roles per project) and each listed
-// user's linked accounts, with the viewer's identity, its source and role. Store reads only, no forge call: a user
-// whose role comes only from GitHub permission is not listed. POST /api/v1/users adds, changes or removes a local
+// local users (role, added by, added at) and each listed user's linked accounts, with the viewer's identity, its
+// source and role. Store reads only, no forge call; config grants no roles (issue #575: one owner check). POST /api/v1/users adds, changes or removes a local
 // user through the CLI's own `users` actions (runLocalCli), so the page and `factory users` share one path, its
 // owner rule, its first-writer-is-owner claim and its audit row (`identity_local_user_changes`, written by the store). The
 // request guards (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the body; then
@@ -10,8 +9,6 @@
 import { ANONYMOUS, type CliAction, type CliIdentity, parseLocalCliArgs, runLocalCli } from "../core/local-cli.js";
 import type { Logger } from "../core/log.js";
 import type { UserId } from "../core/types.js";
-import { staticGrantConfig } from "../impl/grant/static.js";
-import type { Role } from "../interfaces/auth-provider.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
 import { Withholder } from "./withhold.js";
@@ -20,18 +17,10 @@ export const USERS_PATH = "/api/v1/users";
 
 const ANONYMOUS_USER = `local:${ANONYMOUS}`;
 
-/** A user the `static` grant gives roles, per project key (`*` for every project). */
-export interface StaticUser {
-  user_id: UserId;
-  projects: { project: string; roles: Role[] }[];
-}
-
 /** What the users routes need beside the store. Built once per UI process (compose.ts buildUiParts). */
 export interface UiUsers {
   /** The identity the UI process starts with (cliIdentity): the viewer, and who every users write acts as. */
   identity: CliIdentity;
-  /** The selected grants (`permissions.grants`) and `permissions.static`: its users are listed when `static` is selected. */
-  permissions: { grants: readonly string[]; static: unknown };
   /** The per-process token every write route shares; POST must send it in x-csrf-token. */
   csrfToken: string;
   log: Logger;
@@ -40,19 +29,10 @@ export interface UiUsers {
 /** The UI's dependencies with the users routes. Absent `users`: GET is a 404 and POST a 405. */
 export type UsersDeps = UiDeps & { users?: UiUsers };
 
-/** `permissions.static.roles` (checked by staticGrantConfig) as the page's rows, in config order; none unless `static` is selected. */
-function staticUsers(p: UiUsers["permissions"]): StaticUser[] {
-  if (!p.grants.includes("static")) return [];
-  return Object.entries(staticGrantConfig(p.static).roles).map(([user_id, byProject]) => ({
-    user_id: user_id as UserId,
-    projects: Object.entries(byProject).map(([project, list]) => ({ project, roles: [...list] })),
-  }));
-}
-
 /** runLocalCli's refusal for anyone but the owner; the page shows it before a write is tried. */
 const ownerOnly = (owner: string | null, user: string) => `only the local owner (${owner ?? "none yet"}) can change roles; you are ${user}`;
 
-/** GET /api/v1/users. Every stored or configured ID leaves through the Withholder. */
+/** GET /api/v1/users. Every stored ID leaves through the Withholder. */
 export async function readUsers(d: UsersDeps, u: UiUsers) {
   const w = new Withholder(d.scanner);
   const text = async (v: string) => (await w.plain(v)).text;
@@ -66,20 +46,11 @@ export async function readUsers(d: UsersDeps, u: UiUsers) {
       projects: [], links: await links(l.user_id),
     });
   }
-  const statics = staticUsers(u.permissions);
-  for (const s of statics) {
-    const roles = s.projects.flatMap((p) => p.roles);
-    users.push({
-      user_id: await text(s.user_id), role: roles.includes("approver") ? "approver" : "requester", source: "static" as const,
-      added_by: null, added_at: null, projects: s.projects, links: await links(s.user_id),
-    });
-  }
   const me = u.identity.user;
   const owner = locals.find((l) => l.role === "owner")?.user_id ?? null;
   // As runLocalCli decides: the owner may write; with no owner yet, the first named identity to write becomes it.
   const canChange = owner === me || (owner === null && me !== ANONYMOUS_USER);
-  const staticRoles = statics.find((s) => s.user_id === me)?.projects.flatMap((p) => p.roles) ?? [];
-  const role = locals.find((l) => l.user_id === me)?.role ?? (staticRoles.length ? (staticRoles.includes("approver") ? "approver" : "requester") : null);
+  const role = locals.find((l) => l.user_id === me)?.role ?? null;
   return {
     as_of: d.clock.now().toISOString(),
     csrf_token: u.csrfToken,
