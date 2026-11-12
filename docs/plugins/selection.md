@@ -24,6 +24,7 @@ registry, so whatever config selects is what runs and what the canary tests.
 | Updater | `plugins.updater` | `git-worktree` | no |
 | KeepAwake | `plugins.awake` | `caffeinate` on macOS, `none` elsewhere (not in the checked-in config, so the platform decides) | no |
 | TacitLedger | `plugins.tacit` | `none` (the `agents-home` plugin captures pushbacks in the owner's ledger; see [tacit-ledger.md](tacit-ledger.md)) | no |
+| CalendarSource | `calendar` (top level, a list of names) | **optional**, `[]`: no source and no plugin ships yet (see [calendar-source.md](calendar-source.md)) | no |
 | Forge | `plugins.forge` | **optional**, no default plugin: left out, `github` when `plugins.source` lists `github-issues`, else none (see [forge.md](forge.md)) | no |
 
 ```jsonc
@@ -45,7 +46,7 @@ Rules, checked by `loadConfig` at startup (and again by `build()`):
 - **A `plugins` object** must name every guard (`secrets`, `egress`, `broker`) explicitly. A non-guard key you leave out falls back to its default; the optional `forge` left out follows `plugins.source`.
 - **Optional kinds** (`forge`) have no default plugin. `"none"`, `null`, `false` or `""` selects nothing: the selection has no entry for it and no plugin of it is built. Left out, the forge is derived from the sources (issue #273): `github` when `plugins.source` lists `github-issues`, else nothing; an off value next to `github-issues` fails startup, naming `plugins.forge`. An optional kind is never a guard.
 - **An unknown name** for any interface fails startup. The error names the interface, the bad value and every available name.
-- **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store` and `auth` under `plugins` are rejected with a pointer to their own keys.
+- **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store`, `auth` and `calendar` under `plugins` are rejected with a pointer to their own top-level keys.
 - **Unknown config keys are rejected at load**, at every level of `factory.config.json` (top level, `store` for its `type`, `repo`, `dials`, each `floors[i]`, `models`, `agent_git_identity`, `ui`, `stats`, `plugins`): one error lists every unknown key with its path and the valid keys, and adds `did you mean "…"?` when a valid key is within edit distance 2. `npm run factory -- doctor` prints each as a FAIL line and exits 1.
 - **Guards cannot be disabled.** For `secrets`, `egress` and `broker`, leaving the key out of a `plugins` object, or setting it to `null`, `false`, `""`, `"none"` or anything that is not a registered name, fails startup with an error that the plugin is a guard and points to `docs/architecture.md` §5. You can switch a guard to another registered plugin; you cannot turn it off.
 

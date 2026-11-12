@@ -346,6 +346,26 @@ CREATE TABLE bus_topics (
   partitions INTEGER NOT NULL
 );
 
+CREATE TABLE calendar_events (
+    source      TEXT NOT NULL,
+    event_id    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    starts_at   TEXT NOT NULL,
+    ends_at     TEXT NOT NULL,
+    all_day     INTEGER NOT NULL,
+    updated_at  TEXT,
+    synced_at   TEXT NOT NULL,
+    PRIMARY KEY (source, event_id)
+  );
+
+CREATE TABLE calendar_sync_state (
+    source        TEXT PRIMARY KEY,
+    next_sync_at  TEXT NOT NULL,
+    synced_at     TEXT,
+    error         TEXT,
+    error_at      TEXT
+  );
+
 CREATE TABLE controller_alert_patterns (
     pattern_key    TEXT PRIMARY KEY,
     last_alert_at  TEXT NOT NULL
@@ -1649,6 +1669,8 @@ CREATE INDEX bus_system_alerts_partition ON bus_system_alerts (`partition`, seq)
 CREATE INDEX bus_system_alerts_published ON bus_system_alerts (published_at);
 
 CREATE INDEX bus_system_alerts_retries_due ON bus_system_alerts_retries (next_attempt_at);
+
+CREATE INDEX calendar_events_starts ON calendar_events (starts_at);
 
 CREATE INDEX child_restarts_at ON "legacy_child_restarts" (at);
 
