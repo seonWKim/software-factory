@@ -1800,6 +1800,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
+      "runtime_config_file_changes", // file-only key edits (design 08-settings): src/state/migrations/20261113T1200-state-config-file-changes
       "calendar_events", // the calendar component: src/calendar/migrations/20261112T1700-calendar-events
       "calendar_sync_state",
       // The sql bus's own tables (RFC 0015 M3).

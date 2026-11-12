@@ -1486,6 +1486,17 @@ CREATE TABLE runtime_child_restarts (
     at           TEXT NOT NULL,
     reason       TEXT NOT NULL);
 
+CREATE TABLE runtime_config_file_changes (
+    seq           INTEGER PRIMARY KEY AUTOINCREMENT,
+    work_item_id  TEXT NOT NULL UNIQUE,
+    setting_key   TEXT NOT NULL,
+    old_value     TEXT,
+    new_value     TEXT NOT NULL,
+    branch        TEXT NOT NULL,
+    actor         TEXT NOT NULL,
+    at            TEXT NOT NULL
+  );
+
 CREATE TABLE runtime_hook_decisions (
     seq          INTEGER PRIMARY KEY AUTOINCREMENT,
     hook         TEXT NOT NULL,
