@@ -5,6 +5,8 @@ import {
   type UnreviewedMerges, type WorkerProcess, type WorkersView, postResume, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
@@ -130,7 +132,7 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
         {label} at {pause.ends_at}{ends > now ? ` (in ${ago(new Date(now).toISOString(), ends)})` : ""}
       </span>
       {token !== null && (
-        <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} onClick={() => void resume()}>
+        <Button variant="secondary" disabled={busy} onClick={() => void resume()}>
           Resume now
         </Button>
       )}
@@ -237,12 +239,6 @@ function rateLimitText(pauses: PausesView | undefined): string {
   return p ? `paused until ${p.ends_at}` : "ok";
 }
 
-const buttonClass = (on: boolean) =>
-  cn(
-    "rounded-control border px-2 py-1 text-xs tabular-nums",
-    on ? "border-text-1 bg-text-1 text-bg" : "border-border-strong hover:bg-surface-2",
-  );
-
 /** The tree's summary line; each count is a button that sets the matching state filter. */
 function Summary({ rows, rateLimit, onFilter }: { rows: readonly ItemRow[]; rateLimit: string; onFilter: (s: string) => void }) {
   const c = summaryCounts(rows);
@@ -250,7 +246,7 @@ function Summary({ rows, rateLimit, onFilter }: { rows: readonly ItemRow[]; rate
   return (
     <p data-testid="summary" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       {parts.map(([label, n, filter]) => (
-        <button key={filter} type="button" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{n} {label}</button>
+        <Button key={filter} variant="ghost" size="sm" onClick={() => onFilter(filter)} className={cn("tabular-nums", LINK_CLASS)}>{n} {label}</Button>
       ))}
       <span>rate limit: {rateLimit}</span>
     </p>
@@ -294,35 +290,35 @@ export function ItemsPage() {
   return (
     <>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <input
+        <Input
           type="search"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search by title or issue number"
           aria-label="Search work items"
-          className="w-full max-w-sm rounded-control border border-border-strong bg-transparent px-2 py-1 text-sm"
+          className="w-full max-w-sm"
         />
-        <div role="group" aria-label="View" className="flex gap-1.5">
+        <ButtonRow role="group" aria-label="View">
           {(["tree", "list"] as const).map((v) => (
-            <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={buttonClass(view === v)}>{v === "tree" ? "Tree" : "List"}</button>
+            <Button key={v} size="sm" aria-pressed={view === v} onClick={() => setView(v)}>{v === "tree" ? "Tree" : "List"}</Button>
           ))}
-        </div>
+        </ButtonRow>
         {tree && (
-          <div className="flex gap-1.5">
-            <button type="button" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)} className={buttonClass(showClosed)}>Show closed</button>
-            <button type="button" onClick={() => setExpanded(parentIds(nodes))} className={buttonClass(false)}>Expand all</button>
-            <button type="button" onClick={() => setExpanded([])} className={buttonClass(false)}>Collapse all</button>
-          </div>
+          <ButtonRow>
+            <Button size="sm" aria-pressed={showClosed} onClick={() => setShowClosed(!showClosed)}>Show closed</Button>
+            <Button size="sm" onClick={() => setExpanded(parentIds(nodes))}>Expand all</Button>
+            <Button size="sm" onClick={() => setExpanded([])}>Collapse all</Button>
+          </ButtonRow>
         )}
       </div>
       {tree && items.data && <Summary rows={rows} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
-      <div role="group" aria-label="Filter by state" className="mb-3 flex flex-wrap gap-1.5">
+      <ButtonRow role="group" aria-label="Filter by state" className="mb-3">
         {[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => (
-          <button key={s ?? "all"} type="button" aria-pressed={state === s} onClick={() => setState(s)} className={buttonClass(state === s)}>
+          <Button key={s ?? "all"} size="sm" aria-pressed={state === s} onClick={() => setState(s)} className="tabular-nums">
             {s === null ? "All" : FILTER_LABELS[s]} {s === null ? allCount : counted(s)}
-          </button>
+          </Button>
         ))}
-      </div>
+      </ButtonRow>
       {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
         nodes.length === 0 ? <Empty>No work item matches this filter.</Empty> : (
           <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
@@ -528,9 +524,9 @@ function TimelineRow({ entry: t, now }: { entry: TimelineEntry; now: number }) {
         )}
         {spec.length > 0 && (
           <div className="mt-1">
-            <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className={cn("text-xs", LINK_CLASS)}>
+            <Button variant="ghost" size="sm" aria-expanded={open} onClick={() => setOpen(!open)} className={LINK_CLASS}>
               spec written ({open ? "hide" : "show"})
-            </button>
+            </Button>
             {open && (
               <div data-spec className="mt-2 space-y-3 rounded-control border border-border p-3">
                 {spec.map(([f, c]) => (

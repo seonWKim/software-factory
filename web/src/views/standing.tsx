@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { API, type StandingProposalRow, type StandingRuleRow, type StandingView, postStanding, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
 import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Switch } from "../components/ui/switch.js";
 
@@ -67,14 +68,14 @@ function ProposalItem({ proposal, token }: { proposal: StandingProposalRow; toke
         Turn on <code>{proposal.rule}</code>: {proposal.run_length} approvals in a row with the spec unchanged (threshold {proposal.threshold}),
         proposed {proposal.created_at}.
       </p>
-      <div className="mt-2 flex gap-2">
-        <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} onClick={() => answer(true)}>
+      <ButtonRow className="mt-3">
+        <Button variant="secondary" disabled={busy} onClick={() => answer(true)}>
           Accept
         </Button>
-        <Button variant="outline" className="h-8 w-auto px-2" disabled={busy} onClick={() => answer(false)}>
+        <Button variant="secondary" disabled={busy} onClick={() => answer(false)}>
           Decline
         </Button>
-      </div>
+      </ButtonRow>
       <Refusal error={error} />
     </li>
   );

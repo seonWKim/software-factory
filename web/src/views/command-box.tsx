@@ -1,8 +1,10 @@
 import { useState } from "react";
 import type { ProposalView } from "../api.js";
 import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { Field } from "../components/ui/field.js";
+import { Textarea } from "../components/ui/textarea.js";
 import { cn } from "../lib/cn.js";
-import { field, textButton } from "./item-decisions.js";
 
 // The item page's command box and pending proposals (design 09-dashboard-app). The box sends the owner's words as one
 // app request (`sentence`); the controller reads them with the plain-words reader and answers in the item's thread,
@@ -44,32 +46,32 @@ export function CommandBox({ enabled, busy, outcome, send }: { enabled: boolean;
   return (
     <form
       data-command-box
-      className="mt-3 flex max-w-xl flex-col gap-1.5"
+      className="mt-6 flex max-w-xl flex-col gap-3"
       onSubmit={(e) => {
         e.preventDefault();
         void submit();
       }}
     >
-      <label htmlFor="command-box" className="text-sm font-medium">
-        Say it in your own words
-      </label>
-      <textarea
-        id="command-box"
-        rows={2}
-        value={words}
-        onChange={(e) => setWords(e.target.value)}
-        placeholder="e.g. looks good, approve it but keep it small"
-        className={cn(field, "w-full")}
-      />
-      <span className="flex flex-wrap items-center gap-2">
-        <Button type="submit" variant="outline" className={textButton} disabled={!enabled || busy || words.trim() === ""}>
+      <Field
+        label="Say it in your own words"
+        htmlFor="command-box"
+        help="The factory answers in the thread below with the commands it read. Nothing changes until you confirm them."
+      >
+        <Textarea
+          id="command-box"
+          rows={2}
+          value={words}
+          onChange={(e) => setWords(e.target.value)}
+          placeholder="e.g. looks good, approve it but keep it small"
+          className="w-full"
+        />
+      </Field>
+      <ButtonRow>
+        <Button type="submit" variant="secondary" disabled={!enabled || busy || words.trim() === ""}>
           Read it
         </Button>
         <OutcomeText outcome={outcome} />
-      </span>
-      <p className="text-xs text-pretty text-text-2">
-        The factory answers in the thread below with the commands it read. Nothing changes until you confirm them.
-      </p>
+      </ButtonRow>
     </form>
   );
 }
@@ -91,15 +93,15 @@ export function PendingProposals({
               </li>
             ))}
           </ul>
-          <span className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" className={textButton} disabled={!enabled || busy} onClick={() => void send(CONFIRM_ALL, "", p.id)}>
-              Confirm all
-            </Button>
-            <Button variant="outline" className={textButton} disabled={!enabled || busy} onClick={() => void send(CANCEL, "", p.id)}>
+          <ButtonRow className="mt-3">
+            <Button variant="secondary" disabled={!enabled || busy} onClick={() => void send(CANCEL, "", p.id)}>
               Cancel
             </Button>
+            <Button variant="secondary" disabled={!enabled || busy} onClick={() => void send(CONFIRM_ALL, "", p.id)}>
+              Confirm all
+            </Button>
             <OutcomeText outcome={outcomes(p.id)} />
-          </span>
+          </ButtonRow>
         </li>
       ))}
     </ul>

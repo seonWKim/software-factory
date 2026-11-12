@@ -1,8 +1,12 @@
 import { Copy } from "lucide-react";
 import { type FormEvent, useState } from "react";
 import { API, type DataAutonomy, type DataCell, type DataPageBody, type DataTables, useManualApi } from "../api.js";
+import { Button } from "../components/ui/button.js";
+import { ButtonRow } from "../components/ui/button-row.js";
+import { Input } from "../components/ui/input.js";
 import { Empty, ErrorNote, Loading } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
+import { Select } from "../components/ui/select.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -14,9 +18,6 @@ import { itemPath } from "../pages.js";
 
 /** Cells longer than this are cut on display. */
 export const CELL_MAX = 300;
-
-const tab = "rounded-control border px-2 py-1 text-xs";
-const tabOff = "border-border-strong hover:bg-surface-2";
 
 export function DataPage() {
   const tables = useManualApi<DataTables>(API.dataTables);
@@ -39,18 +40,16 @@ export function DataPage() {
             <ul className="space-y-0.5 text-sm">
               {tables.data.tables.map((t) => (
                 <li key={t.name}>
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     aria-pressed={t.name === table}
                     onClick={() => choose(t.name)}
-                    className={cn(
-                      "flex w-full items-baseline gap-2 rounded-control px-2 py-1 text-left hover:bg-surface-2",
-                      t.name === table && "bg-surface-2 font-medium",
-                    )}
+                    className="w-full text-left"
                   >
-                    <span className="min-w-0 truncate font-mono text-xs">{t.name}</span>
-                    <span className="ml-auto text-xs text-text-3 tabular-nums">{t.rows}</span>
-                  </button>
+                    <span className="min-w-0 truncate font-mono">{t.name}</span>
+                    <span className="ml-auto text-text-3 tabular-nums">{t.rows}</span>
+                  </Button>
                 </li>
               ))}
             </ul>
@@ -129,17 +128,17 @@ function TableRows({
           {first}–{last} of {d.total}
         </span>
         <FilterForm columns={d.columns.filter((c) => !d.hidden.includes(c))} filter={filter} setFilter={setFilter} />
-        <div className="ml-auto flex items-center gap-1">
-          <button type="button" className={cn(tab, tabOff)} disabled={d.page <= 1} onClick={() => setPage(d.page - 1)}>
+        <ButtonRow className="ml-auto">
+          <Button size="sm" disabled={d.page <= 1} onClick={() => setPage(d.page - 1)}>
             Previous
-          </button>
+          </Button>
           <span className="text-xs text-text-3 tabular-nums">
             Page {d.page} of {pages}
           </span>
-          <button type="button" className={cn(tab, tabOff)} disabled={d.page >= pages} onClick={() => setPage(d.page + 1)}>
+          <Button size="sm" disabled={d.page >= pages} onClick={() => setPage(d.page + 1)}>
             Next
-          </button>
-        </div>
+          </Button>
+        </ButtonRow>
       </div>
       {d.rows.length === 0 ? (
         <Empty>{filter ? "No row matches this filter." : "This table is empty."}</Empty>
@@ -162,15 +161,16 @@ function TableRows({
               {d.rows.map((row, i) => (
                 <tr key={i}>
                   <td className="px-2 py-1 align-top">
-                    <button
-                      type="button"
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       aria-label="Copy row as JSON"
                       title={copied === i ? "Copied" : "Copy row as JSON"}
                       onClick={() => copy(i, row)}
-                      className="rounded-control p-1 text-text-3 hover:bg-surface-2"
+                      className="text-text-3"
                     >
                       <Copy aria-hidden className="size-3.5" />
-                    </button>
+                    </Button>
                   </td>
                   {d.columns.map((c) => {
                     const key = `${i}:${c}`;
@@ -209,23 +209,19 @@ function FilterForm({
     if (column) setFilter({ column, value });
   };
   return (
-    <form role="search" aria-label="Filter rows" onSubmit={submit} className="flex items-center gap-1">
-      <select aria-label="Filter column" value={column} onChange={(e) => setColumn(e.target.value)} className="rounded-control border border-border-strong bg-transparent px-1 py-1 font-mono text-xs">
+    <form role="search" aria-label="Filter rows" onSubmit={submit} className="flex flex-wrap items-center gap-2">
+      <Select aria-label="Filter column" value={column} onChange={(e) => setColumn(e.target.value)} className="font-mono">
         {columns.map((c) => (
           <option key={c} value={c}>{c}</option>
         ))}
-      </select>
-      <input
-        aria-label="Filter value"
-        value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="equals…"
-        className="w-40 rounded-control border border-border-strong bg-transparent px-2 py-1 text-xs"
-      />
-      <button type="submit" className={cn(tab, tabOff)}>Filter</button>
-      {filter && (
-        <button type="button" className={cn(tab, tabOff)} onClick={() => setFilter(null)}>Clear</button>
-      )}
+      </Select>
+      <Input aria-label="Filter value" value={value} onChange={(e) => setValue(e.target.value)} placeholder="equals…" className="w-40" />
+      <ButtonRow>
+        {filter && (
+          <Button size="sm" onClick={() => setFilter(null)}>Clear</Button>
+        )}
+        <Button type="submit" size="sm">Filter</Button>
+      </ButtonRow>
     </form>
   );
 }
@@ -242,9 +238,9 @@ function CellView({ value, runItems, open, onOpen }: { value: DataCell; runItems
   return (
     <>
       {value.slice(0, CELL_MAX)}…{" "}
-      <button type="button" onClick={onOpen} className={cn("font-sans", LINK_CLASS)}>
+      <Button variant="ghost" size="sm" onClick={onOpen} className={cn("font-sans", LINK_CLASS)}>
         Show all ({value.length} characters)
-      </button>
+      </Button>
     </>
   );
 }
