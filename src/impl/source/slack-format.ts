@@ -1,6 +1,7 @@
 import { COMMANDS, type CommandName, commandPhase, commandSpec, phaseLabel } from "../../core/commands.js";
 import { parseProposalMarker, parseTaskOfferMarker } from "../../core/interpret.js";
 import { utcMinute } from "../../core/spec-comment.js";
+import type { WorkStatus } from "../../core/status-label.js";
 import type { StateChange, WorkItem } from "../../core/types.js";
 import type { RepoRef } from "../github/github-client.js";
 
@@ -156,6 +157,29 @@ function inline(line: string, repo: RepoRef): string {
   if (heading) return `*${text.replace(/^\*(.*)\*$/, "$1")}*`;
   if (bullet) return `${bullet[1]}• ${text}`;
   return text;
+}
+
+const STATUS_WORDS: Record<WorkStatus, string> = {
+  triaging: "triaging",
+  needs_approval: "needs approval",
+  implementing: "implementing",
+  in_review: "in review",
+  ready_to_merge: "ready to merge",
+  needs_human: "needs a human",
+  done: "done",
+  rejected: "rejected",
+};
+
+/** A thread's status message: the status, with a link to the PR once the item has one (`change_ref`, its number). */
+export function statusLine(status: WorkStatus, repo: RepoRef, change_ref: string | null): string {
+  const pr = change_ref ? ` · <${prUrl(repo, change_ref)}|PR #${change_ref}>` : "";
+  return `Status: *${escapeSlack(STATUS_WORDS[status] ?? status)}*${pr}`;
+}
+
+/** The one notice a withheld message or modal leaves in the thread: the scan's rules, none of its content. */
+export function withheldNotice(rules: string): SlackRendered {
+  const text = `A factory message for this thread was withheld by the leak scanner (${escapeSlack(rules)}). It is not posted in any form.`;
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
 }
 
 /** The PR link for PR `n`: a number, or a change_ref (the PR number as text). */
@@ -370,6 +394,12 @@ export function answersModal(decisions: readonly SpecDecisionLine[], meta: strin
     element: { type: "plain_text_input", action_id: MODAL_INPUT, max_length: INPUT_MAX, ...(d.default === null ? {} : { initial_value: d.default.slice(0, INPUT_MAX) }) },
   }));
   return modal(VIEW_SPEC_ANSWERS, "Answer the decisions", "Approve", meta, blocks);
+}
+
+/** The modal a press opens: Other…'s from the last waiting spec among `bodies` (the factory's thread entries), else Reject…'s. */
+export function specModal(action: string, bodies: readonly string[], meta: string): Record<string, unknown> {
+  const spec = action === ACTION_SPEC_OTHER ? bodies.map(waitingSpec).filter((x) => x !== null).at(-1) : undefined;
+  return spec ? answersModal(spec.decisions, meta) : rejectModal(meta);
 }
 
 /** The Reject… modal: one required reason field. */
