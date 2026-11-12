@@ -2,11 +2,14 @@
 // verdicts): which messages get them, what a tap and the Feedback modal store, the record_verdict check, one verdict
 // per message, the message edit, and the ack after the store write. The Slack and store fakes only.
 
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buttonVerdict, buttonVerdictKey, verdictButtonOf } from "../src/core/verdict.js";
 import type { SourceRef, UserId, WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
+import { STEPS_DIR } from "../src/impl/store/mysql/migrations.js";
 import { resultMarker } from "../src/impl/source/slack-format.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import type { AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
@@ -254,5 +257,25 @@ describe("one-tap verdicts in Slack", () => {
     const text = JSON.stringify(edited.blocks);
     expect(text).toContain(`Verdict: Good by ${OWNER}`);
     expect(text).toContain("Done: spec approved by");
+  });
+});
+
+describe("one-tap verdicts: no schema change", () => {
+  const SQLITE = readFileSync("src/impl/store/sqlite/schema.ts", "utf8");
+  const MYSQL_BASELINE = readFileSync("src/impl/store/mysql/schema.ts", "utf8");
+  const MYSQL_STEPS = readdirSync(STEPS_DIR).filter((f) => /^\d{4}-/.test(f)).sort().map((f) => readFileSync(join(STEPS_DIR, f), "utf8"));
+
+  it("the schema files and migrations have nothing of their own for buttons: the verdict table and its comment-id key serve", () => {
+    for (const text of [SQLITE, MYSQL_BASELINE, ...MYSQL_STEPS]) expect(text.toLowerCase()).not.toContain("button");
+    // The key a tap is stored under is the verdict table's unique comment id, in both schemas.
+    expect(SQLITE).toMatch(/CREATE TABLE verdicts \([^;]*?comment_id\s+TEXT NOT NULL UNIQUE/);
+    expect(MYSQL_BASELINE).toMatch(/UNIQUE KEY verdicts_comment \(comment_id\)/);
+  });
+
+  it("the longest button key fits the MySQL comment_id column", () => {
+    const widths = [MYSQL_BASELINE, ...MYSQL_STEPS].flatMap((t) => [...t.matchAll(/comment_id\s+VARCHAR\((\d+)\) NOT NULL/g)].map((m) => Number(m[1])));
+    const width = widths.at(-1)!;
+    const key = buttonVerdictKey("C0123456789AB", "1800000001.000100", `run_${"a".repeat(32)}`);
+    expect(key.length).toBeLessThanOrEqual(width);
   });
 });
