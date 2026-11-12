@@ -379,7 +379,6 @@ export class SqlFactoryStore implements FactoryStore {
     const rows = await this.db.all(`SELECT * FROM controller_verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToVerdict);
   }
-
   // Signal ledger (design 11-signal-ledger): in ./signals.ts.
   recordSignal(s: NewSignal): Promise<boolean> { return signals.recordSignal(this.db, s); }
   latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> { return signals.latestSignalTimes(this.db); }
@@ -388,7 +387,6 @@ export class SqlFactoryStore implements FactoryStore {
   listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> { return signals.listVerdictsSince(this.db, since); }
   listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> { return signals.listRunsFinishedSince(this.db, q); }
   listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
-
   // Command proposals (design 04-gate-commands, issue #584): command-proposals.ts
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
@@ -403,6 +401,8 @@ export class SqlFactoryStore implements FactoryStore {
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
   deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
+  listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
+  remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
   // Owner notices (design 09-notifications): notices.ts
   recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }

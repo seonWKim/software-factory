@@ -16,6 +16,7 @@ import { recordAction } from "../src/outbound/intents.js";
 import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, applyMigrations, discoverMigrations } from "../src/state/index.js";
 import CHANGE_REF_ONLY from "../src/controller/migrations/20261112T1200-controller-change-ref-only.migration.js";
 import SUB_TASKS from "../src/controller/migrations/20261112T1800-controller-sub-tasks.migration.js";
+import TASK_SCHEDULE from "../src/controller/migrations/20261113T0900-controller-task-schedule.migration.js";
 import { type NewTask, localDate } from "../src/core/tasks.js";
 import { newStore, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
@@ -3189,5 +3190,30 @@ describe("20261112T1800-controller-sub-tasks on an existing SQLite database", ()
     await expect(
       db.run("INSERT INTO controller_tasks (id, title, created_by, created_at, parent_id) VALUES ('tk_2', 't', 'u', 'x', 'tk_x')"),
     ).rejects.toThrow();
+  });
+});
+
+describe("20261113T0900-controller-task-schedule on an existing SQLite database", () => {
+  const ID = "20261113T0900-controller-task-schedule";
+  const mdb = (db: SqlDriver): MigrationDb => ({ dialect: "sqlite", all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) });
+
+  it("adds the nullable duration_minutes and reminded_at, backfills nothing and is safe to rerun", async () => {
+    const { store } = await newStore();
+    const db = store.db;
+    await db.run("ALTER TABLE controller_tasks DROP COLUMN duration_minutes");
+    await db.run("ALTER TABLE controller_tasks DROP COLUMN reminded_at");
+    await db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID]);
+    await db.run(
+      "INSERT INTO controller_tasks (id, title, created_by, created_at, due_date, due_time) VALUES ('tk_old', 'old', 'u', '2026-01-01T00:00:00.000Z', '2026-01-02', '09:00')",
+    );
+    await store.migrate();
+    expect(await db.all(`SELECT id FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID])).toEqual([{ id: ID }]);
+    expect(await db.all("SELECT id, due_time, duration_minutes, reminded_at FROM controller_tasks")).toEqual([
+      { id: "tk_old", due_time: "09:00", duration_minutes: null, reminded_at: null },
+    ]);
+    expect(TASK_SCHEDULE).toMatchObject({ change: "additive" });
+    await TASK_SCHEDULE.up(mdb(db));
+    expect(await db.all("SELECT id, duration_minutes, reminded_at FROM controller_tasks")).toEqual([{ id: "tk_old", duration_minutes: null, reminded_at: null }]);
+    expect(await store.getTask("tk_old")).toMatchObject({ duration_minutes: null, reminded_at: null });
   });
 });

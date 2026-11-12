@@ -4,7 +4,7 @@
 
 import type { NewNotice, Notice } from "../../../core/notifications.js";
 import type { Timestamp } from "../../../core/types.js";
-import type { Row, SqlDriver } from "../../../state/index.js";
+import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 
 const COLUMNS = "work_item_id, wait_key, kind, created_at, held_until, delivered_at, count";
 /** Work item IDs per `IN (...)` list: well under every backend's bound-parameter limit. */
@@ -19,9 +19,10 @@ function rowToNotice(r: Row): Notice {
   };
 }
 
-export async function recordNotice(db: SqlDriver, n: NewNotice): Promise<boolean> {
+/** In `tx` when given (a task reminder's transaction, tasks.ts), else on its own. */
+export async function recordNotice(db: SqlDriver, n: NewNotice, tx: SqlExecutor = db): Promise<boolean> {
   try {
-    await db.run(`INSERT INTO controller_notices (${COLUMNS}) VALUES (?, ?, ?, ?, ?, NULL, ?)`, [
+    await tx.run(`INSERT INTO controller_notices (${COLUMNS}) VALUES (?, ?, ?, ?, ?, NULL, ?)`, [
       n.work_item_id, n.wait_key, n.kind, n.created_at, n.held_until, n.count,
     ]);
     return true;
