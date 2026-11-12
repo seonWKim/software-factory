@@ -4,10 +4,16 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { readdirSync, readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DataTable } from "../web/src/components/ui/data-table.js";
-import { ButtonRow, Field, Input, Radio, Select, Textarea } from "../web/src/components/ui/form.js";
+import { Button } from "../web/src/components/ui/button.js";
+import { ButtonRow } from "../web/src/components/ui/button-row.js";
+import { Field } from "../web/src/components/ui/field.js";
+import { Input } from "../web/src/components/ui/input.js";
 import { OverflowMenu, Tooltip } from "../web/src/components/ui/menu.js";
 import { EmptyState, Kbd, Notice, PageHeader, StatusBadge } from "../web/src/components/ui/notice.js";
 import { Badge, LEVEL_TONE, SM_PX } from "../web/src/components/ui/parts.js";
+import { Radio } from "../web/src/components/ui/radio.js";
+import { Select } from "../web/src/components/ui/select.js";
+import { Textarea } from "../web/src/components/ui/textarea.js";
 
 // Every variant, size and state that design-system/components.md lists for the new components renders.
 
@@ -16,49 +22,56 @@ afterEach(cleanup);
 const setWidth = (px: number) => Object.defineProperty(window, "innerWidth", { value: px, configurable: true });
 
 describe("form controls", () => {
-  it.each(["sm", "md"])("Input, Select and Textarea render at size %s", (size) => {
-    render(<><Input size={size} aria-label="i" /><Select size={size} aria-label="s"><option>a</option></Select></>);
-    expect(screen.getByLabelText("i").className).toContain(size === "sm" ? "text-xs" : "text-sm");
-    expect(screen.getByLabelText("s").tagName).toBe("SELECT");
+  it.each(["text", "search", "number"])("Input renders as type %s, 32px high", (type) => {
+    render(<Input type={type} aria-label="i" placeholder="p" />);
+    const input = screen.getByLabelText("i");
+    expect(input.getAttribute("type")).toBe(type);
+    expect(input.className).toContain("h-8");
+    expect(input.className).toContain("placeholder:text-text-3");
   });
 
-  it("marks invalid and disabled controls", () => {
-    render(<><Input invalid disabled aria-label="i" /><Textarea invalid aria-label="t" rows={2} /><Select invalid aria-label="s" /></>);
-    expect(screen.getByLabelText("i").getAttribute("aria-invalid")).toBe("true");
-    expect(screen.getByLabelText("i").hasAttribute("disabled")).toBe(true);
-    expect(screen.getByLabelText("t").getAttribute("aria-invalid")).toBe("true");
+  it("Input, Select and Textarea can be disabled", () => {
+    render(<><Input disabled aria-label="i" /><Select disabled aria-label="s"><option>a</option></Select><Textarea disabled aria-label="t" rows={2} /></>);
+    for (const name of ["i", "s", "t"]) {
+      expect(screen.getByLabelText(name).disabled).toBe(true);
+      expect(screen.getByLabelText(name).className).toContain("disabled:opacity-50");
+    }
     expect(screen.getByLabelText("t").getAttribute("rows")).toBe("2");
-    expect(screen.getByLabelText("s").getAttribute("aria-invalid")).toBe("true");
   });
 
-  it("Field labels its control and links the hint and the error", () => {
-    render(<Field label="Name" hint="Shown to you" error="Required"><Input /></Field>);
-    const input = screen.getByLabelText("Name");
-    expect(input.getAttribute("aria-invalid")).toBe("true");
-    const ids = input.getAttribute("aria-describedby").split(" ");
-    expect(ids.map((id) => document.getElementById(id).textContent)).toEqual(["Shown to you", "Required"]);
+  it("Select draws its own chevron inside its wrapper", () => {
+    render(<Select aria-label="s" wrapperClassName="w-40"><option>a</option></Select>);
+    const select = screen.getByLabelText("s");
+    expect(select.tagName).toBe("SELECT");
+    expect(select.className).toContain("appearance-none");
+    expect(select.parentElement.className).toContain("w-40");
+    expect(select.parentElement.querySelector("svg")).not.toBeNull();
   });
 
-  it("Field without hint or error describes nothing", () => {
-    render(<Field label="Name"><Textarea /></Field>);
-    expect(screen.getByLabelText("Name").hasAttribute("aria-describedby")).toBe(false);
-    expect(screen.getByLabelText("Name").hasAttribute("aria-invalid")).toBe(false);
+  it("Field labels its control, with and without help text", () => {
+    const { rerender } = render(<Field label="Name" htmlFor="n" help="Shown to you"><Input id="n" /></Field>);
+    expect(screen.getByLabelText("Name").id).toBe("n");
+    expect(screen.getByText("Shown to you").className).toContain("text-text-2");
+    rerender(<Field label="Name" htmlFor="n"><Textarea id="n" /></Field>);
+    expect(screen.getByLabelText("Name").tagName).toBe("TEXTAREA");
+    expect(screen.queryByText("Shown to you")).toBeNull();
   });
 
   it("Radio is checked, unchecked or disabled", () => {
     const onChange = vi.fn();
     render(<><Radio name="g" checked onChange={onChange}>On</Radio><Radio name="g" checked={false} onChange={onChange}>Off</Radio><Radio name="g" disabled>Dis</Radio></>);
     expect(screen.getByLabelText("On").checked).toBe(true);
+    expect(screen.getByLabelText("On").className).toContain("checked:border-accent");
     fireEvent.click(screen.getByLabelText("Off"));
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(screen.getByLabelText("Dis").disabled).toBe(true);
   });
 
-  it("ButtonRow aligns to the end or the start", () => {
-    const { container, rerender } = render(<ButtonRow><button>a</button></ButtonRow>);
+  it("ButtonRow wraps its buttons with an 8px gap and takes its alignment from className", () => {
+    const { container } = render(<ButtonRow className="justify-end"><Button>a</Button><Button variant="primary">b</Button></ButtonRow>);
+    expect(container.firstChild.className).toContain("flex-wrap");
+    expect(container.firstChild.className).toContain("gap-2");
     expect(container.firstChild.className).toContain("justify-end");
-    rerender(<ButtonRow align="start"><button>a</button></ButtonRow>);
-    expect(container.firstChild.className).toContain("justify-start");
   });
 });
 

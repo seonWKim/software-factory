@@ -56,31 +56,31 @@ A page's h1 with an optional description and optional actions. States: with or w
 
 ## Input
 
-A single-line text control. Sizes: `sm`, `md` (default). States: default, `invalid` (aria-invalid, bad border), `disabled`.
+A one-line field, 32 px high with padding-x 12 px, on the shared field classes of `control.ts` (1 px `border-strong` border, radius `control`, `surface` background, `text-sm`, placeholder in `text-3`). Variants (`type`): `text` (default), `search`, `number`; not for radios (see Radio). One size. States: default, with placeholder, focus-visible (2 px `focus` outline), `disabled` (opacity 0.5).
 
 ## Textarea
 
-A multi-line text control, `rows` default 4. States: default, `invalid`, `disabled`.
+A multi-line field on the same field classes as Input, padding-x 12 px and padding-y 8 px; its height comes from `rows`. One size. States: default, focus-visible, `disabled`.
 
 ## Select
 
-A native select; options are children. Sizes: `sm`, `md` (default). States: default, `invalid`, `disabled`.
+A native select 32 px high on the field classes, drawing its own chevron (in `text-2`) instead of the browser's; options are children. `wrapperClassName` sets the box around the select and its chevron (its width, its margin). One size. States: default, focus-visible, `disabled`.
 
 ## Field
 
-A label, one control (Input, Textarea or Select), an optional hint and an optional error. It sets the control's id, `aria-describedby` and, with an error, `aria-invalid`. States: with or without hint, with or without error.
+A label (`text-sm`, font-medium) above its control with a 4 px gap, and optional help text (`text-xs`, `text-2`) below. `htmlFor` ties the label to the control's `id`. No variants or sizes. States: with or without `help`.
 
 ## ButtonRow
 
-A form's buttons in a wrapping row. Variants (`align`): `end` (default), `start`.
+Buttons side by side with an 8 px gap, wrapping at a narrow width; the primary action goes last (macOS order). No variants or sizes: alignment comes from `className` (for example `justify-end` in the Dialog footer).
 
 ## Radio
 
-One radio with its label; radios of a group share a `name`. States: checked, unchecked, `disabled`.
+A 16 px radio circle drawn from the tokens with its label (the radio's accessible name): a `text-2` ring on `surface`, checked an `accent` ring around a `surface` dot. Radios of a group share a `name`. One size. States: unchecked, checked, focus-visible, `disabled`.
 
 ## OverflowMenu
 
-A "more" button that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger`, `disabled`. Esc, a click outside or choosing an item closes it.
+A "more" button (a `ghost` Button at size `icon`) that opens a menu of actions: items `{ label, onSelect, danger?, disabled? }`. States: closed, open; item default, `danger` (bad text), `disabled`. Esc, a click outside or choosing an item closes it.
 
 ## Kbd
 
@@ -92,15 +92,15 @@ A short hint on hover and keyboard focus, hidden by Esc or leaving. Variants (`p
 
 ## Button
 
-An icon-sized button. Variants: `ghost` (default), `outline`. States: default, hover, focus-visible, `disabled`.
+The dashboard's one button. Variants: `primary` (accent background, `on-solid` text: the one main action of a view), `secondary` (default: `border-strong` border on `surface`), `ghost` (no border, `surface-2` on hover), `danger` (`failed` text); `danger` with `solid` is filled with the failed colour, only for a confirm dialog's destructive confirm. Sizes: `md` (default, at least 32 px high), `sm` (at least 28 px), `icon` (32 px square). States: default, hover (enabled only), focus-visible, pressed (`aria-pressed` or `aria-checked`: `surface-2` background), `disabled` (opacity 0.5). `type` defaults to `button`.
 
 ## Switch
 
-A role=switch toggle. States: on, off, `disabled`.
+A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a class. Controlled by `checked` and `onCheckedChange`. One size. States: on (`text-1` track), off (`border-strong` track), focus-visible, `disabled`.
 
 ## Dialog
 
-The native modal dialog with a confirm and cancel. Variants: default, `danger` (the confirm button in the failed colour). States: closed, open, `confirmDisabled`, with an `error`. Esc and a click outside cancel; focus returns to `returnFocusTo`.
+The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, optional children and a one-line `consequence`, and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
 
 ## Markdown
 

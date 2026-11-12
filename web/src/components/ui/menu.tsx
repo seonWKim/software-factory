@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { cn } from "../../lib/cn.js";
+import { Button } from "./button.js";
+import { DISABLED, FOCUS } from "./control.js";
 
 // OverflowMenu (a "more" button with a short list of actions) and Tooltip (a short hint on hover and focus).
 // Plain React: no positioning library, so both sit by CSS next to their trigger.
@@ -29,17 +31,9 @@ export function OverflowMenu({ label, items }: { label: string; items: readonly 
   }, [open]);
   return (
     <div ref={root} className="relative inline-block">
-      <button
-        type="button"
-        aria-label={label}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-controls={open ? id : undefined}
-        onClick={() => setOpen(!open)}
-        className="inline-flex size-9 items-center justify-center rounded-control text-sm font-medium hover:bg-surface-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
-      >
+      <Button variant="ghost" size="icon" aria-label={label} aria-haspopup="menu" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}>
         <span aria-hidden>⋯</span>
-      </button>
+      </Button>
       {open && (
         <ul id={id} role="menu" aria-label={label} className="absolute right-0 z-10 mt-1 min-w-40 rounded-control border border-border bg-surface py-1 shadow">
           {items.map((item) => (
@@ -53,7 +47,10 @@ export function OverflowMenu({ label, items }: { label: string; items: readonly 
                   item.onSelect();
                 }}
                 className={cn(
-                  "block w-full px-3 py-1.5 text-left text-sm hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus disabled:opacity-50",
+                  "block w-full px-3 py-1.5 text-left text-sm enabled:hover:bg-surface-2",
+                  FOCUS,
+                  "focus-visible:-outline-offset-2",
+                  DISABLED,
                   item.danger && "text-pill-bad-fg",
                 )}
               >
