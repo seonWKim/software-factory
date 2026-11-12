@@ -147,11 +147,12 @@ export function App() {
 
   return (
     <NavProvider value={navigate}>
-      <div className="flex min-h-dvh bg-bg font-sans text-text-1">
-        {/* Stays in view while the page scrolls; scrolls by itself when it is taller than the window. */}
+      {/* A window-high shell: the content column scrolls, so the sidebar stays in view without sticky or fixed. */}
+      <div className="flex h-dvh bg-bg font-sans text-text-1">
+        {/* Scrolls by itself when it is taller than the window. */}
         <aside
           aria-label={t("nav.sidebar")}
-          className="sticky top-0 flex h-dvh w-44 shrink-0 flex-col self-start overflow-y-auto border-r border-border bg-(--sidebar) p-3 max-sm:w-14"
+          className="flex w-44 shrink-0 flex-col overflow-y-auto border-r border-border bg-(--sidebar) p-3 max-sm:w-14"
         >
           <Brand />
           <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} titled />
@@ -175,7 +176,7 @@ export function App() {
             </div>
           </div>
         </aside>
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div data-scroll-root className="flex min-w-0 flex-1 flex-col overflow-y-auto">
           {/* Wraps instead of widening the page on a narrow screen. */}
           <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-4 py-2">
             <Link

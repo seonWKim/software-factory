@@ -290,13 +290,19 @@ describe("app shell", () => {
 });
 
 describe("sidebar", () => {
-  it("is sticky, full height and scrolls by itself on its own tint; the page behind it is the bg token", () => {
+  it("stays in view in a window-high shell where the content column scrolls, not sticky; on its own tint over the bg token", () => {
     mount();
     const side = screen.getByRole("complementary", { name: "Sidebar" });
-    for (const c of ["sticky", "top-0", "h-dvh", "overflow-y-auto", "bg-(--sidebar)"]) expect(side.className.split(" ")).toContain(c);
+    const own = side.className.split(" ");
+    for (const c of ["overflow-y-auto", "bg-(--sidebar)"]) expect(own).toContain(c);
+    // check:responsive fails a sticky or fixed element taller than 40% of the window (tall-fixed).
+    expect(own).not.toContain("sticky");
+    expect(own).not.toContain("fixed");
     const wrapper = side.parentElement!.className.split(" ");
-    expect(wrapper).toContain("bg-bg");
+    for (const c of ["h-dvh", "bg-bg"]) expect(wrapper).toContain(c);
     expect(wrapper).not.toContain("bg-surface");
+    const content = side.parentElement!.querySelector("[data-scroll-root]")!;
+    expect(content.className.split(" ")).toContain("overflow-y-auto");
   });
 
   it("the Tasks and Factory groups show small grey titles that name them; the System chevron is hidden from screen readers", () => {
