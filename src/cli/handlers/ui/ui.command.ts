@@ -20,12 +20,12 @@ export default defineCommand({
                git-worktree updater, dev runs it too and restarts it on each new revision`,
   async run(_args, ctx) {
     const loaded = await ctx.load();
-    // An ID, never a display name: the same local identity as the CLI's (issue #318), so the local auth plugin
-    // sees one user for the UI and the terminal.
+    // An ID, never a display name: the same local identity as the CLI's (issue #318), so the owner check sees one
+    // user for the UI and the terminal.
     const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
     const parts = await buildUiParts(loaded, { identity });
     // The Users page acts as the same identity, with its source shown as the viewer's, and shares the write routes' token.
-    const users = { identity, permissions: { grants: loaded.grants, static: loaded.file.permissions?.static }, csrfToken: parts.settings.csrfToken, log: parts.pauses.log };
+    const users = { identity, csrfToken: parts.settings.csrfToken, log: parts.pauses.log };
     // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
     const lastChecks = new LastChecks();
     const revision = await serverRevision(loaded.codeRoot);

@@ -6,10 +6,8 @@
 // module only.
 
 import type { Loaded } from "./compose.js";
-import { ConfigKeyError, suggestion } from "./config-keys.js";
 import type { Logger } from "./core/log.js";
 import type { AgentRunner } from "./interfaces/agent-runner.js";
-import type { AuthProvider, GrantSource } from "./interfaces/auth-provider.js";
 import type { CalendarSource } from "./interfaces/calendar-source.js";
 import type { Capability, CapabilitySearch } from "./interfaces/capability-search.js";
 import type { Clock } from "./interfaces/clock.js";
@@ -40,7 +38,6 @@ export interface Instances {
   sandbox: Sandbox;
   runner: AgentRunner;
   llm: LLMProvider;
-  auth: AuthProvider;
   secrets: SecretStore;
   egress: EgressScanner;
   broker: ToolBroker;
@@ -93,8 +90,6 @@ export interface Contexts {
    */
   runner: BaseContext & { sandbox: Sandbox; secrets: SecretStore; broker?: ToolBroker; scanner?: EgressScanner };
   llm: BaseContext & { secrets: SecretStore };
-  /** `grants`: the selected grant sources (`permissions.grants`), built before the auth plugin. */
-  auth: BaseContext & { github: GitHubApi; store: FactoryStore; grants: readonly GrantSource[] };
   secrets: BaseContext;
   egress: BaseContext & { secrets: SecretStore };
   broker: BaseContext & { github: GitHubApi; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock };
@@ -199,7 +194,7 @@ export interface PluginDescriptor<K extends PluginKind = PluginKind> {
   /** How `factory setup <kind> <command>` connects this plugin's account; see connectHooks. */
   connect?: ConnectHook;
   /**
-   * Absent: not a default. store and auth take none: their top-level config keys always pick one. Optional
+   * Absent: not a default. store takes none: their top-level config keys always pick one. Optional
    * kinds (forge) take none either: leaving their key out selects nothing.
    */
   default?: PluginDefault;
@@ -252,50 +247,9 @@ export type Selection = { [K in Exclude<PluginKind, OptionalKind>]: string } & {
   sources?: readonly string[];
   runners?: readonly string[];
   llms?: readonly string[];
-  /** The auth plugin for local commands (CLI, local UI), when `auth` names one per origin (issue #318). */
-  local_auth?: string;
-  /** The auth plugin for Slack thread commands, when `auth.slack_thread` names one (issue #486). Absent: the `local` origin's (issue #498). */
-  slack_auth?: string;
   /** The CalendarSource plugins the top-level `calendar` key lists, in config order; absent when it lists none. */
   calendars?: readonly string[];
 };
-
-/**
- * The origins `auth` can name a plugin for: GitHub comments, local commands (CLI, local UI; issue #318) and Slack
- * thread commands (issue #486).
- */
-const AUTH_ORIGINS = ["github_issue", "local", "slack_thread"] as const;
-
-/**
- * `auth` per command origin (issue #318). A string (the form before) selects the plugin for GitHub comments;
- * local commands then use `local`. An object maps origins to plugins: `github_issue` is required, `local`
- * optional (default `local`), `slack_thread` optional (default: the `local` origin's plugin, issues #486 and #498).
- */
-export function authByOrigin(raw: unknown): { github_issue: unknown; local?: unknown; slack_thread?: unknown } {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return { github_issue: raw };
-  const given = raw as Record<string, unknown>;
-  const problems: string[] = [];
-  for (const key of Object.keys(given)) {
-    if (!(AUTH_ORIGINS as readonly string[]).includes(key)) {
-      problems.push(`unknown auth origin "${key}"; known origins: ${AUTH_ORIGINS.join(", ")}${suggestion(key, [...AUTH_ORIGINS])}`);
-    }
-  }
-  if (!Object.hasOwn(given, "github_issue")) problems.push('auth needs "github_issue": the auth plugin for GitHub comments');
-  if (problems.length > 0) throw new ConfigKeyError(problems);
-  return {
-    github_issue: given.github_issue,
-    ...(Object.hasOwn(given, "local") ? { local: given.local } : {}),
-    ...(Object.hasOwn(given, "slack_thread") ? { slack_thread: given.slack_thread } : {}),
-  };
-}
-
-/**
- * The auth plugin that authorizes commands from the local CLI and the local UI (issue #318): `auth.local` in the
- * per-origin form, else `local`, whatever `auth` selects for GitHub comments. Local commands never depend on it.
- */
-export function selectedLocalAuth(selection: Selection): string {
-  return selection.local_auth ?? "local";
-}
 
 /** Every selected SourceAdapter plugin name, in config order: `sources`, or `[source]` when one is selected. */
 export function selectedSources(selection: Selection): readonly string[] {
@@ -363,27 +317,4 @@ export function connectHooks(registry: Registry): { kind: PluginKind; name: stri
 /** The secret set: the union of the names the selected plugins declare. The SecretStore loads and scans these. */
 export function declaredSecretNames(registry: Registry, selection: Selection): ReadonlySet<SecretName> {
   return new Set(declaredSecrets(registry, selection).map((d) => d.name));
-}
-
-/**
- * Grant plugins (kind `grant`, design 2026-11-01): sources of roles for the one authorize check
- * (src/core/authorize.ts). Several are selected at once, by the list `permissions.grants`, and their union
- * decides, minus denies. Each is a `*.grant.ts` descriptor beside its implementation under src/impl/, kept out
- * of the one-per-interface Registry above because a kind selected as a list has no single selection.
- */
-export interface GrantContext extends BaseContext {
-  github: GitHubApi;
-}
-
-export interface GrantDescriptor {
-  /** The name `permissions.grants` lists; unique among grants. */
-  name: string;
-  create: (ctx: GrantContext) => GrantSource | Promise<GrantSource>;
-  /** Selected when `permissions.grants` is absent. */
-  default?: true;
-}
-
-/** Typed identity for a `*.grant.ts` file: `export default defineGrant({...})`. */
-export function defineGrant(descriptor: GrantDescriptor): GrantDescriptor {
-  return descriptor;
 }

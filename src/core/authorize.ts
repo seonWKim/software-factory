@@ -1,115 +1,62 @@
-import type { UserId, WorkItemId } from "./types.js";
-import type {
-  AuthAction,
-  AuthDecision,
-  AuthProvider,
-  AuthResource,
-  ExternalIdentity,
-  GrantSource,
-  GrantSubject,
-  LinkedAccount,
-  Principal,
-  Role,
-} from "../interfaces/auth-provider.js";
+import type { UserId } from "./types.js";
+import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../interfaces/auth-provider.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 
 /**
- * Permissions in the factory (design 2026-11-01, issue #107; before: forge write access, checked inside the
- * forge's auth provider, was the only permission). A factory user ID has linked provider accounts; grant
- * sources give it roles per project; a role grants actions. Every command path reaches `authorize` below
- * through `AuthProvider.authorize`, with the factory user ID, never a provider account.
+ * The one owner check (design 08-permissions, One owner; issue #575). The factory serves one person: a gate action is
+ * allowed only when the command's factory user is the owner, whatever surface it came from (GitHub, Slack, the
+ * CLI, the dashboard). It replaces the per-origin auth plugins (`github`, `local`, `none`) and the grant sources.
  */
 
-/** What each role may do. The action names are the existing AuthAction values. */
-export const ROLE_ACTIONS: Readonly<Record<Role, readonly AuthAction[]>> = {
-  requester: ["submit_work"],
-  approver: ["submit_work", "approve_spec", "approve_merge", "record_verdict", "use_tool"],
-};
+/** The local identity used when the environment names no one (src/core/local-cli.ts). Never the owner. */
+export const ANONYMOUS_USER = "local:anonymous" as UserId;
 
-/**
- * Actions any resolved user may take unless denied. Intake keeps its own gate: on a labelled source only a user with
- * triage access can add the intake label, so this keeps today's behaviour for `submit_work`.
- */
+/** The refusal reason for anyone but the owner, and the reply the command gets. */
+export const NOT_OWNER = "not_owner";
+export const NOT_OWNER_REPLY = "only the owner may send this command";
+
+/** Actions any resolved user may take: intake keeps its own gate on the source (the intake label). */
 const OPEN_ACTIONS: readonly AuthAction[] = ["submit_work"];
 
-/**
- * Actions only the owner may take, whatever the grants give (design 08-permissions, One owner): approving a pack
- * tool (design 11-packs). The owner is the store's local owner (solo: the first local identity, through
- * LocalUsersGrant; never `local:anonymous`).
- */
-const OWNER_ACTIONS: readonly AuthAction[] = ["approve_tool"];
-
-export interface AuthorizeDeps {
-  /** `getLocalUser` answers the owner check; a store without it has no owner. */
-  store: Pick<FactoryStore, "getWorkItem" | "listLinks"> & Partial<Pick<FactoryStore, "getLocalUser">>;
-  /** The selected grant sources (`permissions.grants`), in config order. */
-  grants: readonly GrantSource[];
+export interface OwnerAuthDeps {
+  store: Pick<FactoryStore, "resolveLink" | "getLocalUser" | "claimLocalOwner">;
+  /**
+   * The identity this process's environment names (`cli_user`, else the CLI identity): the one user that claims the
+   * owner while the store has none, so a solo setup needs no step. Null: only a stored owner is the owner.
+   */
+  claimer: UserId | null;
 }
 
 /**
- * The one authorize check. Any deny refuses (`denied`). Otherwise the action is allowed when any grant gives
- * a role that includes it; local grants are asked first and the first role that covers the action stops the
- * search, so a remote API is not called for a user a local grant already covers. Else `no_role`. An owner action
- * is allowed only to the owner (`not_owner`).
+ * The owner as the factory's AuthProvider. `resolve`: a linked account maps to its factory user; an unlinked GitHub
+ * account is `github:<id>` and a local identity its own user (`localUserId`); any other unlinked account resolves to
+ * no user. `authorize`: `submit_work` is open; every other action needs the owner, else `not_owner`. No remote call.
  */
-export async function authorize(d: AuthorizeDeps, user_id: UserId, action: AuthAction, resource: AuthResource): Promise<AuthDecision> {
-  const project = await projectOf(d, resource);
-  const subject: GrantSubject = { user_id, accounts: await accountsOf(d, user_id) };
-  for (const g of d.grants) if (await g.denies(subject, project)) return { allow: false, reason: "denied" };
-  if (OPEN_ACTIONS.includes(action)) return { allow: true };
-  if (OWNER_ACTIONS.includes(action)) return (await isOwner(d, subject, project)) ? { allow: true } : { allow: false, reason: "not_owner" };
-  const ordered = [...d.grants.filter((g) => !g.remote), ...d.grants.filter((g) => g.remote)];
-  for (const g of ordered) {
-    const roles = await g.roles(subject, project);
-    if (roles.some((r) => ROLE_ACTIONS[r].includes(action))) return { allow: true };
-  }
-  return { allow: false, reason: "no_role" };
-}
-
-async function isOwner(d: AuthorizeDeps, subject: GrantSubject, project: string | null): Promise<boolean> {
-  // The local grants first, as for any action: LocalUsersGrant makes a solo setup's first identity the owner.
-  for (const g of d.grants) if (!g.remote) await g.roles(subject, project);
-  return (await d.store.getLocalUser?.(subject.user_id))?.role === "owner";
-}
-
-async function projectOf(d: AuthorizeDeps, resource: AuthResource): Promise<string | null> {
-  if (resource.kind === "project") return resource.id;
-  if (resource.kind !== "work_item") return null;
-  return (await d.store.getWorkItem(resource.id as WorkItemId))?.project ?? null;
-}
-
-const IMPLIED = /^(github|slack|oidc):(.+)$/;
-
-/**
- * The accounts of a user: its linked ones, plus the account its ID names. Forge user IDs stay `github:<id>`
- * (design 2026-11-01), so `github:1` is account 1 of that provider with no link row.
- */
-async function accountsOf(d: AuthorizeDeps, user_id: UserId): Promise<LinkedAccount[]> {
-  const out = await d.store.listLinks(user_id);
-  const m = IMPLIED.exec(user_id);
-  if (m && !out.some((a) => a.provider === m[1] && a.subject === m[2])) {
-    out.unshift({ provider: m[1] as LinkedAccount["provider"], subject: m[2]! });
-  }
-  return out;
-}
-
-/**
- * An AuthProvider over the store's links and the grant sources. `resolve`: a linked account maps to its
- * user; otherwise `fallback` decides (e.g. `github:<id>`), and null refuses the account as not linked.
- * Links are looked up by provider and subject only; a display name never changes the user.
- */
-export class FactoryAuth implements AuthProvider {
-  constructor(
-    private readonly deps: AuthorizeDeps & { store: Pick<FactoryStore, "resolveLink"> },
-    private readonly fallback: (identity: ExternalIdentity) => UserId | null = () => null,
-  ) {}
+export class OwnerAuth implements AuthProvider {
+  constructor(private readonly d: OwnerAuthDeps) {}
 
   async resolve(identity: ExternalIdentity): Promise<Principal | null> {
-    const user_id = (await this.deps.store.resolveLink(identity.provider, identity.subject)) ?? this.fallback(identity);
+    const linked = await this.d.store.resolveLink(identity.provider, identity.subject);
+    const user_id = linked ?? (identity.provider === "github" ? (`github:${identity.subject}` as UserId) : localUserId(identity));
     return user_id ? { user_id, attributes: {} } : null;
   }
 
-  authorize(principal: Principal, action: AuthAction, resource: AuthResource): Promise<AuthDecision> {
-    return authorize(this.deps, principal.user_id, action, resource);
+  async authorize(principal: Principal, action: AuthAction): Promise<AuthDecision> {
+    if (OPEN_ACTIONS.includes(action)) return { allow: true };
+    return (await this.isOwner(principal.user_id)) ? { allow: true } : { allow: false, reason: NOT_OWNER };
   }
+
+  /** The store's local owner; while there is none, the claimer becomes it. `anonymous` never is. */
+  private async isOwner(user_id: UserId): Promise<boolean> {
+    if (user_id === ANONYMOUS_USER) return false;
+    if ((await this.d.store.getLocalUser(user_id))?.role === "owner") return true;
+    if (user_id !== this.d.claimer) return false;
+    return (await this.d.store.claimLocalOwner(user_id)).user_id === user_id;
+  }
+}
+
+/** The factory user of a local identity: the subject when it is already a user ID, else `local:<subject>`. */
+export function localUserId(identity: ExternalIdentity): UserId | null {
+  if (identity.provider !== "local") return null;
+  return (/^[a-z]+:\S+$/.test(identity.subject) ? identity.subject : `local:${identity.subject}`) as UserId;
 }

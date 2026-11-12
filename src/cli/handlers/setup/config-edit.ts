@@ -65,25 +65,6 @@ export function applyChoices(raw: Obj, c: SharedChoices): Map<string, Json | und
   }
   set("plugins", plugins);
 
-  // Who judges GitHub comments: GitHub when it is on; with GitHub off no GitHub plugin may stay selected.
-  if (c.github) {
-    if (raw.auth === undefined || raw.auth === "local") set("auth", "github");
-    else if (isObj(raw.auth) && raw.auth.github_issue !== "github") set("auth", { ...raw.auth, github_issue: "github" });
-  } else if (isObj(raw.auth)) {
-    set("auth", { ...raw.auth, github_issue: "local", ...(raw.auth.local === "github" ? { local: "local" } : {}) });
-  } else if (raw.auth !== "local" && raw.auth !== "none") {
-    set("auth", "local");
-  }
-  const permissions = isObj(raw.permissions) ? raw.permissions : {};
-  // No `grants` means the default, github-permission: GitHub off lists the local ones; GitHub on adds it back.
-  const grants = Array.isArray(permissions.grants) ? permissions.grants : null;
-  if (!c.github) {
-    const local = (grants ?? []).filter((g) => g !== "github-permission");
-    set("permissions", { ...permissions, grants: local.length > 0 ? local : ["static"] });
-  } else if (grants && !grants.includes("github-permission")) {
-    set("permissions", { ...permissions, grants: [...grants, "github-permission"] });
-  }
-
   if (c.slack) set("slack", { ...(isObj(raw.slack) ? raw.slack : {}), channels: [...c.slack_channels] });
   return out;
 }

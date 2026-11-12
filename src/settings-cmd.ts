@@ -2,6 +2,7 @@
 // runtime"). Every check goes through resolveSettings, the same function the running controller and worker pool
 // read settings through, so a value this command accepts is a value they use. A refused command writes nothing.
 
+import { NOT_OWNER, NOT_OWNER_REPLY } from "./core/authorize.js";
 import { COMMAND_TABLE, cliUsageOf, topWords } from "./core/command-table.js";
 import { type ProjectRef, rekeyProjectSettings } from "./core/project.js";
 import { readProjectLabel } from "./core/project-labels.js";
@@ -166,9 +167,8 @@ async function aligned(deps: SettingsDeps, rows: readonly SettingOverride[], ref
   return { base, label };
 }
 
-/** This check asks local grants only (no forge call), so GitHub write access alone gives no role here. */
-const NO_LOCAL_ROLE =
-  ". This check reads local grants only, not GitHub access: give the user approver in permissions.static.roles (docs/plugins/grant-source.md)";
+/** The refusal's note when the user is not the owner (design 08-permissions, issue #575). */
+const notOwnerNote = (refused: string): string => (refused === NOT_OWNER ? `: ${NOT_OWNER_REPLY}` : "");
 
 function fmt(v: unknown): string {
   return JSON.stringify(v) ?? String(v);
@@ -184,7 +184,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   }
   if (APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {
     const refused = await deps.mayApproveMerge();
-    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}${notOwnerNote(refused)}`);
   }
   let ref: ProjectRef | undefined;
   if (a.project !== undefined) {
@@ -254,7 +254,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
     const descriptor = (await loadSettingCatalog()).get(key);
     if (descriptor && loosens(descriptor, now.value, was.value) !== null) {
       const refused = await deps.mayApproveMerge();
-      if (refused !== null) return fail(`loosening ${key}${where} from ${fmt(was.raw)} to ${fmt(now.raw)} needs approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+      if (refused !== null) return fail(`loosening ${key}${where} from ${fmt(was.raw)} to ${fmt(now.raw)} needs approve_merge on the project: ${refused}${notOwnerNote(refused)}`);
     }
   }
   if (value !== null) {
@@ -335,7 +335,7 @@ async function resetLearned(deps: SettingsDeps, key: string, project: string): P
   if (was.layer === "learned" && loosening(gate, now.value, was.value) !== null && deps.mayApproveMerge) {
     const refused = await deps.mayApproveMerge();
     if (refused !== null) {
-      return fail(`resetting the learned ${key} for ${ref.label} loosens it from ${was.value} to ${now.value} and needs approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+      return fail(`resetting the learned ${key} for ${ref.label} loosens it from ${was.value} to ${now.value} and needs approve_merge on the project: ${refused}${notOwnerNote(refused)}`);
     }
   }
   const change = await deps.store.resetLearnedSetting({ key, project: ref.key, actor: deps.actor });

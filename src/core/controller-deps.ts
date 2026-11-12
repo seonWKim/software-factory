@@ -62,15 +62,11 @@ export interface ControllerDeps {
    * the registry but not selected (docs/plugins/forge.md). Ignored when `forge` is given: the forge reads its own.
    */
   links?: Pick<Forge, "parseLinks">;
-  /** Authorizes commands from the forge (and every origin with no plugin of its own). */
-  auth: AuthProvider;
   /**
-   * Authorizes commands from the local CLI (identity provider `local`) and the local UI (app requests); issue
-   * #318: local commands never depend on the forge's auth plugin. Absent: `auth`.
+   * Authorizes every person's command, from any surface (GitHub, Slack, the CLI, the dashboard): the owner check
+   * (`OwnerAuth`, src/core/authorize.ts; design 08-permissions, issue #575). Also resolves mergers, closers and authors.
    */
-  local_auth?: AuthProvider;
-  /** Authorizes commands from Slack threads (identity provider `slack`; issue #486). Absent: `local_auth`, else `auth` (issue #498). */
-  slack_auth?: AuthProvider;
+  auth: AuthProvider;
   /**
    * The controller's automatic steps (auto mode's spec approvals and merges) authorized under its service passport
    * (RFC 0015 §8, `service:controller`), audited there. Absent (no Identity: tests, a startup check): allowed.

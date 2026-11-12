@@ -16,7 +16,7 @@ export const ANTHROPIC_API = "https://api.anthropic.com";
 export const PROBE_TIMEOUT_MS = 10_000;
 
 /** The plugins that talk to GitHub, by kind. */
-const GITHUB_PLUGINS: Partial<Record<keyof Selection, string>> = { broker: "github", forge: "github", auth: "github" };
+const GITHUB_PLUGINS: Partial<Record<keyof Selection, string>> = { broker: "github", forge: "github" };
 
 /**
  * The endpoints of the selected plugins, without duplicates: GitHub when a GitHub plugin is selected (never
