@@ -133,6 +133,7 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
     const full = cache.syncToken === null;
     const next = full ? new Map<string, FeedEvent>() : new Map(cache.events);
     let pageToken: string | null = null;
+    let etag: string | null = null;
     let first = true;
     for (;;) {
       const params = new URLSearchParams({ singleEvents: "true", maxResults: "2500" });
@@ -145,10 +146,10 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
       if (first && cache.etag) headers["if-none-match"] = cache.etag;
       const res = await this.call(`${EVENTS_API}/${encodeURIComponent(id)}/events?${params}`, { method: "GET", headers }, "events read");
       if (first && res.status === 304) return;
-      if (res.status === 410) throw new SyncTokenGone();
+      if (res.status === 410) throw new SyncTokenGone(`events read of calendar ${id} refused its sync token (HTTP 410)`);
       if (res.status === 401) this.access = null;
       if (res.status !== 200) throw fail(`events read of calendar ${id} failed (HTTP ${res.status})`);
-      if (first) cache.etag = res.headers.get("etag");
+      if (first) etag = res.headers.get("etag");
       first = false;
       const body = await json<{ items?: GoogleEvent[]; nextPageToken?: string; nextSyncToken?: string }>(res, "events read");
       for (const item of body.items ?? []) {
@@ -159,6 +160,8 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
         pageToken = body.nextPageToken;
         continue;
       }
+      // Kept only once every page is read, so a 304 never stands for a half-read answer.
+      cache.etag = etag;
       cache.syncToken = body.nextSyncToken ?? null;
       cache.events = next;
       return;
@@ -208,7 +211,11 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
   }
 }
 
-class SyncTokenGone extends Error {}
+class SyncTokenGone extends Error {
+  constructor(what: string) {
+    super(`google-calendar: ${what}`);
+  }
+}
 
 /** A body as JSON; a body that is not JSON throws without quoting it. */
 async function json<T>(res: HttpResponse, what: string): Promise<T> {
