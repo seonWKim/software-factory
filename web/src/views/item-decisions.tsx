@@ -7,6 +7,8 @@ import { Markdown } from "../components/ui/markdown.js";
 import { Section } from "../components/ui/parts.js";
 import { Radio } from "../components/ui/radio.js";
 import { Textarea } from "../components/ui/textarea.js";
+import type { MessageKey } from "../i18n/en.js";
+import { t } from "../i18n/index.js";
 
 // The item page's spec panel (design §9, issue #526): the waiting spec's In short above Commands, and its decisions
 // as questions to answer before `approve`. A decision with options is a radio group with the default selected and
@@ -60,24 +62,18 @@ export function approvePhase(blockedReason: string | null | undefined): ApproveP
 }
 
 /** What an approve in `phase` approves, and what happens next. */
-const PHASES: Record<ApprovePhase, { what: string; next: string }> = {
-  spec_pending: { what: "the spec waiting for approval", next: "The factory starts the implement run on this spec." },
-  max_revisions: {
-    what: "the spec at the revision limit, as it is (no new revision)",
-    next: "The factory starts the implement run on this spec.",
-  },
-  floor_tier: {
-    what: "a tier raise to the tier the floor check needs",
-    next: "The item's tier is raised and the implement run starts again.",
-  },
-  rule_of_two: { what: "the run held for a person by the Rule of Two", next: "The held run starts." },
+const PHASES: Record<ApprovePhase, { what: MessageKey; next: MessageKey }> = {
+  spec_pending: { what: "decisions.whatSpecPending", next: "decisions.nextImplement" },
+  max_revisions: { what: "decisions.whatMaxRevisions", next: "decisions.nextImplement" },
+  floor_tier: { what: "decisions.whatFloorTier", next: "decisions.nextFloorTier" },
+  rule_of_two: { what: "decisions.whatRuleOfTwo", next: "decisions.nextRuleOfTwo" },
 };
 
 /** The waiting spec's In short, above Commands. */
 export function InShort({ spec }: { spec: WaitingSpec | null | undefined }) {
   if (!spec?.in_short) return null;
   return (
-    <Section title="In short">
+    <Section title={t("decisions.inShort")}>
       <div data-in-short>
         <Markdown text={spec.in_short} />
       </div>
@@ -93,7 +89,7 @@ export function DecisionsPanel({
   return (
     <div data-decisions className="mb-3 space-y-3">
       <p className="text-xs text-pretty text-text-2">
-        Decisions for you: each answer goes with approve. The default is selected; change any you disagree with.
+        {t("decisions.intro")}
       </p>
       {decisions.map((d, i) => {
         const c = choices[i] ?? { own: true, value: "" };
@@ -102,7 +98,7 @@ export function DecisionsPanel({
           <fieldset key={i} data-decision={i + 1} className="min-w-0 max-w-xl">
             <legend className="text-sm font-medium text-pretty break-words">
               {label}
-              {d.owner_only && <span className="ml-1 text-xs text-text-2">(owner only)</span>}
+              {d.owner_only && <span className="ml-1 text-xs text-text-2">{t("decisions.ownerOnly")}</span>}
             </legend>
             {d.reason && <p className="text-xs text-pretty break-words text-text-2">{d.reason}</p>}
             {d.options.length > 0 ? (
@@ -110,21 +106,21 @@ export function DecisionsPanel({
                 {d.options.map((o) => (
                   <Radio key={o} name={`decision-${i + 1}`} checked={!c.own && c.value === o} onChange={() => onChange(i, { own: false, value: o })}>
                     {o}
-                    {o === d.default && <span className="text-xs text-text-2">(default)</span>}
+                    {o === d.default && <span className="text-xs text-text-2">{t("decisions.default")}</span>}
                   </Radio>
                 ))}
                 <Radio name={`decision-${i + 1}`} checked={c.own} onChange={() => onChange(i, { own: true, value: c.own ? c.value : "" })}>
-                  write my own
+                  {t("decisions.writeOwn")}
                 </Radio>
                 {c.own && (
-                  <Input aria-label={`Answer ${i + 1}`} value={c.value} onChange={(e) => onChange(i, { own: true, value: e.target.value })} className="w-full" />
+                  <Input aria-label={t("decisions.answer", { n: i + 1 })} value={c.value} onChange={(e) => onChange(i, { own: true, value: e.target.value })} className="w-full" />
                 )}
               </div>
             ) : (
               <Input
-                aria-label={`Answer ${i + 1}`}
+                aria-label={t("decisions.answer", { n: i + 1 })}
                 value={c.value}
-                placeholder={d.default === null ? "Your answer (no default)" : undefined}
+                placeholder={d.default === null ? t("decisions.noDefaultPlaceholder") : undefined}
                 onChange={(e) => onChange(i, { own: true, value: e.target.value })}
                 className="mt-1 w-full"
               />
@@ -140,19 +136,19 @@ export function DecisionsPanel({
 export function ApproveConfirm({ phase, answers, note }: { phase: ApprovePhase; answers: readonly ChosenAnswer[]; note: string }) {
   const p = PHASES[phase];
   return (
-    <div role="group" aria-label="Confirm approve" data-approve-confirm={phase} className="w-full max-w-xl rounded-control border border-border-strong p-2 text-sm">
-      <p className="text-pretty">You approve {p.what}.</p>
+    <div role="group" aria-label={t("decisions.confirmApprove")} data-approve-confirm={phase} className="w-full max-w-xl rounded-control border border-border-strong p-2 text-sm">
+      <p className="text-pretty">{t("decisions.youApprove", { what: t(p.what) })}</p>
       {answers.length > 0 && (
         <ul className="mt-1 list-disc pl-5" data-confirm-answers>
           {answers.map((a) => (
             <li key={a.n} className="break-words">
-              {a.n}. {a.question} → {a.answer ?? "no answer"} ({a.answer === null ? "no default" : a.isDefault ? "default taken" : "your answer"})
+              {a.n}. {a.question} → {a.answer ?? t("decisions.noAnswer")} ({a.answer === null ? t("decisions.noDefault") : a.isDefault ? t("decisions.defaultTaken") : t("decisions.yourAnswer")})
             </li>
           ))}
         </ul>
       )}
-      {note.trim() !== "" && <p className="mt-1 break-words text-text-2">With your note to the implementer and the reviewer.</p>}
-      <p className="mt-1 text-pretty" data-confirm-next>Next: {p.next}</p>
+      {note.trim() !== "" && <p className="mt-1 break-words text-text-2">{t("decisions.withNote")}</p>}
+      <p className="mt-1 text-pretty" data-confirm-next>{t("decisions.next", { next: t(p.next) })}</p>
     </div>
   );
 }
@@ -170,6 +166,14 @@ export interface CommandDialogProps {
 /** Why a spec is rejected: one of these, and any free text. */
 export const REJECT_REASONS = ["not needed", "wrong approach", "duplicate", "too big; split it"] as const;
 
+/** The shown label of each reject reason; the reason itself is what the server receives. */
+const REJECT_LABEL: Record<(typeof REJECT_REASONS)[number], MessageKey> = {
+  "not needed": "decisions.reasonNotNeeded",
+  "wrong approach": "decisions.reasonWrongApproach",
+  duplicate: "decisions.reasonDuplicate",
+  "too big; split it": "decisions.reasonTooBig",
+};
+
 /** The reject note: the chosen reason, then the free text, one line each. */
 export function rejectNote(reason: string | null, text: string): string {
   return [reason ?? "", text.trim()].filter(Boolean).join("\n");
@@ -182,9 +186,9 @@ export function RejectDialog({ id, pr, busy, error, returnFocusTo, onSend, onClo
   const note = rejectNote(reason, text);
   return (
     <Dialog
-      title={`Reject ${id}`}
-      consequence={`Rejecting closes this item${pr === null ? "" : ` and its PR #${pr}, without a merge`}.`}
-      confirmLabel="Confirm reject"
+      title={t("decisions.rejectTitle", { id })}
+      consequence={pr === null ? t("decisions.rejectConsequence") : t("decisions.rejectConsequencePr", { pr })}
+      confirmLabel={t("decisions.confirmReject")}
       confirmDisabled={busy || note === ""}
       danger
       error={error}
@@ -193,21 +197,21 @@ export function RejectDialog({ id, pr, busy, error, returnFocusTo, onSend, onClo
       onClose={onClose}
     >
       <fieldset className="min-w-0">
-        <legend className="text-sm font-medium">Why?</legend>
-        <div role="radiogroup" aria-label="Reason" className="mt-1 space-y-1">
+        <legend className="text-sm font-medium">{t("decisions.why")}</legend>
+        <div role="radiogroup" aria-label={t("decisions.reason")} className="mt-1 space-y-1">
           {REJECT_REASONS.map((r) => (
             <Radio key={r} name="reject-reason" checked={reason === r} onChange={() => setReason(r)}>
-              {r}
+              {t(REJECT_LABEL[r])}
             </Radio>
           ))}
         </div>
       </fieldset>
       <Textarea
-        aria-label="Reject details"
+        aria-label={t("decisions.rejectDetails")}
         rows={2}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Say more (optional when a reason is chosen)"
+        placeholder={t("decisions.sayMore")}
         className="w-full"
       />
     </Dialog>
@@ -216,6 +220,15 @@ export function RejectDialog({ id, pr, busy, error, returnFocusTo, onSend, onClo
 
 /** The spec sections a revise comments on, in the spec comment's order. */
 export const SPEC_SECTIONS = ["In short", "Problem", "Done when", "Scope", "Allowed paths"] as const;
+
+/** The shown label of each spec section; the section name itself heads the text the server receives. */
+const SECTION_LABEL: Record<(typeof SPEC_SECTIONS)[number], MessageKey> = {
+  "In short": "decisions.sectionInShort",
+  Problem: "decisions.sectionProblem",
+  "Done when": "decisions.sectionDoneWhen",
+  Scope: "decisions.sectionScope",
+  "Allowed paths": "decisions.sectionAllowedPaths",
+};
 
 /** The revise text: each commented section under its `### <Section>` heading; an uncommented one is left out. */
 export function reviseNote(comments: readonly string[]): string {
@@ -231,9 +244,9 @@ export function ReviseDialog({ id, busy, error, returnFocusTo, onSend, onClose }
   const note = reviseNote(comments);
   return (
     <Dialog
-      title={`Revise ${id}`}
-      consequence="Triage writes a new spec from your comments. A section left empty is not sent."
-      confirmLabel="Send revise"
+      title={t("decisions.reviseTitle", { id })}
+      consequence={t("decisions.reviseConsequence")}
+      confirmLabel={t("decisions.sendRevise")}
       confirmDisabled={busy || note === ""}
       error={error}
       returnFocusTo={returnFocusTo}
@@ -242,13 +255,13 @@ export function ReviseDialog({ id, busy, error, returnFocusTo, onSend, onClose }
     >
       {SPEC_SECTIONS.map((s, i) => (
         <div key={s} data-revise-section={s} className="flex flex-col gap-1">
-          <span className="text-sm font-medium">{s}</span>
+          <span className="text-sm font-medium">{t(SECTION_LABEL[s])}</span>
           <Textarea
-            aria-label={`Comment on ${s}`}
+            aria-label={t("decisions.commentOn", { section: t(SECTION_LABEL[s]) })}
             rows={2}
             value={comments[i]}
             onChange={(e) => setComments(comments.map((x, j) => (j === i ? e.target.value : x)))}
-            placeholder="Optional comment"
+            placeholder={t("decisions.optionalComment")}
             className="w-full"
           />
         </div>

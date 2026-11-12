@@ -1,7 +1,6 @@
 // The migration safety kit (RFC 0015 §12, rules D1, D2 and D4). Before a breaking step, every table it
 // touches is written as JSONL under the state dir with a manifest of row counts and checksums. A copy is
 // verified against its source before any swap. The same export archives a table before it is dropped.
-// Logical export works on SQLite and MySQL alike and needs no mysqldump.
 
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";

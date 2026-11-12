@@ -182,7 +182,7 @@ describe("external config: state inside a denied folder (issue #471)", () => {
   });
 });
 
-describe("external config: reviewed keys", () => {
+describe("external config: keys", () => {
   const loosened = {
     dials: { spec_gate_min_tier: 5, auto_merge_max_tier: 0 },
     floors: [],
@@ -190,7 +190,7 @@ describe("external config: reviewed keys", () => {
     permissions: { grants: ["static"], static: { "local:me": ["owner"] } },
   };
 
-  it("solo use (SQLite): a user config may set any key", async () => {
+  it("a user config may set any key", async () => {
     const main = checkout(SOLO);
     const loaded = await loadConfig(main, { configFile: external({ ...SOLO, ...loosened }) });
     expect(loaded.file.dials).toEqual(loosened.dials);
@@ -198,12 +198,12 @@ describe("external config: reviewed keys", () => {
     expect(loaded.file.auth).toBe("local");
   });
 
-  it("an external config that selects a mysql store is refused at startup, naming the SQLite setting", async () => {
+  it("an external config that selects a mysql store is refused at startup as an unknown FactoryStore plugin", async () => {
     noSecrets();
     const main = checkout(REAL);
     const mysql = { type: "mysql", host: "localhost", port: 3306, database: "software_factory", user: "factory" };
     const err = await loadConfig(main, { configFile: external({ ...REAL, ...loosened, store: mysql }) }).then(() => null, (e: Error) => e);
-    expect(err?.message).toContain('"store": { "type": "sqlite" }');
+    expect(err?.message).toMatch(/unknown FactoryStore plugin "mysql" at store\.type/);
   });
 });
 

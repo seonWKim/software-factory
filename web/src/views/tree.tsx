@@ -7,6 +7,7 @@ import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
 import type { ItemRow } from "../api.js";
 import { Badge } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
+import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
@@ -102,12 +103,11 @@ export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
   return nodes.flatMap((n) => (n.children.some((c) => c.item.level !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
 }
 
-/** The counts of the summary line, over the open items: each is also a state filter. */
+/** The item counts of the summary line, over the open items: each is also a state filter. Queued is a run count (pages.tsx, useQueuedRuns). */
 export function summaryCounts(rows: readonly ItemRow[]) {
   const open = rows.filter((r) => r.level !== "closed");
   return {
     running: open.filter((r) => r.level === "running").length,
-    queued: open.filter((r) => r.level === "queued").length,
     held: open.filter(isHeld).length,
     needs: open.filter((r) => needsYou(r)).length,
   };
@@ -137,20 +137,20 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
       <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
       {waits && (
         waits.id ? (
-          <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>waits for {waits.label}</Link>
+          <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</Link>
         ) : (
-          <span className={CHIP} data-waits-for>waits for {waits.label}</span>
+          <span className={CHIP} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</span>
         )
       )}
       {run && (
         <span className="text-xs whitespace-nowrap tabular-nums" data-run>
           {run.kind} #{run.attempt}
-          {run.status === "queued" && run.position !== null && ` · queue ${run.position}`}
+          {run.status === "queued" && run.position !== null && t("tree.queue", { position: run.position })}
           {run.started_at && run.status === "running" && ` · ${ago(run.started_at, now)}`}
         </span>
       )}
       {it.change_ref !== null && (
-        it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>PR #{it.change_ref}</a> : <span className="text-xs tabular-nums">PR #{it.change_ref}</span>
+        it.change_url ? <a href={it.change_url} target="_blank" rel="noreferrer" className={cn("text-xs tabular-nums", LINK_CLASS)}>{t("tree.pr", { ref: it.change_ref })}</a> : <span className="text-xs tabular-nums">{t("tree.pr", { ref: it.change_ref })}</span>
       )}
       <span className="text-xs whitespace-nowrap tabular-nums text-text-2">{ago(it.updated_at, now)}</span>
       <span className="flex basis-full flex-wrap gap-x-2 text-xs text-text-2 sm:basis-auto sm:text-sm">
@@ -161,15 +161,19 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
   );
 }
 
+/** The left padding of a row by its depth: none at the top level, 1rem more per level, the last step for anything deeper. */
+const INDENT = ["pl-0", "pl-4", "pl-8", "pl-12", "pl-16"] as const;
+const indentFor = (level: number) => INDENT[Math.min(Math.max(level, 1), INDENT.length) - 1];
+
 function NodeItem(props: { node: TreeNode; now: number; byNumber: ReadonlyMap<number, ItemRow> }) {
   const { node } = props;
   return (
     <TreeItem id={node.item.id} textValue={node.item.title ?? node.item.source.id} className="outline-none data-[focus-visible]:ring-2 data-[focus-visible]:ring-focus">
       <TreeItemContent>
-        {({ hasChildItems, isExpanded }) => (
-          <div className="flex items-start gap-1 border-b border-border px-1" style={{ paddingLeft: "calc(var(--tree-item-level, 1) * 1rem - 1rem)" }}>
+        {({ hasChildItems, isExpanded, level }) => (
+          <div className={cn("flex items-start gap-1 border-b border-border pr-1", indentFor(level))}>
             {hasChildItems ? (
-              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? "Collapse" : "Expand"}>
+              <Button slot="chevron" className="mt-1 w-5 shrink-0 text-text-2" aria-label={isExpanded ? t("tree.collapse") : t("tree.expand")}>
                 {isExpanded ? "▾" : "▸"}
               </Button>
             ) : (
@@ -222,7 +226,7 @@ export function ItemsTree({ nodes, rows, now, expanded, onExpanded }: {
   }
   return (
     <Tree
-      aria-label="Work items"
+      aria-label={t("tree.label")}
       selectionMode="none"
       expandedKeys={expanded}
       onExpandedChange={(keys) => onExpanded([...keys].map(String))}

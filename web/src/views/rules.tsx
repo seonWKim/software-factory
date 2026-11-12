@@ -7,6 +7,8 @@ import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Textarea } from "../components/ui/textarea.js";
+import type { MessageKey } from "../i18n/en.js";
+import { t } from "../i18n/index.js";
 
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571): the owner's tacit ledger entries
 // waiting for a verdict (candidate classes `C-…` and structure proposals `P-…`), each with its title, state and ID, read
@@ -20,18 +22,18 @@ import { Textarea } from "../components/ui/textarea.js";
 
 const muted = "text-xs text-pretty text-text-2";
 
-const STATE_LABEL: Record<string, string> = { open: "Open", pending: "Pending", held: "Held" };
+const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pending: "rules.statePending", held: "rules.stateHeld" };
 /** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal takes none. */
 const isClass = (id: string): boolean => id.startsWith("C-");
-const VERDICTS: readonly { verdict: RuleVerdict; label: string }[] = [
-  { verdict: "promote", label: "Promote" },
-  { verdict: "hold", label: "Hold" },
-  { verdict: "reject", label: "Reject" },
+const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey }[] = [
+  { verdict: "promote", label: "rules.promote" },
+  { verdict: "hold", label: "rules.hold" },
+  { verdict: "reject", label: "rules.reject" },
 ];
-const CONSEQUENCE: Record<RuleVerdict, string> = {
-  promote: "Promoting makes this rule part of every run's prompt from the next run on.",
-  hold: "Holding keeps the entry in the ledger without a decision.",
-  reject: "Rejecting drops the entry: it never reaches a prompt.",
+const CONSEQUENCE: Record<RuleVerdict, MessageKey> = {
+  promote: "rules.consequencePromote",
+  hold: "rules.consequenceHold",
+  reject: "rules.consequenceReject",
 };
 
 /** The verdict dialog: a reason first, and for promote of a class the rule's wording, prefilled with its title. */
@@ -52,7 +54,7 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
         setError(r.error);
         return;
       }
-      announceStatus(`${VERDICTS.find((v) => v.verdict === verdict)!.label} sent for ${entry.id}.`);
+      announceStatus(t("rules.sent", { label: t(VERDICTS.find((v) => v.verdict === verdict)!.label), id: entry.id }));
       await client.invalidateQueries({ queryKey: [API.rules] });
       onClose();
     } catch (err) {
@@ -61,12 +63,12 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
       setBusy(false);
     }
   };
-  const label = VERDICTS.find((v) => v.verdict === verdict)!.label;
+  const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
-      title={`${label} ${entry.id}`}
-      consequence={CONSEQUENCE[verdict]}
-      confirmLabel={`Send ${label.toLowerCase()}`}
+      title={t("rules.dialogTitle", { label, id: entry.id })}
+      consequence={t(CONSEQUENCE[verdict])}
+      confirmLabel={t("rules.send", { label: label.toLowerCase() })}
       confirmDisabled={busy || reason.trim() === "" || (promote && wording === "")}
       danger={verdict === "reject"}
       error={error}
@@ -74,12 +76,12 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
       onClose={onClose}
     >
       {promote && (
-        <Field label="Rule wording" htmlFor={`${entry.id}-wording`} help="The ledger stores this wording as the promoted rule.">
-          <Textarea id={`${entry.id}-wording`} aria-label="Rule wording" className="min-h-20" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} />
+        <Field label={t("rules.wording")} htmlFor={`${entry.id}-wording`} help={t("rules.wordingHelp")}>
+          <Textarea id={`${entry.id}-wording`} aria-label={t("rules.wording")} className="min-h-20" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} />
         </Field>
       )}
-      <Field label="Why?" htmlFor={`${entry.id}-reason`}>
-        <Textarea id={`${entry.id}-reason`} aria-label="Reason" className="min-h-16" value={reason} maxLength={1000} onChange={(e) => setReason(e.target.value)} />
+      <Field label={t("rules.why")} htmlFor={`${entry.id}-reason`}>
+        <Textarea id={`${entry.id}-reason`} aria-label={t("rules.reason")} className="min-h-16" value={reason} maxLength={1000} onChange={(e) => setReason(e.target.value)} />
       </Field>
     </Dialog>
   );
@@ -90,7 +92,7 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
   return (
     <li data-rule={entry.id} className="space-y-2 p-3">
       <div className="flex flex-wrap items-baseline gap-2">
-        <Badge>{STATE_LABEL[entry.state] ?? entry.state}</Badge>
+        <Badge>{STATE_LABEL[entry.state] ? t(STATE_LABEL[entry.state]!) : entry.state}</Badge>
         <span className="min-w-0 font-mono text-xs break-all text-text-2">{entry.id}</span>
       </div>
       <p data-rule-title className="text-sm text-pretty break-words whitespace-pre-wrap">
@@ -100,7 +102,7 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
         <ButtonRow className="pt-1">
           {VERDICTS.map((v) => (
             <Button key={v.verdict} variant={v.verdict === "reject" ? "danger" : "secondary"} onClick={() => setOpen(v.verdict)}>
-              {v.label}
+              {t(v.label)}
             </Button>
           ))}
         </ButtonRow>
@@ -125,7 +127,7 @@ function LedgerOff({ view }: { view: RulesView }) {
         setError(r.error);
         return;
       }
-      announceStatus("The tacit ledger is on.");
+      announceStatus(t("rules.ledgerOn"));
       await client.invalidateQueries({ queryKey: [API.rules] });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -135,18 +137,21 @@ function LedgerOff({ view }: { view: RulesView }) {
   };
   return (
     <div className="space-y-3">
-      <Empty>No tacit ledger is on, so there are no rules to review.</Empty>
+      <Empty>{t("rules.ledgerOff")}</Empty>
       {home !== null && home.missing === null && (
         <p data-home className="text-sm text-pretty break-words">
-          Found your agents home at <span className="font-mono break-all">{home.path}</span>
+          {t("rules.homeFound")}<span className="font-mono break-all">{home.path}</span>
         </p>
       )}
       {home !== null && home.missing !== null && (
         <p data-home className="text-sm text-pretty break-words">
-          No agents home at <span className="font-mono break-all">{home.path}</span>:{" "}
-          <span className="font-mono break-all">{home.missing}</span> is missing or not executable. Put the tacit and evolve CLIs in{" "}
-          <span className="font-mono break-all">{home.path}/bin</span>, or start the factory and <code>factory ui</code> with AGENTS_HOME set to
-          the folder that holds them.
+          {t("rules.homeMissing")}<span className="font-mono break-all">{home.path}</span>:{" "}
+          <span className="font-mono break-all">{home.missing}</span>
+          {t("rules.homeMissingNext")}
+          <span className="font-mono break-all">{`${home.path}/bin`}</span>
+          {t("rules.homeMissingStart")}
+          <code>{t("rules.factoryUi")}</code>
+          {t("rules.homeMissingEnd")}
         </p>
       )}
       {view.judge !== null && (
@@ -157,9 +162,9 @@ function LedgerOff({ view }: { view: RulesView }) {
       {view.turn_on !== null && view.csrf_token !== null && (
         <>
           <Button variant="primary" disabled={busy} onClick={() => void turnOn(view.csrf_token!, view.turn_on!)}>
-            Turn on
+            {t("rules.turnOn")}
           </Button>
-          <p className={muted}>It applies with no restart. Turn it off again under Settings, Integrations.</p>
+          <p className={muted}>{t("rules.turnOnHint")}</p>
         </>
       )}
       {error !== null && (
@@ -179,10 +184,10 @@ export function RulesPage() {
   if (!v.enabled) return <LedgerOff view={v} />;
   const token = v.judge === null ? v.csrf_token : null;
   return (
-    <Section title="Rules waiting for you" count={v.entries.length}>
+    <Section title={t("rules.waiting")} count={v.entries.length}>
       {v.judge !== null && (
         <p role="note" className="mb-2 rounded-control bg-pill-warn-bg px-3 py-2 text-sm text-pretty break-words text-pill-warn-fg">
-          Read-only: {v.judge}
+          {t("rules.readOnly")}{v.judge}
         </p>
       )}
       {v.error !== null && (
@@ -191,17 +196,16 @@ export function RulesPage() {
         </p>
       )}
       {v.entries.length === 0 ? (
-        v.error === null && <Empty>Nothing waits for a verdict: new pushbacks show here once the ledger has them.</Empty>
+        v.error === null && <Empty>{t("rules.empty")}</Empty>
       ) : (
-        <ul aria-label="Rules waiting for you" className="divide-y divide-border rounded-control border border-border">
+        <ul aria-label={t("rules.waiting")} className="divide-y divide-border rounded-control border border-border">
           {v.entries.map((e) => (
             <RuleCard key={e.id} entry={e} token={token} />
           ))}
         </ul>
       )}
       <p className={`mt-3 ${muted}`}>
-        A promoted rule reaches every run's prompt under Learned rules, with its exceptions and scope. The ledger lives in your agents
-        home; this page only reads it and sends your verdicts.
+        {t("rules.footer")}
       </p>
     </Section>
   );

@@ -15,8 +15,7 @@ export const CODE_ROOT = join(import.meta.dirname, "..", "..");
 
 export const MIGRATIONS_TABLE = "runtime_schema_migrations";
 
-const CREATE: Record<MigrationDb["dialect"], string> = {
-  sqlite: `CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
+const CREATE = `CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
     id            TEXT PRIMARY KEY,
     component     TEXT NOT NULL,
     change_kind   TEXT NOT NULL,
@@ -24,17 +23,7 @@ const CREATE: Record<MigrationDb["dialect"], string> = {
     backup_dir    TEXT,
     started_at    TEXT NOT NULL,
     finished_at   TEXT NOT NULL
-  )`,
-  mysql: `CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
-    id            VARCHAR(191) NOT NULL PRIMARY KEY,
-    component     VARCHAR(64) NOT NULL,
-    change_kind   VARCHAR(16) NOT NULL,
-    checksum      CHAR(64) NOT NULL,
-    backup_dir    TEXT,
-    started_at    CHAR(24) NOT NULL,
-    finished_at   CHAR(24) NOT NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
-};
+  )`;
 
 let cached: Promise<Migration[]> | null = null;
 
@@ -56,11 +45,7 @@ export function discoverMigrations(root: string = CODE_ROOT): Promise<Migration[
 }
 
 async function applied(db: MigrationDb): Promise<Set<string>> {
-  const has =
-    db.dialect === "sqlite"
-      ? await db.all("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?", [MIGRATIONS_TABLE])
-      : await db.all("SELECT 1 AS x FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?", [MIGRATIONS_TABLE]);
-  if (has.length === 0) return new Set();
+  if (!(await tableExists(db, MIGRATIONS_TABLE))) return new Set();
   return new Set((await db.all(`SELECT id FROM ${MIGRATIONS_TABLE}`)).map((r) => String(r.id)));
 }
 
@@ -102,7 +87,7 @@ export interface ApplyOptions {
 export async function applyMigrations(db: MigrationDb, opts: ApplyOptions): Promise<string[]> {
   const pending = await pendingMigrations(db, opts.migrations, opts.contract);
   if (pending.length === 0) return [];
-  await db.run(CREATE[db.dialect]);
+  await db.run(CREATE);
   const out: string[] = [];
   for (const m of pending) {
     const started_at = opts.now();

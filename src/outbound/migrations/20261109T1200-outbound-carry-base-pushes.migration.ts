@@ -21,7 +21,6 @@ export default defineMigration({
       const args = { base_ref: base, merge_sha: sha, message: `Merge origin/${base} into ${base}\n\nBefore the base push of work item ${id}.` };
       await insertOrSkip(
         db,
-        db.dialect,
         "outbound_actions (work_item_id, source_type, target, action, args, intent_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [id, target.type, JSON.stringify(target), "push_base", JSON.stringify(args), `push_base:${id}:${sha}`, String(p.created_at)],
       );

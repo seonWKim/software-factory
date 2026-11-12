@@ -243,7 +243,7 @@ describe("Tasks page", () => {
   });
 
   describe("quick add", () => {
-    const field = () => screen.getByPlaceholderText("Add a task, e.g. pay rent friday p1 #home") as HTMLInputElement;
+    const field = () => screen.getByPlaceholderText("e.g. rent friday p1 #home") as HTMLInputElement;
     const type = (v: string) => fireEvent.change(field(), { target: { value: v } });
     const enter = () => fireEvent.submit(field().closest("form")!);
 
@@ -304,6 +304,80 @@ describe("Tasks page", () => {
       await show();
       expect(document.body.textContent).not.toContain("factory task add");
       expect(document.body.textContent).toContain("Build this sends a task to the factory.");
+    });
+  });
+
+  describe("polish (UI review)", () => {
+    const BUILD = "Build this sends a task to the factory.";
+    const ev = (id: string): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: true, time: null });
+
+    it("the view switcher has no bottom margin, and the section shows the count only, named by the tab", async () => {
+      await show();
+      expect(screen.getByRole("group", { name: "Task view" }).className.split(" ")).not.toContain("mb-6");
+      const section = screen.getByRole("region", { name: "Today" });
+      expect(section.querySelector("h2")).toBeNull();
+      expect(section.querySelector("span.tabular-nums")!.textContent).toBe("2");
+      tab("Inbox");
+      expect(screen.getByRole("region", { name: "Inbox" })).not.toBeNull();
+    });
+
+    it("every empty tab shows its message as the title and Add one above (press q), which focuses the quick-add field", async () => {
+      current = view({ inbox: [], today: { overdue: [], due: [] }, upcoming: [], projects: [] });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
+      const titles: Record<string, string> = {
+        Inbox: "No open task without a due date.",
+        Today: "Nothing is due, overdue or on the calendar today.",
+        Upcoming: "Nothing is due or on the calendar from today through the next 7 days.",
+        Project: "No open task.",
+      };
+      for (const [name, title] of Object.entries(titles)) {
+        tab(name);
+        await screen.findByText(title, {}, SLOW);
+        const action = screen.getByRole("button", { name: "Add one above (press q)" });
+        (document.activeElement as HTMLElement).blur();
+        fireEvent.click(action);
+        expect(document.activeElement).toBe(screen.getByLabelText("Add a task"));
+      }
+    });
+
+    it("shows the Build line only when the tab lists a task and can_build is true", async () => {
+      await show();
+      expect(document.body.textContent).toContain(BUILD);
+      cleanup();
+      current = view({ can_build: false });
+      await show();
+      expect(document.body.textContent).not.toContain(BUILD);
+      cleanup();
+      current = view({ today: { overdue: [], due: [ev("e1")] } });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
+      await screen.findByText("event e1", {}, SLOW);
+      expect(document.body.textContent).not.toContain(BUILD);
+    });
+
+    it("hides the Build line while loading and on an empty tab", async () => {
+      current = view({ inbox: [] });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
+      expect(document.body.textContent).not.toContain(BUILD);
+      await screen.findByRole("list", { name: "Overdue" }, SLOW);
+      expect(document.body.textContent).toContain(BUILD);
+      tab("Inbox");
+      expect(screen.getByRole("button", { name: "Add one above (press q)" })).not.toBeNull();
+      expect(document.body.textContent).not.toContain(BUILD);
+    });
+
+    it("the overdue and event labels are StatusBadges", async () => {
+      current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10" })], due: [ev("e1")] } });
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
+      await screen.findByRole("list", { name: "Overdue" }, SLOW);
+      const overdue = within(card("tk_late")).getByText("Overdue");
+      expect(overdue.className).toContain("rounded-pill");
+      expect(overdue.getAttribute("data-level")).toBe("stuck");
+      const event = within(document.querySelector<HTMLElement>("[data-event]")!).getByText("Event");
+      expect(event.className).toContain("rounded-pill");
     });
   });
 });

@@ -6,6 +6,7 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CONSOLE_EVENTS, ConsoleLog } from "./console.mjs";
 
 const MAC_APPS = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -176,6 +177,7 @@ export class Page {
   #inflight = new Map(); // requestId -> loaderId of the document that sent it
   #lastNetwork = Date.now();
   #loader = null;
+  #console = new ConsoleLog();
 
   static async connect(url) {
     const ws = new WebSocket(url);
@@ -184,7 +186,7 @@ export class Page {
       ws.onerror = () => reject(new Error(`could not connect to ${url}`));
     });
     const page = new Page(ws);
-    await Promise.all([page.send("Page.enable"), page.send("Runtime.enable"), page.send("Network.enable")]);
+    await Promise.all([page.send("Page.enable"), page.send("Runtime.enable"), page.send("Network.enable"), page.send("Log.enable")]);
     return page;
   }
 
@@ -211,6 +213,13 @@ export class Page {
     const done = (p) => (this.#inflight.delete(p.requestId), (this.#lastNetwork = Date.now()));
     this.on("Network.loadingFinished", done);
     this.on("Network.loadingFailed", done);
+    // Console errors and failed requests, per page load: goto() starts a fresh record, takeConsole() reads it.
+    for (const event of CONSOLE_EVENTS) this.on(event, (p) => this.#console.record(event, p));
+  }
+
+  /** Console errors and failed requests recorded since the last goto() or takeConsole(), one line each. */
+  takeConsole() {
+    return this.#console.take();
   }
 
   send(method, params = {}) {
@@ -247,6 +256,7 @@ export class Page {
   async goto(url, { idle_ms = 400, max_ms = 3_000 } = {}) {
     const loaded = this.once("Page.loadEventFired");
     this.#inflight.clear();
+    this.#console.take();
     const { loaderId, errorText } = await this.send("Page.navigate", { url });
     if (errorText) throw new Error(`navigating to ${url}: ${errorText}`);
     this.#loader = loaderId;

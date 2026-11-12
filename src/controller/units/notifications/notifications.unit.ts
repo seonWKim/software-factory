@@ -69,6 +69,9 @@ export class NotificationsUnit {
   }
 }
 
+/** Where a `notify` intent for `to` goes: the channel's adapter type and the neutral notify ref. */
+export const notifyTarget = (to: Notifier): NewAction["target"] => ({ type: to.type, id: NOTIFY_REF, link: "" });
+
 /** One notice's intent for one channel: neutral args, keyed on (item, wait key, channel). */
 function intent(n: NewNotice, items: ReadonlyMap<string, Item>, to: Notifier): NewAction {
   const item = items.get(n.work_item_id);
@@ -76,7 +79,7 @@ function intent(n: NewNotice, items: ReadonlyMap<string, Item>, to: Notifier): N
   const wait = (WAIT_KINDS as readonly string[]).includes(n.kind) ? (n.kind as (typeof WAIT_KINDS)[number]) : null;
   return {
     action: "notify",
-    target: { type: to.type, id: NOTIFY_REF, link: "" },
+    target: notifyTarget(to),
     work_item_id: n.work_item_id === SUMMARY_ITEM ? null : n.work_item_id,
     key: `notify:${n.work_item_id}:${n.wait_key}:${to.channel}`,
     args: {

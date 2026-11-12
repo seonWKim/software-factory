@@ -253,10 +253,15 @@ function rateLimitText(pauses: PausesView | undefined): string {
   return p ? t("items.ratePaused", { time: p.ends_at }) : t("items.rateOk");
 }
 
+/** The queued runs: the one source of the Queue page's list and count and of Work's "N queued" (the same runs as overview.queued). */
+function useQueuedRuns() {
+  return useApi<{ queue: QueueRow[] }>(API.queue);
+}
+
 /** The tree's summary line; each count is a button that sets the matching state filter. */
-function Summary({ rows, rateLimit, onFilter }: { rows: readonly ItemRow[]; rateLimit: string; onFilter: (s: string) => void }) {
+function Summary({ rows, queued, rateLimit, onFilter }: { rows: readonly ItemRow[]; queued: number | undefined; rateLimit: string; onFilter: (s: string) => void }) {
   const c = summaryCounts(rows);
-  const parts: [string, number, string][] = [[t("items.running"), c.running, "running"], [t("items.queued"), c.queued, "queued"], [t("items.heldLower"), c.held, HELD], [t("items.needs"), c.needs, "needs"]];
+  const parts: [string, number | string, string][] = [[t("items.running"), c.running, "running"], [t("items.queued"), queued ?? "…", "queued"], [t("items.heldLower"), c.held, HELD], [t("items.needs"), c.needs, "needs"]];
   return (
     <p data-testid="summary" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
       {parts.map(([label, n, filter]) => (
@@ -295,6 +300,7 @@ export function ItemsPage() {
   const items = useApi<Items>(query ? `${API.items}?${query}` : API.items);
   const overview = useApi<Overview>(API.overview);
   const pauses = useApi<PausesView>(API.pauses);
+  const queue = useQueuedRuns();
   const rows = items.data?.items ?? [];
   const filter: TreeFilter = { state, q, showClosed };
   const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed]);
@@ -325,7 +331,7 @@ export function ItemsPage() {
           </ButtonRow>
         )}
       </div>
-      {tree && items.data && <Summary rows={rows} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
+      {tree && items.data && <Summary rows={rows} queued={queue.data?.queue.length} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
       <ButtonRow role="group" aria-label={t("items.filterByState")} className="mb-3">
         {[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => (
           <Button key={s ?? "all"} size="sm" aria-pressed={state === s} onClick={() => setState(s)} className="tabular-nums">
@@ -646,7 +652,7 @@ export function RunnersPage() {
 
 export function QueuePage() {
   const now = useNow();
-  const queue = useApi<{ queue: QueueRow[] }>(API.queue);
+  const queue = useQueuedRuns();
   const items = useApi<Items>(API.items);
   const map = useMemo(() => byId(items.data?.items), [items.data]);
   return (

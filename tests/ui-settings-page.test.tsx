@@ -39,6 +39,7 @@ const view: SettingsView = {
     row("models", { kind: "models", value: '{"cheap":"haiku","standard":"sonnet","strong":"opus"}', source: "default", file_value: null, applies_at: "the next run that starts" }),
     row("model_by", { kind: "json", value: MODEL_BY, file_value: MODEL_BY, default_value: MODEL_BY, applies_at: "the next run that starts" }),
     row("hold_policy", { kind: "json", value: '{"mode":"hold"}', source: "default", file_value: null, default_value: '{"mode":"hold"}', applies_at: "the next claim" }),
+    row("message_style", { kind: "text", value: '"Short."', file_value: '"Short."', default_value: '""' }),
     row("phases_auto_approve", { kind: "boolean", value: "false", source: "default", file_value: null, applies_at: "the next phase spec triage writes" }),
     row("retry_max_ms", { value: "1800000", file_value: "1800000", default_value: "1800000", applies_at: "the next retry" }),
     row("run_timeout_ms", { value: "5400000", source: "override", file_value: "3600000", default_value: "3600000", applies_at: "the next run that starts" }),
@@ -74,7 +75,10 @@ beforeEach(() => {
   }));
 });
 
+let afterEachReset: () => void = () => undefined;
 afterEach(() => {
+  afterEachReset();
+  afterEachReset = () => undefined;
   cleanup();
   vi.unstubAllGlobals();
 });
@@ -89,12 +93,13 @@ const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 
 describe("Settings page", () => {
-  it("has a Commands from the page section (#page-commands): who commands act as, and that ui.user_id is what to set", async () => {
+  it("has a Commands from the page section (#page-commands): who commands act as, and and no how-to-act sentence", async () => {
     await show();
     const section = await screen.findByRole("region", { name: "Commands from the page" });
     expect(section.closest("#page-commands")).not.toBeNull();
-    await waitFor(() => expect(section.textContent).toContain("Item commands act as local:me@example.com (from environment)"));
-    expect(section.textContent).toContain("set ui.user_id in factory.config.json");
+    await waitFor(() => expect(section.textContent).toContain("Commands act as local:me@example.com (from environment)"));
+    expect(section.textContent).not.toContain("ui.user_id");
+    expect(section.textContent).not.toContain("another user");
   });
 
   it("says commands are off when the session has no actor", async () => {
@@ -113,10 +118,10 @@ describe("Settings page", () => {
     expect(loops.textContent).toContain("the controller's next decision");
     const tick = rowOf(table, "tick_ms");
     expect(tick.textContent).toContain("default");
-    expect(tick.textContent).toContain("not set (default 2000)");
+    expect(tick.textContent).toContain("default: 2s");
     expect(tick.textContent).toContain("the next tick");
     // A long unbroken value may break anywhere, so the table fits its card at 1280 px and Reset keeps its 12 px.
-    expect(within(tick).getByText("not set (default 2000)").className.split(" ")).toContain("wrap-anywhere");
+    expect(within(tick).getByText("2s", { selector: "span.font-mono" }).className.split(" ")).toContain("wrap-anywhere");
     // Reset only where an override exists.
     expect(within(loops).queryByRole("button", { name: "Reset max_loops" })).not.toBeNull();
     expect(within(tick).queryByRole("button", { name: /^Reset/ })).toBeNull();
@@ -129,7 +134,7 @@ describe("Settings page", () => {
     expect(sw.getAttribute("aria-checked")).toBe("false");
     // The project value of a per-project key, with its own reset.
     const att = rowOf(table, "max_attempts");
-    expect(att.textContent).toContain("for github.com/o/r: 2 (override)");
+    expect(att.textContent).toContain("This project: 2 (override)");
     expect(within(att).getByRole("button", { name: "Reset max_attempts for o/r" })).not.toBeNull();
   });
 
@@ -137,7 +142,7 @@ describe("Settings page", () => {
     const table = await show();
     const models = rowOf(table, "models");
     const grid = models.querySelector<HTMLElement>("[data-tiers]")!;
-    expect(grid.className.split(" ")).toEqual(expect.arrayContaining(["grid", "grid-cols-[auto_7rem]", "gap-x-2", "gap-y-3"]));
+    expect(grid.className.split(" ")).toEqual(expect.arrayContaining(["grid", "grid-cols-[max-content_7rem]", "gap-x-2", "gap-y-3"]));
     // Each tier is a label cell then its field cell, so the three fields share one column and start at one x.
     expect([...grid.children].map((c) => c.tagName)).toEqual(["LABEL", "INPUT", "LABEL", "INPUT", "LABEL", "INPUT"]);
     for (const t of ["cheap", "standard", "strong"]) expect(within(grid).getByLabelText(`models ${t}`).className).toContain("w-full");
@@ -259,7 +264,89 @@ describe("Settings page", () => {
     // A short object is listed in full, with no summary; its default too.
     const hold = rowOf(table, "hold_policy");
     expect(hold.querySelector("summary")).toBeNull();
-    expect(hold.querySelectorAll("td")[3]!.textContent).toBe("not set; default:modehold");
+    expect(hold.querySelectorAll("td")[3]!.textContent).toBe("default: modehold");
+  });
+
+  it("shows a millisecond key's File value like its Value (30m), and an empty File value or default as empty", async () => {
+    const table = await show();
+    expect(rowOf(table, "retry_max_ms").querySelectorAll("td")[3]!.textContent).toBe("30m");
+    expect(rowOf(table, "retry_max_ms").textContent).not.toContain("1800000 ");
+    // message_style's file value is set; an empty default shows as one form: default: empty.
+    const style = rowOf(table, "message_style");
+    expect(style.querySelectorAll("td")[3]!.textContent).toBe('"Short."');
+    view.keys.find((k) => k.key === "message_style")!.file_value = null;
+    cleanup();
+    const again = await show();
+    expect(rowOf(again, "message_style").querySelectorAll("td")[3]!.textContent).toBe("default: empty");
+    view.keys.find((k) => k.key === "message_style")!.file_value = '"Short."';
+  });
+
+  it("shows the message_style example once: a paragraph, no placeholder", async () => {
+    const table = await show();
+    const field = within(rowOf(table, "message_style")).getByLabelText("message_style") as HTMLTextAreaElement;
+    expect(field.placeholder).toBe("");
+    expect(document.body.textContent!.split("Short sentences. Plain words, no jargon. Lead with the decision.")).toHaveLength(2);
+  });
+
+  it("labels the per-project line: the global value when there is no override", async () => {
+    const table = await show();
+    const other = view.keys.find((k) => k.key === "max_diff_lines");
+    expect(other).toBeUndefined();
+    cleanup();
+    view.keys.push(row("max_diff_lines", { project_settable: true }));
+    const again = await show();
+    expect(rowOf(again, "max_diff_lines").textContent).toContain("This project: uses the global value");
+    view.keys.pop();
+    expect(table).toBeTruthy();
+  });
+
+  it("hold_policy is a select (hold, start, wait) with the server mode's meaning in each label; wait adds minutes, starting at 20", async () => {
+    const table = await show();
+    const hold = rowOf(table, "hold_policy");
+    const select = within(hold).getByLabelText("hold_policy") as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(["hold", "start", "wait"]);
+    expect([...select.options].map((o) => o.textContent)).toEqual([
+      "hold: keeps the run queued until /approve",
+      "start: claims the run at once (mode run)",
+      "wait: claims the run after its minutes (mode run_after_minutes)",
+    ]);
+    expect(hold.querySelector("textarea")).toBeNull();
+    expect(within(hold).queryByLabelText("hold_policy minutes")).toBeNull();
+    // start writes {"mode":"run"}.
+    fireEvent.change(select, { target: { value: "start" } });
+    fireEvent.click(within(hold).getByRole("button", { name: "Save hold_policy" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run"}' });
+    // wait shows minutes at 20 and writes run_after_minutes with them.
+    fireEvent.change(select, { target: { value: "wait" } });
+    const minutes = within(hold).getByLabelText("hold_policy minutes") as HTMLInputElement;
+    expect(minutes.value).toBe("20");
+    fireEvent.change(minutes, { target: { value: "5" } });
+    fireEvent.click(within(hold).getByRole("button", { name: "Save hold_policy" }));
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run_after_minutes","minutes":5}' });
+  });
+
+  it("hold_policy shows a server refusal next to the field", async () => {
+    answer = { status: 400, body: { ok: false, error: "minutes must be a positive integer" } };
+    const table = await show();
+    const hold = rowOf(table, "hold_policy");
+    fireEvent.change(within(hold).getByLabelText("hold_policy"), { target: { value: "wait" } });
+    fireEvent.change(within(hold).getByLabelText("hold_policy minutes"), { target: { value: "0" } });
+    fireEvent.click(within(hold).getByRole("button", { name: "Save hold_policy" }));
+    expect((await within(hold).findByRole("alert")).textContent).toContain("minutes must be a positive integer");
+  });
+
+  it("in the card layout Value sits under Key and every other cell has its label", async () => {
+    const wide = window.innerWidth;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    afterEachReset = () => Object.defineProperty(window, "innerWidth", { configurable: true, value: wide });
+    await show().catch(() => undefined);
+    const card = (await screen.findByRole("list", { name: "Settable keys" })).querySelector<HTMLElement>('li[data-key="max_loops"]')!;
+    const [title, under, rest] = [...card.children] as HTMLElement[];
+    expect(title!.textContent).toContain("max_loops");
+    expect(within(under!).getByLabelText("max_loops")).not.toBeNull();
+    expect([...rest!.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Source", "File value", "Applies at", "Reset"]);
   });
 
   it("puts the pending proposals first on the page", async () => {

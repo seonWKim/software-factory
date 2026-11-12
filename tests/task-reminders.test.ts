@@ -17,7 +17,8 @@ import { cleanScanner, config, silent } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
 
 // Task reminders (design 02-tasks, schedule a task): the task-reminders unit sends one reminder at a task's time, by
-// the injected Clock, as a desktop notice only (owner answer 3), once, through the conditional write of reminded_at.
+// the injected Clock, once, through the conditional write of reminded_at, as a notice on the desktop app and an intent
+// on every channel notify_channels lists (owner answer 1).
 
 const USER = "local:dev@example.com" as UserId;
 /** A local-time instant on 2026-11-13, so the tests hold in any time zone. */
@@ -96,6 +97,15 @@ describe("a reminder at the task's time (FakeClock)", () => {
     expect(await notices(store)).toEqual(first);
   });
 
+  it("a task whose time passed more than the 5-minute poll window ago gets no reminder", async () => {
+    const { store, clock } = await setup(local(15, 5));
+    await store.addTask(task({ id: "tk_edge" }));
+    await store.addTask(task({ id: "tk_late", due_time: "14:59" }));
+    await controller(store, clock).poll();
+    expect((await notices(store)).map((n) => n.work_item_id)).toEqual(["tk_edge"]);
+    expect(await reminded(store, "tk_late")).toBeNull();
+  });
+
   it("a moved task is reminded again at its new time; an untimed task and one past the lookback never are", async () => {
     const { store, clock } = await setup(local(15, 1));
     await store.addTask(task());
@@ -143,8 +153,10 @@ describe("a reminder at the task's time (FakeClock)", () => {
   });
 });
 
-describe("a reminder reaches only the desktop app's notices (owner answer 3)", () => {
-  it("is listed by GET /api/v1/notices, and nothing goes to Slack or the outbox, also with Slack in notify_channels", async () => {
+const intents = (store: SqlFactoryStore) => store.db.all("SELECT work_item_id, source_type, action, args, intent_key FROM outbound_actions ORDER BY seq");
+
+describe("a reminder goes through the notice path, to every channel notify_channels lists (owner answer 1)", () => {
+  it("is listed by GET /api/v1/notices and writes one notify intent per notify channel, once", async () => {
     const { store, clock } = await setup(local(15));
     await store.addTask(task());
     const s = slack();
@@ -152,7 +164,23 @@ describe("a reminder reaches only the desktop app's notices (owner answer 3)", (
     const r = await respond({ store, clock } as unknown as ApiDeps, { method: "GET", url: "/api/v1/notices", host: "127.0.0.1" });
     const body = JSON.parse(r.body) as { notices: { work_item_id: string; kind: string }[] };
     expect(body.notices.map((n) => [n.work_item_id, n.kind])).toEqual([["tk_1", "task"]]);
-    expect(await store.db.all("SELECT seq FROM outbound_actions")).toEqual([]);
-    expect(s.calls).toEqual([]);
+    const [row, ...rest] = await intents(store);
+    expect(rest).toEqual([]);
+    // No work item ID: a task is no item, so the line links no item page and a reply under it acts on none.
+    expect(row).toMatchObject({ work_item_id: null, source_type: "slack", action: "notify", intent_key: "notify:tk_1:task:2026-11-13T15:00:slack" });
+    expect(JSON.parse(String(row!.args))).toMatchObject({ kind: "needs_you", work_item_id: null, title: "call the bank", reason: "task due at 15:00", count: 1 });
+    // A second poll, or a second replica, writes no second intent.
+    clock.advance(60_000);
+    await controller(store, clock, [s]).poll();
+    await controller(store, clock, [s]).poll();
+    expect((await intents(store)).length).toBe(1);
+  });
+
+  it("writes no intent when notify_channels lists no channel; the desktop notice is still stored", async () => {
+    const { store, clock } = await setup(local(15));
+    await store.addTask(task());
+    await controller(store, clock).poll();
+    expect(await intents(store)).toEqual([]);
+    expect((await notices(store)).map((n) => n.kind)).toEqual(["task"]);
   });
 });

@@ -12,7 +12,7 @@ export interface SqlExecutor {
 
 export interface SqlDialect {
   /** Which SQL the driver speaks; migrations and the sql bus pick their DDL by it. */
-  readonly name: "sqlite" | "mysql";
+  readonly name: "sqlite";
   /** Column that orders rows by insertion, as a tie-break after timestamps. */
   readonly seq: string;
   /** SELECT suffixes. Empty where the driver's transactions already exclude each other. */
