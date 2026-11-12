@@ -15,7 +15,9 @@ const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesP
 
 // The Rules page (issue #571): each pending entry with its title, state and ID; Promote, Hold and Reject ask for a
 // reason in a dialog before they send; Promote of a class (C-) sends the owner's wording as the rule, Promote of a
-// proposal (P-) sends none; with the plugin none, one action explains how to turn on agents-home.
+// proposal (P-) sends none. With the ledger off (design 08-settings): the agents home found gives one line and one
+// primary Turn on, which writes the `integrations` entry through POST /api/v1/settings and loads the rules with no
+// reload; not found, the page names the missing CLI and how to set AGENTS_HOME.
 
 const TOKEN = "tok_rules";
 const SLOW = { timeout: 5_000 };
@@ -25,6 +27,8 @@ const view = (over: Partial<RulesView> = {}): RulesView => ({
   error: null,
   csrf_token: TOKEN,
   judge: null,
+  home: null,
+  turn_on: null,
   entries: [
     { id: "C-012", title: "Keep existing CLI flags.", state: "pending" },
     { id: "P-0007", title: "Split the review prompt", state: "held" },
@@ -44,6 +48,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, init });
+      // The settings route's answer to Turn on: the ledger is on from the next GET.
+      if (url === "/api/v1/settings" && answer.status === 200) current = view();
       return json(answer.status, answer.body);
     }
     if (url === "/api/v1/rules") return json(200, current);
@@ -135,16 +141,62 @@ describe("Rules page", () => {
     expect(within(card("C-012")).queryByRole("button")).toBeNull();
   });
 
-  it("with the plugin none: an empty state with one action that explains how to enable agents-home", async () => {
-    current = { enabled: false, entries: [], error: null, csrf_token: null, judge: null };
+  const off = (over: Partial<RulesView> = {}): RulesView =>
+    view({ enabled: false, entries: [], home: { path: "/Users/me/.agents", missing: null }, turn_on: '{"tacit":"agents-home"}', ...over });
+  const headings = () => screen.queryAllByRole("heading").map((h) => h.textContent);
+
+  it("ledger off, home found: one line names the home and one primary Turn on is the only button", async () => {
+    current = off();
     await show();
-    const action = await screen.findByRole("button", { name: "How to turn on the ledger" }, SLOW);
-    expect(screen.getAllByRole("button")).toEqual([action]);
-    expect(action.getAttribute("aria-expanded")).toBe("false");
-    // 12 px (space-y-3) between the empty box and its button.
-    expect(action.parentElement!.className.split(" ")).toContain("space-y-3");
-    fireEvent.click(action);
-    expect(action.getAttribute("aria-expanded")).toBe("true");
-    expect(document.getElementById("rules-enable")!.textContent).toContain('"tacit": "agents-home"');
+    const turnOn = await screen.findByRole("button", { name: "Turn on" }, SLOW);
+    expect(screen.getAllByRole("button")).toEqual([turnOn]);
+    expect(turnOn.className).toContain("bg-accent"); // the primary variant
+    expect(document.querySelector("[data-home]")!.textContent).toBe("Found your agents home at /Users/me/.agents");
+    // The app's page title is the one "Rules"; the page adds no section titled Rules and no step list.
+    expect(headings()).not.toContain("Rules");
+    expect(document.querySelector("ol")).toBeNull();
+    // 12 px (space-y-3) between the empty box and what follows.
+    expect(turnOn.parentElement!.className.split(" ")).toContain("space-y-3");
+  });
+
+  it("Turn on writes the integrations entry through POST /api/v1/settings, then loads the rules with no reload", async () => {
+    current = off();
+    answer = { status: 200, body: { ok: true, lines: ["integrations = {\"tacit\":\"agents-home\"}"] } };
+    await show();
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }, SLOW));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]!.url).toBe("/api/v1/settings");
+    expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+    expect(sent()).toEqual([{ action: "set", key: "integrations", value: '{"tacit":"agents-home"}' }]);
+    await screen.findByRole("list", { name: "Rules waiting for you" }, SLOW);
+    expect(card("C-012")).not.toBeNull();
+  });
+
+  it("a refused Turn on shows the refusal and stays off", async () => {
+    current = off();
+    answer = { status: 422, body: { error: "refused: integrations changes only by the owner" } };
+    await show();
+    fireEvent.click(await screen.findByRole("button", { name: "Turn on" }, SLOW));
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("only by the owner");
+    expect(screen.queryByRole("list", { name: "Rules waiting for you" })).toBeNull();
+  });
+
+  it("ledger off, home not found: names the missing CLI and how to set AGENTS_HOME, with no path field and no Turn on", async () => {
+    current = off({ home: { path: "/Users/me/.agents", missing: "bin/evolve" }, turn_on: null });
+    await show();
+    await waitFor(() => expect(document.querySelector("[data-home]")).not.toBeNull(), SLOW);
+    const text = document.querySelector("[data-home]")!.textContent!;
+    expect(text).toContain("bin/evolve is missing or not executable");
+    expect(text).toContain("AGENTS_HOME");
+    expect(screen.queryAllByRole("button")).toEqual([]);
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(headings()).not.toContain("Rules");
+  });
+
+  it("ledger off for a user who is not the owner: the reason, and no Turn on", async () => {
+    current = off({ judge: "Only the owner turns the ledger on; you are local:alice.", csrf_token: null, turn_on: null });
+    await show();
+    expect((await screen.findByRole("note", {}, SLOW)).textContent).toContain("Only the owner");
+    expect(screen.queryAllByRole("button")).toEqual([]);
   });
 });

@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { API, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, useApi } from "../api.js";
+import { API, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -12,7 +12,10 @@ import { Textarea } from "../components/ui/textarea.js";
 // waiting for a verdict (candidate classes `C-…` and structure proposals `P-…`), each with its title, state and ID, read
 // through GET /api/v1/rules. Promote, Hold and Reject each open a dialog that asks for a reason before it sends; Promote
 // of a class also asks for the rule's wording, sent as the rule (a proposal takes none). Only the owner sends; anyone
-// else sees the list with the reason. With the tacit plugin `none` the page shows one action: how to turn the ledger on.
+// else sees the list with the reason. With the ledger off (design 08-settings, 2026-11-12) the page says whether it
+// found the agents home: found, one primary Turn on, which stores the `integrations` entry through POST /api/v1/settings
+// and then loads the rules with no reload; not found, which CLI is missing and how to point AGENTS_HOME at the home.
+// The app's page title is the one "Rules" heading.
 // One card per entry at every width, so no table turns into cards.
 
 const muted = "text-xs text-pretty text-text-2";
@@ -107,26 +110,62 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
   );
 }
 
-/** The `none` plugin's empty state: one action, which shows how to turn the ledger on. */
-function LedgerOff() {
-  const [shown, setShown] = useState(false);
+/** The ledger off: the agents home found (Turn on) or the CLI missing there, and why the viewer cannot turn it on. */
+function LedgerOff({ view }: { view: RulesView }) {
+  const client = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const home = view.home;
+  const turnOn = async (token: string, value: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await postSettings(token, { action: "set", key: "integrations", value });
+      if (!r.ok) {
+        setError(r.error);
+        return;
+      }
+      announceStatus("The tacit ledger is on.");
+      await client.invalidateQueries({ queryKey: [API.rules] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div className="space-y-3">
       <Empty>No tacit ledger is on, so there are no rules to review.</Empty>
-      <Button variant="secondary" aria-expanded={shown} aria-controls="rules-enable" onClick={() => setShown(!shown)}>
-        How to turn on the ledger
-      </Button>
-      {shown && (
-        <ol id="rules-enable" className="list-decimal space-y-1 pl-5 text-sm text-pretty break-words">
-          <li>
-            In factory.config.json set <code className="font-mono break-all">"plugins": {"{"} "tacit": "agents-home" {"}"}</code>.
-          </li>
-          <li>
-            Check that your agents home has <code className="font-mono break-all">bin/tacit</code> and{" "}
-            <code className="font-mono break-all">bin/evolve</code>: the home is AGENTS_HOME when set, else ~/.agents.
-          </li>
-          <li>Restart the factory and `factory ui`. Delete the key to turn it off again.</li>
-        </ol>
+      {home !== null && home.missing === null && (
+        <p data-home className="text-sm text-pretty break-words">
+          Found your agents home at <span className="font-mono break-all">{home.path}</span>
+        </p>
+      )}
+      {home !== null && home.missing !== null && (
+        <p data-home className="text-sm text-pretty break-words">
+          No agents home at <span className="font-mono break-all">{home.path}</span>:{" "}
+          <span className="font-mono break-all">{home.missing}</span> is missing or not executable. Put the tacit and evolve CLIs in{" "}
+          <span className="font-mono break-all">{home.path}/bin</span>, or start the factory and <code>factory ui</code> with AGENTS_HOME set to
+          the folder that holds them.
+        </p>
+      )}
+      {view.judge !== null && (
+        <p role="note" className="rounded-control bg-pill-warn-bg px-3 py-2 text-sm text-pretty break-words text-pill-warn-fg">
+          {view.judge}
+        </p>
+      )}
+      {view.turn_on !== null && view.csrf_token !== null && (
+        <>
+          <Button variant="primary" disabled={busy} onClick={() => void turnOn(view.csrf_token!, view.turn_on!)}>
+            Turn on
+          </Button>
+          <p className={muted}>It applies with no restart. Turn it off again under Settings, Integrations.</p>
+        </>
+      )}
+      {error !== null && (
+        <p role="alert" className="text-sm text-pretty break-words text-pill-bad-fg">
+          {error}
+        </p>
       )}
     </div>
   );
@@ -137,13 +176,7 @@ export function RulesPage() {
   const v = rules.data;
   if (rules.isError) return <ErrorNote error={rules.error} />;
   if (!v) return <Loading rows={3} />;
-  if (!v.enabled) {
-    return (
-      <Section title="Rules">
-        <LedgerOff />
-      </Section>
-    );
-  }
+  if (!v.enabled) return <LedgerOff view={v} />;
   const token = v.judge === null ? v.csrf_token : null;
   return (
     <Section title="Rules waiting for you" count={v.entries.length}>

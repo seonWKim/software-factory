@@ -469,6 +469,12 @@ export const en = {
   "settings.resetWas": "reset (was {old})",
   "settings.noOverride": "(no override)",
   "settings.changed": "{old} → {new}",
+  "settings.integrations": "Integrations",
+  "settings.integrationsHint": "Turned on from their own page (the tacit ledger from Rules). A switch turns one off: factory.config.json decides again, with no restart.",
+  "settings.integrationLabel": "Integration: {name}",
+  "settings.integrationOff": "off",
+  "settings.integrationFromDashboard": "set from the dashboard",
+  "settings.integrationFromConfig": "from factory.config.json",
 } as const;
 
 export type MessageKey = keyof typeof en;

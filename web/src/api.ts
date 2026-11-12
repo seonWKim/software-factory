@@ -425,8 +425,19 @@ export interface SettingsView {
   project_keys: string[];
   keys: SettingRow[];
   pr_only: { key: string; description: string }[];
+  /** Each integration (design 08-settings): the plugin in force, and whether the `integrations` setting or the config chose it. Absent: none. */
+  integrations?: IntegrationRow[];
   ignored: { key: string; project: string | null; value: string; reason: string }[];
   history: { seq: number; at: string; actor: string; key: string; project: string | null; old_value: string | null; new_value: string | null }[];
+}
+
+/** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */
+export interface IntegrationRow {
+  kind: string;
+  interface: string;
+  plugin: string;
+  source: "setting" | "config";
+  configured: string;
 }
 
 export type SettingsWrite = { action: "set"; key: string; value: string; project?: string } | { action: "reset"; key: string; project?: string };
@@ -521,8 +532,10 @@ export interface RuleRow {
 }
 
 /**
- * `/api/v1/rules`: `enabled` false when the tacit plugin is `none`; `judge` is why the viewer cannot send a verdict,
- * or null; `error` is a failed ledger read, or null.
+ * `/api/v1/rules`: `enabled` false when the tacit ledger is off; `judge` is why the viewer cannot send a verdict (or,
+ * with the ledger off, turn it on), or null; `error` is a failed ledger read, or null. With the ledger off, `home` is
+ * the agents home and the CLI missing there (null: found), and `turn_on` the `integrations` value that turns it on,
+ * sent through POST /api/v1/settings; null when the viewer may not or the home is not found.
  */
 export interface RulesView {
   enabled: boolean;
@@ -530,6 +543,8 @@ export interface RulesView {
   error: string | null;
   csrf_token: string | null;
   judge: string | null;
+  home: { path: string; missing: string | null } | null;
+  turn_on: string | null;
 }
 
 export type RuleVerdict = "promote" | "reject" | "hold";

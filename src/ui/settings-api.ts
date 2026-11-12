@@ -8,7 +8,9 @@
 // key from the stored project label (storeProjectResolver), and a write for a repo with no stored label is
 // refused with a pointer to `factory settings`. Project labels, actor IDs, values and messages leave through the
 // Withholder, as on the other routes. The request guards (Host, Origin, Content-Type, CSRF token) run in
-// server.ts before writeSettings is reached.
+// server.ts before writeSettings is reached. A set or reset of an owner-only key (`integrations`) then needs the page's
+// user to be the local owner (rules-api.ts ownerOf); with no owner check wired it is refused. GET lists each
+// integration (design 08-settings, 2026-11-12) with the plugin in force and whether a setting or the config chose it.
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { type LearnedSetting, learnedFromRows } from "../core/learned-settings.js";
@@ -24,6 +26,8 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import { loadSettingCatalog } from "../runtime/index.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
 import type { UiDeps } from "./pages.js";
+import type { PauseDeps } from "./pause-api.js";
+import { ownerOf } from "./rules-api.js";
 import { Withholder } from "./withhold.js";
 
 export const SETTINGS_PATH = "/api/v1/settings";
@@ -50,6 +54,8 @@ export interface UiSettings {
   csrfToken: string;
   /** The `approve_merge` check for `mode`, `auto_merge_max_tier` and a loosening change (SettingsDeps.mayApproveMerge). Absent: no check. */
   mayApproveMerge?: () => Promise<string | null>;
+  /** Each integration interface (src/plugins.ts INTEGRATION_KINDS) and the plugin factory.config.json selects for it. Absent: none listed. */
+  integrations?: readonly { kind: string; interface: string; configured: string }[];
 }
 
 /** A fresh CSRF token: 32 random bytes, base64url. Never stored or written to disk. */
@@ -125,7 +131,7 @@ export async function learnedWithRecords(
 /** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). `text`: free text, sent as a JSON string (`message_style`). */
 type Kind = "number" | "boolean" | "models" | "json" | "mode" | "text";
 const kindOf = (k: SettableKey): Kind =>
-  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" ? "json" : k === "mode" ? "mode" : k === "message_style" ? "text" : "number";
+  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" || k === "integrations" ? "json" : k === "mode" ? "mode" : k === "message_style" ? "text" : "number";
 
 /** GET /api/v1/settings. */
 export async function readSettings(d: UiDeps, s: UiSettings) {
@@ -194,6 +200,11 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
   }
   const prOnly = [];
   for (const key of PR_ONLY_KEYS) prOnly.push({ key, description: await text(catalog.describe(key).description) });
+  // Each integration: the entry's plugin when one is stored, else the config's (design 08-settings).
+  const integrations = (s.integrations ?? []).map((i) => {
+    const set = r.values.integrations[i.kind];
+    return { kind: i.kind, interface: i.interface, plugin: set ?? i.configured, source: set === undefined ? "config" : "setting", configured: i.configured };
+  });
   const ignored = [];
   for (const i of r.ignored) {
     ignored.push({ key: i.key, project: i.project ? await text(label(i.project)) : null, value: await text(i.value), reason: await text(i.reason) });
@@ -225,6 +236,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     project_keys: PROJECT_SETTABLE_KEYS,
     keys,
     pr_only: prOnly,
+    integrations,
     ignored,
     history,
   };
@@ -274,7 +286,7 @@ export function noLabelMessage(repo: { owner: string; name: string }): string {
  * POST /api/v1/settings, after the request guards: 200 with the CLI's lines, 422 with the CLI's refusal in
  * `error` (nothing stored), 400 for a body that is not a set or reset.
  */
-export async function writeSettings(d: UiDeps, s: UiSettings, body: unknown): Promise<{ status: number; value: unknown }> {
+export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown): Promise<{ status: number; value: unknown }> {
   const w = new Withholder(d.scanner);
   const text = async (v: string) => (await w.plain(v)).text;
   const parsed = parseWrite(body);
@@ -287,6 +299,12 @@ export async function writeSettings(d: UiDeps, s: UiSettings, body: unknown): Pr
     // The same scanner the page's reads withhold through: a flagged message_style is refused, as on the CLI.
     scanner: d.scanner,
     ...(s.mayApproveMerge ? { mayApproveMerge: s.mayApproveMerge } : {}),
+    // An owner-only key needs the local owner; a page with no owner check refuses it.
+    mayOwn: async () => {
+      if (!d.pauses) return "this page has no owner check";
+      const who = await ownerOf(d, d.pauses, "changes this key");
+      return "error" in who ? who.error : null;
+    },
     resolveProject: async () => {
       let ref: ProjectRef | null;
       try {

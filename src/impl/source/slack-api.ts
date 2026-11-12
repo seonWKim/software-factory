@@ -52,6 +52,10 @@ export interface SlackApi {
    * `trigger_id`, which Slack honours for about 3 seconds.
    */
   openView(trigger_id: string, view: unknown): Promise<void>;
+  /** views.update (no scope needed): replaces the open modal `view_id` with `view`, e.g. a press's one-line result. */
+  updateView(view_id: string, view: unknown): Promise<void>;
+  /** views.push (no scope needed): a modal on top of the open one, by a press's `trigger_id` inside it. */
+  pushView(trigger_id: string, view: unknown): Promise<void>;
 }
 
 /**
@@ -150,6 +154,14 @@ export class HttpSlackApi implements SlackApi {
 
   async openView(trigger_id: string, view: unknown): Promise<void> {
     await this.call(SLACK_BOT_TOKEN, "views.open", { trigger_id, view }, "json");
+  }
+
+  async updateView(view_id: string, view: unknown): Promise<void> {
+    await this.call(SLACK_BOT_TOKEN, "views.update", { view_id, view }, "json");
+  }
+
+  async pushView(trigger_id: string, view: unknown): Promise<void> {
+    await this.call(SLACK_BOT_TOKEN, "views.push", { trigger_id, view }, "json");
   }
 
   /** One call; throws SlackApiError on an HTTP error, a rate limit or `ok: false`. */
