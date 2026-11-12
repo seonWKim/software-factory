@@ -8,7 +8,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SubIssueInput } from "../src/interfaces/source-adapter.js";
-import { cleanScanner, config, silent, triageSpec } from "./helpers/fakes.js";
+import { FakeAuth, FakeSlackPollSource, cleanScanner, config, silent, slackRef, triageSpec } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
 
 // Split specs on a local task (design 04): with only the `local` source, `factory approve <parent>` files each
@@ -107,8 +107,9 @@ describe("split spec on a local task", () => {
     const split = await f.messages(p.id);
     expect(split.filter((b) => b.startsWith("The split spec was approved"))).toHaveLength(1);
     expect(split.find((b) => b.startsWith("The split spec was approved"))).toContain(`local:${p.source.id}-phase-1 (starts now)`);
-    // No refusal, and the parent is never implemented.
-    expect(split.some((b) => b.includes("cannot file sub-issues"))).toBe(false);
+    // The local source files its own sub-tasks: the split comment, never the fallback's one-line list.
+    expect(split.some((b) => b.startsWith("The split spec was approved, so the factory filed its 3 phases as local tasks"))).toBe(false);
+    // The parent is never implemented.
     await f.controller.tickPhases();
     expect((await f.store.listRuns(p.id)).filter((r) => r.kind === "implement")).toEqual([]);
   });
@@ -188,5 +189,86 @@ describe("LocalSource.fileSubIssue", () => {
     const s = new LocalSource(noStore);
     await expect(s.fileSubIssue({ ...input(1), parent: { type: "github_issue", id: "o/r#1", link: "x" } })).rejects.toThrow(/not a local item/);
     await expect(s.fileSubIssue({ ...input(1), marker: "nope" })).rejects.toThrow(/no phase number/);
+  });
+});
+
+describe("split spec on an item whose source cannot file sub-issues (a Slack thread)", () => {
+  /** The fake Slack source without fileSubIssue, as the Slack adapter is. */
+  async function slackSetup() {
+    const clock = new FakeClock();
+    const { store } = await newStore(clock);
+    const slack = new FakeSlackPollSource();
+    Object.defineProperty(slack, "fileSubIssue", { value: undefined });
+    const local = new LocalSource(store);
+    const controller = new ControllerRole({ store, sources: [slack, local], auth: new FakeAuth(), clock, config, log: silent, scanner: cleanScanner });
+    const requester = { provider: "slack", subject: "1" } as const;
+    slack.queue.push({ kind: "item_requested", source: slackRef(1), requester, title: "Big change", body: "do it all" });
+    await controller.tickIntake();
+    clock.advance(DAY);
+    const run = await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 });
+    await store.completeRun(run!.id, run!.lease!.token, { status: "succeeded", summary: "s", data: { spec: bigSpec } });
+    await controller.tickRuns();
+    const parent = (await store.getWorkItemBySource("slack_thread", slackRef(1).id))!;
+    expect(parent).toMatchObject({ stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    let comment = 1000;
+    const approve = async () => {
+      slack.queue.push({ kind: "spec_approved", source: slackRef(1), comment_id: String(++comment), approver: requester });
+      await controller.tickIntake();
+      await controller.tickOutbox();
+    };
+    return { clock, store, slack, controller, parent, approve };
+  }
+
+  it("approve files one local phase item per phase, in order, held after the first, and lists them in one line on the thread", async () => {
+    const f = await slackSetup();
+    await f.approve();
+
+    const phases = await f.store.listPhases(f.parent.id);
+    expect(phases.map((x) => [x.parent_id, x.phase])).toEqual([[f.parent.id, 1], [f.parent.id, 2], [f.parent.id, 3]]);
+    const ids = [1, 2, 3].map((n) => `${slackRef(1).id}-phase-${n}`);
+    expect(phases.map((x) => x.source)).toEqual(ids.map((id) => ({ type: "local", id, link: `local:${id}` })));
+    const [one, two, three] = phases as [WorkItem, WorkItem, WorkItem];
+    expect(one).toMatchObject({ stage: "NEW", blocked_on: "none" });
+    expect((await f.store.listRuns(one.id)).map((r) => r.kind)).toEqual(["triage"]);
+    for (const x of [two, three]) expect(x).toMatchObject({ stage: "NEW", blocked_on: "upstream", blocked_reason: PHASE_HOLD });
+    expect(await f.store.getWorkItem(f.parent.id)).toMatchObject({ stage: "READY", blocked_on: "upstream", blocked_reason: PHASES_OPEN });
+
+    // One line on the parent's Slack thread, listing the phases in order; no refusal.
+    const lines = f.slack.comments.filter((c) => c.source.id === slackRef(1).id && c.body.includes("as local tasks"));
+    expect(lines).toHaveLength(1);
+    const line = lines[0]!.body;
+    expect(line).not.toContain("\n");
+    expect(line.indexOf(`local:${ids[0]}`)).toBeLessThan(line.indexOf(`local:${ids[1]}`));
+    expect(line.indexOf(`local:${ids[1]}`)).toBeLessThan(line.indexOf(`local:${ids[2]}`));
+    expect(f.slack.comments.some((c) => c.body.includes("cannot file sub-issues"))).toBe(false);
+  });
+
+  it("approve again files no second local phase item", async () => {
+    const f = await slackSetup();
+    await f.approve();
+    const first = await f.store.listPhases(f.parent.id);
+    await f.approve();
+    await f.controller.tickPhases();
+    const again = await f.store.listPhases(f.parent.id);
+    expect(again.map((x) => x.id)).toEqual(first.map((x) => x.id));
+  });
+
+  it("each phase closed as completed releases the next; the last closes the Slack parent as completed", async () => {
+    const f = await slackSetup();
+    await f.approve();
+    const phases = await f.store.listPhases(f.parent.id);
+    for (const [i, x] of phases.entries()) {
+      const cur = (await f.store.getWorkItem(x.id))!;
+      if (i > 0) expect(cur).toMatchObject({ blocked_on: "none", blocked_reason: null });
+      const r = await f.store.transition({
+        id: x.id, expected_version: cur.version, patch: { stage: "CLOSED", close_reason: "completed", blocked_on: "none", blocked_reason: null }, actor: system, reason: "closed",
+      });
+      expect(r.ok).toBe(true);
+      await f.controller.tickPhases();
+    }
+    await f.controller.tickPhases();
+    await f.controller.tickOutbox();
+    expect(await f.store.getWorkItem(f.parent.id)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
+    expect(f.slack.closed.map((s) => s.id)).toEqual([slackRef(1).id]);
   });
 });
