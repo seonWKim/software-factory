@@ -568,23 +568,20 @@ interface Stages {
 }
 
 /**
- * Makes the fake sandbox answer the index, blob and tree reads a mechanical merge or a migration renumbering
- * makes (`ls-files -s`, `cat-file`, `hash-object`, `update-index`, `ls-tree`, the added-steps diff, `mv`).
+ * Makes the fake sandbox answer the index and blob reads a mechanical merge makes (`ls-files -s`, `cat-file`,
+ * `hash-object`, `update-index`).
  * `log` has every command in order, git and not; `index` is the merged text each written path got.
  */
-function gitIndex(sandbox: FakeSandbox, o: { stages?: Record<string, Stages>; baseSteps?: string[]; added?: string[]; changed?: string[]; tree?: Record<string, string> }) {
+function gitIndex(sandbox: FakeSandbox, o: { stages?: Record<string, Stages> }) {
   const blobs = new Map<string, string>();
   const index: Record<string, string> = {};
-  const tree: Record<string, string> = { ...o.tree };
   const log: string[] = [];
-  const moves: string[] = [];
   const blob = (text: string) => {
     const sha = createHash("sha1").update(text).digest("hex");
     blobs.set(sha, text);
     return sha;
   };
   const ok = (stdout = ""): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
-  const z = (xs: readonly string[]) => xs.map((x) => `${x}\0`).join("");
   const exec = sandbox.exec.bind(sandbox);
   sandbox.exec = async (h, cmd, opts) => {
     log.push(cmd.join(" "));
@@ -598,7 +595,7 @@ function gitIndex(sandbox: FakeSandbox, o: { stages?: Record<string, Stages>; ba
       if (path in index) return ok(`100644 ${blob(index[path]!)} 0\t${path}\0`);
       const st = o.stages?.[path];
       if (st) return ok([[1, st.ancestor], [2, st.branch], [3, st.base]].map(([n, t]) => `100644 ${blob(t as string)} ${n}\t${path}\0`).join(""));
-      return ok(path in tree ? `100644 ${blob(tree[path]!)} 0\t${path}\0` : "");
+      return ok("");
     }
     if (a[0] === "cat-file") return ok(blobs.get(a[2]!) ?? "");
     if (a[0] === "hash-object") return ok(`${blob(opts.stdin ?? "")}\n`);
@@ -608,22 +605,9 @@ function gitIndex(sandbox: FakeSandbox, o: { stages?: Record<string, Stages>; ba
       return ok();
     }
     if (a[0] === "checkout-index") return ok();
-    if (line.startsWith("diff --name-only -z --no-renames --diff-filter=A")) return ok(z(o.added ?? []));
-    // The branch's changed files: against HEAD after a committed merge, against the index while one is pending.
-    if (a[0] === "diff" && a.length === 6 && (a[5] === "HEAD" || a[4] === "--cached")) return ok(z(o.changed ?? []));
-    if (a[0] === "ls-tree") return ok(z(o.baseSteps ?? []));
-    if (a[0] === "mv") {
-      const [from, to] = [a.at(-2)!, a.at(-1)!];
-      moves.push(`${from} → ${to}`);
-      if (from in tree) {
-        tree[to] = tree[from]!;
-        delete tree[from];
-      }
-      return ok();
-    }
     return exec(h, cmd, opts);
   };
-  return { index, log, moves, tree };
+  return { index, log };
 }
 
 /** Only appended lines on both sides: the base adds one History line, the branch another, at the same place. */
@@ -634,7 +618,7 @@ const APPENDED: Stages = {
 };
 const MERGED = "# Design\n\n## History\n\n- one\n- from the base\n- from the branch\n";
 
-describe("mechanical merges and migration renumbering (design §5, issue #297)", () => {
+describe("mechanical merges (design §5, issue #297)", () => {
   /** An item through triage, implement and review: PR 42 waits for a human merge. */
   async function withPr() {
     const f = await pipeline();
@@ -652,48 +636,6 @@ describe("mechanical merges and migration renumbering (design §5, issue #297)",
     const o = (await f.runs(f.it, kind)).at(-1)?.outcome;
     return o?.status === "succeeded" ? o.data : o;
   };
-
-  it("an update after a base that took the branch's migration number: the step is renumbered before the tests, they pass, no resolve run", async () => {
-    const f = await withPr();
-    f.sandbox.ancestorExit = 1; // the base moved on; the merge itself is clean (different step file names)
-    const g = gitIndex(f.sandbox, {
-      baseSteps: ["migrations/mysql/0024-item-thread.sql", "migrations/mysql/0025-from-base.sql", "migrations/mysql/README.md"],
-      added: ["migrations/mysql/0025-mine.sql"],
-      changed: ["migrations/mysql/0025-mine.sql", "docs/design/05-coordination.md"],
-      tree: {
-        "migrations/mysql/0025-mine.sql": "CREATE TABLE IF NOT EXISTS mine (id INT);\n",
-        "docs/design/05-coordination.md": "MySQL step `migrations/mysql/0025-mine.sql` adds the table.\n",
-      },
-    });
-    await f.unmergeable();
-    await f.step();
-    expect(g.moves).toEqual(["migrations/mysql/0025-mine.sql → migrations/mysql/0026-mine.sql"]);
-    expect(g.index["docs/design/05-coordination.md"]).toBe("MySQL step `migrations/mysql/0026-mine.sql` adds the table.\n");
-    // Renumbered and committed before the check list ran.
-    const mv = g.log.findIndex((l) => l.startsWith("git mv "));
-    const commit = g.log.findIndex((l, i) => i > mv && / commit --no-verify -m Renumber MySQL steps/.test(l));
-    expect(mv).toBeGreaterThan(-1);
-    expect(commit).toBeGreaterThan(mv);
-    expect(g.log.indexOf("npm test", commit)).toBeGreaterThan(commit);
-    expect(await outcome(f, "update")).toMatchObject({ result: "pushed" });
-    expect(f.broker.calls.map((c) => c.name)).toContain("forge.push_branch");
-    expect(await f.runs(f.it, "resolve")).toEqual([]);
-    expect(f.agentCalls("resolve")).toBe(0);
-  });
-
-  it("no renumbering when the branch also changes a SQLite schema file", async () => {
-    const f = await withPr();
-    f.sandbox.ancestorExit = 1;
-    const g = gitIndex(f.sandbox, {
-      baseSteps: ["migrations/mysql/0025-from-base.sql"],
-      added: ["migrations/mysql/0025-mine.sql"],
-      changed: ["migrations/mysql/0025-mine.sql", "src/impl/store/sqlite/schema.ts"],
-    });
-    await f.unmergeable();
-    await f.step();
-    expect(g.moves).toEqual([]);
-    expect(f.log.lines.some((l) => l.msg.startsWith("migration renumbering skipped"))).toBe(true);
-  });
 
   it("an update whose conflict has only appended lines: merged in code, base lines first, no learned weight, no resolve run", async () => {
     const f = await withPr();

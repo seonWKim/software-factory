@@ -3,14 +3,15 @@ import { retryConfig, stallConfig } from "../src/compose.js";
 import { coordinationConfig } from "../src/core/config.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { SETTABLE_KEYS, type SettingsBase, intakeLabel } from "../src/core/settings.js";
-import type { Timestamp } from "../src/core/types.js";
+import type { Timestamp, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { type SettingsDeps, parseModeArgs, parseSettingsArgs, runSettings } from "../src/settings-cmd.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiSettings, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
-import type { UiDeps } from "../src/ui/server.js";
+import { SETTINGS_PATH, type UiSettings, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
+import { type UiDeps, type UiRequest, respond } from "../src/ui/server.js";
+import type { ConfigEditRequest, ConfigEditResult } from "../src/core/config-writer.js";
 import { PROJECT } from "./helpers/fakes.js";
 import { BACKENDS, PROJECT_KEY, newStore } from "./helpers/store.js";
 
@@ -523,5 +524,65 @@ describe.each(BACKENDS)("factory settings: the live timing, coordination and int
     // With the grant: allowed.
     refusal = null;
     expect((await run(d, "set", "max_coordination_cost", "3")).ok).toBe(true);
+  });
+});
+
+describe("settings edit-file: the CLI action and the Settings write route run the same writer", () => {
+  it("parses edit-file <key> <json> [--confirm]; anything else is an error", () => {
+    expect(parseSettingsArgs(["edit-file", "floors", "[]"])).toEqual({ action: "edit-file", key: "floors", value: "[]", confirm: false });
+    expect(parseSettingsArgs(["edit-file", "floors", "[]", "--confirm"])).toEqual({ action: "edit-file", key: "floors", value: "[]", confirm: true });
+    for (const bad of [["edit-file", "floors"], ["edit-file", "floors", "[]", "x"], ["edit-file", "floors", "[]", "--project", "o/r"], ["set", "workers", "2", "--confirm"]]) {
+      expect(parseSettingsArgs(bad), bad.join(" ")).toEqual({ error: expect.any(String) });
+    }
+  });
+
+  it("both pass the request to the one writer; a refusal is the CLI's refused line and the route's 422", async () => {
+    const { store, clock } = await newStore(new FakeClock());
+    const asked: ConfigEditRequest[] = [];
+    const editFile = async (r: ConfigEditRequest): Promise<ConfigEditResult> => {
+      asked.push(r);
+      return r.confirm
+        ? { ok: true, item: "wi_1" as WorkItemId, branch: "factory/wi_1", sha: "a".repeat(40), old_value: "[]", new_value: r.value }
+        : { ok: false, refusal: `${r.key} is loosening-sensitive` };
+    };
+    const cli = await run({ ...deps(store), editFile }, "edit-file", "floors", "[]");
+    expect(cli).toEqual({ ok: false, lines: ["refused: floors is loosening-sensitive"] });
+    expect((await run({ ...deps(store), editFile }, "edit-file", "floors", "[]", "--confirm")).lines[0]).toContain("on the local branch factory/wi_1");
+    // Without a writer wired, the action is refused.
+    expect((await run(deps(store), "edit-file", "floors", "[]")).ok).toBe(false);
+
+    const settings: UiSettings = { base, repo: { owner: "o", name: "r" }, actor: "local:owner", resolveProject: async () => null, csrfToken: newCsrfToken(), editFile };
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), settings };
+    const refused = await writeSettings(d, settings, { action: "edit-file", key: "floors", value: "[]" });
+    expect(refused).toEqual({ status: 422, value: { error: "refused: floors is loosening-sensitive" } });
+    expect((await writeSettings(d, settings, { action: "edit-file", key: "floors", value: "[]", confirm: true })).status).toBe(200);
+    expect((await writeSettings(d, settings, { action: "edit-file", key: "floors", value: "[]", confirm: "yes" })).status).toBe(400);
+    expect((await writeSettings(d, settings, { action: "set", key: "workers", value: "2", confirm: true })).status).toBe(400);
+    expect(asked).toEqual([
+      { key: "floors", value: "[]", confirm: false }, { key: "floors", value: "[]", confirm: true },
+      { key: "floors", value: "[]", confirm: false }, { key: "floors", value: "[]", confirm: true },
+    ]);
+  });
+
+  it("the route sits behind the Settings write guards (Host, Origin, Content-Type, x-csrf-token), each before the writer", async () => {
+    const { store, clock } = await newStore(new FakeClock());
+    let calls = 0;
+    const editFile = async (): Promise<ConfigEditResult> => (calls++, { ok: false, refusal: "no" });
+    const settings: UiSettings = { base, repo: { owner: "o", name: "r" }, actor: "local:owner", resolveProject: async () => null, csrfToken: newCsrfToken(), editFile };
+    const d: UiDeps = { store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), settings };
+    const HOST = "127.0.0.1:4310";
+    const post = (over: Partial<UiRequest>): UiRequest => ({
+      method: "POST", url: SETTINGS_PATH, host: HOST, origin: `http://${HOST}`, contentType: "application/json", csrfToken: settings.csrfToken,
+      body: JSON.stringify({ action: "edit-file", key: "floors", value: "[]", confirm: true }), ...over,
+    });
+    for (const [over, status] of [
+      [{ host: "evil.example" }, 403], [{ origin: "http://evil.example" }, 403], [{ contentType: "text/plain" }, 415],
+      [{ csrfToken: undefined }, 403], [{ csrfToken: newCsrfToken() }, 403],
+    ] as [Partial<UiRequest>, number][]) {
+      expect((await respond(d, post(over))).status, JSON.stringify(over)).toBe(status);
+    }
+    expect(calls).toBe(0);
+    expect((await respond(d, post({}))).status).toBe(422);
+    expect(calls).toBe(1);
   });
 });

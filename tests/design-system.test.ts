@@ -194,9 +194,10 @@ describe("the Gongbang mark in the dashboard", () => {
 
   it("the dialog, the row menu panel and the toast use token utilities only: no zinc-, red- or rounded-md", () => {
     const dialog = readFileSync(join(WEB_SRC, "components", "ui", "dialog.tsx"), "utf8");
-    const commands = readFileSync(join(WEB_SRC, "views", "item-commands.tsx"), "utf8");
+    // The row's "⋯" menu is the shared OverflowMenu.
+    const overflow = readFileSync(join(WEB_SRC, "components", "ui", "menu.tsx"), "utf8");
     const toast = dialog.match(/const STATUS_CLASS =\s*"([^"]*)"/)?.[1];
-    const menu = commands.match(/role="menu"\s+className="([^"]*)"/)?.[1];
+    const menu = overflow.match(/role="menu"[^>]*?className="([^"]*)"/)?.[1];
     expect(toast).toContain("bg-surface");
     expect(menu).toContain("bg-surface");
     const bad = /(?<![\w-])(?:[a-z-]+-)?(?:zinc|red)-\d|(?<![\w-])rounded-md(?![\w-])/;

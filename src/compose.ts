@@ -60,7 +60,7 @@ import type { RepoRef } from "./impl/github/github-client.js";
 import { type RepoLookup, resolveProject } from "./impl/github/forge.plugin.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
-import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
+import { type UiSettings, configWriter, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
@@ -263,9 +263,9 @@ export function cliConfig(
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /** Reads and parses one config file; a missing, unreadable or invalid file fails naming the path. */
-async function readConfigFile(path: string): Promise<unknown> {
+async function readConfigFile(path: string, text?: string): Promise<unknown> {
   try {
-    return JSON.parse(await readFile(path, "utf8")) as unknown;
+    return JSON.parse(text ?? (await readFile(path, "utf8"))) as unknown;
   } catch (err) {
     throw new Error(`cannot load the config file ${path}: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
@@ -358,17 +358,17 @@ export function withForgeDefault(registry: Registry, selection: Selection, plugi
  * `--config` / FACTORY_CONFIG, see cliConfig) replaces the code root's checked-in factory.config.json, and its
  * folder becomes where `state_dir` and `worktrees_dir` resolve; without it they resolve from `root`.
  * `repo.path` always resolves from `root`. `platform` picks the platform-dependent plugin defaults
- * (docs/plugins.md); the host's unless a test passes one.
+ * (docs/plugins.md); the host's unless a test passes one. `text` is read instead of the file (a new text checked before it is written).
  */
 export async function loadConfig(
   root = process.cwd(),
-  opts: { registry?: Registry; codeRoot?: string | undefined; configFile?: string | undefined; platform?: string | undefined } = {},
+  opts: { registry?: Registry; codeRoot?: string | undefined; configFile?: string | undefined; platform?: string | undefined; text?: string } = {},
 ): Promise<Loaded> {
   const codeRoot = resolve(opts.codeRoot ?? root);
   const checkedIn = join(codeRoot, CONFIG_FILE);
   const externalConfig = opts.configFile === undefined ? null : resolve(root, opts.configFile);
   const configFile = externalConfig ?? checkedIn;
-  const raw = await readConfigFile(configFile);
+  const raw = await readConfigFile(configFile, opts.text);
   checkConfigKeys(raw);
   const file = raw as FileConfig;
   if (file.env !== "local") throw new Error(`env "${file.env}" has no implementations yet; only "local"`);
@@ -1029,13 +1029,12 @@ const NO_FORGE = refusing<GitHubApi>("the UI process makes no forge call");
 
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
- * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only
- * because a store plugin may declare secrets and the scanner needs the known secret values; neither reaches
- * the page. The Settings page finds the configured repo's project key from the stored project label
- * (storeProjectResolver), so the UI process never calls the forge or reads a forge credential. `identity` is the
- * CLI identity main.ts resolves (cliIdentity); its user is the Settings writer. The CSRF token is made here, per
- * process, and kept only in memory. The commands route acts as uiCommandsActor says and takes the same token. The pause route's owner
- * check uses the auth plugin over the local grants only, with a client that makes no forge call.
+ * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only because a store plugin may
+ * declare secrets and the scanner needs the known secret values; neither reaches the page. The Settings page finds the configured repo's
+ * project key from the stored project label (storeProjectResolver), so the UI process never calls the forge or reads a forge credential.
+ * `identity` is the CLI identity main.ts resolves (cliIdentity); its user is the Settings writer, also of file-only keys (configWriter).
+ * The CSRF token is made here, per process, and kept only in memory. The commands route acts as uiCommandsActor says and takes the same
+ * token. The pause route's owner check uses the auth plugin over the local grants only, with a client that makes no forge call.
  */
 export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity }): Promise<UiParts> {
   await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -1076,6 +1075,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
+  settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.

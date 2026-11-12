@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { BaseSyncResult, BaseSyncSpec, LocalMergeResult, LocalMergeSpec } from "../../core/local-merge.js";
-import type { ExecOptions, ExecResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
+import type { ExecOptions, ExecResult, NewBranchCommit, NewBranchResult, Sandbox, SandboxHandle, SandboxSpec } from "../../interfaces/sandbox.js";
 import { baseEnv, type RunProcessOptions, runProcess } from "../process/run-process.js";
 
 /** Runs one process; `runProcess` unless a test injects a fake. */
@@ -20,6 +20,8 @@ const REF_LOCK = /incorrect old value|cannot lock ref|unable to update local ref
 const REF_LOCK_RETRIES = 3;
 /** A branch name fetchBranch takes: a plain ref path, never an option or a refspec. */
 const SAFE_BRANCH = /^[A-Za-z0-9_][A-Za-z0-9._/-]*$/;
+/** A file path the branch commit takes: relative, plain segments, never an option, `..` or a `.git` folder. */
+const SAFE_PATH = /^(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*(?:^|\/)\.git(?:\/|$))[A-Za-z0-9_.][A-Za-z0-9._/-]*$/;
 const RETRY_BASE_MS = 200;
 const realWait: Wait = (ms) => new Promise((r) => setTimeout(r, ms));
 /**
@@ -233,6 +235,46 @@ export class NoOpSandbox implements Sandbox {
     return this.localCommit(spec.repo, spec.branch);
   }
 
+  /** The text of `path` in the local branch `ref`, from objects only; null when the branch or the file is missing. */
+  async readLocalFile(spec: { repo: string; ref: string; path: string }): Promise<{ commit: string; text: string } | null> {
+    safeRef(spec.ref);
+    safePath(spec.path);
+    const commit = await this.localCommit(spec.repo, spec.ref);
+    if (commit === null) return null;
+    const r = await this.git(spec.repo, ["cat-file", "blob", `${commit}:${spec.path}`], false);
+    return r.exit_code === 0 ? { commit, text: r.stdout } : null;
+  }
+
+  /**
+   * One commit on a new local branch (design 08-settings, the file-only key writer): the blob, a tree built in a
+   * temporary index file under the worktrees dir (never the repo's own index), the commit (only objects), then
+   * `refs/heads/<branch>` created by `update-ref` with an empty old value, which fails when the branch exists.
+   */
+  async commitNewBranch(spec: NewBranchCommit): Promise<NewBranchResult> {
+    safeRef(spec.base_ref);
+    safeRef(spec.branch);
+    safePath(spec.path);
+    if ((await this.localCommit(spec.repo, spec.branch)) !== null) return { created: false, reason: "exists" };
+    if ((await this.localCommit(spec.repo, spec.base_ref)) !== spec.parent) return { created: false, reason: "base_moved" };
+    const blob = (await this.git(spec.repo, ["hash-object", "-w", "--stdin"], true, {}, spec.content)).stdout.trim();
+    const listed = (await this.git(spec.repo, ["ls-tree", spec.parent, "--", spec.path])).stdout.trim();
+    const mode = /^(100644|100755) blob /.exec(listed)?.[1] ?? "100644";
+    await mkdir(this.worktreesDir, { recursive: true });
+    const dir = await mkdtemp(join(this.worktreesDir, ".index-"));
+    let tree: string;
+    try {
+      const index = { GIT_INDEX_FILE: join(dir, "index") };
+      await this.git(spec.repo, ["read-tree", spec.parent], true, index);
+      await this.git(spec.repo, ["update-index", "--add", "--cacheinfo", `${mode},${blob},${spec.path}`], true, index);
+      tree = (await this.git(spec.repo, ["write-tree"], true, index)).stdout.trim();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    const sha = await this.commitMerge(spec.repo, tree, [spec.parent], spec.message, spec.identity);
+    const made = await this.git(spec.repo, ["update-ref", "-m", spec.message.split("\n")[0]!, `refs/heads/${spec.branch}`, sha, ""], false);
+    return made.exit_code === 0 ? { created: true, sha } : { created: false, reason: "exists" };
+  }
+
   /** The conflicting paths of `branch` merged into the local `base_ref`, from merge-tree (objects only); null: a branch is missing. */
   async localConflicts(spec: { repo: string; base_ref: string; branch: string }): Promise<string[] | null> {
     for (const b of [spec.base_ref, spec.branch]) {
@@ -389,11 +431,19 @@ export class NoOpSandbox implements Sandbox {
     }
   }
 
-  private async git(cwd: string, args: string[], check = true, env: Record<string, string> = {}): Promise<ExecResult> {
-    const r = await this.run(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ ...env, GIT_TERMINAL_PROMPT: "0" }) });
+  private async git(cwd: string, args: string[], check = true, env: Record<string, string> = {}, stdin?: string): Promise<ExecResult> {
+    const r = await this.run(["git", "-C", cwd, ...args], { cwd, env: baseEnv({ ...env, GIT_TERMINAL_PROMPT: "0" }), ...(stdin !== undefined && { stdin }) });
     if (check && r.exit_code !== 0) throw gitError(args, r);
     return r;
   }
+}
+
+function safeRef(b: string): void {
+  if (!SAFE_BRANCH.test(b) || b.includes("..")) throw new Error(`refusing branch ${JSON.stringify(b)}`);
+}
+
+function safePath(p: string): void {
+  if (!SAFE_PATH.test(p)) throw new Error(`refusing path ${JSON.stringify(p)}`);
 }
 
 function gitError(args: readonly string[], r: ExecResult): Error {

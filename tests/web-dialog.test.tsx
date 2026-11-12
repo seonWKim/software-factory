@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Dialog } from "../web/src/components/ui/dialog.js";
-import { ItemsTable } from "../web/src/views/common.js";
+import { NeedsGroups } from "../web/src/views/common.js";
 import { ApproveDialog } from "../web/src/views/item-decisions.js";
 
 // The shared native dialog (design §9): Esc and a click outside cancel without sending, focus goes in and comes
@@ -134,16 +134,16 @@ describe("the verdict dialog on a Needs-you row", () => {
     };
     return render(
       <QueryClientProvider client={client}>
-        <ItemsTable items={[item]} now={Date.parse(AT)} label="Needs you" empty="none" actions />
+        <NeedsGroups items={[item]} now={Date.parse(AT)} titles={new Map()} empty="none" />
       </QueryClientProvider>,
     );
   }
 
-  it("a row shows its primary button first, then ⋯, in a Commands column with every cell vertically centred", () => {
+  it("a row shows its primary button first, then ⋯, in an Actions column with every cell vertically centred", () => {
     mountRow();
     const cells = [...document.querySelectorAll("tbody tr td")];
     const last = cells.at(-1)!;
-    expect(document.querySelector("thead tr")!.lastElementChild!.textContent).toBe("Commands");
+    expect(document.querySelector("thead tr")!.lastElementChild!.textContent).toBe("Actions");
     expect([...last.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Approve", "⋯"]);
     expect(cells.every((td) => td.className.split(" ").includes("align-middle!"))).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "More commands" }));

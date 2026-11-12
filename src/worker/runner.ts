@@ -15,7 +15,7 @@ import { errorText, type LogFields } from "../core/log.js";
 import { type CheckRound, checkCommands, commandText, redact, runChecks } from "../core/checks.js";
 import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
-import { MYSQL_STEPS_DIR, type MergeIO, type Renumbering, applyRenumbering, renumberPlan, touchesSqliteSchema } from "../core/mechanical.js";
+import type { MergeIO } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
 import { type Run, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
 import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
@@ -728,46 +728,7 @@ export class Worker {
         await this.git(handle, ["update-index", "--cacheinfo", `${mode},${sha},${path}`]);
         await this.git(handle, [...NO_HOOKS, "checkout-index", "-f", "--", path]);
       },
-      move: async (from, to) => {
-        await this.git(handle, ["mv", "--", from, to]);
-      },
     };
-  }
-
-  /**
-   * Migration renumbering (design §5, issue #297), after a base merge is committed: when a MySQL step file the
-   * branch adds has a number the base already has, the branch's new steps move to the next free numbers, literal
-   * references to the old names in the branch's changed files follow, and the worker commits that. Skipped (and
-   * logged) when the branch also changes a SQLite schema file: SQLite numbers its migrations in code, so the collision is a real one and the gates report it. Returns the moves made.
-   */
-  async renumberSteps(run: Run, handle: SandboxHandle, baseSha: string): Promise<Renumbering[]> {
-    const plan = await this.stageRenumbering(run, handle, [baseSha, "HEAD"]);
-    if (plan.length === 0) return [];
-    const message = `Renumber MySQL steps after merging the base: ${plan.map((r) => `${r.from.slice(MYSQL_STEPS_DIR.length)} → ${r.to.slice(MYSQL_STEPS_DIR.length)}`).join(", ")}`;
-    await this.gitWith(handle, [...NO_HOOKS, "commit", "--no-verify", "-m", message], gitIdentity(this.cfg.agent_git_identity));
-    return plan;
-  }
-
-  /**
-   * The renumbering itself, staged in the index with no commit: the branch's side is `range` (`[base, "HEAD"]`
-   * after a committed merge, `["--cached", base]` for a merge still pending). Returns the moves made.
-   */
-  async stageRenumbering(run: Run, handle: SandboxHandle, range: readonly string[]): Promise<Renumbering[]> {
-    const names = async (args: string[]) => (await this.git(handle, args)).split("\0").filter(Boolean);
-    const added = (await names(["diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", ...range, "--", MYSQL_STEPS_DIR]))
-      .filter((p) => p.startsWith(MYSQL_STEPS_DIR));
-    if (added.length === 0) return [];
-    const baseSha = range[0] === "--cached" ? range[1]! : range[0]!;
-    const plan = renumberPlan(await names(["ls-tree", "-r", "--name-only", "-z", baseSha, "--", MYSQL_STEPS_DIR]), added);
-    if (plan.length === 0) return [];
-    const changed = await names(["diff", "--name-only", "-z", "--no-renames", ...range]);
-    if (touchesSqliteSchema(changed)) {
-      this.d.log.warn("migration renumbering skipped: the branch changes a SQLite schema file", { run_id: run.id });
-      return [];
-    }
-    await applyRenumbering(this.mergeIO(handle), plan, changed);
-    this.d.log.info("migration steps renumbered", { run_id: run.id, moves: plan.map((r) => `${r.from} → ${r.to}`).join(", ") });
-    return plan;
   }
 
   /**
