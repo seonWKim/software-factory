@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { commandFooter, phaseLabel } from "../src/core/commands.js";
-import { interpret, interpretReply, openItems, parseTaskOfferMarker, taskOfferMarker } from "../src/core/interpret.js";
+import { interpret, interpretReply, openItems } from "../src/core/interpret.js";
+import { type SourceEvent, parseTaskOfferMarker, taskOfferMarker } from "../src/interfaces/source-adapter.js";
 import { withMessageStyle } from "../src/core/message-style.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 
@@ -257,18 +257,33 @@ describe("interpreter: chat answers", () => {
     expect((await interpret("hmm", items, f.llm, at)).kind).toBe("none");
   });
 
-  it("top-level: request, unsure with the message for the offer, and chat with no item", async () => {
-    const f = await setup([answer("request"), answer("unsure", [], "I can't tell."), answer("chat", [], "Yes, I read plain words.")]);
+  it("top-level: request and unsure with the message for the offer, and chat with no item", async () => {
+    const said = "I can make this a task: send a Slack message when a task finishes or needs you.";
+    const f = await setup([answer("request", [], said), answer("unsure", [], "I can't tell."), answer("chat", [], "Yes, I read plain words.")]);
     const items = openItems(await f.store.listWorkItems(10));
-    expect(await interpret("build a Today view", items, f.llm, "top_level")).toEqual({ kind: "request" });
+    const r = await interpret("report when tasks finish", items, f.llm, "top_level");
+    expect(r).toEqual({ kind: "request", text: said, message: "report when tasks finish" });
+    // The request reply is the model's text, then the offer's marker (Slack draws the button from it).
+    expect(interpretReply(r)).toBe(`${said}\n${taskOfferMarker("report when tasks finish")}`);
+    expect(parseTaskOfferMarker(interpretReply(r)!)).toBe("report when tasks finish");
     const u = await interpret("tasks are slow", items, f.llm, "top_level");
     expect(u).toEqual({ kind: "unsure", text: "I can't tell.", message: "tasks are slow" });
     expect(parseTaskOfferMarker(interpretReply(u)!)).toBe("tasks are slow");
-    expect(interpretReply({ kind: "request" })).toBeNull();
     const c = await interpret("can you read this?", items, f.llm, "top_level");
     expect(c).toEqual({ kind: "chat", text: "Yes, I read plain words.", item: null });
     expect(interpretReply(c)).toBe("Yes, I read plain words.");
     expect(f.llm.requests[0]!.system).toContain('`kind: "request"`');
+    // The prompt asks for the request's text: what was understood and what a task would do, in 1 to 3 sentences.
+    expect(f.llm.requests[0]!.system).toMatch(/`kind: "request"`[^\n]*`text` says in 1 to 3 plain sentences/);
+    expect(f.llm.requests[0]!.system).toContain("every kind but `chat`, `request` and `unsure`");
+  });
+
+  it("top-level: a request with empty text is none, which has no reply of its own", async () => {
+    const f = await setup([answer("request", [], "  ")]);
+    const items = openItems(await f.store.listWorkItems(10));
+    const r = await interpret("build a Today view", items, f.llm, "top_level");
+    expect(r).toEqual({ kind: "none" });
+    expect(interpretReply(r)).toBeNull();
   });
 
   it("the task offer marker carries any text, a closing comment included, and reads back the same", () => {
