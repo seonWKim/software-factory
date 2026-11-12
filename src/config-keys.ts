@@ -87,6 +87,7 @@ export const TOP_LEVEL_KEYS = [
   "cli_user",
   "toolchain",
   "packs",
+  "calendar",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.

@@ -12,7 +12,8 @@
 // another plugin, but never disabled: config that selects nothing for a guard fails at startup.
 //
 // Optional kinds (Forge, issue #172) have no default plugin: "none" selects nothing. Leaving `plugins.forge` out
-// lets src/compose.ts derive it from the sources (withForgeDefault, issue #273).
+// lets src/compose.ts derive it from the sources (withForgeDefault, issue #273). CalendarSource is optional too, and
+// selected as a list by its own top-level `calendar` key (default [], design 02-tasks).
 
 import { pathToFileURL } from "node:url";
 import { ConfigKeyError, suggestion } from "./config-keys.js";
@@ -52,8 +53,8 @@ export type {
   SetupContext,
   SetupHook,
 } from "./plugin-api.js";
-export { declaredSecretNames, declaredSecrets, selectedSetups, defineGrant, definePlugin, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
-import { authByOrigin } from "./plugin-api.js";
+export { declaredSecretNames, declaredSecrets, selectedSetups, defineGrant, definePlugin, selectedCalendars, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
+import { authByOrigin, selectedCalendars } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -90,14 +91,15 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   ticks: { interface: "TickGenerator", configKey: "plugins.ticks", guard: false, optional: false },
   engine: { interface: "ExecutionEngine", configKey: "plugins.engine", guard: false, optional: false },
   tacit: { interface: "TacitLedger", configKey: "plugins.tacit", guard: false, optional: false },
+  calendar: { interface: "CalendarSource", configKey: "calendar", guard: false, optional: true },
 };
 
 export const PLUGIN_KINDS = Object.keys(KINDS) as PluginKind[];
 
-/** Store and auth are selected by their own top-level config keys, so they take no default. */
-const TOP_LEVEL_KINDS: readonly PluginKind[] = ["store", "auth"];
+/** Store, auth and calendar are selected by their own top-level config keys, so they take no default. */
+const TOP_LEVEL_KINDS: readonly PluginKind[] = ["store", "auth", "calendar"];
 
-/** The interfaces selected under the `plugins` config object. Store and auth keep their own keys. */
+/** The interfaces selected under the `plugins` config object. Store, auth and calendar keep their own keys. */
 export const PLUGINS_KEYS = PLUGIN_KINDS.filter((k) => !TOP_LEVEL_KINDS.includes(k));
 
 /** Values that mean "turn this off". Never accepted for a guard. */
@@ -334,7 +336,7 @@ export function defaultPlugins(
 export function checkPlugin(registry: Registry, kind: PluginKind, value: unknown): string {
   const entry = registry[kind];
   const names = Object.keys(entry.plugins);
-  const available = `available: ${names.join(", ")}${typeof value === "string" ? suggestion(value, names) : ""}`;
+  const available = `available: ${names.length > 0 ? names.join(", ") : "none"}${typeof value === "string" ? suggestion(value, names) : ""}`;
   if (typeof value === "string" && Object.hasOwn(entry.plugins, value)) return value;
   if (entry.guard && (DISABLING.has(value) || typeof value !== "string")) {
     throw new Error(
@@ -356,13 +358,18 @@ type ListKind = (typeof LIST_KINDS)[number];
  * order. An unknown or non-string entry, or the same name twice fails, naming the key; so does an empty
  * `plugins.runner` or `plugins.llm`, while an empty `plugins.source` gives no source (issue #282). Which
  * source types the names build, and whether two share one, is known only once they are built: the controller
- * checks that at startup.
+ * checks that at startup. The top-level `calendar` key (design 02-tasks) takes a list only, and an empty one gives
+ * no calendar source.
  */
-export function checkList(registry: Registry, kind: ListKind, value: unknown): string[] {
-  if (!Array.isArray(value)) return [checkPlugin(registry, kind, value)];
+export function checkList(registry: Registry, kind: ListKind | "calendar", value: unknown): string[] {
   const entry = registry[kind];
+  if (!Array.isArray(value)) {
+    if (kind !== "calendar") return [checkPlugin(registry, kind, value)];
+    throw new Error(`${entry.configKey} must be a list of ${entry.interface} plugin names (default []); available: ${Object.keys(entry.plugins).join(", ") || "none"}`);
+  }
   // No source at all is allowed (issue #282): items and commands live in the store, messages wait in the outbox.
-  if (value.length === 0 && kind === "source") return [];
+  // No calendar either: its default is [] (design 02-tasks).
+  if (value.length === 0 && (kind === "source" || kind === "calendar")) return [];
   if (value.length === 0) {
     throw new Error(
       `${entry.configKey} is an empty list: name at least one ${entry.interface} plugin; available: ${Object.keys(entry.plugins).join(", ")}`,
@@ -383,7 +390,7 @@ export function checkList(registry: Registry, kind: ListKind, value: unknown): s
  */
 export function selectPlugins(
   registry: Registry,
-  raw: { store: { type: unknown }; auth: unknown; plugins?: unknown },
+  raw: { store: { type: unknown }; auth: unknown; calendar?: unknown; plugins?: unknown },
   opts: { platform?: string | undefined } = {},
 ): Selection {
   const defaults: Partial<Record<PluginKind, string>> = defaultPlugins(opts.platform, registry);
@@ -397,7 +404,7 @@ export function selectPlugins(
     const problems: string[] = [];
     for (const key of Object.keys(given)) {
       if (!(PLUGINS_KEYS as string[]).includes(key)) {
-        const hint = key === "store" || key === "auth" ? `; ${key} is selected by the top-level "${key}" key` : "";
+        const hint = (TOP_LEVEL_KINDS as readonly string[]).includes(key) ? `; ${key} is selected by the top-level "${key}" key` : "";
         problems.push(`unknown plugins key "${key}"${hint}; known keys: ${PLUGINS_KEYS.join(", ")}${suggestion(key, PLUGINS_KEYS)}`);
       }
     }
@@ -414,7 +421,7 @@ export function selectPlugins(
   if (auth.local !== undefined) out.local_auth = checkPlugin(registry, "auth", auth.local);
   if (auth.slack_thread !== undefined) out.slack_auth = checkPlugin(registry, "auth", auth.slack_thread);
   for (const kind of PLUGIN_KINDS) {
-    if ((LIST_KINDS as readonly string[]).includes(kind)) continue;
+    if ((LIST_KINDS as readonly string[]).includes(kind) || kind === "calendar") continue;
     // An optional kind left out or set to an off value selects nothing: the key stays out of the selection.
     if (registry[kind].optional && DISABLING.has(chosen[kind]) && !Object.hasOwn(registry[kind].plugins, chosen[kind] as string)) continue;
     out[kind] = checkPlugin(registry, kind, chosen[kind]);
@@ -427,6 +434,9 @@ export function selectPlugins(
     out[kind] = names[0] ?? "";
     if (names.length !== 1) out[lists[kind]] = names;
   }
+  // The top-level `calendar` key (design 02-tasks): a list of names, absent or [] (the default) for none.
+  const calendars = raw.calendar === undefined ? [] : checkList(registry, "calendar", raw.calendar);
+  if (calendars.length > 0) out.calendars = calendars;
   return out;
 }
 
@@ -440,6 +450,13 @@ export async function createPlugin<K extends PluginKind>(
   const entry = registry[kind] as InterfaceEntry<K>;
   const factory = entry.plugins[checkPlugin(registry, kind, name)]!;
   return factory(ctx);
+}
+
+/** The selected CalendarSource plugins (top-level `calendar`), built in config order, each with its name: none by default. */
+export async function createCalendars(registry: Registry, selection: Selection, ctx: Contexts["calendar"]): Promise<{ name: string; source: Instances["calendar"] }[]> {
+  const out = [];
+  for (const name of selectedCalendars(selection)) out.push({ name, source: await createPlugin(registry, "calendar", name, ctx) });
+  return out;
 }
 
 /**

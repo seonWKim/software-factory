@@ -96,6 +96,8 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   ticks: { "time-based": TimeBasedTicks },
   engine: { journal: JournalEngines },
   tacit: { none: NoTacitLedger },
+  // Optional, selected as a list by the top-level `calendar` key, default []; no provider ships yet (design 02-tasks).
+  calendar: {},
 };
 
 /** Every descriptor file under src/impl with what it exports, loaded the way the registry loads them. */
@@ -205,6 +207,8 @@ describe("plugin registry: defaults", () => {
     });
     const ctx = await context(loaded);
     for (const kind of PLUGIN_KINDS) {
+      // The calendar list defaults to [] (no source), so nothing is built for it.
+      if (kind === "calendar") continue;
       const name = loaded.plugins[kind];
       if (name === undefined) throw new Error(`${kind} has no default`);
       const x = await createPlugin(loaded.registry, kind, name, ctx as never);
@@ -332,6 +336,7 @@ describe("plugin registry: unknown names fail at startup", () => {
   const configWith = (kind: PluginKind, value: unknown): Record<string, unknown> => {
     if (kind === "store") return { ...REAL, store: { type: value } };
     if (kind === "auth") return { ...REAL, auth: value };
+    if (kind === "calendar") return { ...REAL, calendar: [value] };
     return { ...REAL, plugins: { ...(REAL.plugins as object), [kind]: value } };
   };
 
