@@ -511,13 +511,11 @@ export interface StandingView {
 
 /** One ledger entry waiting for the owner's verdict on the Rules page (issue #571). */
 export interface RuleRow {
+  /** `C-…` for a candidate class, `P-…` for a structure proposal. */
   id: string;
-  /** `pushback`, `class` (a candidate class) or `structure` (a structure proposal). */
-  kind: string;
-  /** The domains the rule is for; empty: every domain. */
-  scope: string[];
-  evidence: string[];
-  rule_draft: string;
+  title: string;
+  /** `open`, `pending` or `held`: the ledger's heading it is listed under. */
+  state: string;
 }
 
 /**
@@ -722,7 +720,7 @@ export async function postStanding(
   return { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
 }
 
-/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote the owner's wording when edited. */
+/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording. */
 export async function postRuleVerdict(
   token: string,
   body: { id: string; verdict: RuleVerdict; reason: string; text?: string },

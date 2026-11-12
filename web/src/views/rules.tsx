@@ -7,16 +7,18 @@ import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/part
 import { field } from "./item-decisions.js";
 
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571): the owner's tacit ledger entries
-// waiting for a verdict (pending pushbacks, candidate classes, structure proposals), each with its evidence lines and
-// rule draft, read through GET /api/v1/rules. Promote, Hold and Reject each open a dialog that asks for a reason before
-// it sends; Promote also lets the owner edit the rule's wording, sent beside the kept draft. Only the owner sends; anyone
+// waiting for a verdict (candidate classes `C-…` and structure proposals `P-…`), each with its title, state and ID, read
+// through GET /api/v1/rules. Promote, Hold and Reject each open a dialog that asks for a reason before it sends; Promote
+// of a class also asks for the rule's wording, sent as the rule (a proposal takes none). Only the owner sends; anyone
 // else sees the list with the reason. With the tacit plugin `none` the page shows one action: how to turn the ledger on.
 // One card per entry at every width, so no table turns into cards.
 
 const muted = "text-xs text-pretty text-text-2";
 const BUTTON = "h-8 w-auto px-2";
 
-const KIND_LABEL: Record<string, string> = { pushback: "Pushback", class: "Candidate class", structure: "Structure proposal" };
+const STATE_LABEL: Record<string, string> = { open: "Open", pending: "Pending", held: "Held" };
+/** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal takes none. */
+const isClass = (id: string): boolean => id.startsWith("C-");
 const VERDICTS: readonly { verdict: RuleVerdict; label: string }[] = [
   { verdict: "promote", label: "Promote" },
   { verdict: "hold", label: "Hold" },
@@ -28,22 +30,20 @@ const CONSEQUENCE: Record<RuleVerdict, string> = {
   reject: "Rejecting drops the entry: it never reaches a prompt.",
 };
 
-/** The verdict dialog: a reason first, and for promote the rule's wording, prefilled with the draft. */
+/** The verdict dialog: a reason first, and for promote of a class the rule's wording, prefilled with its title. */
 function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; verdict: RuleVerdict; token: string; onClose: () => void }) {
   const client = useQueryClient();
   const [reason, setReason] = useState("");
-  const [text, setText] = useState(entry.rule_draft);
+  const [text, setText] = useState(entry.title);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const promote = verdict === "promote";
+  const promote = verdict === "promote" && isClass(entry.id);
   const wording = text.trim();
   const send = async () => {
     setBusy(true);
     setError(null);
     try {
-      // The wording goes only when the owner changed it; the ledger keeps the draft either way.
-      const edited = promote && wording !== entry.rule_draft.trim();
-      const r = await postRuleVerdict(token, { id: entry.id, verdict, reason: reason.trim(), ...(edited ? { text: wording } : {}) });
+      const r = await postRuleVerdict(token, { id: entry.id, verdict, reason: reason.trim(), ...(promote ? { text: wording } : {}) });
       if (!r.ok) {
         setError(r.error);
         return;
@@ -73,7 +73,7 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
         <label className="flex flex-col gap-1 text-sm font-medium">
           Rule wording
           <textarea aria-label="Rule wording" className={`${field} min-h-20 font-normal`} value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} />
-          <span className={muted}>Edit it before promoting if you like; the ledger keeps its own draft beside your wording.</span>
+          <span className={muted}>The ledger stores this wording as the promoted rule.</span>
         </label>
       )}
       <label className="flex flex-col gap-1 text-sm font-medium">
@@ -89,30 +89,12 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
   return (
     <li data-rule={entry.id} className="space-y-2 p-3">
       <div className="flex flex-wrap items-baseline gap-2">
-        <Badge>{KIND_LABEL[entry.kind] ?? entry.kind}</Badge>
+        <Badge>{STATE_LABEL[entry.state] ?? entry.state}</Badge>
         <span className="min-w-0 font-mono text-xs break-all text-text-2">{entry.id}</span>
-        {entry.scope.length > 0 && <span className={muted}>for {entry.scope.join(", ")}</span>}
       </div>
-      <div>
-        <h3 className="text-xs font-medium text-text-2">Rule draft</h3>
-        <p data-rule-draft className="text-sm text-pretty break-words whitespace-pre-wrap">
-          {entry.rule_draft === "" ? <span className="text-text-3">No draft yet: the ledger has not distilled one.</span> : entry.rule_draft}
-        </p>
-      </div>
-      <div>
-        <h3 className="text-xs font-medium text-text-2">Evidence</h3>
-        {entry.evidence.length === 0 ? (
-          <p className={muted}>None recorded.</p>
-        ) : (
-          <ul aria-label={`Evidence for ${entry.id}`} className="list-disc space-y-0.5 pl-5 text-sm">
-            {entry.evidence.map((line, i) => (
-              <li key={i} className="text-pretty break-words">
-                {line}
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      <p data-rule-title className="text-sm text-pretty break-words whitespace-pre-wrap">
+        {entry.title}
+      </p>
       {token !== null && (
         <div className="flex flex-wrap gap-2">
           {VERDICTS.map((v) => (
@@ -187,8 +169,8 @@ export function RulesPage() {
         </ul>
       )}
       <p className={`mt-3 ${muted}`}>
-        A promoted rule reaches every run's prompt under Learned rules, unless its scope names another domain. The ledger lives in your
-        agents home; this page only reads it and sends your verdicts.
+        A promoted rule reaches every run's prompt under Learned rules, with its exceptions and scope. The ledger lives in your agents
+        home; this page only reads it and sends your verdicts.
       </p>
     </Section>
   );
