@@ -17,6 +17,7 @@ Each colour has a light and a dark value; `.dark` on `<html>` switches them, so 
 | `text-2` | `text-text-2` | #5E5E63 | #A1A1A8 | secondary text, hints |
 | `text-3` | `text-text-3` | #66666A | #93939A | placeholders, counts |
 | `accent` | `text-accent` | #C2410C | #FB923C | links, the radio mark |
+| `ember` | `fill-ember` | #FB923C | #FB923C | the dot of the Gongbang mark |
 | `running` | | #1D4ED8 | #60A5FA | a running task |
 | `done` | | #15803D | #4ADE80 | a finished task |
 | `failed` | | #B91C1C | #F87171 | a failed task |
