@@ -7,7 +7,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { Listener } from "../src/core/listener.js";
-import { TOP_LEVEL_FACT, taskOfferMarker } from "../src/core/interpret.js";
+import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
+import { taskOfferMarker } from "../src/interfaces/source-adapter.js";
 import type { UserId } from "../src/core/types.js";
 import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";

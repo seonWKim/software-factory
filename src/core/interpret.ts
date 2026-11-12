@@ -5,7 +5,7 @@ import { withMessageStyle } from "./message-style.js";
 import type { SourceRef, Timestamp, WorkItem, WorkItemId } from "./types.js";
 import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest } from "../interfaces/llm-provider.js";
-import type { SourceEvent } from "../interfaces/source-adapter.js";
+import { type SourceEvent, taskOfferMarker } from "../interfaces/source-adapter.js";
 
 /**
  * Reads one plain-language message against the open items (design §4, 2026-11-11, issues #583 and the chat answer).
@@ -349,22 +349,9 @@ export function interpretTexts(r: Interpretation): string[] {
   return ps.map((p) => p.args).filter((a) => a !== "");
 }
 
-// The offer to make a top-level message a task (design §4, decision 1 of the chat answer): the message text rides in
-// the reply's hidden marker, base64url so no text can close the comment, and Slack puts it in the button's value. No
-// store table holds it; the press takes the message in through intake, keyed on the message's source id.
-
-const TASK_OFFER = /^<!-- factory:make-task:([A-Za-z0-9_-]*) -->$/m;
-
-/** The hidden line that ends an offer to make a message a task (a request, unsure or unread answer): the message. */
-export function taskOfferMarker(message: string): string {
-  return `<!-- factory:make-task:${Buffer.from(message, "utf8").toString("base64url")} -->`;
-}
-
-/** The message an offer makes a task of (its marker), or null. */
-export function parseTaskOfferMarker(body: string): string | null {
-  const m = TASK_OFFER.exec(body);
-  return m ? Buffer.from(m[1]!, "base64url").toString("utf8") : null;
-}
+// The offer marker lives in interfaces/source-adapter.ts, beside the `offered` press it leads to; re-exported here for
+// the Slack renderer that reads it.
+export { parseTaskOfferMarker } from "../interfaces/source-adapter.js";
 
 // Stored proposals (design §4, issue #584): one row per proposed command of a `commands` reply, keyed by the reply's
 // proposal ID and the command's index, so storing the same reply again writes nothing. A press confirms or cancels

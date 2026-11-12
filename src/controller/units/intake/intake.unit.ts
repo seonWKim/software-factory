@@ -2,7 +2,7 @@
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
 import { PHASE_MARKER } from "../../../core/split.js";
-import type { SourceEvent } from "../../../interfaces/source-adapter.js";
+import { type SourceEvent, taskOfferMarker } from "../../../interfaces/source-adapter.js";
 import { scanClean } from "../commands/scan.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
@@ -16,11 +16,9 @@ const FLAGGED_TEXT = "I can't use that message: it looks like it holds a secret.
 
 /**
  * The reply to a top-level mention not read (no model, no `approve_spec`, too long, a `none` answer): the line, then
- * the offer's hidden marker, from which Slack draws the "Make this a task" button. The marker is written as
- * `taskOfferMarker` in core/interpret.ts writes it; a unit may not import core (tests/architecture), and
- * tests/chat-intake.test.ts reads the button's value back from it.
+ * the offer's hidden marker, from which Slack draws the "Make this a task" button.
  */
-const unreadOffer = (text: string) => `I couldn't read that. Make it a task?\n<!-- factory:make-task:${Buffer.from(text, "utf8").toString("base64url")} -->`;
+const unreadOffer = (text: string) => `I couldn't read that. Make it a task?\n${taskOfferMarker(text)}`;
 
 /** Takes a requested item in: authorize, create, status, edges, links. */
 export class IntakeUnit {

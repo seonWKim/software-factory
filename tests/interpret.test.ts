@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { commandFooter, phaseLabel } from "../src/core/commands.js";
-import { interpret, interpretReply, openItems, parseTaskOfferMarker, taskOfferMarker } from "../src/core/interpret.js";
+import { interpret, interpretReply, openItems } from "../src/core/interpret.js";
+import { type SourceEvent, parseTaskOfferMarker, taskOfferMarker } from "../src/interfaces/source-adapter.js";
 import { withMessageStyle } from "../src/core/message-style.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
-import type { SourceEvent } from "../src/interfaces/source-adapter.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
 

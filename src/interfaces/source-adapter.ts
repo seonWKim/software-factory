@@ -6,6 +6,24 @@ import type { ExternalIdentity } from "./auth-provider.js";
 
 // Intake surface. Two kinds of source: polled (e.g. forge issues) and streamed (pushed events, e.g. Slack).
 
+// The offer to make a top-level message a task (design §4, decision 1 of the chat answer): the message text rides in
+// the reply's hidden marker, base64url so no text can close the comment, and the source draws a "Make this a task"
+// button from it, whose press is an `offered` item_requested. No store table holds it; the press takes the message in
+// through intake, keyed on the message's source id.
+
+const TASK_OFFER = /^<!-- factory:make-task:([A-Za-z0-9_-]*) -->$/m;
+
+/** The hidden line that ends an offer to make a message a task (a request, unsure or unread answer): the message. */
+export function taskOfferMarker(message: string): string {
+  return `<!-- factory:make-task:${Buffer.from(message, "utf8").toString("base64url")} -->`;
+}
+
+/** The message an offer makes a task of (its marker), or null. */
+export function parseTaskOfferMarker(body: string): string | null {
+  const m = TASK_OFFER.exec(body);
+  return m ? Buffer.from(m[1]!, "base64url").toString("utf8") : null;
+}
+
 /**
  * Command events carry `comment_id`, the id of the comment that held the command, so the controller can
  * react to it (`markSeen`) and key a refusal reply on it. `item_requested` is identified by `source.id`.
