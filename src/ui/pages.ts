@@ -1,7 +1,6 @@
 // The two status pages. Reads only: every value comes from FactoryStore read methods, and no store method
 // that writes is called from here. Free text goes through Withholder; everything else through esc().
 
-import type { TacitLedger } from "../interfaces/tacit-ledger.js";
 import { readProjectLabel } from "../core/project-labels.js";
 import { type ConflictCounts, conflictCounts } from "../core/resolve.js";
 import { type Run, type RunKind, type StateChange, type WorkItem, type WorkItemId, outcomeCost, outcomeTokens } from "../core/types.js";
@@ -23,6 +22,7 @@ import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { mergesSection } from "./merge-digest.js";
 import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
+import type { UiTacit } from "./rules-api.js";
 import type { UiSettings } from "./settings-api.js";
 import type { UiCommands } from "./commands.js";
 import { type DisplayNames, userLabel } from "./names.js";
@@ -64,16 +64,6 @@ export interface UiDeps {
   displayNames?: DisplayNames;
   /** The Rules page's tacit ledger (rules-api.ts, issue #571), read and judged only through it. Absent: the plugin `none`. */
   tacit?: UiTacit;
-}
-
-/** The Rules page's tacit ledger as the UI process holds it (design 08-settings, 2026-11-12). */
-export interface UiTacit {
-  /** The live holder (src/runtime/live-tacit.ts): the plugin the `integrations` entry, else config, names. */
-  ledger: TacitLedger;
-  /** The UI's settings: refreshed before each Rules request, which rebuilds `ledger` when the entry changed. */
-  settings: { refresh(): Promise<void>; values(): { integrations: Readonly<Record<string, string>> } };
-  /** The agents home (AGENTS_HOME, else ~/.agents) and the first CLI missing there, or null when both are executable. */
-  home(): { path: string; missing: string | null };
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

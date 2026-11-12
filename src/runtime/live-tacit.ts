@@ -2,28 +2,37 @@
 // then whatever the runtime `integrations` entry names. LiveSettings hands it the entry after each refresh (the
 // controller and the worker pool each tick, the UI before each Rules request), and it rebuilds the plugin when the
 // name changes: no restart. It keeps only the plugin it built and that plugin's name, never the entry itself.
+// The ledger is the TacitLedger interface (src/interfaces/tacit-ledger.ts), read structurally: a runtime component
+// imports no legacy module.
 
-import { errorText, type Logger } from "../core/log.js";
-import type { IntegrationHolder } from "../core/settings.js";
-import type { TacitDecision, TacitLedger, TacitPendingEntry, TacitPushback, TacitRule } from "../interfaces/tacit-ledger.js";
+/** What the holder delegates to: TacitLedger's shape. */
+interface Ledger {
+  readonly enabled: boolean;
+  capture(...a: never[]): Promise<void>;
+  pending(): Promise<unknown>;
+  verdict(...a: never[]): Promise<void>;
+  rules(): Promise<unknown>;
+}
 
-/** Builds the tacit plugin named `name`; throws for a name the registry does not hold. */
-export type TacitBuild = (name: string) => Promise<TacitLedger>;
+interface Log {
+  info(msg: string, fields?: Record<string, string | null>): void;
+  warn(msg: string, fields?: Record<string, string | null>): void;
+}
 
-export class LiveTacit implements TacitLedger, IntegrationHolder {
+export class LiveTacit<L extends Ledger> {
   private applying: Promise<void> = Promise.resolve();
   private failed: string | null = null;
 
   private constructor(
     private readonly configured: string,
-    private readonly build: TacitBuild,
-    private readonly log: Logger | undefined,
+    private readonly build: (name: string) => Promise<L>,
+    private readonly log: Log | undefined,
     private name: string,
-    private ledger: TacitLedger,
+    private ledger: L,
   ) {}
 
-  /** The holder with the config's plugin (`configured`, the selection's `tacit`) built. */
-  static async start(configured: string, build: TacitBuild, log?: Logger): Promise<LiveTacit> {
+  /** The holder with the config's plugin (`configured`, the selection's `tacit`) built; `build` throws for an unknown name. */
+  static async start<L extends Ledger>(configured: string, build: (name: string) => Promise<L>, log?: Log): Promise<LiveTacit<L>> {
     return new LiveTacit(configured, build, log, configured, await build(configured));
   }
 
@@ -47,7 +56,8 @@ export class LiveTacit implements TacitLedger, IntegrationHolder {
       try {
         this.ledger = await this.build(want);
       } catch (err) {
-        if (this.failed !== want) this.log?.warn("tacit plugin could not be built; keeping the one in use", { plugin: want, in_use: this.name, error: errorText(err) });
+        const error = err instanceof Error ? err.message : String(err);
+        if (this.failed !== want) this.log?.warn("tacit plugin could not be built; keeping the one in use", { plugin: want, in_use: this.name, error });
         this.failed = want;
         return;
       }
@@ -58,19 +68,19 @@ export class LiveTacit implements TacitLedger, IntegrationHolder {
     return this.applying;
   }
 
-  capture(p: TacitPushback): Promise<void> {
-    return this.ledger.capture(p);
+  capture(...a: Parameters<L["capture"]>): Promise<void> {
+    return this.ledger.capture(...a);
   }
 
-  pending(): Promise<readonly TacitPendingEntry[]> {
-    return this.ledger.pending();
+  pending(): ReturnType<L["pending"]> {
+    return this.ledger.pending() as ReturnType<L["pending"]>;
   }
 
-  verdict(id: string, decision: TacitDecision, reason: string, rule?: string): Promise<void> {
-    return this.ledger.verdict(id, decision, reason, rule);
+  verdict(...a: Parameters<L["verdict"]>): Promise<void> {
+    return this.ledger.verdict(...a);
   }
 
-  rules(): Promise<readonly TacitRule[]> {
-    return this.ledger.rules();
+  rules(): ReturnType<L["rules"]> {
+    return this.ledger.rules() as ReturnType<L["rules"]>;
   }
 }

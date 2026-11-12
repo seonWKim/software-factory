@@ -13,8 +13,11 @@
 
 import { RULE_VERDICTS, type RuleVerdict } from "../core/learned-rules.js";
 import { errorText } from "../core/log.js";
+import { LiveSettings } from "../core/settings.js";
+import { checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
+import { LiveTacit } from "../runtime/live-tacit.js";
 import type { UserId } from "../core/types.js";
-import { type TacitPendingEntry, tacitIdKind } from "../interfaces/tacit-ledger.js";
+import { type TacitLedger, type TacitPendingEntry, tacitIdKind } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import { Withholder } from "./withhold.js";
@@ -25,6 +28,33 @@ export const RULE_VERDICT_PATH = "/api/v1/rules/verdict";
 /** The longest reason and rule text a verdict takes. */
 export const MAX_REASON = 1000;
 export const MAX_RULE_TEXT = 2000;
+
+/** The Rules page's tacit ledger as the UI process holds it (design 08-settings, 2026-11-12). */
+export interface UiTacit {
+  /** The live holder (src/runtime/live-tacit.ts): the plugin the `integrations` entry, else config, names. */
+  ledger: TacitLedger;
+  /** The UI's settings: refreshed before each Rules request, which rebuilds `ledger` when the entry changed. */
+  settings: { refresh(): Promise<void>; values(): { integrations: Readonly<Record<string, string>> } };
+  /** The agents home (AGENTS_HOME, else ~/.agents) and the first CLI missing there, or null when both are executable. */
+  home(): { path: string; missing: string | null };
+}
+
+type LiveOpts = ConstructorParameters<typeof LiveSettings>[0];
+
+/**
+ * The UI's ledger (compose.ts buildUiParts): a live holder that starts with `configured` (`plugins.tacit`), and its own
+ * LiveSettings on the store, whose refresh before each Rules request switches it. That LiveSettings reads only
+ * `integrations`, a global key, so its config names no project. The home is this process's.
+ */
+export async function uiTacit(
+  configured: string,
+  build: (name: string) => Promise<TacitLedger>,
+  o: Omit<LiveOpts, "integrations" | "config"> & { config: Omit<LiveOpts["config"], "project"> },
+): Promise<UiTacit> {
+  const ledger = await LiveTacit.start(configured, build, o.log);
+  const settings = new LiveSettings({ ...o, config: { ...o.config, project: { key: "", label: "" } }, integrations: [ledger] });
+  return { ledger, settings, home: () => checkAgentsHome(process.env) };
+}
 
 /** The plugin the Rules page turns on. */
 export const RULES_PLUGIN = "agents-home";

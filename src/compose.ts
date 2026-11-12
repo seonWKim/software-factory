@@ -61,13 +61,12 @@ import { type RepoLookup, resolveProject } from "./impl/github/forge.plugin.js";
 import { ConsoleLogger } from "./impl/log/console-logger.js";
 import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
-import type { UiTacit } from "./ui/pages.js";
 import type { UiPauses } from "./ui/pause-api.js";
+import { type UiTacit, uiTacit } from "./ui/rules-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
-import { checkAgentsHome } from "./impl/tacit/agents-home-tacit-ledger.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
 import {
   type BaseContext, GRANTS, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createCalendars, createGrants, createPlugin, selectGrants, selectPlugins, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources, withPackPlugins,
@@ -842,7 +841,6 @@ export async function build(
   // The bus and the tick generators the roles run on (RFC 0015 §5, design 10-event-driven).
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
-  // The owner's ledger behind a live holder: the `integrations` setting switches it with no restart (design 08-settings).
   const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
@@ -1054,8 +1052,7 @@ export interface UiParts {
   pauses: UiPauses;
   /** Display names by user id from Identity's identity_profiles (M9), only to show. */
   displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
-  /** The Rules page's ledger (design 08-settings): a live holder its own settings refresh before each Rules request. */
-  tacit: UiTacit;
+  tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
   close(): Promise<void>;
 }
 
@@ -1080,14 +1077,9 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const store = await p.store(secrets, clock);
   await store.migrate();
   const scanner = await p.scanner(secrets);
-  const { owner, name } = loaded.config.repo;
-  const token = newCsrfToken();
+  const { owner, name } = loaded.config.repo, token = newCsrfToken();
   const settings: UiSettings = {
-    base: settingsBase(loaded),
-    repo: { owner, name },
-    actor: opts.identity.user,
-    resolveProject: storeProjectResolver(store, { owner, name }),
-    csrfToken: token,
+    base: settingsBase(loaded), repo: { owner, name }, actor: opts.identity.user, resolveProject: storeProjectResolver(store, { owner, name }), csrfToken: token,
     integrations: INTEGRATION_KINDS.map((kind) => ({ kind, interface: loaded.registry[kind].interface, configured: String(loaded.plugins[kind]) })),
   };
   // The owner check for "Resume now" and the page's command checks (approve_spec, approve_merge): the configured auth plugin over the
@@ -1127,13 +1119,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   };
   const profiles = new ProfileStore(storeSql(store));
   const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
-  // The Rules page's ledger: the `integrations` entry, read before each Rules request, switches it with no restart.
-  const tacitLog = new ConsoleLogger(clock, "tacit");
-  const ledger = await LiveTacit.start(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), tacitLog);
-  // Only `integrations` is read here: project blocks stay keyed by owner/name, as settingsBase writes them.
-  const config = resolvedConfig(loaded.config, { key: `${owner}/${name}`, label: `${owner}/${name}` });
-  const live = new LiveSettings({ config, base: settingsBase(loaded), source: store, log: tacitLog, integrations: [ledger] });
-  const tacit: UiTacit = { ledger, settings: live, home: () => checkAgentsHome(process.env) };
+  const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, close: () => identity.stop().then(() => store.close()) };
 }
 
