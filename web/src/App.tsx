@@ -10,7 +10,7 @@ import { t } from "./i18n/index.js";
 import { cn } from "./lib/cn.js";
 import { useShortcuts } from "./keys.js";
 import { Link, NavProvider, useLocationPath } from "./nav.js";
-import { BASE, type ComingDef, type PageDef, TASK_ENTRIES, pagesIn, redirectFor, routeFor } from "./pages.js";
+import { BASE, type PageDef, pagesIn, redirectFor, routeFor } from "./pages.js";
 import { HelpDialog, SearchDialog } from "./search.js";
 import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme.js";
 import { useNow } from "./views/common.js";
@@ -21,6 +21,7 @@ import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
+import { TasksPage } from "./views/tasks.js";
 
 /** "updated Ns ago", ticking each second; below sm only "Ns" shows, the rest stays for screen readers. */
 function Ago({ at }: { at: number }) {
@@ -37,6 +38,7 @@ function Ago({ at }: { at: number }) {
 const VIEWS: Record<string, () => JSX.Element> = {
   "": NeedsYouPage,
   items: ItemsPage,
+  tasks: TasksPage,
   activity: ActivityPage,
   runners: RunnersPage,
   queue: QueuePage,
@@ -52,21 +54,11 @@ const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
 
 const LINK_ROW = "flex items-center gap-2 px-2 py-1.5 text-sm";
 
-/** One sidebar group of page links; Tasks entries without a view yet show disabled, with "coming". */
-function SideLinks({ label, pages, current, coming = [] }: { label: string; pages: readonly PageDef[]; current: PageDef; coming?: readonly ComingDef[] }) {
+/** One sidebar group of page links. */
+function SideLinks({ label, pages, current }: { label: string; pages: readonly PageDef[]; current: PageDef }) {
   return (
     <nav aria-label={label}>
       <ul className="space-y-1">
-        {coming.map((c) => (
-          <li key={c.key}>
-            {/* Below sm only the icon shows: the title and name keep each entry named. */}
-            <span aria-disabled="true" title={t(`page.${c.key}` as MessageKey)} className={cn(LINK_ROW, "cursor-not-allowed text-text-3")}>
-              <c.icon aria-hidden className="size-4 shrink-0" />
-              <span className="max-sm:sr-only">{t(`page.${c.key}` as MessageKey)}</span>
-              <span className="ml-auto text-xs max-sm:sr-only">{t("nav.coming")}</span>
-            </span>
-          </li>
-        ))}
         {pages.map((p) => (
           <li key={p.path}>
             <Link
@@ -155,7 +147,7 @@ export function App() {
       <div className="flex min-h-dvh bg-surface font-sans text-text-1">
         <aside aria-label={t("nav.sidebar")} className="w-44 shrink-0 border-r border-border p-3 max-sm:w-14">
           <Brand />
-          <SideLinks label={t("nav.tasks")} pages={[]} coming={TASK_ENTRIES} current={current} />
+          <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} />
           <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("nav.factory")} pages={pagesIn("factory")} current={current} />
           </div>
