@@ -8,7 +8,7 @@ import type { SourceRef, WorkItem } from "../../core/types.js";
 import type { ExternalIdentity } from "../../interfaces/auth-provider.js";
 import type { EgressScanner } from "../../interfaces/egress-scanner.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
-import type { PushedEvent, SourceCloseReason, SourceEvent, StreamSource } from "../../interfaces/source-adapter.js";
+import type { PushedEvent, SourceCloseReason, SourceEvent, SourceNotice, StreamSource } from "../../interfaces/source-adapter.js";
 import type { RepoRef } from "../github/github-client.js";
 import { SlackApiError, type SlackApi, type SlackMessage } from "./slack-api.js";
 import { commentEvent } from "../../core/comment-event.js";
@@ -18,6 +18,7 @@ import {
 } from "./slack-format.js";
 import { type ChatAnswer, type ChatDeps, type ChatStore, type ProposalPress, UNLINKED, proposalPress, runChatCommand, runProposalPress } from "./slack-commands.js";
 import type { SocketConnector } from "./slack-socket.js";
+import { postNotices } from "./slack-notify.js";
 
 /** Metadata event types on the factory's own messages: a comment (by marker hash) and the one status message. */
 export const META_MESSAGE = "factory_message";
@@ -62,8 +63,10 @@ export interface SlackSourceDeps {
   settings?: ChatDeps["settings"];
   /** Where PR links point. */
   repo: RepoRef;
-  /** The base of a spec message's Full spec link (`<base>/app/items/<id>`; slack.plugin.ts); absent: no link. */
+  /** The base of a spec message's Full spec link and of each notice's link (`<base>/app/items/<id>`; slack.plugin.ts); absent: no link. */
   dashboard?: () => Promise<string>;
+  /** Where the owner's notices are posted (`slack.notify_channel`); absent: the first of `channels`. */
+  notify_channel?: string;
   log: Logger;
 }
 
@@ -89,9 +92,7 @@ export function slackLink(channel: string, ts: string, thread_ts?: string): stri
   return thread_ts && thread_ts !== ts ? `${base}?thread_ts=${thread_ts}&cid=${channel}` : base;
 }
 
-function threadRef(t: SlackThread): SourceRef {
-  return { type: "slack_thread", id: slackSourceId(t), link: slackLink(t.channel, t.thread_ts) };
-}
+const threadRef = (t: SlackThread): SourceRef => ({ type: "slack_thread", id: slackSourceId(t), link: slackLink(t.channel, t.thread_ts) });
 
 /** A request's title: its first line, at most TITLE_MAX characters. */
 const titleOf = (text: string): string => (text.split(/\r?\n/)[0] ?? "").trim().slice(0, TITLE_MAX) || "Slack request";
@@ -100,9 +101,7 @@ const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? 
 const obj = (v: unknown): Record<string, unknown> => (typeof v === "object" && v !== null ? (v as Record<string, unknown>) : {});
 
 /** A marker as it is stored in Slack metadata: a hash, so no marker text is posted. */
-function markerHash(marker: string): string {
-  return createHash("sha256").update(marker).digest("hex").slice(0, 32);
-}
+const markerHash = (marker: string): string => createHash("sha256").update(marker).digest("hex").slice(0, 32);
 
 /**
  * The `slack` stream source (issue #109): Slack Socket Mode in, thread replies out.
@@ -141,6 +140,9 @@ export class SlackSource implements StreamSource {
   private me: Promise<{ team_id: string; user_id: string }> | null = null;
 
   constructor(private readonly d: SlackSourceDeps) {}
+
+  /** The owner's notices of one tick as one message (slack-notify.ts, design 12-notification-channels). */
+  notifyOwner(notices: readonly SourceNotice[]): Promise<void> { return postNotices(this.d, notices); }
 
   async *subscribe(signal: AbortSignal): AsyncGenerator<PushedEvent> {
     const me = await this.identity();
@@ -590,10 +592,7 @@ export class SlackSource implements StreamSource {
 
   /** auth.test once per process; a failure is not cached, so the next call asks again. */
   private identity(): Promise<{ team_id: string; user_id: string }> {
-    if (!this.me) {
-      this.me = this.d.api.identity();
-      this.me.catch(() => (this.me = null));
-    }
+    if (!this.me) (this.me = this.d.api.identity()).catch(() => (this.me = null));
     return this.me;
   }
 }

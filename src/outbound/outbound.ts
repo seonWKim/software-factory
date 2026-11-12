@@ -2,7 +2,8 @@
 // flush time came is sent by the targets, in intent order. One batch at a time per destination keeps its order.
 // A batch is claimed (one sender), its text is scanned (G5), and its intents are delivered; when all are, the batch
 // is marked sent and DeliveryCompleted is published in one transaction. A failure retries the whole batch with
-// backoff: intents already delivered are skipped on the retry, so nothing is written twice.
+// backoff: intents already delivered are skipped on the retry, so nothing is written twice. An adapter's notices
+// (`<type>:notify`, design 12-notification-channels) go out as one call per batch, at most one batch per 60 s.
 
 import { DEAD_LETTERED, type EventBus } from "../bus/index.js";
 import { retryDelayMs } from "../core/policy.js";
@@ -13,6 +14,7 @@ import { envelope, type Envelope } from "../shared/envelope.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
 import { addMs } from "../shared/time.js";
 import type { SqlDriver } from "../state/index.js";
+import { NOTIFY_WINDOW_MS, isNotifyDestination } from "./aggregator/batching.js";
 import { ACTION_INTENT, RETRIED_ACTIONS, THREAD_INTENT, actionOf, type ActionRow } from "./intents.js";
 import type { Delivery, DeliveryTarget } from "./targets/target.js";
 import DELIVERIES_REQUESTS from "./topics/deliveries-requests.topic.js";
@@ -48,6 +50,8 @@ export interface OutboundDeps {
 
 /** Batches one flush sends at most. */
 const FLUSH_BATCH = 50;
+/** Notices one adapter call takes at most: a longer batch is sent in several calls. */
+const NOTIFY_CALL = 50;
 
 /**
  * The attempts a batch gets while its target refuses an intent for good (`refusedForGood`) before that intent is
@@ -128,6 +132,9 @@ export class Outbound {
     }
     // Not every intent can be written here (no adapter, or the sync lease is another replica's): left for one that can.
     if (!intents.every((i) => i.done || (this.target(i.delivery) !== null && this.d.canSend(typeOf(i.delivery))))) return false;
+    const destination = String(b.destination);
+    const notices = isNotifyDestination(destination);
+    if (notices && (await this.tooSoon(id, destination, now))) return false;
     const until = addMs(now, this.d.config().lease_ms);
     const claimed = await this.d.db.run(
       `UPDATE outbound_batches SET state = 'sending', claim_token = claim_token + 1, claimed_until = ?
@@ -141,7 +148,8 @@ export class Outbound {
     const gaveUp: GaveUp[] = [];
     const attempts = Number(b.attempts ?? 0);
     try {
-      for (const i of intents) if (!i.done) passport_id = (await this.deliver(i, now, attempts, gaveUp)) ?? passport_id;
+      if (notices) passport_id = await this.deliverNotices(intents.filter((i) => !i.done), now, attempts, gaveUp);
+      else for (const i of intents) if (!i.done) passport_id = (await this.deliver(i, now, attempts, gaveUp)) ?? passport_id;
     } catch (err) {
       if (!(err instanceof Stop)) throw err;
       const state = err.retry_in_ms === null ? "open" : "failed";
@@ -153,7 +161,6 @@ export class Outbound {
       );
       return false;
     }
-    const destination = String(b.destination);
     const intent_ids = intents.map((i) => i.id);
     await this.d.db.transaction(async (tx) => {
       const n = await tx.run(
@@ -216,18 +223,81 @@ export class Outbound {
    */
   private async deliver(i: Loaded, now: string, attempts: number, gaveUp: GaveUp[]): Promise<string | null> {
     const target = this.target(i.delivery)!;
+    const passport_id = await this.authorized(target);
+    await this.write(i, now, target, attempts, gaveUp);
+    return passport_id;
+  }
+
+  /** The service passport a write to `target` goes under (null with no Identity); a refusal stops the batch for a retry. */
+  private async authorized(target: DeliveryTarget): Promise<string | null> {
     const cfg = this.d.config();
-    if (!this.d.authorize) {
-      await this.write(i, now, target, attempts, gaveUp);
-      return null;
-    }
+    if (!this.d.authorize) return null;
     const { passport_id, decision } = await this.d.authorize(cfg.project_key, target.name);
     if (!decision.allow) {
       this.d.log.warn("outbound's passport refused a delivery; retried later", { target: target.name, reason: decision.reason });
       throw new Stop(cfg.retry_base_ms, `passport_denied: ${decision.reason}`);
     }
-    await this.write(i, now, target, attempts, gaveUp);
     return passport_id;
+  }
+
+  /**
+   * At most one notices message per NOTIFY_WINDOW_MS for a destination: a batch due sooner after the last one sent
+   * (a backlog after an outage) waits until the window passed. True when it must wait.
+   */
+  private async tooSoon(id: string, destination: string, now: string): Promise<boolean> {
+    const [last] = await this.d.db.all("SELECT MAX(sent_at) AS at FROM outbound_batches WHERE destination = ? AND state = 'sent'", [destination]);
+    if (!last?.at) return false;
+    const next = addMs(String(last.at), NOTIFY_WINDOW_MS);
+    if (next <= now) return false;
+    await this.d.db.run("UPDATE outbound_batches SET flush_at = ? WHERE id = ? AND state <> 'sent'", [next, id]);
+    return true;
+  }
+
+  /**
+   * An adapter's undelivered notices of one batch, in calls of at most NOTIFY_CALL (each one message). G5 first: a
+   * title or reason the scan flags withholds the whole batch, its rows marked `withheld` and never retried. A failed
+   * call retries the batch with backoff; the calls before it are recorded delivered, so a retry skips them.
+   */
+  private async deliverNotices(pending: readonly Loaded[], now: string, attempts: number, gaveUp: GaveUp[]): Promise<string | null> {
+    if (pending.length === 0) return null;
+    const target = this.target(pending[0]!.delivery)!;
+    const passport_id = await this.authorized(target);
+    const rows = pending.map((i) => (i.delivery as Extract<Delivery, { kind: "action" }>).row);
+    const findings = (await Promise.all(rows.map((r) => this.d.scanner.scan("comment", `${String(r.args.title ?? "")}\n${String(r.args.reason ?? "")}`))))
+      .flatMap((r) => (r.clean ? [] : r.findings.map((f) => f.rule)));
+    if (findings.length > 0) {
+      const rules = [...new Set(findings)].join(", ");
+      this.d.log.warn("notices blocked by the egress scan; withheld", { target: target.name, rules });
+      await this.delivered(rows, now, "withheld", `withheld by the egress scan (${rules})`);
+      return passport_id;
+    }
+    const send = target.deliverBatch ?? (async (rs: readonly ActionRow[]) => { for (const row of rs) await target.deliver({ kind: "action", row }); });
+    for (let at = 0; at < rows.length; at += NOTIFY_CALL) {
+      const chunk = rows.slice(at, at + NOTIFY_CALL);
+      try {
+        await send(chunk);
+      } catch (err) {
+        const error = errorText(err);
+        if (!pending.slice(at, at + NOTIFY_CALL).map((i) => this.givesUp(err, attempts, i, target, error, gaveUp)).every(Boolean)) {
+          const cfg = this.d.config();
+          const delay = waitedDelay(err, now, retryDelayMs(attempts + 1, cfg.retry_base_ms, cfg.retry_max_ms));
+          this.d.log.warn("notify failed; retried later", { target: target.name, notices: chunk.length, retry_in_ms: delay, error });
+          throw new Stop(delay, error);
+        }
+        await this.delivered(chunk, now, "failed", error);
+        continue;
+      }
+      await this.delivered(chunk, now, "sent", null);
+    }
+    return passport_id;
+  }
+
+  /** Records action rows delivered with `outcome`; one already recorded is left as it is. */
+  private async delivered(rows: readonly ActionRow[], now: string, outcome: string, error: string | null): Promise<void> {
+    await this.d.db.run(
+      `UPDATE outbound_actions SET delivered_at = ?, outcome = ?, last_error = ? WHERE seq IN (${rows.map(() => "?").join(", ")}) AND delivered_at IS NULL`,
+      [now, outcome, error, ...rows.map((r) => r.seq)],
+    );
   }
 
   /** Whether a failed write is given up: refused for good on the batch's last allowed attempt. */

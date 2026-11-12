@@ -8,41 +8,46 @@ import { Kernel } from "../src/controller/units/kernel.js";
 import notificationsUnit from "../src/controller/units/notifications/notifications.unit.js";
 import type { ControllerDeps } from "../src/core/controller-deps.js";
 import {
-  NOTICE_KINDS, type Notice, type NoticeKind, type NoticeSettings, SUMMARY_ITEM, type WaitingItem, decideNotices, noticeKind, parseNoticeKinds,
-  parseQuietHours, quietUntil,
+  FINISHED_CUTOVER, NOTICE_KINDS, type Notice, type NoticeSettings, SUMMARY_ITEM, WAIT_KINDS, type WaitKind, type WaitingItem, decideNotices, noticeKind,
+  parseNoticeKinds, parseQuietHours, quietUntil,
 } from "../src/core/notifications.js";
-import { SETTABLE_DEFAULTS, parseSettable } from "../src/core/settings.js";
+import { SETTABLE_DEFAULTS, parseSettable, resolveSettings } from "../src/core/settings.js";
 import type { StateChange, StateChangeId, Timestamp, WorkItem, WorkItemId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import type { SourceAdapter, SourceNotice } from "../src/interfaces/source-adapter.js";
+import { recordAction } from "../src/outbound/index.js";
 import { tickAt } from "../src/shared/ticks/tick-generator.js";
 import { MIGRATIONS_TABLE } from "../src/state/index.js";
 import { type ApiDeps, respond } from "../src/ui/server.js";
 import { cleanScanner, config, silent } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
 
-// Design 09-notifications: one notice per wait on the owner, quiet hours and their summary, kinds turned off, the
-// backfill of items already waiting, and the local GET route.
+// Design 09-notifications: one notice per wait on the owner and per close (`finished`), quiet hours and their summary,
+// kinds turned off, the backfill of items already waiting, the local GET route, and (design 12-notification-channels)
+// one outbox intent per notice for each `notify_channels` adapter that has notifyOwner.
 
-const ALL: NoticeSettings = { notice_kinds: [...NOTICE_KINDS], quiet_hours: "" };
+type Live = NoticeSettings & { notify_channels: string[] };
+const ALL: Live = { notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [] };
 const MIGRATION_ID = "20261112T0900-controller-notices";
 
 /** A local-time instant on 2026-11-12, so the quiet-hours tests hold in any time zone. */
 const local = (h: number, m = 0, day = 12) => new Date(2026, 10, day, h, m);
 
 /** The settings the unit reads (`live.values()`), changeable between passes. */
-function liveSettings(s: NoticeSettings = ALL) {
-  const values = { ...s };
-  return { values: () => values, set: (n: Partial<NoticeSettings>) => Object.assign(values, n) };
+function liveSettings(s: Partial<Live> = {}) {
+  const values = { ...ALL, ...s };
+  return { values: () => values, set: (n: Partial<Live>) => Object.assign(values, n) };
 }
 
 /** A kernel and router over `store` with only the notifications unit: a fresh writer, as a new process or replica builds it. */
-function writer(store: FactoryStore, clock: FakeClock, live = liveSettings()) {
-  const deps = { store, clock, config, scanner: cleanScanner, log: silent, auth: {}, settings: live } as unknown as ControllerDeps;
-  const none = async () => { throw new Error("notifications write no intent or message"); };
-  const k = new Kernel(deps, { record: none, announce: none, emit: none, actions: none, byKey: none }, { beforeMerge: none });
+function writer(store: FactoryStore, clock: FakeClock, live = liveSettings(), sources: SourceAdapter[] = []) {
+  const deps = { store, clock, config, scanner: cleanScanner, log: silent, auth: {}, settings: live, sources } as unknown as ControllerDeps;
+  const none = async () => { throw new Error("notifications write no message"); };
+  const record = (a: Parameters<typeof recordAction>[1], now: string) => recordAction((store as SqlFactoryStore).db, a, now);
+  const k = new Kernel(deps, { record, announce: none, emit: none, actions: none, byKey: none }, { beforeMerge: none });
   const r = new Router([notificationsUnit] as unknown as ControllerUnits, k, {
     kinds: [], messages: [], guard: async (_w, fn) => fn(), reader: k.reader, commit: (d) => k.commit(d), now: () => tickAt("event", 1, clock.now().getTime()),
   });
@@ -124,6 +129,139 @@ describe("one notice per wait (fake clock)", () => {
   });
 });
 
+/** Closes `it` with `close_reason`, one second on. */
+async function close(store: FactoryStore, clock: FakeClock, it: WorkItem, close_reason: NonNullable<WorkItem["close_reason"]>) {
+  clock.advance(1000);
+  const r = await store.transition({ id: it.id, expected_version: it.version, patch: { stage: "CLOSED", close_reason }, actor: system, reason: `test_${close_reason}` });
+  if (!r.ok) throw new Error(r.reason);
+  return r.item;
+}
+
+/** A source adapter for the fan-out: `notify` true gives it notifyOwner (recording its calls), false leaves it out. */
+function adapter(type: string, notify: boolean): SourceAdapter & { calls: SourceNotice[][] } {
+  const calls: SourceNotice[][] = [];
+  const base = {
+    type, intake: "poll" as const, calls, poll: async () => ({ events: [], next_cursor: "" }), postComment: async () => ({ url: null }),
+    markSeen: async () => {}, setStatus: async () => {}, closeIssue: async () => {},
+  };
+  return notify ? { ...base, notifyOwner: async (n: readonly SourceNotice[]) => void calls.push([...n]) } : base;
+}
+
+async function intents(store: SqlFactoryStore) {
+  const rows = await store.db.all("SELECT action, source_type, target, intent_key, args FROM outbound_actions ORDER BY seq");
+  return rows.map((r) => ({ ...r, target: JSON.parse(String(r.target)), args: JSON.parse(String(r.args)) }));
+}
+
+describe("finished notices (fake clock)", () => {
+  it("a close writes one finished notice keyed on its close state change; a second pass writes nothing more", async () => {
+    const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
+    const open = (await store.createWorkItem({ ...issue(1), title: "Add dark mode" }, system)).item;
+    const closed = await close(store, clock, open, "completed");
+    const w = writer(store, clock);
+    await w.pass();
+    clock.advance(60_000);
+    await w.pass();
+    const change = (await store.listStateChanges(closed.id)).find((c) => c.version === closed.version)!;
+    expect(await rows(store)).toEqual([{ work_item_id: closed.id, wait_key: change.id, kind: "finished", held_until: null, delivered_at: null, count: 1 }]);
+  });
+
+  it("a close before the cutover, or older than the 7-day lookback, writes no finished notice", async () => {
+    const before = new FakeClock(new Date(Date.parse(FINISHED_CUTOVER) - 3_600_000));
+    const early = await newStore(before);
+    await close(early.store, before, (await early.store.createWorkItem(issue(1), system)).item, "completed");
+    await writer(early.store, before).pass();
+    expect(await rows(early.store)).toEqual([]);
+
+    const clock = new FakeClock("2026-11-13T00:00:00.000Z");
+    const { store } = await newStore(clock);
+    await close(store, clock, (await store.createWorkItem(issue(2), system)).item, "rejected");
+    clock.advance(8 * 86_400_000);
+    await writer(store, clock).pass();
+    expect(await rows(store)).toEqual([]);
+  });
+
+  it("finished turned off writes nothing for a close", async () => {
+    const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
+    await close(store, clock, (await store.createWorkItem(issue(1), system)).item, "completed");
+    await writer(store, clock, liveSettings({ notice_kinds: [...WAIT_KINDS] })).pass();
+    expect(await rows(store)).toEqual([]);
+  });
+
+  it("quiet hours hold a finished notice as a needs-you one, and one summary covers both kinds", async () => {
+    const clock = new FakeClock(local(23, 0));
+    const { store } = await newStore(clock);
+    const waits = (await store.createWorkItem(issue(1), system)).item;
+    await block(store, clock, waits, "human", "spec_pending");
+    await close(store, clock, (await store.createWorkItem(issue(2), system)).item, "completed");
+    const slack = adapter("slack_thread", true);
+    const w = writer(store, clock, liveSettings({ quiet_hours: "22:00-07:00", notify_channels: ["slack"] }), [slack]);
+    await w.pass();
+    expect((await store.listHeldNotices()).map((n) => n.kind).sort()).toEqual(["finished", "spec"]);
+    expect(await store.listPendingNotices()).toEqual([]);
+    expect(await intents(store)).toEqual([]);
+    clock.advance(8 * 3_600_000);
+    await w.pass();
+    await w.pass();
+    expect((await store.listPendingNotices()).map((n) => [n.work_item_id, n.kind, n.count])).toEqual([[SUMMARY_ITEM, "summary", 2]]);
+    expect((await intents(store)).map((i) => [i.args.kind, i.args.count, i.args.work_item_id])).toEqual([["summary", 2, null]]);
+  });
+});
+
+describe("notify_channels fan-out (fake adapters)", () => {
+  async function scene(notify_channels: string[], sources: SourceAdapter[]) {
+    const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
+    const waits = (await store.createWorkItem({ ...issue(1), title: "Spec for search" }, system)).item;
+    await block(store, clock, waits, "human", "spec_pending");
+    const done = await close(store, clock, (await store.createWorkItem({ ...issue(2), title: "Add dark mode" }, system)).item, "completed");
+    const w = writer(store, clock, liveSettings({ notify_channels }), sources);
+    await w.pass();
+    await w.pass();
+    return { store, waits, done };
+  }
+
+  it("with notify_channels [] no outbox row is written for any notice", async () => {
+    const { store } = await scene([], [adapter("slack_thread", true)]);
+    expect(await rows(store)).toHaveLength(2);
+    expect(await intents(store)).toEqual([]);
+  });
+
+  it("each notice gets one row per listed channel whose adapter has notifyOwner; a listed adapter without it gets none", async () => {
+    const { store, waits, done } = await scene(["slack", "plain"], [adapter("slack_thread", true), adapter("plain", false)]);
+    const notices = await rows(store);
+    const key = (id: string) => notices.find((n) => n.work_item_id === id)!.wait_key;
+    expect(await intents(store)).toEqual([
+      {
+        action: "notify", source_type: "slack_thread", target: { type: "slack_thread", id: "notify", link: "" }, intent_key: `notify:${waits.id}:${key(waits.id)}:slack`,
+        args: {
+          kind: "needs_you", work_item_id: waits.id, title: "Spec for search", reason: "spec to approve", close_reason: null, source_type: "github_issue",
+          thread_url: "https://github.com/o/r/issues/1", count: 1,
+        },
+      },
+      {
+        action: "notify", source_type: "slack_thread", target: { type: "slack_thread", id: "notify", link: "" }, intent_key: `notify:${done.id}:${key(done.id)}:slack`,
+        args: {
+          kind: "finished", work_item_id: done.id, title: "Add dark mode", reason: "merged", close_reason: "completed", source_type: "github_issue",
+          thread_url: "https://github.com/o/r/issues/2", count: 1,
+        },
+      },
+    ]);
+  });
+
+  it("a channel no configured adapter answers to gets no row", async () => {
+    const { store } = await scene(["slack"], [adapter("plain", true)]);
+    expect(await intents(store)).toEqual([]);
+  });
+
+  it("the close reason reads merged, rejected or dropped", async () => {
+    const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
+    const reasons = ["completed", "rejected", "wont_do", "duplicate", "failed"] as const;
+    for (const [n, reason] of reasons.entries()) await close(store, clock, (await store.createWorkItem(issue(n + 1), system)).item, reason);
+    await writer(store, clock, liveSettings({ notify_channels: ["slack"] }), [adapter("slack_thread", true)]).pass();
+    const by = Object.fromEntries((await intents(store)).map((i) => [i.args.close_reason, i.args.reason]));
+    expect(by).toEqual({ completed: "merged", rejected: "rejected", wont_do: "dropped", duplicate: "dropped", failed: "dropped" });
+  });
+});
+
 describe("the migration marks items already waiting as notified", () => {
   it("stores each waiting item's wait as delivered, so no notice follows; a later wait is noticed", async () => {
     const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
@@ -192,7 +330,7 @@ describe("quiet hours (fake clock)", () => {
     const { store } = await newStore(clock);
     const it = (await store.createWorkItem(issue(1), system)).item;
     await block(store, clock, it, "human", "spec_pending");
-    const w = writer(store, clock, liveSettings({ ...ALL, quiet_hours: "22:00-07:00" }));
+    const w = writer(store, clock, liveSettings({ quiet_hours: "22:00-07:00" }));
     await w.pass();
     expect(await store.listHeldNotices()).toHaveLength(1);
     expect(await store.listPendingNotices()).toEqual([]);
@@ -204,7 +342,7 @@ describe("quiet hours (fake clock)", () => {
 });
 
 describe("notice kinds", () => {
-  const reasons: Record<NoticeKind, string> = { spec: "spec_pending", merge: "merge_pending", failure: "run_failed:implement:timeout", other: "needs_input" };
+  const reasons: Record<WaitKind, string> = { spec: "spec_pending", merge: "merge_pending", failure: "run_failed:implement:timeout", other: "needs_input" };
 
   it("classifies each blocked_reason, and parses the setting", () => {
     for (const [kind, reason] of Object.entries(reasons)) expect(noticeKind(reason)).toBe(kind);
@@ -215,10 +353,17 @@ describe("notice kinds", () => {
     expect(SETTABLE_DEFAULTS.notice_kinds).toEqual([...NOTICE_KINDS]);
   });
 
-  for (const kind of NOTICE_KINDS) {
+  it("accepts finished, includes it by default, and a stored override keeps its own list", () => {
+    expect(parseNoticeKinds(["finished", "spec"])).toEqual(["finished", "spec"]);
+    expect(SETTABLE_DEFAULTS.notice_kinds).toContain("finished");
+    const r = resolveSettings({ file: {}, layers: config.settings }, [{ key: "notice_kinds", project: "", value: JSON.stringify(["spec", "merge"]) }]);
+    expect(r.values.notice_kinds).toEqual(["spec", "merge"]);
+  });
+
+  for (const kind of WAIT_KINDS) {
     it(`${kind} turned off never produces a notice; the other kinds still do`, () => {
-      const settings = { ...ALL, notice_kinds: NOTICE_KINDS.filter((k) => k !== kind) };
-      const items = NOTICE_KINDS.map((k) => waiting(`wi_${k}`, reasons[k]));
+      const settings = { ...ALL, notice_kinds: WAIT_KINDS.filter((k) => k !== kind) };
+      const items = WAIT_KINDS.map((k) => waiting(`wi_${k}`, reasons[k]));
       const now = new FakeClock("2026-11-12T03:00:00.000Z").now();
       expect(decideNotices({ waiting: items, stored: [], now, settings }).map((n) => n.kind)).toEqual(settings.notice_kinds);
       const quiet = { ...settings, quiet_hours: "00:00-23:59" };
@@ -230,13 +375,22 @@ describe("notice kinds", () => {
     const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
     const it = (await store.createWorkItem(issue(1), system)).item;
     await block(store, clock, it, "human", "merge_pending");
-    const w = writer(store, clock, liveSettings({ ...ALL, notice_kinds: ["spec"] }));
+    const w = writer(store, clock, liveSettings({ notice_kinds: ["spec"] }));
     await w.pass();
     expect(await rows(store)).toEqual([]);
   });
 });
 
 describe("GET /api/v1/notices", () => {
+  it("lists finished notices too (owner decision 2026-11-12: the shell shows them)", async () => {
+    const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
+    const done = await close(store, clock, (await store.createWorkItem(issue(1), system)).item, "completed");
+    await writer(store, clock).pass();
+    const r = await respond({ store, clock } as unknown as ApiDeps, { method: "GET", url: "/api/v1/notices", host: "127.0.0.1" });
+    const body = JSON.parse(r.body) as { notices: { work_item_id: string; kind: string }[] };
+    expect(body.notices.map((n) => [n.work_item_id, n.kind])).toEqual([[done.id, "finished"]]);
+  });
+
   it("returns the pending notices as JSON; other methods keep the existing 405", async () => {
     const { store, clock } = await newStore(new FakeClock("2026-11-12T03:00:00.000Z"));
     const it = (await store.createWorkItem(issue(1), system)).item;
