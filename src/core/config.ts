@@ -1,3 +1,4 @@
+import { commandText } from "./checks.js";
 import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION, type HotspotMode, HOTSPOT_MODES, parseHoldPolicy } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
@@ -119,6 +120,13 @@ export function uiCheckConfig(value: unknown): { ui_check?: UiCheck } {
     throw new Error(`repo.ui_check.paths must be a non-empty list of non-empty path prefixes, e.g. ${JSON.stringify(UI_CHECK_DEFAULT_PATHS)}`);
   }
   return { ui_check: { command: [...command], paths: [...(paths ?? UI_CHECK_DEFAULT_PATHS)] } };
+}
+
+/** The prompts' `{{ui_check}}` sentence (design §4): with a `repo.ui_check`, it runs at merge and is no missing work; none: "". */
+export function uiCheckSentence(ui: UiCheck | undefined): string {
+  return ui
+    ? ` The project's UI check, \`${commandText(ui.command)}\`, runs at merge, on the merged commit, where a browser can start, never in this sandbox. Not running it here is not work to report as missing or as unverified.`
+    : "";
 }
 
 /**

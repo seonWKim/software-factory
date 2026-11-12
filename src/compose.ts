@@ -6,7 +6,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
-  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig,
+  AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
   coordinationConfig, retentionConfig, toolGrantsConfig, toolchainCacheOverlaps,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
@@ -342,12 +342,12 @@ export const FORGE_PLACEHOLDER = "{{forge}}";
 
 /** The placeholder in prompts/*.md for the toolchain sentence (design 05-sandbox.md): empty with no toolchain block. */
 export const TOOLCHAIN_PLACEHOLDER = "{{toolchain}}";
+export const UI_CHECK_PLACEHOLDER = "{{ui_check}}"; // the UI check sentence (uiCheckSentence): empty with no repo.ui_check
 
 /**
  * A prompt file's text with its placeholders filled, once at load: the check commands, each command of
  * `checkCommands` (so `repo.check_commands`, else `test_command`) in backticks, in order; the forge name
- * (`plugins.forge`, else "local"); and with a `toolchain` block, one sentence saying those checks run offline from
- * the read-only caches. No block: the toolchain placeholder is removed, so the text is what it was before the block existed.
+ * (`plugins.forge`, else "local"); the `toolchain` block's offline sentence; the `repo.ui_check` sentence (none: "").
  */
 export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: string, toolchain?: ToolchainConfig): string {
   const checks = checkCommands(repo).map((c) => `\`${commandText(c)}\``).join(", then ");
@@ -355,7 +355,7 @@ export function fillPrompt(text: string, repo: FactoryConfig["repo"], forge: str
   const offline = toolchain
     ? ` They run offline: there is no network, and the toolchain caches${caches} are read-only, so build from what they hold and never write to or download into them.`
     : "";
-  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline);
+  return text.split(CHECK_COMMANDS_PLACEHOLDER).join(checks).split(FORGE_PLACEHOLDER).join(forge).split(TOOLCHAIN_PLACEHOLDER).join(offline).split(UI_CHECK_PLACEHOLDER).join(uiCheckSentence(repo.ui_check));
 }
 
 /** The source plugin whose PRs live on GitHub, and the forge it implies (issue #273). */

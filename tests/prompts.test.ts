@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
+import { CHECK_COMMANDS_PLACEHOLDER, FORGE_PLACEHOLDER, UI_CHECK_PLACEHOLDER, fillPrompt, loadConfig } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 
 // These tests check the instruction text only. They cannot prove a model's reply starts with the section.
@@ -266,17 +266,28 @@ describe.each(["implement", "review"])("prompts/%s.md names the configured check
   });
 });
 
-// The UI check runs at merge (design §4): the sandbox cannot start a browser, so neither agent reports it.
+// The UI check runs at merge (design §4): the sandbox cannot start a browser, so neither agent reports it. The
+// sentence is filled from `repo.ui_check` and is absent without it, so no project is told a check runs that does not.
 describe.each(["implement", "review"])("prompts/%s.md: the UI check runs at merge", (name) => {
-  const line = prompt(name).split("\n").find((l) => l.includes("UI check")) ?? "";
+  const text = prompt(name);
+  const ui_check = { command: ["make", "ui-check"], paths: ["web/"] };
 
-  it("says the UI check runs at merge, on the merged commit, not in the sandbox", () => {
-    expect(line).toMatch(/UI check .*runs at merge, on the merged commit/);
-    expect(line).toMatch(/never in this sandbox/);
+  it("has the placeholder, and no UI check sentence of its own", () => {
+    expect(text).toContain(UI_CHECK_PLACEHOLDER);
+    expect(text).not.toContain("UI check");
   });
 
-  it("says not running it is not work to report as missing or as unverified", () => {
-    expect(line).toMatch(/not work to report as missing or as unverified/);
+  it("with repo.ui_check, names the command, says it runs at merge and is not missing or unverified work", () => {
+    const out = fillPrompt(text, repo({ ui_check }), "local");
+    expect(out).toMatch(/UI check, `make ui-check`, runs at merge, on the merged commit, .*never in this sandbox/);
+    expect(out).toMatch(/not work to report as missing or as unverified/);
+    expect(out).not.toContain("{{");
+  });
+
+  it("with no repo.ui_check, says nothing about a UI check", () => {
+    const out = fillPrompt(text, repo({}), "local");
+    expect(out).not.toContain("UI check");
+    expect(out).not.toContain("{{");
   });
 });
 
@@ -288,6 +299,11 @@ describe("on this repo", () => {
     const out = fillPrompt(prompt(name), config.repo, "github");
     expect(out).toContain("`npm run typecheck`");
     expect(out).toContain("`npm test`");
+  });
+
+  it.each(["implement", "review"])("prompts/%s.md says this repo's check:responsive runs at merge", (name) => {
+    const out = fillPrompt(prompt(name), config.repo, "github");
+    expect(out).toMatch(/UI check, `npm run -s check:responsive`, runs at merge/);
   });
 
   it("CLAUDE.md links to AGENTS.md, which holds the moved test-running rule", () => {
