@@ -17,9 +17,22 @@ const PHASE_BATCH = 50;
 function phaseHeld(it: WorkItem): boolean {
   return it.stage === "NEW" && it.blocked_on === "upstream" && it.blocked_reason === PHASE_HOLD;
 }
+/** The claim detail of a split whose parent's source cannot file sub-issues: its phases are local tasks. */
+const LOCAL_FILING = "local";
+/** A phase filed as a local task: its ref derived from the parent's source id and its phase number, as `LocalSource` does. */
+function localPhaseRef(parent: SourceRef, index: number): SourceRef {
+  const id = `${parent.id}-phase-${index}`;
+  return { type: "local", id, link: `local:${id}` };
+}
 /** A phase whose spec waits at the gate for `/approve`. */
 function phaseSpecPending(it: WorkItem): boolean {
   return it.parent_id !== null && it.stage === "READY" && it.blocked_on === "human" && it.blocked_reason === "spec_pending";
+}
+
+/** One phase of a split being filed: its place, its spec, and the ref of the phase before it. */
+type PhaseFiling = { index: number; phase: TriagePhase; total: number; prev: SourceRef | null };
+function phaseBody(it: WorkItem, f: PhaseFiling): string {
+  return phaseIssueBody({ parent: it.source, phase: f.phase, index: f.index, total: f.total, depends_on: f.prev });
 }
 
 /** Split specs: the approval that files one phase per sub-issue, phase holds and releases, closing a finished split. */
@@ -52,8 +65,9 @@ export class PhasesUnit {
    * passes at once (two replicas, an old process still draining) only one files; the pass that loses to the same
    * command answers nothing, one that loses to another command is refused. The winner replies that the filing is
    * queued and records phase 1's keyed `file_sub_issue` action (`advanceSplit`); outbound files it, retrying a
-   * failure, and each phase's DeliveryCompleted records the next, whose body names it. Returns null once applied:
-   * the transitions are its own, conditional on the claim.
+   * failure, and each phase's DeliveryCompleted records the next, whose body names it. A parent whose source cannot
+   * file sub-issues (a Slack thread) gets its phases as local tasks instead, filed in the same pass with no network
+   * call (claim detail `filing: local`). Returns null once applied: the transitions are its own, conditional on the claim.
    */
   async approveSplit(
     it: WorkItem,
@@ -63,10 +77,7 @@ export class PhasesUnit {
     commentId: string,
     tag: StateChangeDetail | null,
   ): Promise<Decision | Refusal> {
-    const adapter = this.c.k.adapterFor(it.source, "fileSubIssue");
-    if (!adapter?.fileSubIssue) {
-      return { refuse: "this source cannot file sub-issues, so a split spec cannot be approved here; reply `/revise <feedback>` to get a spec without phases" };
-    }
+    const local = !this.c.k.adapterFor(it.source, "fileSubIssue")?.fileSubIssue;
     const patch = { blocked_on: "upstream" as const, blocked_reason: SPLIT_FILING };
     const claim = await this.c.k.d.store.transition({
       id: it.id,
@@ -74,7 +85,7 @@ export class PhasesUnit {
       patch,
       actor,
       reason: SPLIT_FILING,
-      detail: { phases: phases.length, comment_id: commentId, note, tag: tag ? JSON.stringify(tag) : null },
+      detail: { phases: phases.length, comment_id: commentId, note, tag: tag ? JSON.stringify(tag) : null, ...(local ? { filing: LOCAL_FILING } : {}) },
     });
     if (!claim.ok) {
       if (claim.reason !== "version_conflict") return null;
@@ -85,7 +96,8 @@ export class PhasesUnit {
       return { refuse: "another `/approve` already approved this split" };
     }
     this.c.k.d.log.info("transition", { work_item_id: it.id, reason: SPLIT_FILING, version: claim.item.version });
-    await this.c.unit("outbox").comment(it, `split-queued:${it.id}:${commentId}`, [
+    // Local tasks are filed in this pass: the thread gets only the line listing them.
+    if (!local) await this.c.unit("outbox").comment(it, `split-queued:${it.id}:${commentId}`, [
       `\`/approve\` was applied: the factory is filing the ${phases.length} phases of this split as sub-issues of this issue, one at a time (each names the phase before it, so it is filed once that one is). This issue lists them once all are filed.`,
       "",
       footerAfter(it, patch),
@@ -101,7 +113,9 @@ export class PhasesUnit {
    * delivered `file_sub_issue` action's, taken in now as a work item (held after the first). The first phase with
    * neither gets its keyed action and the pass stops: the key names the phase and the approval, so it is recorded
    * once, and `/approve` after a give-up records the rest again. A given-up filing stops the split for a person
-   * (`delivery_failed`). With every phase taken in, the parent gets one comment listing them and waits on them.
+   * (`delivery_failed`). A split filed as local tasks takes each phase in at once under its derived ref, so a retry
+   * finds the same rows. With every phase taken in, the parent gets one comment listing them and waits on them: one
+   * line for local tasks, posted to the parent's thread like any comment.
    */
   async advanceSplit(id: WorkItemId): Promise<void> {
     const it = await this.c.k.d.store.getWorkItem(id);
@@ -113,16 +127,22 @@ export class PhasesUnit {
       return;
     }
     const known = new Map((await this.c.k.d.store.listPhases(id)).map((p) => [p.phase, p.source]));
+    const d = claim.detail ?? {};
+    const local = d.filing === LOCAL_FILING;
     const refs: SourceRef[] = [];
     for (const [i, phase] of phases.entries()) {
-      const ref = known.get(i + 1) ?? (await this.filed(it, claim, { index: i + 1, phase, total: phases.length, prev: refs[i - 1] ?? null }));
+      const f = { index: i + 1, phase, total: phases.length, prev: refs[i - 1] ?? null };
+      const ref = known.get(i + 1) ?? (local ? await this.takeIn(it, claim, f, localPhaseRef(it.source, f.index)) : await this.filed(it, claim, f));
       if (!ref) return;
       refs.push(ref);
     }
-    const d = claim.detail ?? {};
     const tag = typeof d.tag === "string" ? (JSON.parse(d.tag) as StateChangeDetail) : null;
     const patch = { blocked_on: "upstream" as const, blocked_reason: PHASES_OPEN };
-    await this.c.unit("outbox").comment(it, `split:${it.id}`, [
+    if (local) {
+      await this.c.unit("outbox").comment(it, `split:${it.id}`,
+        `The split spec was approved, so the factory filed its ${phases.length} phases as local tasks, each starting when the one before it closes as completed: ` +
+          `${refs.map((r) => r.link).join(", ")}. This thread closes as completed when the last one does.`);
+    } else await this.c.unit("outbox").comment(it, `split:${it.id}`, [
       `The split spec was approved, so the factory filed ${phases.length} phases as sub-issues of this issue:`,
       "",
       ...refs.map((r, i) => `${i + 1}. ${r.link}${i === 0 ? " (starts now)" : " (waits for the phase before it)"}`),
@@ -151,13 +171,11 @@ export class PhasesUnit {
    * Phase `f.index`'s ref once outbound filed it, taken in as a work item now; null while its action is being
    * filed, or just recorded (and announced), or given up.
    */
-  private async filed(it: WorkItem, claim: StateChange, f: { index: number; phase: TriagePhase; total: number; prev: SourceRef | null }): Promise<SourceRef | null> {
-    const title = phaseTitle(f.index, f.total, f.phase.title);
-    const body = phaseIssueBody({ parent: it.source, phase: f.phase, index: f.index, total: f.total, depends_on: f.prev });
+  private async filed(it: WorkItem, claim: StateChange, f: PhaseFiling): Promise<SourceRef | null> {
     const key = `file_sub_issue:${it.id}:${f.index}:${String(claim.detail?.comment_id)}`;
     const a = await this.c.k.actionByKey(key);
     if (!a) {
-      const args = { title, body, marker: phaseMarker(it.id, f.index), phase: f.index, phases: f.total };
+      const args = { title: phaseTitle(f.index, f.total, f.phase.title), body: phaseBody(it, f), marker: phaseMarker(it.id, f.index), phase: f.index, phases: f.total };
       await this.c.k.commit({ writes: [{ kind: "intent", action: { action: "file_sub_issue", target: it.source, work_item_id: it.id, args, key } }] });
       await this.c.k.announce();
       return null;
@@ -168,7 +186,13 @@ export class PhasesUnit {
       return null;
     }
     // The source files under its own type: the ref is the parent's type with the delivered id.
-    const ref: SourceRef = { type: it.source.type, id: a.delivered_ref, link: a.delivered_url ?? "" };
+    return this.takeIn(it, claim, f, { type: it.source.type, id: a.delivered_ref, link: a.delivered_url ?? "" });
+  }
+
+  /** Phase `f.index` taken in as a work item under `ref`, linked to its parent, held after the first; keyed on `ref`. */
+  private async takeIn(it: WorkItem, claim: StateChange, f: PhaseFiling, ref: SourceRef): Promise<SourceRef> {
+    const title = phaseTitle(f.index, f.total, f.phase.title);
+    const body = phaseBody(it, f);
     const requester = claim.actor.kind === "user" ? claim.actor.id : it.requester_id;
     const { item, created } = await this.c.k.d.store.createWorkItem(
       {
