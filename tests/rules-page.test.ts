@@ -3,12 +3,18 @@
 // promote of a class the owner's wording as the rule. A promoted rule reaches the next run's prompt under its own
 // heading, read through the plugin's rules() only. Every test runs against a temp home with stub CLIs that take only
 // the real CLIs' forms: no real home, no network, no live model.
+//
+// Turn on (design 08-settings, 2026-11-12): with the ledger off, GET names the agents home and the CLI missing there,
+// and gives the owner the `integrations` value; POST /api/v1/settings stores it through the settings route's guards
+// and owner check, and the next GET uses the rebuilt ledger with no restart.
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { LiveTacit } from "../src/runtime/live-tacit.js";
+import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { Worker } from "../src/worker/index.js";
 import { LearnedRules, joinGuidance } from "../src/core/learned-rules.js";
 import type { LogFields, Logger } from "../src/core/log.js";
@@ -16,13 +22,14 @@ import type { UserId, WorkerId } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { AgentsHomeTacitLedger } from "../src/impl/tacit/agents-home-tacit-ledger.js";
+import { AgentsHomeTacitLedger, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import type { TacitLedger } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
+import type { UiTacit } from "../src/ui/pages.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
-import { newCsrfToken } from "../src/ui/settings-api.js";
+import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
 import { newStore } from "./helpers/store.js";
 import {
   FakeAuth, FakeBroker, FakeForge, FakeRunner, FakeSandbox, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, prompts, silent, triageSpec,
@@ -121,15 +128,35 @@ class MemLog implements Logger {
   }
 }
 
-async function page(tacit: TacitLedger | undefined, as: UserId = OWNER) {
+/** A fixed ledger as the UI holds it: settings that never change, and a home with no CLI. */
+const fixed = (ledger: TacitLedger): UiTacit => ({
+  ledger, settings: { refresh: async () => {}, values: () => ({ integrations: {} }) }, home: () => ({ path: "/no/home", missing: "bin/tacit" }),
+});
+
+/**
+ * The Rules page's deps. `tacit`: a fixed ledger, or `{ agentsHome }` for the UI's live holder as compose.ts builds it
+ * (config `none`, settings read from this store), with `agents-home` built at that home instead of the real one.
+ */
+async function page(tacit: TacitLedger | { agentsHome: string } | undefined, as: UserId = OWNER) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   await store.claimLocalOwner(OWNER);
   const log = new MemLog();
   const pauses: UiPauses = { principal: async () => as, authorize: async () => ({ allow: true }), csrfToken: newCsrfToken(), log };
+  const settings: UiSettings = {
+    base: baseFromConfig(config), repo: config.repo, actor: as, resolveProject: async () => null, csrfToken: pauses.csrfToken,
+    integrations: [{ kind: "tacit", interface: "TacitLedger", configured: "none" }],
+  };
+  let ui: UiTacit | undefined;
+  if (tacit && "agentsHome" in tacit) {
+    const env = { AGENTS_HOME: tacit.agentsHome };
+    const ledger = await LiveTacit.start("none", async (n) => (n === "agents-home" ? tacitLedgerAt(env) : new NoTacitLedger()), log);
+    const live = new LiveSettings({ config, base: baseFromConfig(config), source: store, log, integrations: [ledger] });
+    ui = { ledger, settings: live, home: () => checkAgentsHome(env) };
+  } else if (tacit) ui = fixed(tacit);
   const d: PauseDeps = {
-    store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses,
-    ...(tacit ? { tacit } : {}),
+    store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses, settings,
+    ...(ui ? { tacit: ui } : {}),
   };
   const get = async () => {
     const r = await respond(d, { method: "GET", url: "/api/v1/rules", host: HOST });
@@ -142,8 +169,16 @@ async function page(tacit: TacitLedger | undefined, as: UserId = OWNER) {
     });
     return { status: r.status, value: JSON.parse(r.body) };
   };
-  return { get, post, log };
+  /** POST /api/v1/settings, as the page's Turn on sends it. */
+  const setting = async (body: unknown, over: Partial<UiRequest> = {}) => {
+    const r = await respond(d, {
+      method: "POST", url: "/api/v1/settings", host: HOST, origin: ORIGIN, contentType: "application/json", csrfToken: pauses.csrfToken, body: JSON.stringify(body), ...over,
+    });
+    return { status: r.status, value: JSON.parse(r.body) };
+  };
+  return { get, post, setting, log, store };
 }
+
 
 /** One triage run through the controller and a worker with `guidance`: its agent prompt. */
 async function nextRunPrompt(tacit: TacitLedger): Promise<string> {
@@ -186,8 +221,8 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
   it("with the plugin none (or none wired) the page is told the ledger is off, and a verdict is refused", async () => {
     for (const tacit of [new NoTacitLedger(), undefined]) {
       const p = await page(tacit);
-      expect(await p.get()).toEqual({ enabled: false, entries: [], error: null, csrf_token: null, judge: null });
-      expect(await p.post({ id: "C-012", verdict: "promote", reason: "why" })).toMatchObject({ status: 409, value: { error: expect.stringContaining("agents-home") } });
+      expect(await p.get()).toMatchObject({ enabled: false, entries: [], error: null, turn_on: null });
+      expect(await p.post({ id: "C-012", verdict: "promote", reason: "why" })).toMatchObject({ status: 409, value: { error: expect.stringContaining("turn it on from the Rules page") } });
     }
   });
 
@@ -198,6 +233,57 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     const v = await (await page(broken)).get();
     expect(v).toMatchObject({ enabled: true, entries: [] });
     expect(v.error).toContain("ledger locked");
+  });
+});
+
+describe("Rules page: Turn on", SPAWNS, () => {
+  it("ledger off and the home found: GET names the home and gives the owner the integrations value", async () => {
+    const s = stubHome(PENDING);
+    const v = await (await page({ agentsHome: s.home })).get();
+    expect(v).toMatchObject({ enabled: false, entries: [], judge: null, home: { path: s.home, missing: null }, turn_on: '{"tacit":"agents-home"}' });
+    expect(typeof v.csrf_token).toBe("string");
+  });
+
+  it("Turn on stores the entry through POST /api/v1/settings, and the next GET lists the rules with no restart", async () => {
+    const s = stubHome(PENDING);
+    const p = await page({ agentsHome: s.home });
+    const off = await p.get();
+    expect(await p.setting({ action: "set", key: "integrations", value: off.turn_on })).toMatchObject({ status: 200, value: { ok: true } });
+    const on = await p.get();
+    expect(on).toMatchObject({ enabled: true, error: null, judge: null });
+    expect(on.entries.map((e: { id: string }) => e.id)).toEqual(["P-0007", "C-012", "C-013"]);
+    expect((await p.store.listSettingChanges(10)).map((c) => [c.key, c.new_value])).toEqual([["integrations", '{"tacit":"agents-home"}']]);
+    // Turned off again (the entry reset): the config's `none` is back by the next request.
+    expect((await p.setting({ action: "reset", key: "integrations" })).status).toBe(200);
+    expect(await p.get()).toMatchObject({ enabled: false, turn_on: '{"tacit":"agents-home"}' });
+  });
+
+  it("the home not found: GET names the missing CLI and gives no turn-on value", async () => {
+    const s = stubHome(PENDING);
+    rmSync(join(s.home, "bin", "evolve"));
+    expect(await (await page({ agentsHome: s.home })).get()).toMatchObject({ enabled: false, home: { path: s.home, missing: "bin/evolve" }, turn_on: null });
+  });
+
+  it("a user who is not the owner gets no turn-on value, and their write is refused with nothing stored", async () => {
+    const s = stubHome(PENDING);
+    const p = await page({ agentsHome: s.home }, OTHER);
+    const v = await p.get();
+    expect(v).toMatchObject({ enabled: false, csrf_token: null, turn_on: null, judge: expect.stringContaining("Only the owner turns the ledger on") });
+    expect(await p.setting({ action: "set", key: "integrations", value: '{"tacit":"agents-home"}' })).toMatchObject({
+      status: 422, value: { error: expect.stringContaining("integrations changes only by the owner") },
+    });
+    expect(await p.store.listSettingOverrides()).toEqual([]);
+    expect(await p.store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("the write passes the existing request guards: a stale token, another origin or a non-JSON body is refused", async () => {
+    const s = stubHome(PENDING);
+    const p = await page({ agentsHome: s.home });
+    const body = { action: "set", key: "integrations", value: '{"tacit":"agents-home"}' };
+    expect((await p.setting(body, { csrfToken: "stale" })).status).toBe(403);
+    expect((await p.setting(body, { origin: "http://evil.example" })).status).toBe(403);
+    expect((await p.setting(body, { contentType: "text/plain" })).status).toBe(415);
+    expect(await p.store.listSettingOverrides()).toEqual([]);
   });
 });
 
