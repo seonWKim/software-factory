@@ -8,7 +8,7 @@ import { defineMigration } from "../migrate/migration.js";
 
 const TABLE = "ext_packs_approvals";
 
-const SQLITE = `CREATE TABLE IF NOT EXISTS ${TABLE} (
+const CREATE = `CREATE TABLE IF NOT EXISTS ${TABLE} (
     seq               INTEGER PRIMARY KEY AUTOINCREMENT,
     kind              TEXT NOT NULL,
     name              TEXT NOT NULL,
@@ -18,20 +18,10 @@ const SQLITE = `CREATE TABLE IF NOT EXISTS ${TABLE} (
     at                TEXT NOT NULL
   )`;
 
-const MYSQL = `CREATE TABLE IF NOT EXISTS ${TABLE} (
-    seq               BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    kind              VARCHAR(16) NOT NULL,
-    name              VARCHAR(191) NOT NULL,
-    description_hash  CHAR(64) NOT NULL,
-    action            VARCHAR(16) NOT NULL,
-    user_id           VARCHAR(191) NOT NULL,
-    at                CHAR(24) NOT NULL
-  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`;
-
 export default defineMigration({
   change: "additive",
   tables: [TABLE],
   async up(db) {
-    await db.run(db.dialect === "sqlite" ? SQLITE : MYSQL);
+    await db.run(CREATE);
   },
 });
