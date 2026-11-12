@@ -50,3 +50,34 @@ export function parseVerdict(args: string): VerdictParse {
   if (!severity) return { ok: false, refuse: `the expected format is ${VERDICT_USAGE}` };
   return { ok: false, refuse: `severity \`${severity}\` is not one of ${VERDICT_SEVERITIES.map((s) => `\`${s}\``).join(", ")}` };
 }
+
+/**
+ * The one-tap verdict buttons on a factory result message (design §4): Good, Bad and Feedback. Good stores `accept`
+ * with severity `none`; Bad `changes` with severity `minor` and no reason; Feedback `changes` with severity `none`
+ * and the person's text as the reason.
+ */
+export type VerdictButton = "good" | "bad" | "feedback";
+export const VERDICT_BUTTONS: readonly VerdictButton[] = ["good", "bad", "feedback"];
+export const VERDICT_BUTTON_LABELS: Readonly<Record<VerdictButton, string>> = { good: "Good", bad: "Bad", feedback: "Feedback" };
+
+/** What a button stores; `text` is the Feedback text (the other buttons take none). */
+export function buttonVerdict(b: VerdictButton, text = ""): ParsedVerdict {
+  if (b === "good") return { verdict: "accept", severity: "none", reason: null };
+  if (b === "bad") return { verdict: "changes", severity: "minor", reason: null };
+  return { verdict: "changes", severity: "none", reason: text };
+}
+
+/** The button a stored verdict reads as on its message, or null for a kind no button gives. */
+export function verdictButtonOf(v: { verdict: VerdictKind; severity: VerdictSeverity; reason: string | null }): VerdictButton | null {
+  if (v.verdict === "accept") return "good";
+  if (v.verdict !== "changes") return null;
+  return v.severity === "none" && v.reason !== null ? "feedback" : "bad";
+}
+
+/**
+ * The comment id a message's one-tap verdict is stored under: one per message (`button:<channel>:<message ts>`), with
+ * the run the message reports when it names one, so a second tap updates the same row.
+ */
+export function buttonVerdictKey(channel: string, ts: string, run: string | null): string {
+  return `button:${channel}:${ts}${run === null ? "" : `:${run}`}`;
+}

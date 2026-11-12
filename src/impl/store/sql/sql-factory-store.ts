@@ -119,6 +119,7 @@ import * as tasks from "./tasks.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
+import * as verdicts from "./verdicts.js";
 
 /**
  * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
@@ -322,7 +323,7 @@ export class SqlFactoryStore implements FactoryStore {
         if (!current) return { ok: false, reason: "not_found" };
         // Before the version: a redelivered comment is a no-op whatever happened to the item since.
         const existing = await this.selectVerdictByComment(tx, input.comment_id);
-        if (existing) return { ok: false, reason: "duplicate", verdict: existing };
+        if (existing && verdicts.isDuplicate(existing, input)) return { ok: false, reason: "duplicate", verdict: existing };
         if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
         // One verdict per PR head (design §4): an implicit one never adds a second, an explicit one replaces it.
         if (input.pr_head !== null) {
@@ -340,9 +341,8 @@ export class SqlFactoryStore implements FactoryStore {
           version, now, input.id, input.expected_version,
         ]);
         if (updated !== 1) return { ok: false, reason: "version_conflict", current };
-
-        const reason = input.implicit ? "implicit_verdict" : "human_verdict";
-        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, reason, {});
+        const state_change = await this.insertStateChange(tx, input.id, version, input.actor, input.implicit ? "implicit_verdict" : "human_verdict", {});
+        if (existing) return { ok: true, item: (await this.selectItem(tx, input.id))!, state_change, verdict: await verdicts.replaceVerdict(tx, existing, input, state_change.id, now) };
         const verdict: Verdict = {
           id: newId("vd") as VerdictId,
           work_item_id: input.id,
@@ -379,7 +379,6 @@ export class SqlFactoryStore implements FactoryStore {
     const rows = await this.db.all(`SELECT * FROM controller_verdicts WHERE work_item_id = ? ORDER BY at, ${this.db.dialect.seq}`, [id]);
     return rows.map(rowToVerdict);
   }
-
   // Signal ledger (design 11-signal-ledger): in ./signals.ts.
   recordSignal(s: NewSignal): Promise<boolean> { return signals.recordSignal(this.db, s); }
   latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> { return signals.latestSignalTimes(this.db); }
@@ -388,7 +387,6 @@ export class SqlFactoryStore implements FactoryStore {
   listVerdictsSince(since: Timestamp | null): Promise<Verdict[]> { return signals.listVerdictsSince(this.db, since); }
   listRunsFinishedSince(q: Parameters<FactoryStore["listRunsFinishedSince"]>[0]): Promise<Run[]> { return signals.listRunsFinishedSince(this.db, q); }
   listMergeEvaluations(since: Timestamp | null) { return evaluations.listMergeEvaluations(this.db, since); }
-
   // Command proposals (design 04-gate-commands, issue #584): command-proposals.ts
   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
@@ -403,6 +401,8 @@ export class SqlFactoryStore implements FactoryStore {
   updateTask(id: string, edit: Parameters<FactoryStore["updateTask"]>[1]) { return tasks.updateTask(this.db, id, edit, this.clock.now()); }
   deleteTask(id: string) { return tasks.deleteTask(this.db, id); }
   addSubTask(parent_task_id: string, t: Parameters<FactoryStore["addSubTask"]>[1]) { return tasks.addSubTask(this.db, parent_task_id, t, this.clock.now()); }
+  listDueReminders(now: Date) { return tasks.listDueReminders(this.db, now); }
+  remindTask(...a: Parameters<FactoryStore["remindTask"]>) { return tasks.remindTask(this.db, ...a); }
   // Owner notices (design 09-notifications): notices.ts
   recordNotice(n: Parameters<FactoryStore["recordNotice"]>[0]) { return notices.recordNotice(this.db, n); }
   listNoticesFor(work_item_ids: readonly string[]) { return notices.listNoticesFor(this.db, work_item_ids); }

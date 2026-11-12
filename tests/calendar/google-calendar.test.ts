@@ -18,7 +18,10 @@ import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import type { Secret, SecretName, SecretStore } from "../../src/interfaces/secret-store.js";
 import { REGISTRY } from "../../src/plugins.js";
 import type { SqlDriver } from "../../src/state/index.js";
-import { fakeRepoLookup } from "../helpers/fakes.js";
+import { toolchainEnvKeyRefusal } from "../../src/core/tools/policy.js";
+import { buildAgentEnv } from "../../src/impl/runner/claude-code-runner.js";
+import { ControllerRole } from "../../src/runtime/roles/controller-role.js";
+import { FakeAuth, FakeSource, cleanScanner, config, fakeRepoLookup } from "../helpers/fakes.js";
 import { newStore } from "../helpers/store.js";
 
 // The google-calendar CalendarSource (docs/plugins/calendar-source.md). No test calls Google: every request goes to
@@ -327,6 +330,45 @@ describe("google-calendar: secrets and errors", () => {
       const message = await errorOf(source.events(syncWindow(clock)));
       expect(message).toMatch(/^google-calendar: /);
       for (const leak of leaks) expect(message).not.toContain(leak);
+    }
+  });
+
+  it("the refresh token stays in the SecretStore: never in an agent environment, a log line or the store", async () => {
+    const refresh = SECRETS.GOOGLE_REFRESH_TOKEN;
+    // An agent's environment is built from scratch (G1): a token in the worker's own environment does not reach it,
+    // and its name is refused as an env_allowlist or toolchain.env key.
+    vi.stubEnv(GOOGLE_REFRESH_TOKEN, refresh);
+    const env = buildAgentEnv({ env_allowlist: {} }, { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "harness" }, { home: "/h", claudeConfigDir: "/h/c", path: "/bin" });
+    expect(Object.keys(env)).not.toContain(GOOGLE_REFRESH_TOKEN);
+    expect(Object.values(env)).not.toContain(refresh);
+    expect(() => buildAgentEnv({ env_allowlist: { [GOOGLE_REFRESH_TOKEN]: refresh } }, { name: "ANTHROPIC_API_KEY", value: "y" }, { home: "/h", claudeConfigDir: "/h/c", path: "/bin" })).toThrow(/G1/);
+    expect(toolchainEnvKeyRefusal(GOOGLE_REFRESH_TOKEN)).toMatch(/G1/);
+
+    // The controller's sync, through a success and failures whose answers quote the token: no log line and no
+    // calendar row carries it.
+    const { store } = await newStore(new FakeClock(NOW));
+    const db = (store as unknown as { db: SqlDriver }).db;
+    const { http, source, clock } = setup();
+    const lines: string[] = [];
+    const record = (msg: string, fields?: unknown) => void lines.push(`${msg} ${JSON.stringify(fields ?? {})}`);
+    const log = { info: record, warn: record, error: record };
+    const role = new ControllerRole({
+      store, sources: [new FakeSource()], auth: new FakeAuth(), clock, config, log, scanner: cleanScanner, calendar: [{ name: "google-calendar", source }],
+    });
+    const step = async () => (await role.unit("calendar")).calendarStep();
+    http.events = () => ({ status: 200, body: { items: [timed("a", localDay(clock, 1), localDay(clock, 2))], nextSyncToken: "s1" } });
+    await step();
+    http.events = () => ({ status: 401, body: `bad grant ${refresh}` });
+    clock.advance(CALENDAR_SYNC_MS);
+    await step();
+    clock.advance(3600_000);
+    http.token = () => ({ status: 400, body: { error: `invalid_grant ${refresh}` } });
+    await step();
+    expect(lines.length).toBeGreaterThan(0);
+    const stored = JSON.stringify([await db.all("SELECT * FROM calendar_events"), await db.all("SELECT * FROM calendar_sync_state")]);
+    expect(stored).toContain("token refresh failed");
+    for (const text of [...lines, stored]) {
+      for (const value of Object.values(SECRETS)) expect(text).not.toContain(value);
     }
   });
 

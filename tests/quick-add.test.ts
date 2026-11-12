@@ -17,7 +17,7 @@ const refused = (words: string) => {
 
 describe("parseQuickAdd accepts", () => {
   it("plain words: the title, every field unset", () => {
-    expect(ok("  buy   milk ")).toEqual({ title: "buy milk", list: null, priority: null, due: null, due_time: null, recurrence: null });
+    expect(ok("  buy   milk ")).toEqual({ title: "buy milk", list: null, priority: null, due: null, due_time: null, duration_minutes: null, recurrence: null });
   });
 
   it("today", () => {
@@ -57,12 +57,57 @@ describe("parseQuickAdd accepts", () => {
 
   it("every month", () => {
     expect(ok("pay rent every month 2026-01-31 !1 #home 08:00")).toEqual({
-      title: "pay rent", list: "home", priority: 1, due: { date: "2026-01-31" }, due_time: "08:00", recurrence: "month",
+      title: "pay rent", list: "home", priority: 1, due: { date: "2026-01-31" }, due_time: "08:00", duration_minutes: null, recurrence: "month",
     });
   });
 });
 
+describe("parseQuickAdd reads a typed time and a duration (design 02-tasks, schedule a task)", () => {
+  it("3pm, 3:30pm and at 3pm are a due time of 15:00 or 15:30, alone due today", () => {
+    expect(ok("pay rent 3pm")).toMatchObject({ title: "pay rent", due: { days_from_today: 0 }, due_time: "15:00" });
+    expect(ok("call the bank 3pm")).toMatchObject({ title: "call the bank", due: { days_from_today: 0 }, due_time: "15:00" });
+    expect(ok("call the bank 3:30pm")).toMatchObject({ title: "call the bank", due_time: "15:30" });
+    expect(ok("call the bank at 3pm")).toMatchObject({ title: "call the bank", due_time: "15:00" });
+    expect(ok("call the bank tomorrow at 3:30PM")).toMatchObject({ title: "call the bank", due: { days_from_today: 1 }, due_time: "15:30" });
+    expect(ok("standup at 9:05")).toMatchObject({ title: "standup", due_time: "09:05" });
+  });
+
+  it("12am is midnight and 12pm is noon", () => {
+    expect(ok("a 12am").due_time).toBe("00:00");
+    expect(ok("a 12pm").due_time).toBe("12:00");
+    expect(ok("a 12:15am").due_time).toBe("00:15");
+  });
+
+  it("at is consumed only before a time: anywhere else it stays in the title", () => {
+    expect(ok("meet at home")).toMatchObject({ title: "meet at home", due_time: null });
+    expect(ok("look at")).toMatchObject({ title: "look at", due_time: null });
+    expect(ok("meet at home at 3pm")).toMatchObject({ title: "meet at home", due_time: "15:00" });
+  });
+
+  it("a duration: 45m, 1h, 1h30m; none given is null (planned as 30 minutes)", () => {
+    expect(ok("gym 6pm 1h")).toMatchObject({ title: "gym", due_time: "18:00", duration_minutes: 60 });
+    expect(ok("gym 45m")).toMatchObject({ duration_minutes: 45, due_time: null, due: null });
+    expect(ok("gym 1h30m").duration_minutes).toBe(90);
+    expect(ok("gym 6pm").duration_minutes).toBeNull();
+  });
+});
+
 describe("parseQuickAdd rejects, with a reason", () => {
+  it("13pm, 12:61pm, 0am and at 13pm: no time", () => {
+    expect(refused("call 13pm")).toContain("not a time: 13pm");
+    expect(refused("call 12:61pm")).toContain("not a time: 12:61pm");
+    expect(refused("call 0am")).toContain("not a time: 0am");
+    expect(refused("call at 13pm")).toContain("not a time: 13pm");
+  });
+
+  it("a duration of 0 or over a day, and a second time or duration", () => {
+    expect(refused("gym 0m")).toContain("a duration must be 1 to 1440 minutes");
+    expect(refused("gym 25h")).toContain("not 25h");
+    expect(refused("a 3pm at 4pm")).toContain("repeated field: due time");
+    expect(refused("a 15:00 3pm")).toContain("repeated field: due time");
+    expect(refused("a 1h 30m")).toContain("repeated field: duration");
+  });
+
   it("a date that is no date, such as 2026-13-01", () => {
     expect(refused("pay 2026-13-01")).toContain("not a date: 2026-13-01");
     expect(refused("pay 2026-02-30")).toContain("not a date");

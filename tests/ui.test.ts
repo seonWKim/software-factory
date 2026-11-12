@@ -15,7 +15,8 @@ import type { FactoryStatus } from "../src/ui/factory-status.js";
 import { readFactoryStatus } from "../src/ui/factory-status.js";
 import { NoneUpdater } from "../src/impl/updater/none.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { type UiServer, startUi } from "../src/ui/server.js";
+import { type ApiDeps, type UiRequest, type UiServer, respond, startUi } from "../src/ui/server.js";
+import { TASK_DELETE_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_SUB_PATH } from "../src/ui/tasks-api.js";
 import { parseFilters } from "../src/ui/filters.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { renderIndex, renderItem } from "../src/ui/pages.js";
@@ -904,5 +905,125 @@ describe("classic page: open alarms (design 09-status-page)", () => {
     expect(page).not.toContain(`<section id="alarms">`);
     expect(rowOf(page, hit.id)).not.toContain("Alarm");
     expect(section((await renderItem(deps, hit.id))!, "facts")).not.toContain("Alarm");
+  });
+});
+
+describe("ui: the Tasks page's row actions (design 02-tasks)", () => {
+  const HOST = "127.0.0.1:4310";
+  const ACTOR = "local:owner@example.com" as UserId;
+  const SUB_ID = "tk_sub0123456789";
+
+  /** A store with a parent (one open sub-task), a plain task, and a done task; `post` sends through every guard. */
+  async function tasks() {
+    const clock = new FakeClock(new Date("2026-11-12T09:00:00"));
+    const { store } = await newStore(clock);
+    const token = newCsrfToken();
+    const d: ApiDeps = {
+      store, scanner: cleanScanner, clock, lease_ms: LEASE, health: new HealthMonitor(async () => [], clock),
+      commands: { actor: ACTOR, source: "environment" as const, token },
+    };
+    const add = (id: string, title: string) => store.addTask({ id, title, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: ACTOR });
+    await add("tk_parent", "plan the trip");
+    await add("tk_plain", "call the bank");
+    await add("tk_done", "old chore");
+    await store.completeTask("tk_done");
+    const child = await store.addSubTask("tk_parent", { id: "tk_child", title: "book the train", list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: ACTOR });
+    expect(child.ok).toBe(true);
+    const post = async (url: string, body: unknown, over: Partial<UiRequest> = {}) => {
+      const r = await respond(d, {
+        method: "POST", url, host: HOST, origin: `http://${HOST}`, contentType: "application/json", csrfToken: token, body: JSON.stringify(body), ...over,
+      });
+      return { status: r.status, value: JSON.parse(r.body) as Record<string, unknown> };
+    };
+    /** Every task row the tests touch, open or done, to check a refusal changed nothing. */
+    const snapshot = async () => Promise.all(["tk_parent", "tk_plain", "tk_done", "tk_child", SUB_ID].map((id) => store.getTask(id)));
+    return { store, post, snapshot };
+  }
+
+  it("edit sets the title and the quick-add words for date, priority and project through the store's updateTask", async () => {
+    const s = await tasks();
+    const r = await s.post(TASK_EDIT_PATH, { id: "tk_plain", words: "call the bank again tomorrow 10:00 !2 #home" });
+    expect(r.status).toBe(200);
+    expect(await s.store.getTask("tk_plain")).toMatchObject({ title: "call the bank again", due_date: "2026-11-13", due_time: "10:00", priority: 2, list: "home" });
+    expect(r.value.task).toMatchObject({ id: "tk_plain", title: "call the bank again" });
+    // Words with no title keep the stored title.
+    expect((await s.post(TASK_EDIT_PATH, { id: "tk_plain", words: "!1" })).status).toBe(200);
+    expect(await s.store.getTask("tk_plain")).toMatchObject({ title: "call the bank again", priority: 1, list: "home" });
+  });
+
+  it("complete sets done_at through the store's completeTask; a second completion writes nothing", async () => {
+    const s = await tasks();
+    const r = await s.post(TASK_DONE_PATH, { id: "tk_plain" });
+    expect(r).toMatchObject({ status: 200, value: { task_id: "tk_plain", completed: true } });
+    const done = await s.store.getTask("tk_plain");
+    expect(done!.done_at).not.toBeNull();
+    expect((await s.post(TASK_DONE_PATH, { id: "tk_plain" })).value).toMatchObject({ completed: false });
+    expect(await s.store.getTask("tk_plain")).toEqual(done);
+  });
+
+  it("delete removes a task through the store's deleteTask, and a parent once its sub-tasks are done", async () => {
+    const s = await tasks();
+    expect((await s.post(TASK_DELETE_PATH, { id: "tk_plain" })).status).toBe(200);
+    expect(await s.store.getTask("tk_plain")).toBeNull();
+    await s.store.completeTask("tk_child");
+    expect((await s.post(TASK_DELETE_PATH, { id: "tk_parent" })).status).toBe(200);
+    expect(await s.store.getTask("tk_parent")).toBeNull();
+  });
+
+  it("add sub-task stores one sub-task under the page's ID through the store's addSubTask; a resend stores no second one", async () => {
+    const s = await tasks();
+    const body = { parent: "tk_plain", id: SUB_ID, words: "find the card tomorrow !1" };
+    const r = await s.post(TASK_SUB_PATH, body);
+    expect(r.status).toBe(200);
+    expect(await s.store.getTask(SUB_ID)).toMatchObject({ title: "find the card", parent_task_id: "tk_plain", priority: 1, due_date: "2026-11-13", created_by: ACTOR });
+    expect((await s.post(TASK_SUB_PATH, body)).status).toBe(200);
+    expect((await s.store.listTasks(100)).filter((t) => t.parent_task_id === "tk_plain").map((t) => t.id)).toEqual([SUB_ID]);
+  });
+
+  it("each refusal answers 4xx with its reason and leaves the store unchanged", async () => {
+    const s = await tasks();
+    const before = await s.snapshot();
+    const cases: [string, unknown, number, RegExp][] = [
+      [TASK_EDIT_PATH, { id: "tk_nope", words: "x" }, 404, /no task tk_nope/],
+      [TASK_DONE_PATH, { id: "tk_nope" }, 404, /no task tk_nope/],
+      [TASK_DELETE_PATH, { id: "tk_nope" }, 404, /no task tk_nope/],
+      [TASK_SUB_PATH, { parent: "tk_nope", id: SUB_ID, words: "x" }, 404, /no task tk_nope/],
+      [TASK_DELETE_PATH, { id: "tk_parent" }, 409, /open sub-tasks \(book the train\)/],
+      [TASK_SUB_PATH, { parent: "tk_child", id: SUB_ID, words: "deeper" }, 409, /sub-task cannot have sub-tasks/],
+      [TASK_EDIT_PATH, { id: "tk_plain", words: "!7" }, 400, /priority must be/],
+      [TASK_EDIT_PATH, { id: "tk_plain", words: "" }, 400, /nothing to change/],
+      [TASK_EDIT_PATH, { id: "tk_plain", words: "today today" }, 400, /given twice/],
+      [TASK_EDIT_PATH, { id: "tk_plain", words: "tomorrow every week" }, 400, /recurrence is not edited here/],
+      [TASK_EDIT_PATH, { id: "tk_done", words: "new title" }, 409, /done task cannot be edited/],
+      [TASK_SUB_PATH, { parent: "tk_plain", id: SUB_ID, words: "!1 #home" }, 400, /title is empty/],
+      [TASK_SUB_PATH, { parent: "tk_plain", id: "bad id", words: "x" }, 400, /id must be tk_/],
+      [TASK_DONE_PATH, { id: "tk_plain", extra: 1 }, 400, /unknown field "extra"/],
+    ];
+    for (const [url, body, status, reason] of cases) {
+      const r = await s.post(url, body);
+      expect(r.status, `${url} ${JSON.stringify(body)}`).toBe(status);
+      expect(String(r.value.error)).toMatch(reason);
+    }
+    expect(await s.snapshot()).toEqual(before);
+  });
+
+  it("each action takes the request guards in order, the CSRF token as quick add does, and writes nothing on a refusal", async () => {
+    const s = await tasks();
+    const before = await s.snapshot();
+    const actions: [string, unknown][] = [
+      [TASK_EDIT_PATH, { id: "tk_plain", words: "renamed" }],
+      [TASK_DONE_PATH, { id: "tk_plain" }],
+      [TASK_DELETE_PATH, { id: "tk_plain" }],
+      [TASK_SUB_PATH, { parent: "tk_plain", id: SUB_ID, words: "x" }],
+    ];
+    for (const [url, body] of actions) {
+      expect((await s.post(url, body, { host: "evil.example" })).status, url).toBe(403);
+      expect((await s.post(url, body, { origin: "https://evil.example" })).status, url).toBe(403);
+      expect((await s.post(url, body, { contentType: "text/plain" })).status, url).toBe(415);
+      expect((await s.post(url, body, { csrfToken: undefined })).status, url).toBe(403);
+      expect((await s.post(url, body, { csrfToken: "stale" })).status, url).toBe(403);
+      expect((await s.post(url, body, { bodyTooLarge: true })).status, url).toBe(413);
+    }
+    expect(await s.snapshot()).toEqual(before);
   });
 });

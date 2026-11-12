@@ -9,7 +9,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH } from "../src/ui/tasks-api.js";
+import { TASKS_PATH, TASK_EDIT_PATH, TASK_SCHEDULE_PATH } from "../src/ui/tasks-api.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -92,6 +92,9 @@ describe("POST /api/v1/tasks", () => {
       [{ id: ID, words: "x", extra: 1 }, /unknown field "extra"/],
       [{ id: ID, words: "every fortnight call mum" }, /unknown recurrence/],
       [{ id: ID, words: "!1 #home" }, /title is empty/],
+      [{ id: ID, words: "call 13pm" }, /not a time: 13pm/],
+      [{ id: ID, words: "call 12:61pm" }, /not a time: 12:61pm/],
+      [{ id: ID, words: "call at 3pm 0m" }, /a duration must be/],
     ];
     for (const [body, reason] of cases) {
       const r = await s.post(body);
@@ -108,5 +111,62 @@ describe("POST /api/v1/tasks", () => {
     const unwired = await setup({ wired: false });
     expect((await unwired.post({ id: ID, words: "x" })).status).toBe(405);
     expect(await unwired.tasks()).toEqual([]);
+  });
+});
+
+describe("schedule a task from the Tasks page (design 02-tasks)", () => {
+  it("quick add at 3pm stores a due time of 15:00, today, with no stored duration (planned as 30 minutes)", async () => {
+    const s = await setup();
+    expect((await s.post({ id: ID, words: "call the bank at 3pm" })).status).toBe(200);
+    expect((await s.tasks())[0]).toMatchObject({ title: "call the bank", due_date: "2026-11-12", due_time: "15:00", duration_minutes: null });
+  });
+
+  it("POST /api/v1/tasks/schedule sets the due date, due time and an optional duration; a moved task keeps its duration", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank 45m" });
+    const r = await s.post({ id: ID, date: "2026-11-14", time: "15:30" }, { url: TASK_SCHEDULE_PATH });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body).task).toMatchObject({ id: ID, due_date: "2026-11-14", due_time: "15:30", duration_minutes: 45 });
+    expect((await s.post({ id: ID, date: "2026-11-14", time: "09:00", duration_minutes: 90 }, { url: TASK_SCHEDULE_PATH })).status).toBe(200);
+    expect((await s.tasks())[0]).toMatchObject({ due_date: "2026-11-14", due_time: "09:00", duration_minutes: 90 });
+  });
+
+  it("the duration is edited with the edit words; a refused edit or schedule writes nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank at 3pm" });
+    const edit = (words: string) => s.post({ id: ID, words }, { url: TASK_EDIT_PATH });
+    expect((await edit("1h30m")).status).toBe(200);
+    expect((await s.tasks())[0]).toMatchObject({ title: "call the bank", due_time: "15:00", duration_minutes: 90 });
+    const before = await s.tasks();
+    for (const words of ["0m", "25h", "13pm"]) expect((await edit(words)).status, words).toBe(400);
+    const cases: [unknown, RegExp][] = [
+      [{ id: ID, date: "2026-02-30", time: "15:00" }, /real date/],
+      [{ id: ID, date: "2026-11-14", time: "3pm" }, /HH:MM/],
+      [{ id: ID, date: "2026-11-14", time: "24:00" }, /HH:MM/],
+      [{ id: ID, date: "2026-11-14", time: "15:00", duration_minutes: 0 }, /duration must be/],
+      [{ id: ID, date: "2026-11-14", time: "15:00", duration_minutes: "30" }, /duration must be/],
+      [{ id: ID, date: "2026-11-14", time: "15:00", extra: 1 }, /unknown field "extra"/],
+    ];
+    for (const [body, reason] of cases) {
+      const r = await s.post(body, { url: TASK_SCHEDULE_PATH });
+      expect(r.status, JSON.stringify(body)).toBe(400);
+      expect(JSON.parse(r.body).error).toMatch(reason);
+    }
+    expect((await s.post({ id: "tk_nope_nope", date: "2026-11-14", time: "15:00" }, { url: TASK_SCHEDULE_PATH })).status).toBe(404);
+    expect(await s.tasks()).toEqual(before);
+    await s.store.completeTask(ID);
+    const done = await s.store.getTask(ID);
+    expect((await s.post({ id: ID, date: "2026-11-14", time: "15:00" }, { url: TASK_SCHEDULE_PATH })).status).toBe(409);
+    expect(await s.store.getTask(ID)).toEqual(done);
+  });
+
+  it("the schedule route answers 503 with no actor and refuses a request without the CSRF token, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    const before = await s.tasks();
+    expect((await s.post({ id: ID, date: "2026-11-14", time: "15:00" }, { url: TASK_SCHEDULE_PATH, csrfToken: "stale" })).status).toBe(403);
+    expect(await s.tasks()).toEqual(before);
+    const off = await setup({ actor: null });
+    expect((await off.post({ id: ID, date: "2026-11-14", time: "15:00" }, { url: TASK_SCHEDULE_PATH })).status).toBe(503);
   });
 });

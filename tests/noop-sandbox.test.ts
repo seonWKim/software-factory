@@ -115,8 +115,46 @@ describe("NoOpSandbox", { timeout: 30_000 }, () => {
     expect(git(repo, "rev-parse", "main").trim()).toBe(theirs);
   });
 
+  it("localBranch reads the factory repo's local branch with a forge selected, never origin's, and fetches nothing", async () => {
+    const { root, repo, origin } = repoWithOrigin();
+    // The local main moves past origin's; a local item's branch exists only locally.
+    writeFileSync(join(repo, "local.txt"), "local\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "local only");
+    git(repo, "branch", "factory/wi_1");
+    const calls: (readonly string[])[] = [];
+    const real = (await import("../src/impl/process/run-process.js")).runProcess;
+    const sbx = new NoOpSandbox(join(root, "worktrees"), (cmd, opts) => (calls.push(cmd), real(cmd, opts)));
+    expect(await sbx.localBranch({ repo, branch: "main" })).toBe(git(repo, "rev-parse", "main").trim());
+    expect(await sbx.localBranch({ repo, branch: "main" })).not.toBe(git(origin, "rev-parse", "main").trim());
+    expect(await sbx.localBranch({ repo, branch: "factory/wi_1" })).toBe(git(repo, "rev-parse", "main").trim());
+    expect(await sbx.localBranch({ repo, branch: "factory/wi_2" })).toBeNull();
+    expect(calls.some((c) => c.includes("fetch"))).toBe(false);
+    await expect(sbx.localBranch({ repo, branch: "--upload-pack=x" })).rejects.toThrow(/refusing/);
+  });
+
+  it("the local route's sandbox (with a forge selected) starts a resolve from the local branch and the local base, not origin", async () => {
+    const { root, repo, origin } = repoWithOrigin();
+    git(repo, "checkout", "--quiet", "-b", "factory/wi_1");
+    writeFileSync(join(repo, "branch.txt"), "branch\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "branch only");
+    git(repo, "checkout", "--quiet", "main");
+    writeFileSync(join(repo, "local.txt"), "local\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "--quiet", "-m", "local base only");
+    const sbx = new NoOpSandbox(join(root, "worktrees"), undefined, undefined, { local: true });
+    const h = await sbx.create({ repo, branch: "factory/wi_1", base_ref: "main" });
+    expect(h.base_sha).toBe(git(repo, "rev-parse", "main").trim());
+    expect(h.base_sha).not.toBe(git(origin, "rev-parse", "main").trim());
+    expect(git(h.workdir, "rev-parse", "HEAD").trim()).toBe(git(repo, "rev-parse", "factory/wi_1").trim());
+    expect(git(h.workdir, "rev-parse", "origin/main").trim()).toBe(h.base_sha);
+    expect(git(origin, "branch", "--list")).not.toContain("factory/wi_1");
+    await sbx.destroy(h);
+  });
+
   describe("updateBase", () => {
-    const ok = (stdout = ""): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
+    const ok =(stdout = ""): ExecResult => ({ exit_code: 0, signal: null, stdout, stderr: "", timed_out: false });
     const fail = (stderr: string): ExecResult => ({ exit_code: 1, signal: null, stdout: "", stderr, timed_out: false });
     const isFetch = (cmd: readonly string[]) => cmd.includes("fetch");
     const noWait = async () => {};

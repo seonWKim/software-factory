@@ -85,7 +85,7 @@ function slack(over: { notify_channel?: string; dashboard?: null } = {}) {
   const api = new FakeSlackApi();
   const socket = new FakeSocket();
   const source = new SlackSource({
-    api, connect: socket.connect, channels: [CHANNEL, "C0SECOND"], scanner: cleanScanner, store: {} as SlackSourceDeps["store"], repo: REPO, log: silent,
+    api, connect: socket.connect, channels: [CHANNEL, "C0SECOND"], scanner: cleanScanner, store: {} as SlackSourceDeps["store"], auth: {} as SlackSourceDeps["auth"], repo: REPO, log: silent,
     ...(over.dashboard === null ? {} : { dashboard_url: "https://factory.example.com/" }),
     ...(over.notify_channel ? { notify_channel: over.notify_channel } : {}),
   });

@@ -1,4 +1,4 @@
-import { AGENT_STOP_CHECKS_DEFAULT } from "../../../core/config.js";
+import { AGENT_STOP_CHECKS_DEFAULT, withoutUiCheck } from "../../../core/config.js";
 import { settingValues } from "../../../core/settings.js";
 import type { ModelClass } from "../../../core/model-choice.js";
 import { type DiffStat, type FloorHit, diffStat, overSizeLimit, requiredTier, sizeDetail } from "../../../core/diff-gate.js";
@@ -135,7 +135,7 @@ async function implement(
       }
       const done = {
         commits: commits.length, summary: out.value.summary, next_steps: out.value.next_steps, conflicts: [],
-        missing: out.value.missing, deviations: out.value.deviations,
+        missing: withoutUiCheck(out.value.missing, w.cfg.repo.ui_check), deviations: out.value.deviations,
       };
       const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
       return { work: done, start, head, bundle: await saveRunBundle(w, run, item, handle, dirs, start) };

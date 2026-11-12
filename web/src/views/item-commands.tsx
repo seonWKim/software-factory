@@ -9,6 +9,7 @@ import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
+import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { shortSource } from "../lib/format.js";
 import { Link } from "../nav.js";
@@ -23,7 +24,9 @@ import {
 // in its order: the commands that apply now. One the viewer's grants do not allow (`allowed` false, issue #453) is
 // disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject and revise open a dialog (issue #527): reject asks why and confirms what closes,
 // revise takes a comment per spec section. Verdict (issue #523) is three buttons, Accept, Changes and Reject, with a
-// severity choice; a click sends `<kind> <severity> <reason>` (verdictNote), the reason the note box's text. Every
+// severity choice; a click sends `<kind> <severity> <reason>` (verdictNote), the reason the note box's text. Beside
+// them, the one-tap Good, Bad and Feedback (oneTapNote), the same verdict request as Slack's buttons store: Good is
+// accept/none, Bad changes/minor, Feedback changes/none with the note box's text. Every
 // other command carries the note box's text when it has any (tokens for budget, the approve note). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
 // next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
@@ -47,14 +50,36 @@ const PRIMARY = ["approve", "retry", "resolve"];
 export const VERDICT_PLACEHOLDER = "accept|changes|reject <none|minor|major|critical> <reason>";
 
 /** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
-const VERDICTS = [["accept", "Accept"], ["changes", "Changes"], ["reject", "Reject"]] as const;
+const VERDICTS = [["accept", "commands.accept"], ["changes", "commands.changes"], ["reject", "commands.reject"]] as const satisfies readonly (readonly [string, MessageKey])[];
 export type VerdictChoice = (typeof VERDICTS)[number][0];
 const SEVERITIES = ["none", "minor", "major", "critical"] as const;
+/** The shown label of each severity; the severity itself is what the server receives. */
+const SEVERITY_LABEL: Record<(typeof SEVERITIES)[number], MessageKey> = {
+  none: "commands.severityNone",
+  minor: "commands.severityMinor",
+  major: "commands.severityMajor",
+  critical: "commands.severityCritical",
+};
 export type VerdictSeverityChoice = (typeof SEVERITIES)[number];
 
 /** The note a verdict button sends: `<kind> <severity> <reason>`, the reason left out when empty. */
 export function verdictNote(kind: VerdictChoice, severity: VerdictSeverityChoice, reason: string): string {
   return [kind, severity, reason.trim()].filter((s) => s !== "").join(" ");
+}
+
+/** The one-tap verdicts (design §9), as Slack's result messages offer them, with their labels. */
+const ONE_TAP = [["good", "commands.good"], ["bad", "commands.bad"], ["feedback", "commands.feedback"]] as const satisfies readonly (readonly [string, MessageKey])[];
+export type OneTapChoice = (typeof ONE_TAP)[number][0];
+
+/**
+ * The verdict note a one-tap button sends, with `reason` the note box's text: Good `accept none`, Bad `changes minor`
+ * (`/verdict` needs a reason, so `Bad` when the box is empty), Feedback `changes none <text>`; null for Feedback with
+ * no text, which waits for it.
+ */
+export function oneTapNote(choice: OneTapChoice, reason: string): string | null {
+  if (choice === "good") return verdictNote("accept", "none", reason);
+  if (choice === "bad") return verdictNote("changes", "minor", reason.trim() || "Bad");
+  return reason.trim() === "" ? null : verdictNote("changes", "none", reason);
 }
 
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
@@ -73,10 +98,10 @@ export function notAllowed(c: ItemCommand): Outcome {
 export function commandOutcome(replies: readonly CommandReply[], command: string, local?: LocalSend): Outcome {
   if (local && "error" in local) return { tone: "error", text: local.error };
   const latest = replies.filter((r) => r.command === command).reduce<CommandReply | null>((a, r) => (a && a.seq > r.seq ? a : r), null);
-  if (local && (!latest || latest.seq < local.seq)) return { tone: "status", text: "sent" };
+  if (local && (!latest || latest.seq < local.seq)) return { tone: "status", text: t("commands.sent") };
   if (!latest) return null;
   if (latest.refusal) return { tone: "error", text: plainRefusal(latest.refusal) };
-  return { tone: "status", text: latest.handled_at === null ? "sent" : "Done" };
+  return { tone: "status", text: latest.handled_at === null ? t("commands.sent") : t("commands.done") };
 }
 
 /**
@@ -168,7 +193,7 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
         {reason}
         <InShort spec={data?.spec} />
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
-          No command applies now; the factory continues on its own. Commands show here when the item waits for you.
+          {t("commands.none")}
         </p>
         {sentenceParts}
       </div>
@@ -196,29 +221,29 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
       <h2 className="mb-1 text-balance text-sm font-semibold">{t("decide.title")}</h2>
       {reason}
       <InShort spec={data?.spec} />
-      <section aria-label="Commands" className="mt-3">
+      <section aria-label={t("commands.label")} className="mt-3">
         {off && (
           <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-text-2">
-            Commands are off: this server is not on loopback, so it needs ui.user_id.{" "}
+            {t("commands.offBefore")}
             <Link href={PAGE_COMMANDS_PATH} className={LINK_CLASS}>
-              Settings
-            </Link>{" "}
-            says what to set.
+              {t("commands.offSettings")}
+            </Link>
+            {t("commands.offAfter")}
           </p>
         )}
         {enabled && session.data?.actor && (
           <p data-commands-actor className="mb-2 text-xs text-pretty text-text-2">
-            Acting as <PersonName id={session.data.actor} viewer={session.data.actor} /> (from {session.data.actor_source === "config" ? "config" : "environment"})
+            {t("commands.actingAs")}<PersonName id={session.data.actor} viewer={session.data.actor} />{t("commands.actorFrom", { source: session.data.actor_source === "config" ? t("commands.sourceConfig") : t("commands.sourceEnv") })}
           </p>
         )}
         <DecisionsPanel decisions={decisions} choices={choices} onChange={(i, c) => setPicked(choices.map((x, j) => (j === i ? c : x)))} />
         {usesNote && (
           <Textarea
-            aria-label="Note"
+            aria-label={t("commands.note")}
             rows={3}
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="Tokens for budget, a verdict's reason, or a note"
+            placeholder={t("commands.notePlaceholder")}
             className="mb-3 block w-full max-w-xl"
           />
         )}
@@ -263,10 +288,10 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
                     <ApproveConfirm phase={phase} answers={answers} note={note} />
                     <ButtonRow>
                       <Button variant="secondary" onClick={() => setConfirming(null)}>
-                        Cancel
+                        {t("commands.cancel")}
                       </Button>
                       <Button variant="primary" disabled={disabled} onClick={() => void send(c.name)}>
-                        Confirm {c.name}
+                        {t("commands.confirm", { name: c.name })}
                       </Button>
                     </ButtonRow>
                   </>
@@ -313,15 +338,16 @@ const VERDICT_VARIANT = { accept: "secondary", changes: "secondary", reject: "da
 
 /**
  * The verdict buttons (issue #523): a severity choice, then one ButtonRow of Accept, Changes and Reject, each sending
- * verdictNote with `reason` (the note box's text), and the outcome. Changes and reject need a reason, so they wait for
- * one. A handled verdict shows Done as a ghost button, which hides it; a newer verdict's outcome shows again.
+ * verdictNote with `reason` (the note box's text), then Good, Bad and Feedback (oneTapNote), and the outcome. Changes,
+ * reject and Feedback need the note box's text, so they wait for it. A handled verdict shows Done as a ghost button,
+ * which hides it; a newer verdict's outcome shows again.
  */
 function VerdictButtons({
   title, disabled, reason, outcome, onSend,
 }: { title: string; disabled: boolean; reason: string; outcome: Outcome; onSend: (note: string) => void }) {
   const [severity, setSeverity] = useState<VerdictSeverityChoice>("none");
   const [doneHidden, setDoneHidden] = useState(false);
-  const done = outcome?.tone === "status" && outcome.text === "Done";
+  const done = outcome?.tone === "status" && outcome.text === t("commands.done");
   // A new send (its outcome "sent") shows the next Done again.
   if (!done && doneHidden) setDoneHidden(false);
   return (
@@ -330,14 +356,14 @@ function VerdictButtons({
       <label className="inline-flex items-center gap-2 text-sm font-medium">
         {t("decide.severity")}
         <Select
-          aria-label="Verdict severity"
+          aria-label={t("commands.severityLabel")}
           value={severity}
           disabled={disabled}
           onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}
         >
           {SEVERITIES.map((s) => (
             <option key={s} value={s}>
-              {s}
+              {t(SEVERITY_LABEL[s])}
             </option>
           ))}
         </Select>
@@ -349,16 +375,31 @@ function VerdictButtons({
             variant={VERDICT_VARIANT[kind]}
             data-verdict-kind={kind}
             disabled={disabled || (kind !== "accept" && reason.trim() === "")}
-            title={kind === "accept" ? title : `${title} (write the reason in the note box first)`}
+            title={kind === "accept" ? title : `${title}${t("commands.needReason")}`}
             onClick={() => onSend(verdictNote(kind, severity, reason))}
           >
-            {label}
+            {t(label)}
           </Button>
         ))}
+        {ONE_TAP.map(([choice, label]) => {
+          const sent = oneTapNote(choice, reason);
+          return (
+            <Button
+              key={choice}
+              variant="secondary"
+              data-verdict-tap={choice}
+              disabled={disabled || sent === null}
+              title={choice === "feedback" ? `${title}${t("commands.needFeedback")}` : title}
+              onClick={() => sent !== null && onSend(sent)}
+            >
+              {t(label)}
+            </Button>
+          );
+        })}
         {done ? (
           !doneHidden && (
-            <Button variant="ghost" data-outcome title="The verdict was handled; hide this" onClick={() => setDoneHidden(true)}>
-              Done
+            <Button variant="ghost" data-outcome title={t("commands.handled")} onClick={() => setDoneHidden(true)}>
+              {t("commands.done")}
             </Button>
           )
         ) : (
@@ -385,11 +426,11 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
         variant="secondary"
         disabled={!merge.enabled || !on || busy}
         title={source === "local"
-          ? "Merge the item's local branch into the local base branch (factory merge), after the install and checks pass"
-          : "Merge the PR on the forge with a merge commit, at the head the review passed"}
+          ? t("commands.mergeLocal")
+          : t("commands.mergePr")}
         onClick={() => void send()}
       >
-        Merge
+        {t("commands.merge")}
       </Button>
       <OutcomeText outcome={outcome} />
     </span>
@@ -404,16 +445,16 @@ function VerdictDialog({ id, busy, error, returnFocusTo, onSend, onClose }: Comm
   const [text, setText] = useState("");
   return (
     <Dialog
-      title={`Record a verdict on ${id}`}
-      consequence="The verdict is recorded on this item; the factory applies it on its next tick."
-      confirmLabel="Send verdict"
+      title={t("commands.verdictTitle", { id })}
+      consequence={t("commands.verdictConsequence")}
+      confirmLabel={t("commands.sendVerdict")}
       confirmDisabled={busy || text.trim() === ""}
       error={error}
       returnFocusTo={returnFocusTo}
       onConfirm={() => onSend(text.trim())}
       onClose={onClose}
     >
-      <Input aria-label="Verdict" value={text} onChange={(e) => setText(e.target.value)} placeholder={VERDICT_PLACEHOLDER} className="w-full" />
+      <Input aria-label={t("commands.verdict")} value={text} onChange={(e) => setText(e.target.value)} placeholder={VERDICT_PLACEHOLDER} className="w-full" />
     </Dialog>
   );
 }
@@ -435,7 +476,7 @@ export function NeedCommands({ id, commands, pr }: { id: string; commands: reado
   const send = async (command: string, note: string) => {
     if (!(await post(command, note))) return;
     // The row may have left the list by now (the send re-read it); the status line outlives it.
-    announceStatus(`Command sent: ${command}`);
+    announceStatus(t("commands.commandSent", { command }));
     setOpen(null);
   };
   const failed = commands.flatMap((c) => {
@@ -502,7 +543,7 @@ function MoreMenu({
       <Button
         ref={buttonRef}
         variant="secondary"
-        aria-label="More commands"
+        aria-label={t("commands.more")}
         aria-haspopup="menu"
         aria-expanded={shown}
         onClick={() => setShown(!shown)}

@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TaskRow, TasksView } from "../web/src/api.js";
+import type { EventRow, TaskRow, TasksView } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -125,6 +125,121 @@ describe("Tasks page", () => {
     current = view({ can_build: false });
     await show();
     expect(screen.queryByRole("button", { name: /Build this/ })).toBeNull();
+  });
+
+  describe("calendar events (design 02-tasks, calendar views)", () => {
+    const ev = (id: string, time: string | null, source = "google-calendar"): EventRow => ({ kind: "event", source, id, title: `event ${id}`, all_day: time === null, time });
+    /** Every task and event card in the page, in document order. */
+    const entries = () => [...document.querySelectorAll<HTMLElement>("[data-task], [data-event]")].map((e) => e.dataset.task ?? `event:${e.dataset.event}`);
+
+    it("Today shows the all-day events at the top, then the timed tasks and events in time order, then the untimed tasks", async () => {
+      current = view({
+        today: {
+          overdue: [],
+          due: [
+            ev("holiday", null),
+            ev("standup", "09:30"),
+            row("tk_call", { due_date: "2026-11-12", due_time: "11:00" }),
+            ev("lunch", "12:00"),
+            row("tk_untimed", { due_date: "2026-11-12" }),
+          ],
+        },
+      });
+      render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
+      await screen.findByRole("list", { name: /^Today/ }, SLOW);
+      expect(entries()).toEqual(["event:google-calendar:holiday", "event:google-calendar:standup", "tk_call", "event:google-calendar:lunch", "tk_untimed"]);
+      const holiday = document.querySelector<HTMLElement>('[data-event="google-calendar:holiday"]')!;
+      expect(holiday.textContent).toContain("event holiday");
+      expect(holiday.textContent).toContain("all day");
+      expect(document.querySelector('[data-event="google-calendar:standup"]')!.textContent).toContain("09:30");
+      // An event is read-only: no Build this, no edit.
+      expect(within(holiday).queryByRole("button")).toBeNull();
+    });
+
+    it("Upcoming shows each day's calendar events next to its tasks", async () => {
+      current = view({
+        upcoming: [
+          { date: "2026-11-13", tasks: [ev("dentist", "08:00"), row("tk_soon", { due_date: "2026-11-13", due_time: "10:00" })] },
+          { date: "2026-11-14", tasks: [ev("trip", null)] },
+        ],
+      });
+      await show();
+      tab("Upcoming");
+      expect(entries()).toEqual(["event:google-calendar:dentist", "tk_soon", "event:google-calendar:trip"]);
+      const lists = screen.getAllByRole("list");
+      expect(lists).toHaveLength(2);
+      expect(within(lists[0]!).getByText("event dentist")).toBeTruthy();
+      expect(lists[0]!.querySelector('[data-task="tk_soon"]')).not.toBeNull();
+      expect(lists[1]!.textContent).toContain("all day");
+    });
+
+    it("a source whose last sync failed is named above Today and Upcoming, with its stored events still shown", async () => {
+      current = view({ today: { overdue: [], due: [ev("standup", "09:30")] }, calendar: [{ source: "google-calendar", synced_at: null, failed: true }] });
+      render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
+      expect((await screen.findByText(/google-calendar: showing the stored events/, undefined, SLOW)).closest("[data-calendar-stale]")).not.toBeNull();
+      expect(entries()).toEqual(["event:google-calendar:standup"]);
+    });
+  });
+
+  describe("today's timeline (design 02-tasks, schedule a task)", () => {
+    const slot = (time: string) => document.querySelector<HTMLElement>(`[data-slot="${time}"]`)!;
+    const block = (id: string) => document.querySelector<HTMLElement>(`[data-block="${id}"]`)!;
+    /** A drag carrying `id`, as a task row's drag start sets it. */
+    const carrying = (id: string) => ({ dataTransfer: { getData: (type: string) => (type === "text/plain" ? id : ""), setData: () => {} } });
+
+    it("dragging a task onto a slot posts its ID with today's date and the slot's time", async () => {
+      await show();
+      const data = new Map<string, string>();
+      fireEvent.dragStart(card("tk_late"), { dataTransfer: { setData: (type: string, v: string) => data.set(type, v), getData: () => "" } });
+      expect(data.get("text/plain")).toBe("tk_late");
+      fireEvent.dragOver(slot("15:30"), carrying("tk_late"));
+      fireEvent.drop(slot("15:30"), carrying("tk_late"));
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(posts[0]!.url).toBe("/api/v1/tasks/schedule");
+      expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+      expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_late", date: "2026-11-12", time: "15:30" });
+    });
+
+    it("an inbox task is dragged onto the timeline from the Inbox tab; a refusal shows above the timeline", async () => {
+      await show();
+      tab("Inbox");
+      answer = { status: 409, body: { error: "the task is done: a done task cannot be scheduled" } };
+      fireEvent.drop(slot("09:00"), carrying("tk_inbox"));
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_inbox", date: "2026-11-12", time: "09:00" });
+      expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("the task is done: a done task cannot be scheduled");
+    });
+
+    it("draws a timed task with no stored duration as 30 minutes and a stored duration as its length; an event is read-only", async () => {
+      current = view({
+        today: { overdue: [], due: [row("tk_call", { due_date: "2026-11-12", due_time: "15:00" }), row("tk_gym", { due_date: "2026-11-12", due_time: "18:00", duration_minutes: 90 })] },
+        timeline: [
+          { kind: "task", id: "tk_call", title: "call", start: "15:00", end: "15:30", offset: 900, minutes: 30 },
+          { kind: "task", id: "tk_gym", title: "gym", start: "18:00", end: "19:30", offset: 1080, minutes: 90 },
+          { kind: "event", id: "work:ev1", title: "standup", start: "09:00", end: "09:15", offset: 540, minutes: 15 },
+        ],
+      });
+      render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
+      await screen.findByRole("list", { name: /^Today/ }, SLOW);
+      expect(card("tk_call").textContent).toContain("30 min");
+      expect(card("tk_gym").textContent).toContain("90 min");
+      // A slot is 1.5rem per 30 minutes: 15:00 is 45rem down, 30 minutes 1.5rem high; 90 minutes 4.5rem.
+      expect([block("tk_call").style.top, block("tk_call").style.height]).toEqual(["45rem", "1.5rem"]);
+      expect(block("tk_call").textContent).toContain("15:00–15:30");
+      expect(block("tk_gym").style.height).toBe("4.5rem");
+      expect(block("tk_gym").textContent).toContain("18:00–19:30");
+      expect(block("work:ev1").textContent).toContain("standup");
+      expect(block("work:ev1").getAttribute("draggable")).toBeNull();
+      expect(within(screen.getByRole("list", { name: "Scheduled today" })).queryByRole("button")).toBeNull();
+    });
+
+    it("with no commands actor a row is not draggable and a drop posts nothing", async () => {
+      current = view({ can_build: false });
+      await show();
+      expect(card("tk_late").getAttribute("draggable")).toBe("false");
+      fireEvent.drop(slot("15:00"), carrying("tk_late"));
+      expect(posts).toEqual([]);
+    });
   });
 
   describe("quick add", () => {

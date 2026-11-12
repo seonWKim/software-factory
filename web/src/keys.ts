@@ -7,7 +7,7 @@ import { BASE } from "./pages.js";
 /** One shortcut for the help list: the keys as typed, and the catalog key of what they do. */
 export interface Shortcut {
   keys: string;
-  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.addTask";
+  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.addTask" | "keys.editTask" | "keys.deleteTask";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
@@ -20,6 +20,8 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "k", what: "keys.prev" },
   { keys: "Enter", what: "keys.open" },
   { keys: "q", what: "keys.addTask" },
+  { keys: "e", what: "keys.editTask" },
+  { keys: "Delete", what: "keys.deleteTask" },
 ];
 
 /**
@@ -43,7 +45,10 @@ export function inField(target: EventTarget | null): boolean {
   return el.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !== null;
 }
 
-/** Marks the row `step` away from the selected one (the first when none is) and scrolls it into view. */
+/**
+ * Marks the row `step` away from the selected one (the first when none is) and scrolls it into view. A focusable row
+ * (a Tasks page row) also takes focus, so its own keys (`e` edits, Delete deletes) act on it.
+ */
 function moveSelection(step: 1 | -1): void {
   const rows = [...document.querySelectorAll<HTMLElement>(ROWS)];
   if (rows.length === 0) return;
@@ -54,6 +59,7 @@ function moveSelection(step: 1 | -1): void {
   next.style.outline = "2px solid currentColor";
   next.style.outlineOffset = "-2px";
   next.scrollIntoView?.({ block: "nearest" });
+  if (next.tabIndex >= 0) next.focus({ preventScroll: true });
 }
 
 function clearRow(r: HTMLElement): void {

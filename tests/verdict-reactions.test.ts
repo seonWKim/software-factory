@@ -275,7 +275,7 @@ async function slack() {
   const clock = new FakeClock("2027-01-15T08:00:00Z");
   const { store } = await newStore(clock);
   const api = new FakeSlackApi();
-  const src = new SlackSource({ api, connect: new FakeSocket().connect, channels: [CHANNEL], scanner: cleanScanner, store, repo: { owner: "o", name: "r" }, log: silent });
+  const src = new SlackSource({ api, connect: new FakeSocket().connect, channels: [CHANNEL], scanner: cleanScanner, store, auth: new ReactionAuth(), repo: { owner: "o", name: "r" }, log: silent });
   const posts = new FakeSource("slack_thread");
   const controller = new ControllerRole({ store, sources: [posts], auth: new ReactionAuth(), clock, config, log: silent, scanner: cleanScanner });
   const { item: created } = await store.createWorkItem(

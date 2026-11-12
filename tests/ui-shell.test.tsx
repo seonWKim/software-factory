@@ -19,7 +19,7 @@ import { VIEW_KEY } from "../web/src/views/tree.js";
 
 const AT = "2026-11-07T00:00:00.000Z";
 const overview = {
-  as_of: AT, stages: { NEW: 1, RUNNING: 2 }, needs_you: 4, running: 1, queued: 2, last_24h: { succeeded: 3, failed: 1, tokens: 1500 },
+  as_of: AT, stages: { NEW: 1, RUNNING: 2 }, needs_you: 4, running: 1, queued: 1, last_24h: { succeeded: 3, failed: 1, tokens: 1500 },
   unreviewed_merges_7d: 2,
   factory: { state: "migration_pending", rev: "aaaaaaa1111", target_rev: "bbbbbbb2222", child_pid: 7, since: AT, workers: 3, error: null, pending: ["schema 12"] },
 };
@@ -135,7 +135,7 @@ describe("app shell", () => {
     const factory = screen.getByRole("navigation", { name: "Factory" });
     expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you", "Work", "Activity"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Rules", "Runners", "Queue", "Design system", "Data"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Rules", "Runners", "Queue", "Data"]);
     fireEvent.click(within(nav).getByText("Queue"));
     expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
     expect(location.pathname).toBe("/app/queue");
@@ -286,6 +286,71 @@ describe("app shell", () => {
     mount();
     expect(screen.getByRole("radio", { name: "Dark" }).getAttribute("aria-checked")).toBe("true");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+  });
+});
+
+describe("sidebar", () => {
+  it("stays in view in a window-high shell where the content column scrolls, not sticky; on its own tint over the bg token", () => {
+    mount();
+    const side = screen.getByRole("complementary", { name: "Sidebar" });
+    const own = side.className.split(" ");
+    for (const c of ["overflow-y-auto", "bg-(--sidebar)"]) expect(own).toContain(c);
+    // check:responsive fails a sticky or fixed element taller than 40% of the window (tall-fixed).
+    expect(own).not.toContain("sticky");
+    expect(own).not.toContain("fixed");
+    const wrapper = side.parentElement!.className.split(" ");
+    for (const c of ["h-dvh", "bg-bg"]) expect(wrapper).toContain(c);
+    expect(wrapper).not.toContain("bg-surface");
+    const content = side.parentElement!.querySelector("[data-scroll-root]")!;
+    expect(content.className.split(" ")).toContain("overflow-y-auto");
+  });
+
+  it("the Tasks and Factory groups show small grey titles that name them; the System chevron is hidden from screen readers", () => {
+    mount();
+    for (const name of ["Tasks", "Factory"]) {
+      const nav = screen.getByRole("navigation", { name });
+      const title = document.getElementById(nav.getAttribute("aria-labelledby")!)!;
+      expect(title.textContent).toBe(name);
+      expect(nav.firstElementChild).toBe(title);
+      for (const c of ["text-xs", "text-text-3"]) expect(title.className.split(" ")).toContain(c);
+    }
+    const chevron = document.querySelector("aside summary [data-chevron]")!;
+    expect(chevron.getAttribute("aria-hidden")).toBe("true");
+    // Points right while closed and turns down when the group opens.
+    expect(chevron.getAttribute("class")!.split(" ")).toContain("group-open:rotate-90");
+    expect(chevron.closest("details")!.className.split(" ")).toContain("group");
+  });
+
+  it("Settings is a row at the bottom of the sidebar, selected while open, and no longer a top-bar link", async () => {
+    mount();
+    await screen.findByText("Needs you (4)");
+    expect(within(document.querySelector("header")!).queryByRole("link", { name: "Settings" })).toBeNull();
+    const side = screen.getByRole("complementary", { name: "Sidebar" });
+    const row = within(side).getByRole("link", { name: "Settings" });
+    expect(row.getAttribute("href")).toBe("/app/settings");
+    expect(row.hasAttribute("aria-current")).toBe(false);
+    expect(side.querySelector("details")!.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "System" }).contains(row)).toBe(false);
+    fireEvent.click(row);
+    expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
+    const open = within(side).getByRole("link", { name: "Settings" });
+    expect(open.getAttribute("aria-current")).toBe("page");
+    expect(open.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface-2", "font-medium"]));
+  });
+});
+
+describe("one queued count", () => {
+  it("Work's queued count, the Queue page's count and overview.queued are the same number of queued runs", async () => {
+    history.replaceState(null, "", "/app/items");
+    mount();
+    const summary = await screen.findByTestId("summary");
+    expect(await within(summary).findByRole("button", { name: `${overview.queued} queued` })).toBeTruthy();
+    cleanup();
+    history.replaceState(null, "", "/app/queue");
+    mount();
+    const section = await screen.findByRole("region", { name: "Queued runs" });
+    await vi.waitFor(() => expect(section.querySelector("h2 + span")?.textContent).toBe(String(overview.queued)));
+    expect(queue.queue.length).toBe(overview.queued);
   });
 });
 
@@ -549,6 +614,24 @@ describe("item commands", () => {
   it("shows one button per command, in the API's order, labelled with its name", () => {
     mountCommands(["retry", "approve", "budget"].map(cmd));
     expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["retry", "approve", "budget"]);
+  });
+
+  it("verdict shows Good, Bad and Feedback, each sending the verdict request; Feedback waits for the note box's text", async () => {
+    mountCommands([cmd("verdict")]);
+    expect([...document.querySelectorAll("[data-verdict-tap]")].map((b) => b.textContent)).toEqual(["Good", "Bad", "Feedback"]);
+    expect(button("Feedback").disabled).toBe(true);
+    fireEvent.click(button("Good"));
+    await settle();
+    fireEvent.click(button("Bad"));
+    await settle();
+    typeNote("the flag name is wrong");
+    fireEvent.click(button("Feedback"));
+    await settle();
+    expect(posts.map((p) => p.body)).toEqual([
+      { command: "verdict", note: "accept none" },
+      { command: "verdict", note: "changes minor Bad" },
+      { command: "verdict", note: "changes none the flag name is wrong" },
+    ]);
   });
 
   it("with no command that applies (a running item), says so and offers no note box or button", () => {

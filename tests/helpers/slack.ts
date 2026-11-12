@@ -53,10 +53,11 @@ export class FakeSlackApi implements SlackApi {
     return { ts };
   }
   async updateMessage(m: Omit<SlackPost, "thread_ts"> & { ts: string }): Promise<void> {
-    this.calls.push({ method: "updateMessage", text: m.text });
+    this.calls.push({ method: "updateMessage", text: m.text, ...(m.blocks ? { blocks: m.blocks } : {}) });
     const msg = this.messages.find((x) => x.channel === m.channel && x.ts === m.ts);
     if (!msg) throw new SlackApiError("chat.update", "message_not_found");
     msg.text = m.text;
+    if (m.blocks) msg.blocks = m.blocks;
     if (m.metadata) msg.metadata = m.metadata;
   }
   async threadReplies(channel: string, thread_ts: string): Promise<SlackMessage[]> {

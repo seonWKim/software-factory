@@ -118,6 +118,20 @@ export function canSyncBase(sandbox: Sandbox | undefined): sandbox is BaseSyncSa
   return !!sandbox && typeof (sandbox as Partial<BaseSyncSandbox>).syncBase === "function";
 }
 
+/**
+ * A sandbox that reads the factory repo's local branches whatever it fetches (design §5 Merge conflict): with a
+ * forge selected, the controller's base read is the remote's, so a local item's merge check and its automatic
+ * resolve key read the local base and branch here. No fetch, no network call.
+ */
+export type LocalReadSandbox = Sandbox & {
+  /** The commit of the factory repo's local branch `branch`, or null when there is none. */
+  localBranch(spec: { repo: string; branch: string }): Promise<string | null>;
+};
+
+export function canReadLocal(sandbox: Sandbox | undefined): sandbox is LocalReadSandbox {
+  return !!sandbox && typeof (sandbox as Partial<LocalReadSandbox>).localBranch === "function";
+}
+
 export function canMergeLocal(sandbox: Sandbox | undefined): sandbox is LocalMergeSandbox {
   const s = sandbox as Partial<LocalMergeSandbox> | undefined;
   return !!s && typeof s.mergeLocal === "function" && typeof s.localConflicts === "function";
