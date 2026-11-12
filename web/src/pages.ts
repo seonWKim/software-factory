@@ -1,7 +1,7 @@
 import { Activity, CalendarCheck, Database, HeartPulse, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
-/** Where a page sits in the sidebar: the Tasks group, the Factory group, the collapsed System group, or only the top bar (Settings). */
-export type PageGroup = "tasks" | "factory" | "system" | null;
+/** Where a page sits in the sidebar: the Tasks group, the Factory group, the collapsed System group, or the row at its bottom (Settings). */
+export type PageGroup = "tasks" | "factory" | "system" | "bottom";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
 export interface PageDef {
@@ -24,7 +24,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "runners", label: "Runners", key: "runners", icon: Waypoints, group: "system" },
   { path: "queue", label: "Queue", key: "queue", icon: ListOrdered, group: "system" },
   { path: "data", label: "Data", key: "data", icon: Database, group: "system" },
-  { path: "settings", label: "Settings", key: "settings", icon: Settings, group: null },
+  { path: "settings", label: "Settings", key: "settings", icon: Settings, group: "bottom" },
 ];
 
 export const pagesIn = (group: PageGroup): readonly PageDef[] => PAGES.filter((p) => p.group === group);
