@@ -1,10 +1,10 @@
 // Timestamped migrations (RFC 0015 §6.3): `<yyyymmddThhmm>-<component>-<slug>.migration.ts` in the owning
 // component's migrations/ folder, found by discovery and applied in timestamp order after the frozen baseline
-// (SQLite's numbered list in impl/store/sqlite/schema.ts, MySQL's migrations/mysql/ steps up to 0041).
+// (SQLite's numbered list in impl/store/sqlite/schema.ts).
 
 import type { SqlExecutor } from "../sql-driver.js";
 
-export type Dialect = "sqlite" | "mysql";
+export type Dialect = "sqlite";
 
 export interface MigrationDb extends SqlExecutor {
   readonly dialect: Dialect;
@@ -19,7 +19,7 @@ export interface MigrationSpec {
   readonly change: "additive" | "breaking" | "contract";
   /** Tables a breaking or contract migration changes; backed up (archived) before it runs (§12 D1, D4). */
   readonly tables: readonly string[];
-  /** Applies the change. On MySQL it must be resumable: DDL is not transactional (§12 D3). */
+  /** Applies the change. */
   up(db: MigrationDb): Promise<void>;
   /**
    * Required for breaking: runs right after `up` and returns every problem (a row count or checksum that

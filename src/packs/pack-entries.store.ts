@@ -91,7 +91,6 @@ export class PackEntriesStore {
     const id = `pe_${sha256(`${e.kind}\n${e.name}\n${e.description_hash}`).slice(0, 32)}`;
     return insertOrSkip(
       this.db,
-      this.db.dialect.name,
       "ext_packs_entries (id, kind, name, description_hash, module_hash, descriptor, credential_name, status, added_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
       [id, e.kind, e.name, e.description_hash, e.module_hash, e.descriptor, e.credential_name, e.added_by, at, at],
     );

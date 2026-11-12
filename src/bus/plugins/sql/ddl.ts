@@ -12,7 +12,7 @@
 
 import type { TopicDescriptor } from "../../../shared/topic.js";
 import { topicTable } from "../../../shared/topic.js";
-import type { Dialect, MigrationDb, SqlExecutor, SqlValue } from "../../../state/index.js";
+import type { MigrationDb, SqlExecutor, SqlValue } from "../../../state/index.js";
 
 export interface TopicTables {
   readonly messages: string;
@@ -29,47 +29,24 @@ export function topicTables(name: string): TopicTables {
 export const TOPICS_TABLE = "bus_topics";
 export const SCHEDULER_TABLE = "bus_scheduler";
 
-/** `partition` is a reserved word in MySQL; backticks quote it in both dialects. */
+/** The partition column, quoted as the existing tables name it. */
 export const P = "`partition`";
 
-const MYSQL_TABLE = "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin";
+/** SQLite column types. */
+const t = { id: "TEXT", int: "INTEGER", time: "TEXT", text: "TEXT", long: "TEXT", autoSeq: "INTEGER PRIMARY KEY AUTOINCREMENT" } as const;
 
-interface Types {
-  id: string;
-  int: string;
-  time: string;
-  text: string;
-  long: string;
-  autoSeq: string;
-}
-
-const TYPES: Record<Dialect, Types> = {
-  sqlite: { id: "TEXT", int: "INTEGER", time: "TEXT", text: "TEXT", long: "TEXT", autoSeq: "INTEGER PRIMARY KEY AUTOINCREMENT" },
-  mysql: { id: "VARCHAR(191)", int: "BIGINT", time: "CHAR(24)", text: "TEXT", long: "MEDIUMTEXT", autoSeq: "BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY" },
-};
-
-/**
- * A competing topic's `requires`: the message's requirements as a sorted JSON list of strings (`["sandbox=docker"]`).
- * A VARCHAR on MySQL, which gives no TEXT column a literal default.
- */
-export const REQUIRES_COLUMN: Record<Dialect, string> = {
-  sqlite: "requires TEXT NOT NULL DEFAULT '[]'",
-  mysql: "requires VARCHAR(1024) NOT NULL DEFAULT '[]'",
-};
+/** A competing topic's `requires`: the message's requirements as a sorted JSON list of strings (`["sandbox=docker"]`). */
+export const REQUIRES_COLUMN = "requires TEXT NOT NULL DEFAULT '[]'";
 
 interface Index {
   name: string;
   columns: string;
-  /** SQLite only; MySQL has no partial indexes. */
+  /** A partial index's condition. */
   where?: string;
 }
 
-/** CREATE TABLE IF NOT EXISTS plus its indexes: inline keys on MySQL (no CREATE INDEX IF NOT EXISTS there). */
-function table(dialect: Dialect, name: string, columns: readonly string[], indexes: readonly Index[] = []): string[] {
-  if (dialect === "mysql") {
-    const keys = indexes.map((i) => `KEY ${i.name} (${i.columns})`);
-    return [`CREATE TABLE IF NOT EXISTS ${name} (\n  ${[...columns, ...keys].join(",\n  ")}\n) ${MYSQL_TABLE}`];
-  }
+/** CREATE TABLE IF NOT EXISTS plus its indexes. */
+function table(name: string, columns: readonly string[], indexes: readonly Index[] = []): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS ${name} (\n  ${columns.join(",\n  ")}\n)`,
     ...indexes.map((i) => `CREATE INDEX IF NOT EXISTS ${i.name} ON ${name} (${i.columns})${i.where ? ` WHERE ${i.where}` : ""}`),
@@ -77,8 +54,7 @@ function table(dialect: Dialect, name: string, columns: readonly string[], index
 }
 
 /** The DDL of one topic's tables. */
-export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string[] {
-  const t = TYPES[dialect];
+export function topicTablesSql(topic: TopicDescriptor): string[] {
   const n = topicTables(topic.name);
   const competing = topic.consumption === "competing";
   const messageColumns = [
@@ -101,7 +77,7 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
     `payload ${t.long} NOT NULL`,
     `published_at ${t.time} NOT NULL`,
     ...(competing
-      ? [REQUIRES_COLUMN[dialect], `claimed_by ${t.id}`, `claim_token ${t.int} NOT NULL DEFAULT 0`, `claim_until ${t.time}`, `acked_at ${t.time}`]
+      ? [REQUIRES_COLUMN, `claimed_by ${t.id}`, `claim_token ${t.int} NOT NULL DEFAULT 0`, `claim_until ${t.time}`, `acked_at ${t.time}`]
       : []),
   ];
   const messageIndexes: Index[] = competing
@@ -112,10 +88,10 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
       ];
   messageIndexes.push({ name: `${n.messages}_published`, columns: "published_at" });
   return [
-    ...table(dialect, n.messages, messageColumns, messageIndexes),
+    ...table(n.messages, messageColumns, messageIndexes),
     ...(competing
       ? []
-      : table(dialect, n.cursors, [
+      : table(n.cursors, [
           `consumer_group ${t.id} NOT NULL`,
           `${P} ${t.int} NOT NULL`,
           `last_seq ${t.int} NOT NULL DEFAULT 0`,
@@ -125,7 +101,6 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
           `PRIMARY KEY (consumer_group, ${P})`,
         ])),
     ...table(
-      dialect,
       n.retries,
       [
         `consumer_group ${t.id} NOT NULL`,
@@ -138,7 +113,7 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
       ],
       [{ name: `${n.retries}_due`, columns: "next_attempt_at" }],
     ),
-    ...table(dialect, n.deadLetters, [
+    ...table(n.deadLetters, [
       `consumer_group ${t.id} NOT NULL`,
       `message_seq ${t.int} NOT NULL`,
       `subject ${t.id} NOT NULL`,
@@ -154,37 +129,23 @@ export function topicTablesSql(topic: TopicDescriptor, dialect: Dialect): string
 }
 
 /** The bus's own bookkeeping: the topic list and the scheduler's release horizon (created by a bus migration). */
-export function busTablesSql(dialect: Dialect): string[] {
-  const t = TYPES[dialect];
+export function busTablesSql(): string[] {
   return [
-    ...table(dialect, TOPICS_TABLE, [
+    ...table(TOPICS_TABLE, [
       `name ${t.id} NOT NULL PRIMARY KEY`,
       `consumption ${t.id} NOT NULL`,
       `partitions ${t.int} NOT NULL`,
     ]),
-    ...table(dialect, SCHEDULER_TABLE, [`id ${t.int} NOT NULL PRIMARY KEY`, `released_until ${t.time} NOT NULL`]),
+    ...table(SCHEDULER_TABLE, [`id ${t.int} NOT NULL PRIMARY KEY`, `released_until ${t.time} NOT NULL`]),
   ];
 }
 
-/** MySQL's duplicate-key error number (ER_DUP_ENTRY). */
-const MYSQL_DUPLICATE_KEY = 1062;
-
 /**
- * `INSERT INTO <rest>` (`table (cols) VALUES (...)`) that skips a row whose unique key exists; true when it
- * inserted. It skips key conflicts only, as SQLite's ON CONFLICT DO NOTHING does. On MySQL that is a plain INSERT
- * whose duplicate-key error is caught: INSERT IGNORE would also turn strict-mode errors into warnings (a value cut
- * to its column's length), and the row count of ON DUPLICATE KEY UPDATE cannot tell an insert from a skip under
- * the driver's FOUND_ROWS flag.
+ * `INSERT INTO <rest>` (`table (cols) VALUES (...)`) that skips a row whose unique key exists (ON CONFLICT DO
+ * NOTHING); true when it inserted.
  */
-export async function insertOrSkip(q: SqlExecutor, dialect: Dialect, rest: string, params: readonly SqlValue[] = []): Promise<boolean> {
-  if (dialect === "sqlite") return (await q.run(`INSERT INTO ${rest} ON CONFLICT DO NOTHING`, params)) === 1;
-  try {
-    await q.run(`INSERT INTO ${rest}`, params);
-    return true;
-  } catch (err) {
-    if ((err as { errno?: unknown } | null)?.errno === MYSQL_DUPLICATE_KEY) return false;
-    throw err;
-  }
+export async function insertOrSkip(q: SqlExecutor, rest: string, params: readonly SqlValue[] = []): Promise<boolean> {
+  return (await q.run(`INSERT INTO ${rest} ON CONFLICT DO NOTHING`, params)) === 1;
 }
 
 /**
@@ -203,8 +164,8 @@ export async function ensureTopicTables(db: MigrationDb, topics: readonly TopicD
       );
     }
     if (row) continue;
-    for (const sql of topicTablesSql(topic, db.dialect)) await db.run(sql);
-    await insertOrSkip(db, db.dialect, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`, [
+    for (const sql of topicTablesSql(topic)) await db.run(sql);
+    await insertOrSkip(db, `${TOPICS_TABLE} (name, consumption, partitions) VALUES (?, ?, ?)`, [
       topic.name,
       topic.consumption,
       topic.partitions,
@@ -213,14 +174,12 @@ export async function ensureTopicTables(db: MigrationDb, topics: readonly TopicD
 }
 
 /** The DDL of a component's outbox and inbox (one shape for every component). */
-export function componentTablesSql(component: string, dialect: Dialect): string[] {
+export function componentTablesSql(component: string): string[] {
   if (!/^[a-z]+$/.test(component)) throw new Error(`component name "${component}" must be lowercase letters`);
-  const t = TYPES[dialect];
   const outbox = `${component}_outbox`;
   const inbox = `${component}_inbox`;
   return [
     ...table(
-      dialect,
       outbox,
       [
         `seq ${t.autoSeq}`,
@@ -234,7 +193,6 @@ export function componentTablesSql(component: string, dialect: Dialect): string[
       [{ name: `${outbox}_pending`, columns: "published_at, seq" }],
     ),
     ...table(
-      dialect,
       inbox,
       [
         `consumer ${t.id} NOT NULL`,
@@ -251,5 +209,5 @@ export function componentTablesSql(component: string, dialect: Dialect): string[
 
 /** For a component's own migration: creates its outbox and inbox. */
 export async function ensureComponentTables(db: MigrationDb, component: string): Promise<void> {
-  for (const sql of componentTablesSql(component, db.dialect)) await db.run(sql);
+  for (const sql of componentTablesSql(component)) await db.run(sql);
 }

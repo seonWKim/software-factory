@@ -1,5 +1,5 @@
 {
-  "compose.ts": 1397,
+  "compose.ts": 1365,
   "controller/units/commands/commands.unit.ts": 739,
   "controller/units/run-results/run-results.unit.ts": 1162,
   "core/settings.ts": 775,
@@ -7,7 +7,7 @@
   "golden.ts": 690,
   "impl/github/github-issue-source.ts": 720,
   "impl/runner/claude-code-runner.ts": 661,
-  "impl/store/sql/sql-factory-store.ts": 2974,
+  "impl/store/sql/sql-factory-store.ts": 2952,
   "impl/store/sqlite/schema.ts": 735,
   "impl/updater/git-worktree.ts": 912,
   "interfaces/factory-store.ts": 1353,

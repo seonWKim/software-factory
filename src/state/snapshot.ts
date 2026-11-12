@@ -1,5 +1,5 @@
 // The schema snapshot (RFC 0015 §6.3): every table and index of a database as one SQL text, so review sees
-// each schema change as a diff of schema/sqlite.sql and schema/mysql.sql.
+// each schema change as a diff of schema/sqlite.sql.
 
 import type { SqlExecutor } from "./sql-driver.js";
 
@@ -9,18 +9,6 @@ export async function sqliteSnapshot(db: SqlExecutor): Promise<string> {
     "SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END, name",
   );
   return header("sqlite") + rows.map((r) => `${String(r.sql).trim()};\n`).join("\n");
-}
-
-/** SHOW CREATE TABLE of every table, sorted by name, without the AUTO_INCREMENT counter (data, not schema). */
-export async function mysqlSnapshot(db: SqlExecutor): Promise<string> {
-  const tables = await db.all("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name");
-  const out: string[] = [];
-  for (const t of tables) {
-    const [row] = await db.all(`SHOW CREATE TABLE \`${String(t.name)}\``);
-    const sql = String(row?.["Create Table"] ?? "").replace(/ AUTO_INCREMENT=\d+/, "");
-    out.push(`${sql};\n`);
-  }
-  return header("mysql") + out.join("\n");
 }
 
 function header(dialect: string): string {

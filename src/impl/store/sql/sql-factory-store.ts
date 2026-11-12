@@ -122,7 +122,7 @@ import * as posted from "./posted-comments.js";
 import * as verdicts from "./verdicts.js";
 
 /**
- * FactoryStore over any SqlDriver (SQLite, MySQL; `db` is public for components owning tables). Every write is one driver transaction. Correctness
+ * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
  * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there".
  */
@@ -133,7 +133,7 @@ export class SqlFactoryStore implements FactoryStore {
   ) {}
 
   /**
-   * The schema (SQLite builds it; MySQL refuses while steps are pending), then the project-key check: the store
+   * The schema (the driver builds it), then the project-key check: the store
    * refuses to open while any project column still holds `owner/name` (design 2026-11-01), so a new controller
    * never runs on unmigrated rows. `npm run migrate` rewrites them.
    */
@@ -2398,40 +2398,18 @@ export class SqlFactoryStore implements FactoryStore {
     };
   }
 
-  /**
-   * The schema's tables from the database's own catalog, without row counts. SQLite's driver orders rows by
-   * `rowid`, MySQL's by its `seq` column; that dialect value tells the two catalogs apart.
-   */
+  /** The schema's tables from SQLite's own catalog, without row counts. */
   private async catalog(): Promise<Omit<StoreTable, "rows">[]> {
     const tables = new Map<string, { columns: string[]; pk: { name: string; pos: number }[] }>();
-    if (this.db.dialect.seq === "rowid") {
-      const names = await this.db.all(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
-      );
-      for (const n of names) {
-        const cols = await this.db.all("SELECT name, pk FROM pragma_table_info(?) ORDER BY cid", [n.name as string]);
-        tables.set(n.name as string, {
-          columns: cols.map((c) => c.name as string),
-          pk: cols.filter((c) => Number(c.pk) > 0).map((c) => ({ name: c.name as string, pos: Number(c.pk) })),
-        });
-      }
-    } else {
-      const cols = await this.db.all(
-        `SELECT c.TABLE_NAME AS t, c.COLUMN_NAME AS c FROM information_schema.COLUMNS c
-         JOIN information_schema.TABLES tb ON tb.TABLE_SCHEMA = c.TABLE_SCHEMA AND tb.TABLE_NAME = c.TABLE_NAME
-         WHERE c.TABLE_SCHEMA = DATABASE() AND tb.TABLE_TYPE = 'BASE TABLE'
-         ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION`,
-      );
-      for (const r of cols) {
-        const t = tables.get(r.t as string) ?? { columns: [], pk: [] };
-        t.columns.push(r.c as string);
-        tables.set(r.t as string, t);
-      }
-      const keys = await this.db.all(
-        `SELECT TABLE_NAME AS t, COLUMN_NAME AS c, ORDINAL_POSITION AS pos FROM information_schema.KEY_COLUMN_USAGE
-         WHERE TABLE_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'PRIMARY'`,
-      );
-      for (const k of keys) tables.get(k.t as string)?.pk.push({ name: k.c as string, pos: Number(k.pos) });
+    const names = await this.db.all(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' ORDER BY name",
+    );
+    for (const n of names) {
+      const cols = await this.db.all("SELECT name, pk FROM pragma_table_info(?) ORDER BY cid", [n.name as string]);
+      tables.set(n.name as string, {
+        columns: cols.map((c) => c.name as string),
+        pk: cols.filter((c) => Number(c.pk) > 0).map((c) => ({ name: c.name as string, pos: Number(c.pk) })),
+      });
     }
     const out: Omit<StoreTable, "rows">[] = [];
     for (const [name, t] of [...tables].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
@@ -2492,9 +2470,9 @@ export class SqlFactoryStore implements FactoryStore {
   }
 
   /**
-   * Takes the `commands` lock row until the transaction ends, so inserts into `inbound_commands` commit in seq
-   * order: MySQL assigns AUTO_INCREMENT at insert, and inbound's cursor (`seq > cursor`) would skip a lower seq
-   * that commits after a higher one (design 10-event-driven, sequence locks).
+   * Reads the `commands` lock row, which a driver with row locks holds until the transaction ends, so inserts into
+   * `inbound_commands` commit in seq order and inbound's cursor (`seq > cursor`) never skips a lower seq (design
+   * 10-event-driven, sequence locks). SQLite has one writer, so there the read only checks that the row exists.
    */
   private async lockCommandSequence(tx: SqlExecutor): Promise<void> {
     const [row] = await tx.all(`SELECT name FROM inbound_sequence_locks WHERE name = 'commands'${this.db.dialect.forUpdate}`);
@@ -2941,7 +2919,7 @@ const TIME_COLUMNS = ["created_at", "at", "started_at", "updated_at", "woke_at"]
 
 /**
  * A quoted identifier. Only names read from the database's catalog reach here; anything that is not a plain
- * name is refused, so no caller text is ever spliced into SQL. Backticks quote on SQLite and MySQL alike.
+ * name is refused, so no caller text is ever spliced into SQL.
  */
 function ident(name: string): string {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`not a plain identifier: ${JSON.stringify(name)}`);

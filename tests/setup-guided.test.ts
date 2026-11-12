@@ -82,7 +82,7 @@ describe("setup: the shared choices in factory.config.json", () => {
   });
 
   it("no choice touches the store key: setup asks no store question", () => {
-    const raw = { ...JSON.parse(CHECKED_IN), store: { type: "mysql" } };
+    const raw = JSON.parse(CHECKED_IN);
     for (const github of [true, false]) {
       expect(applyChoices(raw, { github, slack: false, slack_channels: [] }).has("store")).toBe(false);
     }
