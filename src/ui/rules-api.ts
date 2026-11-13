@@ -74,10 +74,10 @@ export const RULES_PLUGIN = "agents-home";
 export async function ownerOf(d: PauseDeps, p: UiPauses, does: string): Promise<{ user: UserId } | { error: string }> {
   const user = await p.principal();
   if (user === null) return { error: "No factory user acts from this page: link your local account or set cli_user." };
-  // The local grants first (as every check): a solo store's first identity becomes its owner there.
+  // The owner check first (as every check): a solo store's first local identity becomes its owner there.
   const decision = await p.authorize(user);
   if (!decision.allow) return { error: `Only the owner ${does}: ${decision.reason}.` };
-  if ((await d.store.getLocalUser(user))?.role !== "owner") return { error: `Only the owner ${does}; you are ${user}.` };
+  if ((await d.store.getOwner()) !== user) return { error: `Only the owner ${does}; you are ${user}.` };
   return { user };
 }
 

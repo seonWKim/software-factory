@@ -24,7 +24,7 @@ const REQUESTER = "local:bob" as UserId;
 async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
   const clock = new FakeClock("2026-03-04T08:00:00.000Z");
   const { store } = await newStore(clock);
-  await store.claimLocalOwner(APPROVER);
+  await store.claimOwner(APPROVER);
   const auth = new OwnerAuth(store);
   const logged: string[] = [];
   const token = newCsrfToken();

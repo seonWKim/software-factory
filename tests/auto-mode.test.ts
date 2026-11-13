@@ -478,10 +478,10 @@ describe("auto mode: the flip", { timeout: 60_000 }, () => {
     expect((await f.changes(id)).find((c) => c.reason === "spec_approved")?.actor).toEqual(AUTO);
   });
 
-  it("enterprise: a flip by an account without approve_merge is refused and writes no row", async () => {
+  it("a flip by anyone but the owner is refused and writes no row", async () => {
     const f = await autoFactory();
-    // The first local identity is the owner; the owner makes DEV a requester.
-    expect((await f.cli(ME, { action: "users_add", user: DEV, role: "requester" })).code).toBe(0);
+    // The first local identity is the owner; DEV is not.
+    await f.store.claimOwner(ME);
     const r = await f.mode("auto", DEV);
     expect(r.ok).toBe(false);
     expect(r.lines.join("\n")).toContain("approve_merge");

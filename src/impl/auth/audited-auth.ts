@@ -1,48 +1,26 @@
-import type { PassportService, ResourceRef } from "../../identity/index.js";
-import type { AuthAction, AuthDecision, AuthProvider, AuthResource, CommandPassport, ExternalIdentity, Principal } from "../../interfaces/auth-provider.js";
+import type { PassportService } from "../../identity/index.js";
+import type { AuthAction, AuthDecision, AuthProvider, AuthResource, ExternalIdentity, Principal } from "../../interfaces/auth-provider.js";
 
 /**
- * The owner check (or any AuthProvider) with every decision audited (RFC 0015 §8). A person's command carries no edge
- * passport (design 08-permissions, One owner): the inner check decides and Identity records one authz_audit row under
- * passport `none`. With a passport (Identity's own tests), Identity checks it first and the inner check decides the rest.
+ * Deprecated (issue #577): the owner check (`OwnerAuth`) now writes each decision's one authz_audit row itself, so
+ * every caller is audited, also the ones compose never wrapped (the CLI's approve_tool, `factory settings`, Slack
+ * taps). This wrapper only delegates and records nothing, so no decision is audited twice. compose.ts still builds
+ * it; removal plan: construct `OwnerAuth` directly there, then delete this class (design 08-permissions).
  */
 export class AuditedAuthProvider implements AuthProvider {
   constructor(
     /** The deciding plugin; public so tests can see which one is wired. */
     readonly inner: AuthProvider,
-    private readonly identity: Pick<PassportService, "record" | "authorize">,
+    _identity?: Pick<PassportService, "record">,
   ) {}
 
   resolve(identity: ExternalIdentity): Promise<Principal | null> {
     return this.inner.resolve(identity);
   }
 
-  async authorize(principal: Principal, action: AuthAction, resource: AuthResource, passport?: CommandPassport): Promise<AuthDecision> {
-    const ref = resourceRef(resource);
-    if (passport !== undefined) {
-      const roles = async (holder: string) => {
-        if (holder !== principal.user_id) return "passport_principal_mismatch";
-        const d = await this.inner.authorize(principal, action, resource);
-        return d.allow ? "allowed" : d.reason;
-      };
-      const r = await this.identity.authorize(passport.id, action, ref, roles, passport.at);
-      return r.allow ? { allow: true } : { allow: false, reason: r.reason };
-    }
-    const decision = await this.inner.authorize(principal, action, resource);
-    await this.identity.record({
-      passport_id: null,
-      principal: principal.user_id,
-      action,
-      resource: ref,
-      allow: decision.allow,
-      reason: decision.allow ? "allowed" : decision.reason,
-    });
-    return decision;
+  authorize(principal: Principal, action: AuthAction, resource: AuthResource): Promise<AuthDecision> {
+    return this.inner.authorize(principal, action, resource);
   }
-}
-
-function resourceRef(resource: AuthResource): ResourceRef {
-  return resource.kind === "work_item" ? { project: null, item: resource.id } : resource.kind === "project" ? { project: resource.id } : { project: null, tool: resource.id };
 }
 
 /**

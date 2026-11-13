@@ -738,22 +738,10 @@ CREATE TABLE identity_link_codes (
     created_at     TEXT NOT NULL
   );
 
-CREATE TABLE identity_local_user_changes (
-    seq       INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id   TEXT NOT NULL,
-    action    TEXT NOT NULL,
-    old_role  TEXT,
-    new_role  TEXT,
-    actor     TEXT NOT NULL,
-    at        TEXT NOT NULL
-  );
-
-CREATE TABLE identity_local_users (
-    user_id     TEXT PRIMARY KEY,
-    role        TEXT NOT NULL,
-    owner_slot  INTEGER UNIQUE,
-    added_by    TEXT NOT NULL,
-    created_at  TEXT NOT NULL
+CREATE TABLE identity_owner (
+    slot        INTEGER PRIMARY KEY CHECK (slot = 1),
+    user_id     TEXT NOT NULL,
+    claimed_at  TEXT NOT NULL
   );
 
 CREATE TABLE identity_passports (

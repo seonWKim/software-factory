@@ -9,9 +9,11 @@ import { loadCommands } from "../src/cli/index.js";
 describe("CLI command discovery", () => {
   it("finds every command, each with its help block", async () => {
     const commands = await loadCommands();
-    for (const name of ["setup", "dev", "controller", "worker", "status", "stats", "workers", "resume", "link-code", "settings", "mode", "ui", "migrate", "doctor", "llm-check", "canary", "improve", "session", "task", "approve", "retry", "revise", "reject", "resolve", "merge", "users", "help", "issue", "golden"]) {
+    for (const name of ["setup", "dev", "controller", "worker", "status", "stats", "workers", "resume", "link-code", "settings", "mode", "ui", "migrate", "doctor", "llm-check", "canary", "improve", "session", "task", "approve", "retry", "revise", "reject", "resolve", "merge", "help", "issue", "golden"]) {
       expect(commands.get(name), name).toBeDefined();
     }
+    // `factory users` is gone (one owner, issue #577): no command claims the word.
+    expect(commands.get("users")).toBeUndefined();
     for (const c of new Set(commands.values())) {
       expect(c.usage.split("\n").every((l) => l.startsWith("  ")), c.names[0]).toBe(true);
       expect(c.usage.includes(`  ${c.names[0]}`) || c.names.length > 1, c.names[0]).toBe(true);

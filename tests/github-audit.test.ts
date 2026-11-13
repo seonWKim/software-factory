@@ -50,7 +50,7 @@ async function factory() {
   const repo = new Repo();
   const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
   // The owner check; ANA is the owner.
-  await store.claimLocalOwner(ANA);
+  await store.claimOwner(ANA);
   const auth = new OwnerAuth(store);
   const controller = new ControllerRole({ store, sources: [source], auth, clock, config, log: recordingLog(), scanner: cleanScanner, repeated_failure_rule: false });
   const runner = new FakeRunner({ triage: () => ({ output: triageSpec }) });

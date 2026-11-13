@@ -561,15 +561,6 @@ export function specNotWaiting(phase: CommandPhase): string {
 }
 
 /**
- * The reason a user's role does not allow a command (`reason`: the auth decision's, e.g. `no_role`), as the controller
- * says it for a local, app or chat command judged by the local auth plugin. The dashboard shows it for the commands it
- * leaves out for the viewer.
- */
-export function roleRefusal(user: string, reason: string): string {
-  return `${user} has no role that allows it (\`${reason}\`); the local owner can grant one with \`factory users add ${user} --role approver\``;
-}
-
-/**
  * Why `/approve` cannot apply to `it` whatever its runs say, in the controller's words; null when the controller may
  * apply it. Read from the item's fields only, so `factory approve` checks it before any store write (issue #528). An
  * implement run held by coordination cost (RUNNING, not blocked: the hold is in no field) and a split parent's states

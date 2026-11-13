@@ -1,7 +1,7 @@
 import type { UserId, WorkItem, WorkItemId } from "./types.js";
 import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 import type { EgressScanner } from "../interfaces/egress-scanner.js";
-import type { FactoryStore, LocalRole } from "../interfaces/factory-store.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { LLMProvider } from "../interfaces/llm-provider.js";
 import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from "./command-table.js";
@@ -25,10 +25,10 @@ import { buildTask, createLocalItem } from "./task-build.js";
  * authorize check and the same replies as the source comment, through the auth plugin for local commands (`local`
  * by default, issue #318); a command on a sync source's item is also mirrored to it, best effort, once the source
  * answers (design 05-sources, CLI intake); a verdict is not mirrored. Every command acts as the CLI identity (`cliIdentity`). The first identity to run a
- * writing command becomes the local owner; `users` lets the owner give others roles. No sync source call.
+ * writing command becomes the owner. No sync source call.
  */
 
-/** Where the CLI identity came from, for `users list`. */
+/** Where the CLI identity came from. */
 export type CliIdentitySource = "cli_user" | "git user.email" | "OS user" | "anonymous" | "linked chat account";
 
 export interface CliIdentity {
@@ -71,10 +71,9 @@ const CLI_KEY_PREFIX = "cli:";
 export function isCliCommandKey(key: string): boolean {
   return key.startsWith(CLI_KEY_PREFIX);
 }
-const USER_ID = /^[a-z]+:\S+$/;
 
-/** The top-level words `factory` hands to this module: the table's task, item (with `confirm`) and users commands. */
-export const CLI_TOP_WORDS = topWords(["task", "item", "users"]);
+/** The top-level words `factory` hands to this module: the table's task and item commands (with `confirm`). */
+export const CLI_TOP_WORDS = topWords(["task", "item"]);
 
 /** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
 export const HELP_WORD = "help";
@@ -108,10 +107,7 @@ export type CliAction =
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
-  | { action: "confirm"; proposal: string }
-  | { action: "users_list" }
-  | { action: "users_add"; user: UserId; role: Exclude<LocalRole, "owner"> }
-  | { action: "users_remove"; user: UserId };
+  | { action: "confirm"; proposal: string };
 
 /** This module's commands, from the command table (src/core/command-table.ts). */
 const LOCAL_COMMANDS = COMMAND_TABLE.filter((c) => (CLI_TOP_WORDS as readonly string[]).includes(c.name.split(" ")[0]!));
@@ -195,18 +191,6 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     if (!id || rest.length > 0) return bad("merge needs one work item ID");
     return { action: "command", command: MERGE_COMMAND, id: id as WorkItemId, text: "" };
   }
-  if (word === "users") {
-    const [sub, user, ...rest] = args;
-    if (sub === "list") return user === undefined ? { action: "users_list" } : bad("users list takes no arguments");
-    if (sub !== "add" && sub !== "remove") return bad(`unknown users command ${JSON.stringify(sub ?? "")}`);
-    if (!user || !USER_ID.test(user)) return bad(`users ${sub} needs a factory user ID such as local:dev@example.com`);
-    if (sub === "remove") return rest.length === 0 ? { action: "users_remove", user: user as UserId } : bad("users remove takes one user ID");
-    const [flag, role, ...extra] = rest;
-    if (flag !== "--role" || (role !== "approver" && role !== "requester") || extra.length > 0) {
-      return bad("users add needs --role approver or --role requester");
-    }
-    return { action: "users_add", user: user as UserId, role };
-  }
   return bad(`unknown command ${JSON.stringify(word)}`);
 }
 
@@ -214,7 +198,7 @@ export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
-    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
+    | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
   >;
   /** Who every command acts as (`cliIdentity`). */
@@ -225,8 +209,6 @@ export interface LocalCliDeps {
   read: (path: string) => Promise<string>;
   /** A new random ID: a local item's source ID, a task's ID, a command's idempotency key. */
   newId: () => string;
-  /** Display names by user ID (Identity's identity_profiles), looked up only to show; absent: IDs only. */
-  displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
   /**
    * The source type the command was typed in, when not the CLI (a chat command, design 05-sources): an item of that
    * source already shows it in its thread, so its row is not mirrored there. Absent: the CLI.
@@ -246,7 +228,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
   const fail = (line: string): CliResult => ({ code: 1, lines: [line] });
   const user = d.identity.user;
   // The first identity to write becomes the local owner (issue #318); anonymous never does.
-  const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimLocalOwner(user));
+  const claim = async () => (user === ANONYMOUS_USER ? null : d.store.claimOwner(user));
   switch (a.action) {
     case "create": {
       const project = await d.project();
@@ -352,33 +334,6 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
-    }
-    case "users_list": {
-      const users = await d.store.listLocalUsers();
-      const names = (await d.displayNames?.([user, ...users.map((u) => u.user_id)])) ?? new Map<string, string>();
-      const shown = (id: string) => (names.has(id) ? `${id} (${names.get(id)})` : id);
-      return {
-        code: 0,
-        lines: [
-          `you are ${shown(user)} (from ${d.identity.from})`,
-          ...(users.length === 0 ? ["no local users yet: the first identity to run a writing command becomes the owner"] : []),
-          ...users.map((u) => [shown(u.user_id), u.role, `added by ${u.added_by}`].join("\t")),
-        ],
-      };
-    }
-    case "users_add":
-    case "users_remove": {
-      const owner = await claim();
-      if (owner?.user_id !== user) return fail(`only the local owner (${owner?.user_id ?? "none yet"}) can change roles; you are ${user}`);
-      if (a.action === "users_remove") {
-        const r = await d.store.removeLocalUser(a.user);
-        if (r === "owner") return fail("the owner cannot be removed");
-        return { code: 0, lines: [r === "removed" ? `removed ${a.user}` : `${a.user} had no role`] };
-      }
-      if (a.user === ANONYMOUS_USER && a.role !== "requester") return fail("anonymous gets read and create only: it cannot be an approver");
-      const r = await d.store.setLocalUserRole(a.user, a.role, user);
-      if (!r.ok) return fail(`${a.user} is the owner; the owner's role does not change`);
-      return { code: 0, lines: [`${a.user} is now ${a.role === "approver" ? "an approver" : "a requester"}`] };
     }
   }
 }

@@ -127,7 +127,7 @@ export function App() {
   const [dialog, setDialog] = useState<"search" | "help" | null>(null);
   useShortcuts({ navigate, openSearch: () => setDialog("search"), openHelp: () => setDialog("help"), path });
   const route = routeFor(path);
-  // An old page path (/app/workers, /app/users) swaps itself for its new one in the address bar.
+  // An old page path (/app/workers) swaps itself for its new one in the address bar.
   const moved = redirectFor(path);
   useEffect(() => {
     if (moved) navigate(moved, true);

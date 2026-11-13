@@ -44,7 +44,7 @@ async function slackFactory() {
   const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new OwnerAuth(store), repo: { owner: "o", name: "r" }, log });
   const forge = new FakeForge();
   // Slack accounts act as the factory user they are linked to, judged by the owner check (design 08-permissions).
-  await store.claimLocalOwner(OWNER);
+  await store.claimOwner(OWNER);
   const auth = new OwnerAuth(store);
   const controller = new ControllerRole({ store, sources: [slack], forge, auth, clock, config, log, scanner, repeated_failure_rule: false });
   const runner = new FakeRunner({

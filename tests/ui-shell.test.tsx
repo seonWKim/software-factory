@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { redirectFor } from "../web/src/pages.js";
 import { ItemsTable, NeedsGroups, QueueTable, RunningTable } from "../web/src/views/common.js";
 import { FactoryBanner } from "../web/src/views/pages.js";
 import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
@@ -418,16 +419,12 @@ describe("app pages", () => {
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
   });
 
-  it("old paths redirect: /app/workers to Runners, /app/users to Needs you", async () => {
+  it("old paths redirect: /app/workers to Runners; /app/users is no longer an old path", async () => {
     history.replaceState(null, "", "/app/workers");
     mount();
     expect(await screen.findByRole("heading", { level: 1, name: "Runners" })).toBeTruthy();
     await vi.waitFor(() => expect(location.pathname).toBe("/app/runners"));
-    cleanup();
-    history.replaceState(null, "", "/app/users");
-    mount();
-    expect(await screen.findByRole("heading", { level: 1, name: "Needs you" })).toBeTruthy();
-    await vi.waitFor(() => expect(location.pathname).toBe("/app/"));
+    expect(redirectFor("/app/users")).toBeNull();
   });
 
   it("each page's heading matches its menu name", async () => {
@@ -1017,7 +1014,7 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
 });
 
 describe("Needs-you command buttons (issue #453)", () => {
-  const NO_ROLE = "local:me has no role that allows it (`no_role`); the local owner can grant one with `factory users add local:me --role approver`";
+  const NOT_OWNER = "only the owner may send this command (`not_owner`)";
   /** Needs you with one row whose commands are `commands`, as the items API lists them. */
   function mountNeeds(commands: ReturnType<typeof cmd>[], extra: object = {}) {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -1154,14 +1151,14 @@ describe("Needs-you command buttons (issue #453)", () => {
   });
 
   it("a command the viewer may not send stays in the menu, disabled, with its reason in plain text", async () => {
-    mountNeeds(["approve", "reject"].map((n) => ({ ...cmd(n), allowed: false, reason: NO_ROLE })));
+    mountNeeds(["approve", "reject"].map((n) => ({ ...cmd(n), allowed: false, reason: NOT_OWNER })));
     // Nothing allowed is primary, so the row gets Open, and approve is in the menu too.
     expect(rowOf("open").textContent).toBe("Open");
     fireEvent.click(menu());
     for (const name of ["Approve", "Reject"]) {
       const item = screen.getByRole("menuitem", { name: new RegExp(`^${name}`) }) as HTMLButtonElement;
       expect(item.disabled, name).toBe(true);
-      expect(item.textContent).toContain("local:me has no role that allows it (no_role)");
+      expect(item.textContent).toContain("only the owner may send this command (not_owner)");
       expect(item.textContent).not.toContain("`");
     }
     fireEvent.click(screen.getByRole("menuitem", { name: /^Approve/ }));

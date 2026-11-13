@@ -1776,8 +1776,10 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     const renamed = new Map(RENAMES.map((r) => [r.from, r.to]));
     // RFC 0015 M4 (D7): inbound_app_requests merged into inbound_commands; both old tables are kept as legacy_*.
     const merged = ["inbound_app_requests"];
+    // Issue #577: the local users and their audit are dropped; the owner moved to identity_owner (src/identity/migrations/20261113T1500-identity-owner).
+    const dropped = ["identity_local_users", "identity_local_user_changes"];
     const DOMAIN_TABLES = [
-      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t) && !merged.includes(t)),
+      ...BASELINE_TABLES.map((t) => renamed.get(t) ?? t).filter((t) => !(ARCHIVE_ONLY as readonly string[]).includes(t) && !merged.includes(t) && !dropped.includes(t)),
       "legacy_inbound_app_requests",
       "legacy_inbound_commands",
       // Rebuilt without pr_number (src/controller/migrations/20261112T1200-controller-change-ref-only); kept until its contract step.
@@ -1788,7 +1790,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       // Tables of timestamped component migrations (RFC 0015 §6.3).
       "authz_audit",
       "identity_passports",
-      "identity_local_user_changes", // the audit of local users (issue #445): src/identity/migrations/20261109T1300-identity-local-user-changes
+      "identity_owner", // the one owner (issue #577): src/identity/migrations/20261113T1500-identity-owner
       "identity_profiles", // display names by user id (owner decision 2026-11-08)
       "identity_revocations",
       "worker_run_steps", // RFC 0015 M6: src/worker/migrations/20261108T1730-worker-run-journal

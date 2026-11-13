@@ -93,7 +93,7 @@ describe("parseChatCommand", () => {
     expect(parseChatCommand("List")).toMatchObject({ kind: "command", entry: { name: "task list" } });
     expect(parseChatCommand("/list")).toMatchObject({ kind: "command", entry: { name: "task list" } });
     expect(parseChatCommand("show wi_9")).toMatchObject({ kind: "command", entry: { name: "task show" }, args: ["wi_9"] });
-    expect(parseChatCommand("users list")).toMatchObject({ kind: "command", entry: { name: "users list" } });
+    expect(parseChatCommand("users list")).toBeNull();
     expect(parseChatCommand("help")).toEqual({ kind: "help" });
     expect(parseChatCommand("/help")).toEqual({ kind: "help" });
   });
@@ -149,12 +149,12 @@ describe("chat help", () => {
 
   it("outside an item's thread: the reads and the request, no item command and no write refused in chat", () => {
     const r = chatHelpReply(all, null);
-    for (const f of ["`list`", "`show <id>`", "`users list`", "`settings list`", "`<request in plain words>`", "`help`"]) expect(r).toContain(f);
-    for (const f of ["approve", "`merge`", "settings set", "users add", "`mode"]) expect(r).not.toContain(f);
+    for (const f of ["`list`", "`show <id>`", "`settings list`", "`<request in plain words>`", "`help`"]) expect(r).toContain(f);
+    for (const f of ["approve", "`merge`", "settings set", "users", "`mode"]) expect(r).not.toContain(f);
     expect(r).toContain("e.g. `@software-factory help`");
   });
 
-  it("in an item's thread: the item commands that apply in its state, for a sender whose role allows them", () => {
+  it("in an item's thread: the item commands that apply in its state, for the owner", () => {
     const r = chatHelpReply(all, at("spec_pending"));
     expect(r).toContain("`approve [notes]`");
     expect(r).toContain("`revise <feedback>`");

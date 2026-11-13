@@ -19,7 +19,7 @@ import { ACTION_PROPOSAL, ACTION_PROPOSAL_ALL, ACTION_PROPOSAL_CANCEL } from "./
 export type ChatAnswer = { markdown: string } | { lines: string[]; whole: string; link?: string } | null;
 
 export type ChatStore = LocalCliDeps["store"] &
-  Pick<FactoryStore, "resolveLink" | "getLocalUser" | "listLocalUsers" | "listCommandProposals" | "answerCommandProposal">;
+  Pick<FactoryStore, "resolveLink" | "getOwner" | "listCommandProposals" | "answerCommandProposal">;
 
 export interface ChatDeps {
   store: ChatStore;
@@ -53,20 +53,19 @@ function unlinkedHelp(): string {
 
 /** The refusal of a write that waits for chat edge passports (#479). */
 export function edgeRefusal(c: TableCommand): string {
-  return `\`${c.name}\` was not run: from Slack, writes to users, settings and the mode wait for signed command passports (issue #479). ` +
-    `Run \`factory ${cliUsageOf(c)}\` from the command line. Reads (\`users list\`, \`settings list\`, \`settings history\`) work here.`;
+  return `\`${c.name}\` was not run: from Slack, writes to settings and the mode wait for signed command passports (issue #479). ` +
+    `Run \`factory ${cliUsageOf(c)}\` from the command line. Reads (\`settings list\`, \`settings history\`) work here.`;
 }
 
 /**
- * What the linked user's stored role allows (design 08-permissions): the owner everything, an approver the approve
- * actions, anyone else reads and requests. While no owner is stored, the first user to write becomes it, as on the
- * CLI, so they may write. Only for `help`'s list: the controller checks every command again when it applies it.
+ * What the linked user may run (design 08-permissions, One owner): the owner everything, anyone else reads and
+ * requests. While no owner is stored, the first user to write becomes it, as on the CLI, so they may write. Only for
+ * `help`'s list: the controller checks every command again when it applies it.
  */
 async function mayOf(store: ChatStore, user: UserId): Promise<(w: CommandWho) => boolean> {
-  const row = await store.getLocalUser(user);
-  const owner = row?.role === "owner" || (!row && !(await store.listLocalUsers()).some((u) => u.role === "owner"));
-  const approver = owner || row?.role === "approver";
-  return (w) => w === "anyone" || w === "submit_work" || (w === "owner" ? owner : approver);
+  const stored = await store.getOwner();
+  const owner = stored === null || stored === user;
+  return (w) => w === "anyone" || w === "submit_work" || owner;
 }
 
 /** Runs one chat command; the answer to post in its thread, or null when the controller answers. */
