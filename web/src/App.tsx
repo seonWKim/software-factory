@@ -15,7 +15,7 @@ import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme
 import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
 import { FailuresPage } from "./views/failures.js";
-import { ActivityPage, HealthPage, ItemPage, ItemsPage, NeedsYouPage, QueuePage, RunnersPage } from "./views/pages.js";
+import { ActivityPage, HealthPage, ItemPage, ItemsPage, NeedsYouPage, RunnersPage } from "./views/pages.js";
 import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
@@ -41,7 +41,6 @@ const VIEWS: Record<string, () => JSX.Element> = {
   tasks: TasksPage,
   activity: ActivityPage,
   runners: RunnersPage,
-  queue: QueuePage,
   health: HealthPage,
   failures: FailuresPage,
   spend: SpendPage,
@@ -202,7 +201,8 @@ export function App() {
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : route.itemId ? (
               <ItemPage key={route.itemId} id={route.itemId} />
-            ) : (
+            ) : moved ? null : (
+              // An old path shows nothing while it swaps itself, so the new page starts with its own query.
               <View />
             )}
           </main>

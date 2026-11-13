@@ -1,4 +1,4 @@
-import { Activity, CalendarCheck, CircleDollarSign, Database, HeartPulse, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
+import { Activity, CalendarCheck, CircleDollarSign, Database, HeartPulse, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
 /** Where a page sits in the sidebar: the Tasks group, the Factory group, the System group, or the row at its bottom (Settings). */
 export type PageGroup = "tasks" | "factory" | "system" | "bottom";
@@ -23,7 +23,6 @@ export const PAGES: readonly PageDef[] = [
   { path: "spend", label: "Spend", key: "spend", icon: CircleDollarSign, group: "system" },
   { path: "rules", label: "Rules", key: "rules", icon: ScrollText, group: "system" },
   { path: "runners", label: "Runners", key: "runners", icon: Waypoints, group: "system" },
-  { path: "queue", label: "Queue", key: "queue", icon: ListOrdered, group: "system" },
   { path: "data", label: "Data", key: "data", icon: Database, group: "system" },
   { path: "settings", label: "Settings", key: "settings", icon: Settings, group: "bottom" },
 ];
@@ -35,8 +34,8 @@ export const BASE = "/app/";
 /** The Settings page's "Commands from the page" section: what to set when the page's commands are off. */
 export const PAGE_COMMANDS_PATH = `${BASE}settings#page-commands`;
 
-/** Old page paths and where they lead now (Workers became Runners). */
-const REDIRECTS: Readonly<Record<string, string>> = { workers: "runners" };
+/** Old page paths and where they lead now (Workers became Runners; Queue became Work's Queued filter). */
+const REDIRECTS: Readonly<Record<string, string>> = { workers: "runners", queue: "items?state=queued" };
 
 /** The path under /app/ without query, hash or trailing slash. */
 function restOf(pathname: string): string {
@@ -61,7 +60,7 @@ export interface Route {
 
 /** The route for a location path under /app/; an old path leads where it moved to, an unknown one to Needs you. */
 export function routeFor(pathname: string): Route {
-  const rest = REDIRECTS[restOf(pathname)] ?? restOf(pathname);
+  const rest = (REDIRECTS[restOf(pathname)] ?? restOf(pathname)).split("?")[0]!;
   const m = /^items\/([^/]+)$/.exec(rest);
   if (m) {
     let id: string | null = null;

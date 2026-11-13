@@ -136,10 +136,10 @@ describe("app shell", () => {
     const factory = screen.getByRole("navigation", { name: "Factory" });
     expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you", "Work", "Activity"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Spend", "Rules", "Runners", "Queue", "Data"]);
-    fireEvent.click(within(nav).getByText("Queue"));
-    expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
-    expect(location.pathname).toBe("/app/queue");
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Spend", "Rules", "Runners", "Data"]);
+    fireEvent.click(within(nav).getByText("Runners"));
+    expect(await screen.findByRole("heading", { name: "Runners" })).toBeTruthy();
+    expect(location.pathname).toBe("/app/runners");
     expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
     expect(fetched.length).toBeGreaterThan(0);
     expect(fetched.every((u) => u.startsWith("/api/v1/"))).toBe(true);
@@ -338,17 +338,50 @@ describe("sidebar", () => {
 });
 
 describe("one queued count", () => {
-  it("Work's queued count, the Queue page's count and overview.queued are the same number of queued runs", async () => {
+  it("Work's queued summary, its Queued filter button and overview.queued are the same number of queued runs", async () => {
     history.replaceState(null, "", "/app/items");
     mount();
     const summary = await screen.findByTestId("summary");
     expect(await within(summary).findByRole("button", { name: `${overview.queued} queued` })).toBeTruthy();
-    cleanup();
+    const filters = screen.getByRole("group", { name: "Filter by state" });
+    expect(await within(filters).findByRole("button", { name: `Queued ${queue.queue.length}` })).toBeTruthy();
+    expect(queue.queue.length).toBe(overview.queued);
+  });
+
+  it("/app/queue redirects to Work with the Queued filter pressed, showing the queued runs", async () => {
     history.replaceState(null, "", "/app/queue");
     mount();
-    const section = await screen.findByRole("region", { name: "Queued runs" });
-    await vi.waitFor(() => expect(section.querySelector("h2 + span")?.textContent).toBe(String(overview.queued)));
-    expect(queue.queue.length).toBe(overview.queued);
+    await vi.waitFor(() => expect(location.pathname + location.search).toBe("/app/items?state=queued"));
+    const filters = screen.getByRole("group", { name: "Filter by state" });
+    expect(within(filters).getByRole("button", { name: /^Queued/ }).getAttribute("aria-pressed")).toBe("true");
+    expect(await screen.findByRole("table", { name: "Queued runs" })).toBeTruthy();
+  });
+
+  it("an unknown state value leaves no filter pressed", async () => {
+    history.replaceState(null, "", "/app/items?state=nonsense");
+    mount();
+    const filters = await screen.findByRole("group", { name: "Filter by state" });
+    expect(within(filters).getByRole("button", { name: /^All/ }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("the Queued filter lists the runs in the server's order with their start times", async () => {
+    const saved = queue.queue.slice() as unknown[];
+    const later = "2099-01-01T00:00:00.000Z";
+    queue.queue.splice(0, queue.queue.length,
+      { position: 1, id: "run_a", kind: "implement", work_item_id: "wi_3", attempt: 0, created_at: AT, not_before: AT } as never,
+      { position: 2, id: "run_c", kind: "implement", work_item_id: "wi_1", attempt: 1, created_at: AT, not_before: later } as never);
+    try {
+      history.replaceState(null, "", "/app/items?state=queued");
+      mount();
+      const table = await screen.findByRole("table", { name: "Queued runs" });
+      const rows = [...table.querySelectorAll("tbody tr")];
+      expect(rows.map((r) => r.getAttribute("data-key"))).toEqual(["run_a", "run_c"]);
+      expect(rows.map((r) => r.querySelector("td")?.textContent)).toEqual(["1", "2"]);
+      expect(within(rows[0] as HTMLElement).getByText("now")).toBeTruthy();
+      expect(rows[1]!.textContent).toMatch(/in \d/);
+    } finally {
+      queue.queue.splice(0, queue.queue.length, ...(saved as typeof queue.queue));
+    }
   });
 });
 
@@ -428,7 +461,7 @@ describe("app pages", () => {
   });
 
   it("each page's heading matches its menu name", async () => {
-    const names: Record<string, string> = { items: "Work", activity: "Activity", runners: "Runners", queue: "Queue", health: "Health", failures: "Failures", spend: "Spend", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { items: "Work", activity: "Activity", runners: "Runners", health: "Health", failures: "Failures", spend: "Spend", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
@@ -806,7 +839,7 @@ describe("why an item waits (issue #310)", () => {
       expect(refLinks(needs)).toEqual(dependencyLinks);
     }));
 
-  it("Work items and the Queue page show the same sentences, #N linked", () =>
+  it("Work items and the Queued filter show the same sentences, #N linked", () =>
     withWhy(async () => {
       localStorage.setItem(VIEW_KEY, "list");
       history.replaceState(null, "", "/app/items");
@@ -814,9 +847,9 @@ describe("why an item waits (issue #310)", () => {
       const all = await screen.findByRole("table", { name: "Work items" });
       expect(refLinks(all)).toEqual([...dependencyLinks, ["#92", `${REF_URL}92`]]);
       cleanup();
-      history.replaceState(null, "", "/app/queue");
+      history.replaceState(null, "", "/app/items?state=queued");
       mount();
-      const q = await screen.findByRole("table", { name: "Queue" });
+      const q = await screen.findByRole("table", { name: "Queued runs" });
       expect(within(q).queryByText("now")).toBeNull();
       expect(refLinks(q)).toEqual([["#92", `${REF_URL}92`]]);
     }));
