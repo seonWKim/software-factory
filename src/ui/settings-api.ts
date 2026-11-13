@@ -35,6 +35,7 @@ import type { Sandbox } from "../interfaces/sandbox.js";
 import { loadSettingCatalog } from "../runtime/index.js";
 import { type ConfigEditRequest, type ConfigEditResult, FILE_ONLY_KEYS, editConfigFile } from "../core/config-writer.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
+import { lastAutoStop } from "./alarms.js";
 import type { UiDeps } from "./pages.js";
 import type { PauseDeps } from "./pause-api.js";
 import { ownerOf } from "./rules-api.js";
@@ -360,6 +361,8 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     integrations,
     ignored,
     history,
+    /** The auto-mode stop still in force (design 03-risk), which the Mode toggle shows; null: none. */
+    auto_stop: await lastAutoStop(d.store),
   };
 }
 

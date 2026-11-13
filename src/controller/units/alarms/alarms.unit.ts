@@ -1,7 +1,7 @@
 // The alarm patterns across items and the restart list.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { HELD_ITEMS, type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, isFailureAlert, recurringStalls, releasePatch } from "../../../core/alarms.js";
+import { HELD_ITEMS, type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, recurringStalls, releasePatch, stopsAuto } from "../../../core/alarms.js";
 import { ALARM_DEFAULTS, STALL_DEFAULTS } from "../../../core/config.js";
 import { SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -41,9 +41,10 @@ export class AlarmsUnit {
         spend: { daily_usd: live["spend.daily_budget_usd"], weekly_usd: live["spend.weekly_budget_usd"] },
       },
     );
-    // A failure burst stops auto mode (design 03-risk); a spend alert only alerts (design 06-spend).
-    const burst = stored.find(isFailureAlert);
-    if (burst) await this.c.unit("local-merge").stopAuto(this.c.k.cfg.project.key, "failure_alert", `the ${burst.pattern} alarm (${burst.error_code}, ${burst.count})`);
+    // Only a crash loop stops auto mode (design 03-risk); an agent-run alarm held its items in the step, and a spend
+    // alert only alerts (design 06-spend).
+    const loop = stored.find(stopsAuto);
+    if (loop) await this.c.unit("local-merge").stopAuto(this.c.k.cfg.project.key, "failure_alert", `the ${loop.pattern} alarm (${loop.error_code}, ${loop.count})`);
     await this.releaseStep();
   }
 

@@ -1,7 +1,8 @@
 // The alarm step (design 05-alarms): a look across items on each controller poll. A pure detector finds three
 // patterns in the store's recently finished runs and the supervisor's restart list: one error repeated on several
 // items, agent runs in a row that used no tokens, and a child crash loop. Each pattern is stored as one alert per
-// 6 hours through the store's conditional insert. A failed run whose pattern has an open filed item holds its item
+// 6 hours through the store's conditional insert. A new repeated-error alert holds the items it hit for a person, and
+// only a crash loop stops auto mode (design 03-risk). A failed run whose pattern has an open filed item holds its item
 // for a person at once. A failure pattern that already alerted or was filed re-raises, at most once an hour, when it
 // keeps failing: its items are held and its filed item gets a comment. The same step checks the spend budgets
 // (design 06-spend): 80% and 100% of a daily or weekly budget alert once each per period, and never stop, pause or
@@ -61,6 +62,8 @@ export interface AlarmFinding {
   error_code: string;
   count: number;
   detail: string;
+  /** A repeated error's pattern and its failed runs, whose items its new alert holds; never stored with the alert. */
+  held?: { pattern_key: string; runs: readonly Run[] };
 }
 
 /**
@@ -86,20 +89,23 @@ export function detectAlarms(input: {
 }
 
 function repeatedErrors(newestFirst: readonly Run[], threshold: number): AlarmFinding[] {
-  const groups = new Map<string, { code: string; detail: string; runs: number; items: Set<string> }>();
+  const groups = new Map<string, { code: string; detail: string; runs: Run[]; items: Set<WorkItemId> }>();
   for (const r of newestFirst) {
     if (r.kind === "improve" || r.status !== "failed" || r.outcome?.status !== "failed") continue;
     const detail = normalizeDetail(r.outcome.detail ?? "");
     const key = `${r.outcome.error_code}\n${detail}`;
-    const g = groups.get(key) ?? { code: r.outcome.error_code, detail, runs: 0, items: new Set<string>() };
-    g.runs++;
+    const g = groups.get(key) ?? { code: r.outcome.error_code, detail, runs: [], items: new Set<WorkItemId>() };
+    g.runs.push(r);
     g.items.add(r.work_item_id);
     groups.set(key, g);
   }
   return [...groups.entries()]
     .filter(([, g]) => g.items.size >= threshold)
     .sort(([a], [b]) => cmp(a, b))
-    .map(([, g]) => ({ pattern: "repeated_error", pattern_key: alertKey(patternKey({ error_code: g.code, detail: g.detail })), error_code: g.code, count: g.runs, detail: g.detail }));
+    .map(([, g]) => {
+      const key = patternKey({ error_code: g.code, detail: g.detail });
+      return { pattern: "repeated_error", pattern_key: alertKey(key), error_code: g.code, count: g.runs.length, detail: g.detail, held: { pattern_key: key, runs: g.runs } };
+    });
 }
 
 function zeroTokens(newestFirst: readonly Run[], threshold: number): AlarmFinding[] {
@@ -146,7 +152,8 @@ export interface AlarmDeps {
 /**
  * One alarm step: reads the runs finished inside the window and the restart list, and stores each pattern found
  * unless it alerted within ALERT_DEDUPE_MS. A detail the egress scanner flags is dropped; the code and count stay.
- * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`. Each recurring
+ * A new zero-token alert starts the model_stall pause, first probe after `probe_interval_ms`; a new repeated-error
+ * alert holds the items it hit (`hold`), so the failing items wait for a person and auto mode goes on. Each recurring
  * pattern re-raises first (`reraise`), then each failed run of an open filed pattern holds its item (`holdFiled`). Returns the alerts this call stored. Safe to run twice and on several
  * replicas at once: the store's conditional insert dedupes.
  */
@@ -157,7 +164,7 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
   // Before this step's own alerts, so a pattern's new 6-hour alert never hides the re-raise it is due.
   const stored = await reraise(d, runs, now, settings.alarm_repeat_count);
   await holdFiled(d, runs, now);
-  for (const f of detectAlarms({ runs, restarts, now, settings })) {
+  for (const { held, ...f } of detectAlarms({ runs, restarts, now, settings })) {
     // G5: alerts reach the status page, so the detail is scanned as UI text, never stored unscanned.
     const scan = await d.scanner.scan("ui", f.detail);
     const r = await d.store.recordAlert({ ...f, detail: scan.clean ? f.detail : null }, ALERT_DEDUPE_MS);
@@ -165,6 +172,8 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
     stored.push(r.alert);
     // The code and count only: the detail stays in the store, where the UI reads it.
     d.log.warn(`alarm: ${f.pattern}`, { alert_id: r.alert.id, error_code: f.error_code, count: f.count });
+    // Only the replica whose insert created the alert holds; the hold is a conditional transition besides.
+    if (held && d.hold) await d.hold({ pattern_key: held.pattern_key, work_item_ids: await unheld(d, held.runs, held.pattern_key, null) });
     if (f.pattern === "zero_tokens") {
       const pause = await d.store.pauseClaims(new Date(now.getTime() + settings.probe_interval_ms).toISOString() as Timestamp, MODEL_STALL);
       if (pause.started) d.log.warn(`agent runs use no tokens: all runs paused, first probe at ${pause.resume_at}`, { resume_at: pause.resume_at });
@@ -174,8 +183,12 @@ export async function alarmStep(d: AlarmDeps, settings: AlarmSettings & { probe_
   return stored;
 }
 
-/** Whether an alert is a failure alarm, which stops auto mode (design 03-risk); a stop or a spend alert is not. */
-export const isFailureAlert = (a: Pick<Alert, "pattern">): boolean => a.pattern !== "auto_stopped" && a.pattern !== "spend_budget";
+/**
+ * Whether an alert the alarm step stored stops auto mode (design 03-risk): only a child crash loop, which is the
+ * factory itself. A repeated error (any code) or a zero-token streak is about agent runs: it holds its items, or the
+ * model_stall pause holds every claim, and auto mode goes on. A spend alert only alerts.
+ */
+export const stopsAuto = (a: Pick<Alert, "pattern">): boolean => a.pattern === "child_restarts";
 
 /**
  * The spend budget check (design 06-spend): the known cost of the runs finished in the current UTC day and ISO
@@ -254,7 +267,7 @@ async function reraise(d: AlarmDeps, runs: readonly Run[], now: Date, threshold:
     if (!r.created) continue;
     stored.push(r.alert);
     d.log.warn("alarm: recurring failure", { alert_id: r.alert.id, error_code: g.error_code, count: fresh, items: g.work_item_ids.length });
-    if (d.hold) await d.hold({ pattern_key: key, work_item_ids: await unheld(d, g, key, byRun, null) });
+    if (d.hold) await d.hold({ pattern_key: key, work_item_ids: await unheld(d, runsOf(g, byRun), key, null) });
     if (filed?.filed_ref && d.comment) await commentFiled(d, { ...filed, filed_ref: filed.filed_ref }, now, fresh, r.alert.id);
   }
   return stored;
@@ -275,21 +288,21 @@ async function holdFiled(d: AlarmDeps, runs: readonly Run[], now: Date): Promise
     if (!filed?.filed_ref) continue;
     const fix = await d.store.getWorkItemBySource(filed.filed_ref.type, filed.filed_ref.id);
     if (fix ? fix.stage === "CLOSED" : now.getTime() - Date.parse(filed.created_at) >= FILED_INTAKE_MS) continue;
-    const items = await unheld(d, g, key, byId, filed.created_at);
+    const items = await unheld(d, runsOf(g, byId), key, filed.created_at);
     if (items.length > 0) await d.hold({ pattern_key: key, work_item_ids: items });
   }
 }
 
+/** `g`'s runs, read from `byId`. */
+const runsOf = (g: FailureGroup, byId: ReadonlyMap<string, Run>): Run[] => g.run_ids.map((id) => byId.get(id)!);
+
 /**
- * The items of `g`'s runs that finished after `after` (null: any) and that no hold of `key` took after the run
+ * The items of `runs` that finished after `after` (null: any) and that no hold of `key` took after the run
  * finished, so a hold a person lifted (`/retry`) or the release cleared is not put back by the same run.
  */
-async function unheld(
-  d: Pick<AlarmDeps, "store">, g: FailureGroup, key: string, byId: ReadonlyMap<string, Run>, after: Timestamp | null,
-): Promise<WorkItemId[]> {
+async function unheld(d: Pick<AlarmDeps, "store">, runs: readonly Run[], key: string, after: Timestamp | null): Promise<WorkItemId[]> {
   const items = new Set<WorkItemId>();
-  for (const id of g.run_ids) {
-    const r = byId.get(id)!;
+  for (const r of runs) {
     if ((after !== null && r.finished_at! <= after) || items.has(r.work_item_id)) continue;
     const held = (await d.store.listStateChanges(r.work_item_id))
       .some((c) => c.reason === RECURRING_FAILURE && c.detail?.pattern_key === key && c.at >= r.finished_at!);
