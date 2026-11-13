@@ -52,8 +52,12 @@ const LONG_BODY = [
 /** A local source with a long ID, as `factory issue` files it. */
 const local = (id) => ({ type: "local", id, link: `local:${id}` });
 
-/** Seeds the store and starts the UI on 127.0.0.1 with a free port. Returns its URL, the pages to check and close(). */
-export async function startFixture() {
+/**
+ * Seeds the store and starts the UI on 127.0.0.1 with a free port. Returns its URL, the pages to check and close().
+ * `extend({ store, csrfToken, owner })` returns more UI dependencies (the idle agents' sandbox adds `tacit` and
+ * `pauses`); the responsive check adds none.
+ */
+export async function startFixture(extend = () => ({})) {
   const dir = await mkdtemp(join(tmpdir(), "sf-responsive-"));
   const clock = new SystemClock();
   const store = new SqlFactoryStore(new SqliteDriver(join(dir, "factory.sqlite")), clock);
@@ -93,6 +97,7 @@ export async function startFixture() {
       },
       storage,
       commands: { actor: OWNER, source: "config", token: csrfToken, mergeAllowed: async () => true, localMerge: true },
+      ...(await extend({ store, csrfToken, owner: OWNER })),
     },
     0,
   );
