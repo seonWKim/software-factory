@@ -791,6 +791,9 @@ export const API = {
   ruleVerdict: "/api/v1/rules/verdict",
   ruleEntry: (id: string) => `/api/v1/rules/entry?id=${encodeURIComponent(id)}`,
   tasks: "/api/v1/tasks",
+  calendar: "/api/v1/calendar",
+  calendarConnect: "/api/v1/calendar/connect",
+  calendarDisconnect: "/api/v1/calendar/disconnect",
   taskBuild: "/api/v1/tasks/build",
   taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
   dataTables: "/api/v1/data/tables",
@@ -902,6 +905,48 @@ export async function postTaskBuild(token: string, id: string): Promise<{ ok: tr
 export async function postTaskAdd(token: string, id: string, words: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.tasks, token, { id, words });
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** One calendar plugin on the Settings page's Calendar section (GET /api/v1/calendar, design 08-settings). */
+export interface CalendarPluginView {
+  /** The plugin's own name, its only label. */
+  name: string;
+  /** Listed in the live `calendar` setting (else the config file's key). */
+  connected: boolean;
+  synced_at: string | null;
+  /** The last sync's error; null after a success. */
+  error: string | null;
+  /** The sign-in this server process started, if any. */
+  attempt: { state: "signing_in" | "connected" | "failed"; events: number | null; error: string | null } | null;
+}
+
+export interface CalendarView {
+  plugins: CalendarPluginView[];
+}
+
+/** What POST /api/v1/calendar/connect answered: the inputs to ask for, the consent page to open, or a refusal. */
+export type CalendarConnectResult =
+  | { ok: true; state: "needs_input"; needs: string[] }
+  | { ok: true; state: "signing_in"; consent_url: string }
+  | { ok: true; state: "connected" | "failed"; events: number | null }
+  | { ok: false; error: string };
+
+/** POST /api/v1/calendar/connect: the plugin, and the values the last answer asked for (none on the first try). */
+export async function postCalendarConnect(token: string, plugin: string, values?: Record<string, string>): Promise<CalendarConnectResult> {
+  const r = await postJson<{ state?: string; needs?: string[]; consent_url?: string; events?: number | null; error?: string }>(
+    API.calendarConnect, token, values === undefined ? { plugin } : { plugin, values },
+  );
+  if (!r.ok) return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+  const v = r.value;
+  if (v.state === "needs_input") return { ok: true, state: "needs_input", needs: v.needs ?? [] };
+  if (v.state === "signing_in") return { ok: true, state: "signing_in", consent_url: v.consent_url ?? "" };
+  return { ok: true, state: v.state === "failed" ? "failed" : "connected", events: v.events ?? null };
+}
+
+/** POST /api/v1/calendar/disconnect. A refusal comes back as `{ ok: false, error }`. */
+export async function postCalendarDisconnect(token: string, plugin: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.calendarDisconnect, token, { plugin });
+  return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** A Tasks page row action: the path segment of its route. */
