@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { RulesView } from "../web/src/api.js";
+import type { RuleEntryView, RulesView } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -13,7 +13,9 @@ import { PAGES, routeFor } from "../web/src/pages.js";
 const PAGE_MODULE = "../web/src/views/rules.js";
 const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesPage: FunctionComponent };
 
-// The Rules page (issue #571): each pending entry with its title, state and ID; Promote, Hold and Reject ask for a
+// The Rules page (issue #571): the pending entries in two groups, rule candidates (C-) and structure proposals (P-),
+// each under its line on what promoting one does; each card with its title, state, ID and one line of what it would
+// change, and its detail (what, why, where) read from GET /api/v1/rules/entry only when the card opens. Promote, Hold and Reject ask for a
 // reason in a dialog before they send; Promote of a class (C-) sends the owner's wording as the rule, Promote of a
 // proposal (P-) sends none. With the ledger off (design 08-settings): the agents home found gives one line and one
 // primary Turn on, which writes the `integrations` entry through POST /api/v1/settings and loads the rules with no
@@ -30,8 +32,8 @@ const view = (over: Partial<RulesView> = {}): RulesView => ({
   home: null,
   turn_on: null,
   entries: [
+    { id: "P-0007", title: "Split the review prompt", state: "held", kind: "edit-asset", target: "prompts/review.md" },
     { id: "C-012", title: "Keep existing CLI flags.", state: "pending" },
-    { id: "P-0007", title: "Split the review prompt", state: "held" },
   ],
   ...over,
 });
@@ -40,10 +42,15 @@ const json = (status: number, body: unknown) => new Response(JSON.stringify(body
 let current: RulesView;
 let posts: { url: string; init: RequestInit }[];
 let answer: { status: number; body: unknown };
+let gets: string[];
+/** GET /api/v1/rules/entry's answer: a detail view, or an HTTP status for a failed read. */
+let detail: RuleEntryView | number;
 
 beforeEach(() => {
   current = view();
   posts = [];
+  gets = [];
+  detail = { id: "C-012", error: null, detail: null };
   answer = { status: 200, body: { id: "C-012", verdict: "promote" } };
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
@@ -52,7 +59,9 @@ beforeEach(() => {
       if (url === "/api/v1/settings" && answer.status === 200) current = view();
       return json(answer.status, answer.body);
     }
+    gets.push(url);
     if (url === "/api/v1/rules") return json(200, current);
+    if (url.startsWith("/api/v1/rules/entry?")) return typeof detail === "number" ? json(detail, { error: "boom" }) : json(200, detail);
     return json(404, { error: "Not found." });
   }));
 });
@@ -77,20 +86,87 @@ describe("Rules page", () => {
     expect(PAGES.map((p) => p.path)).toContain("rules");
   });
 
-  it("lists each pending entry's title, state and ID, and no evidence, kind, scope or draft", async () => {
+  it("groups candidates and proposals, each under its line; each card shows its title, state, ID and what it would change", async () => {
     await show();
-    await screen.findByRole("list", { name: "Rules waiting for you" }, SLOW);
+    const classes = await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    const proposals = screen.getByRole("list", { name: "Structure proposals" });
+    expect(within(classes).getAllByRole("listitem").map((li) => li.dataset.rule)).toEqual(["C-012"]);
+    expect(within(proposals).getAllByRole("listitem").map((li) => li.dataset.rule)).toEqual(["P-0007"]);
+    // Candidates first, each group with its one line on what promoting one does.
+    const groups = screen.getAllByRole("region").map((r) => [r.getAttribute("aria-label"), r.querySelector("[data-group-line]")!.textContent]);
+    expect(groups).toEqual([
+      ["Rule candidates", "Promoting a candidate adds its rule to every run's prompt from the next run on."],
+      ["Structure proposals", "Promoting a proposal records your verdict only; you make the change by hand."],
+    ]);
     expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
     expect(card("C-012").textContent).toContain("Pending");
     expect(card("C-012").textContent).toContain("C-012");
+    expect(card("C-012").querySelector("[data-rule-what]")!.textContent).toBe("Rule: Keep existing CLI flags.");
     expect(card("P-0007").textContent).toContain("Held");
     expect(card("P-0007").querySelector("[data-rule-title]")!.textContent).toBe("Split the review prompt");
-    for (const gone of ["Evidence", "Rule draft", "Candidate class"]) expect(card("C-012").textContent).not.toContain(gone);
+    expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: prompts/review.md");
+    // No detail is read on page load.
+    expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual([]);
+    expect(document.querySelector("[data-rule-detail]")).toBeNull();
   });
+
+  it("opening a card reads its detail on demand and shows what, why and where in that order", async () => {
+    detail = {
+      id: "C-012", error: null,
+      detail: { id: "C-012", default: "Keep every existing CLI flag.", exceptions: "a deprecated flag", incidents: 3, quotes: ["keep --json"], root_reason: "renames skip callers", scope: "software, CLI" },
+    };
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    const toggle = within(card("C-012")).getByRole("button", { name: "Why and where" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    await waitFor(() => expect(card("C-012").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual(["/api/v1/rules/entry?id=C-012"]);
+    const parts = [...card("C-012").querySelectorAll<HTMLElement>("[data-detail-part]")];
+    expect(parts.map((p) => p.dataset.detailPart)).toEqual(["what", "why", "where"]);
+    expect(parts.map((p) => p.querySelector("h3")!.textContent)).toEqual(["What it would change", "Why", "Where it applies"]);
+    expect(parts[0]!.textContent).toContain("Rule: Keep every existing CLI flag.");
+    expect(parts[0]!.textContent).toContain("Except: a deprecated flag");
+    const why = parts[1]!.textContent!;
+    expect(why.indexOf("Came up 3 times.")).toBeLessThan(why.indexOf("keep --json"));
+    expect(why.indexOf("keep --json")).toBeLessThan(why.indexOf("Root reason: renames skip callers"));
+    expect(parts[1]!.querySelector("blockquote[data-quote]")!.textContent).toBe("keep --json");
+    expect(parts[2]!.textContent).toContain("software, CLI");
+  });
+
+  it("a proposal's detail shows its kind and target; a part the ledger lacks says not given", async () => {
+    detail = { id: "P-0007", error: null, detail: { id: "P-0007", incidents: 1 } };
+    await show();
+    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    fireEvent.click(within(card("P-0007")).getByRole("button", { name: "Why and where" }));
+    await waitFor(() => expect(card("P-0007").querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
+    const part = (name: string) => card("P-0007").querySelector(`[data-detail-part="${name}"]`)!.textContent;
+    expect(part("what")).toContain("Kind: edit-asset");
+    expect(part("what")).toContain("Changes: prompts/review.md");
+    expect(part("why")).toContain("Came up once.");
+    expect(part("where")).toContain("not given");
+  });
+
+  for (const [name, answerWith] of [
+    ["returns nothing", { id: "C-012", detail: null, error: null }],
+    ["fails in the ledger", { id: "C-012", detail: null, error: "The detail could not be read: evolve show exited 5" }],
+    ["fails over HTTP", 502],
+  ] as const) {
+    it(`a show that ${name}: the card keeps its title and says the detail could not be read`, async () => {
+      detail = answerWith;
+      await show();
+      await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+      fireEvent.click(within(card("C-012")).getByRole("button", { name: "Why and where" }));
+      await waitFor(() => expect(card("C-012").querySelector("[data-rule-detail]")).not.toBeNull(), SLOW);
+      expect(card("C-012").querySelector("[data-rule-detail]")!.textContent).toBe("The detail could not be read.");
+      expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
+    });
+  }
 
   it("a verdict button asks for a reason before it sends; promote of a class sends the edited wording", async () => {
     await show();
-    await screen.findByRole("list", { name: "Rules waiting for you" }, SLOW);
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     fireEvent.click(within(card("C-012")).getByRole("button", { name: "Promote" }));
     const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
     expect(confirm.disabled).toBe(true);
@@ -109,7 +185,7 @@ describe("Rules page", () => {
 
   it("hold and reject send only the reason; promote of a proposal asks for no wording and sends no text", async () => {
     await show();
-    await screen.findByRole("list", { name: "Rules waiting for you" }, SLOW);
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     for (const [label, reason] of [["Hold", "wait"], ["Reject", "not code"], ["Promote", "good shape"]] as const) {
       fireEvent.click(within(card("P-0007")).getByRole("button", { name: label }));
       expect(within(dialog()).queryByRole("textbox", { name: "Rule wording" })).toBeNull();
@@ -127,7 +203,7 @@ describe("Rules page", () => {
   it("a refusal stays in the dialog", async () => {
     answer = { status: 403, body: { error: "Only the owner judges rules; you are local:alice." } };
     await show();
-    await screen.findByRole("list", { name: "Rules waiting for you" }, SLOW);
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     fireEvent.click(within(card("C-012")).getByRole("button", { name: "Hold" }));
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "x" } });
     fireEvent.click(within(dialog()).getByRole("button", { name: "Send hold" }));
@@ -138,7 +214,8 @@ describe("Rules page", () => {
     current = view({ judge: "Only the owner judges rules; you are local:alice." });
     await show();
     expect((await screen.findByRole("note", {}, SLOW)).textContent).toContain("Only the owner");
-    expect(within(card("C-012")).queryByRole("button")).toBeNull();
+    // Read-only: the detail opens, but no verdict button shows.
+    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
   });
 
   const off = (over: Partial<RulesView> = {}): RulesView =>
@@ -168,7 +245,7 @@ describe("Rules page", () => {
     expect(posts[0]!.url).toBe("/api/v1/settings");
     expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
     expect(sent()).toEqual([{ action: "set", key: "integrations", value: '{"tacit":"agents-home"}' }]);
-    await screen.findByRole("list", { name: "Rules waiting for you" }, SLOW);
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     expect(card("C-012")).not.toBeNull();
   });
 
@@ -178,7 +255,7 @@ describe("Rules page", () => {
     await show();
     fireEvent.click(await screen.findByRole("button", { name: "Turn on" }, SLOW));
     expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("only by the owner");
-    expect(screen.queryByRole("list", { name: "Rules waiting for you" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Rule candidates" })).toBeNull();
   });
 
   it("ledger off, home not found: names the missing CLI and how to set AGENTS_HOME, with no path field and no Turn on", async () => {
