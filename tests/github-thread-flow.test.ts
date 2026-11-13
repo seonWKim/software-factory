@@ -10,11 +10,9 @@ import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/loca
 import type { UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubError } from "../src/impl/github/github-client.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { parseComment } from "../src/core/commands.js";

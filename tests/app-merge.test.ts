@@ -4,7 +4,7 @@ import type { LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.j
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
-import { FakeAuth, FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The Merge button (design §9, issue #451): an app `merge` request merges a GitHub item's PR at the head the review

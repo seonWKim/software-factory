@@ -73,7 +73,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  // Recording fakes: a GitHub client behind the (remote) GitHub permission grant, and a forge. Neither may be called.
+  // Recording fakes: a GitHub client and a forge. Neither may be called.
   const github = new FakeGitHubClient();
   const forgeCalls: string[] = [];
   const forge = new Proxy({}, { get: (_t, k) => (k === "then" ? undefined : () => (forgeCalls.push(String(k)), Promise.reject(new Error("forge")))) }) as Forge;

@@ -6,7 +6,7 @@ import type { RunKind, SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch, W
 import { OwnerAuth } from "../src/core/authorize.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SqlDriver } from "../src/state/index.js";
-import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // `/reject <reason>` closes an open item at any phase (design 04-gate-commands, 2026-11-13): implementing, held by

@@ -9,7 +9,7 @@ import type { LogFields, Logger } from "../src/core/log.js";
 import type { UserId } from "../src/core/types.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -120,15 +120,15 @@ describe("GET /api/v1/users", () => {
 });
 
 describe("POST /api/v1/users", () => {
-  it("the owner adds local:alice as approver; she then passes the local auth plugin's approve check", async () => {
+  it("the owner adds local:alice as approver; one owner: she still does not pass the owner check", async () => {
     const { d, real, users, log, changes } = await setup();
-    const auth = new LocalAuthProvider(real);
+    const auth = new OwnerAuth(real);
     const approve = () => auth.authorize({ user_id: ALICE, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT_KEY });
     expect((await approve()).allow).toBe(false);
     const r = await respond(d, post(users, { action: "add", user_id: ALICE, role: "approver" }));
     expect(r.status).toBe(200);
     expect(parse(r).users.map((u: { user_id: string; role: string }) => [u.user_id, u.role])).toContainEqual([ALICE, "approver"]);
-    expect(await approve()).toEqual({ allow: true });
+    expect(await approve()).toEqual({ allow: false, reason: "not_owner" });
     expect(await changes()).toMatchObject([{ user_id: ALICE, action: "add", old_role: null, new_role: "approver", actor: OWNER }]);
     expect(log.lines).toEqual([{ msg: "local user changed", fields: { action: "add", user_id: ALICE, role: "approver", actor: OWNER } }]);
   });

@@ -8,7 +8,6 @@ import { type Actor, type StateChangeDetail, type UserId, type WorkItem, type Wo
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import { prMergeOutcome, type ActionRow } from "../../../outbound/index.js";
 import { SYSTEM, updateKey, awaitingMerge } from "../support.js";
-import type { UnitOperations } from "../../router/unit.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 

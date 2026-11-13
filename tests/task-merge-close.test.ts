@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { FakeAuth, FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // A merged change closes the plain task `task build` linked to it (design 02-tasks, issue #607), on each merge path:

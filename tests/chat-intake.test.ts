@@ -11,7 +11,6 @@ import { Listener } from "../src/core/listener.js";
 import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
 import { taskOfferMarker } from "../src/interfaces/source-adapter.js";
 import type { UserId } from "../src/core/types.js";
-import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -24,16 +23,6 @@ import { newStore } from "./helpers/store.js";
 
 /** A known secret value: the scanner catches it only as such. */
 const SECRET = "fake-secret-value-for-the-chat-leak-test-01";
-
-/** The forge's auth plugin; Slack accounts are judged by the local auth plugin over the store's links and users. */
-class TestAuth implements AuthProvider {
-  async resolve(identity: ExternalIdentity): Promise<Principal | null> {
-    return { user_id: `github:${identity.subject}` as UserId, attributes: {} };
-  }
-  async authorize(_p: Principal, action: AuthAction): Promise<AuthDecision> {
-    return action === "submit_work" ? { allow: true } : { allow: false, reason: "no_role" };
-  }
-}
 
 /**
  * The fake LLM: answers each call with the next scripted answer (the last repeats), throws, stops on its token limit,
