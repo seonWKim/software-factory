@@ -16,8 +16,9 @@ const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesP
 // The Rules page (issue #571): the pending entries in two groups, rule candidates (C-) and structure proposals (P-),
 // each under its line on what promoting one does; each card with its title, state, ID and one line of what it would
 // change, and its detail (what, why, where) read from GET /api/v1/rules/entry only when the card opens. Promote, Hold and Reject ask for a
-// reason in a dialog before they send; Promote of a class (C-) sends the owner's wording as the rule, Promote of a
-// proposal (P-) sends none. With the ledger off (design 08-settings): the agents home found gives one line and one
+// reason in a dialog before they send; Promote of a class (C-) sends the owner's wording, default and exception (the
+// last two prefilled from its draft), Promote of a proposal (P-) sends none. A judged entry shows its decision and no
+// verdict buttons; a class whose draft could not be read offers no Promote. With the ledger off (design 08-settings): the agents home found gives one line and one
 // primary Turn on, which writes the `integrations` entry through POST /api/v1/settings and loads the rules with no
 // reload; not found, the page names the missing CLI and how to set AGENTS_HOME.
 
@@ -32,8 +33,11 @@ const view = (over: Partial<RulesView> = {}): RulesView => ({
   home: null,
   turn_on: null,
   entries: [
-    { id: "P-0007", title: "Split the review prompt", state: "held", kind: "edit-asset", target: "prompts/review.md" },
-    { id: "C-012", title: "Keep existing CLI flags.", state: "pending" },
+    { id: "P-0007", title: "Split the review prompt", state: "held", kind: "edit-asset", target: "prompts/review.md", judged: null, draft: null, draft_error: null },
+    {
+      id: "C-012", title: "Keep existing CLI flags.", state: "pending", judged: null, draft_error: null,
+      draft: { default: "Keep every flag.", exception: "a deprecated flag", incidents: ["T-1"], scope: "CLI" },
+    },
   ],
   ...over,
 });
@@ -164,7 +168,7 @@ describe("Rules page", () => {
     });
   }
 
-  it("a verdict button asks for a reason before it sends; promote of a class sends the edited wording", async () => {
+  it("a verdict button asks for a reason before it sends; promote of a class sends the edited wording, default and exception", async () => {
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     fireEvent.click(within(card("C-012")).getByRole("button", { name: "Promote" }));
@@ -174,13 +178,38 @@ describe("Rules page", () => {
     const wording = within(dialog()).getByRole("textbox", { name: "Rule wording" }) as HTMLTextAreaElement;
     expect(wording.value).toBe("Keep existing CLI flags.");
     fireEvent.change(wording, { target: { value: "Keep every existing CLI flag." } });
+    const dflt = within(dialog()).getByRole("textbox", { name: "Default" }) as HTMLTextAreaElement;
+    const exception = within(dialog()).getByRole("textbox", { name: "Exception" }) as HTMLTextAreaElement;
+    expect([dflt.value, exception.value]).toEqual(["Keep every flag.", "a deprecated flag"]);
     fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "seen twice" } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.change(exception, { target: { value: " " } });
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(exception, { target: { value: "a flag marked deprecated" } });
     expect(confirm.disabled).toBe(false);
     fireEvent.click(confirm);
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]!.url).toBe("/api/v1/rules/verdict");
     expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
-    expect(sent()).toEqual([{ id: "C-012", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag." }]);
+    expect(sent()).toEqual([{
+      id: "C-012", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag.", default: "Keep every flag.", exception: "a flag marked deprecated",
+    }]);
+  });
+
+  it("a judged entry shows its decision and no verdict buttons; a class with no draft offers no Promote", async () => {
+    current = view({
+      entries: [
+        { id: "C-012", title: "Keep existing CLI flags.", state: "pending", judged: "promote", draft: null, draft_error: null },
+        { id: "C-013", title: "Summary first.", state: "pending", judged: null, draft: null, draft_error: "evolve show exited 1: no class" },
+      ],
+    });
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    expect(card("C-012").querySelector("[data-judged]")!.textContent).toContain("Judged: promote");
+    expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
+    expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("evolve show exited 1");
+    expect((within(card("C-013")).getByRole("button", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((within(card("C-013")).getByRole("button", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("hold and reject send only the reason; promote of a proposal asks for no wording and sends no text", async () => {
@@ -188,7 +217,7 @@ describe("Rules page", () => {
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     for (const [label, reason] of [["Hold", "wait"], ["Reject", "not code"], ["Promote", "good shape"]] as const) {
       fireEvent.click(within(card("P-0007")).getByRole("button", { name: label }));
-      expect(within(dialog()).queryByRole("textbox", { name: "Rule wording" })).toBeNull();
+      for (const name of ["Rule wording", "Default", "Exception"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
       fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: reason } });
       fireEvent.click(within(dialog()).getByRole("button", { name: `Send ${label.toLowerCase()}` }));
       await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
