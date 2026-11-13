@@ -27,9 +27,8 @@ import type { UiSettings } from "./settings-api.js";
 import { itemPrefix, runParts } from "./transcript.js";
 import { Withholder } from "./withhold.js";
 
-export const CAPABILITIES_PATH = "/api/v1/settings/capabilities";
 /** Stored runs read for "last used": those finished in the last 30 days, newest first, at most this many. */
-export const USAGE_RUNS = 100;
+const USAGE_RUNS = 100;
 const USAGE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 /** The most transcript bytes read per run part. */
 const TRANSCRIPT_BYTES = 1024 * 1024;
