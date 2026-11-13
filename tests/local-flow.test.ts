@@ -37,8 +37,8 @@ const ANON = "local:anonymous" as UserId;
 
 /** One owner (design 08-permissions): ME, the CLI identity, with the GitHub account OWNER names linked to it. */
 async function ownedBy(store: Awaited<ReturnType<typeof newStore>>["store"]): Promise<void> {
-  if (await store.getLocalUser(ME)) return;
-  await store.claimLocalOwner(ME);
+  if ((await store.getOwner()) === ME) return;
+  await store.claimOwner(ME);
   await store.createLinkCode(ME, "OWNERLINK1");
   await store.redeemLinkCode("OWNERLINK1", { provider: "github", subject: OWNER.slice("github:".length) });
 }
@@ -283,16 +283,13 @@ describe("local task flow", () => {
     expect((await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!.actor).toEqual({ kind: "user", id: ME });
   });
 
-  it("a local user who is not the owner is refused with the owner reply, also once added as an approver", async () => {
+  it("a local user who is not the owner is refused with the owner reply", async () => {
     const f = await factory();
     const id = (await f.cli(ME, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     await f.step();
     expect((await f.cli(DEV, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
     await f.step();
     expect(await f.refusals(id)).toEqual(["`/approve` was not applied: only the owner may send this command."]);
-    expect((await f.cli(ME, { action: "users_add", user: DEV, role: "approver" })).code).toBe(0);
-    expect((await f.cli(DEV, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
-    await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 
@@ -304,7 +301,7 @@ describe("local task flow", () => {
     await f.step();
     expect(await f.refusals(id)).toHaveLength(1);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    expect((await f.store.listLocalUsers()).map((u) => u.user_id)).not.toContain(ANON);
+    expect(await f.store.getOwner()).not.toBe(ANON);
   });
 });
 

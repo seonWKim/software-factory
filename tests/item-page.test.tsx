@@ -409,7 +409,7 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
 describe("item page: refusals and the viewer's grants (issues #528, #453)", () => {
   const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
   const STORED = "`/approve` was not applied: the spec is not waiting for approval (the item is triaging).";
-  const NO_ROLE = "local:helper has no role that allows it (`no_role`); the local owner can grant one with `factory users add local:helper --role approver`";
+  const NOT_OWNER = "only the owner may send this command (`not_owner`)";
 
   /** The element at `selector`, once the page shows it. */
   const found = (selector: string) =>
@@ -445,14 +445,14 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(replies[0]!.refusal).toBe(STORED);
   });
 
-  it("a command the viewer's grants do not allow is a disabled button with the controller's reason beside it, in plain text", async () => {
-    serve({ commands: ["approve", "reject", "revise"].map((n) => ({ ...cmd(n), allowed: false, reason: NO_ROLE })) });
+  it("a command the owner check refuses is a disabled button with the controller's reason beside it, in plain text", async () => {
+    serve({ commands: ["approve", "reject", "revise"].map((n) => ({ ...cmd(n), allowed: false, reason: NOT_OWNER })) });
     mount("/app/items/wi_g");
     const row = await found('[data-command="approve"]');
     for (const name of ["approve", "reject", "revise"]) {
       expect((screen.getByRole("button", { name: name[0]!.toUpperCase() + name.slice(1) }) as HTMLButtonElement).disabled, name).toBe(true);
       expect(document.querySelector(`[data-command="${name}"]`)!.textContent).toContain(
-        "local:helper has no role that allows it (no_role); the local owner can grant one with factory users add local:helper --role approver",
+        "only the owner may send this command (not_owner)",
       );
     }
     expect(row.textContent).not.toContain("`");

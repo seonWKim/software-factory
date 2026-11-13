@@ -32,4 +32,4 @@ export { LOCAL_KEY_FILE, localKeyFile } from "./plugins/local/local-key.js";
 export { SERVICE_ACTIONS, ServiceAuthProvider, serviceUser, type ServiceName } from "./plugins/service/service-identity.js";
 export { PASSPORT_KEY, startIdentity, type IdentityRuntime } from "./runtime/start.js";
 export { DISPLAY_NAME_MAX, ProfileStore, checkDisplayName, type Profile, type ProfileSource } from "./profiles/profiles.js";
-export { recordLocalUserChange, type LocalUserChange } from "./local-users/changes.js";
+export { NO_PASSPORT, OWNER_TABLE, claimOwner, readOwner, recordOwnerDecision, type OwnerDecision, type OwnerResource } from "./owner/owner.js";

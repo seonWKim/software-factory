@@ -48,7 +48,7 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
       return typeof v === "function" ? v.bind(target) : v;
     },
   });
-  await real.claimLocalOwner(OWNER);
+  await real.claimOwner(OWNER);
   const auth = new OwnerAuth(store);
   const log = new MemLog();
   const pauses: UiPauses = {

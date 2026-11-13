@@ -86,15 +86,14 @@ describe("command proposals: the controller applies a `factory confirm`", () => 
   const PROP = "prop_cli";
   const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", tier: 2 };
 
-  /** The owner and a requester on the local auth plugin; items on a fake issue source, whose posts are the thread. */
+  /** The owner and another local user (never the owner); items on a fake issue source, whose posts are the thread. */
   async function harness() {
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const controller = new ControllerRole({
       store, source, auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
     });
-    await store.claimLocalOwner(OWNER);
-    await store.setLocalUserRole(HELPER, "requester", OWNER);
+    await store.claimOwner(OWNER);
     let n = 0;
     const cli = (user: UserId): LocalCliDeps => ({ store, identity: { user, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "", newId: () => `k${++n}` });
     const at = async (n: number, patch: WorkItemPatch = SPEC_PENDING): Promise<WorkItem> => {

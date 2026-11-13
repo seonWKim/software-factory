@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
-import type { AuthAction, AuthProvider, AuthResource, CommandPassport, Principal } from "../src/interfaces/auth-provider.js";
+import type { AuthAction, AuthProvider, AuthResource, Principal } from "../src/interfaces/auth-provider.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
@@ -470,17 +470,17 @@ describe("dashboard approve, retry and resolve (issue #453): the comment command
     const fake = new FakeAuth();
     const recording: AuthProvider = {
       resolve: (i) => fake.resolve(i),
-      authorize: async (p: Principal, action: AuthAction, resource: AuthResource, passport?: CommandPassport) => {
-        asked.push({ user_id: p.user_id, action, resource, passport });
+      authorize: async (p: Principal, action: AuthAction, resource: AuthResource, ...rest: unknown[]) => {
+        asked.push({ user_id: p.user_id, action, resource, extra: rest });
         return fake.authorize(p, action);
       },
     };
     const h = await harness({ auth: recording });
     const it1 = await h.itemIn(localRef(1), FAILED_IMPLEMENT);
-    // A row from before the owner check, with an edge passport: the check ignores it (design 08-permissions, One owner).
+    // A row from before the owner check, with an edge passport: the check is asked with no passport (design 08-permissions, One owner).
     const r = { ...(await h.request(it1, "retry", null)), passport_id: "pp1" };
     await (await h.controller.unit("app-requests")).applyAppRequest(r);
-    expect(asked).toEqual([{ user_id: WRITER, action: "approve_spec", resource: { kind: "work_item", id: it1.id }, passport: undefined }]);
+    expect(asked).toEqual([{ user_id: WRITER, action: "approve_spec", resource: { kind: "work_item", id: it1.id }, extra: [] }]);
   });
 });
 

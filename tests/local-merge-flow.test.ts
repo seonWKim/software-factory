@@ -203,7 +203,7 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(await f.store.getTask(other!.id)).toMatchObject({ done_at: null, work_item_id: null });
   });
 
-  it("factory merge is refused for an item not waiting for a merge, and for a requester (naming factory users add)", async () => {
+  it("factory merge is refused for an item not waiting for a merge, and for anyone but the owner", async () => {
     const f = await localFactory();
     const id = (await f.cli(ME, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     await f.step();
@@ -217,7 +217,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     await f.step();
     expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_reason: "merge_pending" });
     const mainBefore = git(f.repo, "rev-parse", "main");
-    expect((await f.cli(ME, { action: "users_add", user: DEV, role: "requester" })).code).toBe(0);
     await f.cli(DEV, { action: "command", command: "merge", id, text: "" });
     await f.step();
     expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toBe("`factory merge` was not applied: only the owner may send this command.");
@@ -399,7 +398,6 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     const head = git(f.repo, "rev-parse", `refs/heads/factory/${id}`);
 
     // A non-owner's merge from the page is refused on its request with the owner reply.
-    expect((await f.cli(ME, { action: "users_add", user: DEV, role: "requester" })).code).toBe(0);
     const denied = await f.appMerge(DEV, id);
     await f.step();
     expect((await f.store.getAppCommandRequest(denied))!.refusal).toContain("only the owner may send this command");

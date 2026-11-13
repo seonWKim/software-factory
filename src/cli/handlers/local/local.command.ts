@@ -3,8 +3,6 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildStatsStore } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
-import { ProfileStore } from "../../../identity/index.js";
-import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import { CLI_TOP_WORDS, HELP_WORD, cliIdentity, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
@@ -21,7 +19,7 @@ export default defineCommand({
   usage: `${cliUsageLines()}
                local work items, read by the controller from the store whatever plugins.source lists, acting
                as the CLI identity (cli_user, else local:<git user.email>, else local:<OS user>, else
-               local:anonymous), authorized by the local auth plugin (auth.local, default "local"); no GitHub call`,
+               local:anonymous), authorized by the owner check; no GitHub call`,
   async run(args, ctx) {
     const action = parseLocalCliArgs(ctx.name, [...args]);
     if ("error" in action) {
@@ -50,7 +48,6 @@ export default defineCommand({
           project: async () => (await resolveProject())?.key ?? null,
           read: (path) => readFile(path, "utf8"),
           newId: () => randomUUID(),
-          displayNames: (ids) => new ProfileStore(storeSql(store)).displayNames(ids),
         },
         action,
       );

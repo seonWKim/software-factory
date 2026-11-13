@@ -62,9 +62,6 @@ describe("parseLocalCliArgs", () => {
     expect(parseLocalCliArgs("retry", ["wi_1"])).toMatchObject({ command: "retry", text: "" });
     expect(parseLocalCliArgs("resolve", ["wi_1"])).toEqual({ action: "command", command: "resolve", id: "wi_1", text: "" });
     expect(parseLocalCliArgs("resolve", ["wi_1", "keep", "main's", "gate"])).toEqual({ action: "command", command: "resolve", id: "wi_1", text: "keep main's gate" });
-    expect(parseLocalCliArgs("users", ["list"])).toEqual({ action: "users_list" });
-    expect(parseLocalCliArgs("users", ["add", "local:a@b.c", "--role", "approver"])).toEqual({ action: "users_add", user: "local:a@b.c", role: "approver" });
-    expect(parseLocalCliArgs("users", ["remove", "local:a@b.c"])).toEqual({ action: "users_remove", user: "local:a@b.c" });
     expect(parseLocalCliArgs("verdict", ["wi_1", "changes", "major", "rename", "it"])).toEqual({ action: "command", command: "verdict", id: "wi_1", text: "changes major rename it" });
     expect(parseLocalCliArgs("verdict", ["wi_1", "accept"])).toEqual({ action: "command", command: "verdict", id: "wi_1", text: "accept" });
     expect(parseLocalCliArgs("help", [])).toEqual({ action: "help", id: null });
@@ -76,8 +73,7 @@ describe("parseLocalCliArgs", () => {
     for (const [w, a] of [
       ["task", []], ["task", ["create", "--title", "T"]], ["task", ["create", "--body-file", "b"]], ["task", ["create", "--title"]],
       ["task", ["create", "--title", "T", "--body-file", "b", "--label", "x"]], ["task", ["show"]], ["task", ["list", "x"]],
-      ["task", ["frob"]], ["approve", []], ["retry", []], ["resolve", []], ["verdict", []], ["users", []], ["users", ["add", "alice", "--role", "approver"]],
-      ["users", ["add", "local:a", "--role", "owner"]], ["users", ["add", "local:a"]], ["users", ["remove"]], ["users", ["list", "x"]],
+      ["task", ["frob"]], ["approve", []], ["retry", []], ["resolve", []], ["verdict", []], ["users", ["list"]],
     ] as [string, string[]][]) {
       const r = parseLocalCliArgs(w, a);
       expect({ w, a, r }).toMatchObject({ r: { error: expect.stringContaining("usage:") } });
@@ -91,7 +87,7 @@ describe("parseLocalCliArgs", () => {
     }
   });
 
-  it("the top-level words are the first word of every task, item and users command in the command table, `confirm` among them", () => {
+  it("the top-level words are the first word of every task and item command in the command table, `confirm` among them", () => {
     // The settings handler takes its own words; the sentence form takes any word no handler claims (src/main.ts).
     const local = COMMAND_TABLE.filter((c) => c.group !== "settings" && c.group !== "sentence");
     expect([...new Set(local.map((c) => c.name.split(" ")[0]))]).toEqual([...CLI_TOP_WORDS]);
@@ -253,7 +249,7 @@ describe("approve's own check (issue #528)", () => {
     });
     expect(await run({ action: "command", command: "approve", id: done.id, text: "" })).toEqual({ code: 1, lines: ["`/approve` was not applied: the work item is closed."] });
     expect(await snapshot(store)).toEqual(before);
-    expect(await store.listLocalUsers()).toEqual([]);
+    expect(await store.getOwner()).toBeNull();
   });
 
   it("an implement run held by coordination cost is still approved: the hold is in no field, so the controller decides", async () => {
@@ -355,40 +351,31 @@ describe("the CLI identity", () => {
   });
 });
 
-describe("local users", () => {
+describe("the owner", () => {
   it("the first identity to write becomes the owner; a second one does not", async () => {
     const { store, run, as } = await setup("local:me@example.com" as UserId);
-    expect(await store.listLocalUsers()).toEqual([]);
+    expect(await store.getOwner()).toBeNull();
     expect((await run({ action: "list" })).code).toBe(0);
-    expect(await store.listLocalUsers()).toEqual([]);
+    expect(await store.getOwner()).toBeNull();
     await run({ action: "create", title: "t", bodyFile: "b" });
     await as("local:dev@example.com")({ action: "create", title: "t", bodyFile: "b" });
-    expect((await store.listLocalUsers()).map((u) => [u.user_id, u.role])).toEqual([["local:me@example.com", "owner"]]);
+    expect(await store.getOwner()).toBe("local:me@example.com");
   });
 
-  it("anonymous may create, list and show but never becomes the owner or an approver", async () => {
+  it("anonymous may create, list and show but never becomes the owner", async () => {
     const { store, run } = await setup("local:anonymous" as UserId, "anonymous");
     const id = (await run({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     expect((await store.getWorkItem(id))!.requester_id).toBe("local:anonymous");
     expect((await run({ action: "show", id })).code).toBe(0);
-    expect(await store.listLocalUsers()).toEqual([]);
-    expect((await run({ action: "users_add", user: "local:x" as UserId, role: "approver" })).code).toBe(1);
+    expect(await store.getOwner()).toBeNull();
   });
 
-  it("only the owner adds and removes roles; anonymous cannot be made an approver; the owner stays", async () => {
-    const { store, run, as } = await setup("local:me@example.com" as UserId);
-    const dev = "local:dev@example.com" as UserId;
-    expect(await run({ action: "users_add", user: dev, role: "approver" })).toEqual({ code: 0, lines: [`${dev} is now an approver`] });
-    expect((await as(dev)({ action: "users_add", user: "local:eve" as UserId, role: "approver" })).lines[0]).toContain("only the local owner");
-    expect((await run({ action: "users_add", user: "local:anonymous" as UserId, role: "approver" })).lines[0]).toContain("read and create only");
-    expect((await run({ action: "users_add", user: "local:me@example.com" as UserId, role: "requester" })).code).toBe(1);
-    expect((await run({ action: "users_remove", user: "local:me@example.com" as UserId })).code).toBe(1);
-    expect((await run({ action: "users_list" })).lines.slice(1)).toEqual([
-      "local:me@example.com\towner\tadded by local:me@example.com",
-      `${dev}\tapprover\tadded by local:me@example.com`,
-    ]);
-    expect(await run({ action: "users_remove", user: dev })).toEqual({ code: 0, lines: [`removed ${dev}`] });
-    expect(await store.getLocalUser(dev)).toBeNull();
+  it("`factory users` is gone: `users list` (and every users verb) is an unknown command", () => {
+    for (const args of [["list"], ["add", "local:a@b.c", "--role", "approver"], ["remove", "local:a@b.c"]]) {
+      expect(parseLocalCliArgs("users", args)).toEqual({ error: expect.stringContaining('unknown command "users"') });
+    }
+    expect(CLI_TOP_WORDS).not.toContain("users");
+    expect(COMMAND_TABLE.filter((c) => c.name.startsWith("users"))).toEqual([]);
   });
 });
 

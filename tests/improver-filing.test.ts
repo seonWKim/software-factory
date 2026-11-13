@@ -117,7 +117,7 @@ const local = () => setup((store) => [new LocalSource(store)]);
 async function github() {
   const client = new IssuesClient();
   const sources = (store: FactoryStore) => [new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store)];
-  const auth = async (store: FactoryStore) => (await store.claimLocalOwner("github:1" as UserId), new OwnerAuth(store));
+  const auth = async (store: FactoryStore) => (await store.claimOwner("github:1" as UserId), new OwnerAuth(store));
   return { client, ...(await setup(sources, auth)) };
 }
 

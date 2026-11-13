@@ -260,7 +260,7 @@ describe("no source at all", () => {
 
   it("a CLI command from a user who is not the owner is refused by the same owner check as a GitHub comment, with the same reply", async () => {
     const f = await factory();
-    await f.store.claimLocalOwner("local:someone-else" as UserId);
+    await f.store.claimOwner("local:someone-else" as UserId);
     const id = (await f.cli({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     await f.step();
     await f.cli({ action: "command", command: "approve", id, text: "" });

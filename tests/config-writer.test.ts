@@ -261,7 +261,7 @@ describe("factory merge lands a filed config edit", { timeout: 60_000 }, () => {
     let n = 0;
     const cli = (a: Parameters<typeof runLocalCli>[1]) =>
       runLocalCli({ store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT.key, read: async () => "", newId: () => `id${++n}` }, a);
-    await cli({ action: "users_list" });
+    await store.claimOwner(ME);
 
     const mainBefore = git(r.repo, "rev-parse", "main");
     const e = await editConfigFile(
