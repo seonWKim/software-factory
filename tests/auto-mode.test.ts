@@ -81,7 +81,7 @@ async function autoFactory(opts: Opts = {}) {
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
   const controller = new ControllerRole({
-    store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
+    store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner,
     sandbox: opts.controllerSandbox ? opts.controllerSandbox(sandbox) : sandbox, repeated_failure_rule: false, settings,
     check_env: { PATH: process.env.PATH ?? "" },
   });

@@ -25,7 +25,7 @@ async function harness() {
   const { store, clock } = await newStore();
   const forge = new FakeForge();
   const controller = new ControllerRole({
-    store, sources: [new FakeSource()], forge, sandbox: new FakeSandbox(), auth: new FakeAuth(), local_auth: new OwnerOnly(),
+    store, sources: [new FakeSource()], forge, sandbox: new FakeSandbox(), auth: new OwnerOnly(),
     clock, config, log: silent, scanner: cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };

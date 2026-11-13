@@ -48,7 +48,7 @@ async function localFactory(cfgPatch: Partial<FactoryConfig> = {}) {
   const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
-    store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+    store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
   let commits = 0;
   const runner = new FakeRunner({

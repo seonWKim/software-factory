@@ -29,10 +29,12 @@ export const NOT_OWNER_REPLY = "only the owner may send this command";
 export const ANONYMOUS_USER = "local:anonymous" as UserId;
 
 /**
- * Actions any resolved caller may take: a work request is not a command, and the intake label (or the chat source's
- * own rules) stays its gate. Every other action is the owner's.
+ * Actions any caller may take: a work request is not a command, and the intake label stays its gate. Every other
+ * action is the owner's.
  */
 const OPEN_ACTIONS: readonly AuthAction[] = ["submit_work"];
+/** A chat account no link maps to a factory user: a chat source has no intake label, so it may not file work either. */
+const UNLINKED_CHAT = /^(slack|oidc):/;
 
 /** The reply for a refused decision: the owner check's text, with the reason when it is not `not_owner`. */
 export function refusalReply(reason: string): string {
@@ -58,10 +60,10 @@ export async function factoryUserOf(store: Pick<OwnerStore, "resolveLink">, iden
 /**
  * The owner check: `user_id` must be the store's local owner. A local user ID asked while the store has no owner
  * claims it (solo needs no setup: you are the owner on your first command); `anonymous` never does, and an account
- * of another provider never claims it. `submit_work` stays open to any caller.
+ * of another provider never claims it. `submit_work` stays open to any caller but an unlinked chat account.
  */
 export async function authorizeOwner(store: Pick<OwnerStore, "getLocalUser" | "claimLocalOwner">, user_id: UserId, action: AuthAction): Promise<AuthDecision> {
-  if (OPEN_ACTIONS.includes(action)) return { allow: true };
+  if (OPEN_ACTIONS.includes(action) && !UNLINKED_CHAT.test(user_id)) return { allow: true };
   if (user_id === ANONYMOUS_USER) return { allow: false, reason: NOT_OWNER };
   let row = await store.getLocalUser(user_id);
   if (!row && user_id.startsWith("local:")) row = await store.claimLocalOwner(user_id);
@@ -82,9 +84,8 @@ export class OwnerAuth implements AuthProvider {
 }
 
 /**
- * Deprecated (phase A of issue #575): roles per project from grant sources (design 2026-11-01). Only the auth plugins
- * `github` and `local` still extend `FactoryAuth`, and nothing selects them; phase B removes them, the grants and
- * everything below.
+ * Deprecated (phase A of issue #575): roles per project from grant sources (design 2026-11-01). Only the two unselected
+ * auth plugins still extend `FactoryAuth`; phase B removes them, the grants and everything below.
  */
 export const ROLE_ACTIONS: Readonly<Record<Role, readonly AuthAction[]>> = {
   requester: ["submit_work"],

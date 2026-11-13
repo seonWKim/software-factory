@@ -226,7 +226,7 @@ describe("verdict on an item of a sync source (issue #523)", () => {
     const github = new FakeSource();
     const local = new LocalAuthProvider(store);
     const controller = new ControllerRole({
-      store, sources: [new LocalSource(store), github], auth: local, local_auth: local, clock, config, log: silent, scanner: cleanScanner,
+      store, sources: [new LocalSource(store), github], auth: local, clock, config, log: silent, scanner: cleanScanner,
       repeated_failure_rule: false,
     });
     const gh = (await store.createWorkItem(issue(3), system)).item;

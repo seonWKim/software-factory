@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 // The `slack` stream source (issue #109), end to end on a fake Slack: Socket Mode envelopes through the real
 // listener and inbox into the controller, and the thread replies back out. docs/plugins/source-adapter.md, `slack`.
 
@@ -18,7 +19,7 @@ import { ACTION_MAKE_TASK, cutNote, escapeSlack, proposalButtons, renderSpecMess
 import { runLocalCli } from "../src/core/local-cli.js";
 import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
 import { commentEvent } from "../src/core/comment-event.js";
-import { chatForm, commandFooter, commandState, commandsFor, helpReply, refusalText, roleRefusal, specNotWaiting } from "../src/core/commands.js";
+import { chatForm, commandFooter, commandState, commandsFor, helpReply, refusalText, specNotWaiting } from "../src/core/commands.js";
 import { parseTriage } from "../src/core/outputs.js";
 import { autoApprovedFooter, renderSpec, utcMinute } from "../src/core/spec-comment.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -105,7 +106,7 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   }
   await real.claimLocalOwner("github:1" as UserId);
   const controller = new ControllerRole({
-    store: real, sources: [gh, slack], forge, auth, local_auth: new LocalAuthProvider(real), clock, config, log, scanner, llm: opts.llm ?? new ApproveLLM(),
+    store: real, sources: [gh, slack], forge, auth: new OwnerAuth(real), clock, config, log, scanner, llm: opts.llm ?? new ApproveLLM(),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log: silentLike(log), owner: "replica-a" });
@@ -533,7 +534,7 @@ describe("slack source: replies, buttons and commands", () => {
     expect(replies[0]!.text).toContain("not taken in as a work item");
   });
 
-  it("a linked user whose stored role does not allow it gets the CLI's refusal once per command; nothing changes", async () => {
+  it("a linked account that is not the owner gets the owner reply once per command; nothing changes", async () => {
     const f = await setup();
     const ts = "1800000013.000100";
     const item = await specPending(f, ts);
@@ -546,7 +547,7 @@ describe("slack source: replies, buttons and commands", () => {
       ["approve", "github:2", { item: item.id }],
       ["approve", "github:2", { item: item.id }],
     ]);
-    const refusal = "github:2 has no role that allows it (`no_role`); the local owner can grant one with `factory users add github:2 --role approver`";
+    const refusal = "only the owner may send this command";
     const replies = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
     expect(replies).toHaveLength(2);
     for (const r of replies) expect(r.text).toContain(refusal);
@@ -779,7 +780,7 @@ describe("slack source: answers and structured revise (issue #527)", () => {
     }
   });
 
-  it("a requester's thread /approve or /revise is still refused by the role check, and nothing changes", async () => {
+  it("a non-owner's thread /approve or /revise is refused by the owner check, and nothing changes", async () => {
     const f = await setup();
     const ts = "1800000053.000100";
     const item = await specPending(f, ts, { ...triageSpec, decisions: DECISIONS });
@@ -789,7 +790,7 @@ describe("slack source: answers and structured revise (issue #527)", () => {
     expect(await f.store.getWorkItem(item.id)).toEqual(before);
     const replies = f.api.thread(ts).filter((m) => m.text?.includes("was not applied"));
     expect(replies).toHaveLength(2);
-    for (const r of replies) expect(r.text).toContain("github:2 has no role that allows it (`no_role`)");
+    for (const r of replies) expect(r.text).toContain("only the owner may send this command");
   });
 });
 
@@ -1124,7 +1125,7 @@ describe("slack source: one help and refusal text (issue #528)", () => {
 
   /** The item API as the page of `actor` reads it, its approve_spec checked by the local auth plugin on the project, as compose.ts wires it. */
   async function dashboard(f: F, actor: string, id: string) {
-    const auth = new LocalAuthProvider(f.store);
+    const auth = new OwnerAuth(f.store);
     const d: ApiDeps = {
       store: f.store, scanner: f.scanner, clock: f.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], f.clock),
       commands: {
@@ -1218,13 +1219,13 @@ describe("slack source: one help and refusal text (issue #528)", () => {
     expect((await f.store.listCliCommandsAfter(0, 10)).filter((c) => c.key.startsWith("cli:"))).toEqual([]);
   });
 
-  it("team: a linked requester sees approve disallowed on the dashboard, and Slack refuses the approve with that same text", async () => {
+  it("a linked non-owner sees approve disallowed on the dashboard, and Slack refuses the approve with that same text", async () => {
     const f = await setup();
     const ts = "1800000064.000100";
     const item = await specPending(f, ts);
     const page = await dashboard(f, "github:2", item.id);
     expect(page.commands.map((c) => [c.name, c.allowed, c.reason])).toEqual(
-      ["approve", "reject", "revise"].map((n) => [n, false, roleRefusal("github:2", "no_role")]),
+      ["approve", "reject", "revise"].map((n) => [n, false, "only the owner may send this command"]),
     );
     expect((await dashboard(f, "github:1", item.id)).commands.map((c) => c.name)).toEqual(["approve", "reject", "revise"]);
     await deliver(f, eventEnvelope(mention("1800000064.000200", "approve", { thread_ts: ts, user: "U0BOB" })));
@@ -1441,7 +1442,7 @@ describe("slack source: proposal buttons (issue #584)", () => {
     expect(refused[0]!.text).toContain(escapeSlack(row!.refusal!));
   });
 
-  it("a press is checked like the typed command: a linked presser without the permission is refused; an unlinked one gets one refusal and stores nothing", async () => {
+  it("a press is checked like the typed command: a linked presser who is not the owner is refused; an unlinked one gets one refusal and stores nothing", async () => {
     const llm = new ScriptedLLM();
     const f = await setup({ llm });
     const ts = "1800000093.000100";
@@ -1459,7 +1460,7 @@ describe("slack source: proposal buttons (issue #584)", () => {
     const [row] = await f.store.listCommandProposals(id);
     expect(row).toMatchObject({ status: "refused", answered_by: "github:2" });
     // The refusal a typed `/approve` from the same account gets.
-    expect(row!.refusal).toContain("github:2 has no role that allows it");
+    expect(row!.refusal).toContain("only the owner may send this command");
     expect(replies(f, ts, /^`\/approve` was not applied/)).toHaveLength(1);
   });
 

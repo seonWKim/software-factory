@@ -440,7 +440,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     // Sent anyway (another page, the CLI): the controller, with the local auth plugin as compose.ts wires it, refuses it
     // with the same reason.
     const local = new LocalAuthProvider(h.store);
-    const controller = new ControllerRole({ store: h.store, source: h.source, auth: local, local_auth: local, clock: h.clock, config, log: silent, scanner: cleanScanner });
+    const controller = new ControllerRole({ store: h.store, source: h.source, auth: local, clock: h.clock, config, log: silent, scanner: cleanScanner });
     await h.request("app-x", helper, "approve", { work_item_id: it1.id });
     await controller.tickCommands();
     const [row] = await h.store.listAppCommandRequestsForItem(it1.id, 10);

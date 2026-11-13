@@ -7,11 +7,10 @@ import { type Loaded, Plugins, build, loadConfig } from "../src/compose.js";
 import type { WorkerDeps } from "../src/worker/index.js";
 import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
-import { NoAuthProvider } from "../src/impl/auth/none-auth-provider.js";
 import { AuditedAuthProvider } from "../src/impl/auth/audited-auth.js";
 import { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
 import { ListAllCapabilitySearch } from "../src/impl/capability/list-all-capability-search.js";
@@ -34,8 +33,6 @@ import { SqlBus } from "../src/bus/index.js";
 import { TimeBasedTicks } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
 import { JournalEngines } from "../src/worker/engine/plugins/journal/journal-engine.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
-import type { AuthProvider } from "../src/interfaces/auth-provider.js";
-import type { UserId } from "../src/core/types.js";
 import type { EgressScanner, ScanResult } from "../src/interfaces/egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { Secret, SecretName, SecretStore } from "../src/interfaces/secret-store.js";
@@ -54,7 +51,6 @@ import {
   type PluginKind,
   REGISTRY,
   type Registry,
-  GRANTS,
   INTEGRATION_KINDS,
   createPlugin,
   declaredSecrets,
@@ -79,7 +75,7 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   sandbox: { noop: NoOpSandbox },
   runner: { "claude-code": ClaudeCodeRunner },
   llm: { "claude-cli": ClaudeCliLLMProvider },
-  auth: { github: GitHubAuthProvider },
+  auth: { local: LocalAuthProvider },
   secrets: { "env-file": EnvFileSecretStore },
   egress: { pattern: PatternEgressScanner },
   broker: { github: GitHubToolBroker },
@@ -186,7 +182,8 @@ describe("plugin registry: defaults", () => {
       sandbox: "noop",
       runner: "claude-code",
       llm: "claude-cli",
-      auth: "github",
+      // Never built (design 08-permissions, One owner): selectPlugins still needs a name for the kind.
+      auth: "local",
       secrets: "env-file",
       egress: "pattern",
       broker: "github",
@@ -329,12 +326,12 @@ function implementationClasses(file: string): string[] {
 describe("plugin registry: unknown names fail at startup", () => {
   const configWith = (kind: PluginKind, value: unknown): Record<string, unknown> => {
     if (kind === "store") return { ...REAL, store: { type: value } };
-    if (kind === "auth") return { ...REAL, auth: value };
     if (kind === "calendar") return { ...REAL, calendar: [value] };
     return { ...REAL, plugins: { ...(REAL.plugins as object), [kind]: value } };
   };
 
-  for (const kind of PLUGIN_KINDS) {
+  // `auth` is no longer read (One owner): a config that still has it loads with one warning.
+  for (const kind of PLUGIN_KINDS.filter((k) => k !== "auth")) {
     it(`${kind}: names the interface, the bad value and every available name`, async () => {
       const dir = root(configWith(kind, "no-such-plugin"));
       const err = await loadConfig(dir).then(
@@ -555,75 +552,27 @@ describe("plugin registry: existing config keys keep working", () => {
     expect((await loadConfig(root(rest))).plugins.store).toBe("sqlite");
   });
 
-  it("local commands get the local auth plugin whatever auth selects for GitHub; the per-origin form names both", async () => {
-    const authOf = async (auth: unknown) => {
-      const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
-      try {
-        const d = built.controller.kernel.d;
-        // Each behind the audit of its decisions (M9).
-        return [d.auth, d.local_auth].map((a) => (a as AuditedAuthProvider).inner);
-      } finally {
-        await built.close();
-      }
-    };
-    const [gh, local] = await authOf("github");
-    expect(gh).toBeInstanceOf(GitHubAuthProvider);
-    expect(local).toBeInstanceOf(LocalAuthProvider);
-    const [gh2, local2] = await authOf({ github_issue: "github", local: "none" });
-    expect(gh2).toBeInstanceOf(GitHubAuthProvider);
-    expect(local2).toBeInstanceOf(NoAuthProvider);
-    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack: "local" } }))).rejects.toThrow(/unknown auth origin "slack".*known origins: .*slack_thread/);
-    await expect(loadConfig(root({ ...REAL, auth: { local: "local" } }))).rejects.toThrow(/auth needs "github_issue"/);
-    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", local: "nope" } }))).rejects.toThrow(/unknown AuthProvider plugin "nope"/);
-    await expect(loadConfig(root({ ...REAL, auth: { github_issue: "github", slack_thread: "nope" } }))).rejects.toThrow(/unknown AuthProvider plugin "nope"/);
-  });
-
-  it("Slack commands get the slack_thread auth plugin when auth names one, else the local-origin one (issues #486, #498)", async () => {
-    const readerAuthOf = async (auth: unknown) => {
-      const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
-      try {
-        const { forge, local, slack } = built.controller.kernel.reader.auth;
-        return { forge: (forge as AuditedAuthProvider).inner, local: (local as AuditedAuthProvider).inner, slack: (slack as AuditedAuthProvider).inner };
-      } finally {
-        await built.close();
-      }
-    };
-    const split = await readerAuthOf({ github_issue: "github", slack_thread: "local" });
-    expect(split.forge).toBeInstanceOf(GitHubAuthProvider);
-    expect(split.slack).toBeInstanceOf(LocalAuthProvider);
-    // No slack_thread key: the local-origin plugin, the same instance (chat accounts act as their linked user, #498).
-    const same = await readerAuthOf("github");
-    expect(same.forge).toBeInstanceOf(GitHubAuthProvider);
-    expect(same.slack).toBe(same.local);
-  });
-
-  it("an authorize call asks only the plugin of the identity's origin: slack_thread for Slack, github_issue for GitHub", async () => {
-    const asked: string[] = [];
-    const fake = (name: string) => (): AuthProvider => ({
-      resolve: async (i) => (asked.push(`${name}:resolve:${i.provider}`), { user_id: `${i.provider}:${i.subject}` as UserId, attributes: {} }),
-      authorize: async (p) => (asked.push(`${name}:authorize:${p.user_id}`), { allow: true }),
-    });
-    let reg = withPlugin(REGISTRY, "auth", "fake-gh", fake("gh"));
-    reg = withPlugin(reg, "auth", "fake-slack", fake("slack"));
-    const config = { ...REAL, store: { type: "sqlite" }, auth: { github_issue: "fake-gh", slack_thread: "fake-slack" } };
-    const built = await build(await loadConfig(root(config), { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+  it("every command path gets the one owner check, audited; no auth or grant plugin is built", async () => {
+    const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" } })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      const unit = await built.controller.unit("auth");
-      await unit.authorize({ provider: "slack", subject: "U1" }, "submit_work", "wi_1");
-      expect(asked).toEqual(["slack:resolve:slack", "slack:authorize:slack:U1"]);
-      asked.length = 0;
-      await unit.authorize({ provider: "github", subject: "7" }, "submit_work", "wi_1");
-      expect(asked).toEqual(["gh:resolve:github", "gh:authorize:github:7"]);
+      const { d, reader } = built.controller.kernel;
+      expect((d.auth as AuditedAuthProvider).inner).toBeInstanceOf(OwnerAuth);
+      expect(reader.auth.owner).toBe(d.auth);
+      // The service principals keep their passport checks.
+      expect(reader.auth.service).toBe(d.service_auth);
+      expect(d.service_auth).toBeTypeOf("function");
+      expect(d.outbound_auth).toBeTypeOf("function");
     } finally {
       await built.close();
     }
   });
 
-  it("top-level auth none gives NoAuthProvider", async () => {
-    const loaded = await loadConfig(root({ ...REAL, store: { type: "sqlite" }, auth: "none" }));
-    const built = await build(loaded, { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+  it("an authorize call of any origin asks the owner check: other accounts are refused as not_owner", async () => {
+    const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" } })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
-      expect((built.controller.kernel.d.auth as AuditedAuthProvider).inner).toBeInstanceOf(NoAuthProvider);
+      const unit = await built.controller.unit("auth");
+      expect(await unit.authorize({ provider: "slack", subject: "U1" }, "approve_spec", "wi_1")).toEqual({ refuse: "only the owner may send this command" });
+      expect(await unit.authorize({ provider: "github", subject: "7" }, "approve_merge", "wi_1")).toEqual({ refuse: "only the owner may send this command" });
     } finally {
       await built.close();
     }
@@ -862,24 +811,20 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     const record = <T>(kind: string, ctx: object, x: T): T => ((seen[kind] = ctx as Record<string, unknown>), x);
     let reg = withPlugin(REGISTRY, "github_auth", "app", () => (made++, { credentials, api }));
     reg = withPlugin(reg, "source", "github-issues", (c) => record("source", c, REGISTRY.source.plugins["github-issues"]!(c)));
-    reg = withPlugin(reg, "auth", "github", (c) => record("auth", c, REGISTRY.auth.plugins.github!(c)));
     reg = withPlugin(reg, "forge", "github", (c) => record("forge", c, REGISTRY.forge.plugins.github!(c)));
     reg = withPlugin(reg, "broker", "github", (c) => record("broker", c, {} as ToolBroker));
-    const grant = GRANTS["github-permission"]!;
-    const create = vi.spyOn(grant, "create").mockImplementation((c) => record("grant", c, { remote: true, roles: async () => [], denies: async () => false }));
     const dir = root({ ...REAL, store: { type: "sqlite" }, tool_grants: undefined, plugins: { ...(REAL.plugins as object), awake: "none", source: ["github-issues"] } });
-    try {
-      const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
-      await built.close();
-    } finally {
-      create.mockRestore();
-    }
+    const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
+    await built.close();
     expect(made).toBe(1);
-    for (const kind of ["source", "auth", "grant", "forge", "broker"]) {
+    // No auth plugin or grant is built any more (One owner): the owner check reads the store only.
+    expect(seen).not.toHaveProperty("auth");
+    expect(seen).not.toHaveProperty("grant");
+    for (const kind of ["source", "forge", "broker"]) {
       expect(seen[kind]?.github, kind).toBe(api);
       expect(seen[kind]!.repo, kind).toEqual({ owner: (REAL.repo as { owner: string }).owner, name: (REAL.repo as { name: string }).name });
     }
-    for (const kind of ["source", "auth", "grant"]) {
+    for (const kind of ["source"]) {
       expect(Object.keys(seen[kind]!), kind).not.toContain("credentials");
       expect(Object.keys(seen[kind]!), kind).not.toContain("token");
       expect(Object.values(seen[kind]!), kind).not.toContain(credentials);

@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 // The local store is the home of the conversation (issue #284): the GitHub poll writes each new comment once to its
 // item's thread and each command once to the command inbox, keyed on the GitHub comment id, and the controller
 // applies GitHub commands from the inbox through the GitHub auth provider. Factory messages still reach GitHub
@@ -112,17 +113,26 @@ function spied(inner: AuthProvider): AuthProvider & { asked: string[] } {
   };
 }
 
+/** One owner (design 08-permissions): ME, the CLI identity, with the GitHub account OWNER names linked to it. */
+async function ownedBy(store: FactoryStore): Promise<void> {
+  if (await store.getLocalUser(ME)) return;
+  await store.claimLocalOwner(ME);
+  await store.createLinkCode(ME, "OWNERLINK1");
+  await store.redeemLinkCode("OWNERLINK1", { provider: "github", subject: OWNER.slice("github:".length) });
+}
+
+
 async function factory(o: { store?: FactoryStore; clock?: FakeClock } = {}) {
   const clock = o.clock ?? new FakeClock("2026-11-07T00:00:00Z");
   const store = o.store ?? (await newStore(clock)).store;
   const hub = new Hub();
   const source = new GitHubIssueSource(hub, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
-  const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} })];
-  const auth = new GitHubAuthProvider(store, grants);
-  const local_auth = spied(new LocalAuthProvider(store, grants));
+  // One owner: the GitHub account and the CLI identity are the same factory user (the account is linked to it).
+  await ownedBy(store);
+  const local_auth = spied(new OwnerAuth(store));
   const log = recordingLog();
   const controller = new ControllerRole({
-    store, sources: [source, new LocalSource(store)], auth, local_auth, clock, config, log, scanner: cleanScanner, repeated_failure_rule: false,
+    store, sources: [source, new LocalSource(store)], auth: local_auth, clock, config, log, scanner: cleanScanner, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
@@ -229,12 +239,12 @@ describe("GitHub comments in the local store (issue #284)", () => {
     expect((await f.thread(item.id)).some(([m]) => m === "github:121")).toBe(false);
   });
 
-  it("the GitHub auth provider judges a GitHub command, never the local auth plugin; CLI rows never get provider github", async () => {
+  it("a GitHub command takes the owner check: a stranger is refused, the owner's linked account acts as the owner; CLI rows never get provider github", async () => {
     const f = await factory();
     const item = await f.specced();
     f.hub.comment(7, 130, "/approve", { user: mallory });
     await f.controller.tickIntake();
-    // Refused as today: mallory has no grant. The refusal names GitHub's reason, and nothing changed.
+    // Refused: mallory is not the owner, and nothing changed.
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
     const refusal = (await f.store.listItemMessages(item.id)).find((m) => m.marker === "<!-- factory:refused:130 -->");
     expect(refusal?.body).toContain("`/approve` was not applied");
@@ -242,11 +252,10 @@ describe("GitHub comments in the local store (issue #284)", () => {
     f.hub.comment(7, 131, "/approve");
     await f.controller.tickIntake();
     expect(await f.store.getWorkItem(item.id)).toMatchObject({ stage: "RUNNING" });
-    expect((await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")?.actor).toEqual({ kind: "user", id: OWNER });
-    expect(f.local_auth.asked.filter((a) => a.startsWith("github:"))).toEqual([]);
+    expect((await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")?.actor).toEqual({ kind: "user", id: ME });
 
     // A row the GitHub source did not write never gets provider github: a GitHub key with a local actor is not
-    // applied, and a CLI key with a GitHub actor is judged by the local auth plugin as provider local.
+    // applied, and a CLI key with a GitHub actor is judged as provider local.
     const other = await f.specced(8);
     await f.store.appendCliCommand({ key: "github:999", actor: ME, command: "approve", args: { source: other.source, text: "" } });
     await f.controller.tickCommands();
@@ -444,7 +453,7 @@ describe("CLI commands on a GitHub item (design 05-sources, CLI intake)", () => 
     expect((await f.store.listUnmirroredCliCommands(10)).map((c) => c.args.item)).toEqual([byCli.id]);
   });
 
-  it("an owner or an approver is allowed; a requester or anonymous is refused with the local wording, and nothing changes", async () => {
+  it("only the owner is allowed: an approver, a requester or anonymous is refused with the owner reply, and nothing changes", async () => {
     const f = await factory();
     const items = [await f.specced(7), await f.specced(8), await f.specced(9), await f.specced(10)];
     f.hub.down = OUTAGE;
@@ -457,34 +466,11 @@ describe("CLI commands on a GitHub item (design 05-sources, CLI intake)", () => 
     await f.controller.tickCommands();
 
     expect(await f.store.getWorkItem(items[0]!.id)).toMatchObject({ stage: "RUNNING" });
-    expect(await f.store.getWorkItem(items[1]!.id)).toMatchObject({ stage: "RUNNING" });
-    for (const [it, who] of [[items[2]!, "local:carol"], [items[3]!, "local:anonymous"]] as const) {
+    for (const it of items.slice(1)) {
       expect(await f.store.getWorkItem(it.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending", version: it.version });
-      expect(await refusal(f, it.id)).toBe(
-        `\`/approve\` was not applied: ${who} has no role that allows it (\`no_role\`); the local owner can grant one with \`factory users add ${who} --role approver\`.`,
-      );
+      expect(await refusal(f, it.id)).toBe("`/approve` was not applied: only the owner may send this command.");
     }
     expect(f.local_auth.asked).toEqual(expect.arrayContaining(["local:bob", "local:carol", "local:anonymous"]));
-  });
-
-  it("enterprise: on a shared store, an approver added with `factory users add` approves a GitHub item on another replica; a requester cannot", async () => {
-    const f = await factory();
-    const a = await f.specced(7);
-    const b = await f.specced(8);
-    // Each person's terminal and a second controller replica, all on the one store.
-    const replica = await factory({ store: f.store, clock: f.clock });
-    expect((await f.cli(ME, { action: "users_add", user: "local:bob@example.com" as UserId, role: "approver" })).code).toBe(0);
-    expect((await replica.cli(ME, { action: "users_add", user: "local:carol@example.com" as UserId, role: "requester" })).code).toBe(0);
-    await replica.cli("local:bob@example.com" as UserId, approve(a.id));
-    await f.cli("local:carol@example.com" as UserId, approve(b.id));
-    f.hub.down = OUTAGE;
-    replica.hub.down = OUTAGE;
-    await replica.controller.tickCommands();
-    await f.controller.tickCommands();
-
-    expect((await f.store.listStateChanges(a.id)).find((c) => c.reason === "spec_approved")?.actor).toEqual({ kind: "user", id: "local:bob@example.com" });
-    expect(await f.store.getWorkItem(b.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    expect(await refusal(f, b.id)).toContain("local:carol@example.com has no role that allows it");
   });
 
   it("mirrors each command once on its issue, keyed by the command key; another mirror pass or replica posts nothing new", async () => {

@@ -41,7 +41,7 @@ async function setup() {
   const { store } = await newStore(clock);
   const local = new FlakyLocal(store);
   const auth = new LocalAuthProvider(store);
-  const controller = new ControllerRole({ store, sources: [local], auth, local_auth: auth, clock, config, log: silent, scanner: cleanScanner });
+  const controller = new ControllerRole({ store, sources: [local], auth, clock, config, log: silent, scanner: cleanScanner });
   let n = 0;
   const cli = (a: CliAction) => {
     const d: LocalCliDeps = { store, identity: { user: ME, from: "git user.email" }, project: async () => PROJECT_KEY, read: async () => "the body", newId: () => `id${++n}` };

@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 // Top-level Slack mentions (design 05-sources and 04-gate-commands, "a mention creates an item only on a press"): a
 // mention from an account that may approve is classified by one model call and answered in its own thread; it never
 // becomes an item by itself. A chat message gets one answer; a request, an unsure or unread message gets a short
@@ -79,7 +80,7 @@ async function setup(llm: ScriptedLLM | null) {
   }
   await store.claimLocalOwner("github:1" as UserId);
   const controller = new ControllerRole({
-    store, sources: [gh, slack], forge: new FakeForge(gh), auth: new TestAuth(), local_auth: new LocalAuthProvider(store), clock, config, log, scanner, ...(llm ? { llm } : {}),
+    store, sources: [gh, slack], forge: new FakeForge(gh), auth: new OwnerAuth(store), clock, config, log, scanner, ...(llm ? { llm } : {}),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log, owner: "replica-a" });

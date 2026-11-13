@@ -83,7 +83,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   const auth = new LocalAuthProvider(store, grants);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
-    store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+    store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
