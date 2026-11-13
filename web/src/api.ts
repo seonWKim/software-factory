@@ -535,6 +535,12 @@ export interface RuleRow {
   title: string;
   /** `open`, `pending` or `held`: the ledger's heading it is listed under. */
   state: string;
+  /** The decision of a ledger verdict newer than the pending view: judged already, no verdict offered. Null: not judged. */
+  judged: string | null;
+  /** A class's draft (`evolve show`), which prefills Promote; null for a proposal, a judged entry or a failed read. */
+  draft: { default: string; exception: string; incidents: string[]; scope: string } | null;
+  /** Why a class's draft could not be read (Promote is off then), or null. */
+  draft_error: string | null;
 }
 
 /**
@@ -793,10 +799,10 @@ export async function postStanding(
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording. */
+/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default and exception. */
 export async function postRuleVerdict(
   token: string,
-  body: { id: string; verdict: RuleVerdict; reason: string; text?: string },
+  body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
   if (r.ok) return { ok: true };

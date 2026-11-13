@@ -13,7 +13,10 @@ import { t } from "../i18n/index.js";
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571): the owner's tacit ledger entries
 // waiting for a verdict (candidate classes `C-…` and structure proposals `P-…`), each with its title, state and ID, read
 // through GET /api/v1/rules. Promote, Hold and Reject each open a dialog that asks for a reason before it sends; Promote
-// of a class also asks for the rule's wording, sent as the rule (a proposal takes none). Only the owner sends; anyone
+// of a class also asks for the rule's wording, default and exception (the last two prefilled from the class's draft),
+// which the server writes into the owner's rules file before the verdict (a proposal takes none). A class whose draft
+// could not be read offers no Promote. An entry the ledger judged since its pending view was built shows that decision
+// and no verdict buttons, until the view is rebuilt. Only the owner sends; anyone
 // else sees the list with the reason. With the ledger off (design 08-settings, 2026-11-12) the page says whether it
 // found the agents home: found, one primary Turn on, which stores the `integrations` entry through POST /api/v1/settings
 // and then loads the rules with no reload; not found, which CLI is missing and how to point AGENTS_HOME at the home.
@@ -36,20 +39,34 @@ const CONSEQUENCE: Record<RuleVerdict, MessageKey> = {
   reject: "rules.consequenceReject",
 };
 
-/** The verdict dialog: a reason first, and for promote of a class the rule's wording, prefilled with its title. */
+/** One of the rule's text fields in the promote dialog: a labelled textarea of up to 2000 characters. */
+function RuleText({ id, label, help, value, onChange }: { id: string; label: string; help?: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <Field label={label} htmlFor={id} help={help}>
+      <Textarea id={id} aria-label={label} className="min-h-16" value={value} maxLength={2000} onChange={(e) => onChange(e.target.value)} />
+    </Field>
+  );
+}
+
+/**
+ * The verdict dialog: a reason first, and for promote of a class the rule's wording (prefilled with its title) and its
+ * default and exception (prefilled from its draft).
+ */
 function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; verdict: RuleVerdict; token: string; onClose: () => void }) {
   const client = useQueryClient();
   const [reason, setReason] = useState("");
   const [text, setText] = useState(entry.title);
+  const [dflt, setDefault] = useState(entry.draft?.default ?? "");
+  const [exception, setException] = useState(entry.draft?.exception ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const promote = verdict === "promote" && isClass(entry.id);
-  const wording = text.trim();
+  const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
   const send = async () => {
     setBusy(true);
     setError(null);
     try {
-      const r = await postRuleVerdict(token, { id: entry.id, verdict, reason: reason.trim(), ...(promote ? { text: wording } : {}) });
+      const r = await postRuleVerdict(token, { id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) });
       if (!r.ok) {
         setError(r.error);
         return;
@@ -67,18 +84,20 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
   return (
     <Dialog
       title={t("rules.dialogTitle", { label, id: entry.id })}
-      consequence={t(CONSEQUENCE[verdict])}
+      consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
-      confirmDisabled={busy || reason.trim() === "" || (promote && wording === "")}
+      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes(""))}
       danger={verdict === "reject"}
       error={error}
       onConfirm={() => void send()}
       onClose={onClose}
     >
       {promote && (
-        <Field label={t("rules.wording")} htmlFor={`${entry.id}-wording`} help={t("rules.wordingHelp")}>
-          <Textarea id={`${entry.id}-wording`} aria-label={t("rules.wording")} className="min-h-20" value={text} maxLength={2000} onChange={(e) => setText(e.target.value)} />
-        </Field>
+        <>
+          <RuleText id={`${entry.id}-wording`} label={t("rules.wording")} help={t("rules.wordingHelp")} value={text} onChange={setText} />
+          <RuleText id={`${entry.id}-default`} label={t("rules.default")} help={t("rules.draftHelp")} value={dflt} onChange={setDefault} />
+          <RuleText id={`${entry.id}-exception`} label={t("rules.exception")} value={exception} onChange={setException} />
+        </>
       )}
       <Field label={t("rules.why")} htmlFor={`${entry.id}-reason`}>
         <Textarea id={`${entry.id}-reason`} aria-label={t("rules.reason")} className="min-h-16" value={reason} maxLength={1000} onChange={(e) => setReason(e.target.value)} />
@@ -98,10 +117,25 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
       <p data-rule-title className="text-sm text-pretty break-words whitespace-pre-wrap">
         {entry.title}
       </p>
-      {token !== null && (
+      {entry.judged !== null && (
+        <p data-judged className={muted}>
+          {t("rules.judged", { decision: entry.judged })} {t("rules.judgedHint")}
+        </p>
+      )}
+      {entry.judged === null && entry.draft_error !== null && (
+        <p data-draft-error className="text-xs text-pretty break-words text-pill-bad-fg">
+          {t("rules.draftError", { error: entry.draft_error })}
+        </p>
+      )}
+      {token !== null && entry.judged === null && (
         <ButtonRow className="pt-1">
           {VERDICTS.map((v) => (
-            <Button key={v.verdict} variant={v.verdict === "reject" ? "danger" : "secondary"} onClick={() => setOpen(v.verdict)}>
+            <Button
+              key={v.verdict}
+              variant={v.verdict === "reject" ? "danger" : "secondary"}
+              disabled={v.verdict === "promote" && isClass(entry.id) && entry.draft === null}
+              onClick={() => setOpen(v.verdict)}
+            >
               {t(v.label)}
             </Button>
           ))}
