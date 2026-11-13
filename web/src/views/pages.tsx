@@ -17,10 +17,10 @@ import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, NeedsGroups, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
+import { ItemsTable, MergeCheckNote, byId, NeedsGroups, needsYou, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { FloorNotes } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -29,8 +29,6 @@ import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defau
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
-
-const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
 /** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
 function pauseLine(p: PauseRow, now: number): string {
@@ -182,7 +180,7 @@ export function NeedsYouPage() {
   const rows = items.data?.items ?? [];
   const titles = useMemo(() => byId(items.data?.items), [items.data]);
   // One row per item that waits on the operator; an item started past a deadlock goes on by itself (decision 1).
-  const needs = rows.filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level) && i.why?.code !== "deadlock");
+  const needs = needsYou(rows);
   const deadlocks = rows.filter((i) => i.why?.code === "deadlock").length;
   const o = overview.data;
   const factory = o?.factory;
