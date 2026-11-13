@@ -1,10 +1,13 @@
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571). GET /api/v1/rules lists the
 // owner's tacit ledger entries waiting for a verdict (candidate classes `C-…` and structure proposals `P-…`, open or
-// held), each with its ID, title and state, and a proposal's kind and target, read through `TacitLedger.pending` only.
+// held), each with its ID, title and state, and a proposal's kind and target, read through `TacitLedger.pending` only;
+// an entry the ledger judged after its pending view was built comes with that decision (`judged`), and a class not
+// judged with its draft (default, exception, incidents, scope) or why the draft could not be read.
 // GET /api/v1/rules/entry?id= reads one entry's detail on demand (what it would change, why, where it applies) through
 // `TacitLedger.show` only; it writes nothing. Every ledger text leaves through the Withholder. POST /api/v1/rules/verdict sends
-// one verdict (promote, reject or hold) with the owner's reason, and for promote of a class their wording as the rule,
-// through `TacitLedger.verdict` only: the page has no other write path and writes nothing to the store. The request guards
+// one verdict (promote, reject or hold) with the owner's reason, and for promote of a class their wording, default and
+// exception, which the plugin encodes in the owner's rules file before the verdict, through `TacitLedger.verdict` only:
+// the page has no other write path and writes nothing to the store. The request guards
 // (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (decision 1 of #571:
 // the store's local owner only); every refusal comes before the ledger's CLI runs.
 //
@@ -19,7 +22,9 @@ import { LiveSettings } from "../core/settings.js";
 import { checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
 import { LiveTacit } from "../runtime/live-tacit.js";
 import type { UserId } from "../core/types.js";
-import { type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, tacitIdKind } from "../interfaces/tacit-ledger.js";
+import {
+  type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed, tacitIdKind,
+} from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import { Withholder } from "./withhold.js";
@@ -28,7 +33,7 @@ export const RULES_PATH = "/api/v1/rules";
 export const RULE_VERDICT_PATH = "/api/v1/rules/verdict";
 export const RULE_ENTRY_PATH = "/api/v1/rules/entry";
 
-/** The longest reason and rule text a verdict takes. */
+/** The longest reason and rule text (each of wording, default and exception) a verdict takes. */
 export const MAX_REASON = 1000;
 export const MAX_RULE_TEXT = 2000;
 
@@ -111,7 +116,14 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   const shown = [];
   for (const e of entries) {
     const proposal = { ...(e.kind !== undefined ? { kind: await text(e.kind) } : {}), ...(e.target !== undefined ? { target: await text(e.target) } : {}) };
-    shown.push({ id: await text(e.id), title: await text(e.title), state: e.state, ...proposal });
+    const draft = e.draft === undefined ? null : {
+      default: await text(e.draft.default), exception: await text(e.draft.exception),
+      incidents: await Promise.all(e.draft.incidents.map(text)), scope: await text(e.draft.scope),
+    };
+    shown.push({
+      id: await text(e.id), title: await text(e.title), state: e.state, ...proposal, judged: e.judged ?? null, draft,
+      draft_error: e.draft_error === undefined ? null : await text(e.draft_error),
+    });
   }
   return {
     status: 200,
@@ -149,28 +161,36 @@ export async function readRuleEntry(d: PauseDeps, rawId: string | null): Promise
   return { status: 200, value: { id: shown.id, detail: shown, error: null } };
 }
 
-type VerdictBody = { id: string; verdict: RuleVerdict; reason: string; text?: string };
+type VerdictBody = { id: string; verdict: RuleVerdict; reason: string; rule?: TacitPromotion };
+
+/** The rule's fields a promote of a class takes, each required there and refused anywhere else. */
+const RULE_FIELDS = ["text", "default", "exception"] as const;
 
 /** The POST body as a verdict, or why it is not one. */
 function parseVerdict(body: unknown): VerdictBody | string {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return "the body must be a JSON object";
   const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => !["id", "verdict", "reason", "text"].includes(k));
+  const extra = Object.keys(b).find((k) => !["id", "verdict", "reason", ...RULE_FIELDS].includes(k));
   if (extra) return `unknown field "${extra}"`;
   if (typeof b.id !== "string" || b.id.trim() === "") return "id must be a non-empty string";
   if (!RULE_VERDICTS.includes(b.verdict as RuleVerdict)) return `verdict must be one of ${RULE_VERDICTS.join(", ")}`;
   if (typeof b.reason !== "string" || b.reason.trim() === "" || b.reason.length > MAX_REASON) return `reason must be 1 to ${MAX_REASON} characters`;
-  if (b.text !== undefined) {
-    if (b.verdict !== "promote" || tacitIdKind(b.id.trim()) !== "class") return "only promote of a class (C-) takes a text";
-    if (typeof b.text !== "string" || b.text.trim() === "" || b.text.length > MAX_RULE_TEXT) return `text must be 1 to ${MAX_RULE_TEXT} characters`;
+  const v = { id: b.id.trim(), verdict: b.verdict as RuleVerdict, reason: b.reason.trim() };
+  if (v.verdict !== "promote" || tacitIdKind(v.id) !== "class") {
+    const given = RULE_FIELDS.find((k) => b[k] !== undefined);
+    return given ? `only promote of a class (C-) takes a ${given}` : v;
   }
-  return { id: b.id.trim(), verdict: b.verdict as RuleVerdict, reason: b.reason.trim(), ...(typeof b.text === "string" ? { text: b.text.trim() } : {}) };
+  const bad = RULE_FIELDS.find((k) => typeof b[k] !== "string" || b[k].trim() === "" || b[k].length > MAX_RULE_TEXT);
+  if (bad) return `${bad} must be 1 to ${MAX_RULE_TEXT} characters`;
+  const field = (k: (typeof RULE_FIELDS)[number]) => (b[k] as string).trim();
+  return { ...v, rule: { wording: field("text"), default: field("default"), exception: field("exception") } };
 }
 
 /**
- * POST /api/v1/rules/verdict with `{ id, verdict, reason, text? }` (`text` only on promote of a class), after the
- * request guards: 400 for a body that is not one, 409 with no ledger, 403 for anyone but the owner, 502 when the
- * ledger's CLI fails; else 200.
+ * POST /api/v1/rules/verdict with `{ id, verdict, reason, text?, default?, exception? }` (the three rule fields
+ * required on promote of a class, refused on anything else), after the request guards: 400 for a body that is not
+ * one, 409 with no ledger or when the ledger refuses a promote before writing anything, 403 for anyone but the owner,
+ * 502 when the ledger's CLI fails (or the verdict was recorded but sync-agents failed); else 200.
  */
 export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
   const v = parseVerdict(body);
@@ -181,11 +201,13 @@ export async function writeRuleVerdict(d: PauseDeps, p: UiPauses, body: unknown)
   const who = await ownerOf(d, p, "judges rules");
   if ("error" in who) return { status: 403, value: { error: who.error } };
   try {
-    // The owner's wording goes as the promoted class's rule; the CLIs take no "by", so the log keeps who judged.
-    await tacit.verdict(v.id, v.verdict, v.reason, v.text);
+    // The owner's rule goes with a promoted class; the CLIs take no "by", so the log keeps who judged.
+    await tacit.verdict(v.id, v.verdict, v.reason, v.rule);
   } catch (err) {
+    if (err instanceof TacitRefusal) return { status: 409, value: { error: `The promote was refused: ${errorText(err)}` } };
+    if (err instanceof TacitSyncFailed) return { status: 502, value: { error: `The verdict was recorded, but sync-agents failed: ${errorText(err)}` } };
     return { status: 502, value: { error: `The ledger refused the verdict: ${errorText(err)}` } };
   }
-  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: who.user, edited: v.text !== undefined });
+  p.log.info("rule verdict sent", { id: v.id, verdict: v.verdict, actor: who.user, edited: v.rule !== undefined });
   return { status: 200, value: { id: v.id, verdict: v.verdict } };
 }
