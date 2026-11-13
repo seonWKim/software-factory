@@ -9,14 +9,16 @@ import { approveRefusal, helpReply, itemCommandState, refusalText } from "./comm
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
-import { type TaskEdit, type TaskFields, taskLine } from "./tasks.js";
+import { type Project, projectSlug } from "./projects.js";
+import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
 import { buildTask, createLocalItem } from "./task-build.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task add` stores a plain task from quick-add words and `task
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
- * work item, no triage); `task list` and `task show` read the store; `approve`,
+ * work item, no triage); `project …` keeps the task projects and `task project` links a task to one or unlinks it
+ * (design 02-tasks, task projects); `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
@@ -72,7 +74,7 @@ export function isCliCommandKey(key: string): boolean {
   return key.startsWith(CLI_KEY_PREFIX);
 }
 
-/** The top-level words `factory` hands to this module: the table's task and item commands (with `confirm`). */
+/** The top-level words `factory` hands to this module: the table's task, project and item commands (with `confirm`). */
 export const CLI_TOP_WORDS = topWords(["task", "item"]);
 
 /** `factory help [<id>]`: the `/help` reply, which lists every command, so it is no entry of the command table. */
@@ -103,7 +105,13 @@ export type CliAction =
   | { action: "delete"; id: string }
   | { action: "sub"; parent: string; task: TaskFields }
   | { action: "build"; id: string }
-  | { action: "list" }
+  /** `project`: the `--project` filter's name as typed; left out, every open task. */
+  | { action: "list"; project?: string }
+  | { action: "task_project"; id: string; slug: string; add: boolean }
+  | { action: "project"; verb: "create"; name: string }
+  | { action: "project"; verb: "list"; archived: boolean }
+  | { action: "project"; verb: "rename"; slug: string; name: string }
+  | { action: "project"; verb: "archive" | "restore" | "delete"; slug: string }
   | { action: "show"; id: WorkItemId }
   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
   | { action: "help"; id: WorkItemId | null }
@@ -132,7 +140,16 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
   const bad = (why: string) => ({ error: `${why}\n${cliUsage()}` });
   if (word === "task") {
     const [sub, ...rest] = args;
-    if (sub === "list") return rest.length === 0 ? { action: "list" } : bad("task list takes no arguments");
+    if (sub === "list") {
+      if (rest.length === 0) return { action: "list" };
+      return rest.length === 2 && rest[0] === "--project" && rest[1] ? { action: "list", project: rest[1] } : bad("task list takes only --project <project_slug>");
+    }
+    if (sub === "project") {
+      const [id, link] = rest;
+      const slug = link && /^[+-]/.test(link) ? projectSlug(link.slice(1)) : null;
+      if (rest.length !== 2 || !id || slug === null) return bad("task project needs a task ID and +<slug> to add it to a project or -<slug> to take it out");
+      return { action: "task_project", id, slug, add: link!.startsWith("+") };
+    }
     if (sub === "add") {
       const parsed = parseQuickAdd(rest.join(" "));
       return parsed.ok ? { action: "add", task: parsed.task } : bad(`task add: ${parsed.reason}`);
@@ -169,6 +186,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     }
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
+  if (word === "project") return parseProjectArgs(args, bad);
   if ((ITEM_COMMANDS as readonly string[]).includes(word)) {
     const [id, ...rest] = args;
     if (!id) return bad(`${word} needs a work item ID`);
@@ -194,12 +212,48 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
   return bad(`unknown command ${JSON.stringify(word)}`);
 }
 
+/** `factory project <verb> …`: a slug as typed is read through projectSlug, so `Home Repairs` names `home-repairs`. */
+function parseProjectArgs(args: readonly string[], bad: (why: string) => { error: string }): CliAction | { error: string } {
+  const [verb, ...rest] = args;
+  const slug = (w: string | undefined) => (w === undefined ? null : projectSlug(w.replace(/^\+/, "")));
+  if (verb === "create") return rest.length > 0 ? { action: "project", verb, name: rest.join(" ") } : bad("project create needs a name");
+  if (verb === "list") {
+    if (rest.length === 0 || (rest.length === 1 && rest[0] === "--archived")) return { action: "project", verb, archived: rest.length === 1 };
+    return bad("project list takes only --archived");
+  }
+  if (verb === "rename") {
+    const [from, ...name] = rest;
+    const s = slug(from);
+    return s !== null && name.length > 0 ? { action: "project", verb, slug: s, name: name.join(" ") } : bad("project rename needs a project slug and the new name");
+  }
+  if (verb === "archive" || verb === "restore" || verb === "delete") {
+    const s = slug(rest[0]);
+    return rest.length === 1 && s !== null ? { action: "project", verb, slug: s } : bad(`project ${verb} needs one project slug`);
+  }
+  return bad(`unknown project command ${JSON.stringify(verb ?? "")}`);
+}
+
+/** One project as `project` prints it: `+slug`, its name, and `archived` for an archived one. */
+const projectLine = (p: Project) => [`+${p.slug}`, p.name, ...(p.archived_at === null ? [] : ["archived"])].join("\t");
+
+/** The store write's ProjectRefused as a failed result (its reason), anything else thrown again. */
+async function orRefused(fail: (line: string) => CliResult, run: () => Promise<CliResult>): Promise<CliResult> {
+  try {
+    return await run();
+  } catch (err) {
+    if (err instanceof ProjectRefused) return fail(err.message);
+    throw err;
+  }
+}
+
 export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
+    | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
+    | "addTaskToProject" | "removeTaskFromProject" | "listTaskProjectSlugs"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -246,11 +300,12 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (r.created) await claim();
       return { code: 0, lines: [r.created ? `built ${a.id} as ${r.item.id}` : `${a.id} was already built as ${r.item.id}`] };
     }
-    case "add": {
-      await claim();
-      const task = await d.store.addTask({ ...a.task, id: `tk_${d.newId()}`, created_by: user });
-      return { code: 0, lines: [taskLine(task)] };
-    }
+    case "add":
+      return orRefused(fail, async () => {
+        const task = await d.store.addTask({ ...a.task, id: `tk_${d.newId()}`, created_by: user });
+        await claim();
+        return { code: 0, lines: [taskLine(task)] };
+      });
     case "done": {
       const r = await d.store.completeTask(a.id);
       if (!r.ok) return fail(`no task ${a.id}`);
@@ -263,33 +318,60 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!r.reopened) return { code: 0, lines: [`${a.id} was not done`] };
       return { code: 0, lines: [`reopened ${a.id}`, ...(r.removed_next ? [`removed its next occurrence ${r.removed_next}`] : [])] };
     }
-    case "edit": {
-      const r = await d.store.updateTask(a.id, a.edit);
-      if (r.ok) return { code: 0, lines: [`edited ${taskLine(r.task)}`] };
-      if (r.reason === "needs_due_date") return fail(needsDueDate(r.recurrence));
-      return fail(r.reason === "done" ? `${a.id} is done: a done task cannot be edited` : `no task ${a.id}`);
-    }
+    case "edit":
+      return orRefused(fail, async () => {
+        const r = await d.store.updateTask(a.id, a.edit);
+        if (r.ok) return { code: 0, lines: [`edited ${taskLine(r.task)}`] };
+        if (r.reason === "needs_due_date") return fail(needsDueDate(r.recurrence));
+        return fail(r.reason === "done" ? `${a.id} is done: a done task cannot be edited` : `no task ${a.id}`);
+      });
     case "delete": {
       const r = await d.store.deleteTask(a.id);
       if (r.ok) return { code: 0, lines: [`deleted ${a.id}`, ...(r.detached.length > 0 ? [`detached done sub-tasks: ${r.detached.map((t) => t.id).join(", ")}`] : [])] };
       if (r.reason === "open_sub_tasks") return fail(`${a.id} has open sub-tasks: ${r.sub_tasks.map((t) => t.id).join(", ")}; complete or delete them first`);
       return fail(`no task ${a.id}`);
     }
-    case "sub": {
-      const r = await d.store.addSubTask(a.parent, { ...a.task, id: `tk_${d.newId()}`, created_by: user });
-      if (r.ok) {
-        await claim();
-        return { code: 0, lines: [taskLine(r.task)] };
-      }
-      return fail(r.reason === "nested" ? `${a.parent} is a sub-task: a sub-task cannot have sub-tasks` : `no task ${a.parent}`);
-    }
+    case "sub":
+      return orRefused(fail, async () => {
+        const r = await d.store.addSubTask(a.parent, { ...a.task, id: `tk_${d.newId()}`, created_by: user });
+        if (r.ok) {
+          await claim();
+          return { code: 0, lines: [taskLine(r.task)] };
+        }
+        return fail(r.reason === "nested" ? `${a.parent} is a sub-task: a sub-task cannot have sub-tasks` : `no task ${a.parent}`);
+      });
     case "list": {
+      if (a.project !== undefined) {
+        // A task project's slug, never the repository `owner/name` the settings commands' --project takes.
+        const project = await d.store.getProjectBySlug(projectSlug(a.project) ?? "");
+        if (project === null) return fail(projectRefusal(a.project, "not_found"));
+        if (project.archived_at !== null) return fail(projectRefusal(project.slug, "archived"));
+        const open = await d.store.listTasks(TASK_LIST_LIMIT);
+        const links = await d.store.listTaskProjectSlugs(open.map((t) => t.id));
+        const tasks = open.filter((t) => links[t.id]?.includes(project.slug));
+        return { code: 0, lines: tasks.length === 0 ? [`no open tasks in +${project.slug}`] : tasks.map((t) => taskLine(t, links[t.id] ?? [])) };
+      }
       const items = (await d.store.listWorkItems(TASK_LIST_LIMIT)).filter((i) => i.source.type === "local");
       const tasks = await d.store.listTasks(TASK_LIST_LIMIT);
+      const links = await d.store.listTaskProjectSlugs(tasks.map((t) => t.id));
       const lines = items.length === 0 ? ["no local work items"] : items.map((i) => [i.id, i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t"));
       // Plain tasks in their own section after the work items (design 02-tasks), only when there are any.
-      return { code: 0, lines: tasks.length === 0 ? lines : [...lines, "", "Tasks", ...tasks.map(taskLine)] };
+      return { code: 0, lines: tasks.length === 0 ? lines : [...lines, "", "Tasks", ...tasks.map((t) => taskLine(t, links[t.id] ?? []))] };
     }
+    case "task_project": {
+      const project = await d.store.getProjectBySlug(a.slug);
+      if (project === null) return fail(projectRefusal(a.slug, "not_found"));
+      if (!a.add) {
+        const removed = await d.store.removeTaskFromProject(project.id, a.id);
+        return { code: 0, lines: [removed ? `took ${a.id} out of +${a.slug}` : `${a.id} was not in +${a.slug}`] };
+      }
+      const r = await d.store.addTaskToProject(project.id, a.id);
+      if (!r.ok) return fail(r.reason === "task_not_found" ? `no task ${a.id}` : projectRefusal(a.slug, r.reason === "archived" ? "archived" : "not_found"));
+      if (r.changed) await claim();
+      return { code: 0, lines: [r.changed ? `added ${a.id} to +${a.slug}` : `${a.id} was already in +${a.slug}`] };
+    }
+    case "project":
+      return runProject(d, a, fail, claim);
     case "show": {
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
@@ -334,6 +416,45 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       const item = await d.store.getWorkItem(a.id);
       if (!item) return fail(`no work item ${a.id}`);
       return { code: 0, lines: helpReply(itemCommandState(item, await d.store.listRuns(item.id))).split("\n") };
+    }
+  }
+}
+
+/** `factory project <verb>`: the task projects' store methods, a slug looked up active or archived. */
+async function runProject(
+  d: LocalCliDeps, a: Extract<CliAction, { action: "project" }>, fail: (line: string) => CliResult, claim: () => Promise<unknown>,
+): Promise<CliResult> {
+  const ok = (...lines: string[]): CliResult => ({ code: 0, lines });
+  if (a.verb === "list") {
+    const projects = await d.store.listProjects(a.archived ? "archived" : "active");
+    return ok(...(projects.length === 0 ? [a.archived ? "no archived projects" : "no projects"] : projects.map(projectLine)));
+  }
+  if (a.verb === "create") {
+    const r = await d.store.createProject({ id: `pj_${d.newId()}`, name: a.name, created_by: d.identity.user });
+    if (!r.ok) return fail(r.reason === "invalid_name" ? r.error : `project "${r.project.slug}" exists already${r.project.archived_at === null ? "" : " (archived)"}`);
+    await claim();
+    return ok(projectLine(r.project));
+  }
+  const project = await d.store.getProjectBySlug(a.slug);
+  if (project === null) return fail(projectRefusal(a.slug, "not_found"));
+  await claim();
+  switch (a.verb) {
+    case "rename": {
+      const r = await d.store.renameProject(project.id, a.name);
+      if (r.ok) return ok(`renamed +${a.slug} to ${projectLine(r.project)}`);
+      return fail(r.reason === "invalid_name" ? r.error : r.reason === "slug_taken" ? `project "${r.project.slug}" exists already` : projectRefusal(a.slug, "not_found"));
+    }
+    case "archive":
+    case "restore": {
+      const r = a.verb === "archive" ? await d.store.archiveProject(project.id) : await d.store.restoreProject(project.id);
+      if (!r.ok) return fail(projectRefusal(a.slug, "not_found"));
+      const done = a.verb === "archive" ? "archived" : "restored";
+      return ok(r.changed ? `${done} +${a.slug}` : `+${a.slug} was already ${a.verb === "archive" ? "archived" : "active"}`);
+    }
+    case "delete": {
+      const r = await d.store.deleteProject(project.id);
+      if (!r.ok) return fail(projectRefusal(a.slug, "not_found"));
+      return ok(`deleted +${a.slug}`, ...(r.unlinked.length > 0 ? [`took out its tasks: ${r.unlinked.join(", ")}`] : []));
     }
   }
 }

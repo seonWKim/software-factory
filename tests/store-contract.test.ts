@@ -18,7 +18,7 @@ import CHANGE_REF_ONLY from "../src/controller/migrations/20261112T1200-controll
 import SUB_TASKS from "../src/controller/migrations/20261112T1800-controller-sub-tasks.migration.js";
 import TASK_SCHEDULE from "../src/controller/migrations/20261113T0900-controller-task-schedule.migration.js";
 import TASK_PROJECTS from "../src/controller/migrations/20261113T1300-controller-task-projects.migration.js";
-import { type NewTask, localDate } from "../src/core/tasks.js";
+import { type NewTask, ProjectRefused, localDate } from "../src/core/tasks.js";
 import { newStore, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
 const LEASE = 60_000;
@@ -2968,8 +2968,8 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
     });
   });
 
-  // Task projects (phase 1 of 3): create, rename, archive, restore, membership, delete and listTaskProjects take plain
-  // arguments and are conditional writes, so a repeat changes nothing more. Nothing calls them yet.
+  // Task projects: create, rename, archive, restore, membership, delete and listTaskProjects take plain arguments and
+  // are conditional writes, so a repeat changes nothing more (phase 1); task writes link `+slug` projects (phase 2).
   describe("task projects", () => {
     const by = "local:dev@example.com" as UserId;
     const task = (id: string): NewTask => ({ id, title: id, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: by });
@@ -3101,6 +3101,61 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await links(store)).toEqual([]);
       expect(await store.listTaskProjects("tk_a")).toEqual([]);
       expect(await store.getProject("pj_a")).toMatchObject({ id: "pj_a" });
+    });
+
+    // Phase 2: addTask, addSubTask and updateTask take the `+slug` projects and link in their own transaction.
+    it("addTask with projects links the task to each in the same write; a resend links nothing more", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      await store.addTask({ ...task("tk_a"), projects: ["work", "home", "home"] });
+      await store.addTask({ ...task("tk_a"), projects: ["work", "home"] });
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_a" }, { task_id: "tk_a", project_id: "pj_b" }]);
+      expect(await store.listTaskProjectSlugs(["tk_a", "tk_none"])).toEqual({ tk_a: ["home", "work"] });
+    });
+
+    it("addTask and addSubTask with an unknown or archived project throw the refusal and store no task and no link", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_old", name: "Old", created_by: by });
+      await store.archiveProject("pj_old");
+      await expect(store.addTask({ ...task("tk_a"), projects: ["home", "nope"] })).rejects.toThrow('no project "nope"');
+      await expect(store.addTask({ ...task("tk_a"), projects: ["home", "old"] })).rejects.toThrow('project "old" is archived; restore it first');
+      await expect(store.addTask({ ...task("tk_a"), projects: ["old"] })).rejects.toBeInstanceOf(ProjectRefused);
+      expect(await store.db.all("SELECT id FROM controller_tasks")).toEqual([]);
+      expect(await links(store)).toEqual([]);
+      await store.addTask(task("tk_p"));
+      await expect(store.addSubTask("tk_p", { ...task("tk_s"), projects: ["nope"] })).rejects.toThrow('no project "nope"');
+      expect(await store.getTask("tk_s")).toBeNull();
+      expect(await store.addSubTask("tk_p", { ...task("tk_s"), projects: ["home"] })).toMatchObject({ ok: true });
+      expect(await links(store)).toEqual([{ task_id: "tk_s", project_id: "pj_a" }]);
+    });
+
+    it("updateTask with projects adds links with the edit; a refusal leaves the row and its links as they were", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_old", name: "Old", created_by: by });
+      await store.archiveProject("pj_old");
+      await store.addTask({ ...task("tk_a"), projects: ["home"] });
+      const before = await store.db.all("SELECT * FROM controller_tasks");
+      await expect(store.updateTask("tk_a", { title: "renamed", projects: ["nope"] })).rejects.toThrow('no project "nope"');
+      await expect(store.updateTask("tk_a", { title: "renamed", projects: ["old"] })).rejects.toThrow('project "old" is archived; restore it first');
+      expect(await store.db.all("SELECT * FROM controller_tasks")).toEqual(before);
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_a" }]);
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      expect(await store.updateTask("tk_a", { title: "renamed", projects: ["work", "home"] })).toMatchObject({ ok: true, task: { title: "renamed" } });
+      expect(await store.listTaskProjectSlugs(["tk_a"])).toEqual({ tk_a: ["home", "work"] });
+      // An archived project's link is kept but not listed.
+      await store.archiveProject("pj_b");
+      expect(await store.listTaskProjectSlugs(["tk_a"])).toEqual({ tk_a: ["home"] });
+    });
+
+    it("getProjectBySlug finds an active or archived project by its slug", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_a", name: "Home Repairs", created_by: by });
+      await store.archiveProject("pj_a");
+      expect(await store.getProjectBySlug("home-repairs")).toMatchObject({ id: "pj_a", archived_at: expect.any(String) });
+      expect(await store.getProjectBySlug("home")).toBeNull();
     });
   });
 });

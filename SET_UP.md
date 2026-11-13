@@ -162,14 +162,21 @@ The identity comes from your environment (git config, OS user), so anyone who ca
 `factory help` prints the same command list as a `/help` reply; `factory help <id>` marks the ones that apply to that item now, exactly as `/help` on its issue does. `factory approve <id>` checks first that approve applies to the item (the spec gate, the floor block, a run held for the Rule of Two or by coordination cost); anywhere else it prints the refusal the controller would give and stores nothing. The status page lists only the commands that apply now and that you may send; the ones it leaves out are named once, with the reason, and every refusal there shows as plain text.
 
 - `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
-- `factory task add <words>`: Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, `HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title. Who: anyone who may submit work. Prints: the task: ID, title, due, priority, list and recurrence.
+- `factory task add <words>`: Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, `HH:MM`, `!1` to `!3`, `#label`, `+project`, `every day`, `every week` or `every month`, and the words left are its title. Who: anyone who may submit work. Prints: the task: ID, title, due, priority, list and recurrence.
 - `factory task done <task_id>`: Complete a plain task; a recurring one gets its next occurrence once, however often it is completed. Who: anyone who may submit work. Prints: that it is done (or already was), and the next occurrence.
 - `factory task reopen <task_id>`: Undo a plain task's completion; a recurring one's next occurrence is removed while it is open, and the undo is refused once that is done. Who: anyone who may submit work. Prints: that it is open again (or was not done), and the next occurrence it removed.
 - `factory task edit <task_id> <words>`: Edit an open plain task with quick-add words: only the fields they name change, and words with no title keep the title. Who: anyone who may submit work. Prints: the edited task.
 - `factory task delete <task_id>`: Delete a plain task for good; refused while it has open sub-tasks, and its done sub-tasks become plain tasks. Who: anyone who may submit work. Prints: that it is deleted, and the done sub-tasks it detached.
 - `factory task sub <parent_id> <words>`: Add a sub-task under a plain task from quick-add words, one level deep: a sub-task cannot have sub-tasks. Who: anyone who may submit work. Prints: the sub-task, with its parent's ID.
 - `factory task build <task_id>`: Send an open plain task to intake as one local work item, linked to the task; building it again makes no second item, and a merge of that item completes the task. Who: anyone who may submit work. Prints: the work item's ID (or that the task was already built as it).
-- `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task (a sub-task with its parent's ID).
+- `factory task list [--project <project_slug>]`: List local work items, then open plain tasks, or with `--project` one task project's. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task with its projects after its list (`-`, or `+a,+b`; a sub-task with its parent's ID).
+- `factory task project <task_id> +<slug>|-<slug>`: Add a plain task to a task project, or take it out. Who: anyone who may submit work. Prints: that it was added or taken out (or already was).
+- `factory project create <name>`: Create a task project, a group of plain tasks. Who: anyone who may submit work. Prints: the project: +slug and name.
+- `factory project list [--archived]`: List task projects, or the archived ones. Who: anyone who may submit work. Prints: one line per project: +slug and name.
+- `factory project rename <slug> <name>`: Rename a task project. Who: anyone who may submit work. Prints: the renamed project.
+- `factory project archive <slug>`: Archive a task project; its tasks stay in it. Who: anyone who may submit work. Prints: that it is archived (or already was).
+- `factory project restore <slug>`: Restore an archived task project. Who: anyone who may submit work. Prints: that it is active again (or already was).
+- `factory project delete <slug>`: Delete a task project, not its tasks. Who: anyone who may submit work. Prints: that it is deleted, and the tasks it took out.
 - `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
 - `factory approve <id> [notes]`: Store `/approve` for the item. Who: the owner. Prints: the stored command's number; the controller applies it and answers in the item's thread.
 - `factory retry <id> [text]`: Store `/retry` for the item. Who: the owner. Prints: the stored command's number; the controller applies it and answers in the item's thread.
@@ -423,7 +430,14 @@ In Slack a command follows a mention of the bot, in the item's thread and with n
 - `@bot task delete <task_id>`: as `factory task delete <task_id>`. Who: anyone who may submit work.
 - `@bot task sub <parent_id> <words>`: as `factory task sub <parent_id> <words>`. Who: anyone who may submit work.
 - `@bot task build <task_id>`: as `factory task build <task_id>`. Who: anyone who may submit work.
-- `@bot list`: as `factory task list`. Who: anyone.
+- `@bot list`: as `factory task list [--project <project_slug>]`. Who: anyone.
+- `@bot task project <task_id> +<slug>|-<slug>`: as `factory task project <task_id> +<slug>|-<slug>`. Who: anyone who may submit work.
+- `@bot project create <name>`: as `factory project create <name>`. Who: anyone who may submit work.
+- `@bot project list [--archived]`: as `factory project list [--archived]`. Who: anyone who may submit work.
+- `@bot project rename <slug> <name>`: as `factory project rename <slug> <name>`. Who: anyone who may submit work.
+- `@bot project archive <slug>`: as `factory project archive <slug>`. Who: anyone who may submit work.
+- `@bot project restore <slug>`: as `factory project restore <slug>`. Who: anyone who may submit work.
+- `@bot project delete <slug>`: as `factory project delete <slug>`. Who: anyone who may submit work.
 - `@bot show <id>`: as `factory task show <id>`. Who: anyone.
 - `@bot approve [notes]`: as `factory approve <id> [notes]`, in the item's thread. Who: the owner.
 - `@bot retry [text]`: as `factory retry <id> [text]`, in the item's thread. Who: the owner.

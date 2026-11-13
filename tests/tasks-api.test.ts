@@ -9,7 +9,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SCHEDULE_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { TASKS_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SCHEDULE_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -168,6 +168,56 @@ describe("schedule a task from the Tasks page (design 02-tasks)", () => {
     expect(await s.tasks()).toEqual(before);
     const off = await setup({ actor: null });
     expect((await off.post({ id: ID, date: "2026-11-14", time: "15:00" }, { url: TASK_SCHEDULE_PATH })).status).toBe(503);
+  });
+});
+
+describe("+slug on the dashboard's add, edit and sub routes (design 02-tasks, task projects)", () => {
+  const links = (s: Awaited<ReturnType<typeof setup>>) => s.store.db.all("SELECT task_id, project_id FROM controller_task_projects ORDER BY task_id");
+
+  async function withProjects() {
+    const s = await setup();
+    await s.store.createProject({ id: "pj_home", name: "Home", created_by: ACTOR });
+    await s.store.createProject({ id: "pj_old", name: "Old", created_by: ACTOR });
+    await s.store.archiveProject("pj_old");
+    return s;
+  }
+
+  it("POST /api/v1/tasks answers 400 with the reason for an unknown or archived project and stores no task and no link", async () => {
+    const s = await withProjects();
+    for (const [words, error] of [["fix tap +nope", 'no project "nope"'], ["fix tap +home +old", 'project "old" is archived; restore it first']] as const) {
+      const r = await s.post({ id: ID, words });
+      expect(r.status, words).toBe(400);
+      expect(JSON.parse(r.body)).toEqual({ error });
+    }
+    expect(await s.tasks()).toEqual([]);
+    expect(await links(s)).toEqual([]);
+    expect((await s.post({ id: ID, words: "fix tap +home" })).status).toBe(200);
+    expect(await links(s)).toEqual([{ task_id: ID, project_id: "pj_home" }]);
+  });
+
+  it("POST /api/v1/tasks/edit answers 400 for an unknown or archived project, writing no edit and no link", async () => {
+    const s = await withProjects();
+    await s.post({ id: ID, words: "fix tap" });
+    const before = await s.tasks();
+    const edit = (words: string) => s.post({ id: ID, words }, { url: TASK_EDIT_PATH });
+    for (const words of ["new title +nope", "new title +old"]) {
+      const r = await edit(words);
+      expect(r.status, words).toBe(400);
+      expect(JSON.parse(r.body).error).toMatch(/^(no project "nope"|project "old" is archived; restore it first)$/);
+    }
+    expect(await s.tasks()).toEqual(before);
+    expect(await links(s)).toEqual([]);
+    expect((await edit("+home")).status).toBe(200);
+    expect(await links(s)).toEqual([{ task_id: ID, project_id: "pj_home" }]);
+  });
+
+  it("POST /api/v1/tasks/sub answers 400 for an unknown project and stores no sub-task", async () => {
+    const s = await withProjects();
+    await s.post({ id: ID, words: "move house" });
+    const r = await s.post({ parent: ID, id: "tk_sub_0123456789", words: "pack +nope" }, { url: TASK_SUB_PATH });
+    expect(r.status).toBe(400);
+    expect(JSON.parse(r.body)).toEqual({ error: 'no project "nope"' });
+    expect(await s.store.getTask("tk_sub_0123456789")).toBeNull();
   });
 });
 

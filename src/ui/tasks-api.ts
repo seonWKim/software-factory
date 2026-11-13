@@ -12,7 +12,7 @@
 import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit, validDate } from "../core/quick-add.js";
 import { buildTask } from "../core/task-build.js";
-import { doneWindow, durationError, taskViews } from "../core/tasks.js";
+import { ProjectRefused, doneWindow, durationError, taskViews } from "../core/tasks.js";
 import type { Timestamp } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
@@ -138,9 +138,19 @@ const OFF = { status: 503, value: { error: "Tasks are off: this server is not on
 const refused = (status: 400 | 404 | 409, error: string): ApiResult => ({ status, value: { error } });
 const unknown = (id: string) => refused(404, `no task ${id}: it was deleted, or the page is out of date; reload it`);
 
+/** A store write whose `+slug` names an unknown or archived project: 400 with its reason; the store wrote nothing. */
+async function orProjectRefused(write: () => Promise<ApiResult>): Promise<ApiResult> {
+  try {
+    return await write();
+  } catch (err) {
+    if (err instanceof ProjectRefused) return refused(400, err.message);
+    throw err;
+  }
+}
+
 /**
- * POST /api/v1/tasks with `{ id, words }`, after the request guards: 400 for a body that is not one or words the
- * parser refuses (its reason); 503 when the page has no actor; else 200 with the stored task (the one already stored
+ * POST /api/v1/tasks with `{ id, words }`, after the request guards: 400 for a body that is not one, words the
+ * parser refuses (its reason) or a `+slug` naming an unknown or archived project; 503 when the page has no actor; else 200 with the stored task (the one already stored
  * under that ID on a retry). The title leaves through the Withholder, as on the other routes.
  */
 export async function writeTask(d: UiDeps, body: unknown): Promise<ApiResult> {
@@ -150,15 +160,17 @@ export async function writeTask(d: UiDeps, body: unknown): Promise<ApiResult> {
   if ("error" in b) return refused(400, b.error);
   const parsed = parseQuickAdd(b.words);
   if (!parsed.ok) return { status: 400, value: { error: parsed.reason } };
-  const task = await d.store.addTask({ ...parsed.task, id: b.id, created_by: actor });
-  const title = (await new Withholder(d.scanner).plain(task.title)).text;
-  return { status: 200, value: { task: { ...task, title } } };
+  return orProjectRefused(async () => {
+    const task = await d.store.addTask({ ...parsed.task, id: b.id, created_by: actor });
+    const title = (await new Withholder(d.scanner).plain(task.title)).text;
+    return { status: 200, value: { task: { ...task, title } } };
+  });
 }
 
 /**
  * POST /api/v1/tasks/edit with `{ id, words }`, the store's updateTask as `factory task edit`: the title and the
  * quick-add words for date, time, duration, priority and list, each field named by the words and only those; recurrence is not
- * edited here. 400 for words the parser refuses or a recurrence; 404 for an unknown task; 409 for a done one; else
+ * edited here; `+slug` adds the task to that project. 400 for words the parser refuses, a recurrence, or an unknown or archived project; 404 for an unknown task; 409 for a done one; else
  * 200 with the stored task. Every refusal writes nothing.
  */
 export async function writeTaskEdit(d: UiDeps, body: unknown): Promise<ApiResult> {
@@ -168,10 +180,12 @@ export async function writeTaskEdit(d: UiDeps, body: unknown): Promise<ApiResult
   const parsed = parseQuickEdit(b.words);
   if (!parsed.ok) return refused(400, parsed.reason);
   if (parsed.edit.recurrence !== undefined) return refused(400, "a task's recurrence is not edited here: leave out every day, every week or every month");
-  const r = await d.store.updateTask(b.id, parsed.edit);
-  if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
-  if (r.reason === "needs_due_date") return refused(409, needsDueDate(r.recurrence));
-  return r.reason === "done" ? refused(409, "the task is done: a done task cannot be edited") : unknown(b.id);
+  return orProjectRefused(async () => {
+    const r = await d.store.updateTask(b.id, parsed.edit);
+    if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
+    if (r.reason === "needs_due_date") return refused(409, needsDueDate(r.recurrence));
+    return r.reason === "done" ? refused(409, "the task is done: a done task cannot be edited") : unknown(b.id);
+  });
 }
 
 /** POST /api/v1/tasks/done with `{ id }`, the store's completeTask as `factory task done`: 404 for an unknown task; else 200, `completed` false when it was already done. */
@@ -215,7 +229,7 @@ export async function writeTaskDelete(d: UiDeps, body: unknown): Promise<ApiResu
 
 /**
  * POST /api/v1/tasks/sub with `{ parent, id, words }`, the store's addSubTask as `factory task sub`, under the ID the
- * page chose (a resend stores one task): 400 for words the parser refuses; 404 for an unknown parent; 409 when the
+ * page chose (a resend stores one task): 400 for words the parser refuses or an unknown or archived `+slug` project; 404 for an unknown parent; 409 when the
  * parent is itself a sub-task (one level); else 200 with the stored sub-task.
  */
 export async function writeTaskSub(d: UiDeps, body: unknown): Promise<ApiResult> {
@@ -225,9 +239,11 @@ export async function writeTaskSub(d: UiDeps, body: unknown): Promise<ApiResult>
   if ("error" in b) return refused(400, b.error);
   const parsed = parseQuickAdd(b.words);
   if (!parsed.ok) return refused(400, parsed.reason);
-  const r = await d.store.addSubTask(b.parent, { ...parsed.task, id: b.id, created_by: actor });
-  if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
-  return r.reason === "nested" ? refused(409, "the parent is a sub-task: a sub-task cannot have sub-tasks") : unknown(b.parent);
+  return orProjectRefused(async () => {
+    const r = await d.store.addSubTask(b.parent, { ...parsed.task, id: b.id, created_by: actor });
+    if (r.ok) return { status: 200, value: { task: (await shown(new Withholder(d.scanner), [r.task]))[0] } };
+    return r.reason === "nested" ? refused(409, "the parent is a sub-task: a sub-task cannot have sub-tasks") : unknown(b.parent);
+  });
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;

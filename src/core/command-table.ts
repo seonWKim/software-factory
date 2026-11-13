@@ -70,7 +70,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   {
     name: "task add", args: "<words>", who: "submit_work", group: "task",
     does: "Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, " +
-      "`HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title",
+      "`HH:MM`, `!1` to `!3`, `#label`, `+project`, `every day`, `every week` or `every month`, and the words left are its title",
     prints: "the task: ID, title, due, priority, list and recurrence", chat: "task add <words>", chat_args: "any", item: false, edge: false,
   },
   {
@@ -105,8 +105,41 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     prints: "the work item's ID (or that the task was already built as it)", chat: "task build <task_id>", chat_args: "id", item: false, edge: false,
   },
   {
-    name: "task list", args: "", who: "anyone", group: "task", does: "List local work items, then open plain tasks",
-    prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task (a sub-task with its parent's ID)", chat: "list", chat_args: "none", item: false, edge: false,
+    name: "task list", args: "[--project <project_slug>]", who: "anyone", group: "task",
+    does: "List local work items, then open plain tasks, or with `--project` one task project's",
+    prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task with its projects " +
+      "after its list (`-`, or `+a,+b`; a sub-task with its parent's ID)", chat: "list", chat_args: "none", item: false, edge: false,
+  },
+  {
+    name: "task project", args: "<task_id> +<slug>|-<slug>", who: "submit_work", group: "task",
+    does: "Add a plain task to a task project, or take it out",
+    prints: "that it was added or taken out (or already was)", chat: "task project <task_id> +<slug>|-<slug>", chat_args: "any", item: false, edge: false,
+  },
+  {
+    name: "project create", args: "<name>", who: "submit_work", group: "task",
+    does: "Create a task project, a group of plain tasks",
+    prints: "the project: +slug and name", chat: "project create <name>", chat_args: "any", item: false, edge: false,
+  },
+  {
+    name: "project list", args: "[--archived]", who: "submit_work", group: "task", does: "List task projects, or the archived ones",
+    prints: "one line per project: +slug and name", chat: "project list [--archived]", chat_args: "any", item: false, edge: false,
+  },
+  {
+    name: "project rename", args: "<slug> <name>", who: "submit_work", group: "task", does: "Rename a task project",
+    prints: "the renamed project", chat: "project rename <slug> <name>", chat_args: "any", item: false, edge: false,
+  },
+  {
+    name: "project archive", args: "<slug>", who: "submit_work", group: "task",
+    does: "Archive a task project; its tasks stay in it",
+    prints: "that it is archived (or already was)", chat: "project archive <slug>", chat_args: "id", item: false, edge: false,
+  },
+  {
+    name: "project restore", args: "<slug>", who: "submit_work", group: "task", does: "Restore an archived task project",
+    prints: "that it is active again (or already was)", chat: "project restore <slug>", chat_args: "id", item: false, edge: false,
+  },
+  {
+    name: "project delete", args: "<slug>", who: "submit_work", group: "task", does: "Delete a task project, not its tasks",
+    prints: "that it is deleted, and the tasks it took out", chat: "project delete <slug>", chat_args: "id", item: false, edge: false,
   },
   {
     name: "task show", args: "<id>", who: "anyone", group: "task", does: "Show one work item",
