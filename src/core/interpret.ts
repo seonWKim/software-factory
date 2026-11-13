@@ -1,4 +1,5 @@
 import { issueNumber } from "./change-ref.js";
+import { classifyMessage } from "./classify-message.js";
 import { commentEvent } from "./comment-event.js";
 import { type CommandName, type CommandState, applies, commandSpec, commandState, phaseLabel } from "./commands.js";
 import { withMessageStyle } from "./message-style.js";
@@ -287,6 +288,17 @@ export async function interpret(text: string, items: readonly OpenItem[], llm: L
     default:
       return { kind: "none" };
   }
+}
+
+/**
+ * What a plain message means: the label first, then the interpreter, unchanged. A `plain` message keeps a chat, show,
+ * request or unsure answer but never a proposal: a `commands` or `question` answer becomes `none`, which the caller
+ * answers with its fixed reply.
+ */
+export async function interpretMessage(text: string, items: readonly OpenItem[], llm: LLMProvider, at: MessageAt, style = ""): Promise<Interpretation> {
+  const label = await classifyMessage(text, llm);
+  const r = await interpret(text, items, llm, at, style);
+  return label === "plain" && (r.kind === "commands" || r.kind === "question") ? { kind: "none" } : r;
 }
 
 /** The proposal as the person would type it. */

@@ -19,6 +19,7 @@ import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import { FakeForge, FakeSource, config, recordingLog, waitFor } from "./helpers/fakes.js";
 import { CHANNEL, FakeSlackApi, FakeSocket, TEAM, eventEnvelope, mention, press } from "./helpers/slack.js";
 import { newStore } from "./helpers/store.js";
+import { classifierAnswer } from "./helpers/classifier.js";
 
 /** A known secret value: the scanner catches it only as such. */
 const SECRET = "fake-secret-value-for-the-chat-leak-test-01";
@@ -29,8 +30,11 @@ const SECRET = "fake-secret-value-for-the-chat-leak-test-01";
  */
 class ScriptedLLM implements LLMProvider {
   requests: LLMRequest[] = [];
-  constructor(private readonly answers: ({ kind: string; text?: string } | "throw" | "max_tokens" | "malformed")[]) {}
+  /** `label`: the classifier's answer, before the interpreter's. */
+  constructor(private readonly answers: ({ kind: string; text?: string; entries?: unknown[] } | "throw" | "max_tokens" | "malformed")[], private readonly label = "command") {}
   async complete(req: LLMRequest): Promise<LLMResponse> {
+    const label = classifierAnswer(req, this.label);
+    if (label) return label;
     this.requests.push(req);
     const a = this.answers[Math.min(this.requests.length - 1, this.answers.length - 1)]!;
     if (a === "throw") throw new Error("model unavailable");
@@ -38,7 +42,7 @@ class ScriptedLLM implements LLMProvider {
     if (a === "malformed") return { text: "not json", stop_reason: "end", usage };
     // A token-limit stop cuts off an answer that would otherwise be read.
     if (a === "max_tokens") return { text: "", parsed: { kind: "request", entries: [], text: "I can make this a task." }, stop_reason: "max_tokens", usage };
-    const parsed = { kind: a.kind, entries: [], text: a.text ?? "" };
+    const parsed = { kind: a.kind, entries: a.entries ?? [], text: a.text ?? "" };
     return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage };
   }
 }
@@ -167,6 +171,16 @@ describe("chat intake: top-level Slack mentions", () => {
       expect(reply.buttons).toEqual([ACTION_MAKE_TASK]);
     });
   }
+
+  it("a message the classifier labels plain gets no proposal: the interpreter's commands are dropped, the unread line with the button, and no item", async () => {
+    const f = await setup(new ScriptedLLM([{ kind: "commands", entries: [{ item: "1", command: "approve", args: "" }] }], "plain"));
+    await deliver(f, eventEnvelope(mention(TS, "which one should I approve")));
+    expect(f.llm.requests).toHaveLength(1);
+    const reply = await onlyReply(f);
+    expect(reply.text.startsWith(UNREAD)).toBe(true);
+    expect(reply.text).not.toContain("The factory read");
+    expect(reply.buttons).toEqual([ACTION_MAKE_TASK]);
+  });
 
   it("with no model configured: the unread line with the button, whose value is the message, and no item", async () => {
     const f = await setup(null);
