@@ -21,6 +21,7 @@ import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
 import { RulesPage } from "./views/rules.js";
 import { SpendPage } from "./views/spend.js";
+import { CalendarPage } from "./views/calendar.js";
 import { TasksPage } from "./views/tasks.js";
 
 /** "updated Ns ago", ticking each second; below sm only "Ns" shows, the rest stays for screen readers. */
@@ -39,6 +40,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   "": NeedsYouPage,
   items: ItemsPage,
   tasks: TasksPage,
+  calendar: CalendarPage,
   activity: ActivityPage,
   runners: RunnersPage,
   health: HealthPage,

@@ -76,7 +76,7 @@ const itemReads = () => vi.mocked(fetch).mock.calls.map(([u]) => String(u)).filt
 const switcher = () => screen.getByRole("combobox", { name: "Project" }) as HTMLSelectElement;
 const factoryWork = async () => (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
 /** The work item IDs Factory work lists, in page order. */
-const listed = async () => [...(await factoryWork()).querySelectorAll<HTMLElement>("tr[data-key]")].map((r) => r.dataset.key).sort();
+const listed = async () => [...(await factoryWork()).querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key).sort();
 
 function showTasks(path: string) {
   history.replaceState(null, "", path);

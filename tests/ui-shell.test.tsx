@@ -446,7 +446,7 @@ describe("app pages", () => {
   it("the sidebar's Tasks group links the Tasks page, the System group shows its links, and there is no Users", () => {
     mount();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
-    expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks"]);
+    expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks", "/app/calendar"]);
     const system = screen.getByRole("navigation", { name: "System" });
     expect(within(system).getByRole("link", { name: "Health" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();

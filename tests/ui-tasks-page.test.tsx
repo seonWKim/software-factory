@@ -284,57 +284,25 @@ describe("Tasks page", () => {
     expect(screen.queryByRole("button", { name: /Build this/ })).toBeNull();
   });
 
-  describe("calendar events (design 02-tasks, calendar views)", () => {
-    const ev = (id: string, time: string | null, source = "google-calendar"): EventRow => ({ kind: "event", source, id, title: `event ${id}`, all_day: time === null, time });
-    /** Every task and event card in the page, in document order. */
-    const entries = () => [...document.querySelectorAll<HTMLElement>("[data-task], [data-event]")].map((e) => e.dataset.task ?? `event:${e.dataset.event}`);
+  describe("calendar events leave the Tasks views (design 02-tasks)", () => {
+    const ev = (id: string, time: string | null): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: time === null, time });
 
-    it("Today shows the all-day events at the top, then the timed tasks and events in time order, then the untimed tasks", async () => {
+    it("Inbox, Today, Upcoming, List and Done show no event row and no stale-sync notice", async () => {
       current = view({
-        today: {
-          overdue: [],
-          due: [
-            ev("holiday", null),
-            ev("standup", "09:30"),
-            row("tk_call", { due_date: "2026-11-12", due_time: "11:00" }),
-            ev("lunch", "12:00"),
-            row("tk_untimed", { due_date: "2026-11-12" }),
-          ],
-        },
+        today: { overdue: [], due: [ev("holiday", null), row("tk_call", { due_date: "2026-11-12", due_time: "11:00" })] },
+        upcoming: [{ date: "2026-11-13", tasks: [ev("dentist", "08:00"), row("tk_soon", { due_date: "2026-11-13" })] }],
+        calendar: [{ source: "google-calendar", synced_at: null, failed: true }],
       });
       render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
-      await screen.findByRole("list", { name: /^Today/ }, SLOW);
-      expect(entries()).toEqual(["event:google-calendar:holiday", "event:google-calendar:standup", "tk_call", "event:google-calendar:lunch", "tk_untimed"]);
-      const holiday = document.querySelector<HTMLElement>('[data-event="google-calendar:holiday"]')!;
-      expect(holiday.textContent).toContain("event holiday");
-      expect(holiday.textContent).toContain("all day");
-      expect(document.querySelector('[data-event="google-calendar:standup"]')!.textContent).toContain("09:30");
-      // An event is read-only: no Build this, no edit.
-      expect(within(holiday).queryByRole("button")).toBeNull();
-    });
-
-    it("Upcoming shows each day's calendar events next to its tasks", async () => {
-      current = view({
-        upcoming: [
-          { date: "2026-11-13", tasks: [ev("dentist", "08:00"), row("tk_soon", { due_date: "2026-11-13", due_time: "10:00" })] },
-          { date: "2026-11-14", tasks: [ev("trip", null)] },
-        ],
-      });
-      await show();
-      tab("Upcoming");
-      expect(entries()).toEqual(["event:google-calendar:dentist", "tk_soon", "event:google-calendar:trip"]);
-      const lists = screen.getAllByRole("list");
-      expect(lists).toHaveLength(2);
-      expect(within(lists[0]!).getByText("event dentist")).toBeTruthy();
-      expect(lists[0]!.querySelector('[data-task="tk_soon"]')).not.toBeNull();
-      expect(lists[1]!.textContent).toContain("all day");
-    });
-
-    it("a source whose last sync failed is named above Today and Upcoming, with its stored events still shown", async () => {
-      current = view({ today: { overdue: [], due: [ev("standup", "09:30")] }, calendar: [{ source: "google-calendar", synced_at: null, failed: true }] });
-      render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
-      expect((await screen.findByText(/google-calendar: showing the stored events/, undefined, SLOW)).closest("[data-calendar-stale]")).not.toBeNull();
-      expect(entries()).toEqual(["event:google-calendar:standup"]);
+      await screen.findByText("tk_call", undefined, SLOW);
+      for (const name of ["Today", "Inbox", "Upcoming", "List", "Done"]) {
+        tab(name);
+        expect(document.querySelector("[data-event]")).toBeNull();
+        expect(document.querySelector("[data-calendar-stale]")).toBeNull();
+      }
+      tab("Today");
+      expect(card("tk_call")).not.toBeNull();
+      expect(document.body.textContent).not.toContain("event holiday");
     });
   });
 
@@ -343,9 +311,22 @@ describe("Tasks page", () => {
     const block = (id: string) => document.querySelector<HTMLElement>(`[data-block="${id}"]`)!;
     /** A drag carrying `id`, as a task row's drag start sets it. */
     const carrying = (id: string) => ({ dataTransfer: { getData: (type: string) => (type === "text/plain" ? id : ""), setData: () => {} } });
+    /** The timeline starts collapsed; its control (aria-expanded) opens it. */
+    const expand = () => fireEvent.click(screen.getByRole("button", { name: "Show timeline" }));
+
+    it("is collapsed by default and expands on a control with aria-expanded", async () => {
+      await show();
+      const control = screen.getByRole("button", { name: "Show timeline" });
+      expect(control.getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector("[data-slot]")).toBeNull();
+      fireEvent.click(control);
+      expect(screen.getByRole("button", { name: "Hide timeline" }).getAttribute("aria-expanded")).toBe("true");
+      expect(document.querySelectorAll("[data-slot]").length).toBeGreaterThan(0);
+    });
 
     it("dragging a task onto a slot posts its ID with today's date and the slot's time", async () => {
       await show();
+      expand();
       const data = new Map<string, string>();
       fireEvent.dragStart(card("tk_late"), { dataTransfer: { setData: (type: string, v: string) => data.set(type, v), getData: () => "" } });
       expect(data.get("text/plain")).toBe("tk_late");
@@ -360,6 +341,7 @@ describe("Tasks page", () => {
     it("an inbox task is dragged onto the timeline from the Inbox tab; a refusal shows above the timeline", async () => {
       await show();
       tab("Inbox");
+      expand();
       answer = { status: 409, body: { error: "the task is done: a done task cannot be scheduled" } };
       fireEvent.drop(slot("09:00"), carrying("tk_inbox"));
       await waitFor(() => expect(posts).toHaveLength(1));
@@ -367,7 +349,7 @@ describe("Tasks page", () => {
       expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("the task is done: a done task cannot be scheduled");
     });
 
-    it("draws a timed task with no stored duration as 30 minutes and a stored duration as its length; an event is read-only", async () => {
+    it("draws a timed task with no stored duration as 30 minutes and a stored duration as its length; an event is not drawn", async () => {
       current = view({
         today: { overdue: [], due: [row("tk_call", { due_date: "2026-11-12", due_time: "15:00" }), row("tk_gym", { due_date: "2026-11-12", due_time: "18:00", duration_minutes: 90 })] },
         timeline: [
@@ -378,6 +360,7 @@ describe("Tasks page", () => {
       });
       render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
       await screen.findByRole("list", { name: /^Today/ }, SLOW);
+      expand();
       expect(card("tk_call").textContent).toContain("30 min");
       expect(card("tk_gym").textContent).toContain("90 min");
       // A slot is 1.5rem per 30 minutes: 15:00 is 45rem down, 30 minutes 1.5rem high; 90 minutes 4.5rem.
@@ -385,8 +368,7 @@ describe("Tasks page", () => {
       expect(block("tk_call").textContent).toContain("15:00–15:30");
       expect(block("tk_gym").style.height).toBe("4.5rem");
       expect(block("tk_gym").textContent).toContain("18:00–19:30");
-      expect(block("work:ev1").textContent).toContain("standup");
-      expect(block("work:ev1").getAttribute("draggable")).toBeNull();
+      expect(block("work:ev1")).toBeNull();
       expect(within(screen.getByRole("list", { name: "Scheduled today" })).queryByRole("button")).toBeNull();
     });
 
@@ -394,6 +376,7 @@ describe("Tasks page", () => {
       current = view({ can_build: false });
       await show();
       expect(card("tk_late").getAttribute("draggable")).toBe("false");
+      expand();
       fireEvent.drop(slot("15:00"), carrying("tk_late"));
       expect(posts).toEqual([]);
     });
@@ -520,34 +503,41 @@ describe("Tasks page", () => {
     const BUILD = "Build this sends a task to the factory.";
     const ev = (id: string): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: true, time: null });
 
-    it("the view switcher has no bottom margin, and the section shows the count only, named by the tab", async () => {
+    it("the page stacks the view tabs and switcher, Quick add, Factory work, then the view, with no mb-/mt- on Quick add or Factory work", async () => {
+      items = [item("wi_1", { title: "Approve the spec", level: "needs_approval" })];
       await show();
-      expect(screen.getByRole("group", { name: "Task view" }).className.split(" ")).not.toContain("mb-6");
-      const section = screen.getByRole("region", { name: "Today" });
-      expect(section.querySelector("h2")).toBeNull();
-      expect(section.querySelector("span.tabular-nums")!.textContent).toBe("2");
+      const factory = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
+      const tabs = screen.getByRole("group", { name: "Task view" });
+      const picker = screen.getByRole("combobox", { name: "Project" });
+      const form = screen.getByLabelText("Add a task").closest("form")!;
+      const view = screen.getByRole("region", { name: "Today" });
+      const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+      expect(follows(tabs, picker) && follows(picker, form) && follows(form, factory) && follows(factory, view)).toBe(true);
+      expect(form.className).not.toMatch(/\bm[bt]-/);
+      expect(factory.parentElement!.className).not.toMatch(/\bm[bt]-/);
+      expect(tabs.className).not.toMatch(/\bm[bt]-/);
+      // The count shows with a word or not at all: never a bare number.
+      expect(view.firstElementChild!.querySelector("span")).toBeNull();
       tab("Inbox");
       expect(screen.getByRole("region", { name: "Inbox" })).not.toBeNull();
     });
 
-    it("every empty tab shows its message as the title and Add one above (press q), which focuses the quick-add field", async () => {
+    it("every empty tab shows its message only, saying to add a task in the field above, with no button", async () => {
       current = view({ inbox: [], today: { overdue: [], due: [] }, upcoming: [], projects: [] });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
       const titles: Record<string, string> = {
-        Inbox: "No open task without a due date.",
-        Today: "Nothing is due, overdue or on the calendar today.",
-        Upcoming: "Nothing is due or on the calendar from today through the next 7 days.",
-        List: "No open task.",
+        Inbox: "No open task without a due date. Add a task in the field above.",
+        Today: "Nothing is due or overdue today. Add a task in the field above.",
+        Upcoming: "Nothing is due from today through the next 7 days. Add a task in the field above.",
+        List: "No open task. Add a task in the field above.",
       };
       for (const [name, title] of Object.entries(titles)) {
         tab(name);
-        await screen.findByText(title, {}, SLOW);
-        const action = screen.getByRole("button", { name: "Add one above (press q)" });
-        (document.activeElement as HTMLElement).blur();
-        fireEvent.click(action);
-        expect(document.activeElement).toBe(screen.getByLabelText("Add a task"));
+        const message = await screen.findByText(title, {}, SLOW);
+        expect(within(message.parentElement!).queryByRole("button")).toBeNull();
       }
+      expect(screen.queryByRole("button", { name: /Add one above/ })).toBeNull();
     });
 
     it("shows the Build line only when the tab lists a task and can_build is true", async () => {
@@ -561,7 +551,7 @@ describe("Tasks page", () => {
       current = view({ today: { overdue: [], due: [ev("e1")] } });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
-      await screen.findByText("event e1", {}, SLOW);
+      await screen.findByText("Nothing is due or overdue today. Add a task in the field above.", {}, SLOW);
       expect(document.body.textContent).not.toContain(BUILD);
     });
 
@@ -573,20 +563,17 @@ describe("Tasks page", () => {
       await screen.findByRole("list", { name: "Overdue" }, SLOW);
       expect(document.body.textContent).toContain(BUILD);
       tab("Inbox");
-      expect(screen.getByRole("button", { name: "Add one above (press q)" })).not.toBeNull();
       expect(document.body.textContent).not.toContain(BUILD);
     });
 
-    it("the overdue and event labels are StatusBadges", async () => {
-      current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10" })], due: [ev("e1")] } });
+    it("the overdue label is a StatusBadge", async () => {
+      current = view({ today: { overdue: [row("tk_late", { due_date: "2026-11-10" })], due: [] } });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
       await screen.findByRole("list", { name: "Overdue" }, SLOW);
       const overdue = within(card("tk_late")).getByText("Overdue");
       expect(overdue.className).toContain("rounded-pill");
       expect(overdue.getAttribute("data-level")).toBe("stuck");
-      const event = within(document.querySelector<HTMLElement>("[data-event]")!).getByText("Event");
-      expect(event.className).toContain("rounded-pill");
     });
   });
 
@@ -697,15 +684,16 @@ describe("Tasks page", () => {
   });
 
   describe("Factory work", () => {
-    it("lists a work item that needs the owner above the tabs, in a Needs-you group", async () => {
+    it("lists a work item that needs the owner as one compact list under its group label, with its state once and no table header", async () => {
       items = [item("wi_1", { title: "Approve the spec", level: "needs_approval" }), item("wi_run", { title: "Busy", level: "running" })];
       await show();
       const section = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
       expect(within(section).getByText("Approve the spec")).toBeTruthy();
-      expect(within(section).getByText("Approve")).toBeTruthy();
+      expect(within(section).getByRole("heading", { name: "Approve" })).toBeTruthy();
+      expect(within(section).getAllByText("Needs approval")).toHaveLength(1);
       expect(within(section).queryByText("Busy")).toBeNull();
-      const tabs = screen.getByRole("group", { name: "Task view" });
-      expect(section.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(section.querySelector("table, thead, th")).toBeNull();
+      expect(section.textContent).not.toMatch(/Mergeable|spec ready/);
     });
 
     it("a built task shows its work item's state", async () => {
