@@ -9,6 +9,7 @@ import type { WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, mallory, silent } from "./helpers/fakes.js";
 import { newStore, PROJECT_KEY } from "./helpers/store.js";
+import { classifierAnswer } from "./helpers/classifier.js";
 
 // The plain-comment interpreter (design §4, issue #583): one model call over the message and the open items, then
 // one plain-text reply that proposes typed commands, answers a read, or asks one question. Nothing is applied.
@@ -18,6 +19,8 @@ class ScriptedLLM implements LLMProvider {
   requests: LLMRequest[] = [];
   constructor(private readonly replies: Partial<LLMResponse>[]) {}
   async complete(req: LLMRequest): Promise<LLMResponse> {
+    const label = classifierAnswer(req);
+    if (label) return label;
     this.requests.push(req);
     const r = this.replies[Math.min(this.requests.length - 1, this.replies.length - 1)] ?? {};
     return { text: "", stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null }, ...r };

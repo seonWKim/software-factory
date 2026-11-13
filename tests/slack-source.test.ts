@@ -33,6 +33,7 @@ import { FakeForge, FakeSource, config, issueRef, recordingLog, silent, triageSp
 import { BOT, CHANNEL, FakeSlackApi, FakeSocket, OTHER_CHANNEL, TEAM, eventEnvelope, mention, message, modalPress, press, submission } from "./helpers/slack.js";
 import { itemModal } from "../src/impl/source/slack-modals.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
+import { classifierAnswer } from "./helpers/classifier.js";
 
 /** Not shaped like any token the scanner's patterns know: it is caught only as a known secret value. */
 const FAKE_GITHUB_TOKEN = "fake-github-token-for-the-leak-test-0001";
@@ -60,6 +61,8 @@ class SlackAuth implements AuthProvider {
 /** Reads a top-level mention as a work request; proposes `/approve` on the first open item listed for any plain reply. */
 class ApproveLLM implements LLMProvider {
   async complete(req: LLMRequest): Promise<LLMResponse> {
+    const label = classifierAnswer(req);
+    if (label) return label;
     const id = /"id":"([^"]+)"/.exec(req.messages[0]!.content)?.[1] ?? "";
     const parsed = req.messages[0]!.content.includes(TOP_LEVEL_FACT)
       ? { kind: "request", entries: [], text: "" }
@@ -577,7 +580,8 @@ describe("slack source: replies, buttons and commands", () => {
     const before = await f.store.getWorkItem(item.id);
     const startCalls = calls;
     await deliver(f, eventEnvelope(message("1800000015.000200", "fine by me, go ahead", { thread_ts: ts })));
-    expect(calls).toBe(startCalls + 1);
+    // Two calls: the classifier, then the interpreter.
+    expect(calls).toBe(startCalls + 2);
     expect(f.api.thread(ts).filter((m) => m.text?.startsWith("The factory read one command"))).toHaveLength(1);
     expect(await f.store.getWorkItem(item.id)).toEqual(before);
 
@@ -588,7 +592,7 @@ describe("slack source: replies, buttons and commands", () => {
     await deliver(f, eventEnvelope(message("1800000015.000400", "fine by me, go ahead", { thread_ts: other })));
     expect(await f.store.listInboxAfter("slack_thread", 0, 100)).toEqual(inbox);
     for (const it of await f.store.listWorkItems(10)) expect((await f.store.listItemMessages(it.id)).map((m) => m.marker)).not.toContain("slack:1800000015.000400");
-    expect(calls).toBe(startCalls + 1);
+    expect(calls).toBe(startCalls + 2);
     expect(f.api.calls.length).toBe(posted);
     expect(f.api.thread(other)).toEqual([]);
   });
@@ -1333,7 +1337,9 @@ describe("slack source: commands with no slash after a mention (issue #541)", ()
 /** Answers every plain reply with `entries` (item IDs from the test), as the interpreter's model would. */
 class ScriptedLLM implements LLMProvider {
   entries: { item: string; command: string; args: string }[] = [];
-  async complete(): Promise<LLMResponse> {
+  async complete(req: LLMRequest): Promise<LLMResponse> {
+    const label = classifierAnswer(req);
+    if (label) return label;
     const parsed = { kind: "commands", entries: this.entries };
     return { text: JSON.stringify(parsed), parsed, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
   }

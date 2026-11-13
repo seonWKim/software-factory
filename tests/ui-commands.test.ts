@@ -18,6 +18,7 @@ import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
+import { classifierAnswer } from "./helpers/classifier.js";
 
 // App command requests (issues #245, #282): a request row in the store is a new entry point to the comment command
 // path. It lands in the command inbox too; each controller tick reads the inbox and applies `approve` with the same permission check and
@@ -632,6 +633,8 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
   class ApproveLLM implements LLMProvider {
     calls = 0;
     async complete(req: LLMRequest): Promise<LLMResponse> {
+      const label = classifierAnswer(req);
+      if (label) return label;
       this.calls++;
       const id = /"id":"([^"]+)"/.exec(req.messages[0]!.content)?.[1] ?? "";
       const parsed = { kind: "commands", entries: [{ item: id, command: "approve", args: "ship it" }] };
