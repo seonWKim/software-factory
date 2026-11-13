@@ -262,3 +262,31 @@ describe("GET /api/v1/tasks: the quick-add submit key (design 02-tasks, tasks_ad
     }
   });
 });
+
+describe("GET /api/v1/tasks/done: the Done tab's read (design 02-tasks, Done view)", () => {
+  const get = (s: Awaited<ReturnType<typeof setup>>, query = "") => respond(s.d, { method: "GET", url: `${TASK_DONE_PATH}${query}`, host: HOST });
+
+  it("lists the tasks the page completed, newest done first, with title, list and done time; it writes nothing", async () => {
+    const s = await setup();
+    const other = "tk_fedcba9876543210";
+    await s.post({ id: ID, words: "call the bank #home" });
+    await s.post({ id: other, words: "water plants" });
+    await s.post({ id: ID }, { url: TASK_DONE_PATH });
+    (s.d.clock as FakeClock).advance(60_000);
+    await s.post({ id: other }, { url: TASK_DONE_PATH });
+    const before = await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+    const r = await get(s);
+    expect(r.status).toBe(200);
+    const body = JSON.parse(r.body) as { tasks: { id: string; title: string; list: string | null; done_at: string }[]; older: boolean };
+    expect(body.tasks.map((t) => [t.id, t.title, t.list])).toEqual([[other, "water plants", null], [ID, "call the bank", "home"]]);
+    expect(body.tasks.every((t) => typeof t.done_at === "string")).toBe(true);
+    expect(body.older).toBe(false);
+    expect(await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id")).toEqual(before);
+  });
+
+  it("answers 400 for a `before` that is not a time, 200 for one that is", async () => {
+    const s = await setup();
+    expect((await get(s, "?before=soon")).status).toBe(400);
+    expect((await get(s, "?before=2026-11-01T00:00:00.000Z")).status).toBe(200);
+  });
+});
