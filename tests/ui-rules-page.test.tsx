@@ -27,6 +27,7 @@ const SLOW = { timeout: 5_000 };
 
 const view = (over: Partial<RulesView> = {}): RulesView => ({
   enabled: true,
+  applied: null,
   error: null,
   csrf_token: TOKEN,
   judge: null,
@@ -297,6 +298,34 @@ describe("Rules page", () => {
     expect(screen.queryAllByRole("button")).toEqual([]);
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(headings()).not.toContain("Rules");
+  });
+
+  it("Applied group after the waiting groups: each block's parts, \"not given\" for a missing one, raw text, the elsewhere lines; none when empty or off", async () => {
+    current = view({
+      applied: {
+        rules: [
+          { id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: "모든 문서", incidents: ["T-1", "T-2"], judged: "2026-11-13", raw: null },
+          { id: null, name: null, default: null, exceptions: null, scope: null, incidents: null, judged: null, raw: "## Notes\njust words" },
+        ],
+        elsewhere: ["- C-009 → CLAUDE.md"],
+      },
+    });
+    await show();
+    const applied = await screen.findByRole("list", { name: "Applied" }, SLOW);
+    expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label")).at(-1)).toBe("Applied");
+    const c = applied.querySelector<HTMLElement>('[data-applied="C-001"]')!.textContent!;
+    for (const part of ["C-001", "summary first", "Default: Open with a summary.", "Exception: not given", "Scope: 모든 문서", "Evidence: T-1, T-2", "Judged: 2026-11-13"]) expect(c).toContain(part);
+    expect(applied.querySelector("[data-applied-raw]")!.textContent).toBe("## Notes\njust words");
+    expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("Encoded elsewhere");
+    expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("- C-009 → CLAUDE.md");
+    expect(screen.queryAllByRole("button", { name: /retire|edit/i })).toEqual([]);
+  });
+
+  it("no Applied group when the file holds nothing or the ledger is off", async () => {
+    current = view({ applied: { rules: [], elsewhere: [] } });
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    expect(screen.queryByRole("region", { name: "Applied" })).toBeNull();
   });
 
   it("ledger off for a user who is not the owner: the reason, and no Turn on", async () => {

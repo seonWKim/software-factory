@@ -599,6 +599,18 @@ export interface RuleEntryView {
   error: string | null;
 }
 
+/** One promoted block of the rules file (Applied group); a part it lacks is null, an unparsable block has only `raw`. */
+export interface AppliedRule {
+  id: string | null;
+  name: string | null;
+  default: string | null;
+  exceptions: string | null;
+  scope: string | null;
+  incidents: string[] | null;
+  judged: string | null;
+  raw: string | null;
+}
+
 /**
  * `/api/v1/rules`: `enabled` false when the tacit ledger is off; `judge` is why the viewer cannot send a verdict (or,
  * with the ledger off, turn it on), or null; `error` is a failed ledger read, or null. With the ledger off, `home` is
@@ -608,6 +620,8 @@ export interface RuleEntryView {
 export interface RulesView {
   enabled: boolean;
   entries: RuleRow[];
+  /** The rules file's blocks and encoded-elsewhere lines; null with the ledger off. */
+  applied: { rules: AppliedRule[]; elsewhere: string[] } | null;
   error: string | null;
   csrf_token: string | null;
   judge: string | null;

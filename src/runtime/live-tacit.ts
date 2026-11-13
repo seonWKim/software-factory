@@ -12,6 +12,7 @@ interface Ledger {
   pending(): Promise<unknown>;
   verdict(...a: never[]): Promise<void>;
   rules(): Promise<unknown>;
+  applied?(): Promise<unknown>;
 }
 
 interface Log {
@@ -82,5 +83,10 @@ export class LiveTacit<L extends Ledger> {
 
   rules(): ReturnType<L["rules"]> {
     return this.ledger.rules() as ReturnType<L["rules"]>;
+  }
+
+  /** The rules file's blocks; nothing from a plugin without `applied`. */
+  async applied(): Promise<Awaited<ReturnType<NonNullable<L["applied"]>>>> {
+    return ((await this.ledger.applied?.()) ?? { rules: [], elsewhere: [] }) as Awaited<ReturnType<NonNullable<L["applied"]>>>;
   }
 }

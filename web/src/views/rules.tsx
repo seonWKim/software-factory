@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { API, type RuleDetail, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry } from "../api.js";
+import { API, type AppliedRule, type RuleDetail, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -24,6 +24,9 @@ import { t } from "../i18n/index.js";
 // else sees the list with the reason. With the ledger off (design 08-settings, 2026-11-12) the page says whether it
 // found the agents home: found, one primary Turn on, which stores the `integrations` entry through POST /api/v1/settings
 // and then loads the rules with no reload; not found, which CLI is missing and how to point AGENTS_HOME at the home.
+// After the waiting groups, an Applied group lists the promoted rules file read-only (design 09-dashboard-app.md,
+// 2026-11-13): each block's ID, name, default, exception, scope, evidence and judged date (a missing part reads "not
+// given"), an unparsable block as raw text, then the encoded-elsewhere lines. Not shown when there are none.
 // The app's page title is the one "Rules" heading.
 // One card per entry at every width, so no table turns into cards.
 
@@ -289,6 +292,65 @@ function LedgerOff({ view }: { view: RulesView }) {
   );
 }
 
+/** One part of an applied rule: its label and value, or "not given". */
+function AppliedPart({ label, value }: { label: MessageKey; value: string | null }) {
+  return <p className={line}>{t(label, { value: value ?? t("rules.notGiven") })}</p>;
+}
+
+/** One promoted block: its ID, name and parts; an unparsable block shows its raw text. */
+function AppliedCard({ rule }: { rule: AppliedRule }) {
+  if (rule.raw !== null) {
+    return (
+      <li data-applied-raw className="p-3">
+        <pre className="font-mono text-xs break-words whitespace-pre-wrap">{rule.raw}</pre>
+      </li>
+    );
+  }
+  return (
+    <li data-applied={rule.id} className="space-y-1 p-3">
+      <span className="font-mono text-xs break-all text-text-2">{rule.id}</span>
+      <p className="text-sm font-medium text-pretty break-words">{rule.name}</p>
+      <AppliedPart label="rules.appliedDefault" value={rule.default} />
+      <AppliedPart label="rules.appliedException" value={rule.exceptions} />
+      <AppliedPart label="rules.appliedScope" value={rule.scope} />
+      <AppliedPart label="rules.appliedIncidents" value={rule.incidents === null ? null : rule.incidents.join(", ")} />
+      <AppliedPart label="rules.appliedJudged" value={rule.judged} />
+    </li>
+  );
+}
+
+/** The promoted rules and the encoded-elsewhere lines, read-only; not shown when there are none. */
+function Applied({ applied }: { applied: NonNullable<RulesView["applied"]> }) {
+  const { rules, elsewhere } = applied;
+  if (rules.length === 0 && elsewhere.length === 0) return null;
+  return (
+    <Section title={t("rules.groupApplied")} count={rules.length}>
+      <p data-group-line className={`mb-2 ${muted}`}>
+        {t("rules.groupAppliedLine")}
+      </p>
+      {rules.length > 0 && (
+        <ul aria-label={t("rules.groupApplied")} className="divide-y divide-border rounded-control border border-border">
+          {rules.map((r, i) => (
+            <AppliedCard key={r.id ?? `raw${i}`} rule={r} />
+          ))}
+        </ul>
+      )}
+      {elsewhere.length > 0 && (
+        <div data-elsewhere className="mt-3 space-y-1">
+          <h3 className="text-xs font-semibold text-text-2">{t("rules.elsewhere")}</h3>
+          <ul className="space-y-1">
+            {elsewhere.map((l, i) => (
+              <li key={i} className={line}>
+                {l}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Section>
+  );
+}
+
 export function RulesPage() {
   const rules = useApi<RulesView>(API.rules);
   const v = rules.data;
@@ -326,6 +388,7 @@ export function RulesPage() {
           )
         );
       })}
+      {v.applied !== null && <Applied applied={v.applied} />}
       <p className={`mt-3 ${muted}`}>
         {t("rules.footer")}
       </p>
