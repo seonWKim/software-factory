@@ -48,8 +48,8 @@ let current: RulesView;
 let posts: { url: string; init: RequestInit }[];
 let answer: { status: number; body: unknown };
 let gets: string[];
-/** GET /api/v1/rules/entry's answer: a detail view, or an HTTP status for a failed read. */
-let detail: RuleEntryView | number;
+/** GET /api/v1/rules/entry's answer: a detail view, one per ID, or an HTTP status for a failed read. */
+let detail: RuleEntryView | number | ((id: string) => RuleEntryView);
 
 beforeEach(() => {
   current = view();
@@ -66,7 +66,10 @@ beforeEach(() => {
     }
     gets.push(url);
     if (url === "/api/v1/rules") return json(200, current);
-    if (url.startsWith("/api/v1/rules/entry?")) return typeof detail === "number" ? json(detail, { error: "boom" }) : json(200, detail);
+    if (url.startsWith("/api/v1/rules/entry?")) {
+      if (typeof detail === "number") return json(detail, { error: "boom" });
+      return json(200, typeof detail === "function" ? detail(new URL(url, "http://x").searchParams.get("id")!) : detail);
+    }
     return json(404, { error: "Not found." });
   }));
 });
@@ -318,7 +321,84 @@ describe("Rules page", () => {
     expect(applied.querySelector("[data-applied-raw]")!.textContent).toBe("## Notes\njust words");
     expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("Encoded elsewhere");
     expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("- C-009 → CLAUDE.md");
-    expect(screen.queryAllByRole("button", { name: /retire|edit/i })).toEqual([]);
+    // The raw block has no action; the class has Retire and no edit.
+    expect(screen.getAllByRole("button", { name: "Retire" })).toHaveLength(1);
+    expect(screen.queryAllByRole("button", { name: /edit/i })).toEqual([]);
+  });
+
+  const APPLIED: RulesView["applied"] = {
+    rules: [
+      { id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: null, scope: null, incidents: ["T-1"], judged: "2026-10-01", raw: null },
+      { id: "C-002", name: "flags", default: "Keep every flag.", exceptions: null, scope: null, incidents: ["T-2"], judged: "2026-11-13", raw: null },
+      { id: null, name: null, default: null, exceptions: null, scope: null, incidents: null, judged: null, raw: "## Notes" },
+    ],
+    elsewhere: [],
+  };
+  const applied = (id: string) => document.querySelector<HTMLElement>(`[data-applied="${id}"]`)!;
+
+  it("Suggest reads each applied class's suggestions on demand; a suggested rule shows the badge with its reasons, the others none", async () => {
+    current = view({ applied: APPLIED });
+    detail = (id) => ({ id, error: null, detail: null, retire: id === "C-001" ? ["no new incident for 44 days since judged on 2026-10-01", "covered by C-002"] : [] });
+    await show();
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    // Nothing is suggested, and no entry read, before the press.
+    expect(gets.filter((u) => u.includes("/rules/entry"))).toEqual([]);
+    expect(screen.queryByText("Suggested to retire")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
+    expect((await within(applied("C-001")).findByText("Suggested to retire", {}, SLOW)).textContent).toBe("Suggested to retire");
+    expect([...applied("C-001").querySelectorAll("[data-suggested] li")].map((li) => li.textContent)).toEqual([
+      "no new incident for 44 days since judged on 2026-10-01", "covered by C-002",
+    ]);
+    await waitFor(() => expect(gets.filter((u) => u.includes("/rules/entry")).sort()).toEqual(["/api/v1/rules/entry?id=C-001", "/api/v1/rules/entry?id=C-002"]));
+    expect(within(applied("C-002")).queryByText("Suggested to retire")).toBeNull();
+    // A suggestion writes nothing.
+    expect(posts).toEqual([]);
+    // The next press reads again.
+    fireEvent.click(screen.getByRole("button", { name: "Suggest" }));
+    await waitFor(() => expect(gets.filter((u) => u.includes("/rules/entry"))).toHaveLength(4));
+  });
+
+  it("Retire opens a dialog with a required reason (not in the row) and sends the retire verdict with no rule fields", async () => {
+    current = view({ applied: APPLIED });
+    answer = { status: 200, body: { id: "C-001", verdict: "retire" } };
+    await show();
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    expect(applied("C-001").querySelector("textarea, input")).toBeNull();
+    fireEvent.click(within(applied("C-001")).getByRole("button", { name: "Retire" }));
+    expect(applied("C-001").querySelector("textarea, input")).toBeNull();
+    const confirm = within(dialog()).getByRole("button", { name: "Send retire" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "covered by C-002" } });
+    expect(confirm.disabled).toBe(false);
+    fireEvent.click(confirm);
+    await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
+    expect(sent()).toEqual([{ id: "C-001", verdict: "retire", reason: "covered by C-002" }]);
+    expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+  });
+
+  it("a user who is not the owner sees Retire disabled", async () => {
+    current = view({ applied: APPLIED, judge: "Only the owner judges rules; you are local:alice." });
+    await show();
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    const buttons = screen.getAllByRole("button", { name: "Retire" }) as HTMLButtonElement[];
+    expect(buttons.map((b) => b.disabled)).toEqual([true, true]);
+    fireEvent.click(buttons[0]!);
+    expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+  });
+
+  it("the Retired list is collapsed and gives each rule's reason and date; none when the ledger has none", async () => {
+    current = view({ applied: APPLIED, retired: [{ id: "C-007", reason: "covered by C-001", date: "2026-11-14" }] });
+    await show();
+    const region = await screen.findByRole("region", { name: "Retired" }, SLOW);
+    const details = region.querySelector<HTMLDetailsElement>("details[data-retired]")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toBe("Show retired rules");
+    expect(details.querySelector('[data-retired-rule="C-007"]')!.textContent).toBe("C-007Retired 2026-11-14: covered by C-001");
+    cleanup();
+    current = view({ applied: APPLIED, retired: [] });
+    await show();
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    expect(screen.queryByRole("region", { name: "Retired" })).toBeNull();
   });
 
   it("no Applied group when the file holds nothing or the ledger is off", async () => {

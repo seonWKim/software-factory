@@ -25,7 +25,7 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { AgentsHomeTacitLedger, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
-import type { TacitEntryDetail, TacitLedger } from "../src/interfaces/tacit-ledger.js";
+import type { TacitApplied, TacitEntryDetail, TacitLedger } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiTacit, uiTacit } from "../src/ui/rules-api.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
@@ -310,7 +310,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
 });
 
 /** A ledger that is on, lists PENDING, and answers `show` with `show`; every call it gets is kept in `calls`. */
-function fakeLedger(show: (id: string) => Promise<TacitEntryDetail | null>) {
+function fakeLedger(show: (id: string) => Promise<TacitEntryDetail | null>, applied: TacitApplied = { rules: [], elsewhere: [] }) {
   const calls: string[] = [];
   const ledger: TacitLedger = {
     enabled: true,
@@ -319,7 +319,7 @@ function fakeLedger(show: (id: string) => Promise<TacitEntryDetail | null>) {
     show: async (id) => { calls.push(`show ${id}`); return show(id); },
     verdict: async () => { calls.push("verdict"); },
     rules: async () => [],
-    applied: async () => ({ rules: [], elsewhere: [] }),
+    applied: async () => { calls.push("applied"); return applied; },
   };
   return { ledger, calls };
 }
@@ -332,12 +332,12 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
     const p = await page(f.ledger);
     expect(await p.entry("?id=C-012")).toEqual({
       status: 200,
-      value: { id: "C-012", error: null, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, quotes: ["keep --json"], root_reason: "renames skip callers", scope: "CLI" } },
+      value: { id: "C-012", error: null, retire: null, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, quotes: ["keep --json"], root_reason: "renames skip callers", scope: "CLI" } },
     });
     const bare = fakeLedger(async (id) => ({ id, kind: "edit-asset", target: "prompts/review.md" }));
     expect((await (await page(bare.ledger)).entry("?id=P-20261103-34e9")).value.detail).toEqual({ id: "P-20261103-34e9", kind: "edit-asset", target: "prompts/review.md" });
-    // The detail is read on demand only, and the read calls nothing but show.
-    expect(f.calls).toEqual(["show C-012"]);
+    // The detail is read on demand only, and the read calls nothing but show and, for a class, the rules file.
+    expect(f.calls).toEqual(["show C-012", "applied"]);
   });
 
   it("passes every text of the detail through the Withholder", async () => {
@@ -351,7 +351,7 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
   });
 
   it("a show that returns nothing gives no detail; one that throws gives no detail and its error", async () => {
-    expect((await (await page(fakeLedger(async () => null).ledger)).entry("?id=C-012")).value).toEqual({ id: "C-012", detail: null, error: null });
+    expect((await (await page(fakeLedger(async () => null).ledger)).entry("?id=C-012")).value).toEqual({ id: "C-012", detail: null, error: null, retire: null });
     const broken = fakeLedger(async () => { throw new Error("evolve show exited 5: ledger locked"); });
     const v = (await (await page(broken.ledger)).entry("?id=C-012")).value;
     expect(v).toMatchObject({ id: "C-012", detail: null });
@@ -364,7 +364,7 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
     for (const q of ["", "?id=", "?id=t1"]) expect((await p.entry(q)).status).toBe(400);
     expect(f.calls).toEqual([]);
     for (const tacit of [new NoTacitLedger(), undefined]) {
-      expect(await (await page(tacit)).entry("?id=C-012")).toEqual({ status: 200, value: { id: "C-012", detail: null, error: null } });
+      expect(await (await page(tacit)).entry("?id=C-012")).toEqual({ status: 200, value: { id: "C-012", detail: null, error: null, retire: null } });
     }
   });
 
@@ -535,6 +535,128 @@ describe("Rules page: POST /api/v1/rules/verdict", SPAWNS, () => {
     expect(await (await page(s.ledger)).post({ id: "C-012", verdict: "hold", reason: "x" })).toMatchObject({
       status: 502, value: { error: expect.stringContaining("tacit verdict exited 3: ledger locked") },
     });
+  });
+});
+
+/** A rules file with three applied rules: C-001 judged long ago, C-002 covering it, C-003 naming a path this repo lacks. */
+const APPLIED_MD = [
+  "# Rules", "",
+  "## C-001 summary first", "- 기본값: Open every summary with one line.", "- 근거: 인시던트 T-1, T-2 / 판정일 2025-11-01", "",
+  "## C-002 summaries", "- 기본값: Open every summary with one line. Then the detail.", "- 근거: 인시던트 T-3 / 판정일 2025-12-20", "",
+  "## C-003 old store", "- 기본값: Keep src/impl/old-gone-store.ts small.", "- 범위: src/core/rule-retirement.ts", "",
+  "## 다른 곳에 인코딩된 규칙", "- C-009 → CLAUDE.md", "",
+].join("\n");
+const APPLIED_ENTRIES: Entry[] = [
+  { id: "C-001", title: "summary first", state: "promoted" },
+  { id: "C-002", title: "summaries", state: "promoted" },
+  { id: "C-003", title: "old store", state: "promoted" },
+];
+
+describe("Rules page: retire suggestions (the Suggest button's reads)", SPAWNS, () => {
+  it("an applied class gets its reasons: stale, covered by another rule, a path this repo lacks; a rule that meets none gets []", async () => {
+    const s = stubHome([...PENDING, ...APPLIED_ENTRIES]);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    const p = await page(s.ledger);
+    // The stub's evolve show lists no incident rows: no new incident since C-001 was judged (61 days before the clock's today).
+    expect((await p.entry("?id=C-001")).value.retire).toEqual(["no new incident for 61 days since judged on 2025-11-01", "covered by C-002"]);
+    expect((await p.entry("?id=C-002")).value.retire).toEqual([]);
+    expect((await p.entry("?id=C-003")).value.retire).toEqual(["names src/impl/old-gone-store.ts, which this repo does not have"]);
+    // A pending class or a proposal is no applied rule: no suggestion.
+    expect((await p.entry("?id=C-012")).value.retire).toBeNull();
+    expect((await p.entry("?id=P-0007")).value.retire).toBeNull();
+  });
+
+  it("a class with a new incident since it was judged is not stale; a failed show still gives the other signals", async () => {
+    const rule = { id: "C-001", name: "a", default: "Open every summary with one line.", incidents: ["T-1"], judged: "2025-11-01" };
+    const newer = fakeLedger(async (id) => ({ id, incidents: 2 }), { rules: [rule], elsewhere: [] });
+    expect((await (await page(newer.ledger)).entry("?id=C-001")).value.retire).toEqual([]);
+    const broken = fakeLedger(async () => { throw new Error("evolve show exited 5"); }, { rules: [rule, { id: "C-002", name: "b", default: rule.default }], elsewhere: [] });
+    expect((await (await page(broken.ledger)).entry("?id=C-001")).value).toMatchObject({ detail: null, retire: ["covered by C-002"] });
+  });
+
+  it("reading the page and every suggestion leaves the rules file bytes, the ledger and the verdict CLIs untouched", async () => {
+    const s = stubHome([...PENDING, ...APPLIED_ENTRIES]);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    const before = readFileSync(s.rulesFile);
+    const entries = s.entries();
+    const p = await page(s.ledger);
+    await p.get();
+    for (const id of ["C-001", "C-002", "C-003"]) expect((await p.entry(`?id=${id}`)).status).toBe(200);
+    await p.get();
+    expect(readFileSync(s.rulesFile).equals(before)).toBe(true);
+    expect(s.entries()).toEqual(entries);
+    expect(s.verdicts()).toEqual([]);
+    expect(s.syncs()).toBe(0);
+    expect(await p.store.listSettingChanges(10)).toEqual([]);
+  });
+
+  it("the plugin none gives no suggestions and no applied rules", async () => {
+    const p = await page(new NoTacitLedger());
+    expect(await p.get()).toMatchObject({ enabled: false, applied: null, retired: null });
+    expect((await p.entry("?id=C-001")).value.retire).toBeNull();
+  });
+});
+
+describe("Rules page: retire through POST /api/v1/rules/verdict", SPAWNS, () => {
+  const retire = (id: string, over: Record<string, unknown> = {}) => ({ id, verdict: "retire", reason: "covered by C-002", ...over });
+
+  it("removes the block, runs tacit verdict <id> retire --reason and sync-agents; the rule leaves Applied and shows under Retired from the ledger", async () => {
+    const s = stubHome([...PENDING, ...APPLIED_ENTRIES]);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    const p = await page(s.ledger);
+    expect((await p.get()).retired).toEqual([]);
+    expect(await p.post(retire("C-001"))).toEqual({ status: 200, value: { id: "C-001", verdict: "retire" } });
+    expect(s.verdicts()).toEqual([["verdict", "C-001", "retire", "--reason", "covered by C-002"]]);
+    expect(s.syncs()).toBe(1);
+    expect(readFileSync(s.rulesFile, "utf8")).not.toContain("## C-001");
+    expect(p.log.lines.map((l) => l.fields)).toEqual([{ id: "C-001", verdict: "retire", actor: OWNER, edited: false }]);
+    // The ledger records the verdict (as the real tacit does); the page reads it back as the Retired list.
+    writeFileSync(join(s.home, "private", "tacit", "ledger.jsonl"), `${JSON.stringify({ type: "verdict", class: "C-001", ts: "2026-11-14T10:00:00Z", decision: "retire", reason: "covered by C-002", by: "owner", rule: "", encoded_to: "" })}\n`);
+    const v = await p.get();
+    expect(v.applied.rules.map((r: { id: string }) => r.id)).toEqual(["C-002", "C-003"]);
+    expect(v.retired).toEqual([{ id: "C-001", reason: "covered by C-002", date: "2026-11-14" }]);
+  });
+
+  it("refuses before any CLI runs: a non-owner (403), a rule field, a proposal, no reason (400)", async () => {
+    const s = stubHome([...PENDING, ...APPLIED_ENTRIES]);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    const other = await page(s.ledger, OTHER);
+    expect(await other.post(retire("C-001"))).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner") } });
+    const p = await page(s.ledger);
+    expect(await p.post(retire("C-001", { text: "x" }))).toMatchObject({ status: 400, value: { error: "only promote of a class (C-) takes a text" } });
+    expect(await p.post(retire("P-0007"))).toMatchObject({ status: 400, value: { error: "only a class (C-) is retired" } });
+    expect((await p.post(retire("C-001", { reason: " " }))).status).toBe(400);
+    expect(s.verdicts()).toEqual([]);
+    expect(s.syncs()).toBe(0);
+    expect(readFileSync(s.rulesFile, "utf8")).toBe(APPLIED_MD);
+  });
+
+  it("a class with no block in rules.md is a 409 with nothing written and no CLI run", async () => {
+    const s = stubHome(PENDING);
+    expect(await (await page(s.ledger)).post(retire("C-012"))).toMatchObject({ status: 409, value: { error: expect.stringContaining("The retire was refused: C-012 has no block") } });
+    expect(readFileSync(s.rulesFile, "utf8")).toBe(RULES_MD);
+    expect(s.verdicts()).toEqual([]);
+  });
+
+  it("a verdict the ledger refuses is a 502, and rules.md is byte-identical to before", async () => {
+    const s = stubHome(APPLIED_ENTRIES);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    writeFileSync(join(s.root, "refuse"), "");
+    const before = readFileSync(s.rulesFile);
+    expect(await (await page(s.ledger)).post(retire("C-001"))).toEqual({ status: 502, value: { error: "The ledger refused the verdict: tacit verdict exited 1: ledger locked" } });
+    expect(readFileSync(s.rulesFile).equals(before)).toBe(true);
+    expect(s.syncs()).toBe(0);
+  });
+
+  it("a sync-agents that fails after the verdict is a 502 that says the verdict was recorded; the block stays removed", async () => {
+    const s = stubHome(APPLIED_ENTRIES);
+    writeFileSync(s.rulesFile, APPLIED_MD);
+    writeFileSync(join(s.root, "sync-fail"), "");
+    expect(await (await page(s.ledger)).post(retire("C-001"))).toEqual({
+      status: 502, value: { error: "The verdict was recorded, but sync-agents failed: sync-agents exited 4: agents dir locked" },
+    });
+    expect(s.verdicts()).toHaveLength(1);
+    expect(readFileSync(s.rulesFile, "utf8")).not.toContain("## C-001");
   });
 });
 

@@ -1,6 +1,6 @@
-import type { TacitApplied, TacitEntryDetail, TacitLedger, TacitPendingEntry, TacitRule } from "../../interfaces/tacit-ledger.js";
+import type { TacitApplied, TacitEntryDetail, TacitLedger, TacitPendingEntry, TacitRetired, TacitRule } from "../../interfaces/tacit-ledger.js";
 
-/** No ledger: captures nothing, lists and shows nothing, judges nothing. The default (docs/plugins/tacit-ledger.md). */
+/** No ledger: captures nothing, lists and shows nothing, judges (and retires) nothing. The default (docs/plugins/tacit-ledger.md). */
 export class NoTacitLedger implements TacitLedger {
   readonly enabled = false;
   async capture(): Promise<void> {}
@@ -16,5 +16,8 @@ export class NoTacitLedger implements TacitLedger {
   }
   async applied(): Promise<TacitApplied> {
     return { rules: [], elsewhere: [] };
+  }
+  async retired(): Promise<readonly TacitRetired[]> {
+    return [];
   }
 }

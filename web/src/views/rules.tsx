@@ -1,6 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { API, type AppliedRule, type RuleDetail, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry } from "../api.js";
+import {
+  API, type AppliedRule, type RetiredRule, type RuleDetail, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry,
+} from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
@@ -24,9 +26,13 @@ import { t } from "../i18n/index.js";
 // else sees the list with the reason. With the ledger off (design 08-settings, 2026-11-12) the page says whether it
 // found the agents home: found, one primary Turn on, which stores the `integrations` entry through POST /api/v1/settings
 // and then loads the rules with no reload; not found, which CLI is missing and how to point AGENTS_HOME at the home.
-// After the waiting groups, an Applied group lists the promoted rules file read-only (design 09-dashboard-app.md,
-// 2026-11-13): each block's ID, name, default, exception, scope, evidence and judged date (a missing part reads "not
-// given"), an unparsable block as raw text, then the encoded-elsewhere lines. Not shown when there are none.
+// After the waiting groups, an Applied group lists the promoted rules file (design 09-dashboard-app.md, 2026-11-14):
+// each block's ID, name, default, exception, scope, evidence and judged date (a missing part reads "not given"), an
+// unparsable block as raw text, then the encoded-elsewhere lines. Not shown when there are none. Its Suggest button
+// reads each applied class's retire suggestions through GET /api/v1/rules/entry?id= (never on page load); a rule with
+// one shows a "Suggested to retire" badge and its reasons, kept until the next press or reload. Every applied class
+// has a Retire action (disabled for anyone but the owner) whose dialog asks for a reason; nothing is retired without
+// it. Then a collapsed Retired list: the ledger's retired classes with reason and date.
 // The app's page title is the one "Rules" heading.
 // One card per entry at every width, so no table turns into cards.
 
@@ -49,6 +55,7 @@ const CONSEQUENCE: Record<RuleVerdict, MessageKey> = {
   promote: "rules.consequencePromote",
   hold: "rules.consequenceHold",
   reject: "rules.consequenceReject",
+  retire: "rules.consequenceRetire",
 };
 
 /** One of the rule's text fields in the promote dialog: a labelled textarea of up to 2000 characters. */
@@ -60,30 +67,21 @@ function RuleText({ id, label, help, value, onChange }: { id: string; label: str
   );
 }
 
-/**
- * The verdict dialog: a reason first, and for promote of a class the rule's wording (prefilled with its title) and its
- * default and exception (prefilled from its draft).
- */
-function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; verdict: RuleVerdict; token: string; onClose: () => void }) {
+/** Sends one verdict from a dialog: on success it says so, reloads the rules and closes; a refusal stays as `error`. */
+function useSendVerdict(token: string, onClose: () => void) {
   const client = useQueryClient();
-  const [reason, setReason] = useState("");
-  const [text, setText] = useState(entry.title);
-  const [dflt, setDefault] = useState(entry.draft?.default ?? "");
-  const [exception, setException] = useState(entry.draft?.exception ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const promote = verdict === "promote" && isClass(entry.id);
-  const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
-  const send = async () => {
+  const send = async (body: Parameters<typeof postRuleVerdict>[1], label: string) => {
     setBusy(true);
     setError(null);
     try {
-      const r = await postRuleVerdict(token, { id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) });
+      const r = await postRuleVerdict(token, body);
       if (!r.ok) {
         setError(r.error);
         return;
       }
-      announceStatus(t("rules.sent", { label: t(VERDICTS.find((v) => v.verdict === verdict)!.label), id: entry.id }));
+      announceStatus(t("rules.sent", { label, id: body.id }));
       await client.invalidateQueries({ queryKey: [API.rules] });
       onClose();
     } catch (err) {
@@ -92,6 +90,30 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
       setBusy(false);
     }
   };
+  return { busy, error, send };
+}
+
+/** The required reason, "Why?", in a verdict's dialog. */
+function ReasonField({ id, value, onChange }: { id: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <Field label={t("rules.why")} htmlFor={`${id}-reason`}>
+      <Textarea id={`${id}-reason`} aria-label={t("rules.reason")} className="min-h-16" value={value} maxLength={1000} onChange={(e) => onChange(e.target.value)} />
+    </Field>
+  );
+}
+
+/**
+ * The verdict dialog: a reason first, and for promote of a class the rule's wording (prefilled with its title) and its
+ * default and exception (prefilled from its draft).
+ */
+function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; verdict: RuleVerdict; token: string; onClose: () => void }) {
+  const [reason, setReason] = useState("");
+  const [text, setText] = useState(entry.title);
+  const [dflt, setDefault] = useState(entry.draft?.default ?? "");
+  const [exception, setException] = useState(entry.draft?.exception ?? "");
+  const { busy, error, send } = useSendVerdict(token, onClose);
+  const promote = verdict === "promote" && isClass(entry.id);
+  const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
@@ -101,7 +123,7 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
       confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes(""))}
       danger={verdict === "reject"}
       error={error}
-      onConfirm={() => void send()}
+      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label)}
       onClose={onClose}
     >
       {promote && (
@@ -111,9 +133,28 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
           <RuleText id={`${entry.id}-exception`} label={t("rules.exception")} value={exception} onChange={setException} />
         </>
       )}
-      <Field label={t("rules.why")} htmlFor={`${entry.id}-reason`}>
-        <Textarea id={`${entry.id}-reason`} aria-label={t("rules.reason")} className="min-h-16" value={reason} maxLength={1000} onChange={(e) => setReason(e.target.value)} />
-      </Field>
+      <ReasonField id={entry.id} value={reason} onChange={setReason} />
+    </Dialog>
+  );
+}
+
+/** Retire of an applied class: the required reason, then the verdict (the server removes the rule's block first). */
+function RetireDialog({ id, token, onClose }: { id: string; token: string; onClose: () => void }) {
+  const [reason, setReason] = useState("");
+  const { busy, error, send } = useSendVerdict(token, onClose);
+  const label = t("rules.retire");
+  return (
+    <Dialog
+      title={t("rules.dialogTitle", { label, id })}
+      consequence={t(CONSEQUENCE.retire)}
+      confirmLabel={t("rules.send", { label: label.toLowerCase() })}
+      confirmDisabled={busy || reason.trim() === ""}
+      danger
+      error={error}
+      onConfirm={() => void send({ id, verdict: "retire", reason: reason.trim() }, label)}
+      onClose={onClose}
+    >
+      <ReasonField id={id} value={reason} onChange={setReason} />
     </Dialog>
   );
 }
@@ -298,40 +339,75 @@ function AppliedPart({ label, value }: { label: MessageKey; value: string | null
 }
 
 /** One promoted block: its ID, name and parts; an unparsable block shows its raw text. */
-function AppliedCard({ rule }: { rule: AppliedRule }) {
-  if (rule.raw !== null) {
+function AppliedCard({ rule, token, round }: { rule: AppliedRule; token: string | null; round: number }) {
+  if (rule.raw !== null || rule.id === null) {
     return (
       <li data-applied-raw className="p-3">
         <pre className="font-mono text-xs break-words whitespace-pre-wrap">{rule.raw}</pre>
       </li>
     );
   }
+  return <AppliedClass rule={rule} id={rule.id} token={token} round={round} />;
+}
+
+/**
+ * An applied class: its parts, its retire suggestions once Suggest was pressed (`round` > 0), and Retire, which opens
+ * the reason dialog; disabled for anyone but the owner (no `token`).
+ */
+function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: string; token: string | null; round: number }) {
+  const [retiring, setRetiring] = useState(false);
+  const suggested = useRuleEntry(id, round > 0, round).data?.retire ?? [];
   return (
-    <li data-applied={rule.id} className="space-y-1 p-3">
-      <span className="font-mono text-xs break-all text-text-2">{rule.id}</span>
+    <li data-applied={id} className="space-y-1 p-3">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="font-mono text-xs break-all text-text-2">{id}</span>
+        {suggested.length > 0 && <Badge level="needs_approval">{t("rules.suggested")}</Badge>}
+      </div>
       <p className="text-sm font-medium text-pretty break-words">{rule.name}</p>
+      {suggested.length > 0 && (
+        <ul data-suggested className="space-y-0.5">
+          {suggested.map((r) => (
+            <li key={r} className={muted}>
+              {r}
+            </li>
+          ))}
+        </ul>
+      )}
       <AppliedPart label="rules.appliedDefault" value={rule.default} />
       <AppliedPart label="rules.appliedException" value={rule.exceptions} />
       <AppliedPart label="rules.appliedScope" value={rule.scope} />
       <AppliedPart label="rules.appliedIncidents" value={rule.incidents === null ? null : rule.incidents.join(", ")} />
       <AppliedPart label="rules.appliedJudged" value={rule.judged} />
+      <ButtonRow className="pt-1">
+        <Button variant="danger" disabled={token === null} title={token === null ? t("rules.retireOwner") : undefined} onClick={() => setRetiring(true)}>
+          {t("rules.retire")}
+        </Button>
+      </ButtonRow>
+      {retiring && token !== null && <RetireDialog id={id} token={token} onClose={() => setRetiring(false)} />}
     </li>
   );
 }
 
-/** The promoted rules and the encoded-elsewhere lines, read-only; not shown when there are none. */
-function Applied({ applied }: { applied: NonNullable<RulesView["applied"]> }) {
+/** The promoted rules and the encoded-elsewhere lines, with Suggest; not shown when there are none. */
+function Applied({ applied, token }: { applied: NonNullable<RulesView["applied"]>; token: string | null }) {
   const { rules, elsewhere } = applied;
+  // Each Suggest press is a new round of reads; 0 until the first press.
+  const [round, setRound] = useState(0);
   if (rules.length === 0 && elsewhere.length === 0) return null;
+  const suggest = rules.some((r) => r.raw === null && r.id !== null) && (
+    <Button size="sm" onClick={() => setRound(round + 1)}>
+      {t("rules.suggest")}
+    </Button>
+  );
   return (
-    <Section title={t("rules.groupApplied")} count={rules.length}>
+    <Section title={t("rules.groupApplied")} count={rules.length} action={suggest}>
       <p data-group-line className={`mb-2 ${muted}`}>
         {t("rules.groupAppliedLine")}
       </p>
       {rules.length > 0 && (
         <ul aria-label={t("rules.groupApplied")} className="divide-y divide-border rounded-control border border-border">
           {rules.map((r, i) => (
-            <AppliedCard key={r.id ?? `raw${i}`} rule={r} />
+            <AppliedCard key={r.id ?? `raw${i}`} rule={r} token={token} round={round} />
           ))}
         </ul>
       )}
@@ -347,6 +423,26 @@ function Applied({ applied }: { applied: NonNullable<RulesView["applied"]> }) {
           </ul>
         </div>
       )}
+    </Section>
+  );
+}
+
+/** The ledger's retired classes, newest first, in a collapsed list with reason and date; not shown when there are none. */
+function Retired({ retired }: { retired: RetiredRule[] }) {
+  if (retired.length === 0) return null;
+  return (
+    <Section title={t("rules.groupRetired")} count={retired.length}>
+      <details data-retired>
+        <summary className="cursor-pointer text-xs text-pretty text-text-2">{t("rules.retiredShow")}</summary>
+        <ul aria-label={t("rules.groupRetired")} className="mt-2 divide-y divide-border rounded-control border border-border">
+          {retired.map((r) => (
+            <li key={r.id} data-retired-rule={r.id} className="space-y-1 p-3">
+              <span className="font-mono text-xs break-all text-text-2">{r.id}</span>
+              <p className={line}>{t("rules.retiredOn", { date: r.date, reason: r.reason })}</p>
+            </li>
+          ))}
+        </ul>
+      </details>
     </Section>
   );
 }
@@ -388,7 +484,8 @@ export function RulesPage() {
           )
         );
       })}
-      {v.applied !== null && <Applied applied={v.applied} />}
+      {v.applied !== null && <Applied applied={v.applied} token={token} />}
+      {v.retired && <Retired retired={v.retired} />}
       <p className={`mt-3 ${muted}`}>
         {t("rules.footer")}
       </p>

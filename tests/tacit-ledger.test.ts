@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
-import { parseApplied, parseDraft, parsePending, parseShow } from "../src/impl/tacit/ledger-text.js";
+import { parseApplied, parseDraft, parsePending, parseShow, withoutRuleBlock } from "../src/impl/tacit/ledger-text.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import { REGISTRY, createPlugin, defaultPlugins } from "../src/plugins.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
@@ -499,16 +499,14 @@ describe("plugin agents-home", () => {
     expect(await new NoTacitLedger().show()).toBeNull();
   });
 
-  it("a verdict on a C- ID other than promote runs tacit verdict with no rule; each value is its own argv item, no shell", async () => {
+  it("a hold or reject on a C- ID runs tacit verdict with no rule; each value is its own argv item, no shell", async () => {
     const s = stubHome();
     const ledger = new AgentsHomeTacitLedger(s.home);
     const reason = "seen twice; $(touch pwned) `id`";
-    await ledger.verdict("C-013", "retire", reason, RULE);
-    await ledger.verdict("C-014", "hold", "wait");
+    await ledger.verdict("C-014", "hold", reason, RULE);
     await ledger.verdict("C-015", "reject", "not for code");
     expect(s.argv()).toEqual([
-      `tacit|verdict|C-013|retire|--reason|${reason}`,
-      "tacit|verdict|C-014|hold|--reason|wait",
+      `tacit|verdict|C-014|hold|--reason|${reason}`,
       "tacit|verdict|C-015|reject|--reason|not for code",
     ]);
     expect(existsSync(join(s.home, "pwned"))).toBe(false);
@@ -749,6 +747,100 @@ describe("plugin agents-home: promote of a class encodes the rule", () => {
     rmSync(join(dir, "rule-candidates.md"));
     utimesSync(join(dir, "ledger.jsonl"), later, later);
     expect((await s.ledger.pending())[1]!.judged).toBeUndefined();
+  });
+});
+
+describe("plugin agents-home: retire of a class removes its block", () => {
+  const RULES = (home: string) => join(home, "private", "tacit", "rules.md");
+  /** RULES_SAMPLE with a second rule, C-012, before the encoded-elsewhere heading. */
+  const TWO = RULES_SAMPLE.replace("## 다른 곳에 인코딩된 규칙", "## C-012 keep CLI flags\n- 기본값: Keep every flag.\n- 근거: 인시던트 T-0101 / 판정일 2026-10-01\n\n## 다른 곳에 인코딩된 규칙");
+  const withRules = (text = TWO) => {
+    const s = stubHome();
+    mkdirSync(join(s.home, "private", "tacit"), { recursive: true });
+    writeFileSync(RULES(s.home), text);
+    return { ...s, ledger: new AgentsHomeTacitLedger(s.home, TACIT_CLI_TIMEOUT_MS, TODAY) };
+  };
+
+  it("removes the ## <C-id> block, then runs tacit verdict <id> retire --reason <reason>, then sync-agents", async () => {
+    const s = withRules();
+    const reason = "covered by C-001; $(touch pwned)";
+    await s.ledger.verdict("C-012", "retire", reason);
+    expect(readFileSync(RULES(s.home), "utf8")).toBe(RULES_SAMPLE);
+    expect(s.argv()).toEqual([`tacit|verdict|C-012|retire|--reason|${reason}`, "sync-agents"]);
+    expect(existsSync(join(s.home, "pwned"))).toBe(false);
+    expect((await s.ledger.applied()).rules.map((r) => r.id)).toEqual(["C-001"]);
+  });
+
+  it("the block text: removed up to the next heading or the end; other bytes kept; no block is null", () => {
+    expect(withoutRuleBlock("# R\r\n\r\n## C-1 a\r\n- 기본값: b\r\n\r\n## C-2 c\r\n", "C-1")).toBe("# R\r\n\r\n## C-2 c\r\n");
+    expect(withoutRuleBlock("## C-1 a\n## C-2 c\n- 기본값: d", "C-2")).toBe("## C-1 a\n");
+    expect(withoutRuleBlock("## C-10 a\n", "C-1")).toBeNull();
+  });
+
+  it("a verdict the ledger refuses puts rules.md back byte for byte, and sync-agents does not run", async () => {
+    const s = withRules();
+    const before = readFileSync(RULES(s.home));
+    s.control("refuse", true);
+    await expect(s.ledger.verdict("C-012", "retire", "r")).rejects.toThrow(/^tacit verdict exited 1: ledger locked$/);
+    expect(readFileSync(RULES(s.home)).equals(before)).toBe(true);
+    expect(s.argv().map((l) => l.split("|")[0])).toEqual(["tacit"]);
+  });
+
+  it("a sync-agents that fails after the verdict keeps the removal and throws TacitSyncFailed", async () => {
+    const s = withRules();
+    s.control("sync", true);
+    const err = await s.ledger.verdict("C-012", "retire", "r").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TacitSyncFailed);
+    expect(readFileSync(RULES(s.home), "utf8")).toBe(RULES_SAMPLE);
+    expect(s.argv().map((l) => l.split("|")[0])).toEqual(["tacit", "sync-agents"]);
+  });
+
+  it("refuses with nothing written and no CLI run: no block for the class, no rules file, a file outside the home", async () => {
+    const refused = async (s: ReturnType<typeof withRules>, pattern: RegExp) => {
+      const before = snapshot(s.home);
+      const err = await s.ledger.verdict("C-012", "retire", "r").catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(TacitRefusal);
+      expect((err as Error).message).toMatch(pattern);
+      expect(snapshot(s.home)).toEqual(before);
+      expect(s.argv()).toEqual([]);
+    };
+    await refused(withRules(RULES_SAMPLE), /C-012 has no block in private\/tacit\/rules\.md/);
+    const gone = withRules();
+    rmSync(RULES(gone.home));
+    await refused(gone, /no private\/tacit\/rules\.md/);
+    const away = withRules();
+    const outside = join(away.root, "outside.md");
+    writeFileSync(outside, TWO);
+    rmSync(RULES(away.home));
+    symlinkSync(outside, RULES(away.home));
+    await refused(away, /resolves outside the agents home/);
+    expect(readFileSync(outside, "utf8")).toBe(TWO);
+  });
+
+  it("retired lists each class whose newest ledger verdict is a retire, newest first, with its reason and day; it writes nothing", async () => {
+    const s = withRules();
+    expect(await s.ledger.retired()).toEqual([]);
+    const line = (cls: string, ts: string, decision: string, reason = "r") => JSON.stringify({ type: "verdict", class: cls, ts, decision, reason, by: "owner", rule: "", encoded_to: "" });
+    writeFileSync(join(s.home, "private", "tacit", "ledger.jsonl"), [
+      line("C-001", "2026-11-10T10:00:00Z", "promote"),
+      line("C-001", "2026-11-12T10:00:00Z", "retire", "covered by C-012"),
+      line("C-003", "2026-11-13T10:00:00Z", "retire", "no new incident for 40 days since judged on 2026-10-01"),
+      line("C-004", "2026-11-11T10:00:00Z", "retire"),
+      line("C-004", "2026-11-12T11:00:00Z", "promote"), // promoted again: not retired
+      "not json",
+    ].join("\n"));
+    const before = snapshot(s.home);
+    expect(await s.ledger.retired()).toEqual([
+      { id: "C-003", reason: "no new incident for 40 days since judged on 2026-10-01", date: "2026-11-13" },
+      { id: "C-001", reason: "covered by C-012", date: "2026-11-12" },
+    ]);
+    expect(snapshot(s.home)).toEqual(before);
+  });
+
+  it("the plugin none retires nothing and lists none", async () => {
+    const none = new NoTacitLedger();
+    await expect(none.verdict()).resolves.toBeUndefined();
+    expect(await none.retired()).toEqual([]);
   });
 });
 

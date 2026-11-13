@@ -7,7 +7,7 @@
 // (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
 
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { t } from "./i18n/index.js";
 
 /** The supervisor's status (the status page's banner); null when the factory is stopped. */
@@ -638,11 +638,22 @@ export interface RuleDetail {
   scope?: string;
 }
 
-/** `/api/v1/rules/entry?id=`: `detail` null when the ledger gave none; `error` a failed read, or null. */
+/**
+ * `/api/v1/rules/entry?id=`: `detail` null when the ledger gave none; `error` a failed read, or null. `retire`: an
+ * applied class's reasons to retire it ([] for none), null for any other entry (absent from an older server).
+ */
 export interface RuleEntryView {
   id: string;
   detail: RuleDetail | null;
   error: string | null;
+  retire?: string[] | null;
+}
+
+/** One retired class from the ledger's retire verdicts: the owner's reason and the day (YYYY-MM-DD). */
+export interface RetiredRule {
+  id: string;
+  reason: string;
+  date: string;
 }
 
 /** One promoted block of the rules file (Applied group); a part it lacks is null, an unparsable block has only `raw`. */
@@ -668,6 +679,8 @@ export interface RulesView {
   entries: RuleRow[];
   /** The rules file's blocks and encoded-elsewhere lines; null with the ledger off. */
   applied: { rules: AppliedRule[]; elsewhere: string[] } | null;
+  /** The retired classes, newest first; null with the ledger off (absent from an older server). */
+  retired?: RetiredRule[] | null;
   error: string | null;
   csrf_token: string | null;
   judge: string | null;
@@ -675,7 +688,7 @@ export interface RulesView {
   turn_on: string | null;
 }
 
-export type RuleVerdict = "promote" | "reject" | "hold";
+export type RuleVerdict = "promote" | "reject" | "hold" | "retire";
 
 /** One open plain task on the Tasks page (design 02-tasks, issue #607). */
 export interface TaskRow {
@@ -970,10 +983,13 @@ export function useDoneTasks() {
   });
 }
 
-/** One entry's detail, read once when `enabled` turns true (a card opens), never polled. */
-export function useRuleEntry(id: string, enabled: boolean) {
+/**
+ * One entry's detail, read once when `enabled` turns true (a card opens, or Suggest is pressed), never polled. Each
+ * `round` (a Suggest press) reads it again, and the last round's answer stays shown while the next one loads.
+ */
+export function useRuleEntry(id: string, enabled: boolean, round = 0) {
   const url = API.ruleEntry(id);
-  return useQuery({ queryKey: [url], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity });
+  return useQuery({ queryKey: [url, round], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity, placeholderData: keepPreviousData });
 }
 
 /** A JSON POST with the CSRF token: the status and the parsed body ({} when the body is not JSON). */
@@ -1031,7 +1047,7 @@ export async function postStanding(
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default and exception. */
+/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default and exception (retire takes none). */
 export async function postRuleVerdict(
   token: string,
   body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string },
