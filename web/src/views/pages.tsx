@@ -17,10 +17,10 @@ import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, NeedsGroups, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
+import { ItemsTable, MergeCheckNote, NeedsGroups, needsYou, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { FloorNotes } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -182,7 +182,7 @@ export function NeedsYouPage() {
   const rows = items.data?.items ?? [];
   const titles = useMemo(() => byId(items.data?.items), [items.data]);
   // One row per item that waits on the operator; an item started past a deadlock goes on by itself (decision 1).
-  const needs = rows.filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level) && i.why?.code !== "deadlock");
+  const needs = needsYou(rows);
   const deadlocks = rows.filter((i) => i.why?.code === "deadlock").length;
   const o = overview.data;
   const factory = o?.factory;

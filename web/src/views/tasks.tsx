@@ -17,6 +17,7 @@ import { QUICK_ADD_ATTR, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
+import { FactoryWork, WorkState } from "./task-work.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's open plain tasks, read through GET
 // /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then today's tasks and calendar
@@ -376,9 +377,12 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
       </div>
       <div className="flex items-start gap-2">
         {task.work_item_id !== null ? (
-          <Link href={itemPath(task.work_item_id)} className={cn(LINK_CLASS, "font-mono text-xs break-all")}>
-            {task.work_item_id}
-          </Link>
+          <>
+            <WorkState id={task.work_item_id} title={task.title} />
+            <Link href={itemPath(task.work_item_id)} className={cn(LINK_CLASS, "font-mono text-xs break-all")}>
+              {task.work_item_id}
+            </Link>
+          </>
         ) : (
           token !== null && <BuildButton task={task} token={token} />
         )}
@@ -651,6 +655,7 @@ export function TasksPage() {
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
   return (
     <>
+      <FactoryWork />
       <QuickAdd token={v?.csrf_token ?? null} />
       {undo.error !== null && (
         <p role="alert" className={ALERT}>

@@ -8,7 +8,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { LEVEL_LABELS, ago, isHttpUrl, isWorkerId, shortSource, stateAndNext, until, workerName } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, isWorkerId, shortSource, stateAndNext, until, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { NeedActions, useCommandSend } from "./item-commands.js";
@@ -160,6 +160,10 @@ export function WhyText({ why, items, onRetry }: { why: Pick<Why, "text" | "refs
 
 /** What a Needs-you row asks of the owner: merge a PR, approve a spec, or answer or fix (everything else). */
 export type NeedGroup = "merge" | "approve" | "answer";
+
+/** The items that wait on the owner: one row each; an item started past a deadlock goes on by itself. */
+export const needsYou = (items: readonly ItemRow[]): ItemRow[] =>
+  items.filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level) && i.why?.code !== "deadlock");
 
 export function needGroup(it: ItemRow): NeedGroup {
   if (showsMerge(it.merge) || it.level === "ready_to_merge") return "merge";
