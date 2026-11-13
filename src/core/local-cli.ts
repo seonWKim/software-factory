@@ -7,7 +7,7 @@ import { MERGE_COMMAND } from "./local-merge.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf, commandLine, topWords } from "./command-table.js";
 import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
 import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
-import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
+import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, isProposalId, openItems, typed } from "./interpret.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
 import { type TaskEdit, type TaskFields, taskLine } from "./tasks.js";
 import { buildTask, createLocalItem } from "./task-build.js";
@@ -400,8 +400,8 @@ export function parseSentence(args: readonly string[]): { text: string } | { err
 }
 
 /**
- * Reads `text` as a message on no item: the role check, the egress scan of the words, one model call over the open
- * items, the egress scan of the answer; then a `commands` answer's proposals are stored pending under one new proposal
+ * Reads `text` as a message on no item: the role check, the egress scan of the words, the plain/command label then
+ * the interpreter over the open items (interpretMessage; `plain` proposes nothing), the egress scan of the answer; then a `commands` answer's proposals are stored pending under one new proposal
  * ID (`prop_` and the random ID's letters and digits) and printed as typed lines. Any other answer is printed as a
  * plain reply would read, without its hidden marker; nothing is stored.
  */
@@ -411,7 +411,7 @@ export async function runSentence(d: SentenceDeps, text: string): Promise<CliRes
   if (refused !== null) return fail(`not read: ${refused}`);
   if (!(await d.scanner.scan("comment", text)).clean) return fail("not read: the words did not pass the egress scan, so they were not sent to the model");
   const items = openItems(await d.store.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
-  const result = await interpret(text, items, d.llm, "top_level");
+  const result = await interpretMessage(text, items, d.llm, "top_level");
   for (const t of interpretTexts(result)) if (!(await d.scanner.scan("comment", t)).clean) return fail("the model's answer did not pass the egress scan, so it is not shown");
   if (result.kind === "request") return { code: 0, lines: ["That reads as a work request, so nothing has changed: create it with `factory task create --title <t> --body-file <f>`."] };
   if (result.kind !== "commands") {
