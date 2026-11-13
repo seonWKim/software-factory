@@ -767,7 +767,7 @@ export class LiveSettings {
       ...this.opts.config,
       ...(live ? { coordination } : {}),
       intake_label: v.intake_label ?? this.opts.config.intake_label, // null: no file value and no override, the config's own stays
-      settings: r.layers, tool_grants: v.tool_grants, // the grants in force: the file's, else an override (design 08-settings)
+      settings: r.layers, ...(r.global.tool_grants.source === "default" ? {} : { tool_grants: v.tool_grants }), // grants in force: an override, else the file's
       ...(Object.fromEntries(CONFIG_KEYS.map((k) => [k, v[k]])) as Pick<SettableValues, (typeof CONFIG_KEYS)[number]>),
     };
   }

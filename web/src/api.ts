@@ -451,6 +451,32 @@ export interface SettingsView {
   auto_stop?: AutoStop | null;
 }
 
+/**
+ * One entry of the Settings page's Capabilities list (design 08-settings, 2026-11-13): a skill, a broker tool or a provider
+ * entry. `id` names it (`runner:claude-code`); `last_used` is the newest stored run that used it, null when none did.
+ */
+export interface CapabilityRow {
+  kind: "skill" | "tool" | "provider";
+  id: string;
+  name: string;
+  /** A skill's folder, a tool's description, a provider's endpoint host; null when there is none. */
+  detail: string | null;
+  enabled: boolean;
+  roles: string[];
+  last_used: string | null;
+  read_only?: boolean;
+  /** A provider entry's model per class: the names `model_by` picks between. */
+  models?: { class: string; model: string }[];
+}
+
+/** `/api/v1/settings/capabilities`. */
+export interface CapabilitiesView {
+  as_of: string;
+  /** The roles a tool may be granted to (the `tool_grants` keys). */
+  roles: string[];
+  capabilities: CapabilityRow[];
+}
+
 /** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */
 export interface IntegrationRow {
   kind: string;
@@ -796,6 +822,7 @@ export const API = {
   spend: "/api/v1/spend",
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
+  capabilities: "/api/v1/settings/capabilities",
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",

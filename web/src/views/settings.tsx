@@ -14,6 +14,7 @@ import { ago, duration } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
+import { CapabilitiesSection } from "./settings-capabilities.js";
 import { FileKeysSection, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
 import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 
@@ -27,6 +28,7 @@ import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 // and a quiet-hours field. Integrations (design 08-settings, 2026-11-12) lists each integration with the plugin in force;
 // its Switch removes the dashboard's choice, so factory.config.json decides again. The file-only keys have their own typed
 // form (settings-file-keys.tsx), saved on a local branch the owner merges; the PR-only table keeps the remaining keys.
+// Capabilities (settings-capabilities.tsx, design 08-settings 2026-11-13) lists skills, tools and providers, read only.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
@@ -656,6 +658,7 @@ export function SettingsPage() {
       <ModeSection view={v} />
       <NoticesSection view={v} />
       <IntegrationsSection view={v} />
+      <CapabilitiesSection />
       <PageCommands />
       <Section title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
