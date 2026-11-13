@@ -4,7 +4,7 @@
 // No CLI or chat logic: the methods take plain arguments, so an HTTP route can call them too.
 
 import {
-  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type NewTask, type Recurrence, type Task, type TaskEdit, type TaskPriority,
+  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type NewTask, type Recurrence, type ReopenTaskResult, type Task, type TaskEdit, type TaskPriority,
   type TaskTime, type UpdateTaskResult, applyTaskEdit, dueDate, nextDueDate, reminderDays, reminderDue,
 } from "../../../core/tasks.js";
 import type { NewNotice } from "../../../core/notifications.js";
@@ -128,6 +128,27 @@ async function complete(db: SqlDriver, tx: SqlExecutor, id: string, now: Timesta
 
 export async function completeTask(db: SqlDriver, id: string, now: Timestamp): Promise<CompleteTaskResult> {
   return db.transaction((tx) => complete(db, tx, id, now));
+}
+
+/**
+ * In one transaction: done_at back to NULL where it is set, after deleting the recurring task's next occurrence (its
+ * sub-tasks moved under this task, the same series) while that one is open; a done next occurrence refuses it, writing
+ * nothing. A second reopen finds the task open and writes nothing.
+ */
+export async function reopenTask(db: SqlDriver, id: string): Promise<ReopenTaskResult> {
+  return db.transaction(async (tx) => {
+    const task = await select(tx, "id", id);
+    if (task === null) return { ok: false, reason: "not_found" } as const;
+    if (task.done_at === null) return { ok: true, task, reopened: false, removed_next: null } as const;
+    const next = await select(tx, "parent_id", id);
+    if (next !== null && next.done_at !== null) return { ok: false, reason: "next_done", next } as const;
+    if (next !== null) {
+      await tx.run("UPDATE controller_tasks SET parent_task_id = ? WHERE parent_task_id = ?", [id, next.id]);
+      await tx.run("DELETE FROM controller_tasks WHERE id = ? AND done_at IS NULL", [next.id]);
+    }
+    const reopened = (await tx.run("UPDATE controller_tasks SET done_at = NULL WHERE id = ? AND done_at IS NOT NULL", [id])) === 1;
+    return { ok: true, task: (await select(tx, "id", id))!, reopened, removed_next: next?.id ?? null } as const;
+  });
 }
 
 /** Read-only: the open, timed, unreminded tasks of the lookback's days, then those whose time has come (reminderDue). */

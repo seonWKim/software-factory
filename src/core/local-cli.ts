@@ -15,7 +15,7 @@ import { buildTask, createLocalItem } from "./task-build.js";
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
  * creates a local work item with its triage run queued; `task add` stores a plain task from quick-add words and `task
- * done` completes one, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
+ * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
  * work item, no triage); `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
@@ -99,6 +99,7 @@ export type CliAction =
   | { action: "create"; title: string; bodyFile: string }
   | { action: "add"; task: TaskFields }
   | { action: "done"; id: string }
+  | { action: "reopen"; id: string }
   | { action: "edit"; id: string; edit: TaskEdit }
   | { action: "delete"; id: string }
   | { action: "sub"; parent: string; task: TaskFields }
@@ -154,6 +155,7 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
     }
     if (sub === "delete") return rest.length === 1 && rest[0] ? { action: "delete", id: rest[0] } : bad("task delete needs one task ID");
     if (sub === "done") return rest.length === 1 && rest[0] ? { action: "done", id: rest[0] } : bad("task done needs one task ID");
+    if (sub === "reopen") return rest.length === 1 && rest[0] ? { action: "reopen", id: rest[0] } : bad("task reopen needs one task ID");
     if (sub === "build") return rest.length === 1 && rest[0] ? { action: "build", id: rest[0] } : bad("task build needs one task ID");
     if (sub === "show") return rest.length === 1 && rest[0] ? { action: "show", id: rest[0] as WorkItemId } : bad("task show needs one work item ID");
     if (sub === "create") {
@@ -212,7 +214,7 @@ export interface LocalCliDeps {
   store: Pick<
     FactoryStore,
     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
-    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask" | "listCommandProposals"
+    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
   >;
   /** Who every command acts as (`cliIdentity`). */
@@ -272,6 +274,12 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!r.ok) return fail(`no task ${a.id}`);
       const done = r.completed ? `done ${a.id}` : `${a.id} was already done`;
       return { code: 0, lines: [done, ...(r.next ? [`next: ${taskLine(r.next)}`] : [])] };
+    }
+    case "reopen": {
+      const r = await d.store.reopenTask(a.id);
+      if (!r.ok) return fail(r.reason === "next_done" ? `${a.id}'s next occurrence ${r.next.id} is done: reopen that one first` : `no task ${a.id}`);
+      if (!r.reopened) return { code: 0, lines: [`${a.id} was not done`] };
+      return { code: 0, lines: [`reopened ${a.id}`, ...(r.removed_next ? [`removed its next occurrence ${r.removed_next}`] : [])] };
     }
     case "edit": {
       const r = await d.store.updateTask(a.id, a.edit);

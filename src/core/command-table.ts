@@ -79,6 +79,11 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     prints: "that it is done (or already was), and the next occurrence", chat: "task done <task_id>", chat_args: "id", item: false, edge: false,
   },
   {
+    name: "task reopen", args: "<task_id>", who: "submit_work", group: "task",
+    does: "Undo a plain task's completion; a recurring one's next occurrence is removed while it is open, and the undo is refused once that is done",
+    prints: "that it is open again (or was not done), and the next occurrence it removed", chat: "task reopen <task_id>", chat_args: "id", item: false, edge: false,
+  },
+  {
     name: "task edit", args: "<task_id> <words>", who: "submit_work", group: "task",
     does: "Edit an open plain task with quick-add words: only the fields they name change, and words with no title keep the title",
     prints: "the edited task", chat: "task edit <task_id> <words>", chat_args: "any", item: false, edge: false,
