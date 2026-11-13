@@ -14,7 +14,7 @@
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
-// /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts and GET /api/v1/rules in rules-api.ts; errors as JSON) and the app under /app (app.ts; its own
+// /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts and GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -29,7 +29,7 @@ import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { USERS_PATH, writeUsers } from "./users-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
 import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
-import { RULES_PATH, RULE_VERDICT_PATH, readRules, writeRuleVerdict } from "./rules-api.js";
+import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
@@ -228,6 +228,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     // The Rules page's read (issue #571) and the Tasks page's (#607) are served here beside the notices, so api.ts stays within its size budget.
     const r = url.pathname === NOTICES_PATH ? await readNotices(d)
       : url.pathname === RULES_PATH ? await readRules(d)
+      : url.pathname === RULE_ENTRY_PATH ? await readRuleEntry(d, url.searchParams.get("id"))
       : url.pathname === TASKS_PATH ? await readTasks(d)
       : await api(d, url);
     return json(r.status, r.value);

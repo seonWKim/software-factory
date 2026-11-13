@@ -24,9 +24,9 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { AgentsHomeTacitLedger, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
-import type { TacitLedger } from "../src/interfaces/tacit-ledger.js";
+import type { TacitEntryDetail, TacitLedger } from "../src/interfaces/tacit-ledger.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import type { UiTacit } from "../src/ui/rules-api.js";
+import { type UiTacit, uiTacit } from "../src/ui/rules-api.js";
 import type { PauseDeps, UiPauses } from "../src/ui/pause-api.js";
 import { type UiRequest, respond } from "../src/ui/server.js";
 import { type UiSettings, newCsrfToken } from "../src/ui/settings-api.js";
@@ -137,7 +137,7 @@ const fixed = (ledger: TacitLedger): UiTacit => ({
  * The Rules page's deps. `tacit`: a fixed ledger, or `{ agentsHome }` for the UI's live holder as compose.ts builds it
  * (config `none`, settings read from this store), with `agents-home` built at that home instead of the real one.
  */
-async function page(tacit: TacitLedger | { agentsHome: string } | undefined, as: UserId = OWNER) {
+async function page(tacit: TacitLedger | { agentsHome: string } | undefined, as: UserId = OWNER, known: readonly string[] = []) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
   await store.claimLocalOwner(OWNER);
@@ -155,7 +155,7 @@ async function page(tacit: TacitLedger | { agentsHome: string } | undefined, as:
     ui = { ledger, settings: live, home: () => checkAgentsHome(env) };
   } else if (tacit) ui = fixed(tacit);
   const d: PauseDeps = {
-    store, scanner: new PatternEgressScanner(async () => []), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses, settings,
+    store, scanner: new PatternEgressScanner(async () => known), clock, lease_ms: 300_000, health: new HealthMonitor(async () => [], clock), pauses, settings,
     ...(ui ? { tacit: ui } : {}),
   };
   const get = async () => {
@@ -176,7 +176,12 @@ async function page(tacit: TacitLedger | { agentsHome: string } | undefined, as:
     });
     return { status: r.status, value: JSON.parse(r.body) };
   };
-  return { get, post, setting, log, store };
+  /** GET /api/v1/rules/entry with `query` (`?id=…`). */
+  const entry = async (query: string) => {
+    const r = await respond(d, { method: "GET", url: `/api/v1/rules/entry${query}`, host: HOST });
+    return { status: r.status, value: JSON.parse(r.body) };
+  };
+  return { get, post, setting, entry, log, store };
 }
 
 
@@ -206,7 +211,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     expect(v).toMatchObject({ enabled: true, error: null, judge: null });
     expect(typeof v.csrf_token).toBe("string");
     expect(v.entries).toEqual([
-      { id: "P-0007", title: "Split the review prompt", state: "open" },
+      { id: "P-0007", title: "Split the review prompt", state: "open", kind: "prompt", target: "prompts/review.md" },
       { id: "C-012", title: "keep existing CLI flags", state: "pending" },
       { id: "C-013", title: "summary first", state: "held" },
     ]);
@@ -233,6 +238,80 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     const v = await (await page(broken)).get();
     expect(v).toMatchObject({ enabled: true, entries: [] });
     expect(v.error).toContain("ledger locked");
+  });
+});
+
+/** A ledger that is on, lists PENDING, and answers `show` with `show`; every call it gets is kept in `calls`. */
+function fakeLedger(show: (id: string) => Promise<TacitEntryDetail | null>) {
+  const calls: string[] = [];
+  const ledger: TacitLedger = {
+    enabled: true,
+    capture: async () => { calls.push("capture"); },
+    pending: async () => { calls.push("pending"); return PENDING; },
+    show: async (id) => { calls.push(`show ${id}`); return show(id); },
+    verdict: async () => { calls.push("verdict"); },
+    rules: async () => [],
+  };
+  return { ledger, calls };
+}
+
+const SECRET = "sekret-token-value-0123456789";
+
+describe("Rules page: GET /api/v1/rules/entry", () => {
+  it("returns each detail field read through TacitLedger.show, in its place; a field the ledger lacks is absent", async () => {
+    const f = fakeLedger(async (id) => ({ id, default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, quotes: ["keep --json"], root_reason: "renames skip callers", scope: "CLI" }));
+    const p = await page(f.ledger);
+    expect(await p.entry("?id=C-012")).toEqual({
+      status: 200,
+      value: { id: "C-012", error: null, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, quotes: ["keep --json"], root_reason: "renames skip callers", scope: "CLI" } },
+    });
+    const bare = fakeLedger(async (id) => ({ id, kind: "edit-asset", target: "prompts/review.md" }));
+    expect((await (await page(bare.ledger)).entry("?id=P-20261103-34e9")).value.detail).toEqual({ id: "P-20261103-34e9", kind: "edit-asset", target: "prompts/review.md" });
+    // The detail is read on demand only, and the read calls nothing but show.
+    expect(f.calls).toEqual(["show C-012"]);
+  });
+
+  it("passes every text of the detail through the Withholder", async () => {
+    const f = fakeLedger(async (id) => ({ id, default: `use ${SECRET}`, quotes: ["fine", `paste ${SECRET}`], root_reason: SECRET, scope: "CLI" }));
+    const v = (await (await page(f.ledger, OWNER, [SECRET])).entry("?id=C-012")).value;
+    expect(JSON.stringify(v)).not.toContain(SECRET);
+    expect(v.detail.default).toMatch(/^\[withheld: /);
+    expect(v.detail.quotes[0]).toBe("fine");
+    expect(v.detail.quotes[1]).toMatch(/^\[withheld: /);
+    expect(v.detail.scope).toBe("CLI");
+  });
+
+  it("a show that returns nothing gives no detail; one that throws gives no detail and its error", async () => {
+    expect((await (await page(fakeLedger(async () => null).ledger)).entry("?id=C-012")).value).toEqual({ id: "C-012", detail: null, error: null });
+    const broken = fakeLedger(async () => { throw new Error("evolve show exited 5: ledger locked"); });
+    const v = (await (await page(broken.ledger)).entry("?id=C-012")).value;
+    expect(v).toMatchObject({ id: "C-012", detail: null });
+    expect(v.error).toContain("evolve show exited 5: ledger locked");
+  });
+
+  it("an ID that is neither C- nor P-, or none, is a 400 before show runs; the ledger off or none wired gives no detail", async () => {
+    const f = fakeLedger(async (id) => ({ id }));
+    const p = await page(f.ledger);
+    for (const q of ["", "?id=", "?id=t1"]) expect((await p.entry(q)).status).toBe(400);
+    expect(f.calls).toEqual([]);
+    for (const tacit of [new NoTacitLedger(), undefined]) {
+      expect(await (await page(tacit)).entry("?id=C-012")).toEqual({ status: 200, value: { id: "C-012", detail: null, error: null } });
+    }
+  });
+
+  it("a user who is not the owner reads the detail too: it is read-only", async () => {
+    const f = fakeLedger(async (id) => ({ id, scope: "CLI" }));
+    expect((await (await page(f.ledger, OTHER)).entry("?id=C-012")).value.detail).toEqual({ id: "C-012", scope: "CLI" });
+  });
+
+  it("the UI's live holder reads show from the plugin it built, and follows a switch", async () => {
+    const { store } = await newStore(new FakeClock());
+    const shown = fakeLedger(async (id) => ({ id, scope: "from the plugin" }));
+    const ui = await uiTacit("fake", async (n) => (n === "fake" ? shown.ledger : new NoTacitLedger()), { base: baseFromConfig(config), source: store, log: silent, config });
+    expect(await ui.ledger.show!("C-012")).toEqual({ id: "C-012", scope: "from the plugin" });
+    await (ui.ledger as unknown as { apply(i: Record<string, string>): Promise<void> }).apply({ tacit: "none" });
+    expect(ui.ledger.enabled).toBe(false);
+    expect(await ui.ledger.show!("C-012")).toBeNull();
   });
 });
 
