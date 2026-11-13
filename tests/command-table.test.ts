@@ -75,6 +75,21 @@ describe("the command table", () => {
     expect(parseChatCommand("confirm the release date")).toBeNull();
   });
 
+  it("the task project commands are in the table, in order, each for anyone who may submit work, and `task list --project` takes a project slug", () => {
+    const usages = ["project create <name>", "project list [--archived]", "project rename <slug> <name>", "project archive <slug>", "project restore <slug>", "project delete <slug>"];
+    const named = COMMAND_TABLE.map(cliUsageOf);
+    const at = usages.map((u) => named.indexOf(u));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    for (const u of [...usages, "task project <task_id> +<slug>|-<slug>"]) {
+      expect(COMMAND_TABLE.find((c) => cliUsageOf(c) === u), u).toMatchObject({ who: "submit_work", item: false, edge: false });
+    }
+    expect(CLI_TOP_WORDS).toContain("project");
+    expect(cliUsageOf(COMMAND_TABLE.find((c) => c.name === "task list")!)).toBe("task list [--project <project_slug>]");
+    expect(parseChatCommand("project archive home")).toMatchObject({ kind: "command", entry: { name: "project archive" }, args: ["home"] });
+    expect(parseChatCommand("task project tk_1 -home")).toMatchObject({ kind: "command", entry: { name: "task project" }, args: ["tk_1", "-home"] });
+  });
+
   it("every item command is a command the dashboard may send", () => {
     for (const c of COMMAND_TABLE.filter((x) => x.item)) expect(APP_COMMANDS, c.name).toContain(c.name);
   });

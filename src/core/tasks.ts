@@ -1,10 +1,11 @@
 import type { NewNotice } from "./notifications.js";
-import type { ProjectStore } from "./projects.js";
+import type { Project, ProjectStore } from "./projects.js";
 import type { Timestamp, UserId, WorkItemId } from "./types.js";
 
 /**
  * Plain tasks (design 02-tasks, issue #606): a to-do the owner keeps beside the work items, stored in
- * `controller_tasks`, never a work item, so triage never reads one. No repository: `list` is a free label.
+ * `controller_tasks`, never a work item, so triage never reads one. No repository: `list` is a free label, and
+ * `projects` the task projects' slugs (src/core/projects.ts) a quick add or an edit links it to.
  */
 
 export type Recurrence = "day" | "week" | "month";
@@ -26,6 +27,11 @@ export interface TaskFields {
   /** How long the task takes, in minutes; null or left out: DEFAULT_DURATION_MINUTES. */
   duration_minutes?: number | null;
   recurrence: Recurrence | null;
+  /**
+   * The slugs of the projects (`+slug`) the store links the task to in the same transaction as the add or edit; an
+   * unknown or archived one throws ProjectRefused, so nothing is written. Left out or empty: no link changes.
+   */
+  projects?: string[];
 }
 
 export interface NewTask extends TaskFields {
@@ -35,7 +41,7 @@ export interface NewTask extends TaskFields {
   created_by: UserId;
 }
 
-export interface Task extends Omit<TaskFields, "due" | "duration_minutes"> {
+export interface Task extends Omit<TaskFields, "due" | "duration_minutes" | "projects"> {
   id: string;
   /** How long the task takes, in minutes; null: DEFAULT_DURATION_MINUTES (taskDuration). */
   duration_minutes: number | null;
@@ -54,8 +60,27 @@ export interface Task extends Omit<TaskFields, "due" | "duration_minutes"> {
   reminded_at: Timestamp | null;
 }
 
-/** The fields an edit names (`parseQuickEdit`); every field left out keeps its stored value. */
+/** The fields an edit names (`parseQuickEdit`); every field left out keeps its stored value. `projects` adds links, never removes one. */
 export type TaskEdit = Partial<TaskFields>;
+
+/** Why a project slug a task add or edit names is refused. */
+export function projectRefusal(slug: string, reason: "not_found" | "archived"): string {
+  return reason === "archived" ? `project "${slug}" is archived; restore it first` : `no project "${slug}"`;
+}
+
+/**
+ * Thrown by the store's addTask, addSubTask and updateTask inside their transaction when `projects` names an unknown
+ * or archived project, so the task row, its links and the edit all roll back. The message is projectRefusal's.
+ */
+export class ProjectRefused extends Error {
+  constructor(
+    readonly slug: string,
+    readonly reason: "not_found" | "archived",
+  ) {
+    super(projectRefusal(slug, reason));
+    this.name = "ProjectRefused";
+  }
+}
 
 export type UpdateTaskResult =
   | { ok: true; task: Task }
@@ -85,8 +110,15 @@ export type ReopenTaskResult =
 
 /** The store's task methods, part of FactoryStore, with the task projects' (src/core/projects.ts); implemented once in the shared SQL store. */
 export interface TaskStore extends ProjectStore {
-  /** Inserts the task unless its ID is stored; returns the stored row either way. */
+  /**
+   * Inserts the task unless its ID is stored, linked to each project of `t.projects` in the same transaction; returns
+   * the stored row either way. Throws ProjectRefused (nothing written) for an unknown or archived project.
+   */
   addTask(t: NewTask): Promise<Task>;
+  /** The project with that slug, active or archived; null when none has it. Read-only. */
+  getProjectBySlug(slug: string): Promise<Project | null>;
+  /** The slugs of each task's active projects, sorted; a task in none is left out. Read-only. */
+  listTaskProjectSlugs(task_ids: readonly string[]): Promise<Record<string, string[]>>;
   /** Open tasks (no done_at), oldest first, at most `limit`. Read-only. */
   listTasks(limit: number): Promise<Task[]>;
   /** The Done view's read (design 02-tasks, Done view): the done tasks of `window` (doneWindow), most recently done first. Read-only. */
@@ -106,14 +138,17 @@ export interface TaskStore extends ProjectStore {
   linkTask(id: string, work_item_id: WorkItemId): Promise<Task | null>;
   /** Completes every open task linked to `work_item_id`, as completeTask does each; the tasks it completed. */
   closeLinkedTasks(work_item_id: WorkItemId): Promise<Task[]>;
-  /** Sets the fields `edit` names on an open task, conditional on done_at unset; a refusal writes nothing. */
+  /**
+   * Sets the fields `edit` names on an open task, conditional on done_at unset, and links it to each project of
+   * `edit.projects` in the same transaction; a refusal writes nothing, and an unknown or archived project throws ProjectRefused.
+   */
   updateTask(id: string, edit: TaskEdit): Promise<UpdateTaskResult>;
   /**
    * Deletes the row. Refused while it has open sub-tasks; its done sub-tasks are detached (parent_task_id null) in the
    * same transaction. A work item linked to it is not touched.
    */
   deleteTask(id: string): Promise<DeleteTaskResult>;
-  /** Inserts `t` as a sub-task of `parent_task_id` unless its ID is stored; refused under a sub-task (one level). */
+  /** Inserts `t` as a sub-task of `parent_task_id` unless its ID is stored, linked as addTask links; refused under a sub-task (one level). */
   addSubTask(parent_task_id: string, t: NewTask): Promise<AddSubTaskResult>;
   /** The tasks whose reminder `now` sends (reminderDue), by time. Read-only. */
   listDueReminders(now: Date): Promise<Task[]>;
@@ -169,7 +204,8 @@ export function dueDate(due: DueDay, now: Date): string {
  * on an undated task makes it due today; a recurrence needs a due date. Pure.
  */
 export function applyTaskEdit(task: Task, edit: TaskEdit, now: Date): Task | { refused: "needs_due_date"; recurrence: Recurrence } {
-  const { due, ...fields } = edit;
+  // The project links are no field of the row.
+  const { due, projects: _links, ...fields } = edit;
   const named = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
   const next: Task = { ...task, ...named, due_date: due === undefined ? task.due_date : due === null ? null : dueDate(due, now) };
   if (next.due_date === null && next.due_time !== null) next.due_date = localDate(now);
@@ -190,11 +226,15 @@ export function nextDueDate(date: string, every: Recurrence): string {
   return next.toISOString().slice(0, 10);
 }
 
-/** One line per task: ID, title, due, priority, list (as `#label`) and recurrence, `-` for each unset; a sub-task's parent last. */
-export function taskLine(t: Task): string {
+/**
+ * One line per task: ID, title, due, priority, list (as `#label`), with `projects` given (`task list`) the projects
+ * column (`+a,+b`, sorted), and recurrence, `-` for each unset; a sub-task's parent last.
+ */
+export function taskLine(t: Task, projects?: readonly string[]): string {
   const due = t.due_date === null ? "-" : t.due_time === null ? t.due_date : `${t.due_date} ${t.due_time}`;
   const list = t.list === null ? "-" : "#" + t.list;
-  return [t.id, t.title, due, t.priority === null ? "-" : `!${t.priority}`, list, t.recurrence === null ? "-" : `every ${t.recurrence}`,
+  const column = projects === undefined ? [] : [projects.length === 0 ? "-" : [...projects].sort().map((s) => `+${s}`).join(",")];
+  return [t.id, t.title, due, t.priority === null ? "-" : `!${t.priority}`, list, ...column, t.recurrence === null ? "-" : `every ${t.recurrence}`,
     ...(t.parent_task_id === null ? [] : [`sub of ${t.parent_task_id}`])].join("\t");
 }
 

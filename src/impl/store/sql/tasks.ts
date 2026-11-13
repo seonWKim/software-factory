@@ -11,7 +11,7 @@ import type { NewNotice } from "../../../core/notifications.js";
 import type { Timestamp, UserId, WorkItemId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { recordNotice } from "./notices.js";
-import { unlinkTask } from "./projects.js";
+import { linkTaskProjects, unlinkTask } from "./projects.js";
 import { newId } from "./rows.js";
 
 const COLUMNS =
@@ -57,9 +57,14 @@ function newRow(t: NewTask, now: Date, parent_task_id: string | null): Task {
   };
 }
 
+/** In `tx`: inserts the new row and, when it inserted it, its project links (a resend finds them stored). */
+async function insertNew(db: SqlDriver, tx: SqlExecutor, t: NewTask, now: Date, parent_task_id: string | null): Promise<void> {
+  if (await insert(db, tx, newRow(t, now, parent_task_id))) await linkTaskProjects(tx, t.id, t.projects ?? [], now.toISOString() as Timestamp);
+}
+
 export async function addTask(db: SqlDriver, t: NewTask, now: Date): Promise<Task> {
   return db.transaction(async (tx) => {
-    await insert(db, tx, newRow(t, now, null));
+    await insertNew(db, tx, t, now, null);
     return (await select(tx, "id", t.id))!;
   });
 }
@@ -72,12 +77,12 @@ export async function addSubTask(db: SqlDriver, parent_task_id: string, t: NewTa
     const parent = await select(tx, "id", parent_task_id);
     if (parent === null) return { ok: false, reason: "not_found" } as const;
     if (parent.parent_task_id !== null) return { ok: false, reason: "nested" } as const;
-    await insert(db, tx, newRow(t, now, parent_task_id));
+    await insertNew(db, tx, t, now, parent_task_id);
     return { ok: true, task: (await select(tx, "id", t.id))! } as const;
   });
 }
 
-/** Writes the edited fields where the task is still open; the same edit again writes the same values. */
+/** Writes the edited fields and adds the named project links where the task is still open; the same edit again writes the same values. */
 export async function updateTask(db: SqlDriver, id: string, edit: TaskEdit, now: Date): Promise<UpdateTaskResult> {
   return db.transaction(async (tx) => {
     const task = await select(tx, "id", id);
@@ -90,6 +95,7 @@ export async function updateTask(db: SqlDriver, id: string, edit: TaskEdit, now:
         WHERE id = ? AND done_at IS NULL`,
       [next.title, next.list, next.priority, next.due_date, next.due_time, next.recurrence, next.duration_minutes, next.reminded_at, id],
     );
+    await linkTaskProjects(tx, id, edit.projects ?? [], now.toISOString() as Timestamp);
     return { ok: true, task: (await select(tx, "id", id))! } as const;
   });
 }

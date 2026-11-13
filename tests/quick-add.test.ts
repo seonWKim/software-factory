@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseQuickAdd } from "../src/core/quick-add.js";
+import { parseQuickAdd, parseQuickEdit } from "../src/core/quick-add.js";
 import { localDate, nextDueDate } from "../src/core/tasks.js";
 
 // The quick-add parser (design 02-tasks, issue #606): one test per accepted form and per refusal.
@@ -144,6 +144,28 @@ describe("parseQuickAdd rejects, with a reason", () => {
   it("an empty title", () => {
     expect(refused("")).toContain("the title is empty");
     expect(refused("today !1 #home every week")).toContain("the title is empty");
+  });
+});
+
+describe("+slug: a task project (design 02-tasks, task projects)", () => {
+  it("each +slug is a project slug, projectSlug of the word after +, in the order given and once each", () => {
+    expect(ok("fix tap +Home-Repairs +work +home-repairs")).toMatchObject({ title: "fix tap", projects: ["home-repairs", "work"] });
+    expect(ok("fix tap !1 +HOME #chores")).toMatchObject({ title: "fix tap", priority: 1, list: "chores", projects: ["home"] });
+  });
+
+  it("no +slug leaves projects out", () => {
+    expect(ok("fix tap")).not.toHaveProperty("projects");
+  });
+
+  it("a + with no slug after it is refused", () => {
+    expect(refused("fix tap +")).toBe("a project needs a name after +, e.g. +home, not +");
+    expect(refused("fix tap +!!")).toContain("a project needs a name after +");
+  });
+
+  it("task edit reads +slug the same way, and +slug alone is an edit", () => {
+    expect(parseQuickEdit("+Home")).toEqual({ ok: true, edit: { projects: ["home"] } });
+    expect(parseQuickEdit("new title +work !2")).toEqual({ ok: true, edit: { title: "new title", priority: 2, projects: ["work"] } });
+    expect(parseQuickEdit("+")).toMatchObject({ ok: false, reason: expect.stringContaining("a project needs a name after +") });
   });
 });
 

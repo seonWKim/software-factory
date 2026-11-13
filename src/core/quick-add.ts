@@ -1,3 +1,4 @@
+import { projectSlug } from "./projects.js";
 import { type DueDay, type Recurrence, type TaskEdit, type TaskFields, type TaskPriority, durationError } from "./tasks.js";
 
 /**
@@ -9,8 +10,10 @@ import { type DueDay, type Recurrence, type TaskEdit, type TaskFields, type Task
  * - `45m`, `1h`, `1h30m`: the duration (1 minute to a day; none given: DEFAULT_DURATION_MINUTES when planned);
  * - `!1` to `!3`: the priority, 1 the highest;
  * - `#label`: the list;
+ * - `+slug`: a task project (src/core/projects.ts), its slug projectSlug of the word after `+`; several may be given,
+ *   and the store refuses an unknown or archived one;
  * - `every day`, `every week`, `every month`: the recurrence, which needs a due day.
- * Each field at most once. Pure: no clock, no I/O. `task edit` reads the same words (`parseQuickEdit`), naming only
+ * Each field at most once, except `+slug`. Pure: no clock, no I/O. `task edit` reads the same words (`parseQuickEdit`), naming only
  * the fields they give.
  */
 
@@ -64,6 +67,7 @@ function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok
   let priority: TaskPriority | null = null;
   let list: string | null = null;
   let recurrence: Recurrence | null = null;
+  const projects: string[] = [];
   const seen = new Set<string>();
   const once = (field: string): string | null => {
     if (seen.has(field)) return `repeated field: ${field} given twice`;
@@ -100,6 +104,10 @@ function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok
     } else if (/^#[\w-]+$/.test(w)) {
       refused = once("list");
       list = w.slice(1);
+    } else if (w.startsWith("+")) {
+      const slug = projectSlug(w.slice(1));
+      if (slug === null) return { ok: false, reason: `a project needs a name after +, e.g. +home, not ${w}` };
+      if (!projects.includes(slug)) projects.push(slug);
     } else if (lower === "every") {
       const next = tokens[i + 1]?.toLowerCase();
       if (next === undefined || !(RECURRENCES as readonly string[]).includes(next)) {
@@ -119,6 +127,7 @@ function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok
   if (priority !== null) edit.priority = priority;
   if (list !== null) edit.list = list;
   if (recurrence !== null) edit.recurrence = recurrence;
+  if (projects.length > 0) edit.projects = projects;
   return { ok: true, edit, title: title.join(" ") };
 }
 
@@ -129,10 +138,10 @@ export function parseQuickAdd(words: string): QuickAddResult {
   const s = scan(words);
   if (!s.ok) return s;
   if (s.title === "") return { ok: false, reason: "the title is empty: give some words besides the quick-add tokens" };
-  const { due = null, due_time = null, duration_minutes = null, priority = null, list = null, recurrence = null } = s.edit;
+  const { due = null, due_time = null, duration_minutes = null, priority = null, list = null, recurrence = null, projects } = s.edit;
   const day: DueDay | null = due === null && due_time !== null ? { days_from_today: 0 } : due;
   if (recurrence !== null && day === null) return { ok: false, reason: needsDueDate(recurrence) };
-  return { ok: true, task: { title: s.title, list, priority, due: day, due_time, duration_minutes, recurrence } };
+  return { ok: true, task: { title: s.title, list, priority, due: day, due_time, duration_minutes, recurrence, ...(projects ? { projects } : {}) } };
 }
 
 /** The fields an edit's words name, and only those: words with no title leave the title out. No words: refused. */

@@ -79,7 +79,7 @@ describe("factory task list", () => {
     await cli("add", "first");
     await cli("add", "second", "!2");
     await cli("done", "tk_id1");
-    expect((await cli("list")).lines).toEqual(["no local work items", "", "Tasks", "tk_id2\tsecond\t-\t!2\t-\t-"]);
+    expect((await cli("list")).lines).toEqual(["no local work items", "", "Tasks", "tk_id2\tsecond\t-\t!2\t-\t-\t-"]);
     await runLocalCli({ ...d, project: async () => PROJECT_KEY }, { action: "create", title: "Item", bodyFile: "b" });
     const lines = (await cli("list")).lines;
     expect(lines.indexOf("Tasks")).toBeGreaterThan(0);

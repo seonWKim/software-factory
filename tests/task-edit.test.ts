@@ -201,7 +201,7 @@ describe("factory task list with sub-tasks", () => {
     const { cli } = await setup();
     await cli("add", "move");
     await cli("sub", "tk_id1", "pack");
-    expect((await cli("list")).lines).toEqual(["no local work items", "", "Tasks", "tk_id1\tmove\t-\t-\t-\t-", "tk_id2\tpack\t-\t-\t-\t-\tsub of tk_id1"]);
+    expect((await cli("list")).lines).toEqual(["no local work items", "", "Tasks", "tk_id1\tmove\t-\t-\t-\t-\t-", "tk_id2\tpack\t-\t-\t-\t-\t-\tsub of tk_id1"]);
   });
 });
 
