@@ -10,7 +10,6 @@ export const en = {
   "page.work": "Work",
   "page.activity": "Activity",
   "page.runners": "Runners",
-  "page.queue": "Queue",
   "page.health": "Health",
   "page.failures": "Failures",
   "page.spend": "Spend",
