@@ -11,6 +11,7 @@ import {
   loosening,
 } from "../src/core/settings.js";
 import { loadSettingCatalog } from "../src/runtime/index.js";
+import { TASKS_ADD_KEYS } from "../src/runtime/settings/tasks-add-key.setting.js";
 import { loosens } from "../src/shared/setting.js";
 
 // RFC 0015 M10: the settings catalog (one `*.setting.ts` per key) and the legacy key lists in src/core/settings.ts,
@@ -19,9 +20,12 @@ import { loosens } from "../src/shared/setting.js";
 const catalog = await loadSettingCatalog();
 const keys = (pred: (s: ReturnType<typeof catalog.all>[number]) => boolean) => catalog.all().filter(pred).map((s) => s.key).sort();
 
+/** Runtime keys only the dashboard reads, through its own read route, never the resolver (design 02-tasks). */
+const DASHBOARD_KEYS: readonly string[] = ["tasks_add_key"];
+
 describe("settings catalog", () => {
   it("holds every settable key (runtime) and every PR-only key (review), and nothing else", () => {
-    expect(keys((s) => s.changed_by === "runtime")).toEqual([...SETTABLE_KEYS].sort());
+    expect(keys((s) => s.changed_by === "runtime" && !DASHBOARD_KEYS.includes(s.key))).toEqual([...SETTABLE_KEYS].sort());
     expect(keys((s) => s.changed_by === "review")).toEqual([...PR_ONLY_KEYS].sort());
     for (const k of SETTABLE_KEYS) expect(keyRefusal(k), k).toBeNull();
   });
@@ -40,6 +44,12 @@ describe("settings catalog", () => {
     }
     expect(OWNER_KEYS).toContain("integrations");
     expect(catalog.get("plugins")!.changed_by).toBe("review");
+  });
+
+  it("holds tasks_add_key, a global dashboard setting with the choices enter (default) and cmd-enter", () => {
+    expect(catalog.get("tasks_add_key")).toMatchObject({ type: "enum", default: "enter", changed_by: "runtime", scope: "global", direction: "free" });
+    expect(TASKS_ADD_KEYS).toEqual(["enter", "cmd-enter"]);
+    for (const k of DASHBOARD_KEYS) expect(SETTABLE_KEYS as readonly string[], k).not.toContain(k);
   });
 
   it("orders each per-project gate as the resolver's tighten-only check does", () => {

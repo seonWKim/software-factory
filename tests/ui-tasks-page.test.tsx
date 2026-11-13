@@ -384,7 +384,7 @@ describe("Tasks page", () => {
   });
 
   describe("quick add", () => {
-    const field = () => screen.getByPlaceholderText("e.g. rent friday p1 #home") as HTMLInputElement;
+    const field = () => screen.getByRole("textbox", { name: "Add a task" }) as HTMLInputElement;
     const type = (v: string) => fireEvent.change(field(), { target: { value: v } });
     const enter = () => fireEvent.submit(field().closest("form")!);
 
@@ -439,6 +439,58 @@ describe("Tasks page", () => {
       type("buy milk");
       fireEvent.click(screen.getByRole("button", { name: "Add" }));
       await waitFor(() => expect(posts).toHaveLength(1));
+    });
+
+    describe("the submit key (tasks_add_key, design 02-tasks)", () => {
+      const press = (over: Partial<KeyboardEventInit> = {}) => fireEvent.keyDown(field(), { key: "Enter", ...over });
+      const layout = () => [field().className, field().closest("form")!.className, field().parentElement!.className];
+
+      it("enter (the default, and with no add_key): Enter adds the task, ⌘Enter does not, and the hint says Enter", async () => {
+        await show();
+        const before = layout();
+        expect(field().placeholder).toBe("e.g. rent friday p1 #home, then Enter");
+        expect(field().getAttribute("aria-keyshortcuts")).toBe("Enter");
+        type("buy milk");
+        press({ metaKey: true });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(posts).toHaveLength(0);
+        press();
+        await waitFor(() => expect(posts).toHaveLength(1));
+        expect(JSON.parse(String(posts[0]!.init.body)).words).toBe("buy milk");
+        expect(layout()).toEqual(before);
+      });
+
+      it("cmd-enter: ⌘Enter adds the task, plain Enter adds nothing, the hint says ⌘Enter, and the layout is the same", async () => {
+        await show();
+        const enterLayout = layout();
+        cleanup();
+        current = { ...view(), add_key: "cmd-enter" } as TasksView;
+        await show();
+        expect(field().placeholder).toBe("e.g. rent friday p1 #home, then ⌘Enter");
+        expect(field().getAttribute("aria-keyshortcuts")).toBe("Meta+Enter");
+        expect(layout()).toEqual(enterLayout);
+        type("buy milk");
+        expect(press()).toBe(false); // the browser's own submit on Enter is prevented
+        await new Promise((r) => setTimeout(r, 20));
+        expect(posts).toHaveLength(0);
+        expect(field().value).toBe("buy milk");
+        press({ metaKey: true });
+        await waitFor(() => expect(posts).toHaveLength(1));
+        expect(JSON.parse(String(posts[0]!.init.body)).words).toBe("buy milk");
+      });
+
+      for (const add_key of ["enter", "cmd-enter"]) {
+        it(`${add_key}: the Add button adds the task, and a refusal shows its reason beside the field and keeps the words`, async () => {
+          current = { ...view(), add_key } as TasksView;
+          await show();
+          answer = { status: 400, body: { error: "no title" } };
+          type("p1");
+          fireEvent.click(screen.getByRole("button", { name: "Add" }));
+          expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("no title");
+          expect(field().value).toBe("p1");
+          expect(posts).toHaveLength(1);
+        });
+      }
     });
 
     it("no longer hints at factory task add, and keeps the Build this line", async () => {

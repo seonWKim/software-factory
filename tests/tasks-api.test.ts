@@ -240,6 +240,29 @@ describe("POST /api/v1/tasks/reopen: undo a completion (design 02-tasks)", () =>
   });
 });
 
+describe("GET /api/v1/tasks: the quick-add submit key (design 02-tasks, tasks_add_key)", () => {
+  const get = (s: Awaited<ReturnType<typeof setup>>) => respond(s.d, { method: "GET", url: TASKS_PATH, host: HOST });
+  const set = (s: Awaited<ReturnType<typeof setup>>, value: string, project = "") =>
+    s.store.setSettingOverride({ key: "tasks_add_key", project, value, actor: ACTOR });
+
+  it("answers add_key enter with no stored value, and the stored global choice once one is set", async () => {
+    const s = await setup();
+    expect(JSON.parse((await get(s)).body).add_key).toBe("enter");
+    await set(s, JSON.stringify("cmd-enter"));
+    expect(JSON.parse((await get(s)).body).add_key).toBe("cmd-enter");
+    await set(s, JSON.stringify("enter"));
+    expect(JSON.parse((await get(s)).body).add_key).toBe("enter");
+  });
+
+  it("ignores a stored value that is not one of the choices, or not JSON, and a project's row", async () => {
+    for (const [value, project] of [[JSON.stringify("ctrl-enter"), ""], ["cmd-enter", ""], [JSON.stringify("cmd-enter"), "p1"]] as const) {
+      const s = await setup();
+      await set(s, value, project);
+      expect(JSON.parse((await get(s)).body).add_key, `${value} ${project}`).toBe("enter");
+    }
+  });
+});
+
 describe("GET /api/v1/tasks/done: the Done tab's read (design 02-tasks, Done view)", () => {
   const get = (s: Awaited<ReturnType<typeof setup>>, query = "") => respond(s.d, { method: "GET", url: `${TASK_DONE_PATH}${query}`, host: HOST });
 
