@@ -538,7 +538,7 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
   it("shows no typed form when the server has no file writer", async () => {
     const saved = view.file_keys;
     view.file_keys = null;
-    afterEachReset = () => (view.file_keys = saved);
+    afterEachReset = () => (view.file_keys = saved ?? null);
     await show();
     expect(screen.queryByRole("region", { name: FILE_SECTION })).toBeNull();
     // Without the form every PR-only key stays in the table.
