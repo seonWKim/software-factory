@@ -286,8 +286,8 @@ describe("/budget", () => {
     expect(await f.item(it0)).toEqual(before);
     expect((await f.store.listBudgetCheckpoints(it0.id))[0]).toMatchObject({ answer: "pending" });
     expect(f.refusals().map((c) => c.body)).toEqual([
-      "`/budget` was not applied: it needs write permission on this repository (`not_a_collaborator`).",
-      "`/budget` was not applied: it needs write permission on this repository (`not_a_collaborator`).",
+      "`/budget` was not applied: only the owner may send this command (`not_a_collaborator`).",
+      "`/budget` was not applied: only the owner may send this command (`not_a_collaborator`).",
     ]);
   });
 

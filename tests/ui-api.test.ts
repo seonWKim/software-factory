@@ -1443,7 +1443,7 @@ describe("ui api: pauses and Needs-you reasons (issue: floor banner)", () => {
     grant = { allow: false, reason: "no_role" };
     all = await rows();
     for (const c of of(all, items.approve.id)) {
-      expect(c).toMatchObject({ allowed: false, reason: `${ACTOR} has no role that allows it (\`no_role\`); the local owner can grant one with \`factory users add ${ACTOR} --role approver\`` });
+      expect(c).toMatchObject({ allowed: false, reason: "only the owner may send this command (`no_role`)" });
     }
   });
 

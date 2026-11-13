@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,12 +10,9 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubPermissionGrant } from "../src/impl/github/github-permission.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, renderItem } from "../src/ui/pages.js";
@@ -79,8 +77,7 @@ async function localFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   const github = new FakeGitHubClient();
   const forgeCalls: string[] = [];
   const forge = new Proxy({}, { get: (_t, k) => (k === "then" ? undefined : () => (forgeCalls.push(String(k)), Promise.reject(new Error("forge")))) }) as Forge;
-  const grants = [new StaticGrant({ roles: {}, deny: {} }), new GitHubPermissionGrant(github, { owner: "o", name: "r" })];
-  const auth = new LocalAuthProvider(store, grants);
+  const auth = new OwnerAuth(store);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
     store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
@@ -223,7 +220,7 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect((await f.cli(ME, { action: "users_add", user: DEV, role: "requester" })).code).toBe(0);
     await f.cli(DEV, { action: "command", command: "merge", id, text: "" });
     await f.step();
-    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toContain(`factory users add ${DEV} --role approver`);
+    expect((await f.messages(id, "<!-- factory:refused:")).at(-1)).toBe("`factory merge` was not applied: only the owner may send this command.");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
     expect(git(f.repo, "rev-parse", "main")).toBe(mainBefore);
     expect(f.github.calls).toEqual([]);
@@ -401,11 +398,11 @@ describe("a local task from create to merge, no GitHub plugin", { timeout: 60_00
     expect(git(f.repo, "rev-parse", "main")).toBe(conflicted);
     const head = git(f.repo, "rev-parse", `refs/heads/factory/${id}`);
 
-    // A requester's merge from the page is refused on its request, naming the approver role.
+    // A non-owner's merge from the page is refused on its request with the owner reply.
     expect((await f.cli(ME, { action: "users_add", user: DEV, role: "requester" })).code).toBe(0);
     const denied = await f.appMerge(DEV, id);
     await f.step();
-    expect((await f.store.getAppCommandRequest(denied))!.refusal).toContain(`factory users add ${DEV} --role approver`);
+    expect((await f.store.getAppCommandRequest(denied))!.refusal).toContain("only the owner may send this command");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending" });
 
     // The resolved branch merges from the page.

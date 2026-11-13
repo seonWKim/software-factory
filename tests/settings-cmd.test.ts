@@ -108,13 +108,13 @@ describe.each(BACKENDS)("factory settings: $name", ({ make }) => {
   it("PR-only keys and keys outside the settable list are refused; nothing is written", async () => {
     const { store } = await make();
     const d = deps(store);
-    for (const k of ["plugins", "repo", "store", "floors", "dials", "auth", "secrets", "egress", "broker"]) {
+    for (const k of ["plugins", "repo", "store", "floors", "dials", "secrets", "egress", "broker"]) {
       const r = await run(d, "set", k, "{}");
       expect(r.ok).toBe(false);
       expect(r.lines[0]).toContain(`"${k}" changes by PR only`);
       expect((await run(d, "reset", k)).lines[0]).toContain("changes by PR only");
     }
-    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "branch_prefix", "max_loop"]) {
+    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "branch_prefix", "max_loop", "auth", "permissions"]) {
       const r = await run(d, "set", k, "1");
       expect(r.ok).toBe(false);
       expect(r.lines[0]).toContain(`"${k}" is not settable`);
@@ -357,12 +357,11 @@ describe.each(BACKENDS)("factory mode and auto_merge_max_tier: $name", ({ make }
     expect(asked).toBe(3);
   });
 
-  it("a no_role refusal says how to give the role: the check reads local grants only, not GitHub access", async () => {
+  it("a refusal names the owner check's reason and no grant to add (One owner)", async () => {
     const { store } = await make();
-    const d: SettingsDeps = { ...deps(store, "github:1"), mayApproveMerge: async () => "no_role" };
+    const d: SettingsDeps = { ...deps(store, "github:1"), mayApproveMerge: async () => "not_owner" };
     const r = await run(d, "set", "mode", "auto");
-    expect(r.lines[0]).toContain("no_role. This check reads local grants only");
-    expect(r.lines[0]).toContain("permissions.static.roles");
+    expect(r.lines[0]).toBe("refused: mode changes only with approve_merge on the project: not_owner");
   });
 
   it("a set or reset that loosens a tighten-only key needs approve_merge; tightening does not", async () => {

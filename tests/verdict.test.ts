@@ -204,7 +204,7 @@ describe("controller: /verdict", () => {
     const f = await setup();
     const it0 = await item(f);
     await f.controller.handleEvent(verdict("accept none", "515", onIssue, mallory));
-    expect(await refused(f, it0, "515")).toContain("needs write permission");
+    expect(await refused(f, it0, "515")).toContain("only the owner may send this command");
   });
 
   it("refuses a verdict on a closed item whose PR was not merged, with one reply, and on an item with no PR yet", async () => {

@@ -321,7 +321,7 @@ describe("multi-source controller: commands", () => {
     f.sl.queue.push({ kind: "spec_approved", source: slackRef(1), comment_id: "600", approver: slackMallory });
     await f.controller.tickIntake();
     expect(f.sl.comments.map((c) => c.body)).toEqual([
-      "`/approve` was not applied: it needs write permission on this repository (`not_a_collaborator`).",
+      "`/approve` was not applied: only the owner may send this command (`not_a_collaborator`).",
     ]);
   });
 

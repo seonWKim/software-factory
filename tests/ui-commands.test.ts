@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { uiCommandsActor } from "../src/compose.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { parseVerdict } from "../src/core/verdict.js";
 // TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
@@ -13,7 +13,7 @@ import { parseProposalMarker } from "../src/core/interpret.js";
 import type { PageAction } from "../src/ui/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, respond } from "../src/ui/server.js";
-import { refusalText, roleRefusal } from "../src/core/commands.js";
+import { refusalText } from "../src/core/commands.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
@@ -36,7 +36,7 @@ const RETRY_MS = 1_000;
 async function harness(opts: { localAuth?: boolean; tick_ms?: number } = {}) {
   const { store, clock } = await newStore();
   const source = new FakeSource();
-  const auth = opts.localAuth ? new LocalAuthProvider(store) : new FakeAuth();
+  const auth = opts.localAuth ? new OwnerAuth(store) : new FakeAuth();
   const controller = new ControllerRole({ store, source, auth, clock, config: { ...config, tick_ms: opts.tick_ms ?? config.tick_ms }, log: silent, scanner: cleanScanner });
   const actor = { kind: "system" as const, id: "system:test" };
   /** A work item on issue `n`, put in the state `patch` describes. */
@@ -177,7 +177,7 @@ describe("app command requests: refusals", () => {
     const posted = h.source.comments.filter((c) => c.marker === h.marker(r));
     expect(posted).toHaveLength(1);
     expect(posted[0]!.source).toEqual(it1.source);
-    expect(posted[0]!.body).toBe("`/approve` was not applied: it needs write permission on this repository (`not_a_collaborator`).");
+    expect(posted[0]!.body).toBe("`/approve` was not applied: only the owner may send this command (`not_a_collaborator`).");
     expect(await h.store.getAppCommandRequest(r.seq)).toMatchObject({ handled_at: h.clock.now().toISOString(), refusal: posted[0]!.body });
   });
 
@@ -231,7 +231,7 @@ describe("app command requests: refusals", () => {
       return real(...args);
     };
     await h.controller.tickCommands();
-    expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
+    expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toMatch(/^`\/approve` was not applied: only the owner may send this command/);
     expect((await h.store.listItemMessages(it1.id)).map((m) => m.marker)).toContain(h.marker(r));
     expect(h.source.comments).toEqual([]);
     h.clock.advance(config.retry_max_ms);
@@ -323,7 +323,7 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     const r = await respond(page(h, WRITER), { method: "GET", url: `/api/v1/items/${encodeURIComponent(it1.id)}`, host: HOST });
     const replies = (JSON.parse(r.body) as { replies: { command: string; refusal: string | null; handled_at: string | null }[] }).replies;
     expect(replies.map((x) => x.command)).toEqual(["approve", "retry"]);
-    expect(replies[0]!.refusal).toMatch(/^`\/approve` was not applied: it needs write permission/);
+    expect(replies[0]!.refusal).toMatch(/^`\/approve` was not applied: only the owner may send this command/);
     expect(replies[1]!.refusal).toBe("`/retry` was not applied: there is no failed run to retry.");
     for (const x of replies) expect(x.handled_at).not.toBeNull();
   });
@@ -391,7 +391,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
 
   /** The page as `actor`, its grants checked as compose.ts checks them: the local auth plugin over the local grants, on the project. */
   function page(h: Awaited<ReturnType<typeof harness>>, actor: UserId): ApiDeps {
-    const auth = new LocalAuthProvider(h.store);
+    const auth = new OwnerAuth(h.store);
     const allowed = (action: PageAction) => auth.authorize({ user_id: actor, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
@@ -426,7 +426,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     }
   });
 
-  it("team: a requester sees approve, reject and revise disallowed; the reason is the refusal the controller gives the same command", async () => {
+  it("a non-owner sees approve, reject and revise disallowed; the reason is the refusal the controller gives the same command", async () => {
     const h = await harness({ localAuth: true });
     const owner = "local:owner@example.com" as UserId;
     const helper = "local:helper@example.com" as UserId;
@@ -435,11 +435,11 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const l = await listed(page(h, helper), it1);
     expect(l.commands.map((c) => [c.name, c.allowed, c.reason])).toEqual(
-      ["approve", "reject", "revise"].map((n) => [n, false, roleRefusal(helper, "no_role")]),
+      ["approve", "reject", "revise"].map((n) => [n, false, "only the owner may send this command"]),
     );
-    // Sent anyway (another page, the CLI): the controller, with the local auth plugin as compose.ts wires it, refuses it
+    // Sent anyway (another page, the CLI): the controller, with the owner check as compose.ts wires it, refuses it
     // with the same reason.
-    const local = new LocalAuthProvider(h.store);
+    const local = new OwnerAuth(h.store);
     const controller = new ControllerRole({ store: h.store, source: h.source, auth: local, clock: h.clock, config, log: silent, scanner: cleanScanner });
     await h.request("app-x", helper, "approve", { work_item_id: it1.id });
     await controller.tickCommands();
@@ -559,7 +559,7 @@ describe("Needs you: the verdict control (issue #513)", () => {
 
   /** The page as the local owner, its grants checked by the local auth plugin, as compose.ts checks them. */
   function page(h: Awaited<ReturnType<typeof harness>>): ApiDeps {
-    const auth = new LocalAuthProvider(h.store);
+    const auth = new OwnerAuth(h.store);
     const allowed = (action: PageAction) => auth.authorize({ user_id: OWNER, attributes: {} }, action, { kind: "project", id: PROJECT_KEY });
     return {
       store: h.store, scanner: cleanScanner, clock: h.clock, lease_ms: 60_000,
@@ -646,7 +646,7 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const llm = new ApproveLLM();
-    const auth = new LocalAuthProvider(store);
+    const auth = new OwnerAuth(store);
     const controller = new ControllerRole({ store, source, auth, clock, config, log: silent, scanner: cleanScanner, llm });
     await store.claimLocalOwner(OWNER);
     await store.setLocalUserRole(HELPER, "requester", OWNER);

@@ -46,7 +46,7 @@ describe("legacy-controller", () => {
     expect(h.calls).toEqual([["event", event]]);
   });
 
-  it("a stream command event's actor carries the passport inbound minted, checked at the record's received time", async () => {
+  it("a stream command event reaches the controller as stored: no passport, even on a message that names one", async () => {
     const h = await harness();
     const source = { type: "slack_thread", id: "C1/1", link: "https://slack.example/archives/C1/p1" };
     const who = { provider: "slack", subject: "7" };
@@ -62,12 +62,7 @@ describe("legacy-controller", () => {
       );
       await h.run(message(SOURCE_EVENT_RECEIVED, { record_id: id, kind: event.kind }, "pp_1"));
     }
-    const passport = { id: "pp_1", at: received_at };
-    expect(h.calls).toEqual([
-      ["event", { ...events[0], approver: { ...who, passport } }],
-      ["event", { ...events[1], requester: { ...who, passport } }],
-      ["event", events[2]],
-    ]);
+    expect(h.calls).toEqual(events.map((e) => ["event", e]));
   });
 
   it("a record or command that is gone decides nothing", async () => {

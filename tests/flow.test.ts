@@ -970,7 +970,7 @@ describe("spec gate: /revise and /reject", () => {
     expect(f.source.comments).toHaveLength(comments + 1);
     expect(refusals(f)).toHaveLength(1);
     expect(refusals(f)[0]!.body).toContain("`/revise` was not applied");
-    expect(refusals(f)[0]!.body).toContain("write permission");
+    expect(refusals(f)[0]!.body).toContain("only the owner may send this command");
   });
 
   it("/revise with no feedback is refused with a reply and changes nothing", async () => {
@@ -1106,7 +1106,7 @@ describe("acknowledging commands and intake", () => {
     expect(f.source.reactions.filter((r) => r.comment_id === "502")).toHaveLength(1);
     expect(refusals(f)).toHaveLength(1);
     expect(refusals(f)[0]).toMatchObject({ source: f.src, marker: "<!-- factory:refused:502 -->" });
-    expect(refusals(f)[0]!.body).toContain("write permission");
+    expect(refusals(f)[0]!.body).toContain("only the owner may send this command");
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 
@@ -1280,7 +1280,7 @@ describe("pre-push diff gates: size limit and floor check", () => {
     f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: "6402", approver: mallory });
     await f.step();
     expect(refusals()).toHaveLength(2);
-    expect(refusals()[1]!.body).toContain("write permission");
+    expect(refusals()[1]!.body).toContain("only the owner may send this command");
     expect(await f.store.getWorkItem(f.item.id)).toMatchObject({ blocked_reason: "floor_tier", tier: 2 });
     expect((await f.store.listRuns(f.item.id)).filter((r) => r.kind === "implement")).toHaveLength(1);
 
@@ -1733,7 +1733,7 @@ describe("/resolve on a merge conflict", () => {
     expect(refusals(f)).toHaveLength(1);
     expect(refusals(f)[0]).toMatchObject({ source: f.src, marker: "<!-- factory:refused:7101 -->" });
     expect(refusals(f)[0]!.body).toContain("`/resolve` was not applied");
-    expect(refusals(f)[0]!.body).toContain("write permission");
+    expect(refusals(f)[0]!.body).toContain("only the owner may send this command");
   });
 
   it("/resolve on an item that is not blocked on a merge conflict is refused, naming the state by its label", async () => {

@@ -78,7 +78,8 @@ export class OwnerAuth implements AuthProvider {
     return { user_id: await factoryUserOf(this.store, identity), attributes: {} };
   }
 
-  authorize(principal: Principal, action: AuthAction): Promise<AuthDecision> {
+  /** The resource does not matter: the owner may act on every one, anyone else on none. */
+  authorize(principal: Principal, action: AuthAction, _resource?: AuthResource): Promise<AuthDecision> {
     return authorizeOwner(this.store, principal.user_id, action);
   }
 }

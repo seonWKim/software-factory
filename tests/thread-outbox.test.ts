@@ -3,10 +3,9 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { SourceRef, UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import {
@@ -204,7 +203,7 @@ describe("no source at all", () => {
   async function factory() {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
-    const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} })]);
+    const auth = new OwnerAuth(store);
     const controller = new ControllerRole({ store, sources: [], auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false });
     const runner = new FakeRunner({
       triage: () => ({ output: triageSpec }),
@@ -259,14 +258,15 @@ describe("no source at all", () => {
     expect(await f.store.listDeliveries(id)).toEqual([]);
   });
 
-  it("a CLI command from an unlinked user is refused by the same authorize check as a GitHub comment, with the same reply", async () => {
+  it("a CLI command from a user who is not the owner is refused by the same owner check as a GitHub comment, with the same reply", async () => {
     const f = await factory();
+    await f.store.claimLocalOwner("local:someone-else" as UserId);
     const id = (await f.cli({ action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     await f.step();
     await f.cli({ action: "command", command: "approve", id, text: "" });
     await f.step();
     const refusal = (await f.store.listItemMessages(id)).find((m) => m.marker.startsWith("<!-- factory:refused:cli:"));
-    expect(refusal!.body).toBe("`/approve` was not applied: your local identity resolves to no factory user under the local auth plugin.");
+    expect(refusal!.body).toBe("`/approve` was not applied: only the owner may send this command.");
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 
