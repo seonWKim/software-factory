@@ -11,8 +11,9 @@ import {
   type HttpClient,
   TOKEN_URL,
 } from "../../src/calendar/plugins/google-calendar/google-calendar-source.js";
-import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } from "../../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
-import { buildStatsStore, loadConfig } from "../../src/compose.js";
+import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_HTTP_TIMEOUT_MS, GOOGLE_REFRESH_TOKEN } from "../../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
+import { buildStatsStore, loadConfig, settingsBase } from "../../src/compose.js";
+import { resolveSettings } from "../../src/core/settings.js";
 import { FakeClock } from "../../src/impl/clock/fake-clock.js";
 import { storeSql } from "../../src/impl/store/sql/store-sql.js";
 import { REGISTRY, type Registry, withPlugin } from "../../src/plugins.js";
@@ -20,7 +21,8 @@ import type { SetupIo } from "../../src/setup.js";
 import { FakeCalendarSource, calendarEvent } from "./fakes.js";
 
 // `factory setup calendar google` and `--disconnect` (docs/plugins/calendar-source.md, Turn on), end to end through
-// the generic CLI flow. No test calls Google or opens a browser: the token endpoint and the event reads are a fake
+// the generic CLI flow, which runs the same connect flow as the dashboard (src/setup.ts connectCalendar) and writes the
+// live `calendar` setting, never factory.config.json. No test calls Google or opens a browser: the token endpoint and the event reads are a fake
 // HTTP client, the browser is a fake opener that calls the loopback listener on 127.0.0.1 the way Google's redirect
 // would, and the 5-minute timeout runs on a FakeClock.
 
@@ -54,13 +56,18 @@ class FakeGoogle {
     body: { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3600, scope: CALENDAR_READONLY_SCOPE, token_type: "Bearer" },
   });
   eventsStatus = 200;
+  /** Awaited before the exchange answers: a hung Google never settles it. */
+  beforeExchange: () => Promise<void> = async () => undefined;
   readonly client: HttpClient = async (url, init) => {
     let status = 200;
     let body: unknown;
     if (url === TOKEN_URL) {
       const b = new URLSearchParams(init.body);
       this.bodies.push(b);
-      if (b.get("grant_type") === "authorization_code") ({ status, body } = this.exchange());
+      if (b.get("grant_type") === "authorization_code") {
+        await this.beforeExchange();
+        ({ status, body } = this.exchange());
+      }
       else body = { access_token: ACCESS, expires_in: 3600, scope: CALENDAR_READONLY_SCOPE };
     } else if (url.startsWith(EVENTS_API)) {
       status = this.eventsStatus;
@@ -85,10 +92,8 @@ interface Run {
   hiddenPrompts: string[];
   /** What the fake browser does with the consent URL: by default, Google's redirect with the code and the state. */
   browser: (url: URL) => Promise<void>;
-  yes: boolean;
-  /** The loader fails from this call on (null: never). */
-  refuseLoadFrom: number | null;
   run(args?: { disconnect?: boolean }): Promise<number>;
+  load(): ReturnType<typeof loadConfig>;
 }
 
 const redirect = (url: URL, query: Record<string, string>) =>
@@ -126,25 +131,15 @@ function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r
     clock: new FakeClock(NOW),
     urls: [], printed: [], hiddenPrompts: [],
     browser: async (url) => void (await redirect(url, { code: CODE, state: url.searchParams.get("state")! })),
-    yes: true,
-    refuseLoadFrom: null,
+    load: () => loadConfig(dir, { registry }),
     async run(args = {}) {
-      let loads = 0;
-      const ctx = {
-        name: "setup",
-        usage: "",
-        load: async () => {
-          loads++;
-          if (r.refuseLoadFrom !== null && loads >= r.refuseLoadFrom) throw new Error("config refused by the test loader");
-          return loadConfig(dir, { registry });
-        },
-      };
+      const ctx = { name: "setup", usage: "", load: r.load };
       const hidden = [CLIENT_ID, CLIENT_SECRET];
       const io: SetupIo = {
         ask: {
           interactive: true,
           choose: async (_q, _o, d) => d,
-          yesNo: async () => r.yes,
+          yesNo: async () => true,
           text: async (_q, d) => d,
         },
         secret: async (p) => (r.hiddenPrompts.push(p), hidden.shift()!),
@@ -158,7 +153,18 @@ function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r
 }
 
 const read = (f: string) => readFileSync(f, "utf8");
-const calendarKey = (r: Run) => (JSON.parse(read(r.configFile)) as { calendar?: unknown }).calendar;
+
+/** The effective `calendar` list: the live setting's override, else the file's key. */
+async function listed(r: Run): Promise<readonly string[]> {
+  const loaded = await r.load();
+  const store = await buildStatsStore(loaded);
+  try {
+    await store.migrate();
+    return resolveSettings(settingsBase(loaded), await store.listSettingOverrides()).values.calendar;
+  } finally {
+    await store.close();
+  }
+}
 
 /** Every file under `dir` but `skip`, as text. */
 function filesUnder(dir: string, skip: string): { path: string; text: string }[] {
@@ -209,14 +215,16 @@ describe("factory setup calendar google: the consent", () => {
 });
 
 describe("factory setup calendar google: end to end", () => {
-  it("asks the client ID and secret once, hidden; stores the three secrets; lists the plugin after a diff; syncs once and prints the count", async () => {
+  it("asks the client ID and secret once, hidden; stores the three secrets; lists the plugin in the live setting; syncs once and prints the count", async () => {
     const r = machine();
+    const config = read(r.configFile);
     expect(await r.run()).toBe(0);
     expect(r.hiddenPrompts).toEqual(["   Paste GOOGLE_CLIENT_ID (hidden): ", "   Paste GOOGLE_CLIENT_SECRET (hidden): "]);
     expect(read(r.secretsFile)).toBe(`GITHUB_TOKEN=gh\n\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
     expect(statSync(r.secretsFile).mode & 0o777).toBe(0o600);
-    expect(calendarKey(r)).toEqual(["google-calendar"]);
-    expect(r.printed).toContain('     + "calendar": ["google-calendar"]');
+    expect(await listed(r)).toEqual(["google-calendar"]);
+    expect(read(r.configFile)).toBe(config);
+    expect(r.printed).toContain('   ✓ listed google-calendar in "calendar": ["google-calendar"] (a live setting, no restart)');
     expect(r.printed).toContain("   ✓ synced google-calendar: read 2 events");
     // The sync wrote the store.
     const store = await buildStatsStore(await loadConfig(r.dir));
@@ -265,6 +273,7 @@ describe("factory setup calendar google: refusals store nothing and exit non-zer
     expect(await r.run()).toBe(1);
     expect(read(r.secretsFile)).toBe(before.secrets);
     expect(read(r.configFile)).toBe(before.config);
+    expect(await listed(r)).toEqual([]);
   };
   const snapshot = (r: Run) => ({ secrets: read(r.secretsFile), config: read(r.configFile) });
 
@@ -300,6 +309,22 @@ describe("factory setup calendar google: refusals store nothing and exit non-zer
     await expect(fetch(redirectUri)).rejects.toThrow();
   });
 
+  it("a token exchange with no answer within GOOGLE_HTTP_TIMEOUT_MS fails as no answer", async () => {
+    const r = machine();
+    let asked = false;
+    // Google takes the request and never answers, while the Clock passes the limit.
+    r.google.beforeExchange = async () => {
+      asked = true;
+      r.clock.advance(GOOGLE_HTTP_TIMEOUT_MS - 1);
+      await Promise.resolve();
+      r.clock.advance(1);
+      return new Promise(() => undefined);
+    };
+    await untouched(r, snapshot(r));
+    expect(asked).toBe(true);
+    expect(r.printed.join("\n")).toMatch(/token exchange failed \(no answer\): nothing stored/);
+  });
+
   it("a callback that carries an error from Google", async () => {
     const r = machine();
     r.browser = async (url) => void (await redirect(url, { error: "access_denied", state: url.searchParams.get("state")! }));
@@ -327,70 +352,58 @@ describe("factory setup calendar google: refusals store nothing and exit non-zer
   });
 });
 
-describe("factory setup calendar google: the calendar key and the sync", () => {
+describe("factory setup calendar google: the calendar setting and the sync", () => {
   const work = (reg: Registry) => withPlugin(reg, "calendar", "work", () => new FakeCalendarSource([calendarEvent("w1")]));
 
-  it("keeps the other calendar names and every other line", async () => {
+  it("keeps the other calendar names, and factory.config.json byte for byte", async () => {
     const r = machine({ calendar: ["work"], registry: work });
     const before = read(r.configFile);
     expect(await r.run()).toBe(0);
-    expect(calendarKey(r)).toEqual(["work", "google-calendar"]);
-    expect(read(r.configFile)).toBe(before.replace(/"calendar": \[[^\]]*\]/, '"calendar": ["work", "google-calendar"]'));
+    expect(await listed(r)).toEqual(["work", "google-calendar"]);
+    expect(read(r.configFile)).toBe(before);
   });
 
-  it("a no to the diff leaves the config as it was and runs no sync; the secrets stay", async () => {
-    const r = machine();
-    r.yes = false;
-    const before = read(r.configFile);
+  it("a plugin the file lists already writes no override", async () => {
+    const r = machine({ calendar: ["google-calendar"] });
     expect(await r.run()).toBe(0);
-    expect(read(r.configFile)).toBe(before);
-    expect(read(r.secretsFile)).toContain(`GOOGLE_REFRESH_TOKEN=${REFRESH}`);
-    expect(r.printed.join("\n")).not.toMatch(/read \d+ events/);
-    expect(r.printed.join("\n")).toMatch(/not written, it is not turned on and not synced/);
+    expect(r.printed).toContain('   ✓ "calendar" unchanged: ["google-calendar"] (a live setting, no restart)');
+    const store = await buildStatsStore(await loadConfig(r.dir));
+    try {
+      expect(await store.listSettingOverrides()).toEqual([]);
+    } finally {
+      await store.close();
+    }
   });
 
-  it("a config the loader refuses leaves the file as it was", async () => {
-    const r = machine();
-    r.refuseLoadFrom = 2;
-    const before = read(r.configFile);
-    expect(await r.run()).toBe(1);
-    expect(read(r.configFile)).toBe(before);
-    expect(r.printed.join("\n")).toMatch(/refused by the config check, the file is unchanged/);
-  });
-
-  it("a failed sync prints its error and exits non-zero; the secrets and the config stay", async () => {
+  it("a failed sync prints its error and exits non-zero; the secrets and the setting stay", async () => {
     const r = machine();
     r.google.eventsStatus = 500;
     expect(await r.run()).toBe(1);
     expect(r.printed.join("\n")).toMatch(/sync of google-calendar failed: google-calendar: events read of calendar primary failed \(HTTP 500\)/);
     expect(read(r.secretsFile)).toContain(`GOOGLE_REFRESH_TOKEN=${REFRESH}`);
-    expect(calendarKey(r)).toEqual(["google-calendar"]);
+    expect(await listed(r)).toEqual(["google-calendar"]);
   });
 });
 
 describe("factory setup calendar google --disconnect", () => {
   const CONNECTED = `GITHUB_TOKEN=gh\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nOTHER=x\nGOOGLE_REFRESH_TOKEN=${REFRESH}\n`;
 
-  it("removes the three secret lines, keeps the others and mode 600, and drops the plugin from the key, keeping other names", async () => {
+  it("removes the three secret lines, keeps the others and mode 600, and drops the plugin from the setting, keeping other names", async () => {
     const r = machine({ secrets: CONNECTED, calendar: ["work", "google-calendar"], registry: (reg) => withPlugin(reg, "calendar", "work", () => new FakeCalendarSource()) });
     expect(await r.run({ disconnect: true })).toBe(0);
     expect(read(r.secretsFile)).toBe("GITHUB_TOKEN=gh\nOTHER=x\n");
     expect(statSync(r.secretsFile).mode & 0o777).toBe(0o600);
-    expect(calendarKey(r)).toEqual(["work"]);
+    expect(await listed(r)).toEqual(["work"]);
     expect(r.urls).toEqual([]);
     expect(r.google.bodies).toEqual([]);
   });
 
-  it("a key left empty is set to []; a no to the diff keeps the key", async () => {
+  it("the last name dropped leaves the setting []; factory.config.json stays as it was", async () => {
     const r = machine({ secrets: CONNECTED, calendar: ["google-calendar"] });
+    const before = read(r.configFile);
     expect(await r.run({ disconnect: true })).toBe(0);
-    expect(calendarKey(r)).toEqual([]);
-    expect(read(r.configFile)).toContain('"calendar": []');
-
-    const n = machine({ secrets: CONNECTED, calendar: ["google-calendar"] });
-    n.yes = false;
-    expect(await n.run({ disconnect: true })).toBe(0);
-    expect(calendarKey(n)).toEqual(["google-calendar"]);
+    expect(await listed(r)).toEqual([]);
+    expect(read(r.configFile)).toBe(before);
   });
 
   it("with nothing connected changes nothing", async () => {

@@ -6,13 +6,16 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { syncCalendars } from "../../dist/calendar/index.js";
 import { ALERT_DEDUPE_MS } from "../../dist/core/alarms.js";
 import { saveProject } from "../../dist/core/project-labels.js";
 import { SystemClock } from "../../dist/impl/clock/system-clock.js";
 import { PatternEgressScanner } from "../../dist/impl/egress/pattern-egress-scanner.js";
 import { SqlFactoryStore } from "../../dist/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../../dist/impl/store/sqlite/sqlite-driver.js";
+import { storeSql } from "../../dist/impl/store/sql/store-sql.js";
 import { FsSharedStorage } from "../../dist/impl/storage/fs-shared-storage.js";
+import { UiCalendar } from "../../dist/ui/calendar-api.js";
 import { HealthMonitor } from "../../dist/ui/health.js";
 import { newCsrfToken, storeProjectResolver } from "../../dist/ui/settings-api.js";
 import { startUi } from "../../dist/ui/server.js";
@@ -86,6 +89,7 @@ export async function startFixture() {
         actor: OWNER,
         resolveProject: storeProjectResolver(store, REPO),
         csrfToken,
+        calendar: await seedCalendar(store, clock),
       },
       storage,
       commands: { actor: OWNER, source: "config", token: csrfToken, mergeAllowed: async () => true, localMerge: true },
@@ -185,4 +189,24 @@ async function seed(store, storage) {
   await store.setSettingOverride({ key: "max_diff_files", project: PROJECT.key, value: "40", actor: OWNER });
 
   return { item: busy.id, parent: parent.id, run: failed.id };
+}
+
+/**
+ * The Settings page's Calendar section, as compose.ts wires it for the UI: two plugins with long names, one connected
+ * whose last sync failed with a long error, one never connected. Its connect flow is never run by the check.
+ */
+async function seedCalendar(store, clock) {
+  const connected = `calendar-plugin-${LONG_WORD}`;
+  const failing = { events: async () => { throw new Error(`token refresh failed: invalid_grant for ${LONG_WORD} ${"while reading the calendar list ".repeat(4)}`); } };
+  await syncCalendars(storeSql(store), [{ name: connected, source: failing }], clock.now().getTime());
+  return new UiCalendar({
+    plugins: [
+      { name: connected, secrets: ["CALENDAR_CLIENT_ID", "CALENDAR_CLIENT_SECRET"] },
+      { name: "second-calendar", secrets: ["SECOND_CALENDAR_TOKEN"] },
+    ],
+    listed: async () => [connected],
+    run: async () => {
+      throw new Error("the responsive check never connects a calendar");
+    },
+  });
 }
