@@ -1,7 +1,7 @@
 # 8. Enterprise: retention
 
 - **The controller deletes old operational rows once a day, in three classes, under a store lease (new decision, 2026-11-11, issue #462; current).** The inbox cleanup (`inbox_retention_days`, inbound's `records` tick, `docs/architecture.md` Intake) stays as it was. Code: the `retention` unit (`src/controller/units/retention/`), ticked by the controller role; the store's `pruneDeliveredOutbox`, `pruneHandledCommands` and `pruneRecords`.
-  - **Three classes, one period each.** `factory.config.json` takes a `retention` block: `outbox_days` (default 30), `commands_days` (default 30) and `records_days` (default 90). An absent block or key takes its default. A value must be an integer of 0 or more; anything else fails startup with a message naming the key, and an unknown key under `retention` fails load with a suggestion. `0` keeps that class forever: the pass skips it entirely. The block is file-only, not a runtime setting (`factory settings`): a shorter period deletes history, so it changes by a reviewed PR. Solo and enterprise get the same defaults; the MySQL store runs the same SQL code as SQLite.
+  - **Three classes, one period each.** `factory.config.json` takes a `retention` block: `outbox_days` (default 30), `commands_days` (default 30) and `records_days` (default 90). An absent block or key takes its default. A value must be an integer of 0 or more; anything else fails startup with a message naming the key, and an unknown key under `retention` fails load with a suggestion. `0` keeps that class forever: the pass skips it entirely. The block is file-only, not a runtime setting (`factory settings`): a shorter period deletes history, so it changes by a reviewed PR. Every worker gets the same defaults.
     - **Outbox** (`outbound_intents`, the thread outbox): a row with `delivered_at` set and created more than `outbox_days` ago. An undelivered row is never deleted.
     - **Commands** (`inbound_commands`, the command inbox and the app requests merged into it): a row created more than `commands_days` ago, whose seq is at or below the `commands` cursor (inbound announced it), and that is not waiting for the CLI mirror (`mirror` = 1 with `mirrored_at` NULL stays). An app request also needs `handled_at`. A request recorded before the two tables merged (`legacy_table` `app_command_requests`) also waits until its `app:<seq>` command row is gone; a request recorded since is its own command row.
     - **Records:** claim decisions (`controller_claim_decisions`, by `at`), host sleeps (`worker_host_sleeps`, by `woke_at`) and alerts (`controller_alerts`, by `created_at`) older than `records_days`.
@@ -15,4 +15,4 @@
 
 ## History
 
-- (none: first decision)
+- **Current text names SQLite only** (decision changed 2026-11-11, issue #567). Before: the Three classes decision said solo and enterprise got the same defaults and that the MySQL store ran the same SQL code as SQLite.

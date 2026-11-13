@@ -14,29 +14,24 @@ force.
   `tests/architecture/schema-snapshot.test.ts` fails when it is stale.
 - **Schema changes are timestamped migrations** (since 2026-11-08): `<yyyymmddThhmm>-<component>-<slug>.migration.ts`
   in the owning component's `migrations/` folder, found by discovery, recorded in `runtime_schema_migrations`.
-  They run after the frozen numbered baseline (SQLite's list in `src/impl/store/sqlite/schema.ts`, MySQL steps
-  up to `0041` in `migrations/mysql/`), which gets no new entries. SQLite applies them when it opens, in the
-  same transaction as the baseline; MySQL applies them in `npm run migrate`, after the numbered steps.
+  They run after the frozen numbered baseline (the list in `src/impl/store/sqlite/schema.ts`), which gets no
+  new entries. SQLite applies them when it opens, in the same transaction as the baseline.
 - **No data moves in place** (since 2026-11-08). A breaking migration first writes every table it names to
-  `backups/<time>-<id>/<table>.jsonl` with a manifest of row counts and checksums: beside the SQLite file, or
-  under the state dir for MySQL. A fresh database is not backed up. Renames copy each table under its new
+  `backups/<time>-<id>/<table>.jsonl` with a manifest of row counts and checksums: beside the SQLite file. A fresh database is not backed up. Renames copy each table under its new
   name from its own DDL, verify every column of every row, and only then rename all old tables to
-  `legacy_<old>` at once (one transaction on SQLite, one `RENAME TABLE` on MySQL). The legacy tables stay
+  `legacy_<old>` at once (one transaction). The legacy tables stay
   until a contract migration drops them after the owner confirms.
 - **Contract migrations run only on `npm run migrate -- --contract`** (since 2026-11-09, RFC 0015 M11; see
   History). A `contract` migration names the breaking migrations it follows (`after`) and is never pending for an
-  open, a start or an update: SQLite's open and MySQL's `npm run migrate` skip it. `--contract` applies each one
+  open, a start or an update: SQLite's open skips it. `--contract` applies each one
   whose `after` migrations were applied at least 14 days earlier (`CONTRACT_MIN_DAYS`, the D9 down path's window)
   and prints why it skips the others; a table with rows is archived to `db/backups/` first, and with no backup
   folder the drop is refused (D4). Written: `20261109T0900-state-drop-legacy-tables` (M1's `legacy_*`) and
-  `20261109T0901-inbound-drop-legacy-commands` (M4's). Solo and enterprise: the same; on a shared MySQL store the
-  owner runs it once.
+  `20261109T0901-inbound-drop-legacy-commands` (M4's).
 - **Rehearse before migrating** (since 2026-11-08): `npm run migrate -- --rehearse` copies the database
-  (MySQL: one consistent snapshot into `<database>_rehearsal`, which the factory's MySQL user needs to be
-  granted once; SQLite: `VACUUM INTO` a temp file), applies every pending step and migration to the copy,
+  (`VACUUM INTO` a temp file), applies every pending step and migration to the copy,
   checks that each table still holds the same rows over its old columns (under its name or as its `legacy_`
-  archive), and drops the copy. The live database is only read. Enterprise: run it before every `npm run
-  migrate` on the shared store. Solo: optional, since SQLite also backs up before a breaking migration.
+  archive), and drops the copy. The live database is only read. Optional, since SQLite also backs up before a breaking migration.
 - **CLI commands are discovered** (since 2026-11-08): each command is `src/cli/handlers/<command>/<command>.command.ts`
   (`defineCommand` from `src/cli/command.ts`: its names, its block of the help text, `run`). `src/main.ts` only reads
   `--config`, finds the command by name and runs it; adding a command edits no central file. Help lists the
@@ -60,7 +55,7 @@ force.
   - Steps today: triage `run-agent`; review `run-agent`, `post-review`; implement `run-agent` (an interrupted agent
     step starts a new session, since its retry has a new folder without the old session's commits; result: the work and a G5-scanned git bundle of its
     commits in shared storage), `record-handoffs`, `push-branch`, `open-pr`. A run taken over after its agent step
-    restores the commits from the bundle and runs no agent (`tests/worker-crash-resume.test.ts`, SQLite and MySQL);
+    restores the commits from the bundle and runs no agent (`tests/worker-crash-resume.test.ts`);
     with no bundle (the commits did not scan clean) it fails `resume_lost` (infra) and is retried afresh. The local
     phases between steps (folder, preflight, sync, gates, checks) run again on a resume; they are safe to repeat.
     Resolve: one `resolve` step (merge, agent, scope and marker gates, the merge commit, install and checks; three
@@ -101,8 +96,7 @@ force.
   - A run's comments are thread entries outbound delivers (M7, worker half). Pushes and PR writes stay in the worker
     as journaled steps until outbound's `github-push` and `github-change` take them (see "Writes to the outside
     world leave through outbound").
-- **The sql bus** (since 2026-11-08, RFC 0015 M3; `src/bus/`, contract in `tests/bus-contract.test.ts` on SQLite
-  and MySQL). A component publishes by writing its `<component>_outbox` in its own transaction; the relay moves
+- **The sql bus** (since 2026-11-08, RFC 0015 M3; `src/bus/`, contract in `tests/bus-contract.test.ts`). A component publishes by writing its `<component>_outbox` in its own transaction; the relay moves
   the rows to the topic on the component's `relay` tick. Each topic has its own tables (`bus_<topic>`,
   `_cursors`, `_retries`, `_dead_letters`), created from the discovered topic descriptor by `ensureTopicTables`
   (never altered or dropped there) and listed in `bus_topics`; a change of a topic's partitions or consumption is
@@ -112,11 +106,10 @@ force.
   scheduler's tick moves: retries, delayed messages and expired leases become due against it, so no consumer
   reads a clock. A delayed message on a partitioned topic is parked and does not hold up its partition. Consumers
   dedupe in their component's `<component>_inbox` in the same transaction as their effect (`deliver()`), so
-  at-least-once delivery has an effect exactly once. Solo: SQLite, one process runs every schedule. Enterprise:
-  MySQL, any number of consumers and schedulers; leases and claim tokens keep a message with one consumer.
+  at-least-once delivery has an effect exactly once. SQLite: one process runs every schedule; leases and
+  claim tokens keep a message with one consumer.
 - **Seq cursors never pass an uncommitted seq** (since 2026-11-09, RFC 0015 review; decision changed: writers to
-  one sequence now commit in seq order, see History). MySQL assigns AUTO_INCREMENT at insert, not at commit, so a
-  reader's `seq > cursor` could pass a lower seq whose transaction commits later and skip it for good. Every insert
+  one sequence now commit in seq order, see History). Every insert
   into a sequence a cursor reads takes that sequence's lock row FOR UPDATE first, in the inserting transaction:
   the topic's `bus_topics` row for a topic table (the relay locks all its batch's topics in one statement, in key
   order, so two relays never deadlock; a dead-letter notice locks `system.alerts`), the `commands` row of
@@ -125,8 +118,7 @@ force.
   `inbound_raw_records` (already so). Readers stay plain reads. Chosen over a high-water mark (the lowest seq still
   in flight, or a settle delay), which needs either a vendor-specific query of open transactions or a delay on every
   message; the lock costs one indexed read per writing transaction and serializes only writers to the same
-  sequence. Solo: SQLite has one writer, so the lock is skipped there. Enterprise: MySQL replicas and components
-  write one topic one transaction at a time.
+  sequence. SQLite has one writer, so the lock is skipped there.
 - **Leases are renewed right before handling** (since 2026-11-09, RFC 0015 review). `consume` leases up to one
   message per partition (or `max` competing rows) at once, and the consumer handles them in order, so a later one's
   lease could run out while earlier ones are handled and a second replica would take it too. `EventBus.renew(c)`
@@ -146,10 +138,8 @@ force.
   `consume` refuses a group that never subscribed. Competing topics are one queue for every group: nothing to
   register. Solo and enterprise: the same; on a fresh store every topic is empty, so latest equals earliest.
 - **Inserts skip key conflicts only** (since 2026-11-09, RFC 0015 review; decision changed: no `INSERT IGNORE`, see
-  History). `insertOrSkip` is `ON CONFLICT DO NOTHING` on SQLite and a plain INSERT whose duplicate-key error is
-  caught on MySQL, so a value too long for its column fails instead of being cut. Not `ON DUPLICATE KEY UPDATE pk =
-  pk`: under the driver's `FOUND_ROWS` flag its row count is 1 for a skip too, and the inbox needs to tell a
-  duplicate from a new key. `envelopeProblems` refuses an id, type, subject, project, idempotency key, causation,
+  History). `insertOrSkip` is `ON CONFLICT DO NOTHING`, so a value too long for its column fails instead of being cut, and
+  the inbox tells a duplicate from a new key by its row count. `envelopeProblems` refuses an id, type, subject, project, idempotency key, causation,
   correlation, passport or producer longer than 191 characters, and the bus a partition key longer than that, at
   publish (never in the relay, which would stall the outbox).
 - **The bus and the tick generator are plugins** (decision changed 2026-11-08, M3 leftovers; see History).
@@ -190,8 +180,7 @@ force.
   idempotency key kept). The controller role (`src/runtime/roles/controller-role.ts`) owns the sync lease and hands
   it to inbound (fences its cursor moves) and to the old controller (fences its deliveries). In production, relay
   and consume run every 250 ms and intake every `tick_ms`, so a command reaches the decision code up to about
-  0.5 s later than in the old same-tick loop. `npm run migrate` creates every discovered topic's tables, so an
-  enterprise MySQL user needs no DDL rights at run time: at start a role creates only the tables of a topic
+  0.5 s later than in the old same-tick loop. `npm run migrate` creates every discovered topic's tables, so at start a role creates only the tables of a topic
   `bus_topics` does not list yet (the row is written after the tables) and runs no DDL when every topic is listed
   (since 2026-11-09), so solo needs no migrate step.
 - **The controller decides in discovered units** (since 2026-11-08, RFC 0015 M5; the units still do their own I/O).
@@ -452,7 +441,7 @@ force.
   the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
   `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
   migrations `20261109T0300-controller-merge-queue` and `20261109T1030-controller-merge-queue-heads`; each entry is
-  a `MergeQueueEntry` actor; the queue id is a hash of project and base, so any length fits MySQL's key). Entry: only
+  a `MergeQueueEntry` actor; the queue id is a hash of project and base, so any length fits a key). Entry: only
   a ready change (merge_pending: reviewed, its own checks green) approved by `factory merge` / the Merge button (the
   approver role) or by auto mode where its tier allows, so a change waiting on a person is never in the queue. A
   branch that conflicts with the base is refused at once, as before. Check: each of the first `merge_queue.depth`
@@ -545,6 +534,7 @@ force.
 
 ## History
 
+- **Current text names SQLite only** (decision changed 2026-11-11, issue #567). Before: the current decisions named MySQL beside SQLite in schema changes (MySQL steps up to `0041` in `migrations/mysql/`, applied by `npm run migrate`), backups, renames, contract migrations, rehearsal (a snapshot into `<database>_rehearsal`), the worker-crash and bus contract tests, the sql bus (enterprise: MySQL), the seq cursors (MySQL assigns AUTO_INCREMENT at insert, not at commit, so a reader's `seq > cursor` could pass a lower seq whose transaction commits later), `insertOrSkip` (a plain INSERT whose duplicate-key error was caught on MySQL), the topic tables an enterprise MySQL user needed no DDL rights for, and the merge-queue id length that fits MySQL's key.
 - **Implement run-agent step budget** (decision changed 2026-11-13, issue #671). Before: the implement kind's
   `run-agent` step had the shared `start_to_close` of one hour per step (above the agent's own `run_timeout_ms`,
   which fires first); warm-up plus agent could pass one hour, so the step failed `start_to_close`.
