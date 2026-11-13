@@ -394,8 +394,7 @@ export class SqlFactoryStore implements FactoryStore {
   // Plain tasks (design 02-tasks, issue #606): tasks.ts
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
   listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
-  completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); }
-  reopenTask(id: string) { return tasks.reopenTask(this.db, id); }
+  completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); } reopenTask(id: string) { return tasks.reopenTask(this.db, id); }
   getTask(id: string) { return tasks.getTask(this.db, id); }
   linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }
   closeLinkedTasks(work_item_id: WorkItemId) { return tasks.closeLinkedTasks(this.db, work_item_id, this.now()); }
