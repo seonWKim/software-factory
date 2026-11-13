@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   type AuthProvider,
   type ExternalIdentity,
-  OwnerGrant,
   PassportService,
   ProfileStore,
   REVOCATIONS_TICK,
@@ -67,7 +66,7 @@ for (const [name, open] of BACKENDS) {
         db,
         keys: secretKeyring({ get: async () => ({ reveal: () => "k".repeat(40) }) }, { current: "K" }),
         providers: [named],
-        grants: [new OwnerGrant("oidc:ada")],
+        owner: "oidc:ada",
         ticks,
       });
       await ticks.tick(REVOCATIONS_TICK, Date.parse(AT));

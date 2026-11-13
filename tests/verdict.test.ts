@@ -4,7 +4,7 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItem, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { parseVerdict, verdictRefusal } from "../src/core/verdict.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { AuthAction, Principal } from "../src/interfaces/auth-provider.js";
 import type { SourceEvent, VerdictEventTarget } from "../src/interfaces/source-adapter.js";
@@ -285,7 +285,7 @@ describe("factory verdict on a local item (issue #523)", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const controller = new ControllerRole({
-      store, sources: [new LocalSource(store)], auth: new LocalAuthProvider(store), clock, config, log: silent, scanner: cleanScanner,
+      store, sources: [new LocalSource(store)], auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner,
       repeated_failure_rule: false,
     });
     let n = 0;

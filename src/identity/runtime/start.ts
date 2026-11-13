@@ -8,7 +8,7 @@ import { TimeBasedTickGenerator } from "../../shared/ticks/plugins/time-based/ti
 import type { SqlExecutor } from "../../state/index.js";
 import { secretKeyring } from "../passport/keys.js";
 import { PassportService } from "../passport/service.js";
-import type { AuthProvider, GrantSource } from "../passport/types.js";
+import type { AuthProvider } from "../passport/types.js";
 import { LOCAL_KEY_FILE, localKeyFile } from "../plugins/local/local-key.js";
 import { LocalAuthProvider } from "../plugins/local/local-identity.js";
 
@@ -25,7 +25,6 @@ export async function startIdentity(o: {
   stateDir: string;
   /** Beside the local provider (and the built-in service one). */
   providers?: readonly AuthProvider[];
-  grants?: readonly GrantSource[];
   onError?: (schedule: string, err: unknown) => void;
 }): Promise<IdentityRuntime> {
   const ticks = new TimeBasedTickGenerator(o.onError);
@@ -33,7 +32,6 @@ export async function startIdentity(o: {
     db: o.db,
     keys: secretKeyring(localKeyFile(join(o.stateDir, LOCAL_KEY_FILE), PASSPORT_KEY), { current: PASSPORT_KEY }),
     providers: [new LocalAuthProvider(), ...(o.providers ?? [])],
-    grants: o.grants ?? [],
     ticks,
   });
   const stop = new AbortController();

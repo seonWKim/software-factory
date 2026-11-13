@@ -9,7 +9,6 @@ import { CaffeinateKeepAwake } from "../src/impl/awake/caffeinate-keep-awake.js"
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { AuditedAuthProvider } from "../src/impl/auth/audited-auth.js";
 import { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { GitHubToolBroker } from "../src/impl/github/github-tool-broker.js";
 import { Bm25CapabilitySearch } from "../src/impl/capability/bm25-capability-search.js";
@@ -75,7 +74,6 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   sandbox: { noop: NoOpSandbox },
   runner: { "claude-code": ClaudeCodeRunner },
   llm: { "claude-cli": ClaudeCliLLMProvider },
-  auth: { local: LocalAuthProvider },
   secrets: { "env-file": EnvFileSecretStore },
   egress: { pattern: PatternEgressScanner },
   broker: { github: GitHubToolBroker },
@@ -182,8 +180,6 @@ describe("plugin registry: defaults", () => {
       sandbox: "noop",
       runner: "claude-code",
       llm: "claude-cli",
-      // Never built (design 08-permissions, One owner): selectPlugins still needs a name for the kind.
-      auth: "local",
       secrets: "env-file",
       egress: "pattern",
       broker: "github",
@@ -222,7 +218,7 @@ describe("plugin registry: defaults", () => {
   it("the checked-in factory.config.json selects the defaults, except the GitHub App bot, local and Slack intake, the bm25 doc index and the agents-home tacit ledger, leaving awake to the platform", async () => {
     for (const platform of ["darwin", "linux"]) {
       const loaded = await loadConfig(root(REAL), { platform });
-      const { store: _s, auth: _a, github_auth, sources, capability, tacit, forge, ...rest } = loaded.plugins;
+      const { store: _s, github_auth, sources, capability, tacit, forge, ...rest } = loaded.plugins;
       expect(github_auth).toBe("app");
       expect(tacit).toBe("agents-home");
       expect(sources).toEqual(["github-issues", "local", "slack"]);
@@ -296,7 +292,7 @@ describe("plugin registry: every discovered plugin", () => {
           expect(s.name).toMatch(/^[A-Z][A-Z0-9_]*$/);
           expect(s.purpose.trim()).not.toBe("");
         }
-        if (d.kind === "store" || d.kind === "auth") expect(d.default).toBeUndefined();
+        if (d.kind === "store") expect(d.default).toBeUndefined();
         if (REGISTRY[d.kind].guard) expect(["", "none"]).not.toContain(d.name);
       });
     });
@@ -330,8 +326,7 @@ describe("plugin registry: unknown names fail at startup", () => {
     return { ...REAL, plugins: { ...(REAL.plugins as object), [kind]: value } };
   };
 
-  // `auth` is no longer read (One owner): a config that still has it loads with one warning.
-  for (const kind of PLUGIN_KINDS.filter((k) => k !== "auth")) {
+  for (const kind of PLUGIN_KINDS) {
     it(`${kind}: names the interface, the bad value and every available name`, async () => {
       const dir = root(configWith(kind, "no-such-plugin"));
       const err = await loadConfig(dir).then(
@@ -350,12 +345,12 @@ describe("plugin registry: unknown names fail at startup", () => {
     await expect(build(bad, { clock: new FakeClock(), repoLookup: fakeRepoLookup })).rejects.toThrow(/unknown Sandbox plugin "docker".*available: noop/);
   });
 
-  it("unknown keys in the plugins object fail, and store/auth point to their own keys", async () => {
+  it("unknown keys in the plugins object fail, and store points to its own key", async () => {
     await expect(loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), sandox: "noop" } }))).rejects.toThrow(
       /unknown plugins key "sandox"/,
     );
-    await expect(loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), auth: "none" } }))).rejects.toThrow(
-      /top-level "auth" key/,
+    await expect(loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), store: "sqlite" } }))).rejects.toThrow(
+      /top-level "store" key/,
     );
   });
 
@@ -552,6 +547,12 @@ describe("plugin registry: existing config keys keep working", () => {
     expect((await loadConfig(root(rest))).plugins.store).toBe("sqlite");
   });
 
+  it("the registry has no auth kind and no grant descriptor (One owner, phase B of issue #575)", () => {
+    expect(PLUGIN_KINDS).not.toContain("auth");
+    expect(PLUGINS_KEYS).not.toContain("auth");
+    expect(findPluginFiles([PLUGIN_ROOT], /\.grant\.(?:ts|js)$/)).toEqual([]);
+  });
+
   it("every command path gets the one owner check, audited; no auth or grant plugin is built", async () => {
     const built = await build(await loadConfig(root({ ...REAL, store: { type: "sqlite" } })), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     try {
@@ -582,7 +583,7 @@ describe("plugin registry: existing config keys keep working", () => {
 describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () => {
   const registry = fakeSlackPollRegistry();
   const select = (source: unknown, reg: Registry = registry) =>
-    selectPlugins(reg, { store: { type: "sqlite" }, auth: "github", plugins: { ...(REAL.plugins as object), source } }, { platform: "linux" });
+    selectPlugins(reg, { store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), source } }, { platform: "linux" });
   const failure = (source: unknown): string | null => {
     try {
       select(source);
@@ -614,7 +615,7 @@ describe("plugin registry: plugins.source takes a list (design 2026-11-01)", () 
     expect(failure([])).toBeNull();
     expect(selectedSources(select([]))).toEqual([]);
     const other = (key: "runner" | "llm") => () =>
-      selectPlugins(registry, { store: { type: "sqlite" }, auth: "github", plugins: { ...(REAL.plugins as object), [key]: [] } }, { platform: "linux" });
+      selectPlugins(registry, { store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), [key]: [] } }, { platform: "linux" });
     expect(other("runner")).toThrow(/plugins\.runner is an empty list/);
     expect(other("llm")).toThrow(/plugins\.llm is an empty list/);
   });
@@ -779,8 +780,8 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
   const srcFiles = (dir: string): string[] => findPluginFiles([dir], /\.ts$/);
 
   it("every GitHub descriptor imports its implementation inside create(), never at top level", () => {
-    const files = [...findPluginFiles([GITHUB_DIR]), ...findPluginFiles([GITHUB_DIR], /\.grant\.ts$/)];
-    expect(files.map((f) => f.slice(GITHUB_DIR.length + 1))).toEqual(expect.arrayContaining(["token.plugin.ts", "app.plugin.ts", "github-permission.grant.ts"]));
+    const files = findPluginFiles([GITHUB_DIR]);
+    expect(files.map((f) => f.slice(GITHUB_DIR.length + 1))).toEqual(expect.arrayContaining(["token.plugin.ts", "app.plugin.ts"]));
     for (const file of files) {
       const text = readFileSync(file, "utf8");
       const topLevel = [...text.matchAll(/^import\s+(?!type\b)[^"]*from\s+"(\.[^"]+)"/gm)].map((m) => join(dirname(file), m[1]!));
@@ -817,9 +818,6 @@ describe("GitHub plugins (design 05-sources): one client per process, built by t
     const built = await build(await loadConfig(dir, { registry: reg }), { clock: new FakeClock(), repoLookup: fakeRepoLookup });
     await built.close();
     expect(made).toBe(1);
-    // No auth plugin or grant is built any more (One owner): the owner check reads the store only.
-    expect(seen).not.toHaveProperty("auth");
-    expect(seen).not.toHaveProperty("grant");
     for (const kind of ["source", "forge", "broker"]) {
       expect(seen[kind]?.github, kind).toBe(api);
       expect(seen[kind]!.repo, kind).toEqual({ owner: (REAL.repo as { owner: string }).owner, name: (REAL.repo as { name: string }).name });

@@ -8,10 +8,7 @@ export type {
   Authorization,
   AuthzResult,
   ExternalIdentity,
-  GrantSource,
-  GrantSubject,
   Issued,
-  LinkedAccount,
   NarrowRequest,
   Origin,
   Passport,
@@ -29,10 +26,10 @@ export { ACTIONS, ROLE_ACTIONS } from "./passport/types.js";
 export { NotAuthenticated, PassportService, REVOCATIONS_TICK, type IdentityOptions } from "./passport/service.js";
 export type { PassportKeyring, SigningKey } from "./passport/token.js";
 export { secretKeyring, type SecretProvider } from "./passport/keys.js";
-export { ANONYMOUS_USER, LocalAuthProvider, OwnerGrant, localIdentity, type LocalEnvironment } from "./plugins/local/local-identity.js";
+export { ANONYMOUS_USER, LocalAuthProvider, localIdentity, type LocalEnvironment } from "./plugins/local/local-identity.js";
 export { readLocalEnvironment } from "./plugins/local/local-environment.js";
 export { LOCAL_KEY_FILE, localKeyFile } from "./plugins/local/local-key.js";
-export { SERVICE_ACTIONS, ServiceAuthProvider, ServiceGrant, serviceUser, type ServiceName } from "./plugins/service/service-identity.js";
+export { SERVICE_ACTIONS, ServiceAuthProvider, serviceUser, type ServiceName } from "./plugins/service/service-identity.js";
 export { PASSPORT_KEY, startIdentity, type IdentityRuntime } from "./runtime/start.js";
 export { DISPLAY_NAME_MAX, ProfileStore, checkDisplayName, type Profile, type ProfileSource } from "./profiles/profiles.js";
 export { recordLocalUserChange, type LocalUserChange } from "./local-users/changes.js";

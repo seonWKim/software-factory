@@ -4,7 +4,7 @@
 import type { SqlExecutor } from "../../state/index.js";
 import { canonicalRestrictions } from "./restrictions.js";
 import type { Link } from "./token.js";
-import type { Action, LinkedAccount, Origin, PassportKind, Provider, ResourceRef, Restrictions } from "./types.js";
+import type { Action, Origin, PassportKind, Provider, ResourceRef, Restrictions } from "./types.js";
 
 export interface PassportRow {
   readonly id: string;
@@ -127,11 +127,5 @@ export class PassportStore {
       "INSERT INTO authz_audit (passport_id, principal, action, resource, decision, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [e.passport_id, e.principal, e.action, resourceText(e.resource), e.decision, e.reason, e.at],
     );
-  }
-
-  /** The accounts linked to a user (identity_user_links), for grant sources. */
-  async accounts(user_id: string): Promise<LinkedAccount[]> {
-    const rows = await this.db.all("SELECT provider, subject FROM identity_user_links WHERE user_id = ? ORDER BY provider, subject", [user_id]);
-    return rows.map((r) => ({ provider: String(r.provider), subject: String(r.subject) }));
   }
 }

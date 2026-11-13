@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CONFIRM_COMMAND, interpretReply, isProposalId, parseProposalMarker, proposalMarker } from "../src/core/interpret.js";
 import { type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { FakeSource, cleanScanner, config, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
@@ -91,7 +91,7 @@ describe("command proposals: the controller applies a `factory confirm`", () => 
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const controller = new ControllerRole({
-      store, source, auth: new LocalAuthProvider(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
+      store, source, auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
     });
     await store.claimLocalOwner(OWNER);
     await store.setLocalUserRole(HELPER, "requester", OWNER);

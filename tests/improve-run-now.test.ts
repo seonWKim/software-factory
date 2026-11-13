@@ -5,10 +5,9 @@
 import { describe, expect, it } from "vitest";
 import { enqueueImprove, listImproveRuns } from "../src/core/improver.js";
 import type { UserId, WorkerId } from "../src/core/types.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { HealthMonitor, RUN_NOW_SCRIPT_HASH } from "../src/ui/health.js";
 import { IMPROVE_RUN_PATH } from "../src/ui/improve-api.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
@@ -25,7 +24,8 @@ const REQUESTER = "local:bob" as UserId;
 async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
   const clock = new FakeClock("2026-03-04T08:00:00.000Z");
   const { store } = await newStore(clock);
-  const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [APPROVER]: { "*": ["approver"] }, [REQUESTER]: { "*": ["requester"] } }, deny: {} })]);
+  await store.claimLocalOwner(APPROVER);
+  const auth = new OwnerAuth(store);
   const logged: string[] = [];
   const token = newCsrfToken();
   const pauses: UiPauses = {

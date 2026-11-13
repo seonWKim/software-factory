@@ -12,7 +12,6 @@ import { Worker } from "../src/worker/index.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { ACTION_MAKE_TASK } from "../src/impl/source/slack-format.js";
 import { SlackSource, slackSourceId } from "../src/impl/source/slack-source.js";
 import { FakeBroker, FakeForge, FakeRunner, FakeSandbox, MemoryStorage, alice, config, prompts, recordingLog, triageSpec, waitFor } from "./helpers/fakes.js";
@@ -42,7 +41,7 @@ async function slackFactory() {
   const scanned: string[] = [];
   const inner = new PatternEgressScanner(async () => [PLANTED]);
   const scanner = { scan: (kind: Parameters<typeof inner.scan>[0], text: string) => (scanned.push(text), inner.scan(kind, text)) };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo: { owner: "o", name: "r" }, log });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: [CHANNEL], scanner, store, auth: new OwnerAuth(store), repo: { owner: "o", name: "r" }, log });
   const forge = new FakeForge();
   // Slack accounts act as the factory user they are linked to, judged by the owner check (design 08-permissions).
   await store.claimLocalOwner(OWNER);

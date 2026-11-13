@@ -2,7 +2,7 @@
 // automatic steps, the worker's tool calls, outbound's deliveries) authenticates as itself. Only the `service`
 // provider resolves a `service:` principal, and each service's passport is limited to the actions it takes.
 
-import type { Action, AuthProvider, ExternalIdentity, GrantSource, GrantSubject, Principal, Restrictions, Role } from "../../passport/types.js";
+import type { Action, AuthProvider, ExternalIdentity, Principal, Restrictions } from "../../passport/types.js";
 
 export type ServiceName = "controller" | "worker" | "outbound";
 
@@ -33,21 +33,5 @@ export class ServiceAuthProvider implements AuthProvider {
   async resolve(identity: ExternalIdentity): Promise<Principal | null> {
     if (identity.provider !== "service" || !(identity.subject in SERVICE_ACTIONS)) return null;
     return { user_id: serviceUser(identity.subject as ServiceName) };
-  }
-}
-
-/**
- * A service principal holds the owner role; its passport's `actions` caveat is what limits it. Safe because
- * Identity refuses a `service:` principal from any provider but `service` (PassportService.authenticate).
- */
-export class ServiceGrant implements GrantSource {
-  readonly remote = false;
-
-  async denies(): Promise<boolean> {
-    return false;
-  }
-
-  async roles(subject: GrantSubject): Promise<readonly Role[]> {
-    return subject.user_id.startsWith(SERVICE_PREFIX) ? ["owner"] : [];
   }
 }
