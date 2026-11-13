@@ -14,7 +14,8 @@ import { ALERT_DEDUPE_MS } from "../src/core/alarms.js";
 import { saveProjectLabel } from "../src/core/project-labels.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../src/ui/server.js";
-import { newCsrfToken } from "../src/ui/settings-api.js";
+import { type FileKeysView, type UiSettings, fileKeysOf, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
+import type { ConfigEditRequest, ConfigEditResult } from "../src/core/config-writer.js";
 import { checkoutRevision } from "../src/ui/system-actions.js";
 import viteConfig from "../web/vite.config.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
@@ -1712,5 +1713,68 @@ describe("ui api: Needs you, Needs triage and Blocked by another task", () => {
   it("a request with an old level id gets 400", async () => {
     const { d } = await seeded();
     for (const old of ["needs_human", "waiting_on_issue"]) expect((await get(d, `/api/v1/items?state=${old}`)).status).toBe(400);
+  });
+});
+
+describe("ui api: the Settings page's typed form of the file-only keys (design 08-settings)", () => {
+  const entry = (configKey: string, iface: string, guard: boolean, names: string[]) => ({ interface: iface, configKey, guard, optional: false, plugins: Object.fromEntries(names.map((n) => [n, () => null])) });
+  const loaded = {
+    file: {
+      env: "local", state_dir: ".factory", ui: { port: 4310 }, outbound: { batching: { slack: { max: 5 } } },
+      plugins: { secrets: "env-file", runner: "claude-code" }, hotspot_paths: ["src/core/"], slack: { channels: [SECRET] },
+    },
+    registry: {
+      store: entry("store.type", "FactoryStore", false, ["sqlite"]),
+      secrets: entry("plugins.secrets", "SecretStore", true, ["env-file", "keychain"]),
+      runner: entry("plugins.runner", "AgentRunner", false, ["claude-code", "fake"]),
+    },
+    plugins: { store: "sqlite", secrets: "env-file", runner: "claude-code" },
+  } as unknown as Parameters<typeof fileKeysOf>[0];
+
+  async function wired(editFile: UiSettings["editFile"]) {
+    const { d } = await seeded();
+    const settings: UiSettings = {
+      base: { file: {}, layers: { defaults: {}, projects: {} } } as unknown as UiSettings["base"], repo: { owner: "o", name: "r" }, actor: "local:owner",
+      resolveProject: async () => null, csrfToken: newCsrfToken(), ...(editFile ? { editFile } : {}),
+    };
+    return { ...d, settings };
+  }
+  const refuse = async (): Promise<ConfigEditResult> => ({ ok: false, refusal: "no" });
+
+  it("GET lists each editable file-only key's file value, the read-only keys' values and the plugins interfaces with their registered names", async () => {
+    const view = await json<{ file_keys: FileKeysView }>(await wired(Object.assign(refuse, { fileKeys: () => fileKeysOf(loaded) })), "/api/v1/settings");
+    const editable = view.file_keys.editable.map((f) => f.key);
+    for (const key of ["plugins", "models", "model_by", "slack", "repo.install_command", "repo.test_command", "repo.check_commands", "repo.path", "toolchain", "dials", "floors", "permissions", "hotspot_paths", "mechanical_paths", "path_companions"]) {
+      expect(editable, key).toContain(key);
+    }
+    // The read-only keys and the guards' own members are not in the form; deny_paths is no file key at all.
+    for (const key of ["state_dir", "worktrees_dir", "plugins.secrets", "plugins.egress", "plugins.broker", "deny_paths"]) expect(editable, key).not.toContain(key);
+    expect(view.file_keys.editable.find((f) => f.key === "hotspot_paths")!.value).toBe('["src/core/"]');
+    expect(view.file_keys.editable.find((f) => f.key === "models")!.value).toBeNull();
+    // A value with a secret in it is withheld whole.
+    expect(view.file_keys.editable.find((f) => f.key === "slack")!.value).not.toContain(SECRET);
+    expect(view.file_keys.read_only).toEqual([
+      { key: "store", value: null }, { key: "env", value: '"local"' }, { key: "state_dir", value: '".factory"' }, { key: "worktrees_dir", value: null },
+      { key: "ui", value: '{"port":4310}' }, { key: "outbound.batching", value: '{"slack":{"max":5}}' }, { key: "cli_user", value: null },
+    ]);
+    // Only the interfaces under `plugins`, each with its registered names.
+    expect(view.file_keys.plugins).toEqual([
+      { kind: "secrets", interface: "SecretStore", guard: true, names: ["env-file", "keychain"], selected: "env-file" },
+      { kind: "runner", interface: "AgentRunner", guard: false, names: ["claude-code", "fake"], selected: "claude-code" },
+    ]);
+  });
+
+  it("GET has no form without a file writer", async () => {
+    expect((await json<{ file_keys: unknown }>(await wired(undefined), "/api/v1/settings")).file_keys).toBeNull();
+  });
+
+  it("an edit-file POST answers with the filed item and its branch, for the Merge button", async () => {
+    const editFile = async (r: ConfigEditRequest): Promise<ConfigEditResult> => ({ ok: true, item: "wi_1" as WorkItemId, branch: "factory/wi_1", sha: "a".repeat(40), old_value: null, new_value: r.value });
+    const d = await wired(editFile);
+    const r = await writeSettings(d, d.settings, { action: "edit-file", key: "hotspot_paths", value: '["src/"]' });
+    expect(r).toEqual({ status: 200, value: { ok: true, lines: expect.any(Array), item: "wi_1", branch: "factory/wi_1" } });
+    // A refusal names no item.
+    const no = await wired(refuse);
+    expect(await writeSettings(no, no.settings, { action: "edit-file", key: "hotspot_paths", value: '["src/"]' })).toEqual({ status: 422, value: { error: "refused: no" } });
   });
 });
