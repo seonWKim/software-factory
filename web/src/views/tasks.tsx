@@ -1,18 +1,20 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
 import {
-  API, type DayRow, type DoneRow, type EventRow, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postTaskAction, postTaskAdd, postTaskBuild, useApi,
-  useDoneTasks,
+  API, type DayRow, type DoneRow, type EventRow, type ProjectChoice, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postProject, postTaskAction,
+  postTaskAdd, postTaskBuild, postTaskProject, useDoneTasks, useTasks,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
+import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { EmptyState, Notice, StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
+import { Select } from "../components/ui/select.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR, QUICK_ADD_KEYS, type QuickAddKey, isQuickAddSubmit, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
@@ -23,7 +25,7 @@ import { FactoryWork, WorkState } from "./task-work.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's open plain tasks, read through GET
 // /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then today's tasks and calendar
-// events. Upcoming: today through 7 days ahead, by day, tasks and events. Project: every task under its #list. The
+// events. Upcoming: today through 7 days ahead, by day, tasks and events. List: every task under its #list. The
 // server places each task and event and orders each day (all-day events, then timed items by time, then untimed
 // tasks), so the page does no date arithmetic. A source whose last sync failed is named with its last sync time. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
@@ -42,12 +44,17 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // days before the oldest row shown, and is hidden when the server says none is older. Each row's Reopen posts the same
 // route as ⌘Z; a refusal (its next occurrence is done) shows above the list. Its read shares the tasks' query key, so a
 // completion or a reopen reloads it with the open views.
+// The Project switcher (design 09-dashboard-app, task projects) filters Inbox, Today, Upcoming and List to one active
+// task project's tasks (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
+// load and set on change, so a filtered view can be shared and reloaded. Done is not filtered. Each open row's overflow
+// item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
+// /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
 
 const TABS = [
   { id: "inbox", label: t("tasks.inbox") },
   { id: "today", label: t("tasks.today") },
   { id: "upcoming", label: t("tasks.upcoming") },
-  { id: "project", label: t("tasks.project") },
+  { id: "list", label: t("tasks.list") },
   { id: "done", label: t("tasks.done") },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
@@ -65,8 +72,8 @@ function dayLabel(date: string): string {
  * What every row needs: the CSRF token for its actions (null with no commands actor), each open task's title by ID,
  * and `completed`, which keeps a task the row completed for ⌘Z.
  */
-const Rows = createContext<{ token: string | null; titles: ReadonlyMap<string, string>; completed: (task: TaskRow) => void }>({
-  token: null, titles: new Map(), completed: () => {},
+const Rows = createContext<{ token: string | null; titles: ReadonlyMap<string, string>; projects: readonly ProjectChoice[]; completed: (task: TaskRow) => void }>({
+  token: null, titles: new Map(), projects: [], completed: () => {},
 });
 
 const ALERT = "text-xs text-pretty break-words text-pill-bad-fg";
@@ -107,12 +114,12 @@ function BuildButton({ task, token }: { task: TaskRow; token: string }) {
   );
 }
 
-/** A new task ID: `tk_` and 32 hex characters, inside the route's 8 to 64 URL-safe ones. */
-const newTaskId = (): string => `tk_${crypto.randomUUID().replaceAll("-", "")}`;
+/** A new ID: the prefix (`tk_` for a task, `pj_` for a project) and 32 hex characters, inside the routes' 8 to 64 URL-safe ones. */
+const newId = (prefix: "tk_" | "pj_"): string => `${prefix}${crypto.randomUUID().replaceAll("-", "")}`;
 
-/** The ID for these words: the one kept for them since the last success, so a retry after an error stores one task. */
-function idFor(attempt: { current: { id: string; words: string } | null }, words: string): string {
-  if (attempt.current?.words !== words) attempt.current = { id: newTaskId(), words };
+/** The ID for these words: the one kept for them since the last success, so a retry after an error stores one task (or project). */
+function idFor(attempt: { current: { id: string; words: string } | null }, words: string, prefix: "tk_" | "pj_" = "tk_"): string {
+  if (attempt.current?.words !== words) attempt.current = { id: newId(prefix), words };
   return attempt.current.id;
 }
 
@@ -287,11 +294,104 @@ function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow; 
   );
 }
 
+/**
+ * The project dialog: the shared Dialog with a checkbox per active project (checked: the task is in it), each change
+ * posted at once, and a New project field whose Create project (or Enter) creates the project under an ID kept for that
+ * name, so a retry stores one project, then puts the task in it. A refusal stays in the dialog with its reason. It
+ * renders into document.body, so the row keeps its height.
+ */
+function ProjectsDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow; token: string; returnFocusTo: RefObject<HTMLElement | null>; onClose: () => void }) {
+  const { projects } = useContext(Rows);
+  const client = useQueryClient();
+  const attempt = useRef<{ id: string; words: string } | null>(null);
+  const [linked, setLinked] = useState<ReadonlySet<string>>(() => new Set(task.projects ?? []));
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** One write at a time; its refusal or failure stays in the dialog. */
+  const send = async (write: () => Promise<boolean>) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (await write()) await client.invalidateQueries({ queryKey: [API.tasks] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const link = async (p: ProjectChoice, add: boolean): Promise<boolean> => {
+    const r = await postTaskProject(token, task.id, p.slug, add);
+    if (!r.ok) {
+      setError(r.error);
+      return false;
+    }
+    setLinked((now) => {
+      const next = new Set(now);
+      if (add) next.add(p.slug);
+      else next.delete(p.slug);
+      return next;
+    });
+    announceStatus(t(add ? "tasks.addedToProject" : "tasks.removedFromProject", { title: task.title, name: p.name }));
+    return true;
+  };
+  const create = () =>
+    send(async () => {
+      const words = name.trim();
+      const r = await postProject(token, idFor(attempt, words, "pj_"), words);
+      if (!r.ok) {
+        setError(r.error);
+        return false;
+      }
+      attempt.current = null;
+      setName("");
+      await link(r.project, true);
+      return true;
+    });
+  return (
+    <Dialog
+      title={t("tasks.projectsTitle", { title: task.title })}
+      consequence={t("tasks.projectsHint")}
+      confirmLabel={t("tasks.createProject")}
+      confirmDisabled={busy || name.trim() === ""}
+      cancelLabel={t("tasks.projectsClose")}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => void create()}
+      onClose={onClose}
+    >
+      {projects.length === 0 ? (
+        <p className={muted}>{t("tasks.noProjects")}</p>
+      ) : (
+        <ul aria-label={t("tasks.project")} className="max-h-64 divide-y divide-border overflow-y-auto rounded-control border border-border">
+          {projects.map((p) => {
+            const checked = linked.has(p.slug);
+            return (
+              <li key={p.slug} data-project={p.slug} className="flex items-center gap-3 px-3 py-2">
+                {/* The shared Button as a checkbox, as on the task row: components/ui has no checkbox. */}
+                <Button size="icon" role="checkbox" aria-checked={checked} aria-label={p.name} disabled={busy} onClick={() => void send(() => link(p, !checked))}>
+                  <span aria-hidden>{checked ? "✓" : ""}</span>
+                </Button>
+                <span className="min-w-0 flex-1 text-sm break-words">{p.name}</span>
+                <span className={cn(muted, "break-all")}>+{p.slug}</span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <Field label={t("tasks.newProject")} htmlFor={`new-project-${task.id}`} help={t("tasks.newProjectHint")}>
+        <Input id={`new-project-${task.id}`} value={name} disabled={busy} onChange={(e) => setName(e.target.value)} />
+      </Field>
+    </Dialog>
+  );
+}
+
 function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
   const { token, titles, completed } = useContext(Rows);
   const row = useRef<HTMLLIElement>(null);
   const action = useTaskAction(token);
-  const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete">("view");
+  const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete" | "projects">("view");
   const [checked, setChecked] = useState(false);
   const parent = task.parent_task_id ?? null;
   const due = task.due_date === null ? null : task.due_time === null ? task.due_date : `${task.due_date} ${task.due_time}`;
@@ -319,6 +419,7 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
   const subAttempt = useRef<{ id: string; words: string } | null>(null);
   const items = [
     ...(parent === null ? [{ label: t("tasks.addSub"), onSelect: () => setMode("sub") }] : []),
+    { label: t("tasks.projectsItem"), onSelect: () => setMode("projects") },
     { label: t("tasks.delete"), danger: true, onSelect: () => setMode("delete") },
   ];
   return (
@@ -383,7 +484,7 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
             onClose={close}
           />
         )}
-        {action.error !== null && mode !== "delete" && (
+        {action.error !== null && mode !== "delete" && mode !== "projects" && (
           <p role="alert" className={ALERT}>
             {action.error}
           </p>
@@ -403,6 +504,7 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
         {token !== null && <OverflowMenu label={t("tasks.more", { title: task.title })} items={items} />}
       </div>
       {mode === "delete" && token !== null && <DeleteDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
+      {mode === "projects" && token !== null && <ProjectsDialog task={task} token={token} returnFocusTo={row} onClose={close} />}
     </li>
   );
 }
@@ -445,7 +547,7 @@ function TaskList({ label, tasks, overdue = false }: { label: string; tasks: rea
   );
 }
 
-/** One heading and its list, for the groups of Today, Upcoming and Project. */
+/** One heading and its list, for the groups of Today, Upcoming and List. */
 function Group({ title, tasks, overdue = false }: { title: string; tasks: readonly DayRow[]; overdue?: boolean }) {
   return (
     <div className="space-y-1">
@@ -642,7 +744,7 @@ function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
       </div>
     );
   }
-  if (v.projects.length === 0) return <EmptyTab title={t("tasks.emptyProject")} />;
+  if (v.projects.length === 0) return <EmptyTab title={t("tasks.emptyList")} />;
   return (
     <div className="space-y-3">
       {v.projects.map((p) => (
@@ -723,14 +825,49 @@ function useUndoDone(token: string | null) {
   return { error, completed: (task: TaskRow) => void done.current.push(task) };
 }
 
+/** The `project` query parameter: the switcher's choice, null for All projects. */
+const urlProject = (): string | null => new URLSearchParams(location.search).get("project") || null;
+
+/** The switcher's choice, read from the URL on load and written to it (in place, no new history entry) on change. */
+function useProjectParam(): [string | null, (slug: string | null) => void] {
+  const [project, setProject] = useState(urlProject);
+  const choose = (slug: string | null) => {
+    const url = new URL(location.href);
+    if (slug === null) url.searchParams.delete("project");
+    else url.searchParams.set("project", slug);
+    history.replaceState(history.state, "", url.pathname + url.search + url.hash);
+    setProject(slug);
+  };
+  return [project, choose];
+}
+
+/** The Project switcher: All projects, then the active projects; a slug the URL names that is not among them stays listed by its slug. */
+function ProjectSwitcher({ projects, value, onChange }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void }) {
+  const choices = value === null || projects.some((p) => p.slug === value) ? projects : [...projects, { slug: value, name: `+${value}` }];
+  return (
+    <Select aria-label={t("tasks.project")} wrapperClassName="w-48 max-w-full" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}>
+      <option value="">{t("tasks.allProjects")}</option>
+      {choices.map((p) => (
+        <option key={p.slug} value={p.slug}>
+          {p.name}
+        </option>
+      ))}
+    </Select>
+  );
+}
+
 export function TasksPage() {
   const [tab, setTab] = useState<Tab>("today");
-  const q = useApi<TasksView & { add_key?: QuickAddKey }>(API.tasks);
+  const [project, setProject] = useProjectParam();
+  const q = useTasks<TasksView & { add_key?: QuickAddKey }>(project);
   const v = q.data;
   const token = v?.can_build ? v.csrf_token : null;
   const undo = useUndoDone(token);
-  // Every open task is in Projects, so its titles name each sub-task's parent.
+  // The List tab holds every open task the read returned, so its titles name each sub-task's parent.
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
+  // Kept from the last read, so the switcher keeps its choices while a new filter loads.
+  const known = useRef<readonly ProjectChoice[]>([]);
+  if (v?.active_projects !== undefined) known.current = v.active_projects;
   return (
     <>
       <FactoryWork />
@@ -740,10 +877,13 @@ export function TasksPage() {
           {undo.error}
         </p>
       )}
-      <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
+      <div className="flex flex-wrap items-center gap-2">
+        <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
+        <ProjectSwitcher projects={known.current} value={project} onChange={setProject} />
+      </div>
       <Section label={TABS.find((x) => x.id === tab)!.label} count={v ? count(v, tab) : undefined}>
         {v && (tab === "today" || tab === "upcoming") && <StaleCalendars v={v} />}
-        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, completed: undo.completed }}>
+        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
             <TabBody tab={tab} v={v} />
           </Rows.Provider>}
         {v?.can_build && hasTasks(v, tab) && <p className={`mt-3 ${muted}`}>{t("tasks.buildNote")}</p>}
