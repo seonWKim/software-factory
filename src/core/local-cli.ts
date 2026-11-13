@@ -226,11 +226,6 @@ export interface LocalCliDeps {
   /** Display names by user ID (Identity's identity_profiles), looked up only to show; absent: IDs only. */
   displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
   /**
-   * Deprecated and never called: a command row carries no edge passport, the controller's owner check decides it
-   * (design 08-permissions, One owner). Kept only while `factory` CLI wiring still passes it (phase B removes it).
-   */
-  passport?: () => Promise<string>;
-  /**
    * The source type the command was typed in, when not the CLI (a chat command, design 05-sources): an item of that
    * source already shows it in its thread, so its row is not mirrored there. Absent: the CLI.
    */
