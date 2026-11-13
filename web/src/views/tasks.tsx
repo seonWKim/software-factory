@@ -1,7 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
 import {
-  API, type DayRow, type EventRow, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postTaskAction, postTaskAdd, postTaskBuild, useApi,
+  API, type DayRow, type DoneRow, type EventRow, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postTaskAction, postTaskAdd, postTaskBuild, useApi,
+  useDoneTasks,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { FOCUS } from "../components/ui/control.js";
@@ -15,6 +16,7 @@ import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
+import { localDateTime } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 
@@ -34,12 +36,18 @@ import { itemPath } from "../pages.js";
 // ⌘Z outside a field undoes the last completion this page made (POST /api/v1/tasks/reopen, `factory task reopen`), then
 // the one before it: the page keeps the completed tasks in memory only, so a reload forgets them, and it never undoes an
 // edit or a delete.
+// Done, the fifth tab (design 02-tasks, Done view), reads GET /api/v1/tasks/done: the tasks done in the last 30 days, most
+// recently done first, one flat list across all lists with each row's list label and done time. Show older reads the 30
+// days before the oldest row shown, and is hidden when the server says none is older. Each row's Reopen posts the same
+// route as ⌘Z; a refusal (its next occurrence is done) shows above the list. Its read shares the tasks' query key, so a
+// completion or a reopen reloads it with the open views.
 
 const TABS = [
   { id: "inbox", label: t("tasks.inbox") },
   { id: "today", label: t("tasks.today") },
   { id: "upcoming", label: t("tasks.upcoming") },
   { id: "project", label: t("tasks.project") },
+  { id: "done", label: t("tasks.done") },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -517,6 +525,67 @@ function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow
   );
 }
 
+/** How many days one Done read covers: the server's window (DONE_WINDOW_DAYS in src/core/tasks.ts). */
+const DONE_DAYS = 30;
+
+/** A done task: its title, its list label and the time it was done; Reopen with the commands actor. Read-only otherwise. */
+function DoneCard({ task, busy, onReopen }: { task: DoneRow; busy: boolean; onReopen: () => void }) {
+  const { token } = useContext(Rows);
+  return (
+    <li data-done={task.id} className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 p-3">
+      <div className="min-w-0 flex-1 space-y-1">
+        <p className="text-sm text-pretty break-words">{task.title}</p>
+        <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
+          <span className="tabular-nums">{t("tasks.doneAt", { at: localDateTime(task.done_at) })}</span>
+          <span className="break-all">{task.list === null ? t("tasks.noList") : `#${task.list}`}</span>
+        </p>
+      </div>
+      {token !== null && (
+        <Button variant="secondary" disabled={busy} aria-label={t("tasks.reopenLabel", { title: task.title })} onClick={onReopen}>
+          {t("tasks.reopen")}
+        </Button>
+      )}
+    </li>
+  );
+}
+
+/** The Done tab: its pages of done tasks as one list, Show older while the server says one is older, and Reopen's refusal above the list. */
+function DoneTab() {
+  const { token } = useContext(Rows);
+  const q = useDoneTasks();
+  const action = useTaskAction(token);
+  if (q.isError) return <ErrorNote error={q.error} />;
+  const pages = q.data?.pages ?? [];
+  if (pages.length === 0) return <Loading rows={3} />;
+  const rows = pages.flatMap((p) => p.tasks);
+  const reopen = async (task: DoneRow) => {
+    if (await action.run("reopen", { id: task.id })) announceStatus(t("tasks.reopened", { title: task.title }));
+  };
+  return (
+    <div className="space-y-3">
+      {action.error !== null && (
+        <p role="alert" className={ALERT}>
+          {action.error}
+        </p>
+      )}
+      {rows.length === 0 ? (
+        <EmptyState title={t("tasks.emptyDone", { days: pages.length * DONE_DAYS })} />
+      ) : (
+        <ul aria-label={t("tasks.done")} className="divide-y divide-border rounded-control border border-border">
+          {rows.map((task) => (
+            <DoneCard key={task.id} task={task} busy={action.busy} onReopen={() => void reopen(task)} />
+          ))}
+        </ul>
+      )}
+      {q.hasNextPage && (
+        <Button variant="secondary" disabled={q.isFetchingNextPage} onClick={() => void q.fetchNextPage()}>
+          {t("tasks.showOlder")}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 /** An empty tab: its message and one next step, which puts the cursor in the quick-add field. */
 function EmptyTab({ title }: { title: string }) {
   const focus = () => document.querySelector<HTMLElement>(`[${QUICK_ADD_ATTR}]`)?.focus();
@@ -533,6 +602,7 @@ function EmptyTab({ title }: { title: string }) {
 }
 
 function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
+  if (tab === "done") return <DoneTab />;
   const timeline = <Timeline date={v.today_date} blocks={v.timeline ?? []} />;
   if (tab === "inbox") {
     return (
@@ -590,15 +660,17 @@ function StaleCalendars({ v }: { v: TasksView }) {
   );
 }
 
-const count = (v: TasksView, tab: Tab): number =>
-  tab === "inbox" ? v.inbox.length
+/** The open tasks a tab lists; none for Done, whose rows come from their own read. */
+const count = (v: TasksView, tab: Tab): number | undefined =>
+  tab === "done" ? undefined
+  : tab === "inbox" ? v.inbox.length
   : tab === "today" ? v.today.overdue.length + v.today.due.length
   : tab === "upcoming" ? v.upcoming.reduce((n, d) => n + d.tasks.length, 0)
   : v.projects.reduce((n, p) => n + p.tasks.length, 0);
 
 /** True when the tab lists at least one task; calendar events alone do not count. */
 const hasTasks = (v: TasksView, tab: Tab): boolean =>
-  (tab === "inbox" ? v.inbox
+  tab !== "done" && (tab === "inbox" ? v.inbox
   : tab === "today" ? [...v.today.overdue, ...v.today.due]
   : tab === "upcoming" ? v.upcoming.flatMap((d) => d.tasks)
   : v.projects.flatMap((p) => p.tasks)

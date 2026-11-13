@@ -20,6 +20,15 @@ export function until(at: string | null | undefined, now: number): string {
   return ms <= 0 ? t("format.now") : t("format.in", { time: ago(new Date(now - ms).toISOString(), now) });
 }
 
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** An ISO time as the viewer's local `YYYY-MM-DD HH:MM`, the form the Tasks page shows a due date and time in; the text itself when it is not one. */
+export function localDateTime(at: string): string {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return at;
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
 /** A local item id: `local-` (or `local-filed-`), its hex id, then its phase suffixes (`-phase-N`, nested). */
 const LOCAL_ID = /^local-(?:filed-)?([0-9a-f]{8})[0-9a-f-]*?((?:-phase-\d+)*)$/;
 

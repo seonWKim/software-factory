@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { EventRow, TaskRow, TasksView } from "../web/src/api.js";
+import type { DoneRow, DoneView, EventRow, TaskRow, TasksView } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -35,11 +35,14 @@ const view = (over: Partial<TasksView> = {}): TasksView => ({
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 let current: TasksView;
+/** GET /api/v1/tasks/done's answer by its full URL (the first read, then each Show older); an unlisted URL reads empty. */
+let donePages: Record<string, DoneView>;
 let posts: { url: string; init: RequestInit }[];
 let answer: { status: number; body: unknown };
 
 beforeEach(() => {
   current = view();
+  donePages = {};
   posts = [];
   answer = { status: 200, body: { task_id: "tk_now", work_item_id: "wi_9", created: true } };
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -48,6 +51,7 @@ beforeEach(() => {
       return json(answer.status, answer.body);
     }
     if (url === "/api/v1/tasks") return json(200, current);
+    if (url.startsWith("/api/v1/tasks/done")) return json(200, donePages[url] ?? { tasks: [], older: false, next_before: "2026-10-13T00:00:00.000Z" });
     return json(404, { error: "Not found." });
   }));
 });
@@ -75,7 +79,7 @@ describe("Tasks page", () => {
   it("the view picker is one segmented control in one row, Today selected first, the clicked view selected next", async () => {
     await show();
     const group = screen.getByRole("group", { name: "Task view" });
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Inbox", "Today", "Upcoming", "Project"]);
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Inbox", "Today", "Upcoming", "Project", "Done"]);
     expect(group.className.split(" ")).toContain("flex-nowrap");
     expect(group.className.split(" ")).not.toContain("flex-wrap");
     const selected = () => [...group.querySelectorAll("button[aria-pressed=true]")].map((b) => b.textContent);
@@ -165,6 +169,96 @@ describe("Tasks page", () => {
       answer = { status: 409, body: { error: "its next occurrence is done: undo that one first" } };
       undo();
       expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("its next occurrence is done: undo that one first");
+    });
+  });
+
+  describe("the Done tab (design 02-tasks, Done view)", () => {
+    /** A done row, done at the local time `y-m-d h:min`. */
+    const doneRow = (id: string, at: [number, number, number, number, number], over: Partial<TaskRow> = {}): DoneRow => ({
+      ...row(id, over), done_at: new Date(at[0], at[1] - 1, at[2], at[3], at[4]).toISOString(),
+    });
+    const FIRST = "/api/v1/tasks/done";
+    const doneCard = (id: string) => document.querySelector<HTMLElement>(`[data-done="${id}"]`);
+    const doneIds = () => [...document.querySelectorAll<HTMLElement>("[data-done]")].map((e) => e.dataset.done);
+    const openDone = async () => {
+      await show();
+      tab("Done");
+    };
+
+    it("lists every list's done tasks in one list, in the server's order, each with its list label and done date and time", async () => {
+      donePages[FIRST] = {
+        tasks: [doneRow("tk_b", [2026, 11, 13, 9, 5], { list: "home" }), doneRow("tk_a", [2026, 11, 2, 18, 30])],
+        older: false, next_before: "2026-11-02T00:00:00.000Z",
+      };
+      await openDone();
+      await waitFor(() => expect(doneIds()).toEqual(["tk_b", "tk_a"]), SLOW);
+      expect(screen.getAllByRole("list")).toHaveLength(1);
+      expect(doneCard("tk_b")!.textContent).toContain("done 2026-11-13 09:05");
+      expect(doneCard("tk_b")!.textContent).toContain("#home");
+      expect(doneCard("tk_a")!.textContent).toContain("done 2026-11-02 18:30");
+      expect(doneCard("tk_a")!.textContent).toContain("No list");
+      expect(within(doneCard("tk_a")!).queryByRole("checkbox")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Show older" })).toBeNull();
+    });
+
+    it("Show older reads the 30 days before the oldest row shown and adds them below; it hides when none is older", async () => {
+      const cursor = "2026-10-20T08:00:00.000Z";
+      donePages[FIRST] = { tasks: [doneRow("tk_new", [2026, 11, 10, 8, 0])], older: true, next_before: cursor };
+      donePages[`${FIRST}?before=${encodeURIComponent(cursor)}`] = { tasks: [doneRow("tk_old", [2026, 10, 1, 8, 0])], older: false, next_before: "2026-10-01T00:00:00.000Z" };
+      await openDone();
+      fireEvent.click(await screen.findByRole("button", { name: "Show older" }, SLOW));
+      await waitFor(() => expect(doneIds()).toEqual(["tk_new", "tk_old"]), SLOW);
+      expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toContain(`${FIRST}?before=${encodeURIComponent(cursor)}`);
+      expect(screen.queryByRole("button", { name: "Show older" })).toBeNull();
+    });
+
+    it("Reopen posts { id } to the reopen route with the token; the row leaves Done and the open views reload", async () => {
+      donePages[FIRST] = { tasks: [doneRow("tk_a", [2026, 11, 13, 9, 0])], older: false, next_before: "2026-11-13T00:00:00.000Z" };
+      await openDone();
+      const opens = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => url === "/api/v1/tasks" && (init as RequestInit | undefined)?.method !== "POST").length;
+      const before = opens();
+      answer = { status: 200, body: { task_id: "tk_a", reopened: true, removed_next: null } };
+      donePages[FIRST] = { tasks: [], older: false, next_before: "2026-10-15T00:00:00.000Z" };
+      fireEvent.click(await screen.findByRole("button", { name: "Reopen: tk_a" }, SLOW));
+      await waitFor(() => expect(posts).toHaveLength(1));
+      expect(posts[0]!.url).toBe("/api/v1/tasks/reopen");
+      expect(new Headers(posts[0]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+      expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_a" });
+      await waitFor(() => expect(doneCard("tk_a")).toBeNull(), SLOW);
+      expect(opens()).toBeGreaterThan(before);
+      expect(screen.getByText("No task done in the last 30 days.")).toBeTruthy();
+    });
+
+    it("a refused reopen (its next occurrence is done) shows its reason above the Done list, and the row stays", async () => {
+      donePages[FIRST] = { tasks: [doneRow("tk_r", [2026, 11, 13, 9, 0], { recurrence: "week" })], older: false, next_before: "2026-11-13T00:00:00.000Z" };
+      await openDone();
+      answer = { status: 409, body: { error: "its next occurrence is done: undo that one first" } };
+      fireEvent.click(await screen.findByRole("button", { name: "Reopen: tk_r" }, SLOW));
+      const alert = await screen.findByRole("alert", undefined, SLOW);
+      expect(alert.textContent).toBe("its next occurrence is done: undo that one first");
+      const list = screen.getByRole("list", { name: "Done" });
+      expect(alert.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(doneCard("tk_r")).not.toBeNull();
+    });
+
+    it("a task completed with its checkbox shows in Done once the route answers, with no page reload", async () => {
+      await openDone();
+      await screen.findByText("No task done in the last 30 days.", {}, SLOW);
+      tab("Today");
+      answer = { status: 200, body: { task_id: "tk_now", completed: true, next_id: null } };
+      donePages[FIRST] = { tasks: [doneRow("tk_now", [2026, 11, 12, 9, 10])], older: false, next_before: "2026-11-12T00:00:00.000Z" };
+      fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
+      await waitFor(() => expect(posts).toHaveLength(1));
+      tab("Done");
+      await waitFor(() => expect(doneIds()).toEqual(["tk_now"]), SLOW);
+    });
+
+    it("with no commands actor a done row has no Reopen button", async () => {
+      current = view({ can_build: false });
+      donePages[FIRST] = { tasks: [doneRow("tk_a", [2026, 11, 13, 9, 0])], older: false, next_before: "2026-11-13T00:00:00.000Z" };
+      await openDone();
+      await waitFor(() => expect(doneIds()).toEqual(["tk_a"]), SLOW);
+      expect(screen.queryByRole("button", { name: /Reopen/ })).toBeNull();
     });
   });
 
