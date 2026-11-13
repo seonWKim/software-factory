@@ -2,7 +2,8 @@
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
-// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and the Done tab), delete, sub, and schedule, the timeline's drop) and POST /api/v1/data/ask
+// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and the Done tab), delete, sub, and schedule, the timeline's drop), the
+// project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
 // (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
 
@@ -693,6 +694,14 @@ export interface TaskRow {
   work_item_id: string | null;
   /** The task this is a sub-task of (one level), or null. */
   parent_task_id?: string | null;
+  /** The slugs of its active task projects (absent from an older server). */
+  projects?: string[];
+}
+
+/** An active task project, as the Tasks page's switcher and project dialog list it. */
+export interface ProjectChoice {
+  slug: string;
+  name: string;
 }
 
 /**
@@ -746,7 +755,10 @@ export interface TasksView {
   inbox: TaskRow[];
   today: { overdue: TaskRow[]; due: DayRow[] };
   upcoming: { date: string; tasks: DayRow[] }[];
+  /** The List tab: every open task under its #list. */
   projects: { list: string | null; tasks: TaskRow[] }[];
+  /** The active task projects, by slug (absent from an older server). */
+  active_projects?: ProjectChoice[];
   /** Today's timed tasks and events, placed by the server (absent from an older server). */
   timeline?: TimelineRow[];
   calendar?: CalendarSync[];
@@ -878,6 +890,10 @@ export const API = {
   ruleVerdict: "/api/v1/rules/verdict",
   ruleEntry: (id: string) => `/api/v1/rules/entry?id=${encodeURIComponent(id)}`,
   tasks: "/api/v1/tasks",
+  /** The open tasks' read, filtered to one task project's tasks when `project` is a slug. */
+  tasksIn: (project: string | null) => (project === null ? "/api/v1/tasks" : `/api/v1/tasks?project=${encodeURIComponent(project)}`),
+  projects: "/api/v1/projects",
+  taskProject: "/api/v1/tasks/project",
   tasksDone: (before: string | null) => (before === null ? "/api/v1/tasks/done" : `/api/v1/tasks/done?before=${encodeURIComponent(before)}`),
   calendar: "/api/v1/calendar",
   calendarConnect: "/api/v1/calendar/connect",
@@ -908,6 +924,20 @@ export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
     queryKey: [url],
     queryFn: () => getJson<T>(url),
     refetchInterval: pollMs,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * The open tasks' read, polled as useApi is; `project` filters it to that task project's tasks. Its key starts with the
+ * tasks' key, so a row action's reload of the tasks reloads it whatever the filter.
+ */
+export function useTasks<T>(project: string | null) {
+  const url = API.tasksIn(project);
+  return useQuery({
+    queryKey: [API.tasks, "open", project],
+    queryFn: () => getJson<T>(url),
+    refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
   });
 }
@@ -1007,6 +1037,19 @@ export async function postTaskBuild(token: string, id: string): Promise<{ ok: tr
 export async function postTaskAdd(token: string, id: string, words: string): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.tasks, token, { id, words });
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? `HTTP ${r.status}` };
+}
+
+/** POST /api/v1/projects: a new task project under the page's own `pj_` ID (a resend stores nothing more). A refusal comes back as `{ ok: false, error }`. */
+export async function postProject(token: string, id: string, name: string): Promise<{ ok: true; project: ProjectChoice } | { ok: false; error: string }> {
+  const r = await postJson<{ project?: ProjectChoice; error?: string }>(API.projects, token, { id, name });
+  if (r.ok && r.value.project) return { ok: true, project: r.value.project };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/tasks/project: adds the task to the project (`add`) or removes it. A refusal comes back as `{ ok: false, error }`. */
+export async function postTaskProject(token: string, id: string, project: string, add: boolean): Promise<{ ok: true; changed: boolean } | { ok: false; error: string }> {
+  const r = await postJson<{ changed?: boolean; error?: string }>(API.taskProject, token, { id, project, add });
+  return r.ok ? { ok: true, changed: r.value.changed ?? false } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
 /** One calendar plugin on the Settings page's Calendar section (GET /api/v1/calendar, design 08-settings). */

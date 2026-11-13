@@ -13,7 +13,7 @@ import { PAGES, routeFor } from "../web/src/pages.js";
 const PAGE_MODULE = "../web/src/views/tasks.js";
 const { TasksPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { TasksPage: FunctionComponent };
 
-// The Tasks page (design 02-tasks, issue #607): Inbox, Today (overdue first, in red), Upcoming (by day) and Project
+// The Tasks page (design 02-tasks, issue #607): Inbox, Today (overdue first, in red), Upcoming (by day) and List
 // tabs over GET /api/v1/tasks, which places each task; Build this posts the task's ID once, a built task links to its item.
 
 const TOKEN = "tok_tasks";
@@ -41,6 +41,8 @@ let items: ItemRow[] = [];
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 let current: TasksView;
+/** GET /api/v1/tasks?project=<slug>'s answer by slug (the project switcher); an unlisted slug answers 404. */
+let filtered: Record<string, TasksView>;
 /** GET /api/v1/tasks/done's answer by its full URL (the first read, then each Show older); an unlisted URL reads empty. */
 let donePages: Record<string, DoneView>;
 let posts: { url: string; init: RequestInit }[];
@@ -48,6 +50,8 @@ let answer: { status: number; body: unknown };
 
 beforeEach(() => {
   current = view();
+  filtered = {};
+  history.replaceState(null, "", "/app/tasks");
   items = [];
   donePages = {};
   posts = [];
@@ -58,6 +62,10 @@ beforeEach(() => {
       return json(answer.status, answer.body);
     }
     if (url === "/api/v1/tasks") return json(200, current);
+    if (url.startsWith("/api/v1/tasks?project=")) {
+      const slug = decodeURIComponent(url.slice("/api/v1/tasks?project=".length));
+      return filtered[slug] ? json(200, filtered[slug]) : json(404, { error: `no project "${slug}"` });
+    }
     if (url === "/api/v1/items") return json(200, { as_of: "2026-11-12T00:00:00.000Z", total: items.length, items, facets: {} });
     if (url.startsWith("/api/v1/tasks/done")) return json(200, donePages[url] ?? { tasks: [], older: false, next_before: "2026-10-13T00:00:00.000Z" });
     return json(404, { error: "Not found." });
@@ -87,13 +95,13 @@ describe("Tasks page", () => {
   it("the view picker is one segmented control in one row, Today selected first, the clicked view selected next", async () => {
     await show();
     const group = screen.getByRole("group", { name: "Task view" });
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Inbox", "Today", "Upcoming", "Project", "Done"]);
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Inbox", "Today", "Upcoming", "List", "Done"]);
     expect(group.className.split(" ")).toContain("flex-nowrap");
     expect(group.className.split(" ")).not.toContain("flex-wrap");
     const selected = () => [...group.querySelectorAll("button[aria-pressed=true]")].map((b) => b.textContent);
     expect(selected()).toEqual(["Today"]);
-    tab("Project");
-    expect(selected()).toEqual(["Project"]);
+    tab("List");
+    expect(selected()).toEqual(["List"]);
   });
 
   it("Today lists overdue tasks first, in red, then today's", async () => {
@@ -107,14 +115,14 @@ describe("Tasks page", () => {
     expect(card("tk_now").querySelector("p")!.className).not.toContain("text-pill-bad-fg");
   });
 
-  it("Inbox, Upcoming and Project show their own tasks; a built task links to its work item instead of Build this", async () => {
+  it("Inbox, Upcoming and List show their own tasks; a built task links to its work item instead of Build this", async () => {
     await show();
     tab("Inbox");
     expect(screen.getByRole("list", { name: "Inbox" }).textContent).toContain("tk_inbox");
     tab("Upcoming");
     expect(card("tk_soon").textContent).toContain("#home");
     expect(document.querySelectorAll("[data-task]")).toHaveLength(1);
-    tab("Project");
+    tab("List");
     expect(screen.getByRole("list", { name: "#home" }).textContent).toContain("tk_soon");
     const built = within(screen.getByRole("list", { name: "No list" }));
     expect(built.getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
@@ -530,7 +538,7 @@ describe("Tasks page", () => {
         Inbox: "No open task without a due date.",
         Today: "Nothing is due, overdue or on the calendar today.",
         Upcoming: "Nothing is due or on the calendar from today through the next 7 days.",
-        Project: "No open task.",
+        List: "No open task.",
       };
       for (const [name, title] of Object.entries(titles)) {
         tab(name);
@@ -582,6 +590,112 @@ describe("Tasks page", () => {
     });
   });
 
+  describe("task projects (design 09-dashboard-app, project switcher and dialog)", () => {
+    const PROJECTS = [{ slug: "home", name: "Home" }, { slug: "garden", name: "Garden" }];
+    const switcher = () => screen.getByRole("combobox", { name: "Project" }) as HTMLSelectElement;
+    const reads = () => vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter((u) => u.startsWith("/api/v1/tasks"));
+    const homeOnly = () =>
+      view({
+        inbox: [row("tk_inbox", { projects: ["home"] })],
+        today: { overdue: [], due: [row("tk_now", { due_date: "2026-11-12", projects: ["home"] })] },
+        upcoming: [],
+        projects: [{ list: null, tasks: [row("tk_inbox", { projects: ["home"] }), row("tk_now", { due_date: "2026-11-12", projects: ["home"] })] }],
+        active_projects: PROJECTS,
+      });
+
+    it("the switcher lists All projects first, then the active projects, and reads its value from ?project= on load", async () => {
+      current = view({ active_projects: PROJECTS });
+      filtered = { home: homeOnly() };
+      history.replaceState(null, "", "/app/tasks?project=home");
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
+      await waitFor(() => expect(document.querySelector('[data-task="tk_now"]')).not.toBeNull(), SLOW);
+      expect([...switcher().options].map((o) => o.textContent)).toEqual(["All projects", "Home", "Garden"]);
+      expect(switcher().value).toBe("home");
+      expect(reads()).toContain("/api/v1/tasks?project=home");
+      expect(reads()).not.toContain("/api/v1/tasks");
+    });
+
+    it("choosing a project sets ?project= and filters Inbox, Today, Upcoming and List; All projects clears it; Done is not filtered", async () => {
+      current = view({ active_projects: PROJECTS });
+      filtered = { home: homeOnly() };
+      await show();
+      expect(switcher().value).toBe("");
+      fireEvent.change(switcher(), { target: { value: "home" } });
+      expect(new URLSearchParams(location.search).get("project")).toBe("home");
+      expect(location.pathname).toBe("/app/tasks");
+      await waitFor(() => expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_now"]), SLOW);
+      tab("Inbox");
+      expect(screen.getByRole("list", { name: "Inbox" }).textContent).toContain("tk_inbox");
+      tab("Upcoming");
+      expect(document.querySelectorAll("[data-task]")).toHaveLength(0);
+      tab("List");
+      expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_inbox", "tk_now"]);
+      tab("Done");
+      await waitFor(() => expect(reads()).toContain("/api/v1/tasks/done"), SLOW);
+      expect(reads().filter((u) => u.startsWith("/api/v1/tasks/done")).every((u) => !u.includes("project"))).toBe(true);
+      fireEvent.change(switcher(), { target: { value: "" } });
+      expect(location.search).toBe("");
+      tab("Today");
+      expect(await screen.findByRole("list", { name: "Overdue" }, SLOW)).toBeTruthy();
+    });
+
+    it("Projects… opens the project dialog outside the row; a checkbox adds or removes the task's link", async () => {
+      current = view({ inbox: [row("tk_inbox", { projects: ["home"] })], active_projects: PROJECTS });
+      answer = { status: 200, body: { task_id: "tk_inbox", project: "garden", changed: true } };
+      await show();
+      tab("Inbox");
+      fireEvent.click(within(card("tk_inbox")).getByRole("button", { name: "More actions: tk_inbox" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Projects…" }));
+      const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
+      expect(card("tk_inbox").contains(dialog)).toBe(false);
+      const box = (name: string) => within(dialog).getByRole("checkbox", { name });
+      expect(box("Home").getAttribute("aria-checked")).toBe("true");
+      expect(box("Garden").getAttribute("aria-checked")).toBe("false");
+      fireEvent.click(box("Garden"));
+      await waitFor(() => expect(box("Garden").getAttribute("aria-checked")).toBe("true"), SLOW);
+      fireEvent.click(box("Home"));
+      await waitFor(() => expect(box("Home").getAttribute("aria-checked")).toBe("false"), SLOW);
+      const sent = posts.filter((p) => p.url === "/api/v1/tasks/project").map((p) => JSON.parse(String(p.init.body)));
+      expect(sent).toEqual([{ id: "tk_inbox", project: "garden", add: true }, { id: "tk_inbox", project: "home", add: false }]);
+      expect((posts[0]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe(TOKEN);
+    });
+
+    it("New project creates the project, then puts the task in it; a refusal stays in the dialog", async () => {
+      current = view({ inbox: [row("tk_inbox")], active_projects: [] });
+      await show();
+      tab("Inbox");
+      fireEvent.click(within(card("tk_inbox")).getByRole("button", { name: "More actions: tk_inbox" }));
+      fireEvent.click(screen.getByRole("menuitem", { name: "Projects…" }));
+      const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
+      expect(within(dialog).getByText("No project yet: create the first one below.")).toBeTruthy();
+      answer = { status: 409, body: { error: 'project "home" exists already' } };
+      fireEvent.change(within(dialog).getByLabelText("New project"), { target: { value: "Home" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+      expect((await within(dialog).findByRole("alert", {}, SLOW)).textContent).toBe('project "home" exists already');
+      expect(posts.filter((p) => p.url === "/api/v1/tasks/project")).toEqual([]);
+      answer = { status: 200, body: { project: { slug: "garden", name: "Garden" }, task_id: "tk_inbox", changed: true } };
+      fireEvent.change(within(dialog).getByLabelText("New project"), { target: { value: "Garden" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+      await waitFor(() => expect(posts.some((p) => p.url === "/api/v1/tasks/project")).toBe(true), SLOW);
+      const creates = posts.filter((p) => p.url === "/api/v1/projects").map((p) => JSON.parse(String(p.init.body)) as { id: string; name: string });
+      expect(creates.map((c) => c.name)).toEqual(["Home", "Garden"]);
+      expect(creates.every((c) => /^pj_[0-9a-f]{32}$/.test(c.id))).toBe(true);
+      expect(JSON.parse(String(posts.at(-1)!.init.body))).toEqual({ id: "tk_inbox", project: "garden", add: true });
+      expect((within(dialog).getByLabelText("New project") as HTMLInputElement).value).toBe("");
+    });
+
+    it("a done row has no Projects… item", async () => {
+      donePages = { "/api/v1/tasks/done": { tasks: [{ ...row("tk_old"), done_at: "2026-11-11T10:00:00.000Z" }], older: false, next_before: "2026-10-12T00:00:00.000Z" } };
+      await show();
+      tab("Done");
+      const done = await screen.findByText("tk_old", {}, SLOW);
+      const li = done.closest("[data-done]")!;
+      expect(within(li as HTMLElement).queryByRole("button", { name: /More actions/ })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Projects…" })).toBeNull();
+    });
+  });
+
   describe("Factory work", () => {
     it("lists a work item that needs the owner above the tabs, in a Needs-you group", async () => {
       items = [item("wi_1", { title: "Approve the spec", level: "needs_approval" }), item("wi_run", { title: "Busy", level: "running" })];
@@ -597,14 +711,14 @@ describe("Tasks page", () => {
     it("a built task shows its work item's state", async () => {
       items = [item("wi_1", { level: "ready_to_merge" })];
       await show();
-      tab("Project");
+      tab("List");
       expect(await within(card("tk_built")).findByText("Ready to merge", {}, SLOW)).toBeTruthy();
     });
 
     it("a merged item reads Merged, and the state opens a dialog with the full-page link", async () => {
       items = [item("wi_1", { level: "closed", close_reason: "completed", stage: "CLOSED" })];
       await show();
-      tab("Project");
+      tab("List");
       expect(await within(card("tk_built")).findByText("Merged", {}, SLOW)).toBeTruthy();
       fireEvent.click(within(card("tk_built")).getByRole("button", { name: "Work item state: tk_built" }));
       const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;

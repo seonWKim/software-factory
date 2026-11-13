@@ -11,7 +11,7 @@ import { ButtonRow } from "./button-row.js";
 // single-line field submits the form, which is the confirm button. Focus moves into the dialog when it opens and
 // goes back to `returnFocusTo` (else the element focused when it opened) when it closes. It is built from the
 // components/ui set: radius card, padding space-6, a text-base font-semibold title, and a right-aligned ButtonRow footer
-// with Cancel (secondary, outline) before the confirm (primary, filled accent; or danger filled with the failed colour).
+// with Cancel (secondary, outline; `cancelLabel` names it Close where each change is saved at once) before the confirm (primary, filled accent; or danger filled with the failed colour).
 // The title is one line, truncated, with the full text in its tooltip. The backdrop dims in both themes.
 
 export interface DialogProps {
@@ -21,6 +21,8 @@ export interface DialogProps {
   consequence?: ReactNode;
   confirmLabel: string;
   confirmDisabled?: boolean;
+  /** The secondary button's label; Cancel by default. */
+  cancelLabel?: string;
   /** The confirm uses the failed colour (reject). */
   danger?: boolean;
   /** Shown in the dialog when the send failed, so the dialog stays open and says why. */
@@ -31,7 +33,7 @@ export interface DialogProps {
   children?: ReactNode;
 }
 
-export function Dialog({ title, consequence, confirmLabel, confirmDisabled = false, danger = false, error, onConfirm, onClose, returnFocusTo, children }: DialogProps) {
+export function Dialog({ title, consequence, confirmLabel, confirmDisabled = false, cancelLabel = t("common.cancel"), danger = false, error, onConfirm, onClose, returnFocusTo, children }: DialogProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   const opener = useRef<Element | null>(document.activeElement);
@@ -104,7 +106,7 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
         )}
         <ButtonRow className="justify-end">
           <Button variant="secondary" onClick={() => close.current()}>
-            {t("common.cancel")}
+            {cancelLabel}
           </Button>
           <Button type="submit" variant={danger ? "danger" : "primary"} solid={danger} disabled={confirmDisabled}>
             {confirmLabel}
