@@ -11,6 +11,7 @@ import type { NewNotice } from "../../../core/notifications.js";
 import type { Timestamp, UserId, WorkItemId } from "../../../core/types.js";
 import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
 import { recordNotice } from "./notices.js";
+import { unlinkTask } from "./projects.js";
 import { newId } from "./rows.js";
 
 const COLUMNS =
@@ -93,7 +94,7 @@ export async function updateTask(db: SqlDriver, id: string, edit: TaskEdit, now:
   });
 }
 
-/** In one transaction: refused while a sub-task is open; else detaches the done ones and deletes the row. */
+/** In one transaction: refused while a sub-task is open; else detaches the done ones, drops its project links and deletes the row. */
 export async function deleteTask(db: SqlDriver, id: string): Promise<DeleteTaskResult> {
   return db.transaction(async (tx) => {
     const task = await select(tx, "id", id);
@@ -102,6 +103,7 @@ export async function deleteTask(db: SqlDriver, id: string): Promise<DeleteTaskR
     const open = subs.filter((s) => s.done_at === null);
     if (open.length > 0) return { ok: false, reason: "open_sub_tasks", sub_tasks: open } as const;
     if (subs.length > 0) await tx.run("UPDATE controller_tasks SET parent_task_id = NULL WHERE parent_task_id = ? AND done_at IS NOT NULL", [id]);
+    await unlinkTask(tx, id);
     await tx.run("DELETE FROM controller_tasks WHERE id = ?", [id]);
     return { ok: true, task, detached: subs.map((s) => ({ ...s, parent_task_id: null })) } as const;
   });

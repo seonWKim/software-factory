@@ -1,4 +1,5 @@
 import type { NewNotice } from "./notifications.js";
+import type { ProjectStore } from "./projects.js";
 import type { Timestamp, UserId, WorkItemId } from "./types.js";
 
 /**
@@ -82,8 +83,8 @@ export type ReopenTaskResult =
   /** `reopened`: false when it was open already (nothing written). `removed_next`: the open next occurrence it deleted. */
   | { ok: true; task: Task; reopened: boolean; removed_next: string | null };
 
-/** The store's task methods, part of FactoryStore; implemented once in the shared SQL store. */
-export interface TaskStore {
+/** The store's task methods, part of FactoryStore, with the task projects' (src/core/projects.ts); implemented once in the shared SQL store. */
+export interface TaskStore extends ProjectStore {
   /** Inserts the task unless its ID is stored; returns the stored row either way. */
   addTask(t: NewTask): Promise<Task>;
   /** Open tasks (no done_at), oldest first, at most `limit`. Read-only. */

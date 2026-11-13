@@ -17,6 +17,7 @@ import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, applyMigrations, di
 import CHANGE_REF_ONLY from "../src/controller/migrations/20261112T1200-controller-change-ref-only.migration.js";
 import SUB_TASKS from "../src/controller/migrations/20261112T1800-controller-sub-tasks.migration.js";
 import TASK_SCHEDULE from "../src/controller/migrations/20261113T0900-controller-task-schedule.migration.js";
+import TASK_PROJECTS from "../src/controller/migrations/20261113T1300-controller-task-projects.migration.js";
 import { type NewTask, localDate } from "../src/core/tasks.js";
 import { newStore, human, issue, system, w1, w2, PROJECT_KEY, OTHER_PROJECT_KEY } from "./helpers/store.js";
 
@@ -1800,6 +1801,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
       "controller_notices", // owner notices: src/controller/migrations/20261112T0900-controller-notices
       "controller_notice_messages", "controller_notice_questions", // Slack notice records: 20261112T2100-controller-notice-messages
+      "controller_projects", "controller_task_projects", // task projects: 20261113T1300-controller-task-projects
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "runtime_config_file_changes", // file-only key edits (design 08-settings): src/state/migrations/20261113T1200-state-config-file-changes
@@ -2965,6 +2967,142 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect((await store.claimRun({ worker_id: w1, kinds: ["implement"], lease_ms: LEASE }))?.work_item_id).toBe(it1.id);
     });
   });
+
+  // Task projects (phase 1 of 3): create, rename, archive, restore, membership, delete and listTaskProjects take plain
+  // arguments and are conditional writes, so a repeat changes nothing more. Nothing calls them yet.
+  describe("task projects", () => {
+    const by = "local:dev@example.com" as UserId;
+    const task = (id: string): NewTask => ({ id, title: id, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: by });
+    const links = (store: { db: SqlDriver }) => store.db.all("SELECT task_id, project_id FROM controller_task_projects ORDER BY project_id, task_id");
+    const slugs = (ps: readonly { slug: string }[]) => ps.map((p) => p.slug);
+
+    it("createProject stores the cleaned name, its slug and the Clock's time, and answers a repeated ID as stored", async () => {
+      const { store } = await make(new FakeClock("2026-11-14T09:00:00.000Z"));
+      const r = await store.createProject({ id: "pj_a", name: "  Home   repairs ", created_by: by });
+      const project = { id: "pj_a", slug: "home-repairs", name: "Home repairs", created_by: by, created_at: "2026-11-14T09:00:00.000Z", archived_at: null };
+      expect(r).toEqual({ ok: true, project });
+      expect(await store.createProject({ id: "pj_a", name: "Something else", created_by: by })).toEqual({ ok: true, project });
+      expect(await store.getProject("pj_a")).toEqual(project);
+      expect(await store.getProject("pj_nope")).toBeNull();
+    });
+
+    it("createProject refuses a bad name and a taken slug, writing nothing", async () => {
+      const { store } = await make();
+      const held = await store.createProject({ id: "pj_a", name: "Home repairs", created_by: by });
+      expect(await store.createProject({ id: "pj_b", name: "   ", created_by: by })).toMatchObject({ ok: false, reason: "invalid_name" });
+      expect(await store.createProject({ id: "pj_b", name: "HOME  Repairs!", created_by: by })).toEqual({
+        ok: false, reason: "slug_taken", project: held.ok ? held.project : null,
+      });
+      expect(await store.getProject("pj_b")).toBeNull();
+      expect(slugs(await store.listProjects("active"))).toEqual(["home-repairs"]);
+    });
+
+    it("renameProject changes the name and slug, refuses a bad name, a taken slug and an unknown project", async () => {
+      const { store } = await make();
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      const r = await store.renameProject("pj_a", "Home repairs");
+      expect(r).toMatchObject({ ok: true, project: { id: "pj_a", name: "Home repairs", slug: "home-repairs" } });
+      expect(await store.renameProject("pj_a", "Home repairs")).toEqual(r);
+      expect(await store.renameProject("pj_a", "home REPAIRS")).toMatchObject({ ok: true, project: { name: "home REPAIRS", slug: "home-repairs" } });
+      expect(await store.renameProject("pj_a", "work")).toMatchObject({ ok: false, reason: "slug_taken", project: { id: "pj_b" } });
+      expect(await store.renameProject("pj_a", "\n")).toMatchObject({ ok: false, reason: "invalid_name" });
+      expect(await store.renameProject("pj_nope", "Fine")).toEqual({ ok: false, reason: "not_found" });
+      expect(await store.getProject("pj_a")).toMatchObject({ name: "home REPAIRS", slug: "home-repairs" });
+    });
+
+    it("listProjects lists active projects by slug, and archived ones apart", async () => {
+      const { store } = await make();
+      for (const [id, name] of [["pj_1", "Zebra"], ["pj_2", "apple"], ["pj_3", "Mango"]] as const) await store.createProject({ id, name, created_by: by });
+      expect(slugs(await store.listProjects("active"))).toEqual(["apple", "mango", "zebra"]);
+      expect(await store.listProjects("archived")).toEqual([]);
+    });
+
+    it("archive hides a project from listings but keeps its links; restore brings it back with the same links", async () => {
+      const { store, clock } = await make(new FakeClock("2026-11-14T09:00:00.000Z"));
+      await store.addTask(task("tk_a"));
+      await store.addTask(task("tk_b"));
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      await store.addTaskToProject("pj_a", "tk_a");
+      await store.addTaskToProject("pj_a", "tk_b");
+      await store.addTaskToProject("pj_b", "tk_a");
+      const linked = await links(store);
+
+      clock.advance(1000);
+      const archived = await store.archiveProject("pj_a");
+      expect(archived).toMatchObject({ ok: true, changed: true, project: { id: "pj_a", archived_at: "2026-11-14T09:00:01.000Z" } });
+      clock.advance(1000);
+      expect(await store.archiveProject("pj_a")).toEqual({ ...archived, changed: false });
+      expect(slugs(await store.listProjects("active"))).toEqual(["work"]);
+      expect(slugs(await store.listProjects("archived"))).toEqual(["home"]);
+      expect(slugs(await store.listTaskProjects("tk_a"))).toEqual(["work"]);
+      expect(await store.listTaskProjects("tk_b")).toEqual([]);
+      expect(await links(store)).toEqual(linked);
+
+      const restored = await store.restoreProject("pj_a");
+      expect(restored).toMatchObject({ ok: true, changed: true, project: { id: "pj_a", archived_at: null } });
+      expect(await store.restoreProject("pj_a")).toEqual({ ...restored, changed: false });
+      expect(slugs(await store.listProjects("active"))).toEqual(["home", "work"]);
+      expect(slugs(await store.listTaskProjects("tk_a"))).toEqual(["home", "work"]);
+      expect(slugs(await store.listTaskProjects("tk_b"))).toEqual(["home"]);
+      expect(await links(store)).toEqual(linked);
+      expect(await store.archiveProject("pj_nope")).toEqual({ ok: false, reason: "not_found" });
+      expect(await store.restoreProject("pj_nope")).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("addTaskToProject links once, refuses an unknown task or project and an archived project; removeTaskFromProject unlinks once", async () => {
+      const { store } = await make();
+      await store.addTask(task("tk_a"));
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_old", name: "Old", created_by: by });
+      await store.archiveProject("pj_old");
+      expect(await store.addTaskToProject("pj_a", "tk_a")).toEqual({ ok: true, changed: true });
+      expect(await store.addTaskToProject("pj_a", "tk_a")).toEqual({ ok: true, changed: false });
+      expect(await store.addTaskToProject("pj_nope", "tk_a")).toEqual({ ok: false, reason: "project_not_found" });
+      expect(await store.addTaskToProject("pj_a", "tk_nope")).toEqual({ ok: false, reason: "task_not_found" });
+      expect(await store.addTaskToProject("pj_old", "tk_a")).toEqual({ ok: false, reason: "archived" });
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_a" }]);
+      expect(slugs(await store.listTaskProjects("tk_a"))).toEqual(["home"]);
+
+      expect(await store.removeTaskFromProject("pj_a", "tk_a")).toBe(true);
+      expect(await store.removeTaskFromProject("pj_a", "tk_a")).toBe(false);
+      expect(await links(store)).toEqual([]);
+      expect(await store.listTaskProjects("tk_a")).toEqual([]);
+    });
+
+    it("deleteProject removes the project and its links only, leaving the tasks and other projects' links as they were", async () => {
+      const { store } = await make();
+      await store.addTask(task("tk_a"));
+      await store.addTask(task("tk_b"));
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      await store.addTaskToProject("pj_a", "tk_a");
+      await store.addTaskToProject("pj_a", "tk_b");
+      await store.addTaskToProject("pj_b", "tk_a");
+      const tasksBefore = await store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+
+      const r = await store.deleteProject("pj_a");
+      expect(r).toMatchObject({ ok: true, project: { id: "pj_a", slug: "home" }, unlinked: ["tk_a", "tk_b"] });
+      expect(await store.deleteProject("pj_a")).toEqual({ ok: false, reason: "not_found" });
+      expect(await store.getProject("pj_a")).toBeNull();
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_b" }]);
+      expect(await store.db.all("SELECT * FROM controller_tasks ORDER BY id")).toEqual(tasksBefore);
+      // The slug is free again.
+      expect(await store.createProject({ id: "pj_c", name: "Home", created_by: by })).toMatchObject({ ok: true, project: { id: "pj_c" } });
+    });
+
+    it("deleteTask drops the task's project links and leaves the projects", async () => {
+      const { store } = await make();
+      await store.addTask(task("tk_a"));
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.addTaskToProject("pj_a", "tk_a");
+      expect(await store.deleteTask("tk_a")).toMatchObject({ ok: true });
+      expect(await links(store)).toEqual([]);
+      expect(await store.listTaskProjects("tk_a")).toEqual([]);
+      expect(await store.getProject("pj_a")).toMatchObject({ id: "pj_a" });
+    });
+  });
 });
 
 describe("migration 19 on an existing SQLite database", () => {
@@ -3223,6 +3361,39 @@ describe("20261112T1800-controller-sub-tasks on an existing SQLite database", ()
     await expect(
       db.run("INSERT INTO controller_tasks (id, title, created_by, created_at, parent_id) VALUES ('tk_2', 't', 'u', 'x', 'tk_x')"),
     ).rejects.toThrow();
+  });
+});
+
+describe("20261113T1300-controller-task-projects on an existing SQLite database", () => {
+  const ID = "20261113T1300-controller-task-projects";
+  const mdb = (db: SqlDriver): MigrationDb => ({ dialect: "sqlite", all: (q, p) => db.all(q, p), run: (q, p) => db.run(q, p) });
+  const projectTables = (db: SqlDriver) =>
+    db.all("SELECT type, name FROM sqlite_master WHERE tbl_name IN ('controller_projects', 'controller_task_projects') ORDER BY type, name");
+
+  it("adds both tables and the membership index, writes no row on a store with tasks, and is safe to rerun", async () => {
+    const { store } = await newStore();
+    const db = store.db;
+    const created = await projectTables(db);
+    expect(created).toEqual(expect.arrayContaining([
+      { type: "index", name: "controller_task_projects_project" },
+      { type: "table", name: "controller_projects" },
+      { type: "table", name: "controller_task_projects" },
+    ]));
+    await db.run("DROP TABLE controller_task_projects");
+    await db.run("DROP TABLE controller_projects");
+    await db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID]);
+    await db.run("INSERT INTO controller_tasks (id, title, list, created_by, created_at) VALUES ('tk_old', 'old', 'home', 'u', '2026-01-01T00:00:00.000Z')");
+    await store.migrate();
+    expect(await db.all(`SELECT id FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID])).toEqual([{ id: ID }]);
+    expect(await projectTables(db)).toEqual(created);
+    expect(await db.all("SELECT * FROM controller_projects")).toEqual([]);
+    expect(await db.all("SELECT * FROM controller_task_projects")).toEqual([]);
+    expect(TASK_PROJECTS).toMatchObject({ change: "additive" });
+    await TASK_PROJECTS.up(mdb(db));
+    expect(await projectTables(db)).toEqual(created);
+    expect(await db.all("SELECT * FROM controller_projects")).toEqual([]);
+    expect(await db.all("SELECT * FROM controller_task_projects")).toEqual([]);
+    expect(await db.all("SELECT id, list FROM controller_tasks")).toEqual([{ id: "tk_old", list: "home" }]);
   });
 });
 

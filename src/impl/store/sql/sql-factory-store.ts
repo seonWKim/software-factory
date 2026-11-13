@@ -115,6 +115,7 @@ import * as signals from "./signals.js";
 import * as evaluations from "./merge-evaluations.js";
 import * as proposals from "./command-proposals.js";
 import * as tasks from "./tasks.js";
+import { SqlProjectStore } from "./projects.js";
 import * as notices from "./notices.js";
 import * as noticeMessages from "./notice-messages.js";
 import * as posted from "./posted-comments.js";
@@ -123,13 +124,12 @@ import * as verdicts from "./verdicts.js";
 /**
  * FactoryStore over a SqlDriver (SQLite; `db` is public for components owning tables). Every write is one driver transaction. Correctness
  * never depends on the row locks alone: every state change is also a conditional UPDATE (version,
- * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there".
+ * status, lease token), and uniqueness is enforced by keys, with a duplicate treated as "already there". Task projects: SqlProjectStore.
  */
-export class SqlFactoryStore implements FactoryStore {
-  constructor(
-    readonly db: SqlDriver,
-    private readonly clock: Clock,
-  ) {}
+export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
+  constructor(db: SqlDriver, private readonly clock: Clock) {
+    super(db, () => clock.now().toISOString() as Timestamp);
+  }
 
   /**
    * The schema (the driver builds it), then the project-key check: the store
