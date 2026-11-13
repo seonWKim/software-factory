@@ -31,6 +31,12 @@ export interface HttpResponse {
 
 export type HttpClient = (url: string, init: HttpRequest) => Promise<HttpResponse>;
 
+/** How long one HTTP call to Google may take, its body included, before it fails as "no answer". */
+export const GOOGLE_HTTP_TIMEOUT_MS = 30_000;
+
+/** fetch, given up after `ms`: a hung Google fails that sync instead of holding up the controller's tick. */
+export const timedFetch = (ms: number): HttpClient => (url, init) => fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+
 /** The SecretStore as this source uses it: one `get` per name. */
 export interface SecretReader<N extends string> {
   get(name: N): Promise<{ reveal(): string } | null>;

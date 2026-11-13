@@ -6,15 +6,17 @@
 // permissions, issue #445; users-api.ts), POST /api/v1/improve/run (design §7, issue #508; improve-api.ts) and
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
 // issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
-// /api/v1/tasks/build, Build this, and /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// /api/v1/tasks/build, Build this, and /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions) and the
+// calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing and improve routes then
-// check the owner (approve_spec), the users and rules routes the local owner, the pack approvals route approve_tool, the task routes
+// check the owner (approve_spec), the users, rules and calendar routes the local owner, the pack approvals route approve_tool, the task routes
 // the commands actor. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
-// /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts and GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts; errors as JSON) and the app under /app (app.ts; its own
+// /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts and GET
+// /api/v1/calendar in calendar-api.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -32,6 +34,7 @@ import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
 import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
+import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
 import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
 import { parseFilters } from "./filters.js";
 import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
@@ -130,14 +133,14 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "users" | "improve" | "packs" | "rules" | "tasks";
+type WriteRoute = "settings" | "resume" | "standing" | "users" | "improve" | "packs" | "rules" | "tasks" | "calendar";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
  * /api/v1/pauses/resume or /api/v1/standing when the pause routes (their owner check) are, to exactly
  * /api/v1/users when the users routes are, or to exactly /api/v1/improve/run when both the pause routes and
- * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is (a query
- * string is ignored). Null for every other request.
+ * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is, or
+ * to exactly /api/v1/calendar/connect or /disconnect when the settings carry the Calendar section (a query string is ignored). Null for every other request.
  */
 function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (req.method !== "POST") return null;
@@ -150,6 +153,7 @@ function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (path === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined) return "packs";
   if (path === RULE_VERDICT_PATH && d.pauses !== undefined) return "rules";
   if (Object.hasOwn(TASK_WRITES, path) && d.commands !== undefined) return "tasks";
+  if ((path === CALENDAR_CONNECT_PATH || path === CALENDAR_DISCONNECT_PATH) && d.settings?.calendar !== undefined) return "calendar";
   return null;
 }
 
@@ -165,7 +169,7 @@ function mediaType(value: string | undefined): string {
  */
 async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise<UiResponse> {
   const token =
-    route === "settings" ? d.settings!.csrfToken
+    route === "settings" || route === "calendar" ? d.settings!.csrfToken
     : route === "users" ? d.users!.csrfToken
     : route === "tasks" ? d.commands!.token
     : d.pauses!.csrfToken;
@@ -192,6 +196,7 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
     : route === "packs" ? await writePackApproval(d, d.pauses!, body)
     : route === "rules" ? await writeRuleVerdict(d, d.pauses!, body)
     : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
+    : route === "calendar" ? await writeCalendar(d, pathOf(req.url), body)
     : await writeStanding(d, d.pauses!, body);
   return json(r.status, r.value);
 }
@@ -213,7 +218,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, users, improve run, pack approvals, rule verdict and task routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, users, improve run, pack approvals, rule verdict, task and calendar routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -230,6 +235,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
       : url.pathname === RULES_PATH ? await readRules(d)
       : url.pathname === RULE_ENTRY_PATH ? await readRuleEntry(d, url.searchParams.get("id"))
       : url.pathname === TASKS_PATH ? await readTasks(d)
+      : url.pathname === CALENDAR_PATH ? await readCalendarStatus(d)
       : await api(d, url);
     return json(r.status, r.value);
   }

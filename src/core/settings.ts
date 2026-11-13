@@ -261,7 +261,7 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
-  "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations",
+  "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations", "calendar",
   "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
@@ -281,8 +281,11 @@ export type Mode = (typeof MODES)[number];
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
-/** Keys only the owner changes, free and with no grant (design 08-settings): `integrations` switches a plugin the factory runs. */
-export const OWNER_KEYS: readonly SettableKey[] = ["integrations"];
+/**
+ * Keys only the owner changes, free and with no grant (design 08-settings): `integrations` switches a plugin the factory
+ * runs, and `calendar` turns on the calendars whose secrets the owner's connect wrote.
+ */
+export const OWNER_KEYS: readonly SettableKey[] = ["integrations", "calendar"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -320,6 +323,7 @@ export interface SettableValues {
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; // interface → plugin name; no entry: the config's choice (design 08-settings)
+  calendar: readonly string[]; // CalendarSource plugin names, in order (design 08-settings, 2026-11-13); [] none
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number;
   max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number;
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
@@ -350,7 +354,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
-  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {},
+  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {}, calendar: [],
   stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms,
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
   max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight,
@@ -442,6 +446,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     case "integrations": return integrationEntries(value) as SettableValues[K];
+    case "calendar": return calendarNames(value) as SettableValues[K];
     case "max_coordination_cost": case "hotspot_weight": case "mechanical_weight": {
       const problem = coordinationProblems({ [key]: value ?? null })[0];
       if (problem) throw new Error(problem);
@@ -458,6 +463,17 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
 function integrationEntries(v: unknown): Record<string, string> {
   if (v === null || typeof v !== "object" || Array.isArray(v) || Object.values(v).some((n) => typeof n !== "string" || n.trim() === "")) throw new Error("integrations must be an object from interface to plugin name");
   return { ...(v as Record<string, string>) };
+}
+
+/**
+ * `calendar` as stored: plugin names in order, each once. Which names a plugin has is the registry's to say: the
+ * connect routes write only registered names, and a process skips (and logs) a name it cannot build.
+ */
+function calendarNames(v: unknown): string[] {
+  if (!Array.isArray(v) || v.some((n) => typeof n !== "string" || n.trim() === "") || new Set(v).size !== v.length) {
+    throw new Error("calendar must be a list of CalendarSource plugin names, each once");
+  }
+  return [...(v as string[])];
 }
 
 /** A ModelTable back in the form `model_by` is written in, so it can be checked and stored like any value. */
@@ -680,7 +696,7 @@ export interface OverrideSource {
 /**
  * The settings a running process acts on. refresh() re-reads the stored overrides and learned values (the controller each tick,
  * the worker pool each tick, a worker before each claim and each lease renewal) and hands `integrations` to the plugin holders
- * (src/runtime/live-tacit.ts); the getters return the last resolved values without I/O. Only a cache of store rows: no replica
+ * (src/runtime/live-tacit.ts) and `calendar` to the calendar holder; the getters return the last resolved values without I/O. Only a cache of store rows: no replica
  * needs it, and a restart rebuilds it. A failed read keeps the values in use; an override that fails a check is logged once and ignored.
  */
 export class LiveSettings {
@@ -691,6 +707,8 @@ export class LiveSettings {
   constructor(
     private readonly opts: {
       config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger; integrations?: readonly { apply(e: Readonly<Record<string, string>>): Promise<void> }[];
+      /** The calendar holder (src/calendar/live-calendars.ts): handed the effective `calendar` list after each refresh. */
+      calendar?: { apply(names: readonly string[]): Promise<void> };
     },
   ) {
     this.current = resolveSettings(opts.base, [], this.label);
@@ -718,6 +736,7 @@ export class LiveSettings {
     this.current = resolveSettings(this.opts.base, rows, this.label);
     this.view = this.viewOf(this.current);
     for (const h of this.opts.integrations ?? []) await h.apply(this.current.values.integrations);
+    await this.opts.calendar?.apply(this.current.values.calendar);
     for (const i of this.current.ignored) {
       const sig = JSON.stringify([i.key, i.project, i.value]);
       if (this.reported.has(sig)) continue;
