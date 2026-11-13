@@ -6,10 +6,11 @@ import { type SentenceDeps, parseSentence, runSentence } from "../src/core/local
 import { isProposalId } from "../src/core/interpret.js";
 import type { UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
-import type { LLMProvider, LLMResponse } from "../src/interfaces/llm-provider.js";
+import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { cleanScanner } from "./helpers/fakes.js";
 import { issue, newStore, system } from "./helpers/store.js";
+import { classifierAnswer } from "./helpers/classifier.js";
 
 // `factory "<words>"` (design 04-gate-commands, the CLI sentence form): the plain-words reader over the open items,
 // with a fake model. Each proposed command prints as its typed line with the proposal ID and is stored pending; no item
@@ -22,7 +23,9 @@ const SPEC_PENDING: WorkItemPatch = { stage: "READY", blocked_on: "human", block
 class ScriptedLLM implements LLMProvider {
   calls = 0;
   constructor(public answer: Record<string, unknown>) {}
-  async complete(): Promise<LLMResponse> {
+  async complete(req: LLMRequest): Promise<LLMResponse> {
+    const label = classifierAnswer(req);
+    if (label) return label;
     this.calls++;
     return { text: JSON.stringify(this.answer), parsed: this.answer, stop_reason: "end", usage: { input_tokens: 1, output_tokens: 1, cost_usd: null } };
   }
