@@ -2,8 +2,9 @@
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
-// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z), delete, sub, and schedule, the timeline's drop), each with the per-process CSRF token (from GET /api/v1/settings,
-// /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules or /api/v1/tasks) in x-csrf-token.
+// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z), delete, sub, and schedule, the timeline's drop) and POST /api/v1/data/ask
+// (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
+// /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
 import { t } from "./i18n/index.js";
@@ -510,11 +511,29 @@ export type SettingsWrite =
 /** The answer to a write: the CLI's lines (an edit-file also with its filed item and branch), or its refusal. */
 export type WriteResult = { ok: true; lines: string[]; filed?: { item: string; branch: string } } | { ok: false; error: string };
 
-/** `/api/v1/data/tables`: every store table (design §9 Data page). */
+/** One store table: its line, owning component and column meanings (null and {} when no component describes it). */
+export interface DataTableInfo {
+  name: string;
+  rows: number;
+  columns: string[];
+  hidden: string[];
+  /** Absent from a server older than the table docs. */
+  description?: string | null;
+  owner?: string | null;
+  column_docs?: Record<string, string>;
+}
+
+/** `/api/v1/data/tables`: every store table (design §9 Data page); `csrf_token` is null when the server has no Ask route. */
 export interface DataTables {
   as_of: string;
-  tables: { name: string; rows: number; columns: string[]; hidden: string[] }[];
+  tables: DataTableInfo[];
+  csrf_token: string | null;
 }
+
+/** POST /api/v1/data/ask's answer: the query and its result, the query and why it was refused, or a message alone. */
+export type DataAskResult =
+  | { ok: true; sql: string; columns: string[]; rows: DataCell[][]; truncated: boolean; answer: string | null }
+  | { ok: false; sql: string | null; error: string };
 
 /** `/api/v1/data/autonomy`: merged factory items with no person's push (design §6); `autonomy` null with none merged. */
 export interface DataAutonomy {
@@ -851,6 +870,7 @@ export const API = {
   taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
   dataTables: "/api/v1/data/tables",
   dataAutonomy: "/api/v1/data/autonomy",
+  dataAsk: "/api/v1/data/ask",
   dataTable: (name: string, params: URLSearchParams) => {
     const q = params.toString();
     return `/api/v1/data/tables/${encodeURIComponent(name)}${q ? `?${q}` : ""}`;
@@ -1013,6 +1033,14 @@ export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub" | "schedu
 export async function postTaskAction(token: string, action: TaskAction, body: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.taskAction(action), token, body);
   return r.ok ? { ok: true } : { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/data/ask: one plain-text question (design 09-dashboard-app, Data page Ask). */
+export async function postDataAsk(token: string, question: string): Promise<DataAskResult> {
+  const r = await postJson<{ error?: string; sql?: string; columns?: string[]; rows?: DataCell[][]; truncated?: boolean; answer?: string | null }>(API.dataAsk, token, { question });
+  const v = r.value;
+  if (r.ok) return { ok: true, sql: v.sql ?? "", columns: v.columns ?? [], rows: v.rows ?? [], truncated: v.truncated === true, answer: v.answer ?? null };
+  return { ok: false, sql: v.sql ?? null, error: v.error ?? t("api.http", { status: r.status }) };
 }
 
 /**
