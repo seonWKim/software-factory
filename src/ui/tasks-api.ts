@@ -1,4 +1,5 @@
-// The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views with the stored calendar events; POST /api/v1/tasks/edit,
+// The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views with the stored calendar events, and GET
+// /api/v1/tasks/done, its Done tab; POST /api/v1/tasks/edit,
 // /done, /reopen, /delete and /sub, the page's row actions, and /schedule, its timeline's drop, each calling the store method of its CLI command (`factory task
 // edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
 // its Build this button (task-build.ts, the same action as `factory task build`); and POST /api/v1/tasks, which
@@ -11,7 +12,8 @@
 import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit, validDate } from "../core/quick-add.js";
 import { buildTask } from "../core/task-build.js";
-import { durationError, taskViews } from "../core/tasks.js";
+import { doneWindow, durationError, taskViews } from "../core/tasks.js";
+import type { Timestamp } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
@@ -57,6 +59,23 @@ export async function readTasks(d: UiDeps): Promise<ApiResult> {
     status: 200,
     value: { as_of: now.toISOString(), ...taskViews(open, now, events), calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build },
   };
+}
+
+/**
+ * GET /api/v1/tasks/done, the Tasks page's Done tab (design 02-tasks, Done view): the done tasks of the last
+ * DONE_WINDOW_DAYS days at the server's clock, most recently done first, every list in one list; with `?before=<ISO
+ * time>` (Show older), those of the DONE_WINDOW_DAYS days before it. `older`: a task was done before the window;
+ * `next_before`: the `before` of Show older's read, the oldest row's done time (the window's start when it has none).
+ * Reads the stored copy only: no source is called and nothing is written.
+ */
+export async function readDoneTasks(d: UiDeps, before: string | null): Promise<ApiResult> {
+  const end = before === null ? null : Date.parse(before);
+  if (end !== null && Number.isNaN(end)) return refused(400, "before must be an ISO time, e.g. 2026-11-13T09:00:00.000Z");
+  const now = d.clock.now();
+  const window = doneWindow(now, end === null ? null : (new Date(end).toISOString() as Timestamp));
+  const r = await d.store.listDoneTasks(window);
+  const tasks = await shown(new Withholder(d.scanner), r.tasks);
+  return { status: 200, value: { as_of: now.toISOString(), tasks, older: r.older, next_before: tasks.at(-1)?.done_at ?? window.from } };
 }
 
 /**

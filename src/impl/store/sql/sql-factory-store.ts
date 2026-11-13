@@ -392,7 +392,7 @@ export class SqlFactoryStore implements FactoryStore {
   answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
   // Plain tasks (design 02-tasks, issue #606): tasks.ts
   addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
-  listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
+  listTasks(limit: number) { return tasks.listTasks(this.db, limit); } listDoneTasks(w: Parameters<FactoryStore["listDoneTasks"]>[0]) { return tasks.listDoneTasks(this.db, w); }
   completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); } reopenTask(id: string) { return tasks.reopenTask(this.db, id); }
   getTask(id: string) { return tasks.getTask(this.db, id); }
   linkTask(id: string, work_item_id: WorkItemId) { return tasks.linkTask(this.db, id, work_item_id); }

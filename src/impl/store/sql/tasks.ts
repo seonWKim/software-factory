@@ -4,7 +4,7 @@
 // No CLI or chat logic: the methods take plain arguments, so an HTTP route can call them too.
 
 import {
-  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type NewTask, type Recurrence, type ReopenTaskResult, type Task, type TaskEdit, type TaskPriority,
+  type AddSubTaskResult, type CompleteTaskResult, type DeleteTaskResult, type DoneTasks, type DoneWindow, type NewTask, type Recurrence, type ReopenTaskResult, type Task, type TaskEdit, type TaskPriority,
   type TaskTime, type UpdateTaskResult, applyTaskEdit, dueDate, nextDueDate, reminderDays, reminderDue,
 } from "../../../core/tasks.js";
 import type { NewNotice } from "../../../core/notifications.js";
@@ -110,6 +110,14 @@ export async function deleteTask(db: SqlDriver, id: string): Promise<DeleteTaskR
 export async function listTasks(db: SqlDriver, limit: number): Promise<Task[]> {
   const rows = await db.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE done_at IS NULL ORDER BY created_at, id LIMIT ?`, [limit]);
   return rows.map(rowToTask);
+}
+
+/** Read-only: the window's done tasks, most recently done first, and whether one was done before it. */
+export async function listDoneTasks(db: SqlDriver, w: DoneWindow): Promise<DoneTasks> {
+  const [upper, args] = w.before === null ? ["", [w.from]] : [" AND done_at < ?", [w.from, w.before]];
+  const rows = await db.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE done_at >= ?${upper} ORDER BY done_at DESC, id DESC`, args);
+  const older = await db.all("SELECT id FROM controller_tasks WHERE done_at < ? LIMIT 1", [w.from]);
+  return { tasks: rows.map(rowToTask), older: older.length > 0 };
 }
 
 /** In `tx`: completeTask's conditional completion and, for a recurring task, its one next occurrence (unlinked). */
