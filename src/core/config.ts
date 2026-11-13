@@ -27,7 +27,8 @@ export interface FactoryConfig extends LoadedConfig {
   project: ProjectRef;
   /**
    * Broker tools granted to agent runs, per run kind: `tool_grants` from factory.config.json, checked at startup
-   * against the broker (`toolGrantsConfig`). Absent: no run gets a tool; a kind with no entry gets none either.
+   * against the broker (`toolGrantsConfig`), or the runtime `tool_grants` setting in force (LiveSettings' view, design
+   * 08-settings). Absent: no run gets a tool; a kind with no entry gets none either.
    */
   tool_grants?: ToolGrants;
 }
