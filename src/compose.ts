@@ -28,7 +28,7 @@ import { PackCheckRunner } from "./runtime/hooks/pack-checks.js";
 import { type HookDescriptor, UNCALLED_HOOK_POINTS } from "./shared/hook.js";
 import { VERDICT_SEVERITIES } from "./core/verdict.js";
 import {
-  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, resolveSettings, settingsLayers, workerCount,
+  type GlobalSettableKey, HEARTBEAT_LEASE_MESSAGE, type LearnedSettingsSource, booleanSetting, intakeLabel, LiveSettings, SETTABLE_KEYS, type SettingsBase, isProjectSettableKey, maxWorkers, positiveInteger, settingsLayers, workerCount,
 } from "./core/settings.js";
 import { WorkerPool } from "./worker/index.js";
 import type { LocalRoute } from "./worker/index.js";
@@ -36,7 +36,6 @@ import { FallbackLLM } from "./core/fallback-llm.js";
 import { FallbackRunner } from "./core/fallback-runner.js";
 import { checkConfigKeys, removedKeysWarning } from "./config-keys.js";
 import { checkStatePaths } from "./state-paths.js";
-import type { CalendarSource } from "./interfaces/calendar-source.js";
 import type { Clock } from "./interfaces/clock.js";
 import type { EgressScanner } from "./interfaces/egress-scanner.js";
 import type { GitHubAccess, GitHubApi, GitHubCredentials } from "./interfaces/github-credentials.js";
@@ -65,7 +64,6 @@ import type { UiCommands } from "./ui/commands.js";
 import { type UiSettings, configWriter, newCsrfToken, storeProjectResolver } from "./ui/settings-api.js";
 import type { UiPauses } from "./ui/pause-api.js";
 import { type UiTacit, uiTacit } from "./ui/rules-api.js";
-import { UiCalendar } from "./ui/calendar-api.js";
 import type { OpenAICompatibleConfig } from "./impl/openai/config.js";
 import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
@@ -73,7 +71,7 @@ import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
 import { LiveCalendars } from "./calendar/index.js";
 import {
-  type BaseContext, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, connectHooks, createCalendars, createPlugin, selectPlugins, selectedLlms, selectedRunners, selectedSources, withPackPlugins,
+  type BaseContext, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins, selectedLlms, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
@@ -642,22 +640,6 @@ export interface Built {
 /** What every broker plugin is built with, beside the base context. */
 interface BrokerDeps { github: GitHubApi; credentials: GitHubCredentials; secrets: SecretStore; store: FactoryStore; scanner: EgressScanner; clock: Clock }
 
-/** `loaded` as if its `calendar` key listed `name` too, so the secret store reads that plugin's secrets as a selected one's. */
-export function asCalendarSelected(loaded: Loaded, name: string): Loaded {
-  return { ...loaded, plugins: { ...loaded.plugins, calendars: [...new Set([...(loaded.plugins.calendars ?? []), name])] } };
-}
-
-/**
- * The calendar plugin `name`, built as a selected one is, with its secrets read fresh from the secret file: the live
- * `calendar` setting's sources (LiveCalendars) and the one sync after a connect (src/setup.ts connectCalendar).
- */
-export async function calendarFeed(loaded: Loaded, name: string, clock: Clock): Promise<CalendarSource> {
-  const as = asCalendarSelected(loaded, name);
-  const p = new Plugins(as);
-  const [built] = await createCalendars(as.registry, { ...as.plugins, calendars: [name] }, { ...p.base, secrets: await p.secrets(), clock });
-  return built!.source;
-}
-
 /**
  * Resolves the configured plugins one at a time, through the same registry as build(). For code that needs
  * only some of them: setup, doctor and the G6 canary, so they exercise the configured guards.
@@ -817,11 +799,9 @@ export async function build(
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
   const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
-  // The calendars the live `calendar` setting names (design 08-settings, 2026-11-13), rebuilt after each settings refresh.
-  const calendars = new LiveCalendars((name) => calendarFeed(loaded, name, clock), new ConsoleLogger(clock, "calendar"));
+  const calendars = new LiveCalendars(async (name) => createPlugin(registry, "calendar", name, { ...base, secrets: await new Plugins({ ...loaded, plugins: { ...sel, calendars: [name] } }).secrets(), clock }), new ConsoleLogger(clock, "calendar"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
-
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
   // no GitHub plugin: the local project key, and no GitHub call.
@@ -839,7 +819,7 @@ export async function build(
   const learned = new StoredLearnedSettings(store, new ConsoleLogger(clock, "settings"));
   const settings = new LiveSettings({
     config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, learned,
-    log: new ConsoleLogger(clock, "settings"), integrations: [tacit], calendar: calendars,
+    log: new ConsoleLogger(clock, "settings"), integrations: [tacit], calendar: calendars, // the live `calendar` list (design 08-settings)
   });
   await settings.refresh();
 
@@ -1027,7 +1007,6 @@ export interface UiParts {
   close(): Promise<void>;
 }
 
-
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
  * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only because a store plugin may
@@ -1071,17 +1050,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
-  // The Calendar section (design 08-settings, 2026-11-13): the plugins with a connect hook, and the one connect flow the
-  // CLI runs, answered from the page's request; it writes as the Settings writer. setup.ts is loaded when a connect runs.
-  settings.calendar = new UiCalendar({
-    plugins: connectHooks(loaded.registry).filter((h) => h.kind === "calendar").map((h) => ({ name: h.name, secrets: (loaded.registry.calendar.secrets[h.name] ?? []).map((d) => d.name) })),
-    listed: async () => resolveSettings(settings.base, await store.listSettingOverrides()).values.calendar,
-    run: async (name, disconnect, io) =>
-      (await import("./setup.js")).connectCalendar({
-        loaded, store, actor: settings.actor, clock, name, disconnect, beforeWrite: io.beforeWrite,
-        io: { ask: { hidden: io.hidden, yesNo: async (_q, dflt) => dflt }, print: () => undefined, openBrowser: io.openBrowser },
-      }),
-  });
+  settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, { store, actor: settings.actor, clock, base: settings.base }); // its Calendar section
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
@@ -1091,8 +1060,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
-  const profiles = new ProfileStore(storeSql(store));
-  const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
+  const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, close: () => identity.stop().then(() => store.close()) };
 }

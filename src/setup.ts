@@ -4,7 +4,7 @@
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
-import { type Loaded, Plugins, asCalendarSelected, calendarFeed, settingsBase } from "./compose.js";
+import { type Loaded, Plugins, settingsBase } from "./compose.js";
 import { runCanary } from "./canary.js";
 import { type LoadedConfig, toolchainCacheOverlaps } from "./core/config.js";
 import { describeSettings, resolveSettings, settingsFor } from "./core/settings.js";
@@ -12,13 +12,12 @@ import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubError } from "./impl/github/github-client.js";
 import { prFlagLabels, statusLabels } from "./impl/github/github-issue-source.js";
 import { baseEnv, runProcess } from "./impl/process/run-process.js";
-import type { Clock } from "./interfaces/clock.js";
 import type { FactoryStore } from "./interfaces/factory-store.js";
 import type { GitHubApi } from "./interfaces/github-credentials.js";
 import { storeSql } from "./impl/store/sql/store-sql.js";
 import type { SecretName, SecretStore } from "./interfaces/secret-store.js";
 import type { ConnectContext } from "./plugin-api.js";
-import { REGISTRY, type SecretDeclaration, connectHooks, declaredSecrets, selectedSetups } from "./plugins.js";
+import { REGISTRY, type SecretDeclaration, connectHooks, createPlugin, declaredSecrets, selectedSetups } from "./plugins.js";
 import type { Ask } from "./cli/handlers/setup/ask.js";
 
 export const MAX_TOKEN_DAYS = 30;
@@ -514,49 +513,38 @@ export { connectHooks };
 /** Every connect command of the built-in registry, for the usage text: `setup <kind> <command>`. */
 export const CONNECT_COMMANDS = connectHooks(REGISTRY).map((h) => ({ kind: h.kind, name: h.name, command: h.hook.command, configKey: REGISTRY[h.kind].configKey }));
 
-/** What one connect or disconnect of a calendar plugin is run with: `factory setup calendar <command>` and the dashboard. */
+/** One connect or disconnect of calendar plugin `name`: `factory setup calendar <command>`, or the dashboard's Calendar section. */
 export interface CalendarConnectRun {
   loaded: Loaded;
-  /** Where the live `calendar` setting and the one sync write. */
-  store: FactoryStore;
-  /** Who connects, as an ID, never a display name: the setting's audit row. */
-  actor: string;
-  clock: Clock;
-  /** The calendar plugin, by the name the `calendar` setting lists. */
+  store: FactoryStore; // where the live `calendar` setting and the one sync write
+  actor: string; // who connects, as an ID: the setting's audit row
+  clock: ConnectContext["clock"];
   name: string;
   disconnect: boolean;
-  /** How the hook asks, prints and opens the consent page: the terminal, or the dashboard's request and page. */
-  io: Pick<ConnectContext, "ask" | "print" | "openBrowser">;
-  /** Called before each secret write; a throw stops it (the dashboard's check that every asked value was given). */
-  beforeWrite?: () => void;
-}
-
-export interface CalendarConnectOutcome {
-  /** The effective `calendar` list before and after; equal when it did not change. */
-  was: readonly string[];
-  listed: readonly string[];
-  /** A connect's one sync; null on disconnect, or when the plugin synced in the last 5 minutes already. */
-  sync: SyncOutcome | null;
+  io: Pick<ConnectContext, "ask" | "print" | "openBrowser">; // the terminal, or the dashboard's request
+  beforeWrite?: () => void; // called before each secret write; a throw stops it (the dashboard's check that every asked value was given)
 }
 
 /**
  * The one connect and disconnect flow (design 08-settings, 2026-11-13): the CLI and the dashboard both run it, so they
  * cannot disagree. A missing secret file stops it before anything runs. The plugin's connect hook asks, signs in and
  * stores its secrets through this file's writer (mode 600); then the plugin is listed in (or dropped from) the live
- * `calendar` setting, other names kept; a connect then runs one sync of that plugin. A refusal throws before any write.
+ * `calendar` setting, other names kept; a connect then runs one sync of it, whose outcome is `sync` (null on disconnect,
+ * or when it synced in the last 5 minutes already). A refusal throws before any write.
  */
-export async function connectCalendar(r: CalendarConnectRun): Promise<CalendarConnectOutcome> {
+export async function connectCalendar(r: CalendarConnectRun): Promise<{ was: readonly string[]; listed: readonly string[]; sync: SyncOutcome | null }> {
   const found = connectHooks(r.loaded.registry).find((h) => h.kind === "calendar" && h.name === r.name);
   if (!found) throw new Error(`no calendar plugin "${r.name}" has a connect hook`);
   const file = r.loaded.secretsFile;
   if (!(await stat(file).then(() => true, () => false))) {
     throw new Error(`No secret file at ${file}: run npm run setup first (it creates it), then connect again. Nothing was written.`);
   }
+  // The secrets read as if the plugin were selected: it may not be listed yet. Each build reads the file afresh.
+  const selected = new Plugins({ ...r.loaded, plugins: { ...r.loaded.plugins, calendars: [r.name] } });
   const ctx: ConnectContext = {
     ...r.io,
     secretsFile: file,
-    // The secrets read as if the plugin were selected: it may not be listed yet.
-    secrets: await new Plugins(asCalendarSelected(r.loaded, r.name)).secrets(),
+    secrets: await selected.secrets(),
     async storeSecrets(values) {
       r.beforeWrite?.();
       // Checked first, so the values are written together or not at all.
@@ -571,24 +559,16 @@ export async function connectCalendar(r: CalendarConnectRun): Promise<CalendarCo
     clock: r.clock,
   };
   await (r.disconnect ? found.hook.disconnect(ctx) : found.hook.connect(ctx));
-  const { was, listed } = await listCalendar(r);
-  if (r.disconnect) return { was, listed, sync: null };
-  let sync: SyncOutcome | null;
-  try {
-    const feed = { name: r.name, source: await calendarFeed(r.loaded, r.name, r.clock) };
-    sync = (await syncCalendars(storeSql(r.store), [feed], r.clock.now().getTime())).find((o) => o.source === r.name) ?? null;
-  } catch (err) {
-    sync = { source: r.name, ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-  return { was, listed, sync };
-}
-
-/** Lists (or drops) `r.name` in the live `calendar` setting, keeping the other names; no override is written when nothing changes. */
-async function listCalendar(r: CalendarConnectRun): Promise<{ was: readonly string[]; listed: readonly string[] }> {
   const was = resolveSettings(settingsBase(r.loaded), await r.store.listSettingOverrides()).values.calendar;
   const listed = r.disconnect ? was.filter((n) => n !== r.name) : was.includes(r.name) ? was : [...was, r.name];
   if (listed.length !== was.length) await r.store.setSettingOverride({ key: "calendar", project: "", value: JSON.stringify(listed), actor: r.actor });
-  return { was, listed };
+  if (r.disconnect) return { was, listed, sync: null };
+  try {
+    const source = await createPlugin(r.loaded.registry, "calendar", r.name, { ...selected.base, secrets: await selected.secrets(), clock: r.clock });
+    return { was, listed, sync: (await syncCalendars(storeSql(r.store), [{ name: r.name, source }], r.clock.now().getTime())).find((o) => o.source === r.name) ?? null };
+  } catch (err) {
+    return { was, listed, sync: { source: r.name, ok: false, error: err instanceof Error ? err.message : String(err) } };
+  }
 }
 
 /** Drops every `name=` line, keeping every other line. A name not in the file writes nothing. Atomic rename, mode 600. */

@@ -15,8 +15,13 @@
 // the owner connects again. No secret value is returned, logged or stored: errors name steps, never values.
 
 import { type SyncOutcome, readSyncStates } from "../calendar/index.js";
+import type { Loaded } from "../compose.js";
 import { errorText } from "../core/log.js";
+import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
+import type { FactoryStore } from "../interfaces/factory-store.js";
+import type { ConnectContext } from "../plugin-api.js";
+import { connectHooks } from "../plugins.js";
 import { type ApiResult, apiError } from "./api.js";
 import type { PauseDeps } from "./pause-api.js";
 import { ownerOf } from "./rules-api.js";
@@ -112,6 +117,24 @@ export class UiCalendar {
     const sync = r.out.sync;
     Object.assign(attempt, { state: "connected", events: sync?.ok ? sync.events : null, error: sync && !sync.ok ? sync.error : null });
   }
+}
+
+/**
+ * The UI process's Calendar section (compose.ts buildUiParts): the calendar plugins with a connect hook, and the one
+ * connect flow the CLI runs (src/setup.ts connectCalendar, loaded when a connect runs), writing as the Settings writer.
+ */
+export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: string; clock: ConnectContext["clock"]; base: SettingsBase }): UiCalendar {
+  return new UiCalendar({
+    plugins: connectHooks(loaded.registry)
+      .filter((h) => h.kind === "calendar")
+      .map((h) => ({ name: h.name, secrets: (loaded.registry.calendar.secrets[h.name] ?? []).map((d) => d.name) })),
+    listed: async () => resolveSettings(o.base, await o.store.listSettingOverrides()).values.calendar,
+    run: async (name, disconnect, io) =>
+      (await import("../setup.js")).connectCalendar({
+        loaded, store: o.store, actor: o.actor, clock: o.clock, name, disconnect, beforeWrite: io.beforeWrite,
+        io: { ask: { hidden: io.hidden, yesNo: async (_q, dflt) => dflt }, print: () => undefined, openBrowser: io.openBrowser },
+      }),
+  });
 }
 
 declare module "./settings-api.js" {
