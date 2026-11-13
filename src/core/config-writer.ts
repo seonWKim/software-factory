@@ -13,8 +13,8 @@ import type { Timestamp, UserId, WorkItem, WorkItemId } from "./types.js";
 
 /**
  * The keys the writer edits (owner list, phase 1 owns any change to it): plugins, models, model_by, slack, the repo
- * commands, toolchain, the paths (state_dir, worktrees_dir, repo.path), floors, dials, permissions and the guards.
- * A dotted key names a member of an object.
+ * commands, toolchain, the paths (state_dir, worktrees_dir, repo.path), floors, dials, permissions, the guards, and
+ * the path lists triage weighs (hotspot_paths, mechanical_paths, path_companions). A dotted key names a member of an object.
  */
 export const FILE_ONLY_KEYS = [
   "plugins", "plugins.secrets", "plugins.egress", "plugins.broker",
@@ -23,6 +23,7 @@ export const FILE_ONLY_KEYS = [
   "toolchain",
   "state_dir", "worktrees_dir", "repo.path",
   "floors", "dials", "permissions",
+  "hotspot_paths", "mechanical_paths", "path_companions",
 ] as const;
 
 /** The guards (owner answer): an edit to one is loosening-sensitive. `deny_paths` is built at load, never a file key. */
