@@ -6,11 +6,12 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Section } from "../components/ui/parts.js";
 import { StatusBadge } from "../components/ui/notice.js";
 import type { MessageKey } from "../i18n/en.js";
+import { LEVEL_LABELS, shortSource } from "../lib/format.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { NeedsGroups, byId, needsYou, useNow } from "./common.js";
-import { ItemCommands } from "./item-commands.js";
+import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } from "./common.js";
+import { ItemCommands, NeedActions, useCommandSend } from "./item-commands.js";
 
 /** The five states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
 const STATE_OF: Record<string, MessageKey> = {
@@ -47,21 +48,61 @@ export function WorkState({ id, title }: { id: string; title: string }) {
   );
 }
 
+const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"], ["approve", "needs.groupApprove"], ["answer", "needs.groupAnswer"]];
+
 /**
- * Factory work: the open items that need the owner, in the Needs-you groups with their row actions; with `project` (the
- * Tasks page's switcher) only those built from a task in that project.
+ * One compact Factory work row: the item (and its PR), its state as one badge, a merge check only when it is not
+ * "mergeable", the reason only for an Answer-or-fix item (Merge and Approve say it with the badge), and the primary action.
+ */
+function WorkRow({ it }: { it: ItemRow }) {
+  const cmd = useCommandSend(it.id);
+  const group = needGroup(it);
+  const checking = it.merge_check?.state === "checking";
+  const reason = group === "answer" ? (it.need?.reason ?? it.why?.text ?? "") : "";
+  return (
+    <li data-key={it.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 p-3">
+      <div className="min-w-0 flex-1 space-y-1">
+        <span className="flex min-w-0 items-baseline gap-2">
+          <Link href={itemPath(it.id)} title={t("needs.idHover", { id: it.id })} className="truncate font-medium text-text-1 hover:underline">
+            {it.title ?? shortSource(it.source.id)}
+          </Link>
+          {it.change_ref !== null && <span className="shrink-0 text-xs text-text-2 tabular-nums">#{it.change_ref}</span>}
+        </span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <StatusBadge level={it.level} size="sm">{LEVEL_LABELS[it.level] ?? it.level}</StatusBadge>
+          {it.merge_check && !checking && it.merge_check.state !== "mergeable" && <MergeCheckNote check={it.merge_check} />}
+        </span>
+        {reason !== "" && <p data-need title={reason} className="line-clamp-2 text-xs break-words text-text-2">{reason}</p>}
+      </div>
+      <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={group} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(reason)} />
+    </li>
+  );
+}
+
+/**
+ * Factory work: the open items that need the owner as one compact list per group (Merge, Approve, Answer or fix), one
+ * state badge per row and no table header; with `project` (the Tasks page's switcher) only those built from a task in
+ * that project. Nothing shows when none waits. Needs you keeps its own table.
  */
 export function FactoryWork({ project }: { project: string | null }) {
-  const now = useNow();
   const items = useItems(project);
   const rows = items.data?.items;
   const needs = useMemo(() => needsYou(rows ?? []), [rows]);
-  const titles = useMemo(() => byId(rows), [rows]);
   if (items.isError) return <ErrorNote error={items.error} />;
-  if (!rows) return null;
+  const groups = GROUPS.map(([group, title]) => ({ title: t(title), rows: needs.filter((it) => needGroup(it) === group) })).filter((g) => g.rows.length > 0);
+  if (groups.length === 0) return null;
   return (
-    <Section title={t("tasks.factoryWork")} count={needs.length}>
-      <NeedsGroups items={needs} now={now} titles={titles} empty={t("needs.empty")} />
+    <Section title={t("tasks.factoryWork")}>
+      <div className="space-y-3">
+        {groups.map((g) => (
+          <div key={g.title} className="space-y-1">
+            <h3 className="text-xs font-medium text-text-2">{g.title}</h3>
+            <ul aria-label={g.title} className="divide-y divide-border rounded-control border border-border">
+              {g.rows.map((it) => <WorkRow key={it.id} it={it} />)}
+            </ul>
+          </div>
+        ))}
+      </div>
     </Section>
   );
 }

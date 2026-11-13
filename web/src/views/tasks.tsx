@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
 import {
-  API, type DayRow, type DoneRow, type EventRow, type ProjectChoice, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postProject, postTaskAction,
+  API, type DayRow, type DoneRow, type ProjectChoice, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postProject, postTaskAction,
   postTaskAdd, postTaskBuild, postTaskProject, useDoneTasks, useTasks,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -9,7 +9,7 @@ import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { EmptyState, Notice, StatusBadge } from "../components/ui/notice.js";
+import { EmptyState, StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
@@ -24,16 +24,17 @@ import { itemPath } from "../pages.js";
 import { FactoryWork, WorkState } from "./task-work.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's open plain tasks, read through GET
-// /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then today's tasks and calendar
-// events. Upcoming: today through 7 days ahead, by day, tasks and events. List: every task under its #list. The
-// server places each task and event and orders each day (all-day events, then timed items by time, then untimed
-// tasks), so the page does no date arithmetic. A source whose last sync failed is named with its last sync time. Build this sends a task to intake once (POST /api/v1/tasks/build); a
+// /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then today's tasks.
+// Upcoming: today through 7 days ahead, by day. List: every task under its #list. The server places each task and
+// orders each day, so the page does no date arithmetic. Calendar events are not shown here: the Calendar page (views/
+// calendar.tsx) lists them, with the stale-sync notice. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
 // Each row's actions (design 02-tasks) post to the route that calls the CLI command's store method: the checkbox
 // completes it, `e` or Edit edits it in place (Enter saves, Esc cancels), and its overflow menu adds a sub-task (top-level
 // rows only) or deletes it through the danger Dialog. A sub-task shows indented under its parent, one level.
-// Inbox and Today end with today's timeline (design 02-tasks, schedule a task): the server places each timed task, drawn
-// its duration (30 minutes when none is stored), and each timed event, read-only. A task row dragged onto a
+// Inbox and Today end with today's timeline (design 02-tasks, schedule a task), collapsed until its control (aria-expanded)
+// is pressed: the server places each timed task, drawn its duration (30 minutes when none is stored); events are not
+// drawn. A task row dragged onto a
 // half-hour slot is scheduled there (POST /api/v1/tasks/schedule: today's date, the slot's time); typing a time in
 // the row's edit (3pm, 45m) does the same from the keyboard.
 // ⌘Z outside a field undoes the last completion this page made (POST /api/v1/tasks/reopen, `factory task reopen`), then
@@ -46,10 +47,12 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // completion or a reopen reloads it with the open views.
 // The Project switcher (design 09-dashboard-app, task projects) filters Inbox, Today, Upcoming and List to one active
 // task project's tasks (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
-// load and set on change, so a filtered view can be shared and reloaded. Done is not filtered. Factory work above
-// the tabs follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
+// load and set on change, so a filtered view can be shared and reloaded. Done is not filtered. Factory work
+// follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
+// The page's order (design 09-dashboard-app): the view tabs and the switcher, Quick add, Factory work, the view; the blocks
+// are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 const TABS = [
   { id: "inbox", label: t("tasks.inbox") },
@@ -63,7 +66,7 @@ type Tab = (typeof TABS)[number]["id"];
 const muted = "text-xs text-pretty text-text-2";
 
 /** `2026-11-13` as the viewer's short weekday and date, e.g. "Fri, 13 Nov"; the date itself when it is not one. */
-function dayLabel(date: string): string {
+export function dayLabel(date: string): string {
   const [y, m, d] = date.split("-").map(Number);
   if (!y || !m || !d) return date;
   return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
@@ -187,7 +190,7 @@ function QuickAdd({ token, addKey }: { token: string | null; addKey: QuickAddKey
     }
   };
   return (
-    <form onSubmit={(e) => void submit(e)} className="mb-6 space-y-1">
+    <form onSubmit={(e) => void submit(e)} className="space-y-1">
       <div className="flex gap-2">
         <Input
           ref={input}
@@ -512,44 +515,29 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
 
 /**
  * The list's rows with each sub-task right after its parent when both are in the list, so it shows indented under
- * it; a sub-task whose parent is in another list stays in place and names its parent. Events are never nested.
+ * it; a sub-task whose parent is in another list stays in place and names its parent.
  */
-function nest(rows: readonly DayRow[]): { row: DayRow; sub: boolean }[] {
-  const tasks = rows.filter((x): x is TaskRow => !isEventRow(x));
+function nest(tasks: readonly TaskRow[]): { row: TaskRow; sub: boolean }[] {
   const here = new Set(tasks.map((x) => x.id));
-  const under = (x: DayRow) => !isEventRow(x) && x.parent_task_id != null && here.has(x.parent_task_id);
-  const subs = (x: DayRow) => (isEventRow(x) ? [] : tasks.filter((s) => s.parent_task_id === x.id).map((s) => ({ row: s, sub: true })));
-  return rows.filter((x) => !under(x)).flatMap((x) => [{ row: x, sub: false }, ...subs(x)]);
+  const under = (x: TaskRow) => x.parent_task_id != null && here.has(x.parent_task_id);
+  return tasks.filter((x) => !under(x)).flatMap((x) => [{ row: x, sub: false }, ...tasks.filter((s) => s.parent_task_id === x.id).map((s) => ({ row: s, sub: true }))]);
 }
 
-/** A calendar event: its title, its time that day or "all day", and its source's name. Read-only. */
-function EventCard({ event }: { event: EventRow }) {
-  return (
-    <li data-event={`${event.source}:${event.id}`} className="flex flex-wrap items-start gap-x-3 gap-y-2 p-3">
-      <div className="min-w-0 flex-1 space-y-1">
-        <p className="text-sm text-pretty break-words">{event.title}</p>
-        <p className={cn(muted, "flex flex-wrap gap-x-3 gap-y-1")}>
-          <StatusBadge size="sm">{t("tasks.event")}</StatusBadge>
-          <span className="tabular-nums">{event.time ?? t("tasks.allDay")}</span>
-          <span className="break-all">{event.source}</span>
-        </p>
-      </div>
-    </li>
-  );
-}
+/** The tasks among a day's rows: the server also places calendar events there, which the Calendar page shows. */
+const tasksOf = (rows: readonly DayRow[]): TaskRow[] => rows.filter((x): x is TaskRow => !isEventRow(x));
 
-function TaskList({ label, tasks, overdue = false }: { label: string; tasks: readonly DayRow[]; overdue?: boolean }) {
+function TaskList({ label, tasks, overdue = false }: { label: string; tasks: readonly TaskRow[]; overdue?: boolean }) {
   return (
     <ul aria-label={label} className="divide-y divide-border rounded-control border border-border">
-      {nest(tasks).map(({ row, sub }) =>
-        isEventRow(row) ? <EventCard key={`event:${row.source}:${row.id}`} event={row} /> : <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />,
-      )}
+      {nest(tasks).map(({ row, sub }) => (
+        <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />
+      ))}
     </ul>
   );
 }
 
 /** One heading and its list, for the groups of Today, Upcoming and List. */
-function Group({ title, tasks, overdue = false }: { title: string; tasks: readonly DayRow[]; overdue?: boolean }) {
+function Group({ title, tasks, overdue = false }: { title: string; tasks: readonly TaskRow[]; overdue?: boolean }) {
   return (
     <div className="space-y-1">
       <h3 className={cn("text-xs font-medium", overdue ? "text-pill-bad-fg" : "text-text-2")}>{title}</h3>
@@ -569,13 +557,15 @@ const SLOTS = Array.from({ length: (24 * 60) / SLOT_MINUTES }, (_, i) => i * SLO
 const hhmm = (m: number) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
 
 /**
- * Today's timeline: a half-hour slot per row, each a drop target for a task row, and the server's blocks drawn over
- * it at their time and length. A drop schedules the task at the slot; its refusal shows above the timeline.
+ * Today's timeline: collapsed until its control is pressed; then a half-hour slot per row, each a drop target for a task
+ * row, and the server's scheduled tasks drawn over it at their time and length. A drop schedules the task at the slot; its
+ * refusal shows above the timeline.
  */
 function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow[] }) {
   const { token } = useContext(Rows);
   const action = useTaskAction(token);
   const [over, setOver] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
   const label = t("tasks.timeline", { day: dayLabel(date) });
   const drop = async (e: DragEvent<HTMLLIElement>, time: string) => {
     e.preventDefault();
@@ -584,16 +574,23 @@ function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow
     if (id === "") return;
     if (await action.run("schedule", { id, date, time })) announceStatus(t("tasks.scheduled", { time }));
   };
+  const body = `timeline-${date}`;
   return (
     <div className="space-y-1">
-      <h3 className="text-xs font-medium text-text-2">{label}</h3>
-      {token !== null && <p className={muted}>{t("tasks.timelineHint")}</p>}
-      {action.error !== null && (
+      <div className="flex items-center gap-2">
+        <h3 className="text-xs font-medium text-text-2">{label}</h3>
+        <Button variant="ghost" size="sm" aria-expanded={open} aria-controls={body} onClick={() => setOpen(!open)}>
+          {open ? t("tasks.timelineHide") : t("tasks.timelineShow")}
+        </Button>
+      </div>
+      <div id={body} hidden={!open} className="space-y-1">
+      {open && token !== null && <p className={muted}>{t("tasks.timelineHint")}</p>}
+      {open && action.error !== null && (
         <p role="alert" className={ALERT}>
           {action.error}
         </p>
       )}
-      <div className="max-h-96 overflow-y-auto rounded-control border border-border">
+      {open && <div className="max-h-96 overflow-y-auto rounded-control border border-border">
         <div className="relative">
           <ol aria-label={label}>
             {SLOTS.map((m) => {
@@ -617,15 +614,12 @@ function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow
             })}
           </ol>
           <ul aria-label={t("tasks.timelineBlocks")}>
-            {blocks.map((b) => (
+            {blocks.filter((b) => b.kind === "task").map((b) => (
               <li
                 key={`${b.kind}:${b.id}`}
                 data-block={b.id}
                 data-minutes={b.minutes}
-                className={cn(
-                  "pointer-events-none absolute right-2 left-16 overflow-hidden rounded-control border px-2 text-xs text-text-1",
-                  b.kind === "event" ? "border-dashed border-border bg-surface" : "border-border-strong bg-surface-2",
-                )}
+                className="pointer-events-none absolute right-2 left-16 overflow-hidden rounded-control border border-border-strong bg-surface-2 px-2 text-xs text-text-1"
                 style={{ top: `${b.offset * REM_PER_MINUTE}rem`, height: `${b.minutes * REM_PER_MINUTE}rem` }}
               >
                 <span className="tabular-nums">{t("tasks.span", { start: b.start, end: b.end })}</span> <span className="break-words">{b.title}</span>
@@ -633,6 +627,7 @@ function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow
             ))}
           </ul>
         </div>
+      </div>}
       </div>
     </div>
   );
@@ -699,28 +694,15 @@ function DoneTab() {
   );
 }
 
-/** An empty tab: its message and one next step, which puts the cursor in the quick-add field. */
-function EmptyTab({ title }: { title: string }) {
-  const focus = () => document.querySelector<HTMLElement>(`[${QUICK_ADD_ATTR}]`)?.focus();
-  return (
-    <EmptyState
-      title={title}
-      action={
-        <Button variant="secondary" onClick={focus}>
-          {t("tasks.emptyAction")}
-        </Button>
-      }
-    />
-  );
-}
-
 function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
   if (tab === "done") return <DoneTab />;
+  const today = tasksOf(v.today.due);
+  const upcoming = v.upcoming.map((d) => ({ date: d.date, tasks: tasksOf(d.tasks) })).filter((d) => d.tasks.length > 0);
   const timeline = <Timeline date={v.today_date} blocks={v.timeline ?? []} />;
   if (tab === "inbox") {
     return (
       <div className="space-y-3">
-        {v.inbox.length === 0 ? <EmptyTab title={t("tasks.emptyInbox")} /> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} />}
+        {v.inbox.length === 0 ? <EmptyState title={t("tasks.emptyInbox")} /> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} />}
         {timeline}
       </div>
     );
@@ -728,24 +710,24 @@ function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
   if (tab === "today") {
     return (
       <div className="space-y-3">
-        {v.today.overdue.length + v.today.due.length === 0 && <EmptyTab title={t("tasks.emptyToday")} />}
+        {today.length + v.today.overdue.length === 0 && <EmptyState title={t("tasks.emptyToday")} />}
         {v.today.overdue.length > 0 && <Group title={t("tasks.overdue")} tasks={v.today.overdue} overdue />}
-        {v.today.due.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={v.today.due} />}
+        {today.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={today} />}
         {timeline}
       </div>
     );
   }
   if (tab === "upcoming") {
-    if (v.upcoming.length === 0) return <EmptyTab title={t("tasks.emptyUpcoming")} />;
+    if (upcoming.length === 0) return <EmptyState title={t("tasks.emptyUpcoming")} />;
     return (
       <div className="space-y-3">
-        {v.upcoming.map((d) => (
+        {upcoming.map((d) => (
           <Group key={d.date} title={dayLabel(d.date)} tasks={d.tasks} />
         ))}
       </div>
     );
   }
-  if (v.projects.length === 0) return <EmptyTab title={t("tasks.emptyList")} />;
+  if (v.projects.length === 0) return <EmptyState title={t("tasks.emptyList")} />;
   return (
     <div className="space-y-3">
       {v.projects.map((p) => (
@@ -755,39 +737,13 @@ function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
   );
 }
 
-/** The sources whose last sync failed, each with its last sync time: their events shown are the last stored ones. */
-function StaleCalendars({ v }: { v: TasksView }) {
-  const failed = (v.calendar ?? []).filter((c) => c.failed);
-  if (failed.length === 0) return null;
-  const when = (at: string | null) => (at === null ? t("tasks.neverSynced") : t("tasks.lastSynced", { at: new Date(at).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) }));
-  return (
-    <div className="mb-3">
-      <Notice tone="warn" title={t("tasks.calendarSyncFailed")}>
-        {failed.map((c) => (
-          <p key={c.source} data-calendar-stale={c.source} className="text-pretty break-words">
-            {t("tasks.staleCalendar", { source: c.source, when: when(c.synced_at) })}
-          </p>
-        ))}
-      </Notice>
-    </div>
-  );
-}
-
-/** The open tasks a tab lists; none for Done, whose rows come from their own read. */
-const count = (v: TasksView, tab: Tab): number | undefined =>
-  tab === "done" ? undefined
-  : tab === "inbox" ? v.inbox.length
-  : tab === "today" ? v.today.overdue.length + v.today.due.length
-  : tab === "upcoming" ? v.upcoming.reduce((n, d) => n + d.tasks.length, 0)
-  : v.projects.reduce((n, p) => n + p.tasks.length, 0);
-
-/** True when the tab lists at least one task; calendar events alone do not count. */
+/** True when the tab lists at least one task. */
 const hasTasks = (v: TasksView, tab: Tab): boolean =>
   tab !== "done" && (tab === "inbox" ? v.inbox
-  : tab === "today" ? [...v.today.overdue, ...v.today.due]
-  : tab === "upcoming" ? v.upcoming.flatMap((d) => d.tasks)
+  : tab === "today" ? [...v.today.overdue, ...tasksOf(v.today.due)]
+  : tab === "upcoming" ? v.upcoming.flatMap((d) => tasksOf(d.tasks))
   : v.projects.flatMap((p) => p.tasks)
-  ).some((x) => !isEventRow(x));
+  ).length > 0;
 
 /**
  * ⌘Z: the tasks this page completed, newest last, in memory only (a reload clears them). Each press outside a field
@@ -870,25 +826,32 @@ export function TasksPage() {
   const known = useRef<readonly ProjectChoice[]>([]);
   if (v?.active_projects !== undefined) known.current = v.active_projects;
   return (
-    <>
-      <FactoryWork project={project} />
-      <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} />
-      {undo.error !== null && (
-        <p role="alert" className={ALERT}>
-          {undo.error}
-        </p>
-      )}
+    <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-2">
         <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
         <ProjectSwitcher projects={known.current} value={project} onChange={setProject} />
       </div>
-      <Section label={TABS.find((x) => x.id === tab)!.label} count={v ? count(v, tab) : undefined}>
-        {v && (tab === "today" || tab === "upcoming") && <StaleCalendars v={v} />}
-        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
-            <TabBody tab={tab} v={v} />
-          </Rows.Provider>}
-        {v?.can_build && hasTasks(v, tab) && <p className={`mt-3 ${muted}`}>{t("tasks.buildNote")}</p>}
-      </Section>
-    </>
+      <div className="space-y-1">
+        <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} />
+        {undo.error !== null && (
+          <p role="alert" className={ALERT}>
+            {undo.error}
+          </p>
+        )}
+      </div>
+      <div className="empty:hidden">
+        <FactoryWork project={project} />
+      </div>
+      <div>
+        <Section label={TABS.find((x) => x.id === tab)!.label}>
+          <div className="space-y-3">
+            {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
+                <TabBody tab={tab} v={v} />
+              </Rows.Provider>}
+            {v?.can_build && hasTasks(v, tab) && <p className={muted}>{t("tasks.buildNote")}</p>}
+          </div>
+        </Section>
+      </div>
+    </div>
   );
 }

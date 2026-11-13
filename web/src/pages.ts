@@ -1,4 +1,4 @@
-import { Activity, CalendarCheck, CircleDollarSign, Database, HeartPulse, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
+import { Activity, CalendarCheck, CalendarDays, CircleDollarSign, Database, HeartPulse, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
 /** Where a page sits in the sidebar: the Tasks group, the Factory group, the System group, or the row at its bottom (Settings). */
 export type PageGroup = "tasks" | "factory" | "system" | "bottom";
@@ -15,6 +15,7 @@ export interface PageDef {
 /** The pages, in sidebar order. Literal `path` then `label` per entry: scripts/responsive-check.mjs reads them. */
 export const PAGES: readonly PageDef[] = [
   { path: "tasks", label: "Tasks", key: "tasks", icon: CalendarCheck, group: "tasks" },
+  { path: "calendar", label: "Calendar", key: "calendar", icon: CalendarDays, group: "tasks" },
   { path: "", label: "Needs you", key: "needs", icon: Siren, group: "factory" },
   { path: "items", label: "Work", key: "work", icon: ListTodo, group: "factory" },
   { path: "activity", label: "Activity", key: "activity", icon: Activity, group: "factory" },
