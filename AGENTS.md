@@ -26,7 +26,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 - **One owner.** The factory serves one person, its owner, who may run many workers (processes, replicas, machines) on one store. Identity comes from the environment: git `user.email`, then the OS user, then `anonymous`. Build no feature whose only reason is another person (roles, grants, per-person permissions, user tables, shared budgets between people); keep every feature whose reason is another process (claims, leases, fencing, conditional updates, idempotent handlers, bus partitions). See `docs/design/08-enterprise.md`.
 - **Few external calls.** Batch, cache, and use conditional requests and cursors. No per-item or per-poll remote reads when the stored copy is enough. Never send bursts of writes through a shared account.
 - **Maintainable.** See the maintainability rule below.
-- **Heavy tests run on a schedule.** MySQL and full end-to-end suites run periodically against main, not on every change.
+- **Heavy tests run on a schedule.** Full end-to-end suites run periodically against main, not on every change.
 
 ## Rules for working here
 
@@ -58,5 +58,3 @@ The factory's prompts in `prompts/` are generic, for any project. These are this
 
 - Tests: run them through the project's scripts, also for a single file (`npm test -- tests/x.test.ts`), never the test runner directly (`npx vitest ...`): the scripts carry flags the sandbox needs. Dependencies are already installed and the sandbox has no network: never run `npm install`, `npm ci`, or `npx` for a package that is not installed.
 - Merge conflicts in `docs/design.md`, `docs/design/*.md`, `docs/plugins/*.md`, `docs/settings.md` and `SET_UP.md`: keep both sides' sections. Each side's new or changed section stays; never drop either side's section to keep the other's. When both sides added a current decision at the top of a topic file, order the two newest first by their decision date. When both sides edited the same decision paragraph, combine the two edits into one decision and keep both sides' History lines. If both sides edited any other paragraph, combine the two edits.
-- Migrations: when both sides added a migration with the same number, the base keeps its number and the branch's migration is renumbered to the next free number in both the SQLite and the MySQL schema lists (`migrations/mysql/`, `src/impl/store/mysql/migrations.ts`) and in tests that name the number. This rule applies until the MySQL store is removed (`docs/plugins/factory-store.md`).
-- Specs: a store schema change also allows `migrations/mysql/` and `src/impl/store/mysql/migrations.ts` beside the SQLite schema.
