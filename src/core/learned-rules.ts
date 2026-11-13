@@ -7,8 +7,8 @@ import { type Logger, errorText } from "./log.js";
 import type { GuidanceSource } from "./worker-deps.js";
 import type { TacitLedger, TacitRule } from "../interfaces/tacit-ledger.js";
 
-/** The verdicts the Rules page sends. */
-export const RULE_VERDICTS = ["promote", "reject", "hold"] as const;
+/** The verdicts the Rules page sends; `retire` is for an applied class only. */
+export const RULE_VERDICTS = ["promote", "reject", "hold", "retire"] as const;
 export type RuleVerdict = (typeof RULE_VERDICTS)[number];
 
 /** The cap on learned rules text per prompt (fixed): about 1000 tokens. Text past it is dropped with a warning. */
