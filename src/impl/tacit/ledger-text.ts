@@ -121,19 +121,27 @@ function appliedRule(heading: string, body: readonly string[]): TacitAppliedRule
  * The whole rules file for the Applied group. Each `## ` block up to the next `#` heading is one rule: with a `C-` ID and
  * a `기본값` line it gives its `기본값`, `예외`, `범위` and the T- IDs and `판정일` of its `근거` line (a part it lacks is
  * absent); any other block is kept as raw text. The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as
- * written.
+ * written. Lines inside a fenced code block (``` or ~~~) are skipped, so a format template in the file is no rule; an
+ * unclosed fence runs to the end of the file.
  */
 export function parseApplied(text: string): TacitApplied {
   const rules: TacitAppliedRule[] = [];
   const elsewhere: string[] = [];
   let block: { heading: string; body: string[] } | null = null;
   let inElsewhere = false;
+  let fence: string | null = null;
   const flush = () => {
     if (block) rules.push(appliedRule(block.heading, block.body));
     block = null;
   };
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
+    // A fenced block (``` or ~~~, closed by the same mark) is skipped whole; an unclosed one runs to the end.
+    const mark = /^(```|~~~)/.exec(line)?.[1];
+    if (fence !== null || mark !== undefined) {
+      fence = fence === null ? mark! : line.startsWith(fence) ? null : fence;
+      continue;
+    }
     if (line.startsWith("#")) {
       flush();
       inElsewhere = line === ENCODED_ELSEWHERE_HEADING;
