@@ -742,6 +742,7 @@ export const en = {
   "commands.mergeLocal": "Merge the item's local branch into the local base branch (factory merge), after the install and checks pass",
   "commands.mergePr": "Merge the PR on the forge with a merge commit, at the head the review passed",
   "commands.merge": "Merge",
+  "commands.merging": "Merging…",
   "commands.verdictTitle": "Record a verdict on {id}",
   "commands.verdictConsequence": "The verdict is recorded on this item; the factory applies it on its next tick.",
   "commands.sendVerdict": "Send verdict",
