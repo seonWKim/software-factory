@@ -277,9 +277,31 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     }
   });
 
+  it("applied: the rules file's blocks, an unparsable block as raw text and the encoded-elsewhere lines, each through the Withholder", async () => {
+    const s = stubHome(PENDING);
+    writeFileSync(join(s.home, "private", "tacit", "rules.md"), [
+      "# Rules", "", "## C-001 summary first", "- 기본값: Open with a summary.", "- 예외 (이럴 땐 override): a one-word reply", "- 근거: 인시던트 T-1, T-2 / 판정일 2026-11-13", "- 범위: 모든 문서",
+      "", "## Notes", "just words", "", "## 다른 곳에 인코딩된 규칙", "- C-009 → CLAUDE.md", "", "- token sekret-token-value-0123456789",
+    ].join("\n"));
+    const v = await (await page(s.ledger, OWNER, ["sekret-token-value-0123456789"])).get();
+    expect(v.applied.rules).toEqual([
+      { id: "C-001", name: "summary first", default: "Open with a summary.", exceptions: "a one-word reply", scope: "모든 문서", incidents: ["T-1", "T-2"], judged: "2026-11-13", raw: null },
+      { id: null, name: null, default: null, exceptions: null, scope: null, incidents: null, judged: null, raw: "## Notes\njust words" },
+    ]);
+    expect(v.applied.elsewhere[0]).toBe("- C-009 → CLAUDE.md");
+    expect(v.applied.elsewhere[1]).not.toContain("sekret-token-value-0123456789");
+  });
+
+  it("applied: no rules.md gives no applied rules and no error; the ledger off gives null", async () => {
+    const s = stubHome(PENDING);
+    rmSync(join(s.home, "private", "tacit", "rules.md"));
+    expect(await (await page(s.ledger)).get()).toMatchObject({ enabled: true, error: null, applied: { rules: [], elsewhere: [] } });
+    expect(await (await page(new NoTacitLedger())).get()).toMatchObject({ enabled: false, applied: null });
+  });
+
   it("a ledger CLI that fails shows its error and no entries", async () => {
     const broken: TacitLedger = {
-      enabled: true, capture: async () => {}, pending: async () => { throw new Error("ledger locked"); }, verdict: async () => {}, rules: async () => [],
+      enabled: true, capture: async () => {}, pending: async () => { throw new Error("ledger locked"); }, verdict: async () => {}, rules: async () => [], applied: async () => ({ rules: [], elsewhere: [] }),
     };
     const v = await (await page(broken)).get();
     expect(v).toMatchObject({ enabled: true, entries: [] });
@@ -297,6 +319,7 @@ function fakeLedger(show: (id: string) => Promise<TacitEntryDetail | null>) {
     show: async (id) => { calls.push(`show ${id}`); return show(id); },
     verdict: async () => { calls.push("verdict"); },
     rules: async () => [],
+    applied: async () => ({ rules: [], elsewhere: [] }),
   };
   return { ledger, calls };
 }
