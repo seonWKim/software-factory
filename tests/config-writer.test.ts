@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { type Loaded, loadConfig, localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { setConfigKey } from "../src/core/config-text.js";
-import { type ConfigWriterDeps, editConfigFile } from "../src/core/config-writer.js";
+import { type ConfigWriterDeps, FILE_ONLY_KEYS, editConfigFile } from "../src/core/config-writer.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { Timestamp, UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { ConfigFileChangesSql } from "../src/impl/store/sql/config-file-changes.js";
@@ -182,6 +182,22 @@ describe("the file-only key writer", { timeout: 60_000 }, () => {
   it("an edit of plugins that keeps the guards needs no confirm flag", async () => {
     const f = await setup();
     expect(await f.edit("plugins", { ...JSON.parse(FIXTURE).plugins, capability: "none" })).not.toMatchObject({ refusal: expect.stringContaining("confirm") });
+  });
+
+  it("accepts the path lists (hotspot_paths, mechanical_paths, path_companions) as file-only keys", async () => {
+    const f = await setup();
+    const was = JSON.parse(FIXTURE);
+    const edits: [string, unknown][] = [
+      ["hotspot_paths", [...was.hotspot_paths, "src/core/settings.ts"]],
+      ["mechanical_paths", [...was.mechanical_paths, "docs/notes/"]],
+      ["path_companions", [...was.path_companions, { when: "src/core/settings.ts", also: ["tests/settings.test.ts"] }]],
+    ];
+    for (const [key, value] of edits) {
+      expect(FILE_ONLY_KEYS, key).toContain(key);
+      const r = await f.edit(key, value);
+      expect(r, key).toMatchObject({ ok: true, new_value: JSON.stringify(value) });
+      if (r.ok) expect(JSON.parse(git(f.repo, "cat-file", "blob", `${r.branch}:${FILE}`))[key]).toEqual(value);
+    }
   });
 
   it("refuses a key that is not file-only by name, writing nothing", async () => {

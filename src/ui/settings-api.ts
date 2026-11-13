@@ -3,7 +3,9 @@
 // with its evidence run IDs and set time) and "applies at", the PR-only keys with their
 // descriptions and the last 50 audit rows; POST /api/v1/settings sets or resets one key, or (`"action": "edit-file"`)
 // sets one file-only key of factory.config.json on a new local branch (design 08-settings). Every write goes through runSettings (src/settings-cmd.ts),
-// the same function `factory settings` runs, so the page accepts and refuses exactly what the CLI does.
+// the same function `factory settings` runs, so the page accepts and refuses exactly what the CLI does. GET also carries
+// `file_keys` for the page's typed form: each file-only key's value in the file as loaded, the read-only keys' values,
+// and each `plugins` interface with its registered plugin names; an edit-file answer names the filed item and its branch.
 //
 // The UI process has no forge client and no forge credential: `--project` finds the configured repo's project
 // key from the stored project label (storeProjectResolver), and a write for a repo with no stored label is
@@ -31,7 +33,7 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
 import type { Sandbox } from "../interfaces/sandbox.js";
 import { loadSettingCatalog } from "../runtime/index.js";
-import { type ConfigEditRequest, type ConfigEditResult, editConfigFile } from "../core/config-writer.js";
+import { type ConfigEditRequest, type ConfigEditResult, FILE_ONLY_KEYS, editConfigFile } from "../core/config-writer.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
 import type { UiDeps } from "./pages.js";
 import type { PauseDeps } from "./pause-api.js";
@@ -64,13 +66,69 @@ export interface UiSettings {
   mayApproveMerge?: () => Promise<string | null>;
   /** Each integration interface (src/plugins.ts INTEGRATION_KINDS) and the plugin factory.config.json selects for it. Absent: none listed. */
   integrations?: readonly { kind: string; interface: string; configured: string }[];
-  /** The file-only key writer `factory settings edit-file` runs (compose.ts configWriter). Absent: an edit-file write is refused. */
-  editFile?: (r: ConfigEditRequest) => Promise<ConfigEditResult>;
+  /**
+   * The file-only key writer `factory settings edit-file` runs (compose.ts configWriter). Absent: an edit-file write is
+   * refused. Its `fileKeys` feeds the page's typed form; a writer without it shows no form.
+   */
+  editFile?: ((r: ConfigEditRequest) => Promise<ConfigEditResult>) & Partial<Pick<ConfigFileWriter, "fileKeys">>;
+}
+
+/**
+ * The keys the Settings page shows with their value and no write control (design 08-settings, owner list): each
+ * moves state, binds at start, or is too free-form for one control. `factory.config.json` is the way to change them.
+ */
+export const READ_ONLY_FILE_KEYS = ["store", "env", "state_dir", "worktrees_dir", "ui", "outbound.batching", "cli_user"] as const;
+
+/** One key's value in the file as loaded: JSON text, null when the file leaves it out. */
+export interface FileKeyValue {
+  key: string;
+  value: string | null;
+}
+
+/** What the Settings page's typed form reads (design 08-settings). */
+export interface FileKeysView {
+  /** Each file-only key the page edits, in the writer's order. */
+  editable: FileKeyValue[];
+  /** READ_ONLY_FILE_KEYS, in order. */
+  read_only: FileKeyValue[];
+  /** Each interface selected under `plugins`: its registered plugin names, whether it is a guard, and the plugin in force. */
+  plugins: { kind: string; interface: string; guard: boolean; names: string[]; selected: string | null }[];
+}
+
+/** The file-only key writer, and what its typed form on the Settings page reads. */
+export type ConfigFileWriter = ((r: ConfigEditRequest) => Promise<ConfigEditResult>) & { fileKeys(): FileKeysView };
+
+const isReadOnlyFileKey = (key: string): boolean => (READ_ONLY_FILE_KEYS as readonly string[]).includes(key);
+
+/** The guards' own `plugins.<kind>` keys: the page edits them through the plugins list. */
+const GUARD_MEMBER = /^plugins\./;
+
+function fileValue(file: unknown, key: string): string | null {
+  let v: unknown = file;
+  for (const k of key.split(".")) v = typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>)[k] : undefined;
+  return v === undefined ? null : JSON.stringify(v);
+}
+
+/** The typed form's view of the loaded config: the file's values and the registry's plugin names. */
+export function fileKeysOf(loaded: Pick<Loaded, "file" | "registry" | "plugins">): FileKeysView {
+  const of = (key: string): FileKeyValue => ({ key, value: fileValue(loaded.file, key) });
+  const selection = loaded.plugins as unknown as Record<string, unknown>;
+  return {
+    editable: FILE_ONLY_KEYS.filter((k) => !isReadOnlyFileKey(k) && !GUARD_MEMBER.test(k)).map(of),
+    read_only: READ_ONLY_FILE_KEYS.map(of),
+    plugins: Object.values(loaded.registry)
+      .filter((e) => e.configKey.startsWith("plugins."))
+      .map((e) => {
+        const kind = e.configKey.slice("plugins.".length);
+        const selected = selection[kind];
+        return { kind, interface: e.interface, guard: e.guard, names: Object.keys(e.plugins), selected: typeof selected === "string" ? selected : null };
+      }),
+  };
 }
 
 /** What the file-only key writer is built from: the CLI handler and compose.ts buildUiParts pass the same parts. */
 export interface ConfigWriterParts {
-  loaded: Pick<Loaded, "root" | "codeRoot" | "configFile" | "externalConfig" | "config">;
+  loaded: Pick<Loaded, "root" | "codeRoot" | "configFile" | "externalConfig" | "config" | "file" | "registry" | "plugins">;
   store: FactoryStore;
   sandbox: Sandbox;
   /** The time, ISO (the injected Clock). */
@@ -87,9 +145,9 @@ export interface ConfigWriterParts {
  * The file-only key writer (core/config-writer.ts, design 08-settings) that `factory settings edit-file` and the
  * Settings write route both run: the configured sandbox, the factory repo's local base, the config file's path in
  * that repo (null when it is outside it), the factory's git identity, and the loader's checks (checkConfigKeys, then
- * loadConfig) on the whole new text.
+ * loadConfig) on the whole new text. Its `fileKeys` reads the file as this process loaded it (fileKeysOf).
  */
-export function configWriter(p: ConfigWriterParts): (r: ConfigEditRequest) => Promise<ConfigEditResult> {
+export function configWriter(p: ConfigWriterParts): ConfigFileWriter {
   const { repo } = p.loaded.config;
   const rel = relative(repo.path, p.loaded.externalConfig ?? join(p.loaded.root, basename(p.loaded.configFile)));
   const file = rel === "" || rel.startsWith("..") || isAbsolute(rel) ? null : rel.split(sep).join("/");
@@ -108,7 +166,8 @@ export function configWriter(p: ConfigWriterParts): (r: ConfigEditRequest) => Pr
     identity: p.loaded.config.agent_git_identity, actor: p.actor as UserId, project: p.project, check,
     newId: () => `wi_${randomUUID().replaceAll("-", "")}` as WorkItemId,
   };
-  return (r) => editConfigFile(deps, r);
+  const fileKeys = fileKeysOf(p.loaded);
+  return Object.assign((r: ConfigEditRequest) => editConfigFile(deps, r), { fileKeys: () => fileKeys });
 }
 
 /** A fresh CSRF token: 32 random bytes, base64url. Never stored or written to disk. */
@@ -258,6 +317,13 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     const set = r.values.integrations[i.kind];
     return { kind: i.kind, interface: i.interface, plugin: set ?? i.configured, source: set === undefined ? "config" : "setting", configured: i.configured };
   });
+  const fileKeys = s.editFile?.fileKeys?.();
+  const withheld = async (list: FileKeyValue[]) => {
+    const out = [];
+    for (const f of list) out.push({ key: f.key, value: f.value === null ? null : await text(f.value) });
+    return out;
+  };
+  const file_keys = fileKeys ? { ...fileKeys, editable: await withheld(fileKeys.editable), read_only: await withheld(fileKeys.read_only) } : null;
   const ignored = [];
   for (const i of r.ignored) {
     ignored.push({ key: i.key, project: i.project ? await text(label(i.project)) : null, value: await text(i.value), reason: await text(i.reason) });
@@ -289,6 +355,8 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     project_keys: PROJECT_SETTABLE_KEYS,
     keys,
     pr_only: prOnly,
+    /** The typed form of the file-only keys (design 08-settings); null: this process has no file writer. */
+    file_keys,
     integrations,
     ignored,
     history,
@@ -343,14 +411,17 @@ export function noLabelMessage(repo: { owner: string; name: string }): string {
 }
 
 /**
- * POST /api/v1/settings, after the request guards: 200 with the CLI's lines, 422 with the CLI's refusal in
- * `error` (nothing stored), 400 for a body that is not a set, reset or edit-file.
+ * POST /api/v1/settings, after the request guards: 200 with the CLI's lines (an edit-file also with the filed item
+ * and its branch, for the page's Merge button), 422 with the CLI's refusal in `error` (nothing stored), 400 for a
+ * body that is not a set, reset or edit-file.
  */
 export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown): Promise<{ status: number; value: unknown }> {
   const w = new Withholder(d.scanner);
   const text = async (v: string) => (await w.plain(v)).text;
   const parsed = parseWrite(body);
   if ("error" in parsed) return { status: 400, value: { error: parsed.error } };
+  let filed: { item: string; branch: string } | null = null;
+  const editFile = s.editFile;
   const deps: SettingsDeps = {
     store: d.store,
     base: s.base,
@@ -359,7 +430,15 @@ export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown):
     // The same scanner the page's reads withhold through: a flagged message_style is refused, as on the CLI.
     scanner: d.scanner,
     ...(s.mayApproveMerge ? { mayApproveMerge: s.mayApproveMerge } : {}),
-    ...(s.editFile ? { editFile: s.editFile } : {}),
+    ...(editFile
+      ? {
+          editFile: async (req: ConfigEditRequest) => {
+            const e = await editFile(req);
+            if (e.ok) filed = { item: e.item, branch: e.branch };
+            return e;
+          },
+        }
+      : {}),
     // An owner-only key needs the local owner; a page with no owner check refuses it.
     mayOwn: async () => {
       if (!d.pauses) return "this page has no owner check";
@@ -386,5 +465,5 @@ export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown):
   }
   const lines = [];
   for (const l of r.lines) lines.push(await text(l));
-  return r.ok ? { status: 200, value: { ok: true, lines } } : { status: 422, value: { error: lines.join("\n") } };
+  return r.ok ? { status: 200, value: { ok: true, lines, ...(filed ?? {}) } } : { status: 422, value: { error: lines.join("\n") } };
 }

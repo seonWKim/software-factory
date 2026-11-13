@@ -1,6 +1,5 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useId, useRef, useState } from "react";
-import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, postSettings, useApi } from "../api.js";
+import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Input } from "../components/ui/input.js";
@@ -12,6 +11,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { ago, duration } from "../lib/format.js";
 import { useNow } from "./common.js";
+import { FileKeysSection, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
 import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 
 // The Settings page (design §8 and §9, issue #236): every settable key with its value, source and when a change
@@ -22,7 +22,8 @@ import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 // its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
 // The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
 // and a quiet-hours field. Integrations (design 08-settings, 2026-11-12) lists each integration with the plugin in force;
-// its Switch removes the dashboard's choice, so factory.config.json decides again.
+// its Switch removes the dashboard's choice, so factory.config.json decides again. The file-only keys have their own typed
+// form (settings-file-keys.tsx), saved on a local branch the owner merges; the PR-only table keeps the remaining keys.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
@@ -59,41 +60,6 @@ function holdOf(text: string): HoldDraft {
   const obj = asObject(text);
   const mode = obj?.mode === "run" || obj?.mode === "run_after_minutes" ? obj.mode : "hold";
   return { mode, minutes: typeof obj?.minutes === "number" ? String(obj.minutes) : DEFAULT_HOLD_MINUTES };
-}
-
-/** A write and its outcome for one field: the refusal stays next to the field until the next try. */
-function useWrite(token: string) {
-  const client = useQueryClient();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<string | null>(null);
-  const write = async (body: SettingsWrite): Promise<boolean> => {
-    setBusy(true);
-    setError(null);
-    setDone(null);
-    try {
-      const r = await postSettings(token, body);
-      if (!r.ok) {
-        setError(r.error);
-        return false;
-      }
-      setDone(r.lines[0] ?? t("settings.saved"));
-      await client.invalidateQueries({ queryKey: [API.settings] });
-      return true;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-  return { busy, error, done, write };
-}
-
-function Outcome({ error, done }: { error: string | null; done: string | null }) {
-  if (error) return <p role="alert" className="mt-1 text-xs text-pretty break-words text-pill-bad-fg">{error}</p>;
-  if (done) return <p role="status" className="mt-1 text-xs text-pretty break-words text-text-2">{done}</p>;
-  return null;
 }
 
 /** The JSON object in `text`, or null when it holds anything else. */
@@ -633,6 +599,9 @@ export function SettingsPage() {
   if (settings.isError) return <ErrorNote error={settings.error} />;
   if (!settings.data) return <Loading rows={8} />;
   const v = settings.data;
+  // The keys the typed form edits leave the PR-only table; the remaining keys change only by a reviewed PR.
+  const editable = editableKeys(v);
+  const prOnly = v.pr_only.filter((p) => !editable.has(p.key));
   return (
     <>
       <ProposalsSection />
@@ -663,12 +632,13 @@ export function SettingsPage() {
         </Section>
       )}
       <StandingSection />
-      <Section title={PR_ONLY_TITLE} count={v.pr_only.length}>
+      <FileKeysSection view={v} />
+      <Section title={PR_ONLY_TITLE} count={prOnly.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.prOnlyIntro", { command: <code>{"factory settings set"}</code>, file: <code>{"factory.config.json"}</code> })}
         </p>
         <Table label={PR_ONLY_TITLE} head={[t("settings.colKey")]}>
-          {v.pr_only.map((p) => (
+          {prOnly.map((p) => (
             <Tr key={p.key} data-key={p.key}>
               <Td>
                 <span className="font-mono text-xs">{p.key}</span>
