@@ -3,27 +3,17 @@ import type { SourceRef } from "./types.js";
 import { localIdentity } from "./local-cli.js";
 import type { CliCommand, NewCliCommand } from "../interfaces/factory-store.js";
 import type { SourceEvent } from "../interfaces/source-adapter.js";
-import type { ExternalIdentity } from "../interfaces/auth-provider.js";
 
 /**
  * The command inbox's reader (issue #282; design 05-sources "Thread first"). A CLI command (`args.item` the work
  * item ID, `args.text` an optional string) is rebuilt as `/<command> <text>` and mapped by the one comment event
  * mapping (src/core/comment-event.ts) every source shares, so the controller handles it as the same comment:
  * the same event kinds, the same authorize check, the same replies. `comment_id` is the command's key; the
- * identity is provider `local`, subject the actor after `local:`, with the row's edge passport.
+ * identity is provider `local`, subject the actor after `local:`. A command row carries no edge passport: the owner
+ * check decides it (design 08-permissions, One owner).
  */
 export function commandEvent(c: CliCommand, source: SourceRef): SourceEvent | null {
-  return commentEvent(source, c.key, commandIdentity(c, localIdentity(c.actor)), rebuilt(c));
-}
-
-/**
- * `identity` with the command row's edge passport (RFC 0015 §8) and the row's recorded time, which the controller's
- * authorize checks. A command never stored (a poll with no store) has neither.
- */
-export function commandIdentity(c: Pick<NewCliCommand, "passport_id"> & Partial<Pick<CliCommand, "created_at">>, identity: ExternalIdentity): ExternalIdentity {
-  if (c.passport_id === undefined) return identity;
-  if (c.created_at === undefined) throw new Error("a command's passport is checked at the time its row was recorded");
-  return { ...identity, passport: { id: c.passport_id, at: c.created_at } };
+  return commentEvent(source, c.key, localIdentity(c.actor), rebuilt(c));
 }
 
 /** `/<command> <text>`, the comment a command row was read from or stands for. */
@@ -70,12 +60,12 @@ export function githubCommand(c: {
  * keyed as before. A command on a PR's conversation gets the PR the poll read: `/revise` and `/resolve` as `pr`,
  * `/verdict` as its target. `source` is where it was written; `event` is null for a row that maps to no event.
  */
-export function syncedCommand(c: NewCliCommand & Partial<Pick<CliCommand, "created_at">>): { source: SourceRef; event: SourceEvent | null } | null {
+export function syncedCommand(c: NewCliCommand): { source: SourceRef; event: SourceEvent | null } | null {
   const id = GITHUB_KEY.exec(c.key)?.[1];
   const subject = GITHUB_ACTOR.exec(c.actor)?.[1];
   const source = sourceRef(c.args.source);
   if (!id || !subject || !source) return null;
-  const e = commentEvent(source, id, commandIdentity(c, { provider: "github", subject }), rebuilt(c));
+  const e = commentEvent(source, id, { provider: "github", subject }, rebuilt(c));
   const pr = commandPr(c.args.pr);
   if (!e || !pr) return { source, event: e };
   if (e.kind === "revise_requested" || e.kind === "resolve_requested") return { source, event: { ...e, pr } };

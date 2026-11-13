@@ -21,7 +21,7 @@ import { envelope, newMessageId, type Envelope } from "../shared/envelope.js";
 import type { Tick } from "../shared/ticks/tick-generator.js";
 import type { Dialect, SqlDriver, SqlExecutor } from "../state/index.js";
 import {
-  POLLED, commandActor, commandsAfter, fenceHolds, moveCursor, pruneRecords, readCursor, storeRecord, streamRecordsAfter, syncLeaseToken, type InboundEvent,
+  POLLED, commandsAfter, fenceHolds, moveCursor, pruneRecords, readCursor, storeRecord, streamRecordsAfter, syncLeaseToken, type InboundEvent,
 } from "./records.js";
 import { INBOUND_RECEIVED } from "./topics/inbound-records.topic.js";
 
@@ -63,13 +63,6 @@ export interface InboundDeps {
   readonly replica_id?: string;
   /** Runs one stream source's listener (it stores pushed events as records) until `signal` aborts. */
   readonly listen?: (source: StreamSource, signal: AbortSignal) => Promise<void>;
-  /**
-   * The edge passport of a command row that has none (a comment command a poll stored) or of a stream source's
-   * command event (a Slack `/approve`): Identity authenticates its actor through the provider mapping (RFC 0015 §8,
-   * M9). Null when no provider resolves the actor; the controller's authorize still decides. Absent: commands keep
-   * the passport their row has, and stream records get none.
-   */
-  readonly passportFor?: (origin: string, actor: string) => Promise<string | null>;
   readonly log: Logger;
 }
 
@@ -135,12 +128,8 @@ export class Inbound {
     if (!Number.isSafeInteger(after) || after < 0) throw new Error(`command inbox: bad cursor ${JSON.stringify(cursor)}`);
     const rows = await commandsAfter(this.d.db, after, RELAY_BATCH);
     if (rows.length === 0) return;
-    // Passports are minted before the commit: one minted for a commit that loses its cursor race is never used.
-    const announced: Envelope[] = [];
-    for (const c of rows) {
-      const passport = c.passport_id ?? (await this.d.passportFor?.(c.origin, c.actor)) ?? null;
-      announced.push(this.received(c.id, "command", streamOf(c.args.source), t, passport));
-    }
+    // No edge passport: the controller's owner check decides each command (design 08-permissions, One owner).
+    const announced = rows.map((c) => this.received(c.id, "command", streamOf(c.args.source), t));
     await this.commit(COMMANDS_CURSOR, cursor, String(rows.at(-1)!.seq), null, async () => announced);
   }
 
@@ -230,13 +219,7 @@ export class Inbound {
     const cursor = await readCursor(this.d.db, name);
     const rows = await streamRecordsAfter(this.d.db, s.type, streamSeq(cursor), RELAY_BATCH);
     if (rows.length === 0) return;
-    // A command event's passport is minted before the commit, as a command row's; other events get none.
-    const announced: Envelope[] = [];
-    for (const r of rows) {
-      const actor = commandActor(r.event);
-      const passport = actor ? ((await this.d.passportFor?.(actor.provider, `${actor.provider}:${actor.subject}`)) ?? null) : null;
-      announced.push(this.received(r.id, "event", s.type, t, passport));
-    }
+    const announced = rows.map((r) => this.received(r.id, "event", s.type, t));
     await this.commit(name, cursor, String(rows.at(-1)!.seq), null, async () => announced);
   }
 
@@ -265,11 +248,10 @@ export class Inbound {
     }
   }
 
-  /** `passport`: a command's edge passport; the normalizer's CommandReceived or SourceEventReceived inherits it as its cause's. */
-  private received(id: string, kind: "event" | "command", stream: string, t: Tick, passport: string | null = null): Envelope {
+  private received(id: string, kind: "event" | "command", stream: string, t: Tick): Envelope {
     return envelope(
       { type: INBOUND_RECEIVED, subject: stream, idempotency_key: id, idempotency_key_ttl_ms: RECORD_TTL_MS, payload: { record_id: id, kind } },
-      { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id: passport, occurred_at: t.now },
+      { id: null, correlation_id: id, project_id: this.d.config().project_key, passport_id: null, occurred_at: t.now },
       "inbound",
     );
   }

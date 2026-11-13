@@ -1,10 +1,9 @@
-import { FactoryAuth } from "../../core/authorize.js";
-import type { UserId } from "../../core/types.js";
-import type { ExternalIdentity, GrantSource, GrantSubject, Role } from "../../interfaces/auth-provider.js";
+import { ANONYMOUS_USER, FactoryAuth, localUserId } from "../../core/authorize.js";
+import type { GrantSource, GrantSubject, Role } from "../../interfaces/auth-provider.js";
 import type { FactoryStore } from "../../interfaces/factory-store.js";
 
-/** The local identity used when the environment names no one (src/core/local-cli.ts). Read and create only. */
-export const ANONYMOUS_USER = "local:anonymous" as UserId;
+// Deprecated (phase A of issue #575): nothing selects the `local` auth plugin; every command path takes the owner
+// check (src/core/authorize.ts). Phase B removes this file.
 
 /**
  * Roles from the store's local users (issue #318): `owner` and `approver` approve, `requester` and anyone without
@@ -46,10 +45,4 @@ export class LocalAuthProvider extends FactoryAuth {
   ) {
     super({ store, grants: [new LocalUsersGrant(store), ...grants.filter((g) => !g.remote)] }, localUserId);
   }
-}
-
-/** The factory user of a local identity: the subject when it is already a user ID, else `local:<subject>`. */
-export function localUserId(identity: ExternalIdentity): UserId | null {
-  if (identity.provider !== "local") return null;
-  return (/^[a-z]+:\S+$/.test(identity.subject) ? identity.subject : `local:${identity.subject}`) as UserId;
 }

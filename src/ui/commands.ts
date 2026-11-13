@@ -18,7 +18,8 @@
 
 import { randomUUID } from "node:crypto";
 import { COMMAND_TABLE } from "../core/command-table.js";
-import { COMMANDS, type CommandName, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec, roleRefusal } from "../core/commands.js";
+import { COMMANDS, type CommandName, commandPhase, commandSpec, commandsFor, itemCommandState, latestSpec } from "../core/commands.js";
+import { refusalReply } from "../core/authorize.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, isProposalId, parseProposalMarker, typed } from "../core/interpret.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND } from "../core/local-cli.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../core/local-merge.js";
@@ -37,12 +38,10 @@ export interface UiCommands {
   /** Random, per process; held only in memory. GET /api/v1/session returns it, POST must send it in x-csrf-token. */
   token: string;
   /**
-   * Whether `actor` holds `action` on the project, over the local grants only (no forge call), as the controller
-   * checks a command with the configured auth plugin (compose.ts). Absent (a page with no auth wired): see actorGrant.
+   * Whether `actor` may send `action` on the project: the owner check the controller applies to every command
+   * (compose.ts, src/core/authorize.ts). Absent (a page with no auth wired): see actorGrant.
    */
   allowed?: (action: PageAction) => Promise<AuthDecision>;
-  /** The actor's edge passport (Identity, RFC 0015 §8), stored on each request row. Absent: none. */
-  passport?: () => Promise<string>;
   /** Whether a forge is selected (`plugins.forge`), for a PR's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
   forge?: boolean;
   /** Whether the controller's sandbox can merge locally, for a local item's Merge; set by compose.ts buildUiParts. Absent: not known here; the controller still checks. */
@@ -168,8 +167,7 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   const args: Record<string, unknown> = {
     work_item_id: item.id, ...("note" in parsed && parsed.note !== undefined ? { note: parsed.note } : {}), ...("proposal" in parsed ? { proposal: parsed.proposal } : {}),
   };
-  const passport_id = await c.passport?.();
-  const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args, ...(passport_id ? { passport_id } : {}) });
+  const { request } = await d.store.recordAppCommandRequest({ key, actor: c.actor, command: parsed.command, args });
   return { status: 202, value: { request_id: request.key, seq: request.seq, command: request.command, work_item_id: item.id } };
 }
 
@@ -182,13 +180,12 @@ export function readSession(d: UiDeps, now: Date): Record<string, unknown> | nul
 /** The actions the page asks about for its actor: approve_spec for the item commands, approve_merge for Merge. */
 export type PageAction = "approve_spec" | "approve_merge";
 
-/** The page actor's grant of one action: allowed, or refused with the controller's reason (roleRefusal). */
+/** The page actor's grant of one action: allowed, or refused with the controller's reply (refusalReply). */
 export type ActorGrant = { allow: true } | { allow: false; reason: string };
 
 /**
- * Whether the page's actor holds `action`, as the controller checks it for an app command (design §9): the configured
- * auth plugin over the local grants, on the project (UiCommands.allowed, no forge call). In solo use the first
- * identity becomes the local owner there, so no grant is needed. Asked at most once per call of the result, so a
+ * Whether the page's actor holds `action`, as the controller checks it for an app command (design §9): the owner check
+ * on the project (UiCommands.allowed, no forge call). In solo use the first identity becomes the local owner there. Asked at most once per call of the result, so a
  * request asks once however many items or commands it lists. When it cannot be asked here (commands off, or no auth
  * wired), approve_spec is allowed (the controller still checks every command it applies) and approve_merge is not
  * (Merge stays disabled).
@@ -199,7 +196,7 @@ export function actorGrant(d: UiDeps, action: PageAction): () => Promise<ActorGr
     const c = d.commands;
     if (c?.actor == null || !c.allowed) return action === "approve_spec" ? { allow: true } : { allow: false, reason: NOT_MERGER };
     const decision = await c.allowed(action);
-    return decision.allow ? { allow: true } : { allow: false, reason: roleRefusal(c.actor, decision.reason) };
+    return decision.allow ? { allow: true } : { allow: false, reason: refusalReply(decision.reason) };
   };
   return () => (asked ??= ask());
 }

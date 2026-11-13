@@ -225,7 +225,10 @@ export interface LocalCliDeps {
   newId: () => string;
   /** Display names by user ID (Identity's identity_profiles), looked up only to show; absent: IDs only. */
   displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
-  /** The CLI identity's edge passport (Identity, RFC 0015 §8), stored on each command row. Absent: none. */
+  /**
+   * Deprecated and never called: a command row carries no edge passport, the controller's owner check decides it
+   * (design 08-permissions, One owner). Kept only while `factory` CLI wiring still passes it (phase B removes it).
+   */
   passport?: () => Promise<string>;
   /**
    * The source type the command was typed in, when not the CLI (a chat command, design 05-sources): an item of that
@@ -320,10 +323,7 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       // An item of a sync source gets the command mirrored on its issue later; a local item has no other surface, and
       // a command typed in the item's own thread is already there. A verdict changes no state, so it is not mirrored.
       const mirror = a.command !== "verdict" && item.source.type !== "local" && item.source.type !== d.origin;
-      const passport_id = await d.passport?.();
-      const { command } = await d.store.appendCliCommand({
-        key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}), ...(passport_id ? { passport_id } : {}),
-      });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: a.command, args, ...(mirror ? { mirror } : {}) });
       return {
         code: 0,
         lines: [`stored \`${name}\` for ${item.id} as ${user} (command ${command.seq}); the controller applies it on its next poll, see \`factory task show ${item.id}\``],
@@ -339,9 +339,8 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       await claim();
       // The controller's confirm path (src/controller/units/commands/proposals.ts) claims and applies each pending row,
       // and answers a refusal in the thread of the first pending command's item.
-      const passport_id = await d.passport?.();
       const args = { item: pending[0]!.work_item_id, proposal: a.proposal };
-      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args, ...(passport_id ? { passport_id } : {}) });
+      const { command } = await d.store.appendCliCommand({ key: `${CLI_KEY_PREFIX}${d.newId()}`, actor: user, command: CONFIRM_COMMAND, args });
       const n = pending.length === 1 ? "its pending command" : `its ${pending.length} pending commands`;
       return { code: 0, lines: [`stored \`factory confirm ${a.proposal}\` as ${user} (command ${command.seq}); the controller applies ${n} on its next poll`] };
     }

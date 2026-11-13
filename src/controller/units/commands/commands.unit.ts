@@ -7,7 +7,7 @@ import {
   failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
-import { commandEvent, commandIdentity, syncedCommand } from "../../../core/command-inbox.js";
+import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
@@ -23,7 +23,7 @@ import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
 import { scanClean } from "./scan.js";
 
-type AppSender = { user_id: UserId; passport?: Extract<CommandEvent, { kind: "spec_approved" }>["approver"]["passport"] } | null;
+type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
 type ResolveEvent = Extract<SourceEvent, { kind: "resolve_requested" }>;
 type PrReviewEvent = Extract<ForgeEvent, { kind: "pr_changes_requested" }>;
@@ -151,9 +151,9 @@ export class CommandsUnit {
     // Any source's item (design 05-sources, CLI intake): identity provider `local`, judged by the local auth plugin; never waits on its source.
     if (!item) return;
     // A proposal's confirm press (proposals.ts) and `factory merge <id>` (local items only) skip the comment mapping.
-    if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, commandIdentity(c, localIdentity(c.actor))), say: refusalText });
+    if (c.command === CONFIRM_COMMAND) return confirmProposal(this.c, c, item, { event: (r, s) => proposalEvent(r, s, localIdentity(c.actor)), say: refusalText });
     if (c.command === MERGE_COMMAND) {
-      if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, commandIdentity(c, localIdentity(c.actor)), c.key);
+      if (item.source.type === LOCAL_SOURCE) await this.c.unit("local-merge").mergeLocal(item.id, localIdentity(c.actor), c.key);
       return;
     }
     const e = commandEvent(c, item.source);
@@ -184,11 +184,11 @@ export class CommandsUnit {
     );
   }
 
-  /** A gate command from a comment (`app` null) or an app request (its user and edge passport, checked locally), design §4: `approve_spec`, the
+  /** A gate command from a comment (`app` null) or an app request (its user), design §4: `approve_spec`, the
    * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close, the pushback's capture. */
   async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
     const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
-    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id, true, app.passport) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
+    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
     if ("refuse" in principal) return principal.refuse;
     const input = await this.commandInput(item.id, e, app === null);
     if ("refuse" in input) return input.refuse;
@@ -472,7 +472,7 @@ export class CommandsUnit {
   /** The dashboard's Confirm all, Cancel or sentence (proposals.ts appProposal); undefined for any other app command. */
   appProposal(r: AppCommandRequest, item: WorkItem, key: string): Promise<string | null> | undefined {
     const kind = r.command === CONFIRM_COMMAND ? "confirm" : r.command === CANCEL_APP_COMMAND ? "cancel" : r.command === SENTENCE_APP_COMMAND ? "sentence" : null;
-    const who = commandIdentity(r, localIdentity(r.actor));
+    const who = localIdentity(r.actor);
     return kind ? appProposal(this.c, r, item, key, kind, { who, event: (row, s) => proposalEvent(row, s, who), say: refusalText, footer: async () => commandFooter(await this.stateOf(item)) }) : undefined;
   }
 

@@ -10,8 +10,6 @@ import type { Dialect, Row, SqlExecutor } from "../state/index.js";
 
 /** What an adapter read: a source's event or the forge's. */
 export type InboundEvent = SourceEvent | ForgeEvent;
-/** Who sent a command event, as its source names them. */
-type Actor = Extract<SourceEvent, { kind: "spec_approved" }>["approver"];
 
 /** A raw record's id, the claim check its messages carry: `rec_<seq>` (RFC 0015 §12, `inbound_raw_records`). */
 export function recordId(seq: number): string {
@@ -78,34 +76,16 @@ export async function streamRecordsAfter(
   return rows.map((r) => ({ seq: Number(r.seq), id: recordId(Number(r.seq)), event: JSON.parse(String(r.event)) as InboundEvent, received_at: String(r.received_at) }));
 }
 
-/**
- * A record by id. `passport`: the edge passport inbound minted for it at the relay (RFC 0015 §8); a command event's
- * actor carries it, its expiry checked at the record's received time, as a command row's is at its recorded time.
- */
+/** A record by id. */
 export async function readRecord(
   q: SqlExecutor,
   id: string,
-  passport: string | null = null,
 ): Promise<{ source_type: SourceType; event: InboundEvent; received_at: string } | null> {
   const seq = RECORD_ID.exec(id)?.[1];
   if (!seq) return null;
   const [row] = await q.all("SELECT source_type, event, received_at FROM inbound_raw_records WHERE seq = ?", [Number(seq)]);
   if (!row) return null;
-  const event = JSON.parse(String(row.event)) as InboundEvent;
-  const received_at = String(row.received_at);
-  return { source_type: row.source_type as SourceType, event: passport ? withPassport(event, { id: passport, at: received_at }) : event, received_at };
-}
-
-/** Who sent a person's command event (an approve, a retry, ...); null for any other event (a plain comment, an item request). */
-export function commandActor(e: InboundEvent): Actor | null {
-  if (!("comment_id" in e) || e.kind === "plain_comment") return null;
-  return "approver" in e ? e.approver : e.requester;
-}
-
-/** `e` with its command actor carrying `passport`; any other event unchanged. */
-function withPassport(e: InboundEvent, passport: NonNullable<Actor["passport"]>): InboundEvent {
-  if (!("comment_id" in e) || e.kind === "plain_comment") return e;
-  return "approver" in e ? { ...e, approver: { ...e.approver, passport } } : { ...e, requester: { ...e.requester, passport } };
+  return { source_type: row.source_type as SourceType, event: JSON.parse(String(row.event)) as InboundEvent, received_at: String(row.received_at) };
 }
 
 /**
@@ -135,7 +115,6 @@ export function commandOf(row: Row): CliCommand {
     command: String(row.command),
     args: JSON.parse(String(row.args)) as Record<string, unknown>,
     ...(Number(row.mirror) === 1 ? { mirror: true } : {}),
-    ...(row.passport_id != null ? { passport_id: String(row.passport_id) } : {}),
     created_at: row.created_at as CliCommand["created_at"],
   };
 }

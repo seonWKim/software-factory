@@ -1,29 +1,10 @@
-import type { AuthProvider as IdentityProvider, PassportService, Principal as IdentityPrincipal, Provider, ResourceRef } from "../../identity/index.js";
+import type { PassportService, ResourceRef } from "../../identity/index.js";
 import type { AuthAction, AuthDecision, AuthProvider, AuthResource, CommandPassport, ExternalIdentity, Principal } from "../../interfaces/auth-provider.js";
 
 /**
- * The provider mapping of an auth plugin as Identity's provider (RFC 0015 §8 "Edge"): a forge or chat account
- * resolves to the same factory user the plugin's own `resolve` gives (linked accounts first), with no remote call.
- */
-export class PluginIdentityProvider implements IdentityProvider {
-  constructor(
-    readonly provider: Exclude<Provider, "local" | "service">,
-    private readonly plugin: AuthProvider,
-  ) {}
-
-  async resolve(identity: { provider: Provider; subject: string }): Promise<IdentityPrincipal | null> {
-    if (identity.provider !== this.provider) return null;
-    const p = await this.plugin.resolve({ provider: this.provider, subject: identity.subject });
-    return p ? { user_id: p.user_id } : null;
-  }
-}
-
-/**
- * Any auth plugin, with Identity deciding on the command's passport (RFC 0015 §8, M9). With a passport, Identity
- * checks its chain, expiry, revocation and caveats, that it names the principal the plugin resolved, and then the
- * plugin's own grants decide the role (the plugin chosen by the command's origin, as before); one authz_audit row
- * holds the decision under that passport. With none (a row from before M9, an actor no provider resolves, the UI's
- * own checks), the plugin decides and Identity records it under passport `none`.
+ * The owner check (or any AuthProvider) with every decision audited (RFC 0015 §8). A person's command carries no edge
+ * passport (design 08-permissions, One owner): the inner check decides and Identity records one authz_audit row under
+ * passport `none`. With a passport (Identity's own tests), Identity checks it first and the inner check decides the rest.
  */
 export class AuditedAuthProvider implements AuthProvider {
   constructor(

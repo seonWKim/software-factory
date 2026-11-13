@@ -45,7 +45,7 @@ ${SETTINGS_COMMANDS.map((c) => `  ${cliUsageOf(c).slice("settings ".length).padE
 --project: only for ${PROJECT_SETTABLE_KEYS.join(", ")}, and only with the configured repo's owner/name.
 ${APPROVE_MERGE_KEYS.join(" and ")}, and a set or reset that loosens a tighten-only key: only with approve_merge on the project.
 reset <key> --project <owner/name> --learned: clear the value the improve run learned; only with approve_merge when that loosens the value in force.
-  ${EDIT_FILE_USAGE.padEnd(42)}  Set one file-only key of factory.config.json on a new local branch, filed for your \`factory merge <id>\`; a guard, floor or permission needs --confirm`;
+  ${EDIT_FILE_USAGE.padEnd(42)}  Set one file-only key of factory.config.json on a new local branch, filed for your \`factory merge <id>\`; a guard or floor needs --confirm`;
 
 export const MODE_USAGE = `usage: npm run factory -- ${cliUsageOf(MODE_COMMAND)}
   ${MODE_COMMAND.does}: needs approve_merge on the project, and writes one audit row`;
@@ -179,10 +179,6 @@ async function aligned(deps: SettingsDeps, rows: readonly SettingOverride[], ref
   return { base, label };
 }
 
-/** This check asks local grants only (no forge call), so GitHub write access alone gives no role here. */
-const NO_LOCAL_ROLE =
-  ". This check reads local grants only, not GitHub access: give the user approver in permissions.static.roles (docs/plugins/grant-source.md)";
-
 function fmt(v: unknown): string {
   return JSON.stringify(v) ?? String(v);
 }
@@ -197,7 +193,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
   }
   if (APPROVE_MERGE_KEYS.includes(key) && deps.mayApproveMerge) {
     const refused = await deps.mayApproveMerge();
-    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+    if (refused !== null) return fail(`${key} changes only with approve_merge on the project: ${refused}`);
   }
   let ref: ProjectRef | undefined;
   if (a.project !== undefined) {
@@ -267,7 +263,7 @@ async function change(deps: SettingsDeps, a: Extract<SettingsAction, { action: "
     const descriptor = (await loadSettingCatalog()).get(key);
     if (descriptor && loosens(descriptor, now.value, was.value) !== null) {
       const refused = await deps.mayApproveMerge();
-      if (refused !== null) return fail(`loosening ${key}${where} from ${fmt(was.raw)} to ${fmt(now.raw)} needs approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+      if (refused !== null) return fail(`loosening ${key}${where} from ${fmt(was.raw)} to ${fmt(now.raw)} needs approve_merge on the project: ${refused}`);
     }
   }
   if (value !== null) {
@@ -348,7 +344,7 @@ async function resetLearned(deps: SettingsDeps, key: string, project: string): P
   if (was.layer === "learned" && loosening(gate, now.value, was.value) !== null && deps.mayApproveMerge) {
     const refused = await deps.mayApproveMerge();
     if (refused !== null) {
-      return fail(`resetting the learned ${key} for ${ref.label} loosens it from ${was.value} to ${now.value} and needs approve_merge on the project: ${refused}${refused === "no_role" ? NO_LOCAL_ROLE : ""}`);
+      return fail(`resetting the learned ${key} for ${ref.label} loosens it from ${was.value} to ${now.value} and needs approve_merge on the project: ${refused}`);
     }
   }
   const change = await deps.store.resetLearnedSetting({ key, project: ref.key, actor: deps.actor });

@@ -19,11 +19,6 @@ const GATE: ReadonlyMap<string, Exclude<CommandEvent["kind"], "budget_continue">
 /** The commands applied from an app request, as a refusal names them. */
 const APPLIED = "only `approve`, `merge`, `reject`, `resolve`, `retry`, `revise` and `verdict` are applied from an app request";
 
-/** The page's edge passport, checked for expiry at the time the request was recorded (absent: none). */
-function appPassport(r: AppCommandRequest) {
-  return r.passport_id === undefined ? undefined : { id: r.passport_id, at: r.created_at };
-}
-
 /**
  * The comment command event of an app gate command on `item`, keyed `key`: the note is the approve's or retry's
  * note, the resolve's notes, the reject's reason or the revise's feedback. Never on a PR: a revise here is the
@@ -78,12 +73,12 @@ export class AppRequestsUnit {
       // A local item with no PR takes the local merge; an item with a PR (a local item from the PR era too) its
       // PR's merge on the forge (design 05-sources). mergeLocal posts its own refusal under the same marker as
       // finishAppRequest's, so the thread gets it once; a PR merge's later refusal comes back under it too.
-      const who = { user_id: r.actor, passport: appPassport(r) };
+      const who = { user_id: r.actor };
       refusal = item.source.type === LOCAL_SOURCE && item.change_ref === null
         ? await this.c.unit("local-merge").mergeLocal(item.id, who, key, { [APP_REQUEST]: r.seq })
         : await this.c.unit("pr-events").requestPrMerge(item.id, who, key, { [APP_REQUEST]: r.seq });
     } else if (r.command === "verdict") {
-      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "record_verdict", item.id, true, appPassport(r));
+      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "record_verdict", item.id);
       refusal = "refuse" in principal ? principal.refuse : await this.c.unit("verdicts").verdictFrom(item.id, { comment_id: key, target: "issue" }, principal, note ?? "");
     } else if (gate) {
       refusal = await this.gateRequest(r, item, gate, key, note);
@@ -110,7 +105,7 @@ export class AppRequestsUnit {
       if ("refuse" in scanned) return scanned.refuse;
       note = scanned.note ?? "";
     }
-    const app = { user_id: r.actor, passport: appPassport(r) };
+    const app = { user_id: r.actor };
     return this.c.unit("commands").gateCommand(item, gateEvent(kind, item, key, r, note), app, { [APP_REQUEST]: r.seq });
   }
 

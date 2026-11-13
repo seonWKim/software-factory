@@ -82,10 +82,10 @@ export class PrEventsUnit {
    * (`last_head_sha`), so a moved head is refused by the forge and nothing moves; its result comes back as
    * `prMergeDelivered`. Returns the refusal (the caller posts it), or null when the merge is requested.
    */
-  async requestPrMerge(id: WorkItemId, who: { user_id: UserId; passport?: Parameters<UnitOperations["auth"]["allowed"]>[4] }, key: string, detail: Record<string, unknown>): Promise<string | null> {
+  async requestPrMerge(id: WorkItemId, who: { user_id: UserId }, key: string, detail: Record<string, unknown>): Promise<string | null> {
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
-    const principal = await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id, true, who.passport);
+    const principal = await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id);
     if ("refuse" in principal) return principal.refuse;
     const pr = prNumber(item);
     if (!awaitingMerge(item) || pr === null) {

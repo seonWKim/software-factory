@@ -1,3 +1,4 @@
+import { refusalReply } from "./authorize.js";
 import { checkedLines, commandText, runChecks } from "./checks.js";
 import type { FactoryConfig } from "./config.js";
 import { requiredTier } from "./diff-gate.js";
@@ -71,7 +72,7 @@ export class Sessions {
     const principal = await this.d.auth.resolve(o.person);
     if (!principal) return refused("refused: your account is not linked to a factory user");
     const allowed = await this.d.auth.authorize(principal, "approve_spec", { kind: "project", id: cfg.project.key });
-    if (!allowed.allow) return refused(`refused: a session needs write permission on the repository (${allowed.reason})`);
+    if (!allowed.allow) return refused(`refused: ${refusalReply(allowed.reason)}`);
     const actor = { kind: "user" as const, id: principal.user_id };
 
     const target = parseTarget(o.target);
