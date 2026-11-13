@@ -3,7 +3,7 @@
 // rows and numbers. Free text from the store (titles, blocked reasons, state-change values, run errors, owner
 // and actor ids) leaves only through the Withholder: clean text as is (JSON, not HTML-escaped), anything with
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
-// table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
+// table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`; its Ask is a write route (data-ask.ts).
 //
 // Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The write routes, among them POST
 // /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts), POST /api/v1/pauses/resume
@@ -26,6 +26,7 @@ import { failures } from "./failures.js";
 import { spend } from "./spend.js";
 import { readGitHubBudget } from "./github-budget.js";
 import { effectiveGlobal, readSettings } from "./settings-api.js";
+import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, oneLine, parseRevision, systemActions } from "./system-actions.js";
@@ -69,8 +70,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return items(c, url.searchParams);
     case "/runs": return ok(await runs(c));
     case "/queue": return ok(await queue(c));
-    case "/workers":
-      return ok(await workers(c));
+    case "/workers": return ok(await workers(c));
     case "/unreviewed-merges":
       return unreviewedMerges(c, url.searchParams);
     case "/health":
@@ -78,8 +78,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
     case "/spend": return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now }, url.searchParams);
-    case "/settings":
-      return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
+    case "/settings": return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
+    case "/settings/capabilities": return d.settings ? ok(await readCapabilities(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {
       const session = readSession(d, c.now);
       return session ? ok(session) : apiError(404, "Not found.");
@@ -150,7 +150,7 @@ class ApiCtx {
 
   /** The Data page's context: the same store, Withholder and channel as every other route. */
   data(): DataCtx {
-    return { store: this.d.store, text: (v) => this.text(v), now: this.now };
+    return { store: this.d.store, text: (v) => this.text(v), now: this.now, askToken: this.d.settings?.ask ? this.d.settings.csrfToken : null };
   }
 
   private readonly labels = new Map<string, Promise<string>>();

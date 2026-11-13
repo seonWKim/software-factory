@@ -63,6 +63,7 @@ the `05-*` files.
 - [09-notifications.md](design/09-notifications.md): owner notices: one `controller_notices` row per wait on the owner, kinds, quiet hours and their summary, the backfill, and `GET /api/v1/notices`.
 - [09-desktop-app.md](design/09-desktop-app.md): the macOS app that runs the supervisor as its child, shows the dashboard and the needs-you count, and drains on Quit.
 - [09-brand-and-tokens.md](design/09-brand-and-tokens.md): the one token source (`design-system/tokens.json`), the generated `web/src/tokens.css`, the Tailwind mapping and the no-hex rule.
+- [09-dashboard-complexity.md](design/09-dashboard-complexity.md): audit of the dashboard's pages and item-page flows, and up to five simplification proposals.
 
 ## 10. Event-driven factory
 - [10-event-driven.md](design/10-event-driven.md): the RFC 0015 move, prefixed tables, timestamped migrations with backups and verified copies, and architecture tests.

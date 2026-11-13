@@ -11,7 +11,7 @@ import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js";
 import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
-import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpret, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
+import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
 import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
@@ -479,7 +479,7 @@ export class CommandsUnit {
   /**
    * One plain message through the interpreter, on an item's comment `on` or top-level (null; the intake unit's chat
    * messages): the length filter and the egress scan of the message (`unread` when either stops it: no model call),
-   * the model call over the open items, the egress scan of the answer (`blocked`: nothing stored, nothing posted),
+   * the plain/command label then the interpreter (interpretMessage), the egress scan of the answer (`blocked`: nothing stored, nothing posted),
    * then the reply, with a `commands` answer's proposals stored once for the comment. Null reply: `request` or `none`.
    * `where` names the item or the source in a scan finding's log line.
    */
@@ -492,7 +492,7 @@ export class CommandsUnit {
     const text = body.trim();
     if (!llm || text === "" || text.length > INTERPRET_MAX_CHARS || !(await scanClean(this.c, where, "message", [text]))) return "unread";
     const items = openItems(await this.c.k.reader.listWorkItemsWhere({ exclude_closed: true, limit: INTERPRET_MAX_ITEMS }));
-    const result = await interpret(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level", this.c.k.live.values().message_style);
+    const result = await interpretMessage(text, items, llm, on ? { item: openItems([on.item])[0]!, blocked_reason: on.item.blocked_reason } : "top_level", this.c.k.live.values().message_style);
     if (!(await scanClean(this.c, where, "answer", interpretTexts(result)))) return "blocked";
     return { kind: result.kind, body: interpretReply(result, on ? await storeProposals(this.c, on.item, on.e, result) : null) };
   }

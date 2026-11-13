@@ -21,6 +21,7 @@ beforeAll(async () => {
 const LOOSER: Readonly<Record<string, { than: unknown; looser: unknown }>> = {
   floors: { than: [{ prefix: "src/", tier: 4 }], looser: [] },
   dials: { than: { spec_gate_min_tier: 1, auto_merge_max_tier: 0 }, looser: { spec_gate_min_tier: 1, auto_merge_max_tier: 1 } },
+  tool_grants: { than: { triage: ["forge.preflight"] }, looser: { triage: ["forge.preflight"], review: ["forge.preflight"] } },
 };
 
 /** A pair (value set above, a looser value below) for a tighten-only setting. */

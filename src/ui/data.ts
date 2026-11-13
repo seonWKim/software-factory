@@ -3,10 +3,46 @@
 // a name the schema does not have is a 404 and never reaches SQL; a filter value is a bound parameter in the
 // store. Hidden columns (fencing tokens, the link-code hash; listed once, in HIDDEN_COLUMNS) leave only as
 // "[hidden]" and cannot be filtered on. Every text cell passes the Withholder the rest of the API uses.
+// Each table's line, owner and column meanings come from the table-docs.ts beside its component's migrations
+// (TABLE_DOCS here gathers them); the Ask box (data-ask.ts) sends the same lines to the model.
 
+import { TOPIC_TABLE_DOCS, TABLE_DOCS as BUS } from "../bus/table-docs.js";
+import { TABLE_DOCS as CALENDAR } from "../calendar/table-docs.js";
+import { TABLE_DOCS as CONTROLLER } from "../controller/table-docs.js";
 import { collectAutonomy } from "../core/stats.js";
 import type { RunId } from "../core/types.js";
+import { TABLE_DOCS as IDENTITY } from "../identity/table-docs.js";
+import { TABLE_DOCS as INBOUND } from "../inbound/table-docs.js";
 import { type FactoryStore, type StoreTable, TABLE_PAGE_DEFAULT, TABLE_PAGE_MAX, type TableCell } from "../interfaces/factory-store.js";
+import { TABLE_DOCS as OUTBOUND } from "../outbound/table-docs.js";
+import { TABLE_DOCS as RUNTIME } from "../runtime/table-docs.js";
+import { TABLE_DOCS as STATE } from "../state/table-docs.js";
+import { TABLE_DOCS as WORKER } from "../worker/table-docs.js";
+
+/** Each owning component's table lines (key `table`) and column meanings (key `table.column`). */
+export const TABLE_DOCS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+  bus: BUS, calendar: CALENDAR, controller: CONTROLLER, identity: IDENTITY, inbound: INBOUND, outbound: OUTBOUND, runtime: RUNTIME, state: STATE, worker: WORKER,
+};
+
+/** What a table holds: its owning component, one line, and the meaning of the columns whose name does not say. */
+export interface TableDoc {
+  owner: string;
+  description: string;
+  columns: Record<string, string>;
+}
+
+/** `table`'s doc; a bus topic's table (made at run time) by its suffix; null when no component describes it. */
+export function tableDoc(table: string): TableDoc | null {
+  for (const [owner, docs] of Object.entries(TABLE_DOCS)) {
+    const description = docs[table];
+    if (description === undefined) continue;
+    const prefix = `${table}.`;
+    const columns = Object.entries(docs).filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k.slice(prefix.length), v] as const);
+    return { owner, description, columns: Object.fromEntries(columns) };
+  }
+  const topic = table.startsWith("bus_") ? TOPIC_TABLE_DOCS.find(([suffix]) => table.endsWith(suffix)) : undefined;
+  return topic ? { owner: "bus", description: topic[1], columns: {} } : null;
+}
 
 /** Columns whose values never leave the server: fencing tokens and the stored link-code hash. */
 /** Each table appears twice until the contract migration: the legacy copy keeps its old name (RFC 0015 §12). */
@@ -34,6 +70,8 @@ export interface DataCtx {
   /** The API's Withholder: the value, or `[withheld: <rule>]`. */
   text(value: string): Promise<string | null>;
   now: Date;
+  /** The write token the Ask box sends (POST /api/v1/data/ask); null when this server has no Ask route. */
+  askToken: string | null;
 }
 
 export type DataResult = { status: number; value: unknown } | { status: number; error: string };
@@ -42,10 +80,19 @@ function hiddenOf(t: StoreTable): string[] {
   return t.columns.filter((c) => isHidden(t.name, c));
 }
 
-/** GET /api/v1/data/tables: each table's name, row count and columns (and which of them are hidden). */
+/**
+ * GET /api/v1/data/tables: each table's name, row count and columns (and which of them are hidden), with its line,
+ * owner and column meanings (null and {} for a table no component describes; hidden columns get none), and the
+ * Ask box's write token.
+ */
 export async function dataTables(c: DataCtx): Promise<DataResult> {
-  const tables = (await c.store.listTables()).map((t) => ({ name: t.name, rows: t.rows, columns: t.columns, hidden: hiddenOf(t) }));
-  return { status: 200, value: { as_of: c.now.toISOString(), tables } };
+  const tables = (await c.store.listTables()).map((t) => {
+    const doc = tableDoc(t.name);
+    const hidden = hiddenOf(t);
+    const column_docs = Object.fromEntries(Object.entries(doc?.columns ?? {}).filter(([col]) => !hidden.includes(col)));
+    return { name: t.name, rows: t.rows, columns: t.columns, hidden, description: doc?.description ?? null, owner: doc?.owner ?? null, column_docs };
+  });
+  return { status: 200, value: { as_of: c.now.toISOString(), tables, csrf_token: c.askToken } };
 }
 
 /** GET /api/v1/data/autonomy: Autonomy (design §6), the same numbers as `factory stats --json`. One store read. */

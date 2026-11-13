@@ -31,12 +31,15 @@ Fallback chain (design 2026-11-07, `docs/design/08-plugins.md`): list several ru
 - The result names its member in `served_by`; usage is summed over the members tried, the transcript joins each member's behind a `----- runner fallback: <name> -----` line, and the worker logs `runner fallback` (`from`, `to`, `reason`). If every member fails, the error lists each failure; a rate limit from the last one keeps the earliest `reset_at`.
 - Switch back: a single name again, e.g. `"runner": "claude-code"` (a list of one is the same).
 
+Capabilities (design `08-settings.md`, 2026-11-13; before: see History): the Settings page lists each registered AgentRunner plugin as one entry, `runner:<plugin>`, one per configured endpoint, enabled when `plugins.runner` selects it (each chain member). A plugin with its own config block (`openai_compatible`) shows that endpoint's host and its model names; `claude-code` shows the `models` names. Each entry lists its model per class, the classes `model_by` names, so a run's class resolves to the model of the entry that serves it; how `model_by` resolves is unchanged. An entry's roles are the agent roles (`triage`, `implement`, `review`, `resolve`); its last use is the newest stored run of those whose reported model (`usage.model`) contains one of the entry's model names. Granted tools now follow the runtime `tool_grants` setting at the next run that starts (`docs/plugins/tool-broker.md`).
+
 A new runner reuses the shared tools in `src/core/tools` (`Read`, `Glob`, `Grep`, `Write`, `Edit`, `Bash` as `ToolSpec`s, with `guardPolicy`) instead of implementing its own file tools and deny rules, so it gets the file guards for free (architecture §5). `tests/helpers/scripted-runner.ts` is a test-only example, selected only with `withPlugin(REGISTRY, "runner", ...)` in tests and never in the registry.
 
 Switch back / disable: `"runner": "claude-code"`. There is no "off".
 
 ## History
 
+- **Capabilities entries** (2026-11-13, issue #572). Before: the runners were visible only in `plugins.runner` of factory.config.json, with no page showing which are on, which models they serve or when one was last used; `AgentRunSpec.tool_grants` came from the file's `tool_grants` only.
 - **Tool hooks** (2026-11-11, issue #494). Before: the PreToolUse hook checked only `allowed_paths` and failed open; no runner declared tool-hook support, and no pack check ran on an edit.
 - **Toolchain** (2026-11-08, issue #334). Before: the harness settings had no read allow list and the agent env no config-declared entry, so a run could not read a home-level toolchain cache.
 - **Writes** (2026-11-07). Before: `--allowedTools` named Write and Edit bare, so the native tools could write any path the host user can, the owner's live checkout included; only `.env` edits were denied.

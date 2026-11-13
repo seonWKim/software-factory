@@ -139,6 +139,7 @@ describe("Standing approvals section against a server that keeps the rule", () =
     const current = (): StandingView => ({ ...standing(), rules: [{ ...standing().rules[0]!, enabled }] });
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/v1/settings") return json(200, settings);
+      if (url === "/api/v1/settings/capabilities") return json(200, { as_of: "", roles: [], capabilities: [] });
       if (init?.method === "POST") {
         const body = JSON.parse(String(init.body)) as { enabled: boolean };
         const changed = body.enabled !== enabled;

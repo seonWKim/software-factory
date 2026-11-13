@@ -2,6 +2,8 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { dirname, join } from "node:path";
 import { migrationPendingError } from "../../../interfaces/updater.js";
 import { type Row, type SqlDialect, type SqlDriver, type SqlExecutor, type SqlValue, applyMigrations, pendingMigrations } from "../../../state/index.js";
+import type { ReadOnlyQueryOpts, ReadOnlyQueryResult } from "../../../interfaces/factory-store.js";
+import { readOnlyQuery } from "./readonly-query.js";
 import { MIGRATIONS } from "./schema.js";
 
 const SQLITE_CONSTRAINT_UNIQUE = 2067;
@@ -44,6 +46,14 @@ export class SqliteDriver implements SqlDriver {
 
   run(sql: string, params?: readonly SqlValue[]): Promise<number> {
     return this.serialize(() => this.exec.run(sql, params));
+  }
+
+  /**
+   * One read-only query (design 09-dashboard-app, Data page Ask) on its own read-only connection to this file, never
+   * on this driver's connection, so it neither waits behind this process's writes nor can make one.
+   */
+  readOnlyQuery(sql: string, opts?: ReadOnlyQueryOpts): Promise<ReadOnlyQueryResult> {
+    return readOnlyQuery(this.path, sql, opts);
   }
 
   /**

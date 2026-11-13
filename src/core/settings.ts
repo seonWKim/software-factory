@@ -1,5 +1,5 @@
 import type { Budgets } from "./budget.js";
-import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, coordinationProblems } from "./config.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, type ToolGrants, coordinationProblems, toolGrantsShape } from "./config.js";
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
@@ -261,8 +261,8 @@ export const SETTABLE_KEYS = [
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
-  "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations",
-  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd",
+  "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations", "calendar",
+  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -281,8 +281,8 @@ export type Mode = (typeof MODES)[number];
 export const AUTO_MERGE_TIER_MAX = 3;
 /** Keys whose change needs `approve_merge` on the project (design 08-settings): they decide what merges without a person. */
 export const APPROVE_MERGE_KEYS: readonly SettableKey[] = ["mode", "auto_merge_max_tier"];
-/** Keys only the owner changes, free and with no grant (design 08-settings): `integrations` switches a plugin the factory runs. */
-export const OWNER_KEYS: readonly SettableKey[] = ["integrations"];
+/** Keys only the owner changes, free and with no grant (design 08-settings): `integrations` and `calendar` switch plugins the factory runs. */
+export const OWNER_KEYS: readonly SettableKey[] = ["integrations", "calendar"];
 
 /** Keys that change only by a reviewed PR to factory.config.json (guards and secrets included). */
 export const PR_ONLY_KEYS = [
@@ -319,9 +319,9 @@ export interface SettableValues {
   auto_merge_max_tier: number;
   message_style: string;
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
-  integrations: Readonly<Record<string, string>>; // interface → plugin name; no entry: the config's choice (design 08-settings)
+  integrations: Readonly<Record<string, string>>; calendar: readonly string[]; // interface → plugin name (no entry: the config's choice); calendar plugin names
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number;
-  max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number;
+  max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
 }
 
@@ -350,10 +350,10 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
-  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {},
+  notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {}, calendar: [],
   stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms,
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
-  max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight,
+  max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
 });
 
@@ -441,7 +441,8 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
-    case "integrations": return integrationEntries(value) as SettableValues[K];
+    case "integrations": return integrationEntries(value) as SettableValues[K]; case "tool_grants": return toolGrantsShape(value) as SettableValues[K];
+    case "calendar": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error("calendar must be a list of distinct calendar plugin names, or [] for none"); } // the same list check
     case "max_coordination_cost": case "hotspot_weight": case "mechanical_weight": {
       const problem = coordinationProblems({ [key]: value ?? null })[0];
       if (problem) throw new Error(problem);
@@ -657,7 +658,7 @@ export function workersCap(base: SettingsBase): number {
 
 /** The base a FactoryConfig alone gives: every key from the config, as if the file set it. For tests and lone loops. */
 export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTable; names?: ModelNames | undefined }): SettingsBase {
-  const file: Partial<Record<GlobalSettableKey, unknown>> = { intake_label: config.intake_label };
+  const file: Partial<Record<GlobalSettableKey, unknown>> = { intake_label: config.intake_label, ...(config.tool_grants ? { tool_grants: config.tool_grants } : {}) };
   for (const k of CONFIG_KEYS) if (config[k] !== undefined) file[k] = config[k];
   const c = config.coordination;
   if (c) Object.assign(file, { hold_policy: c.hold_policy, max_coordination_cost: c.max_cost, hotspot_weight: c.hotspot_weight, mechanical_weight: c.mechanical_weight });
@@ -678,10 +679,9 @@ export interface OverrideSource {
 }
 
 /**
- * The settings a running process acts on. refresh() re-reads the stored overrides and learned values (the controller each tick,
- * the worker pool each tick, a worker before each claim and each lease renewal) and hands `integrations` to the plugin holders
- * (src/runtime/live-tacit.ts); the getters return the last resolved values without I/O. Only a cache of store rows: no replica
- * needs it, and a restart rebuilds it. A failed read keeps the values in use; an override that fails a check is logged once and ignored.
+ * The settings a running process acts on. refresh() re-reads the stored overrides and learned values (the controller each tick, the worker pool each tick, a worker before
+ * each claim and each lease renewal) and hands `integrations` to the plugin holders (src/runtime/live-tacit.ts) and `calendar` to the calendar holder; the getters return
+ * the last resolved values without I/O. Only a cache of store rows: no replica needs it, and a restart rebuilds it. A failed read keeps the values in use; an override that fails a check is logged once and ignored.
  */
 export class LiveSettings {
   private current: ResolvedSettings;
@@ -690,7 +690,7 @@ export class LiveSettings {
 
   constructor(
     private readonly opts: {
-      config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger; integrations?: readonly { apply(e: Readonly<Record<string, string>>): Promise<void> }[];
+      config: FactoryConfig; base: SettingsBase; source?: OverrideSource | null; learned?: { refresh(): Promise<void> }; log?: Logger; integrations?: readonly { apply(e: Readonly<Record<string, string>>): Promise<void> }[]; calendar?: { apply(names: readonly string[]): Promise<void> };
     },
   ) {
     this.current = resolveSettings(opts.base, [], this.label);
@@ -717,7 +717,7 @@ export class LiveSettings {
     }
     this.current = resolveSettings(this.opts.base, rows, this.label);
     this.view = this.viewOf(this.current);
-    for (const h of this.opts.integrations ?? []) await h.apply(this.current.values.integrations);
+    await Promise.all([...(this.opts.integrations ?? []).map((h) => h.apply(this.current.values.integrations)), this.opts.calendar?.apply(this.current.values.calendar)]);
     for (const i of this.current.ignored) {
       const sig = JSON.stringify([i.key, i.project, i.value]);
       if (this.reported.has(sig)) continue;
@@ -767,7 +767,7 @@ export class LiveSettings {
       ...this.opts.config,
       ...(live ? { coordination } : {}),
       intake_label: v.intake_label ?? this.opts.config.intake_label, // null: no file value and no override, the config's own stays
-      settings: r.layers,
+      settings: r.layers, ...(r.global.tool_grants.source === "default" ? {} : { tool_grants: v.tool_grants }), // grants in force: an override, else the file's
       ...(Object.fromEntries(CONFIG_KEYS.map((k) => [k, v[k]])) as Pick<SettableValues, (typeof CONFIG_KEYS)[number]>),
     };
   }
