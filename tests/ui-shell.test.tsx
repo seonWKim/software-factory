@@ -305,20 +305,17 @@ describe("sidebar", () => {
     expect(content.className.split(" ")).toContain("overflow-y-auto");
   });
 
-  it("the Tasks and Factory groups show small grey titles that name them; the System chevron is hidden from screen readers", () => {
+  it("the Tasks and Factory groups show small grey titles that name them, and so does System", () => {
     mount();
-    for (const name of ["Tasks", "Factory"]) {
+    for (const name of ["Tasks", "Factory", "System"]) {
       const nav = screen.getByRole("navigation", { name });
       const title = document.getElementById(nav.getAttribute("aria-labelledby")!)!;
       expect(title.textContent).toBe(name);
       expect(nav.firstElementChild).toBe(title);
       for (const c of ["text-xs", "text-text-3"]) expect(title.className.split(" ")).toContain(c);
     }
-    const chevron = document.querySelector("aside summary [data-chevron]")!;
-    expect(chevron.getAttribute("aria-hidden")).toBe("true");
-    // Points right while closed and turns down when the group opens.
-    expect(chevron.getAttribute("class")!.split(" ")).toContain("group-open:rotate-90");
-    expect(chevron.closest("details")!.className.split(" ")).toContain("group");
+    expect(document.querySelector("aside details, aside summary, aside [data-chevron]")).toBeNull();
+    expect(screen.getByRole("navigation", { name: "System" }).closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
   });
 
   it("Settings is a row at the bottom of the sidebar, selected while open, and no longer a top-bar link", async () => {
@@ -329,7 +326,7 @@ describe("sidebar", () => {
     const row = within(side).getByRole("link", { name: "Settings" });
     expect(row.getAttribute("href")).toBe("/app/settings");
     expect(row.hasAttribute("aria-current")).toBe(false);
-    expect(side.querySelector("details")!.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "System" }).compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "System" }).contains(row)).toBe(false);
     fireEvent.click(row);
     expect(await screen.findByRole("heading", { level: 1, name: "Settings" })).toBeTruthy();
@@ -412,11 +409,12 @@ describe("app pages", () => {
     expect(within(running).getByText("Being built")).toBeTruthy();
   });
 
-  it("the sidebar's Tasks group links the Tasks page, the System group is collapsed, and there is no Users", () => {
+  it("the sidebar's Tasks group links the Tasks page, the System group shows its links, and there is no Users", () => {
     mount();
     const tasks = screen.getByRole("navigation", { name: "Tasks" });
     expect([...tasks.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/tasks"]);
-    expect(document.querySelector("aside details")!.hasAttribute("open")).toBe(false);
+    const system = screen.getByRole("navigation", { name: "System" });
+    expect(within(system).getByRole("link", { name: "Health" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
   });
 

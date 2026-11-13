@@ -1,6 +1,6 @@
 import { Activity, CalendarCheck, CircleDollarSign, Database, HeartPulse, ListOrdered, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
-/** Where a page sits in the sidebar: the Tasks group, the Factory group, the collapsed System group, or the row at its bottom (Settings). */
+/** Where a page sits in the sidebar: the Tasks group, the Factory group, the System group, or the row at its bottom (Settings). */
 export type PageGroup = "tasks" | "factory" | "system" | "bottom";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
