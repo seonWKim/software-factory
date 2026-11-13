@@ -76,8 +76,11 @@ force.
     run; failed or running rows hold only a partial, so a paused or requeued run whose steps all failed survives a
     deploy with its WIP (decision changed 2026-11-09, worker review finding 4; see History). Each process
     stamps the revision its supervisor built it from (`SF_CODE_VERSION`, 08-self-update), or `dev` unsupervised.
-  - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step (above the agent's
-    own `run_timeout_ms`, which fires first), `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
+  - Named timeouts per run kind (`timeouts` in the kind file): `start_to_close` one hour per step by default; the
+    implement kind's `run-agent` step gets two hours (7,200,000 ms), above twice `run_timeout_ms`, since it holds
+    the toolchain warm-up and the agent, each with its own `run_timeout_ms`, then the pack checks and the bundle
+    save; the resolve kind's `resolve` step gets three hours (decision changed 2026-11-13, issue #671; see
+    History). `heartbeat` the default `lease_ms`, `schedule_to_close` a week from
     the run's creation (runs wait in claim pauses and coordination holds). A step over its timeout fails
     `start_to_close` (infra); a run past its deadline fails `schedule_to_close`. Either one stops the step's work:
     the step's abort also aborts the signal the runner hands the run kind, and a failed step settles only after its
@@ -541,6 +544,10 @@ force.
   violations in `known-violations/*.json`, which may only shrink.
 
 ## History
+
+- **Implement run-agent step budget** (decision changed 2026-11-13, issue #671). Before: the implement kind's
+  `run-agent` step had the shared `start_to_close` of one hour per step (above the agent's own `run_timeout_ms`,
+  which fires first); warm-up plus agent could pass one hour, so the step failed `start_to_close`.
 
 - **Outbound wait time and Slack refusals** (decision changed 2026-11-10, issue #483). Before: a failed batch always
   retried on its backoff and ignored the error's `wait_until`; a Slack error had only a method and a code, so a 429

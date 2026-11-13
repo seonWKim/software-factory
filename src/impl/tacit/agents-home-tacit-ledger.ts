@@ -8,10 +8,10 @@ import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
-  type TacitDecision, type TacitLedger, type TacitPendingEntry, type TacitPushback, type TacitRule, tacitIdKind,
+  type TacitDecision, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPushback, type TacitRule, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
-import { parsePending, parseRules } from "./ledger-text.js";
+import { parsePending, parseRules, parseShow } from "./ledger-text.js";
 import { NoTacitLedger } from "./no-tacit-ledger.js";
 
 /** How long one CLI call may take before it is stopped and counted as a failure. */
@@ -49,6 +49,13 @@ export function tacitLedgerAt(env: Readonly<Record<string, string | undefined>>,
   return found.missing === null ? new AgentsHomeTacitLedger(found.path) : new NoTacitLedger();
 }
 
+/** Which CLI judges `id`; throws, before any CLI runs, for an ID that is neither a class nor a proposal. */
+function kindOf(id: string): "class" | "proposal" {
+  const kind = tacitIdKind(id);
+  if (kind === null) throw new Error(`"${id}" is neither a class (C-) nor a proposal (P-) ID`);
+  return kind;
+}
+
 export class AgentsHomeTacitLedger implements TacitLedger {
   readonly enabled = true;
 
@@ -67,10 +74,15 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     return parsePending(await this.run("evolve", ["pending"]));
   }
 
+  /** `evolve show <id>`: one entry's detail; null when it prints nothing. An ID that is neither C- nor P- throws first. */
+  async show(id: string): Promise<TacitEntryDetail | null> {
+    kindOf(id);
+    return parseShow(id, await this.run("evolve", ["show", id]));
+  }
+
   /** `tacit verdict` for a class (with `--rule` on promote only), `evolve verdict` for a proposal (never a rule). */
   async verdict(id: string, decision: TacitDecision, reason: string, rule?: string): Promise<void> {
-    const kind = tacitIdKind(id);
-    if (kind === null) throw new Error(`"${id}" is neither a class (C-) nor a proposal (P-) ID`);
+    const kind = kindOf(id);
     if (kind === "proposal" && decision === "retire") throw new Error(`evolve verdict takes no retire: "${id}" is a proposal`);
     const args = ["verdict", id, decision, "--reason", reason];
     if (kind === "class" && decision === "promote" && rule !== undefined) args.push("--rule", rule);
