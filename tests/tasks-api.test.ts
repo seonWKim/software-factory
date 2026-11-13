@@ -10,6 +10,7 @@ import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { TASKS_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SCHEDULE_PATH, TASK_SUB_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
+import { PROJECTS_PATH, TASK_PROJECT_PATH } from "../src/ui/projects-api.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -338,5 +339,147 @@ describe("GET /api/v1/tasks/done: the Done tab's read (design 02-tasks, Done vie
     const s = await setup();
     expect((await get(s, "?before=soon")).status).toBe(400);
     expect((await get(s, "?before=2026-11-01T00:00:00.000Z")).status).toBe(200);
+  });
+});
+
+describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-app, project dialog and switcher)", () => {
+  type S = Awaited<ReturnType<typeof setup>>;
+  const PJ = "pj_0123456789abcdef";
+  const snapshot = async (s: S) => ({
+    projects: await s.store.db.all("SELECT * FROM controller_projects ORDER BY id"),
+    links: await s.store.db.all("SELECT * FROM controller_task_projects ORDER BY task_id, project_id"),
+    tasks: await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id"),
+  });
+  const create = (s: S, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: PROJECTS_PATH, ...over });
+  const link = (s: S, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_PROJECT_PATH, ...over });
+  const get = async (s: S, query = "") => respond(s.d, { method: "GET", url: `${TASKS_PATH}${query}`, host: HOST });
+
+  /** Two tasks; Home holds the first, Old (archived) the second. */
+  async function seeded() {
+    const s = await setup();
+    await s.post({ id: ID, words: "fix tap" });
+    await s.post({ id: "tk_fedcba9876543210", words: "paint shed tomorrow" });
+    await s.store.createProject({ id: "pj_home", name: "Home", created_by: ACTOR });
+    await s.store.createProject({ id: "pj_old", name: "Old", created_by: ACTOR });
+    await s.store.addTaskToProject("pj_home", ID);
+    await s.store.addTaskToProject("pj_old", "tk_fedcba9876543210");
+    await s.store.archiveProject("pj_old");
+    return s;
+  }
+
+  it("both POST routes are task write routes", () => {
+    expect(Object.keys(TASK_WRITES)).toEqual(expect.arrayContaining([PROJECTS_PATH, TASK_PROJECT_PATH]));
+  });
+
+  it("POST /api/v1/projects creates a project by the page's actor; a repeat with the same ID stores nothing more", async () => {
+    const s = await setup();
+    const r = await create(s, { id: PJ, name: "  Home   Repairs " });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toEqual({ project: { id: PJ, slug: "home-repairs", name: "Home Repairs", archived_at: null } });
+    expect(await s.store.getProject(PJ)).toMatchObject({ created_by: ACTOR });
+    const before = await snapshot(s);
+    const again = await create(s, { id: PJ, name: "  Home   Repairs " });
+    expect(again.status).toBe(200);
+    expect(JSON.parse(again.body)).toEqual(JSON.parse(r.body));
+    expect(await snapshot(s)).toEqual(before);
+  });
+
+  it("POST /api/v1/projects answers 400 for an invalid name or body, 409 naming the holder of a taken slug, 503 with no actor; each writes nothing", async () => {
+    const s = await setup();
+    await create(s, { id: PJ, name: "Home" });
+    const before = await snapshot(s);
+    const empty = await create(s, { id: "pj_aaaaaaaaaaaa", name: "   " });
+    expect(empty.status).toBe(400);
+    expect(JSON.parse(empty.body).error).toBe("a project name must not be empty");
+    expect((await create(s, { id: "pj_aaaaaaaaaaaa", name: "!!!" })).status).toBe(400);
+    for (const body of [{ id: "nope", name: "Garden" }, { id: "pj_aaaaaaaaaaaa" }, { id: "pj_aaaaaaaaaaaa", name: 3 }, { id: "pj_aaaaaaaaaaaa", name: "Garden", x: 1 }, []]) {
+      expect((await create(s, body)).status, JSON.stringify(body)).toBe(400);
+    }
+    const taken = await create(s, { id: "pj_bbbbbbbbbbbb", name: "HOME" });
+    expect(taken.status).toBe(409);
+    expect(JSON.parse(taken.body)).toMatchObject({ error: 'project "home" exists already', project: { id: PJ, slug: "home" } });
+    const off = await setup({ actor: null });
+    expect((await create(off, { id: PJ, name: "Home" })).status).toBe(503);
+    expect(await off.store.listProjects("active")).toEqual([]);
+    expect(await snapshot(s)).toEqual(before);
+  });
+
+  it("POST /api/v1/tasks/project adds and removes a task's link; changed is false when it was in that state", async () => {
+    const s = await seeded();
+    const other = "tk_fedcba9876543210";
+    const add = await link(s, { id: other, project: "home", add: true });
+    expect(add.status).toBe(200);
+    expect(JSON.parse(add.body)).toEqual({ task_id: other, project: "home", changed: true });
+    expect(JSON.parse((await link(s, { id: other, project: "home", add: true })).body)).toMatchObject({ changed: false });
+    expect((await s.store.listTaskProjects(other)).map((p) => p.slug)).toEqual(["home"]);
+    expect(JSON.parse((await link(s, { id: other, project: "home", add: false })).body)).toEqual({ task_id: other, project: "home", changed: true });
+    expect(JSON.parse((await link(s, { id: other, project: "home", add: false })).body)).toMatchObject({ changed: false });
+    expect(await s.store.listTaskProjects(other)).toEqual([]);
+    // Removing from an archived project is allowed: only an add is refused.
+    expect(JSON.parse((await link(s, { id: other, project: "old", add: false })).body)).toMatchObject({ changed: true });
+  });
+
+  it("POST /api/v1/tasks/project answers 400, 404 and the archived reason, and 503 with no actor; each writes nothing", async () => {
+    const s = await seeded();
+    const before = await snapshot(s);
+    for (const body of [{ id: ID, project: "home" }, { id: ID, project: "Home", add: true }, { id: ID, project: "home", add: "yes" }, { id: "", project: "home", add: true }, { id: ID, project: "home", add: true, x: 1 }, "x"]) {
+      expect((await link(s, body)).status, JSON.stringify(body)).toBe(400);
+    }
+    const noProject = await link(s, { id: ID, project: "garden", add: true });
+    expect(noProject.status).toBe(404);
+    expect(JSON.parse(noProject.body)).toEqual({ error: 'no project "garden"' });
+    expect((await link(s, { id: "tk_nope_nope", project: "home", add: true })).status).toBe(404);
+    expect((await link(s, { id: "tk_nope_nope", project: "home", add: false })).status).toBe(404);
+    const archived = await link(s, { id: ID, project: "old", add: true });
+    expect(archived.status).toBe(400);
+    expect(JSON.parse(archived.body)).toEqual({ error: 'project "old" is archived; restore it first' });
+    const off = await setup({ actor: null });
+    expect((await link(off, { id: ID, project: "home", add: true })).status).toBe(503);
+    expect(await snapshot(s)).toEqual(before);
+  });
+
+  it("both POST routes refuse a missing CSRF token (403) and a wrong Content-Type (415) and write nothing", async () => {
+    const s = await seeded();
+    const before = await snapshot(s);
+    for (const send of [() => create(s, { id: PJ, name: "Garden" }, { csrfToken: undefined }), () => link(s, { id: ID, project: "home", add: false }, { csrfToken: undefined })]) {
+      expect((await send()).status).toBe(403);
+    }
+    for (const send of [() => create(s, { id: PJ, name: "Garden" }, { contentType: "text/plain" }), () => link(s, { id: ID, project: "home", add: false }, { contentType: "text/plain" })]) {
+      expect((await send()).status).toBe(415);
+    }
+    for (const over of [{ host: "evil.example" }, { origin: "https://evil.example" }, { bodyTooLarge: true }, { body: "{not json" }] as Partial<UiRequest>[]) {
+      expect((await create(s, { id: PJ, name: "Garden" }, over)).status, JSON.stringify(over)).toBeGreaterThanOrEqual(400);
+      expect((await link(s, { id: ID, project: "home", add: false }, over)).status, JSON.stringify(over)).toBeGreaterThanOrEqual(400);
+    }
+    expect(await snapshot(s)).toEqual(before);
+  });
+
+  it("GET /api/v1/tasks lists the active projects and each row's project slugs, and writes nothing", async () => {
+    const s = await seeded();
+    const before = await snapshot(s);
+    const v = JSON.parse((await get(s)).body);
+    expect(v.active_projects).toEqual([{ slug: "home", name: "Home" }]);
+    expect(v.inbox.find((t: { id: string }) => t.id === ID).projects).toEqual(["home"]);
+    // Old is archived: its link stays, but the row shows active projects only.
+    expect(v.upcoming.flatMap((d: { tasks: { id: string; projects: string[] }[] }) => d.tasks).find((t: { id: string }) => t.id === "tk_fedcba9876543210").projects).toEqual([]);
+    expect(await snapshot(s)).toEqual(before);
+  });
+
+  it("GET /api/v1/tasks?project=<slug> keeps only that project's tasks in every view; 404 unknown, 400 archived or not a slug", async () => {
+    const s = await seeded();
+    await s.post({ id: "tk_home_tomorrow1", words: "buy washers tomorrow +home" });
+    const ids = (rows: { id?: string }[]) => rows.map((t) => t.id);
+    const v = JSON.parse((await get(s, "?project=home")).body);
+    expect(ids(v.inbox)).toEqual([ID]);
+    expect(ids(v.upcoming.flatMap((d: { tasks: { id: string }[] }) => d.tasks))).toEqual(["tk_home_tomorrow1"]);
+    expect(v.projects.flatMap((p: { tasks: { id: string }[] }) => ids(p.tasks)).sort()).toEqual([ID, "tk_home_tomorrow1"].sort());
+    const all = JSON.parse((await get(s)).body);
+    expect(ids(all.upcoming.flatMap((d: { tasks: { id: string }[] }) => d.tasks))).toContain("tk_fedcba9876543210");
+    const unknown = await get(s, "?project=garden");
+    expect(unknown.status).toBe(404);
+    expect(JSON.parse(unknown.body)).toEqual({ error: 'no project "garden"' });
+    expect((await get(s, "?project=old")).status).toBe(400);
+    expect((await get(s, "?project=Not%20A%20Slug")).status).toBe(400);
+    expect((await get(s, "?project=")).status).toBe(400);
   });
 });

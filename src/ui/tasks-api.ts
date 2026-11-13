@@ -12,7 +12,8 @@
 import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit, validDate } from "../core/quick-add.js";
 import { buildTask } from "../core/task-build.js";
-import { ProjectRefused, doneWindow, durationError, taskViews } from "../core/tasks.js";
+import { isProjectSlug } from "../core/projects.js";
+import { ProjectRefused, doneWindow, durationError, projectRefusal, taskViews } from "../core/tasks.js";
 import type { Timestamp } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
@@ -20,6 +21,7 @@ import type { UiDeps } from "./pages.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { TASKS_ADD_KEYS, type TasksAddKey } from "../runtime/settings/tasks-add-key.setting.js";
 import { Withholder } from "./withhold.js";
+import { PROJECTS_PATH, TASK_PROJECT_PATH, writeProject, writeTaskProject } from "./projects-api.js";
 
 export const TASKS_PATH = "/api/v1/tasks";
 export const TASK_BUILD_PATH = "/api/v1/tasks/build";
@@ -43,23 +45,39 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
 }
 
 /**
- * GET /api/v1/tasks: the open tasks' views (Inbox, Today, Upcoming, Projects; core/tasks.ts taskViews) at the server's
- * clock, in its time zone, with the calendar events stored by the last syncs placed in Today and Upcoming, and
- * `calendar`, each source's last sync time and whether its last sync failed. Reads the stored copy only: no source
- * is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false when the commands
- * route is off). `add_key`, the quick-add field's submit key: the `tasks_add_key` setting's stored global value.
+ * GET /api/v1/tasks: the open tasks' views (Inbox, Today, Upcoming, Projects (the List tab, by #list); core/tasks.ts
+ * taskViews) at the server's clock, in its time zone, with the calendar events stored by the last syncs placed in Today
+ * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
+ * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
+ * for the page's project switcher. With `project` (a slug, `?project=`) the views hold only the open tasks linked to
+ * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
+ * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
+ * when the commands route is off). `add_key`, the quick-add field's submit key: the `tasks_add_key` setting's stored
+ * global value.
  */
-export async function readTasks(d: UiDeps): Promise<ApiResult> {
+export async function readTasks(d: UiDeps, project: string | null = null): Promise<ApiResult> {
+  if (project !== null) {
+    if (!isProjectSlug(project)) return refused(400, "project must be a project slug, e.g. home-repairs");
+    const p = await d.store.getProjectBySlug(project);
+    if (p === null) return refused(404, projectRefusal(project, "not_found"));
+    if (p.archived_at !== null) return refused(400, projectRefusal(project, "archived"));
+  }
   const now = d.clock.now();
   const w = new Withholder(d.scanner);
-  const open = await shown(w, await d.store.listTasks(TASK_LIST_LIMIT));
+  const listed = await shown(w, await d.store.listTasks(TASK_LIST_LIMIT));
+  const slugs = await d.store.listTaskProjectSlugs(listed.map((t) => t.id));
+  const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [] }));
+  const open = project === null ? rows : rows.filter((t) => t.projects.includes(project));
+  const active_projects = await Promise.all((await d.store.listProjects("active")).map(async (p) => ({ slug: p.slug, name: (await w.plain(p.name)).text })));
   const calendar = await readCalendar(storeSql(d.store));
   const events = await shown(w, calendar.events);
   const can_build = (d.commands?.actor ?? null) !== null;
   const add_key = await readAddKey(d);
   return {
     status: 200,
-    value: { as_of: now.toISOString(), ...taskViews(open, now, events), calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build, add_key },
+    value: {
+      as_of: now.toISOString(), ...taskViews(open, now, events), active_projects, calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build, add_key,
+    },
   };
 }
 
@@ -278,7 +296,7 @@ export async function writeTaskSchedule(d: UiDeps, body: unknown): Promise<ApiRe
   return r.reason === "done" ? refused(409, "the task is done: a done task cannot be scheduled") : unknown(b.id);
 }
 
-/** Every POST route of this file by path, for server.ts: each after the request guards, with the commands actor's token. */
+/** Every POST route of this file and projects-api.ts by path, for server.ts: each after the request guards, with the commands actor's token. */
 export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => Promise<ApiResult>>> = {
   [TASKS_PATH]: writeTask,
   [TASK_BUILD_PATH]: writeTaskBuild,
@@ -288,4 +306,6 @@ export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => 
   [TASK_DELETE_PATH]: writeTaskDelete,
   [TASK_SUB_PATH]: writeTaskSub,
   [TASK_SCHEDULE_PATH]: writeTaskSchedule,
+  [TASK_PROJECT_PATH]: writeTaskProject,
+  [PROJECTS_PATH]: writeProject,
 };

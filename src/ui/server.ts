@@ -5,7 +5,8 @@
 // /api/v1/standing (design 05-standing-approvals, issue #300; standing-api.ts), POST /api/v1/improve/run (design §7, issue #508; improve-api.ts) and
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
 // issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
-// /api/v1/tasks/build, Build this, and /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions) and the
+// /api/v1/tasks/build, Build this, /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions, and
+// projects-api.ts's /api/v1/tasks/project and /api/v1/projects, its project dialog) and the
 // calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
 // (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing and improve routes then
@@ -16,7 +17,7 @@
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
 // /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
-// /api/v1/tasks and /api/v1/tasks/done (the Done tab) in tasks-api.ts and GET
+// /api/v1/tasks (`?project=<slug>`: the project switcher) and /api/v1/tasks/done (the Done tab) in tasks-api.ts and GET
 // /api/v1/calendar in calendar-api.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
 
@@ -234,7 +235,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     const r = url.pathname === NOTICES_PATH ? await readNotices(d)
       : url.pathname === RULES_PATH ? await readRules(d)
       : url.pathname === RULE_ENTRY_PATH ? await readRuleEntry(d, url.searchParams.get("id"))
-      : url.pathname === TASKS_PATH ? await readTasks(d)
+      : url.pathname === TASKS_PATH ? await readTasks(d, url.searchParams.get("project"))
       : url.pathname === TASK_DONE_PATH ? await readDoneTasks(d, url.searchParams.get("before"))
       : url.pathname === CALENDAR_PATH ? await readCalendarStatus(d)
       : await api(d, url);
