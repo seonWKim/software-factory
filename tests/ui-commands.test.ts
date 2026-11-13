@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { uiCommandsActor } from "../src/compose.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { OwnerAuth } from "../src/core/authorize.js";
@@ -6,7 +6,7 @@ import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/typ
 import { parseVerdict } from "../src/core/verdict.js";
 // TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
 // @ts-expect-error -- see above
-import { awaitsReply, commandOutcome, oneTapNote, verdictNote } from "../web/src/views/item-commands.js";
+import { oneTapNote, verdictNote } from "../web/src/views/item-commands.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { parseProposalMarker } from "../src/core/interpret.js";
@@ -749,20 +749,119 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
   });
 });
 
-describe("the Merge button's Merging… state (item page)", () => {
-  const reply = (seq: number, extra: Record<string, unknown> = {}) => ({ seq, command: "merge", handled_at: null, refusal: null, ...extra }) as never;
-  it("waits for the reply after a send, then stops", () => {
-    expect(awaitsReply(commandOutcome([], "merge", { seq: 5 }))).toBe(true);
-    expect(awaitsReply(commandOutcome([reply(5)], "merge", { seq: 5 }))).toBe(true);
-    expect(awaitsReply(commandOutcome([reply(5, { handled_at: "t" })], "merge", { seq: 5 }))).toBe(false);
-    expect(awaitsReply(commandOutcome([reply(5, { handled_at: "t", refusal: "the head moved" })], "merge", { seq: 5 }))).toBe(false);
+/** A JSON response for the stubbed fetch. */
+const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+describe("the Merge button's Merging… state (item page and Needs-you row)", () => {
+  // The web views need a DOM; this file's other tests run on node, so only these set jsdom up (vitest's own environment).
+  let teardown: (() => unknown) | undefined;
+  let rtl: typeof import("@testing-library/react");
+  let createElement: typeof import("react").createElement;
+  let QueryClient: typeof import("@tanstack/react-query").QueryClient;
+  let QueryClientProvider: typeof import("@tanstack/react-query").QueryClientProvider;
+  let views: { MergeButton: unknown; NeedActions: unknown; useCommandSend: (id: string) => unknown };
+  let post: () => Promise<Response>;
+  let itemReplies: unknown[];
+  beforeAll(async () => {
+    const { builtinEnvironments } = await import("vitest/environments");
+    teardown = (await builtinEnvironments.jsdom.setup(globalThis, {})).teardown.bind(null, globalThis);
+    rtl = await import("@testing-library/react");
+    ({ createElement } = await import("react"));
+    ({ QueryClient, QueryClientProvider } = await import("@tanstack/react-query"));
+    // @ts-expect-error -- TS6142, as the import at the top of this file
+    views = await import("../web/src/views/item-commands.js");
   });
-  it("does not wait for a failed send or with no send", () => {
-    expect(awaitsReply(commandOutcome([], "merge", { error: "network" }))).toBe(false);
-    expect(awaitsReply(commandOutcome([], "merge"))).toBe(false);
+  afterAll(async () => {
+    await teardown?.();
   });
-  it("has the Merging… label", async () => {
-    const { t } = await import("../web/src/i18n/index.js");
-    expect(t("commands.merging")).toBe("Merging…");
+  beforeEach(() => {
+    itemReplies = [];
+    post = async () => json({ seq: 5 });
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { method?: string }) => {
+      if (init?.method === "POST") return post();
+      if (url === "/api/v1/session") return json({ as_of: "t", csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" });
+      if (url === "/api/v1/items/wi_1") return json({ item: { id: "wi_1" }, replies: itemReplies });
+      return json({ error: "Not found." }, 404);
+    }));
+  });
+  afterEach(() => {
+    rtl.cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  const reply = (extra: Record<string, unknown> = {}) => ({ seq: 5, command: "merge", created_at: "t", handled_at: null, refusal: null, ...extra });
+  const READY = { enabled: true, reason: null };
+  const wrap = (client: InstanceType<typeof QueryClient>, el: unknown) => createElement(QueryClientProvider, { client }, el as never);
+  const mergeButton = () => rtl.screen.getByRole("button", { name: /^Merg/ }) as unknown as { disabled: boolean; textContent: string };
+  /** Holds the POST open until the returned function is called. */
+  const holdPost = () => {
+    let release!: () => void;
+    post = () => new Promise((r) => { release = () => r(json({ seq: 5 })); });
+    return () => release();
+  };
+
+  it("on the item page: Merging… and disabled from the click until the reply, then Done or the refusal", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const page = (replies: unknown[]) => wrap(client, createElement(views.MergeButton as never, { id: "wi_1", source: "local", merge: READY, replies }));
+    const view = rtl.render(page([]));
+    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    expect(mergeButton().textContent).toBe("Merge");
+    const release = holdPost();
+    rtl.fireEvent.click(mergeButton() as never);
+    // In flight.
+    await rtl.waitFor(() => expect(mergeButton().textContent).toBe("Merging…"));
+    expect(mergeButton().disabled).toBe(true);
+    // Sent, not yet handled: never enabled "Merge" in the gap.
+    release();
+    await rtl.waitFor(() => expect(rtl.screen.getByText("sent")).toBeTruthy());
+    expect(mergeButton().textContent).toBe("Merging…");
+    expect(mergeButton().disabled).toBe(true);
+    view.rerender(page([reply()]));
+    expect(mergeButton().textContent).toBe("Merging…");
+    // Handled: Done.
+    view.rerender(page([reply({ handled_at: "t" })]));
+    expect(rtl.screen.getByText("Done")).toBeTruthy();
+    expect(mergeButton().textContent).toBe("Merge");
+    // Refused: Merge again, the refusal beside it.
+    view.rerender(page([reply({ handled_at: "t", refusal: "the head moved" })]));
+    expect(mergeButton().textContent).toBe("Merge");
+    expect(mergeButton().disabled).toBe(false);
+    expect(rtl.screen.getByText("the head moved")).toBeTruthy();
+  });
+
+  it("on the item page: a failed send returns the button to Merge with the error", async () => {
+    post = async () => json({ error: "the server failed" }, 500);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    rtl.render(wrap(client, createElement(views.MergeButton as never, { id: "wi_1", source: "local", merge: READY, replies: [] })));
+    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    rtl.fireEvent.click(mergeButton() as never);
+    await rtl.waitFor(() => expect(rtl.screen.getByText("the server failed")).toBeTruthy());
+    expect(mergeButton().textContent).toBe("Merge");
+    expect(mergeButton().disabled).toBe(false);
+  });
+
+  it("in the Needs-you row: Merging… until the item's reply, then Merge with the refusal beside it", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function Row() {
+      const cmd = views.useCommandSend("wi_1");
+      return createElement(views.NeedActions as never, { id: "wi_1", title: "One", commands: [], pr: null, group: "merge", merge: READY, source: "local", checking: false, cmd, allow: [] });
+    }
+    rtl.render(wrap(client, createElement(Row)));
+    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    const release = holdPost();
+    rtl.fireEvent.click(mergeButton() as never);
+    await rtl.waitFor(() => expect(mergeButton().textContent).toBe("Merging…"));
+    expect(mergeButton().disabled).toBe(true);
+    release();
+    // Sent: the row reads the item until its reply; with none yet it stays Merging… and disabled.
+    await rtl.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => u === "/api/v1/items/wi_1")).toBe(true));
+    expect(mergeButton().textContent).toBe("Merging…");
+    expect(mergeButton().disabled).toBe(true);
+    // The controller refuses; the next read (the poll) brings the reply.
+    itemReplies = [reply({ handled_at: "t", refusal: "the head moved" })];
+    await client.invalidateQueries({ queryKey: ["/api/v1/items/wi_1"] });
+    await rtl.waitFor(() => expect(rtl.screen.getByText("the head moved")).toBeTruthy());
+    expect(mergeButton().textContent).toBe("Merge");
+    expect(mergeButton().disabled).toBe(false);
   });
 });

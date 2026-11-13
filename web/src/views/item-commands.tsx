@@ -1,6 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type MouseEvent, type ReactNode, type RefObject, useId, useRef, useState } from "react";
-import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
+import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, POLL_MS, type Session, getJson, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
@@ -502,16 +502,20 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   const primary = group === "merge" ? undefined : primaryOf(commands);
   const others = commands.filter((c) => c !== primary);
   const off = !on || busy;
-  const [mergeSending, setMergeSending] = useState(false);
-  // The row has no replies: Merging… from the click until the send fails (an error) or the row moves on.
-  const merging = group === "merge" && (mergeSending || awaitsReply(commandOutcome([], "merge", local.merge)));
+  // A merge this row sent: its replies from the item's own query (the item page's key), read only until the reply.
+  const mergeSent = group === "merge" && !!local.merge && "seq" in local.merge;
+  const mergeOutcome = (replies: readonly CommandReply[] = []) => commandOutcome(replies, "merge", local.merge);
+  const detail = useQuery({
+    queryKey: [API.item(id)],
+    queryFn: () => getJson<ItemDetail>(API.item(id)),
+    enabled: mergeSent,
+    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) ? POLL_MS : false),
+  });
+  const outcome = mergeSent ? mergeOutcome(detail.data?.replies) : null;
+  // Merging… from the click until the controller's reply (handled or refused) arrives.
+  const merging = group === "merge" && (busy || awaitsReply(outcome));
   const send = async (command: string, note: string) => {
-    if (command === "merge") setMergeSending(true);
-    try {
-      if (!(await post(command, note))) return;
-    } finally {
-      if (command === "merge") setMergeSending(false);
-    }
+    if (!(await post(command, note))) return;
     announceStatus(t("commands.commandSent", { command }));
     setOpen(null);
   };
@@ -528,12 +532,13 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {group === "merge" ? (
-        <span data-command="merge" className="inline-flex">
+        <span data-command="merge" className="inline-flex items-center gap-2">
           <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
             <Button variant="secondary" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
               {checking ? t("needs.checking") : merging ? t("commands.merging") : t("commands.merge")}
             </Button>
           </Tooltip>
+          {!awaitsReply(outcome) && <OutcomeText outcome={outcome} />}
         </span>
       ) : primary ? (
         <span data-command={primary.name} className="inline-flex">
