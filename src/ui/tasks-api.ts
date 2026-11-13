@@ -16,6 +16,7 @@ import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
+import { TASKS_ADD_KEYS, type TasksAddKey } from "../runtime/settings/tasks-add-key.setting.js";
 import { Withholder } from "./withhold.js";
 
 export const TASKS_PATH = "/api/v1/tasks";
@@ -44,7 +45,7 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
  * clock, in its time zone, with the calendar events stored by the last syncs placed in Today and Upcoming, and
  * `calendar`, each source's last sync time and whether its last sync failed. Reads the stored copy only: no source
  * is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false when the commands
- * route is off).
+ * route is off). `add_key`, the quick-add field's submit key: the `tasks_add_key` setting's stored global value.
  */
 export async function readTasks(d: UiDeps): Promise<ApiResult> {
   const now = d.clock.now();
@@ -53,10 +54,23 @@ export async function readTasks(d: UiDeps): Promise<ApiResult> {
   const calendar = await readCalendar(storeSql(d.store));
   const events = await shown(w, calendar.events);
   const can_build = (d.commands?.actor ?? null) !== null;
+  const add_key = await readAddKey(d);
   return {
     status: 200,
-    value: { as_of: now.toISOString(), ...taskViews(open, now, events), calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build },
+    value: { as_of: now.toISOString(), ...taskViews(open, now, events), calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build, add_key },
   };
+}
+
+/** The `tasks_add_key` setting: its stored global override when that is one of the choices, else the default (`enter`). */
+async function readAddKey(d: UiDeps): Promise<TasksAddKey> {
+  const row = (await d.store.listSettingOverrides()).find((o) => o.key === "tasks_add_key" && o.project === "");
+  let value: unknown = null;
+  try {
+    value = row === undefined ? null : JSON.parse(row.value);
+  } catch {
+    // Not JSON: the default applies.
+  }
+  return TASKS_ADD_KEYS.find((k) => k === value) ?? TASKS_ADD_KEYS[0];
 }
 
 /**

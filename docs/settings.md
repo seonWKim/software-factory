@@ -57,6 +57,7 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `stall_ms` | worker | runtime | global | free |  | `300000` | Longest an agent run may go with no model output and no open tool call before it counts as stalled. |
 | `standing_approvals.threshold` | controller | runtime | global | tighten-only |  | `10` | Spec approvals in a row, with the spec unchanged, before a standing rule is proposed. |
 | `store` | state | review | global | free |  |  | Where the factory keeps its state: the store's driver and location. |
+| `tasks_add_key` | runtime | runtime | global | free |  | `"enter"` | Which key adds a task from the Tasks page quick-add field: enter or cmd-enter. |
 | `tick_ms` | runtime | runtime | global | free |  | `2000` | How often the controller and the worker pool run their loop. |
 | `tool_grants` | runtime | runtime | global | tighten-only |  | `{}` | Which read-only tools each role (run kind) may call; a role with no entry gets none. |
 | `toolchain` | worker | review | global | free |  |  | Cache folders agents may read but not write, their extra env, and the command that warms them. |

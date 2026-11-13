@@ -4,7 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
-import { GO_KEYS } from "../web/src/keys.js";
+import { GO_KEYS, isQuickAddSubmit } from "../web/src/keys.js";
 
 // The app's keyboard shortcuts (design §9): ⌘K search, g-keys, j/k/Enter on rows and ? for the list; none of them
 // fires while focus is in a field.
@@ -136,7 +136,7 @@ describe("shortcuts", () => {
     expect(document.activeElement).toBe(document.body);
     history.pushState(null, "", "/app/tasks");
     dispatchEvent(new PopStateEvent("popstate"));
-    const quick = await screen.findByPlaceholderText("e.g. rent friday p1 #home");
+    const quick = await screen.findByRole("textbox", { name: "Add a task" });
     const other = screen.getByLabelText("field");
     other.focus();
     press("q", {}, other);
@@ -184,5 +184,17 @@ describe("shortcuts", () => {
     mount();
     press("?");
     expect(await screen.findByText("Add a task")).toBeTruthy();
+  });
+
+  it("the quick-add submit key (tasks_add_key): Enter alone under enter, ⌘Enter alone under cmd-enter", () => {
+    const k = (over = {}) => ({ key: "Enter", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, ...over });
+    expect(isQuickAddSubmit(k(), "enter")).toBe(true);
+    expect(isQuickAddSubmit(k({ metaKey: true }), "enter")).toBe(false);
+    expect(isQuickAddSubmit(k({ metaKey: true }), "cmd-enter")).toBe(true);
+    expect(isQuickAddSubmit(k(), "cmd-enter")).toBe(false);
+    for (const over of [{ ctrlKey: true }, { altKey: true }, { shiftKey: true }, { isComposing: true }, { key: "a" }]) {
+      expect(isQuickAddSubmit(k({ metaKey: true, ...over }), "cmd-enter"), JSON.stringify(over)).toBe(false);
+      expect(isQuickAddSubmit(k(over), "enter"), JSON.stringify(over)).toBe(false);
+    }
   });
 });

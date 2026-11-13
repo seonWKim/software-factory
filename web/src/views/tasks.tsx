@@ -13,7 +13,7 @@ import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
-import { QUICK_ADD_ATTR, isUndo } from "../keys.js";
+import { QUICK_ADD_ATTR, QUICK_ADD_KEYS, type QuickAddKey, isQuickAddSubmit, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -135,10 +135,11 @@ function useTaskAction(token: string | null) {
 }
 
 /**
- * Quick add: Enter or Add posts the words under an ID the page chose. The field keeps that ID, for those words, until
- * the add succeeds, so a retry after an error stores one task. Esc clears the field.
+ * Quick add: the submit key (`addKey`, the owner's `tasks_add_key` setting: Enter, or ⌘Enter with plain Enter adding
+ * nothing) or Add posts the words under an ID the page chose. The field keeps that ID, for those words, until the add
+ * succeeds, so a retry after an error stores one task. Esc clears the field. The placeholder names the submit key.
  */
-function QuickAdd({ token }: { token: string | null }) {
+function QuickAdd({ token, addKey }: { token: string | null; addKey: QuickAddKey }) {
   const client = useQueryClient();
   const input = useRef<HTMLInputElement>(null);
   const attempt = useRef<{ id: string; words: string } | null>(null);
@@ -176,13 +177,18 @@ function QuickAdd({ token }: { token: string | null }) {
           {...{ [QUICK_ADD_ATTR]: "" }}
           className="flex-1"
           aria-label={t("tasks.addLabel")}
-          placeholder={t("tasks.addPlaceholder")}
+          placeholder={t("tasks.addPlaceholder", { key: QUICK_ADD_KEYS[addKey].label })}
+          aria-keyshortcuts={QUICK_ADD_KEYS[addKey].aria}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               setText("");
               setError(null);
+            } else if (e.key === "Enter") {
+              // The form's own submit on Enter is replaced by the chosen key's.
+              e.preventDefault();
+              if (isQuickAddSubmit(e.nativeEvent, addKey)) void submit();
             }
           }}
         />
@@ -643,7 +649,7 @@ function useUndoDone(token: string | null) {
 
 export function TasksPage() {
   const [tab, setTab] = useState<Tab>("today");
-  const q = useApi<TasksView>(API.tasks);
+  const q = useApi<TasksView & { add_key?: QuickAddKey }>(API.tasks);
   const v = q.data;
   const token = v?.can_build ? v.csrf_token : null;
   const undo = useUndoDone(token);
@@ -651,7 +657,7 @@ export function TasksPage() {
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
   return (
     <>
-      <QuickAdd token={v?.csrf_token ?? null} />
+      <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} />
       {undo.error !== null && (
         <p role="alert" className={ALERT}>
           {undo.error}
