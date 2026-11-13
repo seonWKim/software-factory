@@ -227,7 +227,6 @@ async function implement(
   });
 
   const head = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
-  const db = await w.database(run);
   // The run's last trusted step (RFC 0015 M7): after the gates, its HEAD goes to a ref of this host's factory repo,
   // through the broker's trusted-git checks and G5 branch scan. The worker holds no forge credential: the push and
   // the PR are keyed intents outbound delivers, and the controller applies the PR number when that delivery
@@ -244,7 +243,7 @@ async function implement(
   }
   let pr_intent: string | null = null;
   if (stored.forge) {
-    const description = w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed, skipped: db?.skipped ?? null }));
+    const description = w.prDescription(item, work, checkedLines(checked.results, { fixed: checked.fixed }));
     pr_intent = await step("record-push", async () => (await w.recordPush(item, run, { branch, sha: stored.sha }, { title: prTitle(item), ...description })).pr);
   }
   // The conflicts the sync step resolved, for the derived counts (design §5 Merge conflict). `files`: what the PR

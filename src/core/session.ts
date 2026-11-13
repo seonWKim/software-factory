@@ -261,7 +261,7 @@ export class Sessions {
     if (!store.ok) return this.refuseFinish(file, [`push: ${store.error_code}: ${store.message}`.slice(0, 500)]);
     // The factory's own push, so the next poll does not take it for a person's (design 2026-11-01).
     if (!(await this.d.store.recordPushedHead(file.run_id, file.token, head)).ok) return refused("refused: the session ended while pushing");
-    const lines = checkedLines(checked.results, { fixed: false, skipped: null });
+    const lines = checkedLines(checked.results, { fixed: false });
     const content = store.content as { sha?: unknown; forge?: unknown };
     // The local broker's branch is the change itself: the review's input, and `factory merge` its merge.
     let pr_intent: string | null = null;

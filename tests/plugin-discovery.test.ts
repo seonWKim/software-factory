@@ -107,7 +107,6 @@ describe("plugin discovery: the built-in registry", () => {
       clock: "system",
       updater: "git-worktree",
       github_auth: "token",
-      test_database: "none",
       network_probe: "http",
       bus: "sql",
       ticks: "time-based",

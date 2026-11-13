@@ -29,7 +29,6 @@ import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { GitWorktreeUpdater } from "../src/impl/updater/git-worktree.js";
-import { NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import { HttpNetworkProbe } from "../src/impl/network-probe/http-network-probe.js";
 import { SqlBus } from "../src/bus/index.js";
 import { TimeBasedTicks } from "../src/shared/ticks/plugins/time-based/time-based-tick-generator.js";
@@ -91,7 +90,6 @@ const EXPECTED: { [K in PluginKind]: Record<string, Ctor> } = {
   updater: { "git-worktree": GitWorktreeUpdater },
   awake: { caffeinate: CaffeinateKeepAwake },
   github_auth: { token: TokenCredentials },
-  test_database: { none: NoTestDatabase },
   // Optional with no default plugin (issue #172); github-issues among the sources implies github (issue #273).
   forge: { github: GitHubForge },
   network_probe: { http: HttpNetworkProbe },
@@ -199,7 +197,6 @@ describe("plugin registry: defaults", () => {
       updater: "git-worktree",
       awake: "caffeinate",
       github_auth: "token",
-      test_database: "none",
       network_probe: "http",
       bus: "sql",
       ticks: "time-based",
@@ -362,6 +359,13 @@ describe("plugin registry: unknown names fail at startup", () => {
     );
     await expect(loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), auth: "none" } }))).rejects.toThrow(
       /top-level "auth" key/,
+    );
+  });
+
+  it("the removed plugins.test_database key fails at startup as an unknown plugins key", async () => {
+    expect(PLUGINS_KEYS).not.toContain("test_database");
+    await expect(loadConfig(root({ ...REAL, plugins: { ...(REAL.plugins as object), test_database: "none" } }))).rejects.toThrow(
+      /unknown plugins key "test_database"/,
     );
   });
 

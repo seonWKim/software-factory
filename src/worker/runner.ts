@@ -12,7 +12,7 @@ import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "../
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
-import { type CheckRound, checkCommands, commandText, redact, runChecks } from "../core/checks.js";
+import { type CheckRound, checkCommands, commandText, runChecks } from "../core/checks.js";
 import { AGENT_STALLED, FORGE_AUTH, GITHUB_RATE_LIMIT, GITHUB_RATE_LIMITED, githubRateLimitReset, MODEL_STALL, PREFLIGHT_ACCESS, preflightCheck, RATE_LIMITED, branchFor, wipBranchFor, canAutoMerge, NETWORK, NETWORK_PROBE_MS, NETWORK_UNAVAILABLE, classifyNetwork, failureClass } from "../core/policy.js";
 import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
@@ -21,7 +21,6 @@ import { type Run, type RunOutcome, type RunUsage, type Timestamp, type WorkItem
 import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
-import type { TestDatabase, TestDatabaseLease } from "../interfaces/test-database.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
 import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
@@ -32,9 +31,6 @@ export class Worker {
    * execute() call only, keyed by the claimed Run object; nothing another replica needs.
    */
   readonly meters = new WeakMap<Run, RunUsage>();
-
-  /** The run's test database, once a check asked for it; dropped at the end of execute(). Scratch, like meters. */
-  readonly databases = new WeakMap<Run, Promise<TestDatabaseLease | null>>();
 
   readonly live: LiveSettings;
 
@@ -294,8 +290,6 @@ export class Worker {
     } finally {
       this.d.passports?.end(run.id, token);
       this.meters.delete(run);
-      // Dropped whatever happened, a failed check included (design §4).
-      await this.releaseDatabase(run);
       this.scratch.delete(run);
       stopHeartbeat.abort();
       stopWatch.abort();
@@ -647,52 +641,22 @@ export class Worker {
   }
 
   /**
-   * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env, the slot env
-   * (worker index, test workers) and the run's test database (SF_TEST_MYSQL_URL). That env never reaches an
-   * agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
+   * The check list in the run folder (or `o.cwd` inside it) with the check env: the tool env and the slot env
+   * (worker index, test workers). That env never reaches an agent. Stops at the first failure. `o.commands`: the list to run; absent, the configured checks.
    */
   async runCheckList(run: Run, handle: SandboxHandle, signal: AbortSignal, o: { commands?: string[][]; cwd?: string } = {}): Promise<CheckRound> {
-    const db = await this.database(run);
     const round = await runChecks({
       sandbox: this.d.sandbox,
       handle,
       commands: o.commands ?? checkCommands(this.cfg.repo),
       ...(o.cwd === undefined ? {} : { cwd: o.cwd }),
-      env: { ...this.d.toolEnv, ...this.slotEnv(), ...db?.env },
+      env: { ...this.d.toolEnv, ...this.slotEnv() },
       timeout_ms: this.cfg.run_timeout_ms,
       signal,
-      redact: db?.redact ?? [],
+      redact: [],
     });
     if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
     return round;
-  }
-
-  /** The run's test database, made on first use. Null without a TestDatabase. A failure is an infra failure. */
-  database(run: Run): Promise<TestDatabaseLease | null> {
-    let lease = this.databases.get(run);
-    if (!lease) {
-      const db = this.d.testDatabase;
-      lease = db
-        ? db.create(run.id).catch((err: unknown) => {
-            // Never the plugin's message: it could name the URL.
-            this.d.log.warn("test database could not be created", { run_id: run.id, error: err instanceof Error ? err.name : "unknown" });
-            throw new RunFailure("test_database_failed", "the run's test database could not be created", true);
-          })
-        : Promise.resolve(null);
-      this.databases.set(run, lease);
-    }
-    return lease;
-  }
-
-  /** Drops the run's test database, if one was made. A failure is logged (no message) and the run goes on. */
-  async releaseDatabase(run: Run): Promise<void> {
-    const lease = this.databases.get(run);
-    this.databases.delete(run);
-    if (!lease) return;
-    const db = await lease.catch(() => null);
-    await db?.release().catch((err: unknown) => {
-      this.d.log.warn("test database could not be dropped", { run_id: run.id, error: err instanceof Error ? err.name : "unknown" });
-    });
   }
 
   /**
