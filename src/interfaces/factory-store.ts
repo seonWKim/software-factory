@@ -998,11 +998,13 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
   /** One page of `table`'s rows, newest first by its `order_by` columns, with the total row count (after the filter). `limit` defaults to
    *  TABLE_PAGE_DEFAULT, capped at TABLE_PAGE_MAX; `offset` defaults to 0. Null, with no row read, when the table or the filter's column is not in the schema. */
   listTableRows(input: TablePageInput): Promise<TablePage | null>;
-  /** One read-only SELECT (design 09-dashboard-app, Data page Ask), after the statement checks, on its own read-only connection: at most `max_rows` rows, stopped at `time_limit_ms`; a read of an `ignore` column gives NULL. Absent: the backend has none. */
+  /** One read-only SELECT (design 09-dashboard-app, Data page Ask), after the statement checks, on its own read-only connection:
+   *  at most `max_rows` rows, stopped at `time_limit_ms`; a read of an `ignore` column gives NULL. Absent: the backend has none (409). */
   readOnlyQuery?: ((sql: string, opts?: ReadOnlyQueryOpts) => Promise<ReadOnlyQueryResult>) | undefined;
 }
 
-export const TABLE_PAGE_DEFAULT = 50; // rows a table page returns when no limit is given
+/** Rows a table page returns when no limit is given. */
+export const TABLE_PAGE_DEFAULT = 50;
 export const TABLE_PAGE_MAX = 200; // the most rows one table page returns
 
 export interface ReadOnlyQueryOpts { max_rows?: number; time_limit_ms?: number; ignore?: Readonly<Record<string, readonly string[]>> }

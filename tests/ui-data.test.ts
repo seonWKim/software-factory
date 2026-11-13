@@ -101,6 +101,22 @@ describe("ui api: data tables", () => {
     expect(by.get("identity_link_codes")).toMatchObject({ rows: 1, hidden: ["code_hash"] });
   });
 
+  it("/data/tables gives each table its line and owner, and column meanings where a line gives one", async () => {
+    const { d } = await seeded();
+    type Row = { name: string; description: string | null; owner: string | null; column_docs: Record<string, string> };
+    const body = await json<{ tables: Row[]; csrf_token: string | null }>(d, "/api/v1/data/tables");
+    for (const t of body.tables) {
+      expect(t.description, t.name).toEqual(expect.any(String));
+      expect(t.owner, t.name).toEqual(expect.any(String));
+    }
+    const by = new Map(body.tables.map((t) => [t.name, t]));
+    expect(by.get("worker_runs")).toMatchObject({ owner: "worker", column_docs: { status: expect.stringContaining("failed") } });
+    expect(by.get("controller_work_items")).toMatchObject({ owner: "controller", column_docs: { stage: expect.stringContaining("REVIEW") } });
+    // A hidden column never gets a meaning; this server has no Ask, so no write token.
+    for (const t of body.tables) expect(Object.keys(t.column_docs).filter((c) => (HIDDEN_COLUMNS[t.name] ?? []).includes(c)), t.name).toEqual([]);
+    expect(body.csrf_token).toBeNull();
+  });
+
   it("/data/tables/:name returns one page of rows, newest first, with the total, the page and the limit", async () => {
     const { d, plain, leaky } = await seeded();
     const p = await json<Page>(d, "/api/v1/data/tables/controller_work_items");

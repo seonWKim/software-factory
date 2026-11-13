@@ -62,25 +62,25 @@ export function readOnlyQuery(path: string, sql: string, opts: ReadOnlyQueryOpts
   const limit = opts.time_limit_ms ?? READ_ONLY_TIME_LIMIT_MS;
   const job: ReadOnlyJob = { path, sql, max_rows: opts.max_rows ?? READ_ONLY_MAX_ROWS, ignore: opts.ignore ?? {} };
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", WORKER], { stdio: ["pipe", "pipe", "ignore"] });
+    // Node kills the child at the time limit (SIGKILL: SQLite cannot be interrupted from JS, a process can).
+    const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", WORKER], { stdio: ["pipe", "pipe", "ignore"], timeout: limit, killSignal: "SIGKILL" });
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
     const done = (r: ReadOnlyQueryResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
       child.kill("SIGKILL");
       resolve(r);
     };
-    const timer = setTimeout(() => done({ refused: `Stopped: the query ran past the time limit of ${limit / 1000} seconds.` }), limit);
     child.stdout.on("data", (c: Buffer) => {
       size += c.length;
       if (size > MAX_ANSWER_BYTES) done({ refused: "The result is too large to show: ask for fewer or shorter columns." });
       else chunks.push(c);
     });
     child.on("error", (err) => done({ refused: `The query could not start: ${err.message}.` }));
-    child.on("close", () => {
+    child.on("close", (_code, signal) => {
+      if (signal === "SIGKILL") return done({ refused: `Stopped: the query ran past the time limit of ${limit / 1000} seconds.` });
       try {
         done(JSON.parse(Buffer.concat(chunks).toString("utf8")) as ReadOnlyQueryResult);
       } catch {
