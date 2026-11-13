@@ -9,7 +9,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
-import { TASKS_PATH, TASK_EDIT_PATH, TASK_SCHEDULE_PATH } from "../src/ui/tasks-api.js";
+import { TASKS_PATH, TASK_DONE_PATH, TASK_EDIT_PATH, TASK_REOPEN_PATH, TASK_SCHEDULE_PATH, TASK_WRITES } from "../src/ui/tasks-api.js";
 import { newStore } from "./helpers/store.js";
 
 const HOST = "127.0.0.1:4310";
@@ -168,5 +168,74 @@ describe("schedule a task from the Tasks page (design 02-tasks)", () => {
     expect(await s.tasks()).toEqual(before);
     const off = await setup({ actor: null });
     expect((await off.post({ id: ID, date: "2026-11-14", time: "15:00" }, { url: TASK_SCHEDULE_PATH })).status).toBe(503);
+  });
+});
+
+describe("POST /api/v1/tasks/reopen: undo a completion (design 02-tasks)", () => {
+  const reopen = (s: Awaited<ReturnType<typeof setup>>, body: unknown, over: Partial<UiRequest> = {}) => s.post(body, { url: TASK_REOPEN_PATH, ...over });
+
+  it("is a task write route beside /done", () => {
+    expect(Object.keys(TASK_WRITES)).toContain(TASK_REOPEN_PATH);
+    expect(TASK_WRITES[TASK_REOPEN_PATH]).toBeTypeOf("function");
+  });
+
+  it("reopens a done task through the store's reopenTask; a second reopen answers reopened false and writes nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    await s.post({ id: ID }, { url: TASK_DONE_PATH });
+    expect(await s.tasks()).toEqual([]);
+    const r = await reopen(s, { id: ID });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toEqual({ task_id: ID, reopened: true, removed_next: null });
+    expect((await s.tasks()).map((t) => t.id)).toEqual([ID]);
+    const before = await s.store.getTask(ID);
+    expect(JSON.parse((await reopen(s, { id: ID })).body)).toMatchObject({ reopened: false });
+    expect(await s.store.getTask(ID)).toEqual(before);
+  });
+
+  it("deletes a recurring task's open next occurrence; answers 409 when it is done, writing nothing", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "water plants today every day" });
+    const first = JSON.parse((await s.post({ id: ID }, { url: TASK_DONE_PATH })).body) as { next_id: string };
+    expect(JSON.parse((await reopen(s, { id: ID })).body)).toMatchObject({ reopened: true, removed_next: first.next_id });
+    expect(await s.store.getTask(first.next_id)).toBeNull();
+    const second = JSON.parse((await s.post({ id: ID }, { url: TASK_DONE_PATH })).body) as { next_id: string };
+    await s.store.completeTask(second.next_id);
+    const before = await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+    const r = await reopen(s, { id: ID });
+    expect(r.status).toBe(409);
+    expect(JSON.parse(r.body).error).toMatch(/next occurrence is done/);
+    expect(await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id")).toEqual(before);
+  });
+
+  it("answers 404 for an unknown task, 400 for a body that is not { id }, and 503 with no actor", async () => {
+    const s = await setup();
+    expect((await reopen(s, { id: "tk_nope_nope" })).status).toBe(404);
+    expect((await reopen(s, { id: ID, extra: 1 })).status).toBe(400);
+    expect((await reopen(s, {})).status).toBe(400);
+    const off = await setup({ actor: null });
+    expect((await reopen(off, { id: ID })).status).toBe(503);
+  });
+
+  it("takes the request guards of /done in the same order, and writes nothing on a refusal", async () => {
+    const s = await setup();
+    await s.post({ id: ID, words: "call the bank" });
+    await s.store.completeTask(ID);
+    const before = await s.store.getTask(ID);
+    const bad: Partial<UiRequest>[] = [
+      { host: "evil.example", origin: "https://evil.example", contentType: "text/plain", csrfToken: "stale", bodyTooLarge: true },
+      { origin: "https://evil.example", contentType: "text/plain", csrfToken: "stale", bodyTooLarge: true },
+      { contentType: "text/plain", csrfToken: undefined, bodyTooLarge: true },
+      { csrfToken: "stale", bodyTooLarge: true },
+      { bodyTooLarge: true },
+      { body: "{not json" },
+    ];
+    for (const over of bad) {
+      const done = await s.post({ id: ID }, { url: TASK_DONE_PATH, ...over });
+      const r = await reopen(s, { id: ID }, over);
+      expect(r.status, JSON.stringify(over)).toBe(done.status);
+      expect(r.status, JSON.stringify(over)).toBeGreaterThanOrEqual(400);
+    }
+    expect(await s.store.getTask(ID)).toEqual(before);
   });
 });
