@@ -9,7 +9,7 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { NeedsGroups, needsYou, useNow } from "./common.js";
+import { NeedsGroups, byId, needsYou, useNow } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 
 /** The five states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
@@ -53,7 +53,7 @@ export function FactoryWork() {
   const items = useApi<Items>(API.items);
   const rows = items.data?.items;
   const needs = useMemo(() => needsYou(rows ?? []), [rows]);
-  const titles = useMemo(() => new Map((rows ?? []).map((i) => [i.id, i])), [rows]);
+  const titles = useMemo(() => byId(rows), [rows]);
   if (items.isError) return <ErrorNote error={items.error} />;
   if (!rows) return null;
   return (

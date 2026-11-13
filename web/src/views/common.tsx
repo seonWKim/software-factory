@@ -158,6 +158,9 @@ export function WhyText({ why, items, onRetry }: { why: Pick<Why, "text" | "refs
   return <span data-why={why.code}>{parts}</span>;
 }
 
+/** The items list keyed by item ID. */
+export const byId = (items: readonly ItemRow[] | undefined): Map<string, ItemRow> => new Map((items ?? []).map((i) => [i.id, i]));
+
 /** What a Needs-you row asks of the owner: merge a PR, approve a spec, or answer or fix (everything else). */
 export type NeedGroup = "merge" | "approve" | "answer";
 

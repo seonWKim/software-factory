@@ -20,7 +20,7 @@ import { t } from "../i18n/index.js";
 import { LEVEL_LABELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, NeedsGroups, needsYou, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
+import { ItemsTable, MergeCheckNote, byId, NeedsGroups, needsYou, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { FloorNotes } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -29,8 +29,6 @@ import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defau
 
 /** "host slept N min" for a host sleep's gap, at least 1 min (only gaps over 60 s are recorded). */
 export const sleptText = (gap_ms: number): string => t("host.slept", { min: Math.max(1, Math.round(gap_ms / 60_000)) });
-
-const byId = (items: readonly ItemRow[] | undefined) => new Map((items ?? []).map((i) => [i.id, i]));
 
 /** One active claim pause for the banner: what it stops, when it began (model stall) and when it ends or is checked next. */
 function pauseLine(p: PauseRow, now: number): string {
