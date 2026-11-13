@@ -191,18 +191,18 @@ describe("item page: In short, decisions and the approve confirm (issue #526)", 
     }));
   }
 
-  /** Clicks approve once it is enabled; returns the confirm step, before anything is sent. */
+  /** Clicks Approve once it is enabled; returns the approve dialog, before anything is sent. */
   async function approve() {
-    const button = await screen.findByRole("button", { name: "approve" });
+    const button = await screen.findByRole("button", { name: "Approve" });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button);
-    const confirm = await screen.findByRole("group", { name: "Confirm approve" });
+    const dialog = await screen.findByRole("dialog", { name: "Approve Decisions" });
     expect(posts).toEqual([]);
-    return confirm;
+    return dialog;
   }
 
   const send = async (body: unknown) => {
-    fireEvent.click(screen.getByRole("button", { name: "Confirm approve" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_d/commands", body }]));
   };
 
@@ -310,10 +310,11 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
 
   /** Clicks `name` once it is enabled; returns its dialog. */
   async function open(name: "reject" | "revise") {
-    const button = (await screen.findByRole("button", { name })) as HTMLButtonElement;
+    const label = name === "reject" ? "Reject" : "Revise";
+    const button = (await screen.findByRole("button", { name: label })) as HTMLButtonElement;
     await waitFor(() => expect(button.disabled).toBe(false));
     fireEvent.click(button);
-    return screen.getByRole("dialog", { name: name === "reject" ? "Reject wi_r" : "Revise wi_r" });
+    return screen.getByRole("dialog", { name: `${label} Forms` });
   }
 
   it("Reject opens a Why? form with four reasons and a text box; the reason and the text are sent as the reject note", async () => {
@@ -449,7 +450,7 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     mount("/app/items/wi_g");
     const row = await found('[data-command="approve"]');
     for (const name of ["approve", "reject", "revise"]) {
-      expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(true);
+      expect((screen.getByRole("button", { name: name[0]!.toUpperCase() + name.slice(1) }) as HTMLButtonElement).disabled, name).toBe(true);
       expect(document.querySelector(`[data-command="${name}"]`)!.textContent).toContain(
         "local:helper has no role that allows it (no_role); the local owner can grant one with factory users add local:helper --role approver",
       );
@@ -460,26 +461,22 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(document.querySelector("[data-commands-none]")).toBeNull();
   });
 
-  it("the verdict row: a Verdict severity select, then Accept, Changes, Reject, Good, Bad, Feedback and a ghost Done in one button row; Done hides the outcome", async () => {
+  it("the verdict row: a Verdict button that opens the dialog, then Good, Bad, Feedback and a ghost Done in one button row; Done hides the outcome", async () => {
     const replies = [{ seq: 4, command: "verdict", created_at: AT, handled_at: AT, refusal: null }];
     serve({ commands: [cmd("verdict")], replies });
     mount("/app/items/wi_g");
     const row = await found('[data-command="verdict"]');
-    const select = within(row).getByRole("combobox", { name: "Verdict severity" });
-    expect(select.tagName).toBe("SELECT");
+    expect(within(row).queryByRole("combobox")).toBeNull();
     const done = await waitFor(() => within(row).getByRole("button", { name: "Done" }));
     const group = done.parentElement!;
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Accept", "Changes", "Reject", "Good", "Bad", "Feedback", "Done"]);
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Verdict", "Good", "Bad", "Feedback", "Done"]);
     expect(group.className.split(" ")).toEqual(expect.arrayContaining(["flex-wrap", "gap-2"]));
-    const cls = (name: string) => within(group).getByRole("button", { name }).className.split(" ");
-    expect(cls("Accept")).toContain("border-border-strong");
-    expect(cls("Reject")).toContain("text-failed");
-    expect(cls("Done")).not.toContain("border");
+    expect(within(group).getByRole("button", { name: "Done" }).className.split(" ")).not.toContain("border");
     fireEvent.click(done);
     expect(within(row).queryByRole("button", { name: "Done" })).toBeNull();
   });
 
-  it("Merge is its own block 24 px (space-6) below the verdict row, after it; Reject has the danger border", async () => {
+  it("Merge is its own block 24 px (space-6) below the verdict row, after it, as the primary button", async () => {
     serve({ item: base("wi_g", 50, "Grants", { merge: { enabled: true, reason: null } }), commands: [cmd("verdict")] });
     mount("/app/items/wi_g");
     const merge = await found('[data-command="merge"]');
@@ -488,8 +485,7 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     expect(merge.className.split(" ")).toContain("not-first:mt-6");
     expect(verdict.className.split(" ")).not.toContain("not-first:mt-6");
     expect(within(merge).getByRole("button", { name: "Merge" })).toBeTruthy();
-    const reject = within(verdict).getByRole("button", { name: "Reject" }).className.split(" ");
-    expect(reject).toEqual(expect.arrayContaining(["border", "border-border-strong", "text-failed"]));
+    expect(within(merge).getByRole("button", { name: "Merge" }).className.split(" ")).toContain("bg-accent");
   });
 });
 

@@ -1,13 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, type RefObject, useRef, useState } from "react";
+import { type MouseEvent, type ReactNode, type RefObject, useId, useRef, useState } from "react";
 import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
 import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
-import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
+import { Field } from "../components/ui/field.js";
+import { Radio } from "../components/ui/radio.js";
 import { OverflowMenu, Tooltip } from "../components/ui/menu.js";
 import { Select } from "../components/ui/select.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -20,22 +21,23 @@ import { PAGE_COMMANDS_PATH, itemPath } from "../pages.js";
 import { CommandBox, type Outcome, OutcomeText, PendingProposals, SENTENCE } from "./command-box.js";
 import { PersonName } from "./common.js";
 import {
-  ApproveConfirm, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approveNote, approvePhase, chosenAnswers, initialChoices, type CommandDialogProps,
+  ApproveDialog, type DecisionChoice, DecisionsPanel, InShort, RejectDialog, ReviseDialog, approvePhase, chosenAnswers, commandLabel, initialChoices, type CommandDialogProps,
 } from "./item-decisions.js";
 
 // The item page's command buttons (design §9, issue #228): one button per entry of the item API's `commands`,
 // in its order: the commands that apply now. One the viewer's grants do not allow (`allowed` false, issue #453) is
-// disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject and revise open a dialog (issue #527): reject asks why and confirms what closes,
-// revise takes a comment per spec section. Verdict (issue #523) is three buttons, Accept, Changes and Reject, with a
-// severity choice; a click sends `<kind> <severity> <reason>` (verdictNote), the reason the note box's text. Beside
-// them, the one-tap Good, Bad and Feedback (oneTapNote), the same verdict request as Slack's buttons store: Good is
+// disabled with the controller's reason beside it, in plain text; every refusal shows without backticks. Reject, revise, verdict and approve (in an approve phase) open the one shared Dialog:
+// reject asks why and confirms what closes, revise takes a comment per spec section, verdict (issue #523) is an
+// Accept, Changes or Reject choice with a severity and a reason (required for Changes and Reject) sent as
+// `<kind> <severity> <reason>` (verdictNote). Beside the Verdict button, the one-tap Good, Bad and Feedback
+// (oneTapNote), the same verdict request as Slack's buttons store: Good is
 // accept/none, Bad changes/minor, Feedback changes/none with the note box's text. Every
 // other command carries the note box's text when it has any (tokens for budget, the approve note). A send
 // is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
 // next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
 // (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
 // A waiting spec (issue #526) shows its In short above Commands and its decisions as questions above the note box;
-// approve in an approve phase (the spec gate, the floor block, the Rule of Two) goes through a confirm step first;
+// approve in an approve phase (the spec gate, the floor block, the Rule of Two) opens its dialog first;
 // approve sends the answers as `N: <answer>` lines. Below the buttons, the item's pending proposals and the command
 // box (command-box.tsx), sent through the same app request route.
 // All of it sits in one "What you need to decide" box at the top of the item page (design 09-dashboard-app): the
@@ -44,13 +46,11 @@ import {
 
 /** Commands sent from their own dialog, not with the note box. */
 const FORMS = ["reject", "revise"];
-/** In Needs you, which has no note box, verdict has its own dialog too (issue #513). */
-const NEED_FORMS = [...FORMS, "verdict"];
+/** Every command that opens a dialog from a button: those, and verdict (its Accept, Changes or Reject choice). */
+const DIALOGS = [...FORMS, "verdict"];
+type FormName = "reject" | "revise" | "verdict";
 /** The commands a Needs-you row shows as its one primary button: what the state asks for. */
 const PRIMARY = ["approve", "retry", "resolve"];
-
-/** The verdict as typed after `/verdict`, the placeholder of its text form. */
-export const VERDICT_PLACEHOLDER = "accept|changes|reject <none|minor|major|critical> <reason>";
 
 /** The verdicts a person gives, as `/verdict` takes them, with their button labels. */
 const VERDICTS = [["accept", "commands.accept"], ["changes", "commands.changes"], ["reject", "commands.reject"]] as const satisfies readonly (readonly [string, MessageKey])[];
@@ -162,8 +162,7 @@ function CliHint({ command, id, short }: { command: string; id: string; short: s
 export function ItemCommands({ id, commands, replies, reason = null }: { id: string; commands: readonly ItemCommand[]; replies: readonly CommandReply[]; reason?: ReactNode }) {
   const { session, on: enabled, busy, local, send: post } = useCommandSend(id);
   const [note, setNote] = useState("");
-  const [confirming, setConfirming] = useState<string | null>(null);
-  const [open, setOpen] = useState<string | null>(null);
+  const [open, setOpen] = useState<FormName | "approve" | null>(null);
   const opener = useRef<HTMLElement | null>(null);
   const [picked, setPicked] = useState<DecisionChoice[] | null>(null);
   // The page's own item query (same key and options), read here for its `merge` and its waiting spec.
@@ -204,12 +203,12 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
   }
   const off = session.isError || session.data?.commands_enabled === false;
   const usesNote = commands.some((c) => c.allowed && !FORMS.includes(c.name));
+  const itemTitle = detail?.title ?? id;
   const primary = primaryOf(commands);
 
   /** Sends `command` with `text` (a form's) or, without it, the note box's. */
   const send = async (command: string, text?: string) => {
-    setConfirming(null);
-    if (!(await post(command, text ?? (command === "approve" ? approveNote(answers, note) : note)))) return;
+    if (!(await post(command, text ?? note))) return;
     if (text === undefined) setNote("");
     else setOpen(null);
     setPicked(null);
@@ -254,8 +253,7 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
           {commands.map((c) => {
             const disabled = !enabled || busy || !c.allowed;
             const outcome = c.allowed ? commandOutcome(replies, c.name, local[c.name]) : notAllowed(c);
-            const hasForm = FORMS.includes(c.name);
-            const confirms = c.name === "approve" && phase !== null;
+            const opensDialog = DIALOGS.includes(c.name) || (c.name === "approve" && phase !== null);
             if (c.name === "verdict") {
               return (
                 <li key={c.name} data-command={c.name}>
@@ -264,6 +262,10 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
                     disabled={disabled}
                     reason={note}
                     outcome={outcome}
+                    onOpen={(e) => {
+                      opener.current = e.currentTarget;
+                      setOpen("verdict");
+                    }}
                     onSend={(text) => void post("verdict", text).then((ok) => ok && setNote(""))}
                   />
                 </li>
@@ -273,32 +275,17 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
               <li key={c.name} data-command={c.name} className="flex flex-wrap items-center gap-2">
                 <Button
                   variant={c === primary ? "primary" : "secondary"}
-                  className="capitalize"
-                  disabled={disabled || confirming === c.name}
+                  disabled={disabled}
                   title={`${c.usage}: ${c.description}`}
-                  {...(hasForm ? { "aria-haspopup": "dialog" as const } : {})}
+                  {...(opensDialog ? { "aria-haspopup": "dialog" as const } : {})}
                   onClick={(e) => {
                     opener.current = e.currentTarget;
-                    if (hasForm) setOpen(c.name);
-                    else if (confirms) setConfirming(c.name);
-                    else void send(c.name);
+                    if (!opensDialog) void send(c.name);
+                    else setOpen(c.name as FormName | "approve");
                   }}
                 >
-                  {c.name}
+                  {commandLabel(c.name)}
                 </Button>
-                {confirming === c.name && phase !== null && (
-                  <>
-                    <ApproveConfirm phase={phase} answers={answers} note={note} />
-                    <ButtonRow>
-                      <Button variant="secondary" onClick={() => setConfirming(null)}>
-                        {t("commands.cancel")}
-                      </Button>
-                      <Button variant="primary" disabled={disabled} onClick={() => void send(c.name)}>
-                        {t("commands.confirm", { name: c.name })}
-                      </Button>
-                    </ButtonRow>
-                  </>
-                )}
                 <OutcomeText outcome={outcome} />
               </li>
             );
@@ -311,10 +298,23 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
           )}
         </ul>
         {primary && detail && <CliHint command={primary.name} id={id} short={shortSource(detail.source.id)} />}
-        {(open === "reject" || open === "revise") && (
+        {open === "approve" && phase !== null && (
+          <ApproveDialog
+            title={`${commandLabel("approve")} ${itemTitle}`}
+            phase={phase}
+            answers={answers}
+            note={note}
+            busy={busy || !enabled}
+            error={local.approve && "error" in local.approve ? local.approve.error : null}
+            returnFocusTo={opener}
+            onSend={(text) => void send("approve", text)}
+            onClose={() => setOpen(null)}
+          />
+        )}
+        {open !== null && open !== "approve" && (
           <CommandDialog
             command={open}
-            id={id}
+            title={itemTitle}
             pr={detail?.change_ref ?? null}
             busy={busy || !enabled}
             error={local[open] && "error" in local[open] ? local[open].error : null}
@@ -329,61 +329,32 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
   );
 }
 
-/** The dialog for `command` (reject, revise or verdict), the same on the Floor and the item page. */
-function CommandDialog({ command, pr, ...props }: CommandDialogProps & { command: "reject" | "revise" | "verdict"; pr: string | null }) {
-  if (command === "reject") return <RejectDialog pr={pr} {...props} />;
-  if (command === "revise") return <ReviseDialog {...props} />;
-  return <VerdictDialog {...props} />;
+/** The dialog for `command` (reject, revise or verdict), the same on the Floor and the item page. `title` is the item's. */
+function CommandDialog({ command, title, pr, ...props }: Omit<CommandDialogProps, "title"> & { command: FormName; title: string; pr: string | null }) {
+  const full = `${commandLabel(command)} ${title}`;
+  if (command === "reject") return <RejectDialog title={full} pr={pr} {...props} />;
+  if (command === "revise") return <ReviseDialog title={full} {...props} />;
+  return <VerdictDialog title={full} {...props} />;
 }
 
-/** The verdict buttons' variants: Accept secondary, Changes secondary, Reject danger text. */
-const VERDICT_VARIANT = { accept: "secondary", changes: "secondary", reject: "danger" } as const;
-
 /**
- * The verdict buttons (issue #523): a severity choice, then one ButtonRow of Accept, Changes and Reject, each sending
- * verdictNote with `reason` (the note box's text), then Good, Bad and Feedback (oneTapNote), and the outcome. Changes,
- * reject and Feedback need the note box's text, so they wait for it. A handled verdict shows Done as a ghost button,
- * which hides it; a newer verdict's outcome shows again.
+ * The item page's verdict row: the Verdict button, which opens the verdict dialog, then Good, Bad and Feedback
+ * (oneTapNote, with `reason` the note box's text; Feedback waits for it), and the outcome. A handled verdict shows
+ * Done as a ghost button, which hides it; a newer verdict's outcome shows again.
  */
 function VerdictButtons({
-  title, disabled, reason, outcome, onSend,
-}: { title: string; disabled: boolean; reason: string; outcome: Outcome; onSend: (note: string) => void }) {
-  const [severity, setSeverity] = useState<VerdictSeverityChoice>("none");
+  title, disabled, reason, outcome, onOpen, onSend,
+}: { title: string; disabled: boolean; reason: string; outcome: Outcome; onOpen: (e: MouseEvent<HTMLButtonElement>) => void; onSend: (note: string) => void }) {
   const [doneHidden, setDoneHidden] = useState(false);
   const done = outcome?.tone === "status" && outcome.text === t("commands.done");
   // A new send (its outcome "sent") shows the next Done again.
   if (!done && doneHidden) setDoneHidden(false);
   return (
     <div data-verdict className="flex flex-wrap items-center gap-2">
-      {/* The visible label says Severity; the accessible name says which severity. */}
-      <label className="inline-flex items-center gap-2 text-sm font-medium">
-        {t("decide.severity")}
-        <Select
-          aria-label={t("commands.severityLabel")}
-          value={severity}
-          disabled={disabled}
-          onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}
-        >
-          {SEVERITIES.map((s) => (
-            <option key={s} value={s}>
-              {t(SEVERITY_LABEL[s])}
-            </option>
-          ))}
-        </Select>
-      </label>
       <ButtonRow>
-        {VERDICTS.map(([kind, label]) => (
-          <Button
-            key={kind}
-            variant={VERDICT_VARIANT[kind]}
-            data-verdict-kind={kind}
-            disabled={disabled || (kind !== "accept" && reason.trim() === "")}
-            title={kind === "accept" ? title : `${title}${t("commands.needReason")}`}
-            onClick={() => onSend(verdictNote(kind, severity, reason))}
-          >
-            {t(label)}
-          </Button>
-        ))}
+        <Button variant="secondary" aria-haspopup="dialog" disabled={disabled} title={title} onClick={onOpen}>
+          {commandLabel("verdict")}
+        </Button>
         {ONE_TAP.map(([choice, label]) => {
           const sent = oneTapNote(choice, reason);
           return (
@@ -426,7 +397,7 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
   return (
     <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
       <Button
-        variant="secondary"
+        variant="primary"
         disabled={!merge.enabled || !on || busy}
         title={source === "local"
           ? t("commands.mergeLocal")
@@ -441,23 +412,47 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
 }
 
 /**
- * A Needs-you row's verdict dialog (issue #513): one line, as typed after `/verdict`, sent as the item page's note box
- * sends it; Enter sends it. The controller parses it; a malformed one is refused with the usage line.
+ * The verdict dialog, on the Floor and the item page: an Accept, Changes or Reject choice, a severity and a reason,
+ * sent as `<kind> <severity> <reason>` (verdictNote). Changes and Reject need a reason; Accept sends without one.
  */
-function VerdictDialog({ id, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps) {
-  const [text, setText] = useState("");
+function VerdictDialog({ title, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps) {
+  const [kind, setKind] = useState<VerdictChoice>("accept");
+  const [severity, setSeverity] = useState<VerdictSeverityChoice>("none");
+  const [reason, setReason] = useState("");
+  const uid = useId();
   return (
     <Dialog
-      title={t("commands.verdictTitle", { id })}
+      title={title}
       consequence={t("commands.verdictConsequence")}
       confirmLabel={t("commands.sendVerdict")}
-      confirmDisabled={busy || text.trim() === ""}
+      confirmDisabled={busy || (kind !== "accept" && reason.trim() === "")}
       error={error}
       returnFocusTo={returnFocusTo}
-      onConfirm={() => onSend(text.trim())}
+      onConfirm={() => onSend(verdictNote(kind, severity, reason))}
       onClose={onClose}
     >
-      <Input aria-label={t("commands.verdict")} value={text} onChange={(e) => setText(e.target.value)} placeholder={VERDICT_PLACEHOLDER} className="w-full" />
+      <fieldset className="min-w-0">
+        <legend className="text-sm font-medium">{t("commands.verdict")}</legend>
+        <div role="radiogroup" aria-label={t("commands.verdict")} className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+          {VERDICTS.map(([k, label]) => (
+            <Radio key={k} name="verdict-kind" checked={kind === k} onChange={() => setKind(k)}>
+              {t(label)}
+            </Radio>
+          ))}
+        </div>
+      </fieldset>
+      <Field label={t("commands.severityLabel")} htmlFor={`${uid}-severity`}>
+        <Select id={`${uid}-severity`} value={severity} onChange={(e) => setSeverity(e.target.value as VerdictSeverityChoice)}>
+          {SEVERITIES.map((s) => (
+            <option key={s} value={s}>
+              {t(SEVERITY_LABEL[s])}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Field label={t("decisions.reason")} htmlFor={`${uid}-reason`}>
+        <Textarea id={`${uid}-reason`} rows={3} value={reason} onChange={(e) => setReason(e.target.value)} className="w-full" />
+      </Field>
     </Dialog>
   );
 }
@@ -467,11 +462,11 @@ const PRIMARY_LABEL: Record<string, MessageKey> = { approve: "needs.actApprove",
 /** The key that presses a row's primary button when the row is selected (never Merge). */
 export const PRIMARY_KEY = "p";
 
-const sentence = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1);
-
 /** What a Needs-you row's Actions cell needs of the row: its group, the merge state and the commands the Why text names. */
 export interface NeedActionsProps {
   id: string;
+  /** The item's title, or its ID when it has none: the dialogs' titles. */
+  title: string;
   commands: readonly ItemCommand[];
   pr: string | null;
   /** "merge": the primary button is Merge (disabled with the reason, or "Checking…" while the merge check runs). */
@@ -493,9 +488,9 @@ export interface NeedActionsProps {
  * (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
  * a failed send shows its error in the row, a sent one in a short status message that outlives the row.
  */
-export function NeedActions({ id, commands, pr, group, merge, source, checking, cmd, allow }: NeedActionsProps) {
+export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
-  const [open, setOpen] = useState<"reject" | "revise" | "verdict" | null>(null);
+  const [open, setOpen] = useState<FormName | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
   // The OverflowMenu owns its button, so the dialogs hand focus back to it by looking it up when they close.
   const moreButton = { get current() { return wrap.current?.querySelector<HTMLElement>("[aria-haspopup=menu]") ?? null; } } as RefObject<HTMLElement | null>;
@@ -510,9 +505,9 @@ export function NeedActions({ id, commands, pr, group, merge, source, checking, 
   const canRetry = commands.some((c) => c.name === "retry" && c.allowed);
   const items = [
     ...others.map((c) => ({
-      label: c.allowed ? sentence(c.name) : `${sentence(c.name)}: ${plainRefusal(c.reason ?? "not allowed")}`,
+      label: c.allowed ? commandLabel(c.name) : `${commandLabel(c.name)}: ${plainRefusal(c.reason ?? "not allowed")}`,
       disabled: off || !c.allowed,
-      onSelect: () => (NEED_FORMS.includes(c.name) ? setOpen(c.name as "reject" | "revise" | "verdict") : void send(c.name, "")),
+      onSelect: () => (DIALOGS.includes(c.name) ? setOpen(c.name as FormName) : void send(c.name, "")),
     })),
     ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
@@ -547,7 +542,7 @@ export function NeedActions({ id, commands, pr, group, merge, source, checking, 
       {open !== null && (
         <CommandDialog
           command={open}
-          id={id}
+          title={title}
           pr={pr}
           busy={off}
           error={local[open] && "error" in local[open] ? local[open].error : null}
