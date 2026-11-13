@@ -1103,7 +1103,7 @@ function baseRefspec(w: Worker, item: WorkItem): string {
 export default defineRunKind({
   name: "implement",
   folder: true,
-  timeouts: DEFAULT_TIMEOUTS,
+  timeouts: { ...DEFAULT_TIMEOUTS, steps: { "run-agent": { start_to_close_ms: 2 * 3_600_000 } } }, // Warm-up and agent (run_timeout_ms each), then pack checks and bundle: 2 h, over twice run_timeout_ms (#671).
   execute: (w, c) => implement(w, c.run, c.item, c.handle!, c.ctx, c.signal, c.model, c.plan ?? null, c.kept ?? null, c.step),
 });
 

@@ -541,6 +541,29 @@ export interface RuleRow {
   draft: { default: string; exception: string; incidents: string[]; scope: string } | null;
   /** Why a class's draft could not be read (Promote is off then), or null. */
   draft_error: string | null;
+  /** A proposal's kind (`promote-learning`, `edit-asset`, `new-asset`) and the asset it changes, when the ledger lists them. */
+  kind?: string;
+  target?: string;
+}
+
+/** One entry's detail from `/api/v1/rules/entry?id=`; a field the ledger did not print is absent. */
+export interface RuleDetail {
+  id: string;
+  default?: string;
+  exceptions?: string;
+  kind?: string;
+  target?: string;
+  incidents?: number;
+  quotes?: string[];
+  root_reason?: string;
+  scope?: string;
+}
+
+/** `/api/v1/rules/entry?id=`: `detail` null when the ledger gave none; `error` a failed read, or null. */
+export interface RuleEntryView {
+  id: string;
+  detail: RuleDetail | null;
+  error: string | null;
 }
 
 /**
@@ -717,6 +740,7 @@ export const API = {
   standing: "/api/v1/standing",
   rules: "/api/v1/rules",
   ruleVerdict: "/api/v1/rules/verdict",
+  ruleEntry: (id: string) => `/api/v1/rules/entry?id=${encodeURIComponent(id)}`,
   tasks: "/api/v1/tasks",
   taskBuild: "/api/v1/tasks/build",
   taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
@@ -745,6 +769,12 @@ export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
     refetchInterval: pollMs,
     refetchIntervalInBackground: false,
   });
+}
+
+/** One entry's detail, read once when `enabled` turns true (a card opens), never polled. */
+export function useRuleEntry(id: string, enabled: boolean) {
+  const url = API.ruleEntry(id);
+  return useQuery({ queryKey: [url], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity });
 }
 
 /** A JSON POST with the CSRF token: the status and the parsed body ({} when the body is not JSON). */

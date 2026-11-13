@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
-import { parseDraft, parsePending } from "../src/impl/tacit/ledger-text.js";
+import { parseDraft, parsePending, parseShow } from "../src/impl/tacit/ledger-text.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import { REGISTRY, createPlugin, defaultPlugins } from "../src/plugins.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
@@ -59,12 +59,25 @@ const RULE: TacitPromotion = { wording: "keep CLI flags", default: "Keep every f
 /** A fixed today for the judged date. */
 const TODAY = { now: () => new Date(2026, 10, 13, 9, 30) };
 
+/** `evolve show C-012` in the form the parser reads (docs/plugins/tacit-ledger.md; assumed, not checked against the real CLI). */
+const DETAIL_SAMPLE = `# C-012 keep existing CLI flags
+## incidents 3
+- wi_1 — "keep --json, scripts use it"
+- wi_2 — “don't rename the flag”
+- wi_3
+근본 원인: agents rename flags without checking callers
+## rule draft
+- 기본값: Keep every existing CLI flag when renaming a command.
+- 예외: a flag the owner marked deprecated
+- 범위: software, CLI
+`;
+
 /**
  * A temp agents home with stub `bin/tacit`, `bin/evolve` and `bin/sync-agents` that take only the real CLIs' forms
  * (checked 2026-11-12 with `--help`; `evolve show` 2026-11-13) and exit 2 with usage text on any other. As the real
  * ledger does, `tacit verdict … promote` exits 1 without both `--rule` and `--encoded-to`. The stubs log each call's
  * argv, one item per field, to `<root>/log/argv`, outside the home, read `<root>/control/{fail,sleep,refuse,sync}`
- * and `evolve show <id>` prints `<root>/drafts/<id>` (C-012's draft is SHOW_SAMPLE), so the stubs never write the
+ * and `evolve show <id>` prints `<root>/drafts/<id>` (C-012's draft is SHOW_SAMPLE; an empty file prints nothing), so the stubs never write the
  * home. Only capture reads stdin; any other call that gets stdin fails.
  */
 function stubHome(): {
@@ -119,7 +132,7 @@ case "$1" in
     echo "usage: evolve <command> [options]"
     echo "commands:"
     echo "  pending  list what waits for a verdict"
-    echo "  show <id>  one entry's draft, incidents and verdicts"
+    echo "  show <id>  one entry's detail: its draft, incidents and verdicts"
     echo "  verdict <id> {hold,promote,reject} --reason <reason> [--applied-to <file>]"
     ;;
   pending)
@@ -398,7 +411,7 @@ describe("plugin agents-home", () => {
     const s = stubHome();
     const ledger = new AgentsHomeTacitLedger(s.home);
     expect(await ledger.pending()).toEqual([
-      { id: "P-0007", title: "Keep the flag", state: "open" },
+      { id: "P-0007", title: "Keep the flag", state: "open", kind: "spec", target: "src/core/foo.ts" },
       {
         id: "C-012", title: "keep existing CLI flags", state: "pending",
         draft: { default: "Keep every existing CLI flag.", exception: "a flag the owner marked deprecated", incidents: ["T-0101", "T-0102"], scope: "software, CLI" },
@@ -425,17 +438,65 @@ describe("plugin agents-home", () => {
 
   it("the pending text: open and held proposals, pending and held classes; rows under any other heading are skipped", () => {
     expect(parsePending(PENDING_SAMPLE)).toEqual([
-      { id: "P-0007", title: "Keep the flag", state: "open" },
+      { id: "P-0007", title: "Keep the flag", state: "open", kind: "spec", target: "src/core/foo.ts" },
       { id: "C-012", title: "keep existing CLI flags", state: "pending" },
     ]);
     const text = [
       "## proposals (open) 0", "## proposals (held) 1", "- P-0003 [prompt] prompts/review.md — Ask for tests first",
+      "- P-20261103-34e9 — No kind or target",
       "## tacit Pending 0", "## tacit Held 1", "- C-004 name the flag in the spec", "## stats", "- C-009 not an entry",
     ].join("\n");
     expect(parsePending(text)).toEqual([
-      { id: "P-0003", title: "Ask for tests first", state: "held" },
+      { id: "P-0003", title: "Ask for tests first", state: "held", kind: "prompt", target: "prompts/review.md" },
+      { id: "P-20261103-34e9", title: "No kind or target", state: "held" },
       { id: "C-004", title: "name the flag in the spec", state: "held" },
     ]);
+  });
+
+  it("the pending text keeps each proposal's kind and target", () => {
+    const text = [
+      "## proposals (open) 3",
+      "- P-20261103-34e9 [promote-learning] skills/review/SKILL.md — Promote the review learning",
+      "- P-20261104-0a1b [edit-asset] prompts/implement.md — Ask for the failing test first",
+      "- P-20261105-77c2 [new-asset] skills/flags/SKILL.md — A skill for CLI flags",
+    ].join("\n");
+    expect(parsePending(text).map((e) => [e.id, e.kind, e.target])).toEqual([
+      ["P-20261103-34e9", "promote-learning", "skills/review/SKILL.md"],
+      ["P-20261104-0a1b", "edit-asset", "prompts/implement.md"],
+      ["P-20261105-77c2", "new-asset", "skills/flags/SKILL.md"],
+    ]);
+  });
+
+  it("the show text: each field lands in its place, and a field the text lacks is absent", () => {
+    expect(parseShow("C-012", DETAIL_SAMPLE)).toEqual({
+      id: "C-012",
+      default: "Keep every existing CLI flag when renaming a command.",
+      exceptions: "a flag the owner marked deprecated",
+      scope: "software, CLI",
+      root_reason: "agents rename flags without checking callers",
+      incidents: 3,
+      quotes: ["keep --json, scripts use it", "don't rename the flag"],
+    });
+    const proposal = ["# P-20261103-34e9", "kind: edit-asset", "target: prompts/review.md", "root reason: reviews skip the tests", "  and nobody asks"].join("\n");
+    expect(parseShow("P-20261103-34e9", proposal)).toEqual({
+      id: "P-20261103-34e9", kind: "edit-asset", target: "prompts/review.md", root_reason: "reviews skip the tests\nand nobody asks",
+    });
+    // Incidents with no number count their rows; a bare reference has no words.
+    expect(parseShow("C-1", "## incidents\n- wi_1\n- wi_2")).toEqual({ id: "C-1", incidents: 2 });
+    expect(parseShow("C-1", "  \n")).toBeNull();
+  });
+
+  it("show runs evolve show <id> and reads its text; it writes nothing; an empty text is null; a bad ID runs no CLI", async () => {
+    const s = stubHome();
+    writeFileSync(join(s.root, "drafts", "P-0007"), "");
+    const before = snapshot(s.home);
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    expect(await ledger.show("C-012")).toMatchObject({ id: "C-012", incidents: 1, scope: "software, CLI" });
+    expect(await ledger.show("P-0007")).toBeNull();
+    await expect(ledger.show("t1")).rejects.toThrow(/neither a class \(C-\) nor a proposal \(P-\)/);
+    expect(s.argv()).toEqual(["evolve|show|C-012", "evolve|show|P-0007"]);
+    expect(snapshot(s.home)).toEqual(before);
+    expect(await new NoTacitLedger().show()).toBeNull();
   });
 
   it("a verdict on a C- ID other than promote runs tacit verdict with no rule; each value is its own argv item, no shell", async () => {
@@ -470,6 +531,7 @@ describe("plugin agents-home", () => {
     writeFileSync(join(s.home, "bin", "evolve"), "#!/bin/sh\necho 'ledger locked' >&2\nexit 5\n");
     await expect(ledger.pending()).rejects.toThrow(/^evolve pending exited 5: ledger locked$/);
     await expect(ledger.verdict("P-1", "hold", "x")).rejects.toThrow(/^evolve verdict exited 5: ledger locked$/);
+    await expect(ledger.show("C-1")).rejects.toThrow(/^evolve show exited 5: ledger locked$/);
   });
 
   it("rules reads <home>/private/tacit/rules.md: each C- section's default, exceptions and scope; no file, no rules", async () => {
@@ -492,7 +554,7 @@ describe("plugin agents-home", () => {
     expect(snapshot(s.home)).toEqual(before);
   });
 
-  it("pending and verdicts other than promote of a class call subcommands the CLIs' --help names, and never write under the home", async () => {
+  it("pending, show and verdicts other than promote of a class call subcommands the CLIs' --help names, and never write under the home", async () => {
     const s = stubHome();
     const before = snapshot(s.home);
     const help = (cli: string) => [...execHelp(join(s.home, "bin", cli)).matchAll(/^ {2}(\w+)/gm)].map((m) => m[1]);
@@ -500,8 +562,9 @@ describe("plugin agents-home", () => {
     await ledger.pending();
     await ledger.verdict("C-012", "reject", "r");
     await ledger.verdict("P-0007", "hold", "r");
+    await ledger.show("C-012");
     const used = s.argv().filter((l) => !l.endsWith("--help")).map((l) => l.split("|").slice(0, 2).join(" "));
-    expect(used).toEqual(["evolve pending", "evolve show", "tacit verdict", "evolve verdict"]);
+    expect(used).toEqual(["evolve pending", "evolve show", "tacit verdict", "evolve verdict", "evolve show"]);
     expect(help("tacit")).toEqual(expect.arrayContaining(["capture", "verdict"]));
     expect(help("evolve")).toEqual(expect.arrayContaining(["pending", "show", "verdict"]));
     expect(snapshot(s.home)).toEqual(before);
@@ -643,7 +706,7 @@ describe("plugin agents-home: promote of a class encodes the rule", () => {
     ].join("\n"));
     const before = snapshot(s.home);
     const entries = await s.ledger.pending();
-    expect(entries).toEqual([{ id: "P-0007", title: "Keep the flag", state: "open" }, { id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote" }]);
+    expect(entries).toEqual([{ id: "P-0007", title: "Keep the flag", state: "open", kind: "spec", target: "src/core/foo.ts" }, { id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote" }]);
     expect(s.argv()).toEqual(["evolve|pending"]);
     expect(snapshot(s.home)).toEqual(before);
     // Once the view is rebuilt after the verdict, the entry is not judged; with no view file, nothing is.
