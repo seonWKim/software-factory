@@ -145,7 +145,7 @@ async function mergeAndResolve(
   }
 
   const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
-  // install_command first, then the check list (design §4); only the checks get the test database.
+  // install_command first, then the check list (design §4).
   await gate(w, handle, repo.install_command, signal);
   for (const cmd of checkCommands(repo)) await gate(w, handle, cmd, signal);
   // The gate commands run repo code: they must not have moved HEAD off the commit they checked.

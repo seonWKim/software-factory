@@ -110,7 +110,6 @@ export interface Contexts {
   updater: BaseContext & { run: CommandRunner; launcher: ChildLauncher; clock: Clock; log: Logger };
   awake: BaseContext & { clock: Clock };
   github_auth: BaseContext & { secrets: SecretStore; clock: Clock };
-  /** The pre-push checks' throwaway database (design §4); `none` is its one plugin. */
   /** `credentials`: what a run's push needs; only outbound's targets call the forge's writes (RFC 0015 M7, G2). */
   forge: BaseContext & { github: GitHubApi; credentials?: GitHubCredentials };
   /** The network pause's probe (design §5 Restarts): the selection and the config name its endpoints. */
