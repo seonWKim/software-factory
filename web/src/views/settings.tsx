@@ -14,6 +14,7 @@ import { ago, duration } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
+import { CalendarSection } from "./settings-calendar.js";
 import { FileKeysSection, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
 import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 
@@ -25,7 +26,8 @@ import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 // its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
 // The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
 // and a quiet-hours field. Integrations (design 08-settings, 2026-11-12) lists each integration with the plugin in force;
-// its Switch removes the dashboard's choice, so factory.config.json decides again. The file-only keys have their own typed
+// its Switch removes the dashboard's choice, so factory.config.json decides again. Calendar (settings-calendar.tsx) connects and
+// disconnects each calendar plugin, which writes the live `calendar` key. The file-only keys have their own typed
 // form (settings-file-keys.tsx), saved on a local branch the owner merges; the PR-only table keeps the remaining keys.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
@@ -348,8 +350,8 @@ const NOTICE_KINDS = [
   ["failure", t("settings.noticeFailure")],
   ["other", t("settings.noticeOther")],
 ] as const;
-/** The keys the Notices section edits; their table rows point there instead of a generic editor that does not fit. */
-const NOTICE_KEYS = new Set(["notice_kinds", "quiet_hours"]);
+/** The keys a section of their own edits (Notices, Calendar); their table rows point there instead of a generic editor that does not fit. */
+const SECTION_KEYS: Readonly<Record<string, MessageKey>> = { notice_kinds: "settings.editUnderNotices", quiet_hours: "settings.editUnderNotices", calendar: "settings.editUnderCalendar" };
 
 /** The strings in a JSON list; none for anything else. */
 function listOf(text: string): string[] {
@@ -470,9 +472,9 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
         <Description text={row.description} />
       </Td>
       <Td className="min-w-56">
-        {NOTICE_KEYS.has(row.key) ? (
+        {SECTION_KEYS[row.key] ? (
           <p className="text-xs text-pretty text-text-2">
-            <span className="font-mono wrap-anywhere">{row.value}</span> · {t("settings.editUnderNotices")}
+            <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
           </p>
         ) : (
           <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
@@ -656,6 +658,7 @@ export function SettingsPage() {
       <ModeSection view={v} />
       <NoticesSection view={v} />
       <IntegrationsSection view={v} />
+      <CalendarSection token={v.csrf_token} />
       <PageCommands />
       <Section title={t("settings.settableKeys")} count={v.keys.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">

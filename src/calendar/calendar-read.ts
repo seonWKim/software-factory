@@ -37,3 +37,19 @@ export async function readCalendar(db: SqlDriver): Promise<StoredCalendar> {
     sources: sources.map((r) => ({ source: String(r.source), synced_at: r.synced_at == null ? null : String(r.synced_at), failed: r.error_at != null })),
   };
 }
+
+/** A source's sync state for the Settings page's Calendar section: its last success and its last error's text. */
+export interface SourceSyncState {
+  readonly source: string;
+  readonly synced_at: string | null;
+  /** The last read's error, as the sync stored it (it never holds a secret value); null after a success. */
+  readonly error: string | null;
+  readonly error_at: string | null;
+}
+
+/** Every source's sync state, by name. One read, no write. */
+export async function readSyncStates(db: SqlDriver): Promise<SourceSyncState[]> {
+  const rows = await db.all("SELECT source, synced_at, error, error_at FROM calendar_sync_state ORDER BY source");
+  const text = (v: unknown) => (v == null ? null : String(v));
+  return rows.map((r) => ({ source: String(r.source), synced_at: text(r.synced_at), error: text(r.error), error_at: text(r.error_at) }));
+}
