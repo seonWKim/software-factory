@@ -10,13 +10,13 @@ import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileS
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import {
-  type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
+  type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
   type TacitPushback, type TacitRule, TacitRefusal, TacitSyncFailed, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 import {
-  ENCODED_ELSEWHERE_HEADING, hasEncodedElsewhere, hasRuleHeading, parseDraft, parsePending, parseRules, parseShow, withRuleBlock,
+  ENCODED_ELSEWHERE_HEADING, hasEncodedElsewhere, hasRuleHeading, parseDraft, parseApplied, parsePending, parseRules, parseShow, withRuleBlock,
 } from "./ledger-text.js";
 import { NoTacitLedger } from "./no-tacit-ledger.js";
 
@@ -203,16 +203,26 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     return out;
   }
 
-  /** `<home>/private/tacit/rules.md`, read as it is; no file: no rules. */
-  async rules(): Promise<readonly TacitRule[]> {
-    let text: string;
+  /** `<home>/private/tacit/rules.md` as text; null when there is no file. */
+  private readRulesText(): string | null {
     try {
-      text = readFileSync(join(this.home, "private", "tacit", "rules.md"), "utf8");
+      return readFileSync(join(this.home, RULES_FILE), "utf8");
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw err;
     }
-    return parseRules(text);
+  }
+
+  /** `<home>/private/tacit/rules.md`, read as it is; no file: no rules. */
+  async rules(): Promise<readonly TacitRule[]> {
+    const text = this.readRulesText();
+    return text === null ? [] : parseRules(text);
+  }
+
+  /** The whole rules file for the Rules page (`parseApplied`); no file: nothing. */
+  async applied(): Promise<TacitApplied> {
+    const text = this.readRulesText();
+    return text === null ? { rules: [], elsewhere: [] } : parseApplied(text);
   }
 
   /** Whether `<home>/<file>` is an executable file. */

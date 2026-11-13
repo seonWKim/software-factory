@@ -3,6 +3,8 @@
 // held), each with its ID, title and state, and a proposal's kind and target, read through `TacitLedger.pending` only;
 // an entry the ledger judged after its pending view was built comes with that decision (`judged`), and a class not
 // judged with its draft (default, exception, incidents, scope) or why the draft could not be read.
+// `applied` (the Applied group) is the promoted rules file read through `TacitLedger.applied` only: its blocks and its
+// encoded-elsewhere lines, null with the ledger off.
 // GET /api/v1/rules/entry?id= reads one entry's detail on demand (what it would change, why, where it applies) through
 // `TacitLedger.show` only; it writes nothing. Every ledger text leaves through the Withholder. POST /api/v1/rules/verdict sends
 // one verdict (promote, reject or hold) with the owner's reason, and for promote of a class their wording, default and
@@ -92,7 +94,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     return "error" in who ? await text(who.error) : null;
   };
   if (!tacit?.enabled) {
-    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], error: null, csrf_token: null, judge: null, home: null, turn_on: null } };
+    if (!d.tacit) return { status: 200, value: { enabled: false, entries: [], applied: null, error: null, csrf_token: null, judge: null, home: null, turn_on: null } };
     const judge = await judgeOf("turns the ledger on");
     const home = d.tacit.home();
     // The whole entry with `tacit` set: other integrations keep theirs.
@@ -100,7 +102,7 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
     return {
       status: 200,
       value: {
-        enabled: false, entries: [], error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
+        enabled: false, entries: [], applied: null, error: null, csrf_token: judge === null ? d.pauses!.csrfToken : null, judge,
         home: { path: await text(home.path), missing: home.missing }, turn_on: turnOn,
       },
     };
@@ -127,8 +129,26 @@ export async function readRules(d: PauseDeps): Promise<ApiResult> {
   }
   return {
     status: 200,
-    value: { enabled: true, entries: shown, error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null },
+    value: { enabled: true, entries: shown, applied: await readApplied(tacit, text), error: error === null ? null : await text(error), csrf_token: d.pauses?.csrfToken ?? null, judge, home: null, turn_on: null },
   };
+}
+
+/** The rules file's blocks and encoded-elsewhere lines, each text through the Withholder; a failed read gives none (the entries stay). */
+async function readApplied(tacit: TacitLedger, text: (v: string) => Promise<string>) {
+  const opt = async (v: string | undefined) => (v === undefined ? null : await text(v));
+  try {
+    const a = (await tacit.applied?.()) ?? { rules: [], elsewhere: [] };
+    const rules = [];
+    for (const r of a.rules) {
+      rules.push({
+        id: await opt(r.id), name: await opt(r.name), default: await opt(r.default), exceptions: await opt(r.exceptions), scope: await opt(r.scope),
+        incidents: r.incidents === undefined ? null : await Promise.all(r.incidents.map(text)), judged: await opt(r.judged), raw: await opt(r.raw),
+      });
+    }
+    return { rules, elsewhere: await Promise.all(a.elsewhere.map(text)) };
+  } catch {
+    return { rules: [], elsewhere: [] };
+  }
 }
 
 /**
