@@ -119,6 +119,11 @@ export interface TaskStore extends ProjectStore {
   getProjectBySlug(slug: string): Promise<Project | null>;
   /** The slugs of each task's active projects, sorted; a task in none is left out. Read-only. */
   listTaskProjectSlugs(task_ids: readonly string[]): Promise<Record<string, string[]>>;
+  /**
+   * The slugs of each work item's source task's active projects (the task whose work_item_id it is), sorted, in one
+   * read; an item with no source task or no active project is left out. Read-only.
+   */
+  listWorkItemProjectSlugs(work_item_ids: readonly string[]): Promise<Record<string, string[]>>;
   /** Open tasks (no done_at), oldest first, at most `limit`. Read-only. */
   listTasks(limit: number): Promise<Task[]>;
   /** The Done view's read (design 02-tasks, Done view): the done tasks of `window` (doneWindow), most recently done first. Read-only. */

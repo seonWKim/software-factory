@@ -28,6 +28,7 @@ import { readGitHubBudget } from "./github-budget.js";
 import { effectiveGlobal, readSettings } from "./settings-api.js";
 import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
+import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, oneLine, parseRevision, systemActions } from "./system-actions.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
@@ -66,8 +67,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
   switch (path) {
     case "/overview":
       return ok(await overview(c, url.searchParams));
-    case "/items":
-      return items(c, url.searchParams);
+    case "/items": return (await projectFilterRefusal(d.store, url.searchParams.get("project"))) ?? items(c, url.searchParams);
     case "/runs": return ok(await runs(c));
     case "/queue": return ok(await queue(c));
     case "/workers": return ok(await workers(c));
@@ -319,7 +319,7 @@ async function items(c: ApiCtx, params: URLSearchParams): Promise<ApiResult> {
   const f = parsed.filters;
   const ctx = { store: c.d.store, w: c.w, now: c.now, lease_ms: c.d.lease_ms };
   const rows = await listRows(ctx, f);
-  const shown = applyFilters(rows, f);
+  const shown = await inProject(c.d.store, params.get("project"), applyFilters(rows, f));
   const checks = new Map<string, MergeCheck>();
   for (const m of await c.d.store.listMergeChecks(shown.filter((r) => readyToMerge(r.item)).map((r) => r.item.id))) checks.set(m.work_item_id, m);
   const out = [];

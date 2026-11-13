@@ -46,7 +46,8 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // completion or a reopen reloads it with the open views.
 // The Project switcher (design 09-dashboard-app, task projects) filters Inbox, Today, Upcoming and List to one active
 // task project's tasks (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
-// load and set on change, so a filtered view can be shared and reloaded. Done is not filtered. Each open row's overflow
+// load and set on change, so a filtered view can be shared and reloaded. Done is not filtered. Factory work above
+// the tabs follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
 
@@ -870,7 +871,7 @@ export function TasksPage() {
   if (v?.active_projects !== undefined) known.current = v.active_projects;
   return (
     <>
-      <FactoryWork />
+      <FactoryWork project={project} />
       <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} />
       {undo.error !== null && (
         <p role="alert" className={ALERT}>

@@ -136,6 +136,23 @@ async function listTaskProjectSlugs(db: SqlDriver, task_ids: readonly string[]):
   return out;
 }
 
+/**
+ * Each work item's source task's active projects' slugs, sorted, read over controller_tasks.work_item_id in one query;
+ * an item with no source task, or whose task is in no active project, is left out.
+ */
+async function listWorkItemProjectSlugs(db: SqlDriver, work_item_ids: readonly string[]): Promise<Record<string, string[]>> {
+  if (work_item_ids.length === 0) return {};
+  const rows = await db.all(
+    `SELECT DISTINCT t.work_item_id, p.slug FROM controller_tasks t JOIN controller_task_projects l ON l.task_id = t.id
+      JOIN controller_projects p ON p.id = l.project_id
+      WHERE p.archived_at IS NULL AND t.work_item_id IN (${work_item_ids.map(() => "?").join(", ")}) ORDER BY t.work_item_id, p.slug`,
+    [...work_item_ids],
+  );
+  const out: Record<string, string[]> = {};
+  for (const r of rows) (out[String(r.work_item_id)] ??= []).push(String(r.slug));
+  return out;
+}
+
 async function listTaskProjects(db: SqlDriver, task_id: string): Promise<Project[]> {
   const rows = await db.all(
     `SELECT ${COLUMNS.split(", ").map((c) => `p.${c}`).join(", ")} FROM controller_projects p
@@ -167,4 +184,5 @@ export class SqlProjectStore implements ProjectStore {
   removeTaskFromProject(project_id: string, task_id: string) { return removeTaskFromProject(this.db, project_id, task_id); }
   listTaskProjects(task_id: string) { return listTaskProjects(this.db, task_id); }
   listTaskProjectSlugs(task_ids: readonly string[]) { return listTaskProjectSlugs(this.db, task_ids); }
+  listWorkItemProjectSlugs(work_item_ids: readonly string[]) { return listWorkItemProjectSlugs(this.db, work_item_ids); }
 }

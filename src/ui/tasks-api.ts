@@ -13,7 +13,7 @@ import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit, validDate } from "../core/quick-add.js";
 import { buildTask } from "../core/task-build.js";
 import { isProjectSlug } from "../core/projects.js";
-import { ProjectRefused, doneWindow, durationError, projectRefusal, taskViews } from "../core/tasks.js";
+import { ProjectRefused, type TaskStore, doneWindow, durationError, projectRefusal, taskViews } from "../core/tasks.js";
 import type { Timestamp } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
@@ -56,12 +56,8 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
  * global value.
  */
 export async function readTasks(d: UiDeps, project: string | null = null): Promise<ApiResult> {
-  if (project !== null) {
-    if (!isProjectSlug(project)) return refused(400, "project must be a project slug, e.g. home-repairs");
-    const p = await d.store.getProjectBySlug(project);
-    if (p === null) return refused(404, projectRefusal(project, "not_found"));
-    if (p.archived_at !== null) return refused(400, projectRefusal(project, "archived"));
-  }
+  const refusal = await projectFilterRefusal(d.store, project);
+  if (refusal !== null) return refusal;
   const now = d.clock.now();
   const w = new Withholder(d.scanner);
   const listed = await shown(w, await d.store.listTasks(TASK_LIST_LIMIT));
@@ -79,6 +75,29 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
       as_of: now.toISOString(), ...taskViews(open, now, events), active_projects, calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build, add_key,
     },
   };
+}
+
+/**
+ * Why a `?project=` filter is refused, or null for none or an active project: 400 for a value that is not a slug or an
+ * archived project, 404 for an unknown one. GET /api/v1/tasks and GET /api/v1/items both answer with it.
+ */
+export async function projectFilterRefusal(store: Pick<TaskStore, "getProjectBySlug">, project: string | null): Promise<ApiResult | null> {
+  if (project === null) return null;
+  if (!isProjectSlug(project)) return refused(400, "project must be a project slug, e.g. home-repairs");
+  const p = await store.getProjectBySlug(project);
+  if (p === null) return refused(404, projectRefusal(project, "not_found"));
+  if (p.archived_at !== null) return refused(400, projectRefusal(project, "archived"));
+  return null;
+}
+
+/**
+ * GET /api/v1/items?project=<slug> (the Tasks page's Factory work, design 09-dashboard-app): only the rows whose source
+ * task is in that active project, from one store read for every listed row; all of them with no project.
+ */
+export async function inProject<T extends { item: { id: string } }>(store: Pick<TaskStore, "listWorkItemProjectSlugs">, project: string | null, rows: T[]): Promise<T[]> {
+  if (project === null) return rows;
+  const slugs = await store.listWorkItemProjectSlugs(rows.map((r) => r.item.id));
+  return rows.filter((r) => slugs[r.item.id]?.includes(project) ?? false);
 }
 
 /** The `tasks_add_key` setting: its stored global override when that is one of the choices, else the default (`enter`). */
