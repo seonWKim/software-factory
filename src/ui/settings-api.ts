@@ -36,6 +36,7 @@ import { loadSettingCatalog } from "../runtime/index.js";
 import { type ConfigEditRequest, type ConfigEditResult, FILE_ONLY_KEYS, editConfigFile } from "../core/config-writer.js";
 import { type SettingsAction, type SettingsDeps, runSettings } from "../settings-cmd.js";
 import { lastAutoStop } from "./alarms.js";
+import { type UiCapabilitySources, capabilitySources } from "./capabilities-api.js";
 import type { UiDeps } from "./pages.js";
 import type { PauseDeps } from "./pause-api.js";
 import { ownerOf } from "./rules-api.js";
@@ -71,7 +72,7 @@ export interface UiSettings {
    * The file-only key writer `factory settings edit-file` runs (compose.ts configWriter). Absent: an edit-file write is
    * refused. Its `fileKeys` feeds the page's typed form; a writer without it shows no form.
    */
-  editFile?: ((r: ConfigEditRequest) => Promise<ConfigEditResult>) & Partial<Pick<ConfigFileWriter, "fileKeys">>;
+  editFile?: ((r: ConfigEditRequest) => Promise<ConfigEditResult>) & Partial<Pick<ConfigFileWriter, "fileKeys" | "capabilities">>;
 }
 
 /**
@@ -96,8 +97,11 @@ export interface FileKeysView {
   plugins: { kind: string; interface: string; guard: boolean; names: string[]; selected: string | null }[];
 }
 
-/** The file-only key writer, and what its typed form on the Settings page reads. */
-export type ConfigFileWriter = ((r: ConfigEditRequest) => Promise<ConfigEditResult>) & { fileKeys(): FileKeysView };
+/**
+ * The file-only key writer, and what the Settings page reads from the same loaded config: its typed form, and the
+ * Capabilities section's sources (capabilities-api.ts), read again on each call so a new skill shows with no restart.
+ */
+export type ConfigFileWriter = ((r: ConfigEditRequest) => Promise<ConfigEditResult>) & { fileKeys(): FileKeysView; capabilities(): Promise<UiCapabilitySources> };
 
 const isReadOnlyFileKey = (key: string): boolean => (READ_ONLY_FILE_KEYS as readonly string[]).includes(key);
 
@@ -129,7 +133,7 @@ export function fileKeysOf(loaded: Pick<Loaded, "file" | "registry" | "plugins">
 
 /** What the file-only key writer is built from: the CLI handler and compose.ts buildUiParts pass the same parts. */
 export interface ConfigWriterParts {
-  loaded: Pick<Loaded, "root" | "codeRoot" | "configFile" | "externalConfig" | "config" | "file" | "registry" | "plugins">;
+  loaded: Pick<Loaded, "root" | "codeRoot" | "configFile" | "externalConfig" | "config" | "file" | "registry" | "plugins" | "pack_tools">;
   store: FactoryStore;
   sandbox: Sandbox;
   /** The time, ISO (the injected Clock). */
@@ -168,7 +172,7 @@ export function configWriter(p: ConfigWriterParts): ConfigFileWriter {
     newId: () => `wi_${randomUUID().replaceAll("-", "")}` as WorkItemId,
   };
   const fileKeys = fileKeysOf(p.loaded);
-  return Object.assign((r: ConfigEditRequest) => editConfigFile(deps, r), { fileKeys: () => fileKeys });
+  return Object.assign((r: ConfigEditRequest) => editConfigFile(deps, r), { fileKeys: () => fileKeys, capabilities: () => capabilitySources(p.loaded, p.store) });
 }
 
 /** A fresh CSRF token: 32 random bytes, base64url. Never stored or written to disk. */
@@ -244,7 +248,7 @@ export async function learnedWithRecords(
 /** How the page edits a key. `json`: an object edited as JSON text (`model_by`, `hold_policy`). `text`: free text, sent as a JSON string (`message_style`). */
 type Kind = "number" | "boolean" | "models" | "json" | "mode" | "text";
 const kindOf = (k: SettableKey): Kind =>
-  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" || k === "integrations" ? "json" : k === "mode" ? "mode" : k === "message_style" ? "text" : "number";
+  k === "phases_auto_approve" ? "boolean" : k === "models" ? "models" : k === "model_by" || k === "hold_policy" || k === "integrations" || k === "tool_grants" ? "json" : k === "mode" ? "mode" : k === "message_style" ? "text" : "number";
 
 /** GET /api/v1/settings. */
 export async function readSettings(d: UiDeps, s: UiSettings) {

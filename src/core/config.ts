@@ -90,6 +90,52 @@ export function toolGrantsConfig(raw: unknown, broker: Pick<ToolBroker, "allTool
   return out;
 }
 
+/**
+ * The runtime `tool_grants` setting's value (design 08-settings, 2026-11-13): the same shape as the file key, checked
+ * without the broker, which only the worker builds. A name the broker does not list, or one that is not read-only,
+ * reaches no agent: the run's tool gate lists and calls only granted read-only tools the broker serves.
+ */
+export function toolGrantsShape(raw: unknown): ToolGrants {
+  const shape = `tool_grants must be an object mapping a run kind (${GRANT_RUN_KINDS.join(", ")}) to a list of tool names`;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error(shape);
+  const out: ToolGrants = {};
+  for (const [kind, names] of Object.entries(raw as Record<string, unknown>)) {
+    if (!(GRANT_RUN_KINDS as readonly string[]).includes(kind)) throw new Error(`tool_grants key ${JSON.stringify(kind)} is not a run kind; run kinds: ${GRANT_RUN_KINDS.join(", ")}`);
+    if (!Array.isArray(names) || !names.every((n) => typeof n === "string" && n.trim() !== "")) throw new Error(`tool_grants.${kind} must be a list of tool names`);
+    const bad = (names as string[]).find((n) => n.startsWith("pack:") && !PACK_GRANT.test(n));
+    if (bad !== undefined) throw new Error(`tool_grants.${kind} grants ${JSON.stringify(bad)}: a pack entry is pack:tool:<name> or pack:mcp_server:<name>`);
+    out[kind as GrantRunKind] = [...new Set(names as string[])];
+  }
+  return out;
+}
+
+/** The keys of the `capabilities` block (design 08-settings, 2026-11-13). */
+export const CAPABILITIES_KEYS = ["skill_folders"] as const;
+
+/**
+ * `capabilities` from factory.config.json: `skill_folders`, the folders whose skills the Settings page lists (a
+ * leading `~` is the owner's HOME, a relative path is taken from the config's folder). Absent: none, and nothing
+ * fails. A folder that is missing when read lists no skills.
+ */
+export function capabilitiesConfig(raw: unknown): { skill_folders: readonly string[] } {
+  const problems = capabilitiesProblems(raw);
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+  const block = (raw as { capabilities?: { skill_folders?: string[] } } | null)?.capabilities;
+  return { skill_folders: block?.skill_folders ?? [] };
+}
+
+/** What is wrong with the `capabilities` block, one line each; [] when it is absent or right. */
+export function capabilitiesProblems(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return [];
+  const block = (raw as Record<string, unknown>).capabilities;
+  if (block === undefined) return [];
+  if (typeof block !== "object" || block === null || Array.isArray(block)) return ["capabilities must be an object with skill_folders"];
+  const folders = (block as Record<string, unknown>).skill_folders;
+  if (folders === undefined) return [];
+  if (!Array.isArray(folders) || !folders.every((f) => typeof f === "string" && f.trim() !== "")) return ["capabilities.skill_folders must be a list of folder paths"];
+  return [];
+}
+
 /** `repo.ui_check`: an argv command and the path prefixes whose change makes the merge check run it. */
 export interface UiCheck {
   command: string[];
