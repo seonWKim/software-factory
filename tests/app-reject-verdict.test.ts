@@ -184,7 +184,7 @@ describe("dashboard reject", () => {
       const r = await h.request(it1, "reject", "no", READER);
       await h.apply();
       expect(await h.get(it1)).toEqual(it1);
-      expect(await h.refusals(it1, r)).toEqual(["`/reject` was not applied: it needs write permission on this repository (`not_a_collaborator`)."]);
+      expect(await h.refusals(it1, r)).toEqual(["`/reject` was not applied: only the owner may send this command (`not_a_collaborator`)."]);
     }
   });
 
@@ -288,7 +288,7 @@ describe("dashboard verdict", () => {
       await h.apply();
       expect(await h.verdicts(it1)).toEqual([]);
       expect(await h.get(it1)).toEqual(it1);
-      expect(await h.refusals(it1, r)).toEqual(["`/verdict` was not applied: it needs write permission on this repository (`not_a_collaborator`)."]);
+      expect(await h.refusals(it1, r)).toEqual(["`/verdict` was not applied: only the owner may send this command (`not_a_collaborator`)."]);
     }
   });
 
@@ -331,7 +331,7 @@ describe("dashboard revise (issue #527)", () => {
       await h.apply();
       expect(await h.get(it1)).toEqual(it1);
       expect(await h.store.listRuns(it1.id)).toEqual([]);
-      expect(await h.refusals(it1, r)).toEqual(["`/revise` was not applied: it needs write permission on this repository (`not_a_collaborator`)."]);
+      expect(await h.refusals(it1, r)).toEqual(["`/revise` was not applied: only the owner may send this command (`not_a_collaborator`)."]);
     }
   });
 
@@ -424,7 +424,7 @@ describe("dashboard approve, retry and resolve (issue #453): the comment command
       expect(await h.get(it1)).toEqual(it1);
       expect(await h.changes(it1)).toEqual([]);
       expect(await h.store.listRuns(it1.id)).toEqual([]);
-      const reply = `\`/${command}\` was not applied: it needs write permission on this repository (\`not_a_collaborator\`).`;
+      const reply = `\`/${command}\` was not applied: only the owner may send this command (\`not_a_collaborator\`).`;
       expect(await h.refusals(it1, r)).toEqual([reply]);
       expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBe(reply);
     }
@@ -465,7 +465,7 @@ describe("dashboard approve, retry and resolve (issue #453): the comment command
     expect((await h.changes(it1)).find((c) => c.reason === "spec_approved")?.detail).toMatchObject({ note: "+paths src/other.ts" });
   });
 
-  it("the check is approve_spec on the item for the request's user, with the request's edge passport", async () => {
+  it("the check is approve_spec on the item for the request's user, with no passport even on an old row that has one", async () => {
     const asked: unknown[] = [];
     const fake = new FakeAuth();
     const recording: AuthProvider = {
@@ -477,10 +477,10 @@ describe("dashboard approve, retry and resolve (issue #453): the comment command
     };
     const h = await harness({ auth: recording });
     const it1 = await h.itemIn(localRef(1), FAILED_IMPLEMENT);
-    // The row as the unit gets it, with its passport (the request's edge passport, recorded by the page).
+    // A row from before the owner check, with an edge passport: the check ignores it (design 08-permissions, One owner).
     const r = { ...(await h.request(it1, "retry", null)), passport_id: "pp1" };
     await (await h.controller.unit("app-requests")).applyAppRequest(r);
-    expect(asked).toEqual([{ user_id: WRITER, action: "approve_spec", resource: { kind: "work_item", id: it1.id }, passport: { id: "pp1", at: r.created_at } }]);
+    expect(asked).toEqual([{ user_id: WRITER, action: "approve_spec", resource: { kind: "work_item", id: it1.id }, passport: undefined }]);
   });
 });
 

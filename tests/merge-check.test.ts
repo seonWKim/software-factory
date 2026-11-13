@@ -603,7 +603,7 @@ describe("merge queue: a failing UI check (real git)", { timeout: 120_000 }, () 
     const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
     const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
     const controller = new ControllerRole({
-      store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+      store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
     });
     const runner = new FakeRunner({
       triage: () => ({ output: { ...triageSpec, allowed_paths: ["web/"], files_to_change: ["web/app.css"] } }),

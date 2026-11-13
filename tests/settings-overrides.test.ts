@@ -143,10 +143,10 @@ describe("a stored override that fails a check is ignored, and its key keeps the
 
 describe("key refusals", () => {
   it("PR-only keys and keys outside the allow-list", () => {
-    for (const k of ["plugins", "repo", "store", "floors", "dials", "auth", "secrets", "egress", "broker"]) {
+    for (const k of ["plugins", "repo", "store", "floors", "dials", "secrets", "egress", "broker"]) {
       expect(keyRefusal(k)).toContain("changes by PR only");
     }
-    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "branch_prefix", "nope"]) {
+    for (const k of ["budgets", "inbox_retention_days", "stats", "ui", "branch_prefix", "nope", "auth", "permissions"]) {
       expect(keyRefusal(k)).toContain("is not settable");
     }
     for (const k of SETTABLE_KEYS) expect(keyRefusal(k)).toBeNull();

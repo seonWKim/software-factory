@@ -101,7 +101,7 @@ describe("inbound GitHub commands: the actor is the linked factory user", () => 
     expect(await f.store.listStateChanges(item.id)).toHaveLength(changes);
     expect((await f.store.listItemMessages(item.id)).find((m) => m.marker === "github:502")).toMatchObject({ actor: "github:99", body: "/approve" });
     // The refusal is a reply in the thread, delivered through the outbox like every factory message.
-    expect((f.repo.comments.get(7) ?? []).some((c) => /write permission/.test(c.body))).toBe(true);
+    expect((f.repo.comments.get(7) ?? []).some((c) => /only the owner may send this command/.test(c.body))).toBe(true);
     expect(JSON.stringify(await f.store.listItemMessages(item.id))).not.toContain("stranger");
   });
 });

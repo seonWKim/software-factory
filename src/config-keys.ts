@@ -29,8 +29,6 @@ export const TOP_LEVEL_KEYS = [
   "branch_prefix",
   "dials",
   "floors",
-  "auth",
-  "permissions",
   "plugins",
   "models",
   "model_by",
@@ -92,9 +90,24 @@ export const TOP_LEVEL_KEYS = [
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
-type MissingTopLevel = Exclude<keyof FileConfig, (typeof TOP_LEVEL_KEYS)[number]>;
+type MissingTopLevel = Exclude<keyof FileConfig, (typeof TOP_LEVEL_KEYS)[number] | (typeof REMOVED_TOP_LEVEL_KEYS)[number]>;
 const _allTopLevelListed: [MissingTopLevel] extends [never] ? true : false = true;
 void _allTopLevelListed;
+
+/**
+ * Top-level keys no longer read (design 08-permissions, One owner): the owner check replaced the auth plugin choice
+ * (`auth`) and the grants (`permissions`). A config that still has one loads, with one warning (removedKeysWarning).
+ */
+export const REMOVED_TOP_LEVEL_KEYS = ["auth", "permissions"] as const;
+
+/** The one warning for the removed keys a parsed config still has, naming each; null when it has none. */
+export function removedKeysWarning(raw: unknown): string | null {
+  if (!isObject(raw)) return null;
+  const found = REMOVED_TOP_LEVEL_KEYS.filter((k) => Object.hasOwn(raw, k));
+  if (found.length === 0) return null;
+  const names = found.map((k) => `"${k}"`).join(" and ");
+  return `factory.config.json: ${names} ${found.length === 1 ? "is" : "are"} no longer read (one owner check decides every command); remove ${found.length === 1 ? "it" : "them"}`;
+}
 
 /** Store keys per store.type. A type not listed here (an unknown plugin) skips the store key check. */
 export const STORE_KEYS: Readonly<Record<string, readonly string[]>> = {
@@ -177,7 +190,9 @@ export function unknownConfigKeys(raw: unknown): string[] {
       problems.push(`unknown config key "${key}" at ${at}; valid ${what} keys: ${valid.join(", ")}${suggestion(key, valid)}`);
     }
   };
-  check(raw, "", "top-level", TOP_LEVEL_KEYS);
+  // A removed key is not unknown: it loads with removedKeysWarning's warning instead.
+  const removed: readonly string[] = REMOVED_TOP_LEVEL_KEYS;
+  check(Object.fromEntries(Object.entries(raw).filter(([k]) => !removed.includes(k))), "", "top-level", TOP_LEVEL_KEYS);
   const store = raw.store;
   if (isObject(store) && typeof store.type === "string" && Object.hasOwn(STORE_KEYS, store.type)) {
     check(store, "store", `store (type "${store.type}")`, STORE_KEYS[store.type]!);

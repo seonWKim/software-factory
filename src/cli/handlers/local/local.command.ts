@@ -3,7 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { buildStatsStore } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
-import { ProfileStore, startIdentity, type IdentityRuntime } from "../../../identity/index.js";
+import { ProfileStore } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import { CLI_TOP_WORDS, HELP_WORD, cliIdentity, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
@@ -39,14 +39,8 @@ export default defineCommand({
     const identity = cliIdentity(cliUser, await cliEnvironment(loaded.root));
     await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
     const store = await buildStatsStore(loaded);
-    let identityRt: IdentityRuntime | null = null;
     try {
       await store.migrate();
-      // The edge (RFC 0015 §8): a command row carries the CLI identity's passport. Started only for a command.
-      const passport = async () => {
-        identityRt ??= await startIdentity({ db: storeSql(store), stateDir: loaded.stateDir });
-        return identityRt.edge({ provider: "local", subject: identity.user }, "cli");
-      };
       const { owner, name } = loaded.config.repo;
       const resolveProject = storeProjectResolver(store, { owner, name });
       const r = await runLocalCli(
@@ -57,7 +51,6 @@ export default defineCommand({
           read: (path) => readFile(path, "utf8"),
           newId: () => randomUUID(),
           displayNames: (ids) => new ProfileStore(storeSql(store)).displayNames(ids),
-          passport,
         },
         action,
       );
@@ -67,7 +60,6 @@ export default defineCommand({
       for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
       return r.code;
     } finally {
-      await (identityRt as IdentityRuntime | null)?.stop();
       await store.close();
     }
   },

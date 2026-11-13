@@ -63,7 +63,7 @@ async function forgeFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   const sandbox = new NoOpSandbox(join(root, "wt"));
   const localSandbox = new NoOpSandbox(join(root, "local-wt"), undefined, undefined, { local: true });
   const controller = new ControllerRole({
-    store, sources: [source], forge, auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+    store, sources: [source], forge, auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),

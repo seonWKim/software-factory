@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,15 +11,11 @@ import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/loca
 import { Sessions } from "../src/core/session.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import type { GrantSource, Role } from "../src/interfaces/auth-provider.js";
 import { STORE_BRANCH } from "../src/interfaces/tool-broker.js";
 import {
   FakeAuth, FakeBroker, FakeIssues, FakeRunner, FakeSandbox, FakeForge, FakeSource, MemorySessionFiles, MemoryStorage, alice, cleanScanner, config, issueRef,
@@ -27,9 +24,8 @@ import {
 import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
 
 // A local task end to end (issue #200): filed and approved from the CLI, read by the `local` source, applied by
-// the controller, built, reviewed, merged. Since issue #318 local commands are authorized by the `local` auth
-// plugin (local users in the store), GitHub comments by the GitHub one: here GitHubAuthProvider over a static grant
-// and a remote grant standing in for GitHub, which can be made unreachable. Since issue #333 a local item takes
+// the controller, built, reviewed, merged. Every command, local or a GitHub comment, takes the one owner check
+// (design 08-permissions, One owner): ME is the owner, with the GitHub account OWNER names linked to it. Since issue #333 a local item takes
 // the local broker and sandbox by its source type, with or without a GitHub plugin selected, and `factory merge`
 // merges it into the local base branch: the flows below run over a real git repo.
 
@@ -38,20 +34,15 @@ const ME = "local:me@example.com" as UserId;
 const DEV = "local:dev@example.com" as UserId;
 const ANON = "local:anonymous" as UserId;
 
-/** The GitHub permission check: a remote grant that counts its calls and throws while GitHub is unreachable. */
-class GitHubGrant implements GrantSource {
-  readonly remote = true;
-  calls = 0;
-  reachable = true;
-  async denies(): Promise<boolean> {
-    return false;
-  }
-  async roles(): Promise<readonly Role[]> {
-    this.calls++;
-    if (!this.reachable) throw new Error("GitHub unreachable (rate limited)");
-    return [];
-  }
+
+/** One owner (design 08-permissions): ME, the CLI identity, with the GitHub account OWNER names linked to it. */
+async function ownedBy(store: Awaited<ReturnType<typeof newStore>>["store"]): Promise<void> {
+  if (await store.getLocalUser(ME)) return;
+  await store.claimLocalOwner(ME);
+  await store.createLinkCode(ME, "OWNERLINK1");
+  await store.redeemLinkCode("OWNERLINK1", { provider: "github", subject: OWNER.slice("github:".length) });
 }
+
 
 /** `sync: false`: no sync plugin is selected (the `local` source only); the fake forge still stands in for the merge. */
 async function factory(opts: { sync?: boolean } = {}) {
@@ -60,12 +51,10 @@ async function factory(opts: { sync?: boolean } = {}) {
   const gh = new FakeSource();
   const forge = new FakeForge(opts.sync === false ? null : gh);
   const local = new LocalSource(store);
-  const github = new GitHubGrant();
-  const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
-  const auth = new GitHubAuthProvider(store, grants);
-  const local_auth = new LocalAuthProvider(store, grants);
+  await ownedBy(store);
+  const auth = new OwnerAuth(store);
   const controller = new ControllerRole({
-    store, sources: opts.sync === false ? [local] : [gh, local], forge, auth, local_auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
+    store, sources: opts.sync === false ? [local] : [gh, local], forge, auth, clock, config, log: silent, scanner: cleanScanner, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
     triage: () => ({ output: triageSpec }),
@@ -91,7 +80,7 @@ async function factory(opts: { sync?: boolean } = {}) {
   };
   const refusals = async (id: WorkItemId) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
-  return { clock, store, gh, forge, github, controller, broker, step, cli, refusals };
+  return { clock, store, gh, forge, controller, broker, step, cli, refusals };
 }
 
 const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
@@ -144,10 +133,8 @@ async function gitFactory(o: { github: boolean }) {
   // The GitHub broker: a recording fake whose calls are the GitHub calls, outbound's push and PR included.
   const ghBroker = new FakeBroker();
   const forge = new FakeForge(gh, ghBroker.calls);
-  const github = new GitHubGrant();
-  const grants = [new StaticGrant({ roles: { [OWNER]: { "*": ["approver"] } }, deny: {} }), github];
-  const local_auth = new LocalAuthProvider(store, grants);
-  const auth = o.github ? new GitHubAuthProvider(store, grants) : local_auth;
+  await ownedBy(store);
+  const auth = new OwnerAuth(store);
   const wt = join(root, "wt");
   const localRoute = {
     broker: new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: repo }),
@@ -156,7 +143,7 @@ async function gitFactory(o: { github: boolean }) {
   // With GitHub selected, the selected sandbox fetches origin.
   const sandbox = o.github ? new NoOpSandbox(wt) : localRoute.sandbox;
   const controller = new ControllerRole({
-    store, sources: o.github ? [gh, new LocalSource(store)] : [new LocalSource(store)], ...(o.github ? { forge } : {}), auth, local_auth, clock, config: cfg,
+    store, sources: o.github ? [gh, new LocalSource(store)] : [new LocalSource(store)], ...(o.github ? { forge } : {}), auth, clock, config: cfg,
     log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
   });
   const runner = new FakeRunner({
@@ -196,7 +183,7 @@ async function gitFactory(o: { github: boolean }) {
   };
   /** Every GitHub call the fakes saw for local items: broker calls and preflights, permission reads, issue and PR writes. */
   const githubCalls = () =>
-    ghBroker.calls.length + ghBroker.preflights.length + github.calls + gh.subIssueCalls
+    ghBroker.calls.length + ghBroker.preflights.length + gh.subIssueCalls
     + gh.comments.filter((c) => c.source.type === "local").length + forge.comments.length + forge.statusCalls.length;
   const messages = async (id: WorkItemId, prefix: string) =>
     (await store.listItemMessages(id)).filter((m) => m.marker.startsWith(prefix)).map((m) => m.body);
@@ -281,9 +268,8 @@ describe("local task flow, over git", { timeout: 60_000 }, () => {
 });
 
 describe("local task flow", () => {
-  it("a GitHub comment is still authorized by the GitHub auth plugin", async () => {
+  it("a GitHub comment takes the owner check: a stranger is refused, the owner's linked account approves as the owner", async () => {
     const f = await factory();
-    await f.cli(ME, { action: "create", title: "t", bodyFile: "b" }); // a local owner exists; it is not a GitHub approver
     f.gh.queue.push({ kind: "item_requested", source: issueRef(5), requester: alice, title: "t", body: "b" });
     await f.step();
     const item = (await f.store.getWorkItemBySource("github_issue", issueRef(5).id))!;
@@ -291,30 +277,23 @@ describe("local task flow", () => {
 
     f.gh.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "900", approver: mallory, note: "" });
     await f.step();
-    expect(f.gh.comments.find((c) => c.marker === "<!-- factory:refused:900 -->")!.body).toContain("needs write permission");
-    expect(f.github.calls).toBeGreaterThan(0);
-    // A local identity sent as a GitHub account is a GitHub account: the local owner row does not count there.
+    expect(f.gh.comments.find((c) => c.marker === "<!-- factory:refused:900 -->")!.body).toBe("`/approve` was not applied: only the owner may send this command.");
     f.gh.queue.push({ kind: "spec_approved", source: issueRef(5), comment_id: "901", approver: { provider: "github", subject: "1" }, note: "" });
     await f.step();
-    expect((await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!.actor).toEqual({ kind: "user", id: OWNER });
+    expect((await f.store.listStateChanges(item.id)).find((c) => c.reason === "spec_approved")!.actor).toEqual({ kind: "user", id: ME });
   });
 
-  it("enterprise: a local user without a role is refused; once the owner grants approver, the same command is applied", async () => {
+  it("a local user who is not the owner is refused with the owner reply, also once added as an approver", async () => {
     const f = await factory();
     const id = (await f.cli(ME, { action: "create", title: "t", bodyFile: "b" })).lines[0] as WorkItemId;
     await f.step();
     expect((await f.cli(DEV, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
     await f.step();
-    const [refusal] = await f.refusals(id);
-    expect(refusal).toContain(`factory users add ${DEV} --role approver`);
-    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-
-    expect((await f.cli(DEV, { action: "users_add", user: DEV, role: "approver" })).code).toBe(1);
+    expect(await f.refusals(id)).toEqual(["`/approve` was not applied: only the owner may send this command."]);
     expect((await f.cli(ME, { action: "users_add", user: DEV, role: "approver" })).code).toBe(0);
     expect((await f.cli(DEV, { action: "command", command: "approve", id, text: "" })).code).toBe(0);
     await f.step();
-    const approval = (await f.store.listStateChanges(id)).find((c) => c.reason === "spec_approved")!;
-    expect(approval.actor).toEqual({ kind: "user", id: DEV });
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 
   it("anonymous may file a task but its approve is refused, and it never becomes the owner", async () => {
@@ -325,7 +304,7 @@ describe("local task flow", () => {
     await f.step();
     expect(await f.refusals(id)).toHaveLength(1);
     expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
-    expect(await f.store.listLocalUsers()).toEqual([]);
+    expect((await f.store.listLocalUsers()).map((u) => u.user_id)).not.toContain(ANON);
   });
 });
 

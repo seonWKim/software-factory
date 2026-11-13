@@ -1,3 +1,4 @@
+import { OwnerAuth } from "../src/core/authorize.js";
 // Top-level Slack mentions (design 05-sources and 04-gate-commands, "a mention creates an item only on a press"): a
 // mention from an account that may approve is classified by one model call and answered in its own thread; it never
 // becomes an item by itself. A chat message gets one answer; a request, an unsure or unread message gets a short
@@ -10,7 +11,6 @@ import { Listener } from "../src/core/listener.js";
 import { TOP_LEVEL_FACT } from "../src/core/interpret.js";
 import { taskOfferMarker } from "../src/interfaces/source-adapter.js";
 import type { UserId } from "../src/core/types.js";
-import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principal } from "../src/interfaces/auth-provider.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -23,16 +23,6 @@ import { newStore } from "./helpers/store.js";
 
 /** A known secret value: the scanner catches it only as such. */
 const SECRET = "fake-secret-value-for-the-chat-leak-test-01";
-
-/** The forge's auth plugin; Slack accounts are judged by the local auth plugin over the store's links and users. */
-class TestAuth implements AuthProvider {
-  async resolve(identity: ExternalIdentity): Promise<Principal | null> {
-    return { user_id: `github:${identity.subject}` as UserId, attributes: {} };
-  }
-  async authorize(_p: Principal, action: AuthAction): Promise<AuthDecision> {
-    return action === "submit_work" ? { allow: true } : { allow: false, reason: "no_role" };
-  }
-}
 
 /**
  * The fake LLM: answers each call with the next scripted answer (the last repeats), throws, stops on its token limit,
@@ -79,7 +69,7 @@ async function setup(llm: ScriptedLLM | null) {
   }
   await store.claimLocalOwner("github:1" as UserId);
   const controller = new ControllerRole({
-    store, sources: [gh, slack], forge: new FakeForge(gh), auth: new TestAuth(), local_auth: new LocalAuthProvider(store), clock, config, log, scanner, ...(llm ? { llm } : {}),
+    store, sources: [gh, slack], forge: new FakeForge(gh), auth: new OwnerAuth(store), clock, config, log, scanner, ...(llm ? { llm } : {}),
   });
   const ac = new AbortController();
   const listener = new Listener({ store, source: slack, clock, config, log, owner: "replica-a" });

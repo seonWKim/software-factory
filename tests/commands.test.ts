@@ -665,8 +665,8 @@ describe("answers to the spec's decisions on /approve (issue #526)", () => {
     expect(await h.store.getWorkItem(it.id)).toEqual(it);
     const replies = (await h.store.listItemMessages(it.id)).filter((m) => m.marker.startsWith("<!-- factory:refused:")).map((m) => m.body);
     expect(replies).toEqual([
-      "`/approve` was not applied: it needs write permission on this repository (`not_a_collaborator`).",
-      "`/revise` was not applied: it needs write permission on this repository (`not_a_collaborator`).",
+      "`/approve` was not applied: only the owner may send this command (`not_a_collaborator`).",
+      "`/revise` was not applied: only the owner may send this command (`not_a_collaborator`).",
     ]);
   });
 });

@@ -4,7 +4,7 @@ import type { LocalMergeResult, LocalMergeSpec } from "../src/core/local-merge.j
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { AuthDecision, AuthProvider, Principal } from "../src/interfaces/auth-provider.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
-import { FakeAuth, FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge, FakeSandbox, FakeSource, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // The Merge button (design §9, issue #451): an app `merge` request merges a GitHub item's PR at the head the review
@@ -47,7 +47,7 @@ async function harness(opts: { forge?: boolean } = {}) {
   const sandbox = new MergingSandbox();
   const roles = new LocalRoles();
   const controller = new ControllerRole({
-    store, sources: [source], forge: opts.forge === false ? null : forge, sandbox, auth: new FakeAuth(), local_auth: roles,
+    store, sources: [source], forge: opts.forge === false ? null : forge, sandbox, auth: roles,
     clock, config, log: silent, scanner: cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };
@@ -115,7 +115,7 @@ describe("Merge on a GitHub item (the forge's mergePr)", () => {
 
     expect(h.forge.mergeCalls).toEqual([]);
     expect(await h.store.getWorkItem(it1.id)).toEqual(it1);
-    expect(await h.replies(it1, r)).toEqual([expect.stringContaining("has no role that allows it")]);
+    expect(await h.replies(it1, r)).toEqual(["`merge` was not applied: only the owner may send this command (`no_role`)."]);
     expect(h.roles.asked).toEqual(["approve_merge"]);
   });
 

@@ -246,7 +246,7 @@ describe("factory merge lands a filed config edit", { timeout: 60_000 }, () => {
     const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
     const sandbox = new NoOpSandbox(join(r.root, "wt"), undefined, undefined, { local: true });
     const controller = new ControllerRole({
-      store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
+      store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner, sandbox, repeated_failure_rule: false,
     });
     const worker = new Worker({
       id: "w1" as WorkerId, store, sandbox, runner: new FakeRunner({}), broker: new LocalToolBroker({ store, scanner: cleanScanner, branchPrefix: cfg.branch_prefix, repoPath: r.repo }),

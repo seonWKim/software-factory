@@ -10,7 +10,7 @@ import { LOCAL_SOURCE, MERGE_COMMAND, canMergeLocal, canReadLocal, canSyncBase }
 import { gatePathTouched } from "../../../core/improver.js";
 import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, type SourceRef, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
-import type { CommandPassport, ExternalIdentity } from "../../../interfaces/auth-provider.js";
+import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
 import { AUTO, awaitingMerge } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -19,10 +19,9 @@ import { controllerUnit } from "../context.js";
 /** mergeLocal's `who` for auto mode's merge: no person, actor `system:auto`. */
 const AUTO_MERGE = { auto: true } as const;
 
-/** The status page's user (an app request): its factory user id and the page's edge passport (absent: none). */
+/** The status page's user (an app request): its factory user id. */
 interface AppActor {
   readonly user_id: UserId;
-  readonly passport?: CommandPassport | undefined;
 }
 /** Settings audit rows read to find the mode change an automatic action ran under. */
 const MODE_HISTORY = 500;
@@ -73,7 +72,7 @@ export class LocalMergeUnit {
     const auto = who === AUTO_MERGE;
     const service = auto ? await this.c.unit("auth").automatic("approve_merge", item) : null;
     const principal = "user_id" in who
-      ? await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id, true, who.passport)
+      ? await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id)
       : "auto" in who
         ? service === null ? { user_id: AUTO_ACTOR } : { refuse: service }
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);

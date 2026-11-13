@@ -15,13 +15,11 @@ export default defineHandler<Envelope, ControllerContext>({
   async handle(m, ctx) {
     if (m.type === COMMAND_RECEIVED) {
       const c = await readCommand(ctx.db, String(m.payload.command_id));
-      // A comment command's row has no passport: inbound minted it at the relay, onto the message (RFC 0015 §8).
-      if (c) await ctx.decisions.consumeCommand(c.passport_id === undefined && m.passport_id ? { ...c, passport_id: m.passport_id } : c);
+      if (c) await ctx.decisions.consumeCommand(c);
       return;
     }
     // A record pruned before it was handled (past inbox_retention_days) has nothing left to decide on.
-    // A stream source's command event (a Slack `/approve`) carries the passport inbound minted at the relay.
-    const r = await readRecord(ctx.db, String(m.payload.record_id), m.passport_id);
+    const r = await readRecord(ctx.db, String(m.payload.record_id));
     if (r) await ctx.decisions.consumeEvent(r.event);
   },
 });

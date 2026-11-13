@@ -115,14 +115,14 @@ describe("session start", () => {
       return r.lines.join("\n");
     };
 
-    it("for a CLOSED item, an item in REVIEW, a READY item (naming /approve), no allowed_paths, or no write permission", async () => {
+    it("for a CLOSED item, an item in REVIEW, a READY item (naming /approve), no allowed_paths, or not the owner", async () => {
       const h = await harness();
       expect(await unchanged(h, (await h.running(1, ["src/a/"], 2, { stage: "CLOSED", close_reason: "wont_do" })).id)).toMatch(/closed/);
       expect(await unchanged(h, (await h.running(2, ["src/a/"], 2, { stage: "REVIEW", change_ref: "5" })).id)).toMatch(/in review \(PR #5\)/);
       const ready = await h.running(3, ["src/a/"], 2, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
       expect(await unchanged(h, ready.id)).toContain("`/approve`");
       expect(await unchanged(h, (await h.running(4, [])).id)).toMatch(/no allowed_paths/);
-      expect(await unchanged(h, (await h.running(5)).id, {}, mallory)).toMatch(/write permission/);
+      expect(await unchanged(h, (await h.running(5)).id, {}, mallory)).toMatch(/only the owner may send this command/);
       expect(h.files.files.size).toBe(0);
     });
 

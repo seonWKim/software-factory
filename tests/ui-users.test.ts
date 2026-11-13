@@ -1,5 +1,5 @@
 // Local users on the dashboard (design 08-permissions and 09-dashboard-app, issue #445). GET /api/v1/users lists the
-// local users, the static grant users and their links, and the viewer's identity, with no forge call; POST
+// local users and their links, and the viewer's identity, with no forge call and no permissions config; POST
 // /api/v1/users adds, changes or removes a local user through the CLI's own `users` actions, behind the pause
 // route's guards (Host, Origin, Content-Type, CSRF token, body size, JSON, body) and then the owner check. Every
 // refusal writes nothing: no identity_local_users row and no identity_local_user_changes row.
@@ -9,7 +9,7 @@ import type { LogFields, Logger } from "../src/core/log.js";
 import type { UserId } from "../src/core/types.js";
 import type { CliIdentity } from "../src/core/local-cli.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { HealthMonitor } from "../src/ui/health.js";
@@ -22,7 +22,6 @@ const HOST = "127.0.0.1:4310";
 const ORIGIN = `http://${HOST}`;
 const OWNER = "local:owner@example.com" as UserId;
 const ALICE = "local:alice" as UserId;
-const STATIC = "github:9" as UserId;
 const ANON = "local:anonymous" as UserId;
 
 class MemLog implements Logger {
@@ -54,7 +53,6 @@ async function setup(opts: { me?: CliIdentity; owner?: UserId | null; wired?: bo
   const log = new MemLog();
   const users: UiUsers = {
     identity: opts.me ?? { user: OWNER, from: "git user.email" },
-    permissions: { grants: ["static"], static: { roles: { [STATIC]: { "*": ["approver"], [PROJECT_KEY]: ["requester"] } } } },
     csrfToken: newCsrfToken(),
     log,
   };
@@ -81,7 +79,7 @@ const parse = (r: { body: string }) => JSON.parse(r.body);
 const get = (d: UsersDeps) => respond(d, { method: "GET", url: USERS_PATH, host: HOST });
 
 describe("GET /api/v1/users", () => {
-  it("lists the local users, the static grant users and their links, and the viewer, from the store alone", async () => {
+  it("lists the local users and their links, and the viewer, from the store alone: no static rows", async () => {
     const { d, real, users } = await setup();
     await real.setLocalUserRole(ALICE, "requester", OWNER);
     await real.createLinkCode(ALICE, "ABCDEFGHJK");
@@ -97,9 +95,8 @@ describe("GET /api/v1/users", () => {
     expect(v.users).toEqual([
       expect.objectContaining({ user_id: OWNER, role: "owner", source: "local", added_by: OWNER, links: [] }),
       { user_id: ALICE, role: "requester", source: "local", added_by: OWNER, added_at: at, projects: [], links: [{ provider: "github", subject: "12345" }] },
-      { user_id: STATIC, role: "approver", source: "static", added_by: null, added_at: null, links: [],
-        projects: [{ project: "*", roles: ["approver"] }, { project: PROJECT_KEY, roles: ["requester"] }] },
     ]);
+    expect(v.users.some((u: { source: string }) => u.source === "static")).toBe(false);
   });
 
   it("shows a non-owner the list read-only, with the reason a write would get", async () => {
@@ -123,15 +120,15 @@ describe("GET /api/v1/users", () => {
 });
 
 describe("POST /api/v1/users", () => {
-  it("the owner adds local:alice as approver; she then passes the local auth plugin's approve check", async () => {
+  it("the owner adds local:alice as approver; one owner: she still does not pass the owner check", async () => {
     const { d, real, users, log, changes } = await setup();
-    const auth = new LocalAuthProvider(real);
+    const auth = new OwnerAuth(real);
     const approve = () => auth.authorize({ user_id: ALICE, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT_KEY });
     expect((await approve()).allow).toBe(false);
     const r = await respond(d, post(users, { action: "add", user_id: ALICE, role: "approver" }));
     expect(r.status).toBe(200);
     expect(parse(r).users.map((u: { user_id: string; role: string }) => [u.user_id, u.role])).toContainEqual([ALICE, "approver"]);
-    expect(await approve()).toEqual({ allow: true });
+    expect(await approve()).toEqual({ allow: false, reason: "not_owner" });
     expect(await changes()).toMatchObject([{ user_id: ALICE, action: "add", old_role: null, new_role: "approver", actor: OWNER }]);
     expect(log.lines).toEqual([{ msg: "local user changed", fields: { action: "add", user_id: ALICE, role: "approver", actor: OWNER } }]);
   });

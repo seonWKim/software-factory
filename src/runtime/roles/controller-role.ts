@@ -21,7 +21,6 @@ import { errorText } from "../../core/log.js";
 import { GITHUB_RATE_LIMIT } from "../../core/policy.js";
 import { LiveSettings } from "../../core/settings.js";
 import type { Run, SourceType, WorkItemId } from "../../core/types.js";
-import type { IdentityRuntime } from "../../identity/index.js";
 import { INBOUND, Inbound, type InboundContext } from "../../inbound/index.js";
 import {
   GIT_TARGET, LOCAL_GIT_HOST, OUTBOUND, TACIT_TARGET, OUTBOUND_FLUSH_MS, Outbound, type OutboundContext, actionByKey, actionsOf, announce, buildTargets, localGit, policyFor, recordAction,
@@ -46,8 +45,6 @@ export interface ControllerRoleDeps extends ControllerDeps {
   /** `plugins.bus` and `plugins.ticks`, built by compose through the plugin registry. Absent: `sql` and `time-based`. */
   bus?: BusPlugin;
   ticks?: TickSource;
-  /** Identity (M9): inbound gives a command row without a passport its actor's edge passport. Absent: none. */
-  identity?: Pick<IdentityRuntime, "commandPassport">;
   /**
    * Hooks (RFC 0015 §8, M10): the names enabled, and the hooks to choose from (absent: the discovered ones), for
    * tests. Absent: the config's `hooks` (none unless the owner lists some), as the worker's `before_run`.
@@ -498,7 +495,6 @@ export class ControllerRole implements Decisions {
       ...(d.github_budget ? { budget: d.github_budget } : {}),
       ...(d.refresh_forge_budget ? { refreshBudget: d.refresh_forge_budget } : {}),
       ...(d.replica_id ? { replica_id: d.replica_id } : {}),
-      ...(d.identity ? { passportFor: d.identity.commandPassport } : {}),
       // Each stream source gets its own listener; its store lease (per source type) lets only one replica subscribe.
       listen: (source, signal) =>
         new Listener({ store: d.store, source, clock: d.clock, config: leaseTimings(d.settings), log: d.log, owner }).run(signal),

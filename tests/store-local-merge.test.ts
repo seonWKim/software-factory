@@ -60,7 +60,7 @@ describe.each(BACKENDS)("local merge on a shared store: $name", ({ make }) => {
 
     const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
     const replica = (n: number) => new ControllerRole({
-      store, sources: [new LocalSource(store)], auth, local_auth: auth, clock, config: cfg, log: silent, scanner: cleanScanner,
+      store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner,
       sandbox: new NoOpSandbox(join(root, `wt${n}`), undefined, undefined, { local: true }), repeated_failure_rule: false,
     });
     const who = { provider: "local" as const, subject: "me@example.com" };

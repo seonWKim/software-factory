@@ -3,10 +3,10 @@ import { lastRefusedLines } from "../src/cli/handlers/local/refused.js";
 import { MergeQueueStore } from "../src/controller/actors/merge-queue/merge-queue.store.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { RunKind, SourceRef, UserId, WorkItem, WorkItemId, WorkItemPatch, WorkerId } from "../src/core/types.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { SqlDriver } from "../src/state/index.js";
-import { FakeAuth, FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
+import { FakeForge, FakeSource, alice, cleanScanner, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore } from "./helpers/store.js";
 
 // `/reject <reason>` closes an open item at any phase (design 04-gate-commands, 2026-11-13): implementing, held by
@@ -14,7 +14,8 @@ import { PROJECT_KEY, newStore } from "./helpers/store.js";
 // with no run left queued or running. An item whose change is in the merge queue or merged is refused with the reason,
 // and the refusal reaches the sender: a reply in the item's thread, and for the CLI `factory task show`.
 
-const ME = "local:me@example.com" as UserId;
+/** The owner: a `cli_user` that is a GitHub user ID, so the CLI and GitHub comments act as the same factory user. */
+const ME = "github:1" as UserId;
 /** Under a default hotspot folder (weight 3.0): two items changing it are over max_coordination_cost. */
 const HOTSPOT = "src/worker/runner.ts";
 const localRef = (n: number): SourceRef => ({ type: "local", id: `local-${n}`, link: `local:local-${n}` });
@@ -23,10 +24,10 @@ async function harness() {
   const { store, clock } = await newStore();
   const source = new FakeSource();
   const forge = new FakeForge(source);
-  const local = new LocalAuthProvider(store);
+  const local = new OwnerAuth(store);
   await store.claimLocalOwner(ME);
   const controller = new ControllerRole({
-    store, sources: [source], forge, auth: new FakeAuth(), local_auth: local, clock, config, log: silent, scanner: cleanScanner,
+    store, sources: [source], forge, auth: local, clock, config, log: silent, scanner: cleanScanner,
   });
   const actor = { kind: "system" as const, id: "system:test" };
   /** An item at `ref` moved to `patch`, with one queued run per kind in `runs`. */
@@ -152,7 +153,7 @@ describe("/reject refused when the change is merged or in the merge queue", () =
   it("a refused CLI reject: the command is stored, and `factory task show` lists it with its reason under Last refused command", async () => {
     const h = await harness();
     const it1 = await queued(h, 2);
-    const cli = { store: h.store, identity: { user: ME, from: "git user.email" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "r1" };
+    const cli = { store: h.store, identity: { user: ME, from: "cli_user" as const }, project: async () => PROJECT_KEY, read: async () => "", newId: () => "r1" };
     expect((await runLocalCli(cli, { action: "command", command: "reject", id: it1.id as WorkItemId, text: "no" })).code).toBe(0);
     expect(lastRefusedLines(await h.store.listItemMessages(it1.id))).toEqual(["", "Last refused command", "  (none)"]);
     await h.controller.tickCommands();

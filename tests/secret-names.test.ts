@@ -373,7 +373,8 @@ describe("docs and template follow the declarations", () => {
     const template = readFileSync(join(REPO_ROOT, ".env.example"), "utf8");
     const keys = new Set([...template.matchAll(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/gm)].map((m) => m[1]!));
     for (const platform of ["darwin", "linux"]) {
-      const sel = selectPlugins(REGISTRY, REAL as { store: { type: unknown }; auth: unknown; plugins?: unknown }, { platform });
+      // compose passes the auth kind's fixed, never-built name (One owner): factory.config.json has no `auth` key.
+      const sel = selectPlugins(REGISTRY, { ...(REAL as { store: { type: unknown }; plugins?: unknown }), auth: "local" }, { platform });
       for (const name of declaredSecretNames(REGISTRY, sel)) expect(keys, name).toContain(name);
     }
   });

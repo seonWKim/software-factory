@@ -59,26 +59,29 @@ describe("setup: the shared choices in factory.config.json", () => {
   it("local only: selects no GitHub plugin, changes only those keys and keeps every other line as written", async () => {
     const raw = JSON.parse(CHECKED_IN);
     const changes = applyChoices(raw, { github: false, slack: false, slack_channels: [] });
-    expect([...changes.keys()].sort()).toEqual(["auth", "permissions", "plugins"]);
+    expect([...changes.keys()]).toEqual(["plugins"]);
     const text = editConfigText(CHECKED_IN, changes);
     const edited = JSON.parse(text);
     expect(edited.store).toEqual({ type: "sqlite" });
-    expect(edited.auth).toBe("local");
-    // Only the remote grant goes; the checked-in static roles (the owner's approver grant) stay as written.
-    expect(edited.permissions).toEqual({ grants: ["static"], static: raw.permissions.static });
     expect(edited.plugins).toMatchObject({ source: ["local"], broker: "local", github_auth: "app", runner: "claude-code" });
     const { removed, added } = changedLines(CHECKED_IN, text);
-    // The checked-in "permissions" block (its static roles kept) is written back on one line.
-    expect(removed.filter((l) => !/"auth"|"broker"|"source"|"agent_git_identity"|"permissions"|"grants"|"static"/.test(l))).toEqual([]);
-    expect(added.filter((l) => !/"auth"|"broker"|"source"|"permissions"|"agent_git_identity"/.test(l))).toEqual([]);
+    expect(removed.filter((l) => !/"broker"|"source"|"agent_git_identity"/.test(l))).toEqual([]);
+    expect(added.filter((l) => !/"broker"|"source"|"agent_git_identity"/.test(l))).toEqual([]);
     const loaded = await load(text);
     expect(loaded.config.local_only).toBe(true);
     expect(loaded.store).toEqual({ type: "sqlite" });
 
     const diff = configDiffLines(raw, changes);
-    expect(diff).toContain('- "auth": "github"');
-    expect(diff).toContain('+ "auth": "local"');
-    expect(diff).toContain('+ "permissions": { "grants": ["static"], "static": { "roles": { "github:69591622": { "*": ["approver"] } } } }');
+    expect(diff.some((l) => /"auth"|"permissions"/.test(l))).toBe(false);
+  });
+
+  it("a file that still has the removed auth and permissions keys gets them removed (One owner)", () => {
+    const raw = { ...JSON.parse(CHECKED_IN), auth: "github", permissions: { grants: ["static"] } };
+    const changes = applyChoices(raw, currentChoices(raw, true));
+    expect(changes.get("auth")).toBeUndefined();
+    expect(changes.has("auth")).toBe(true);
+    expect(changes.has("permissions")).toBe(true);
+    expect(configDiffLines(raw, changes)).toContain('- "auth": "github"');
   });
 
   it("no choice touches the store key: setup asks no store question", () => {
@@ -96,10 +99,8 @@ describe("setup: the shared choices in factory.config.json", () => {
     const text = editConfigText(local, changes);
     const edited = JSON.parse(text);
     expect(edited.store).toEqual({ type: "sqlite" });
-    expect(edited.auth).toBe("github");
     expect(edited.plugins.source).toEqual(["github-issues", "local", "slack"]);
     expect(edited.plugins.broker).toBe("github");
-    expect(edited.permissions.grants).toEqual(["static", "github-permission"]);
     expect(edited.slack).toEqual({ channels: ["C0123456789"] });
     expect(text.endsWith('"slack": { "channels": ["C0123456789"] }\n}\n')).toBe(true);
     const loaded = await load(text);

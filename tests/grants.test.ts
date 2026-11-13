@@ -123,7 +123,7 @@ describe("who may /approve", () => {
     const changes = await f.store.listStateChanges(before.id);
     const { item, refusals } = await approve(f, 4, slack("U404"));
     expect(refusals).toHaveLength(1);
-    expect(refusals[0]!.body).toMatch(/not linked/);
+    expect(refusals[0]!.body).toMatch(/only the owner may send this command \(`not_linked`\)/);
     expect(item).toEqual(before);
     expect(await f.store.listStateChanges(before.id)).toEqual(changes);
     expect(await f.store.listRuns(before.id)).toEqual([]);

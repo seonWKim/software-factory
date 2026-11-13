@@ -85,6 +85,7 @@
   "component-imports-legacy|controller/units/app-requests/app-requests.unit.ts|core/local-merge.ts",
   "component-imports-legacy|controller/units/app-requests/app-requests.unit.ts|core/types.ts",
   "component-imports-legacy|controller/units/app-requests/app-requests.unit.ts|interfaces/factory-store.ts",
+  "component-imports-legacy|controller/units/auth/auth.unit.ts|core/authorize.ts",
   "component-imports-legacy|controller/units/auth/auth.unit.ts|interfaces/auth-provider.ts",
   "component-imports-legacy|controller/units/checks-gate/checks-gate.unit.ts|core/change-ref.ts",
   "component-imports-legacy|controller/units/checks-gate/checks-gate.unit.ts|core/log.ts",

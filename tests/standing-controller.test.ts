@@ -175,7 +175,7 @@ describe("standing approvals: /standing", () => {
     await f.standing(it, "maybe");
     const refusals = f.posts("refused:", it).map((c) => c.body);
     expect(refusals).toHaveLength(3);
-    expect(refusals[0]).toContain("write permission");
+    expect(refusals[0]).toContain("only the owner may send this command");
     expect(refusals[1]).toContain("`spec-t1`");
     expect(refusals[2]).toContain("/standing accept <rule>");
     expect(await f.rule()).toBeUndefined();
