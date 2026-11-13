@@ -69,8 +69,9 @@ import type { SlackConfig } from "./impl/source/slack-config.js";
 import { baseEnv } from "./impl/process/run-process.js";
 import { defaultSecretsFile } from "./impl/secrets/env-file-secret-store.js";
 import { LiveTacit } from "./runtime/live-tacit.js";
+import { LiveCalendars } from "./calendar/index.js";
 import {
-  type BaseContext, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createCalendars, createPlugin, selectPlugins, selectedLlms, selectedRunners, selectedSources, withPackPlugins,
+  type BaseContext, INTEGRATION_KINDS, REGISTRY, type Registry, type Selection, createPlugin, selectPlugins, selectedLlms, selectedRunners, selectedSources, withPackPlugins,
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
@@ -792,9 +793,9 @@ export async function build(
   const bus = await createPlugin(registry, "bus", sel.bus, base);
   const ticks = await createPlugin(registry, "ticks", sel.ticks, base);
   const tacit = await LiveTacit.start(sel.tacit, (name) => createPlugin(registry, "tacit", name, base), new ConsoleLogger(clock, "tacit"));
+  const calendars = new LiveCalendars(async (name) => createPlugin(registry, "calendar", name, { ...base, secrets: await new Plugins({ ...loaded, plugins: { ...sel, calendars: [name] } }).secrets(), clock }), new ConsoleLogger(clock, "calendar"));
   // The worker's ExecutionEngine (RFC 0015 §7): one per worker loop, built by the pool.
   const engines = await createPlugin(registry, "engine", sel.engine, { ...base, store });
-
   // Startup resolution (design 2026-11-07), after every plugin check so a bad selection is reported first: the
   // project key every write uses, from the store; GitHub refreshes the label in the background (a rename). With
   // no GitHub plugin: the local project key, and no GitHub call.
@@ -812,7 +813,7 @@ export async function build(
   const learned = new StoredLearnedSettings(store, new ConsoleLogger(clock, "settings"));
   const settings = new LiveSettings({
     config, base: { ...settingsBase(loaded), layers: config.settings }, source: store, learned,
-    log: new ConsoleLogger(clock, "settings"), integrations: [tacit],
+    log: new ConsoleLogger(clock, "settings"), integrations: [tacit], calendar: calendars, // the live `calendar` list (design 08-settings)
   });
   await settings.refresh();
 
@@ -827,7 +828,7 @@ export async function build(
     log: new ConsoleLogger(clock, "controller"),
     scanner,
     llm,
-    calendar: await createCalendars(registry, sel, { ...base, secrets, clock }), // synced every 5 minutes (design 02-tasks); [] unless `calendar` lists some
+    calendar: calendars.feeds, // synced every 5 minutes (design 02-tasks); [] unless the `calendar` setting lists some
     network_probe, bus, ticks, tacit, // tacit: the owner's ledger (#570), whose capture CLI outbound runs; no agent run gets it
     // Owner of a stream source's listener lease while this process holds it (docs/architecture.md, Intake).
     replica_id: `${hostname()}:${process.pid}`,
@@ -1000,7 +1001,6 @@ export interface UiParts {
   close(): Promise<void>;
 }
 
-
 /**
  * What the status page needs and nothing more: no controller, worker, source or runner, and no forge client.
  * Built through Plugins (the configured store, secrets and egress scanner). The secret store is loaded only because a store plugin may
@@ -1044,6 +1044,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
+  settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, { store, actor: settings.actor, clock, base: settings.base }); // its Calendar section
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.
@@ -1053,8 +1054,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     csrfToken: token,
     log: new ConsoleLogger(clock, "ui"),
   };
-  const profiles = new ProfileStore(storeSql(store));
-  const displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
+  const profiles = new ProfileStore(storeSql(store)), displayNames = (ids: readonly string[]) => profiles.displayNames(ids);
   const tacit = await uiTacit(loaded.plugins.tacit, (n) => createPlugin(loaded.registry, "tacit", n, p.base), { config: loaded.config, base: settingsBase(loaded), source: store, log: new ConsoleLogger(clock, "tacit") });
   return { clock, store, scanner, settings, commands, pauses, displayNames, tacit, close: () => identity.stop().then(() => store.close()) };
 }

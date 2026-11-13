@@ -50,7 +50,6 @@ export type {
   SetupHook,
 } from "./plugin-api.js";
 export { connectHooks, declaredSecretNames, declaredSecrets, selectedSetups, definePlugin, selectedCalendars, selectedLlms, selectedRunners, selectedSources } from "./plugin-api.js";
-import { selectedCalendars } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -433,13 +432,6 @@ export async function createPlugin<K extends PluginKind>(
   const entry = registry[kind] as InterfaceEntry<K>;
   const factory = entry.plugins[checkPlugin(registry, kind, name)]!;
   return factory(ctx);
-}
-
-/** The selected CalendarSource plugins (top-level `calendar`), built in config order, each with its name: none by default. */
-export async function createCalendars(registry: Registry, selection: Selection, ctx: Contexts["calendar"]): Promise<{ name: string; source: Instances["calendar"] }[]> {
-  const out = [];
-  for (const name of selectedCalendars(selection)) out.push({ name, source: await createPlugin(registry, "calendar", name, ctx) });
-  return out;
 }
 
 /**

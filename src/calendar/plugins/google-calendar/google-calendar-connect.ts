@@ -3,13 +3,14 @@
 // with hidden input; the browser opens Google's consent page for calendar.readonly only, with a PKCE S256 challenge,
 // a random state and a redirect to a loopback listener on 127.0.0.1 that closes after 5 minutes. The code is
 // exchanged, the answer must grant exactly calendar.readonly and carry a refresh token, and only then are the three
-// secrets stored, together. Every value stays in memory until then; no message carries one. The HTTP client is
-// injected and the timeout runs on the context's Clock, so no test calls Google or waits.
+// secrets stored, together. Every value stays in memory until then; no message carries one. The token exchange is
+// given up after GOOGLE_HTTP_TIMEOUT_MS, as the sync's calls are. The HTTP client is injected and both timeouts run
+// on the context's Clock, so no test calls Google or waits. The CLI and the dashboard both run this one hook.
 
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { CALENDAR_READONLY_SCOPE, type HttpClient, type SecretReader, TOKEN_URL, fail, json } from "./google-calendar-source.js";
+import { CALENDAR_READONLY_SCOPE, GOOGLE_HTTP_TIMEOUT_MS, type HttpClient, type SecretReader, TOKEN_URL, fail, json } from "./google-calendar-source.js";
 
 export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 /** How long the loopback listener waits for the browser's callback. */
@@ -87,7 +88,7 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
   const code = callback.get("code");
   if (!code) throw fail("the callback carried no authorization code: nothing stored");
 
-  const answer = await exchange(o.http, { code, clientId, clientSecret, redirectUri: loopback.redirectUri, verifier });
+  const answer = await exchange(o.http, ctx.clock, { code, clientId, clientSecret, redirectUri: loopback.redirectUri, verifier });
   if (!onlyReadonly(answer.scope)) throw fail("the token answer granted a scope other than exactly calendar.readonly: refused, nothing stored");
   if (typeof answer.refresh_token !== "string" || answer.refresh_token === "") throw fail("the token answer carried no refresh token: nothing stored");
   await ctx.storeSecrets(new Map([[idName, clientId], [secretName, clientSecret], [refreshToken, answer.refresh_token]]));
@@ -132,6 +133,7 @@ export function onlyReadonly(scope: unknown): boolean {
 
 async function exchange(
   http: HttpClient,
+  clock: Sleeper,
   p: { code: string; clientId: string; clientSecret: string; redirectUri: string; verifier: string },
 ): Promise<{ scope?: unknown; refresh_token?: unknown }> {
   const body = new URLSearchParams({
@@ -142,11 +144,20 @@ async function exchange(
     redirect_uri: p.redirectUri,
     code_verifier: p.verifier,
   }).toString();
+  const noAnswer = () => fail("token exchange failed (no answer): nothing stored");
+  const timer = new AbortController();
+  // Rejects after GOOGLE_HTTP_TIMEOUT_MS on the Clock; an abort (the answer came first) settles it quietly.
+  const late = clock.sleep(GOOGLE_HTTP_TIMEOUT_MS, timer.signal).then(
+    () => Promise.reject(noAnswer()),
+    () => new Promise<never>(() => undefined),
+  );
   let res;
   try {
-    res = await http(TOKEN_URL, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body });
+    res = await Promise.race([http(TOKEN_URL, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body }), late]);
   } catch {
-    throw fail("token exchange failed (no answer): nothing stored");
+    throw noAnswer();
+  } finally {
+    timer.abort();
   }
   if (res.status !== 200) throw fail(`token exchange failed (HTTP ${res.status}): nothing stored`);
   return json(res, "token exchange");
