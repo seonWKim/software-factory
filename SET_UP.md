@@ -54,7 +54,7 @@ It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`
 | 1. Plugins | Asks whether to sync with GitHub and whether to take work from Slack threads (then the channel IDs). Shows the change to `factory.config.json` as a `-`/`+` diff and writes it when you say yes; only the changed keys (`plugins`, `auth`, `permissions`, `slack`) change. Local only (the default on a new file) selects no GitHub plugin. If you answer no to GitHub and decline the diff, setup still asks for no GitHub secret and checks none | Answer, then confirm the diff |
 | 2. Secret file | Creates `~/.config/software-factory/.env` (folder `700`, file `600`), outside the repository, with an empty line for each secret the selected plugins need | Press Enter |
 | 3. Secrets | Lists the secrets the selected plugins need, then asks for each missing one with hidden input and writes it to the secret file. The model credential is `CLAUDE_CODE_OAUTH_TOKEN`; with GitHub on, `GITHUB_APP_ID` (App) or `GITHUB_TOKEN` (token, with the settings below); with Slack on, its two tokens. With nothing missing it asks whether to replace one | For the model credential, run `claude setup-token` in a **separate, plain terminal**, sign in in the browser, copy the token it prints (shown once). Paste each at its prompt |
-| 4. Database | Creates or updates the SQLite store under the state folder (the only store: a `mysql` store in `factory.config.json` fails at startup with a line naming `"store": { "type": "sqlite" }`) | Press Enter |
+| 4. Database | Creates or updates the SQLite store under the state folder (the only store) | Press Enter |
 | 5. You | Asks your display name (prefilled from git `user.name`) and stores it once against your ID; makes you the local owner if there is none yet | Type your name or press Enter. Your ID stays `cli_user`, else `local:<git user.email>`, else `local:<OS user>` |
 | 6. Mode | Asks `manual` or `auto` and `auto_merge_max_tier` (0 to 3; 0 merges nothing) and sets a changed one through `factory settings set`. Runtime settings, not file keys | Press Enter to keep the current ones |
 | 7. Setup of the selected plugins | Creates the `factory` intake label and the eight status labels (below) on the repository; reports each as created, already exists, or could not create. Nothing to do with GitHub off | Press Enter |
@@ -291,7 +291,7 @@ The checked-in config declares the store interface, the config keys and both doc
 
 ### CI and branch protection
 
-`.github/workflows/test.yml` runs on every pull request and every push to `main`. Job `test`: `npm ci`, `npm run typecheck`, `npm test`. No secret is needed. There is no MySQL job: the store is SQLite (`docs/design/05-coordination.md`).
+`.github/workflows/test.yml` runs on every pull request and every push to `main`. Job `test`: `npm ci`, `npm run typecheck`, `npm test`. No secret is needed. The store is SQLite (`docs/design/05-coordination.md`).
 
 The factory waits for a PR's checks before it posts "A human merge is required": while any check runs, the item stays in review (`blocked_on: ci`, `checks_pending`) and the factory looks again every `poll_interval_ms`; a failed check sends the item back to implement; when every check passed it moves to `merge_pending`. A PR with no checks at all counts as passed.
 
@@ -304,7 +304,7 @@ Once, after the workflow has run at least once on GitHub, make the `test` check 
 
 ### Checks before push
 
-Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list. Without a test database (`"plugins": { "test_database": "none" }`, the checked-in setting) the MySQL driver tests skip themselves before push and the PR body says so.
+Before an implement run pushes, the worker runs `repo.check_commands` from `factory.config.json` (here `npm run typecheck`, then `npm test`; the same commands as the workflow's `run:` steps, and a test fails if the two drift). A failure gets one fix step; a second failure stops the run with `checks_failed` and a comment naming the command. The update and resolve runs run the same list.
 
 ## Run the factory on your project
 
@@ -315,7 +315,7 @@ The checked-in `factory.config.json` is this repository's own config. To point t
 3. Check it: `npm run factory -- doctor --config ~/factory/my-app/factory.config.json`. The first line names the config file in use.
 4. Start: `npm run factory -- dev --config ~/factory/my-app/factory.config.json` (or `export FACTORY_CONFIG=…`; `--config` wins when both are set). Every command takes the flag.
 
-With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve from the config file's folder (`~/factory/my-app/.factory`, `~/factory/my-app/.worktrees`); without them they stay under the folder you start in. Prompts still come from the factory checkout, and the secret file stays at `~/.config/software-factory/.env`. Solo use (SQLite) may set any key; on a shared MySQL store, `dials`, `floors`, `plugins`, `permissions` and `auth` always come from the checked-in file. Details: [`docs/plugins/selection.md`](docs/plugins/selection.md).
+With `--config` or `FACTORY_CONFIG`, `state_dir` and `worktrees_dir` resolve from the config file's folder (`~/factory/my-app/.factory`, `~/factory/my-app/.worktrees`); without them they stay under the folder you start in. Prompts still come from the factory checkout, and the secret file stays at `~/.config/software-factory/.env`. With SQLite you may set any key. Details: [`docs/plugins/selection.md`](docs/plugins/selection.md).
 
 ## macOS app
 
