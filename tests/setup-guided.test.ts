@@ -13,7 +13,7 @@ import {
   editConfigText,
   parseSlackChannels,
 } from "../src/cli/handlers/setup/config-edit.js";
-import { registerMe } from "../src/cli/handlers/setup/me.js";
+import { registerYou } from "../src/cli/handlers/setup/guided.js";
 import setupCommand from "../src/cli/handlers/setup/setup.command.js";
 import { REGISTRY, connectHooks } from "../src/plugins.js";
 import { loadConfig } from "../src/compose.js";
@@ -181,15 +181,15 @@ describe("setup: you (display name by ID)", () => {
   it("the first person becomes the owner; the name is stored once in identity_profiles, against the ID only", async () => {
     const { store } = await newStore();
     const profiles = new ProfileStore(storeSql(store));
-    const r = await registerMe({ store, profiles, identity: me, gitName: "Kim Seon Woo", ask: defaultsAsk(() => undefined), now: AT });
+    const r = await registerYou({ store, profiles, identity: me, gitName: "Kim Seon Woo", ask: defaultsAsk(() => undefined), now: AT });
     expect(r.ok).toBe(true);
     expect(r.lines.join("\n")).toContain('you are local:me@example.com (from git user.email), shown as "Kim Seon Woo"');
-    expect(r.lines.join("\n")).toContain("you are the local owner");
+    expect(r.lines.join("\n")).toContain("you are the owner");
     expect(await profiles.get("local:me@example.com")).toEqual({ user_id: "local:me@example.com", display_name: "Kim Seon Woo", source: "self", updated_at: AT });
-    expect(await store.listLocalUsers()).toEqual([expect.objectContaining({ user_id: "local:me@example.com", role: "owner" })]);
+    expect(await store.getOwner()).toBe("local:me@example.com");
 
     // Rerun: the stored name is the default, git's name is not.
-    const again = await registerMe({ store, profiles, identity: me, gitName: "Other", ask: defaultsAsk(() => undefined), now: AT });
+    const again = await registerYou({ store, profiles, identity: me, gitName: "Other", ask: defaultsAsk(() => undefined), now: AT });
     expect(again.lines[0]).toContain('"Kim Seon Woo"');
 
     // No table but identity_profiles holds the name.
@@ -201,41 +201,39 @@ describe("setup: you (display name by ID)", () => {
     }
   });
 
-  it("a later person (setup --me) gets no role until the owner grants one", async () => {
+  it("a later person is told who the owner is and stays not the owner", async () => {
     const { store } = await newStore();
     const profiles = new ProfileStore(storeSql(store));
-    await registerMe({ store, profiles, identity: me, gitName: "Me", ask: defaultsAsk(() => undefined), now: AT });
-    const r = await registerMe({ store, profiles, identity: you, gitName: null, ask: terminalAsk(async () => "You Person", () => undefined), now: AT });
-    expect(r.lines.join("\n")).toContain("no role yet: you may create and read work items. The owner (local:me@example.com) can run `factory users add local:you@example.com --role approver`");
-    expect(await store.getLocalUser("local:you@example.com" as never)).toBeNull();
+    await registerYou({ store, profiles, identity: me, gitName: "Me", ask: defaultsAsk(() => undefined), now: AT });
+    const r = await registerYou({ store, profiles, identity: you, gitName: null, ask: terminalAsk(async () => "You Person", () => undefined), now: AT });
+    expect(r.lines.join("\n")).toContain("the owner is local:me@example.com: only the owner may send commands");
+    expect(await store.getOwner()).toBe("local:me@example.com");
     expect((await profiles.get("local:you@example.com"))?.display_name).toBe("You Person");
-    await store.setLocalUserRole("local:you@example.com" as never, "approver", "local:me@example.com" as never);
-    const later = await registerMe({ store, profiles, identity: you, gitName: null, ask: defaultsAsk(() => undefined), now: AT });
-    expect(later.lines.join("\n")).toContain("your role: approver");
   });
 
-  it("`users list` shows the name next to the ID, looked up at the edge", async () => {
-    const { store } = await newStore();
-    const profiles = new ProfileStore(storeSql(store));
-    await registerMe({ store, profiles, identity: me, gitName: "Kim", ask: defaultsAsk(() => undefined), now: AT });
-    const r = await runLocalCli(
-      { store, identity: me, project: async () => null, read: async () => "", newId: () => "x", displayNames: (ids) => profiles.displayNames(ids) },
-      { action: "users_list" },
-    );
-    expect(r.lines[0]).toBe("you are local:me@example.com (Kim) (from git user.email)");
-    expect(r.lines[1]).toMatch(/^local:me@example\.com \(Kim\)\towner\t/);
+  it("`setup --me` is no longer accepted", async () => {
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((line: unknown) => void errors.push(String(line)));
+    try {
+      const code = await setupCommand.run(["--me"], { usage: "usage", load: async () => { throw new Error("not loaded"); } } as never);
+      expect(code).toBe(1);
+      expect(errors.join("\n")).toContain('setup: unknown argument "--me"');
+      expect(setupCommand.usage).not.toContain("--me");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("anonymous stores nothing and claims nothing; --yes with no git user.name stores no name", async () => {
     const { store } = await newStore();
     const profiles = new ProfileStore(storeSql(store));
     const anon = cliIdentity(null, { gitEmail: null, osUser: null });
-    const r = await registerMe({ store, profiles, identity: anon, gitName: "Someone", ask: defaultsAsk(() => undefined), now: AT });
+    const r = await registerYou({ store, profiles, identity: anon, gitName: "Someone", ask: defaultsAsk(() => undefined), now: AT });
     expect(r.ok).toBe(false);
-    expect(await store.listLocalUsers()).toEqual([]);
+    expect(await store.getOwner()).toBeNull();
     expect(await profiles.get("local:anonymous")).toBeNull();
 
-    const n = await registerMe({ store, profiles, identity: me, gitName: null, ask: defaultsAsk(() => undefined), now: AT });
+    const n = await registerYou({ store, profiles, identity: me, gitName: null, ask: defaultsAsk(() => undefined), now: AT });
     expect(n.ok).toBe(true);
     expect(n.lines[0]).toContain("no display name stored");
     expect(await profiles.get("local:me@example.com")).toBeNull();

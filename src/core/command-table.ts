@@ -8,14 +8,14 @@ import type { CommandName } from "./commands.js";
  * front end lacks an entry. The item commands' phases and replies stay in src/core/commands.ts.
  */
 
-/** Who may run a command: anyone, the holder of an action's role, or the local owner. */
+/** Who may run a command: anyone, anyone who may submit work, or the owner (the actions are the owner check's). */
 export type CommandWho = "anyone" | "submit_work" | "approve_spec" | "approve_merge" | "owner";
 
 /**
- * The CLI handler that runs it: local tasks, item commands, local users, settings and the mode, or (`sentence`) the
+ * The CLI handler that runs it: local tasks, item commands, settings and the mode, or (`sentence`) the
  * plain-words reader, which `factory` runs for any first word no handler claims (src/main.ts).
  */
-export type CommandGroup = "task" | "item" | "users" | "settings" | "sentence";
+export type CommandGroup = "task" | "item" | "settings" | "sentence";
 
 /** The sentence form's name: `factory "<words>"`, a command in the owner's own words (design 04-gate-commands). */
 export const SENTENCE_FORM = '"<words>"';
@@ -49,7 +49,7 @@ export interface TableCommand {
   /** Acts on one work item: in chat only in the item's thread (which names the item), on the dashboard a command on its page. */
   item: boolean;
   /**
-   * A write to users, settings or the mode: refused from chat until chat commands carry an edge passport (#479).
+   * A write to settings or the mode: refused from chat until chat commands carry an edge passport (#479).
    * Reads still work there.
    */
   edge: boolean;
@@ -132,18 +132,6 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
     chat_args: "id", item: false, edge: false,
   },
   {
-    name: "users list", args: "", who: "anyone", group: "users", does: "List local users",
-    prints: "your identity and every local user with its role (owner, approver, requester)", chat: "users list", chat_args: "none", item: false, edge: false,
-  },
-  {
-    name: "users add", args: "<user_id> --role approver|requester", who: "owner", group: "users", does: "Give a local user a role, e.g. `local:dev@example.com`",
-    prints: "the user's new role", chat: "users add <user_id> --role approver|requester", chat_args: "any", item: false, edge: true,
-  },
-  {
-    name: "users remove", args: "<user_id>", who: "owner", group: "users", does: "Remove a local user's role",
-    prints: "whether a role was removed", chat: "users remove <user_id>", chat_args: "any", item: false, edge: true,
-  },
-  {
     name: "settings list", args: "", who: "anyone", group: "settings", does: "List every settable key",
     prints: "each key's effective value and its source (override, file, default)", chat: "settings list", chat_args: "none", item: false, edge: false,
   },
@@ -187,9 +175,9 @@ export function cliHelpLine(): string {
 const WHO: Record<CommandWho, string> = {
   anyone: "anyone",
   submit_work: "anyone who may submit work",
-  approve_spec: "the owner and approvers",
-  approve_merge: "the owner and approvers (approve_merge)",
-  owner: "the local owner",
+  approve_spec: "the owner",
+  approve_merge: "the owner",
+  owner: "the owner",
 };
 
 /** One line of the CLI list: usage, what it does, who may run it and what it prints. */

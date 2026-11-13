@@ -328,14 +328,13 @@ describe("app command requests: from the page's POST (issue #227)", () => {
     for (const x of replies) expect(x.handled_at).not.toBeNull();
   });
 
-  it("without ui.user_id, a loopback page acts as the CLI identity: the local owner's approve applies, a requester's is refused", async () => {
+  it("without ui.user_id, a loopback page acts as the CLI identity: the owner's approve applies, another local user's is refused", async () => {
     const h = await harness({ localAuth: true });
     const owner = "local:owner@example.com" as UserId;
     const helper = "local:helper@example.com" as UserId;
     const env = (user: UserId) => uiCommandsActor(null, { user, from: "git user.email" }, "127.0.0.1");
     expect(env(owner)).toEqual({ actor: owner, source: "environment" });
-    await h.store.claimLocalOwner(owner);
-    expect(await h.store.setLocalUserRole(helper, "requester", owner)).toMatchObject({ ok: true });
+    await h.store.claimOwner(owner);
 
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     expect((await post(page(h, env(helper).actor!, "environment"), it1, { command: "approve" })).status).toBe(202);
@@ -414,10 +413,10 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     ["CLOSED without a merge", { stage: "CLOSED", close_reason: "rejected" }, []],
   ];
 
-  it("each stage lists only the commands that apply in it, each allowed for a viewer whose grant allows them", async () => {
+  it("each stage lists only the commands that apply in it, each allowed for the owner", async () => {
     const h = await harness({ localAuth: true });
     const owner = "local:owner@example.com" as UserId;
-    await h.store.claimLocalOwner(owner);
+    await h.store.claimOwner(owner);
     let n = 0;
     for (const [stage, patch, want] of STAGES) {
       const l = await listed(page(h, owner), await h.itemIn(patch, ++n));
@@ -430,8 +429,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     const h = await harness({ localAuth: true });
     const owner = "local:owner@example.com" as UserId;
     const helper = "local:helper@example.com" as UserId;
-    await h.store.claimLocalOwner(owner);
-    expect(await h.store.setLocalUserRole(helper, "requester", owner)).toMatchObject({ ok: true });
+    await h.store.claimOwner(owner);
     const it1 = await h.itemIn(SPEC_PENDING, 1);
     const l = await listed(page(h, helper), it1);
     expect(l.commands.map((c) => [c.name, c.allowed, c.reason])).toEqual(
@@ -449,10 +447,10 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     expect((await listed(page(h, helper), await h.itemIn({ stage: "CLOSED", close_reason: "rejected" }, 2))).commands).toEqual([]);
   });
 
-  it("solo: with no link and no grants, the dashboard and the CLI both offer and take approve", async () => {
+  it("solo: with no link and no owner yet, the dashboard and the CLI both offer and take approve", async () => {
     const h = await harness({ localAuth: true });
     const me = "local:me@example.com" as UserId;
-    expect(await h.store.listLocalUsers()).toEqual([]);
+    expect(await h.store.getOwner()).toBeNull();
     const byPage = await h.itemIn(SPEC_PENDING, 1);
     const byCli = await h.itemIn(SPEC_PENDING, 2);
     expect(names(await listed(page(h, me), byPage))).toEqual(["approve", "reject", "revise"]);
@@ -506,7 +504,7 @@ describe("verdict from the item page and the item API (issue #523)", () => {
 
   it("solo, no forge and no account: a verdict app request stores one verdict on a local item with no PR and changes no state", async () => {
     const h = await harness({ localAuth: true });
-    expect(await h.store.listLocalUsers()).toEqual([]);
+    expect(await h.store.getOwner()).toBeNull();
     const it1 = await itemOf(h, local(1), MERGE_PENDING);
     await h.request("app-v", ME, "verdict", { work_item_id: it1.id, note: verdictNote("changes", "minor", "rename the flag") });
     await h.controller.tickCommands();
@@ -577,7 +575,7 @@ describe("Needs you: the verdict control (issue #513)", () => {
 
   it("a waiting item with a PR offers verdict; its text, sent from the row, stores the same verdict as the item page's note box", async () => {
     const h = await harness({ localAuth: true });
-    await h.store.claimLocalOwner(OWNER);
+    await h.store.claimOwner(OWNER);
     const fromRow = await h.itemIn(MERGE_PENDING, 1);
     const fromNoteBox = await h.itemIn(MERGE_PENDING, 2);
     const d = page(h);
@@ -597,7 +595,7 @@ describe("Needs you: the verdict control (issue #513)", () => {
 
   it("a malformed verdict from the row is refused with the usage line, and nothing is stored", async () => {
     const h = await harness({ localAuth: true });
-    await h.store.claimLocalOwner(OWNER);
+    await h.store.claimOwner(OWNER);
     const it1 = await h.itemIn(MERGE_PENDING, 1);
     expect((await post(page(h), it1, { command: "verdict", note: "lgtm" })).status).toBe(202);
     await h.controller.tickCommands();
@@ -608,7 +606,7 @@ describe("Needs you: the verdict control (issue #513)", () => {
 
   it("a local item with no PR offers verdict too, and the controller takes it (decision 3)", async () => {
     const h = await harness({ localAuth: true });
-    await h.store.claimLocalOwner(OWNER);
+    await h.store.claimOwner(OWNER);
     const actor = { kind: "system" as const, id: "system:test" };
     const source = { type: "local", id: "local-1", link: "local:local-1" };
     const { item } = await h.store.createWorkItem({ source, requester_id: OWNER, project: PROJECT_KEY, problem: "p", resources: [] }, actor);
@@ -641,15 +639,14 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
     }
   }
 
-  /** The local owner and a requester; the page as `actor`; a controller with a model. */
+  /** The owner and another local user; the page as `actor`; a controller with a model. */
   async function setup() {
     const { store, clock } = await newStore();
     const source = new FakeSource();
     const llm = new ApproveLLM();
     const auth = new OwnerAuth(store);
     const controller = new ControllerRole({ store, source, auth, clock, config, log: silent, scanner: cleanScanner, llm });
-    await store.claimLocalOwner(OWNER);
-    await store.setLocalUserRole(HELPER, "requester", OWNER);
+    await store.claimOwner(OWNER);
     const { item } = await store.createWorkItem({ source: issueRef(1), requester_id: OWNER, project: PROJECT_KEY, problem: "p", resources: [] }, { kind: "system", id: "system:test" });
     const r = await store.transition({ id: item.id, expected_version: item.version, actor: { kind: "system", id: "system:test" }, reason: "setup", patch: { ...SPEC_PENDING, tier: 2 } });
     if (!r.ok) throw new Error("setup");

@@ -24,8 +24,6 @@ export default defineCommand({
     // user for the UI and the terminal.
     const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
     const parts = await buildUiParts(loaded, { identity });
-    // The Users page acts as the same identity, with its source shown as the viewer's, and shares the write routes' token.
-    const users = { identity, csrfToken: parts.settings.csrfToken, log: parts.pauses.log };
     // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
     const lastChecks = new LastChecks();
     const revision = await serverRevision(loaded.codeRoot);
@@ -76,8 +74,6 @@ export default defineCommand({
         displayNames: parts.displayNames,
         // "Resume now" on the Floor and Health pages (POST /api/v1/pauses/resume): owner check, then endClaimPause.
         pauses: parts.pauses,
-        // The Users page (GET and POST /api/v1/users): local roles through the CLI's `users` actions, as this machine's CLI identity.
-        users,
         // The Rules page (GET /api/v1/rules, POST /api/v1/rules/verdict): the tacit ledger's list and verdict, owner only;
         // a live holder, switched by the `integrations` setting before each Rules request.
         tacit: parts.tacit,
@@ -86,7 +82,7 @@ export default defineCommand({
     );
     const { actor, source } = parts.commands;
     const actsAs = actor === null ? "nobody: set ui.user_id" : `${actor} from ${source}`;
-    console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings, Resume now, Users as ${identity.user}, and item commands as ${actsAs}; Ctrl-C to stop)`);
+    console.log(`status page: http://${ui.address}:${ui.port}/ (writes: Settings and Resume now as ${identity.user}, and item commands as ${actsAs}; Ctrl-C to stop)`);
     // The supervisor's ui child (design: Self-update) also stops when the supervisor is gone, never as an orphan.
     const orphan = new AbortController();
     if (supervised) process.once("disconnect", () => orphan.abort());

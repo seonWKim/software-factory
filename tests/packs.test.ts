@@ -798,16 +798,15 @@ describe("packs: approvals, the pin and the grant check", () => {
     expect(await s.rows()).toHaveLength(2);
   });
 
-  it("approve_tool takes the owner check: the local owner is allowed, an approver and anonymous are not_owner", async () => {
+  it("approve_tool takes the owner check: the owner is allowed, another local user and anonymous are not_owner", async () => {
     const { store } = await newStore();
     const auth = new OwnerAuth(store);
     const ask = (user_id: string) => auth.authorize({ user_id: user_id as UserId, attributes: {} }, "approve_tool", { kind: "tool", id: GRANT });
     expect(await ask("local:anonymous")).toEqual({ allow: false, reason: "not_owner" });
     // Solo: the first local identity becomes the owner with no setup.
     expect(await ask(ME)).toEqual({ allow: true });
-    await store.setLocalUserRole("local:other" as UserId, "approver", ME);
     expect(await ask("local:other")).toEqual({ allow: false, reason: "not_owner" });
-    // One owner: an approver role allows nothing else either.
+    // One owner: another local user is allowed nothing else either.
     expect(await auth.authorize({ user_id: "local:other" as UserId, attributes: {} }, "approve_spec", { kind: "tool", id: GRANT })).toEqual({ allow: false, reason: "not_owner" });
     expect(IDENTITY_ROLE_ACTIONS.owner).toContain("approve_tool");
     expect(IDENTITY_ROLE_ACTIONS.approver).not.toContain("approve_tool");
