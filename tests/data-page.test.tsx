@@ -18,10 +18,15 @@ const overview = { as_of: AT, stages: {}, needs_you: 0, running: 0, queued: 0, l
 const tables = {
   as_of: AT,
   tables: [
-    { name: "run_attempts", rows: 1, columns: ["run_id", "attempt", "lease_token", "worker_id", "error_code"], hidden: ["lease_token"] },
-    { name: "work_items", rows: 2, columns: ["id", "title", "problem", "version"], hidden: [] },
+    {
+      name: "run_attempts", rows: 1, columns: ["run_id", "attempt", "lease_token", "worker_id", "error_code"], hidden: ["lease_token"],
+      description: "Each attempt of a run.", owner: "worker", column_docs: { error_code: "Why the attempt failed." },
+    },
+    { name: "work_items", rows: 2, columns: ["id", "title", "problem", "version"], hidden: [], description: "Work items.", owner: "controller", column_docs: {} },
   ],
+  csrf_token: "tok-1",
 };
+const ASK_SQL = "SELECT count(*) AS failed_today FROM worker_runs WHERE kind = 'implement' AND status = 'failed'";
 const workItems = {
   as_of: AT, table: "work_items", columns: ["id", "title", "problem", "version"], hidden: [], order_by: ["created_at", "id"], filter: null,
   total: 2, page: 1, limit: 50, run_items: {},
@@ -44,15 +49,23 @@ const RESPONSES: Record<string, unknown> = {
   "/api/v1/data/tables/run_attempts": attempts,
 };
 let fetched: string[] = [];
+let posted: { url: string; token: string | null; body: unknown }[] = [];
+/** What POST /api/v1/data/ask answers: status and body. */
+let askReply: { status: number; body: unknown } = { status: 200, body: {} };
 let client: QueryClient;
 let clip: string[] = [];
 
 beforeEach(() => {
   fetched = [];
+  posted = [];
   clip = [];
   history.replaceState(null, "", "/app/");
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => "visible");
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === "POST") {
+      posted.push({ url, token: new Headers(init.headers).get("x-csrf-token"), body: JSON.parse(String(init.body)) });
+      return new Response(JSON.stringify(askReply.body), { status: askReply.status, headers: { "content-type": "application/json" } });
+    }
     fetched.push(url);
     const body = RESPONSES[url.split("?")[0]!];
     if (body === undefined) return new Response(JSON.stringify({ error: "Not found." }), { status: 404 });
@@ -202,6 +215,73 @@ describe("Data page", () => {
       expect((await screen.findByTestId("data-autonomy")).textContent).toBe("Autonomy: not enough data");
     } finally {
       RESPONSES["/api/v1/data/autonomy"] = autonomy;
+    }
+  });
+
+  it("the table list shows each table's owner and description, and its card the column meanings", async () => {
+    history.replaceState(null, "", "/app/data");
+    mount();
+    const list = await screen.findByRole("navigation", { name: "Tables" });
+    expect((await within(list).findAllByTestId("data-table-doc")).map((p) => p.textContent)).toEqual(["worker · Each attempt of a run.", "controller · Work items."]);
+    const t = await openTable("run_attempts");
+    const info = screen.getByTestId("data-table-info");
+    expect(info.textContent).toContain("Each attempt of a run.");
+    expect(info.textContent).toContain("Owner: worker");
+    const meanings = within(info).getByLabelText("Columns");
+    expect(meanings.textContent).toBe("error_codeWhy the attempt failed.");
+    expect([...t.querySelectorAll("th")].find((th) => th.textContent === "error_code")!.getAttribute("title")).toBe("Why the attempt failed.");
+  });
+
+  async function ask(question: string) {
+    const box = await screen.findByRole("region", { name: "Ask" });
+    fireEvent.change(within(box).getByRole("textbox", { name: /^Question/ }), { target: { value: question } });
+    fireEvent.click(within(box).getByRole("button", { name: "Ask" }));
+    return box;
+  }
+
+  it("Ask posts the question with the token, then shows the query, the one-line answer and the result table, in that order", async () => {
+    askReply = { status: 200, body: { as_of: AT, sql: ASK_SQL, columns: ["failed_today"], rows: [[3]], truncated: false, answer: "failed_today: 3" } };
+    history.replaceState(null, "", "/app/data");
+    mount();
+    const box = await ask("how many implement runs failed today");
+    const result = await within(box).findByRole("table", { name: "Result" });
+    expect(posted).toEqual([{ url: "/api/v1/data/ask", token: "tok-1", body: { question: "how many implement runs failed today" } }]);
+    const sql = within(box).getByTestId("data-ask-sql");
+    const line = within(box).getByTestId("data-ask-line");
+    expect(sql.textContent).toBe(ASK_SQL);
+    expect(line.textContent).toBe("failed_today: 3");
+    expect(sql.compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(line.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect([...result.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["3"]);
+  });
+
+  it("a refused query shows the query and the reason; a cut result says so; no model shows the message", async () => {
+    history.replaceState(null, "", "/app/data");
+    mount();
+    askReply = { status: 422, body: { error: "Only one statement runs.", sql: "SELECT 1; SELECT 2", refused: "Only one statement runs." } };
+    let box = await ask("two things");
+    expect((await within(box).findByRole("alert")).textContent).toContain("Only one statement runs.");
+    expect(within(box).getByTestId("data-ask-sql").textContent).toBe("SELECT 1; SELECT 2");
+    expect(within(box).queryByRole("table")).toBeNull();
+    askReply = { status: 200, body: { as_of: AT, sql: "SELECT x FROM n", columns: ["x"], rows: [[1], [2]], truncated: true, answer: null } };
+    box = await ask("count");
+    expect(await within(box).findByText("Showing the first 2 rows: the result was cut.")).toBeTruthy();
+    expect(within(box).queryByTestId("data-ask-line")).toBeNull();
+    askReply = { status: 503, body: { error: "No model is configured: Ask needs the Model plugin (plugins.llm)." } };
+    box = await ask("anything");
+    expect((await within(box).findByRole("alert")).textContent).toContain("No model is configured");
+    expect(within(box).queryByTestId("data-ask-sql")).toBeNull();
+  });
+
+  it("shows no Ask box when the server has no Ask route", async () => {
+    RESPONSES["/api/v1/data/tables"] = { ...tables, csrf_token: null };
+    try {
+      history.replaceState(null, "", "/app/data");
+      mount();
+      await screen.findByRole("navigation", { name: "Tables" });
+      expect(screen.queryByRole("region", { name: "Ask" })).toBeNull();
+    } finally {
+      RESPONSES["/api/v1/data/tables"] = tables;
     }
   });
 });

@@ -95,6 +95,29 @@ export interface TacitRule {
   readonly scope: string;
 }
 
+/**
+ * One block of the rules file as the Applied group shows it. A block that parses (a `C-` ID and a `기본값` line) has its
+ * `id` and `name` and the parts it has; any other `## ` block has only `raw`, its text as written.
+ */
+export interface TacitAppliedRule {
+  readonly id?: string;
+  readonly name?: string;
+  readonly default?: string;
+  readonly exceptions?: string;
+  readonly scope?: string;
+  /** The T- IDs on the `근거` line. */
+  readonly incidents?: readonly string[];
+  /** The `판정일` on the `근거` line (YYYY-MM-DD). */
+  readonly judged?: string;
+  readonly raw?: string;
+}
+
+/** What the rules file holds: its blocks in file order, and the lines under `## 다른 곳에 인코딩된 규칙` as written. */
+export interface TacitApplied {
+  readonly rules: readonly TacitAppliedRule[];
+  readonly elsewhere: readonly string[];
+}
+
 /** The verdicts a ledger takes. `retire` is for a class only. */
 export type TacitDecision = "hold" | "promote" | "reject" | "retire";
 
@@ -124,4 +147,6 @@ export interface TacitLedger {
   verdict(id: string, decision: TacitDecision, reason: string, rule?: TacitPromotion): Promise<void>;
   /** The promoted rules, in the ledger's order; none when the ledger has no rules file. */
   rules(): Promise<readonly TacitRule[]>;
+  /** Everything the rules file holds, for the Rules page's Applied group; nothing when there is no file. Reads only. Optional as `show` is: a ledger written before it has none. */
+  applied?(): Promise<TacitApplied>;
 }

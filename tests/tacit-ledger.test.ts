@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { AgentsHomeTacitLedger, TACIT_AGENT, TACIT_CLI_TIMEOUT_MS, agentsHome, checkAgentsHome, tacitLedgerAt } from "../src/impl/tacit/agents-home-tacit-ledger.js";
-import { parseDraft, parsePending, parseShow } from "../src/impl/tacit/ledger-text.js";
+import { parseApplied, parseDraft, parsePending, parseShow } from "../src/impl/tacit/ledger-text.js";
 import { NoTacitLedger } from "../src/impl/tacit/no-tacit-ledger.js";
 import { REGISTRY, createPlugin, defaultPlugins } from "../src/plugins.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
@@ -552,6 +552,39 @@ describe("plugin agents-home", () => {
     ]);
     expect(s.argv()).toEqual([]);
     expect(snapshot(s.home)).toEqual(before);
+  });
+
+  it("applied parses a real-format rules.md: each C- block with its evidence, a block that does not parse as raw text, the encoded-elsewhere lines", async () => {
+    const text = [
+      "# Rules", "intro", "",
+      "## C-001 summary first", "- 기본값: Open with a summary.", "  Then the details.", "- 예외 (이럴 땐 override): a one-word reply", "- 근거: 인시던트 T-1, T-20 / 판정일 2026-11-13", "- 범위: 모든 문서", "",
+      "## C-002 no scope", "- 기본값: Keep flags.", "",
+      "## Notes", "- 기본값: but no C- ID", "",
+      "## C-003 no default", "- 예외: x", "",
+      "## 다른 곳에 인코딩된 규칙", "- C-009 → CLAUDE.md", "", "- C-010 → prompts/review.md", "", "## After", "- not elsewhere",
+    ].join("\n");
+    const a = parseApplied(text);
+    expect(a.rules).toEqual([
+      { id: "C-001", name: "summary first", default: "Open with a summary.\nThen the details.", exceptions: "a one-word reply", scope: "모든 문서", incidents: ["T-1", "T-20"], judged: "2026-11-13" },
+      { id: "C-002", name: "no scope", default: "Keep flags." },
+      { raw: "## Notes\n- 기본값: but no C- ID" },
+      { raw: "## C-003 no default\n- 예외: x" },
+      { raw: "## After\n- not elsewhere" },
+    ]);
+    expect(a.elsewhere).toEqual(["- C-009 → CLAUDE.md", "- C-010 → prompts/review.md"]);
+    expect(parseApplied("")).toEqual({ rules: [], elsewhere: [] });
+  });
+
+  it("applied reads through the plugin: no rules.md, nothing; the plugin none, nothing; it writes nothing", async () => {
+    const s = stubHome();
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    expect(await ledger.applied()).toEqual({ rules: [], elsewhere: [] });
+    mkdirSync(join(s.home, "private", "tacit"), { recursive: true });
+    writeFileSync(join(s.home, "private", "tacit", "rules.md"), "## C-001 a\n- 기본값: b\n\n## 다른 곳에 인코딩된 규칙\n- C-9 → x\n");
+    const before = snapshot(s.home);
+    expect(await ledger.applied()).toEqual({ rules: [{ id: "C-001", name: "a", default: "b" }], elsewhere: ["- C-9 → x"] });
+    expect(snapshot(s.home)).toEqual(before);
+    expect(await new NoTacitLedger().applied()).toEqual({ rules: [], elsewhere: [] });
   });
 
   it("pending, show and verdicts other than promote of a class call subcommands the CLIs' --help names, and never write under the home", async () => {

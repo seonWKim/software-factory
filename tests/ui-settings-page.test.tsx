@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SettingRow, SettingsView } from "../web/src/api.js";
+import type { CapabilitiesView, SettingRow, SettingsView } from "../web/src/api.js";
 
 // tsconfig.test.json checks this file without JSX (only tests/ui-shell.test.tsx is checked with web/tsconfig.json),
 // so the page is built with createElement and its .tsx module is loaded by a specifier the node check skips.
@@ -86,6 +86,22 @@ const view: SettingsView = {
   ],
 };
 
+// The Capabilities section's read (design 08-settings, 2026-11-13): a skill, a granted tool, a tool that writes, a provider entry.
+const capabilities: CapabilitiesView = {
+  as_of: AT,
+  roles: ["triage", "implement", "review", "update", "resolve", "manual"],
+  capabilities: [
+    { kind: "skill", id: "skill:deploy", name: "deploy", detail: "/home/me/.claude/skills", enabled: true, roles: [], last_used: null },
+    { kind: "tool", id: "tool:forge.preflight", name: "forge.preflight", detail: "Read-only check.", enabled: true, roles: ["review", "triage"], last_used: AT, read_only: true },
+    { kind: "tool", id: "tool:git.store_branch", name: "git.store_branch", detail: "Store a branch.", enabled: false, roles: [], last_used: null, read_only: false },
+    {
+      kind: "provider", id: "runner:claude-code", name: "runner:claude-code", detail: null, enabled: true, roles: ["triage", "implement", "review", "resolve"], last_used: AT,
+      models: [{ class: "cheap", model: "haiku" }, { class: "standard", model: "sonnet" }, { class: "strong", model: "opus" }],
+    },
+  ],
+};
+let capabilitiesReads = 0;
+
 let posts: { url: string; init: RequestInit }[] = [];
 const ON = { as_of: "2026-11-08T00:00:00Z", csrf_token: "t", commands_enabled: true, actor: "local:me@example.com", actor_source: "environment" };
 let session: Record<string, unknown> = ON;
@@ -101,6 +117,7 @@ beforeEach(() => {
       return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "content-type": "application/json" } });
     }
     if (url === "/api/v1/settings") return new Response(JSON.stringify(view), { status: 200, headers: { "content-type": "application/json" } });
+    if (url === "/api/v1/settings/capabilities") return (capabilitiesReads++, new Response(JSON.stringify(capabilities), { status: 200, headers: { "content-type": "application/json" } }));
     if (url.startsWith("/api/v1/items/")) return new Response(JSON.stringify({ item: { merge: { enabled: true, reason: null } } }), { status: 200, headers: { "content-type": "application/json" } });
     if (url === "/api/v1/session") return new Response(JSON.stringify(session), { status: 200, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 404 });
@@ -125,6 +142,28 @@ const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 
 describe("Settings page", () => {
+  it("has a Capabilities section: each skill, tool and provider entry with its state, roles and last use", async () => {
+    capabilitiesReads = 0;
+    await show();
+    const table = await screen.findByRole("table", { name: "Capabilities" });
+    const rows = [...table.querySelectorAll("tbody > tr")];
+    expect(rows.map((r) => r.querySelector("td")!.textContent)).toEqual([
+      "deploy/home/me/.claude/skills",
+      "forge.preflightRead-only check.",
+      "git.store_branchStore a branch.",
+      "runner:claude-codecheap: haiku · standard: sonnet · strong: opus",
+    ]);
+    expect(rows[1]!.textContent).toContain("Enabled");
+    expect(rows[1]!.textContent).toContain("review, triage");
+    expect(rows[1]!.textContent).toContain("ago");
+    expect(rows[2]!.textContent).toContain("Off");
+    expect(rows[2]!.textContent).toContain("writes; never granted");
+    expect(rows[0]!.textContent).toContain("No role");
+    expect(rows[0]!.textContent).toContain("Not in recent runs");
+    // Read once when the page opens, never polled: it reads stored transcripts.
+    expect(capabilitiesReads).toBe(1);
+  });
+
   it("has a Commands from the page section (#page-commands): who commands act as, and and no how-to-act sentence", async () => {
     await show();
     const section = await screen.findByRole("region", { name: "Commands from the page" });

@@ -3,7 +3,7 @@
 // docs/plugins/tacit-ledger.md) and a class's draft (the owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
 // holds the promoted rules, and a promote adds one block to it.
 
-import type { TacitDraft, TacitEntryDetail, TacitPendingEntry, TacitPromotion, TacitRule } from "../../interfaces/tacit-ledger.js";
+import type { TacitApplied, TacitAppliedRule, TacitDraft, TacitEntryDetail, TacitPendingEntry, TacitPromotion, TacitRule } from "../../interfaces/tacit-ledger.js";
 
 /** `## proposals (open) 1`, `## proposals (held) 0`, `## tacit Pending 1`, `## tacit Held 0`: the state word. */
 const PENDING_HEADING = /^##\s+(?:proposals\s+\((open|held)\)|tacit\s+(pending|held))(?:\s|$)/i;
@@ -81,6 +81,71 @@ export function parseRules(text: string): TacitRule[] {
     }
   }
   return out;
+}
+
+/** `- 근거: 인시던트 T-1, T-2 / 판정일 2026-11-13`: the evidence line of a promoted block. */
+const EVIDENCE_LINE = /^-\s*근거\s*[:：]?(.*)$/;
+const JUDGED_DATE = /판정일\s*[:：]?\s*(\d{4}-\d{2}-\d{2})/;
+
+/** One `## ` block (not the encoded-elsewhere one) as an applied rule: it parses with a `C-` ID and a `기본값` line, else it is raw. */
+function appliedRule(heading: string, body: readonly string[]): TacitAppliedRule {
+  const raw = [heading, ...body].join("\n").trim();
+  const h = RULE_HEADING.exec(heading);
+  const fields: { default?: string; exceptions?: string; scope?: string; incidents?: string[]; judged?: string } = {};
+  let field: "default" | "exceptions" | "scope" | null = null;
+  for (const l of body) {
+    const line = l.trim();
+    const f = RULE_FIELD.exec(line);
+    const e = EVIDENCE_LINE.exec(line);
+    if (f) {
+      field = FIELD_KEY[f[1] as keyof typeof FIELD_KEY];
+      fields[field] = afterColon(f[2]!);
+    } else if (e) {
+      field = null;
+      const text = e[1]!;
+      const incidents = [...text.slice(0, JUDGED_DATE.exec(text)?.index ?? text.length).matchAll(INCIDENT_ID)].map((m) => m[0]);
+      if (incidents.length > 0) fields.incidents = incidents;
+      const judged = JUDGED_DATE.exec(text)?.[1];
+      if (judged !== undefined) fields.judged = judged;
+    } else if (field !== null && line !== "" && /^\s/.test(l)) {
+      fields[field] = `${fields[field]}\n${line}`;
+    } else {
+      field = null;
+    }
+  }
+  if (!h || fields.default === undefined) return { raw };
+  return { id: h[1]!, name: h[2]!.trim(), ...fields };
+}
+
+/**
+ * The whole rules file for the Applied group. Each `## ` block up to the next `#` heading is one rule: with a `C-` ID and
+ * a `기본값` line it gives its `기본값`, `예외`, `범위` and the T- IDs and `판정일` of its `근거` line (a part it lacks is
+ * absent); any other block is kept as raw text. The non-empty lines under `## 다른 곳에 인코딩된 규칙` are `elsewhere`, as
+ * written.
+ */
+export function parseApplied(text: string): TacitApplied {
+  const rules: TacitAppliedRule[] = [];
+  const elsewhere: string[] = [];
+  let block: { heading: string; body: string[] } | null = null;
+  let inElsewhere = false;
+  const flush = () => {
+    if (block) rules.push(appliedRule(block.heading, block.body));
+    block = null;
+  };
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (line.startsWith("#")) {
+      flush();
+      inElsewhere = line === ENCODED_ELSEWHERE_HEADING;
+      if (line.startsWith("## ") && !inElsewhere) block = { heading: line, body: [] };
+    } else if (inElsewhere) {
+      if (line !== "") elsewhere.push(line);
+    } else if (block) {
+      block.body.push(raw);
+    }
+  }
+  flush();
+  return { rules, elsewhere };
 }
 
 /** `### C-040 <title>`: the draft's first heading names its class. */

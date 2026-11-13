@@ -68,8 +68,8 @@
     `created_at`, `updated_at`. `controller_standing_proposals`: one row per (gate, tier, run_length) with `threshold`; storing the
     same proposal again writes nothing and returns the stored one, so two replicas finding the same run leave one row.
     Store methods on `FactoryStore` (`putStandingRule`, `listStandingRules`, `recordStandingProposal`,
-    `listStandingProposals`), implemented once in the shared SQL store for SQLite and MySQL.
-  - **Schema.** SQLite migration 32 and MySQL step `0032-standing-approvals.sql`, same tables and columns. The spec named
+    `listStandingProposals`), implemented once in the shared SQL store.
+  - **Schema.** SQLite migration 32. The spec named
     24; 24 to 31 had already shipped, so this takes the next free number.
   - **Solo and enterprise.** The same: rules are keyed by (gate, tier) only, and every replica reads the same rows.
 
@@ -82,3 +82,4 @@
   separate item; rules and proposals were shown and changed only through `/standing`, and the status page had no route
   for them.
 - **Guard code on the protected list** (changed 2026-11-09, runtime review H3). Before: only `src/identity/settings/` of identity was listed, and `src/compose.ts` (G1, the passport broker wrapper), `src/outbound/outbound.ts` (G5, the delivery passport) and the default broker files under `src/impl/github/` were not, so auto mode could merge an agent change to them with no person.
+- **MySQL text removed from the current decisions** (decision changed 2026-11-11, issue #567). Before: the store methods were "implemented once in the shared SQL store for SQLite and MySQL" and the schema was "SQLite migration 32 and MySQL step `0032-standing-approvals.sql`, same tables and columns".

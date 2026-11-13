@@ -2310,8 +2310,8 @@ export class SqlFactoryStore implements FactoryStore {
     const like = (f: string) => `%${`${JSON.stringify(f)}:${JSON.stringify(id)}`.replace(/[!%_]/g, (c) => `!${c}`)}%`;
     return this.db.all(`SELECT * FROM (SELECT * FROM inbound_commands WHERE ${origins} AND (${fields.map(() => "args LIKE ? ESCAPE '!'").join(" OR ")}) ORDER BY seq DESC LIMIT ${Math.max(0, Math.floor(limit))}) ORDER BY seq`, fields.map(like));
   }
-  // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident().
-
+  // Raw table reads (design §9 Data page, issue #239). Names come only from the catalog; see ident(). The Ask's query is the driver's (SQLite only).
+  get readOnlyQuery(): FactoryStore["readOnlyQuery"] { return (this.db as Pick<FactoryStore, "readOnlyQuery">).readOnlyQuery?.bind(this.db); }
   async listTables(): Promise<StoreTable[]> {
     const out: StoreTable[] = [];
     for (const t of await this.catalog()) {
