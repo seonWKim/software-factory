@@ -107,6 +107,9 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
   return { tone: "status", text: latest.handled_at === null ? t("commands.sent") : t("commands.done") };
 }
 
+/** Whether `outcome` is the "sent" state: a request queued, its reply not here yet. */
+export const awaitsReply = (outcome: Outcome): boolean => outcome?.tone === "status" && outcome.text === t("commands.sent");
+
 /**
  * Sending app commands for item `id`: `send` posts one with the session's token, keeps what this page did with each
  * command (`local`), and on success re-reads the item and the list, so the controller's reply shows. `on`: commands
@@ -394,17 +397,19 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
   const { on, busy, local, send: post } = useCommandSend(id);
   const send = () => post("merge", "");
   const outcome: Outcome = merge.enabled ? commandOutcome(replies, "merge", local.merge) : { tone: "status", text: merge.reason ?? "" };
+  // Merging… from the click until the controller's reply (handled or refused) arrives.
+  const merging = merge.enabled && (busy || awaitsReply(outcome));
   return (
     <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
       <Button
         variant="primary"
-        disabled={!merge.enabled || !on || busy}
+        disabled={!merge.enabled || !on || merging}
         title={source === "local"
           ? t("commands.mergeLocal")
           : t("commands.mergePr")}
         onClick={() => void send()}
       >
-        {t("commands.merge")}
+        {merging ? t("commands.merging") : t("commands.merge")}
       </Button>
       <OutcomeText outcome={outcome} />
     </span>
@@ -497,8 +502,16 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   const primary = group === "merge" ? undefined : primaryOf(commands);
   const others = commands.filter((c) => c !== primary);
   const off = !on || busy;
+  const [mergeSending, setMergeSending] = useState(false);
+  // The row has no replies: Merging… from the click until the send fails (an error) or the row moves on.
+  const merging = group === "merge" && (mergeSending || awaitsReply(commandOutcome([], "merge", local.merge)));
   const send = async (command: string, note: string) => {
-    if (!(await post(command, note))) return;
+    if (command === "merge") setMergeSending(true);
+    try {
+      if (!(await post(command, note))) return;
+    } finally {
+      if (command === "merge") setMergeSending(false);
+    }
     announceStatus(t("commands.commandSent", { command }));
     setOpen(null);
   };
@@ -517,8 +530,8 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
       {group === "merge" ? (
         <span data-command="merge" className="inline-flex">
           <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
-            <Button variant="secondary" disabled={off || checking || !merge?.enabled} onClick={() => void send("merge", "")}>
-              {checking ? t("needs.checking") : t("commands.merge")}
+            <Button variant="secondary" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
+              {checking ? t("needs.checking") : merging ? t("commands.merging") : t("commands.merge")}
             </Button>
           </Tooltip>
         </span>

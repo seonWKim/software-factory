@@ -6,7 +6,7 @@ import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/typ
 import { parseVerdict } from "../src/core/verdict.js";
 // TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
 // @ts-expect-error -- see above
-import { oneTapNote, verdictNote } from "../web/src/views/item-commands.js";
+import { awaitsReply, commandOutcome, oneTapNote, verdictNote } from "../web/src/views/item-commands.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { parseProposalMarker } from "../src/core/interpret.js";
@@ -743,5 +743,23 @@ describe("the command box and pending proposals (design 09-dashboard-app)", () =
       expect({ body, status: (await h.post(OWNER, body)).status }).toEqual({ body, status: 400 });
     }
     expect(await h.store.listAppCommandRequestsForItem(h.item.id, 10)).toEqual([]);
+  });
+});
+
+describe("the Merge button's Merging… state (item page)", () => {
+  const reply = (seq: number, extra: Record<string, unknown> = {}) => ({ seq, command: "merge", handled_at: null, refusal: null, ...extra }) as never;
+  it("waits for the reply after a send, then stops", () => {
+    expect(awaitsReply(commandOutcome([], "merge", { seq: 5 }))).toBe(true);
+    expect(awaitsReply(commandOutcome([reply(5)], "merge", { seq: 5 }))).toBe(true);
+    expect(awaitsReply(commandOutcome([reply(5, { handled_at: "t" })], "merge", { seq: 5 }))).toBe(false);
+    expect(awaitsReply(commandOutcome([reply(5, { handled_at: "t", refusal: "the head moved" })], "merge", { seq: 5 }))).toBe(false);
+  });
+  it("does not wait for a failed send or with no send", () => {
+    expect(awaitsReply(commandOutcome([], "merge", { error: "network" }))).toBe(false);
+    expect(awaitsReply(commandOutcome([], "merge"))).toBe(false);
+  });
+  it("has the Merging… label", async () => {
+    const { t } = await import("../web/src/i18n/index.js");
+    expect(t("commands.merging")).toBe("Merging…");
   });
 });
