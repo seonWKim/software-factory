@@ -27,14 +27,16 @@ export function CalendarSection({ token }: { token: string }) {
   const plugins = view.data.plugins ?? [];
   if (plugins.length === 0) return null;
   return (
-    <Section title={t("calendar.title")} count={plugins.length}>
-      <p className="mb-2 text-sm text-pretty text-text-2">{t("calendar.hint")}</p>
-      <ul className="space-y-4 text-sm">
-        {plugins.map((p) => (
-          <CalendarRow key={p.name} plugin={p} token={token} />
-        ))}
-      </ul>
-    </Section>
+    <div id="calendar">
+      <Section title={t("calendar.title")} count={plugins.length}>
+        <p className="mb-2 text-sm text-pretty text-text-2">{t("calendar.hint")}</p>
+        <ul className="space-y-4 text-sm">
+          {plugins.map((p) => (
+            <CalendarRow key={p.name} plugin={p} token={token} />
+          ))}
+        </ul>
+      </Section>
+    </div>
   );
 }
 
