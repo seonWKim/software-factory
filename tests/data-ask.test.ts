@@ -15,6 +15,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { READ_ONLY_MAX_ROWS } from "../src/impl/store/sqlite/readonly-query.js";
+import { hasAuthorizer } from "../src/impl/store/sqlite/readonly-query-worker.js";
 import { DATA_ASK_PATH, QUESTION_MAX } from "../src/ui/data-ask.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
@@ -237,11 +238,26 @@ describe("POST /api/v1/data/ask: the query", () => {
     expect(String(r.value.refused)).toMatch(/names lease_token, a hidden column/);
     const star = await page({ model: "SELECT * FROM worker_runs" });
     const all = await star.post({ question: QUESTION });
+    expect(JSON.stringify(all.value)).not.toContain(String(LEASE_TOKEN));
+    // Without an SQLite authorizer (Node before 24.10, as on CI) the query's plan reads lease_token, so it is refused.
+    if (!hasAuthorizer()) {
+      expect(all).toMatchObject({ status: 422, value: { refused: expect.stringMatching(/hidden column of worker_runs/) } });
+      return;
+    }
     expect(all.status).toBe(200);
     const columns = all.value.columns as string[];
     const row = (all.value.rows as unknown[][])[0]!;
     expect(row[columns.indexOf("lease_token")]).toBe("[hidden]");
-    expect(JSON.stringify(all.value)).not.toContain(String(LEASE_TOKEN));
+  });
+
+  it("a hidden column read under another name (a renamed CTE column) never shows its value", async () => {
+    const [{ n }] = (await (await page()).driver.all("SELECT count(*) AS n FROM pragma_table_info('worker_runs')")) as [{ n: number }];
+    const names = Array.from({ length: n }, (_, i) => `c${i}`);
+    const p = await page({ model: `WITH r(${names.join(", ")}) AS (SELECT * FROM worker_runs) SELECT ${names.join(", ")} FROM r` });
+    const r = await p.post({ question: QUESTION });
+    expect(JSON.stringify(r.value)).not.toContain(String(LEASE_TOKEN));
+    // With an authorizer the read gives NULL; without one the query is refused.
+    expect(r.status).toBe(hasAuthorizer() ? 200 : 422);
   });
 
   it(`returns at most ${READ_ONLY_MAX_ROWS} rows and says the result was cut`, async () => {
