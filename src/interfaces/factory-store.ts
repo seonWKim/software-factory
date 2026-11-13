@@ -995,18 +995,19 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
 
   /** Every table of the backend's schema, by name, with its row count, columns and the order a page uses. */
   listTables(): Promise<StoreTable[]>;
-  /**
-   * One page of `table`'s rows, newest first by its `order_by` columns, with the total row count (after the
-   * filter). `limit` defaults to TABLE_PAGE_DEFAULT and is capped at TABLE_PAGE_MAX; `offset` defaults to 0.
-   * Null, with no row read, when the table or the filter's column is not in the schema.
-   */
+  /** One page of `table`'s rows, newest first by its `order_by` columns, with the total row count (after the filter). `limit` defaults to
+   *  TABLE_PAGE_DEFAULT, capped at TABLE_PAGE_MAX; `offset` defaults to 0. Null, with no row read, when the table or the filter's column is not in the schema. */
   listTableRows(input: TablePageInput): Promise<TablePage | null>;
+  /** One read-only SELECT (design 09-dashboard-app, Data page Ask), after the statement checks, on its own read-only connection: at most `max_rows` rows, stopped at `time_limit_ms`; a read of an `ignore` column gives NULL. Absent: the backend has none. */
+  readOnlyQuery?: ((sql: string, opts?: ReadOnlyQueryOpts) => Promise<ReadOnlyQueryResult>) | undefined;
 }
 
-/** Rows a table page returns when no limit is given. */
-export const TABLE_PAGE_DEFAULT = 50;
-/** The most rows one table page returns. */
-export const TABLE_PAGE_MAX = 200;
+export const TABLE_PAGE_DEFAULT = 50; // rows a table page returns when no limit is given
+export const TABLE_PAGE_MAX = 200; // the most rows one table page returns
+
+export interface ReadOnlyQueryOpts { max_rows?: number; time_limit_ms?: number; ignore?: Readonly<Record<string, readonly string[]>> }
+/** A read-only query's columns and rows in order, `truncated` when the row cap cut it; or why it was refused. */
+export type ReadOnlyQueryResult = { columns: string[]; rows: TableCell[][]; truncated: boolean } | { refused: string };
 
 /** One table of the store's schema. */
 export interface StoreTable {
@@ -1016,10 +1017,7 @@ export interface StoreTable {
   columns: string[];
   /** Primary-key columns in key order; empty when the table has none. */
   primary_key: string[];
-  /**
-   * Columns a page sorts by, all descending: the first of created_at, at, started_at, updated_at the table
-   * has, then its primary key; empty for a table with neither (rows in the database's own order).
-   */
+  /** Columns a page sorts by, all descending: the first of created_at, at, started_at, updated_at it has, then its primary key; empty for neither. */
   order_by: string[];
 }
 

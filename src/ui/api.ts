@@ -3,7 +3,7 @@
 // rows and numbers. Free text from the store (titles, blocked reasons, state-change values, run errors, owner
 // and actor ids) leaves only through the Withholder: clean text as is (JSON, not HTML-escaped), anything with
 // an egress finding as `[withheld: <rule>]`. A lease's fencing token is never returned. The Data page's raw
-// table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`.
+// table reads (/data/tables, data.ts) use the same Withholder and show hidden columns as `[hidden]`; its Ask is a write route (data-ask.ts).
 //
 // Request guards (Host, GET/HEAD) run in server.ts before this module is reached. The write routes, among them POST
 // /api/v1/settings (settings-api.ts), POST /api/v1/items/:id/commands (commands.ts), POST /api/v1/pauses/resume
@@ -150,7 +150,7 @@ class ApiCtx {
 
   /** The Data page's context: the same store, Withholder and channel as every other route. */
   data(): DataCtx {
-    return { store: this.d.store, text: (v) => this.text(v), now: this.now };
+    return { store: this.d.store, text: (v) => this.text(v), now: this.now, askToken: this.d.settings?.ask ? this.d.settings.csrfToken : null };
   }
 
   private readonly labels = new Map<string, Promise<string>>();

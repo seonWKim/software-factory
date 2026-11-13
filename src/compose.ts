@@ -995,8 +995,7 @@ export interface UiParts {
   commands: UiCommands;
   /** The "Resume now" route (design §5 Restarts, issue #291): the page's factory user, the owner check, the CSRF token. */
   pauses: UiPauses;
-  /** Display names by user id from Identity's identity_profiles (M9), only to show. */
-  displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
+  displayNames: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>; // by user id from Identity's identity_profiles (M9), only to show
   tacit: UiTacit; // the Rules page's ledger, switched by the `integrations` setting before each Rules request (design 08-settings)
   close(): Promise<void>;
 }
@@ -1045,6 +1044,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
   settings.editFile = configWriter({ loaded, store, sandbox: await p.sandbox(), now: () => clock.now().toISOString(), actor: opts.identity.user, loadConfig, project: async () => (await settings.resolveProject())?.key ?? null });
   settings.calendar = (await import("./ui/calendar-api.js")).uiCalendar(loaded, { store, actor: settings.actor, clock, base: settings.base }); // its Calendar section
+  settings.ask = { llm: await p.llm(secrets).catch(() => null), log: new ConsoleLogger(clock, "ask") }; // the Data page's Ask: the Model plugin, null when it cannot be built
   const cliUser = cliUserConfig(loaded.file);
   const pauses: UiPauses = {
     // A local account linked to a factory user first, else `cli_user`: an ID, never a display name.

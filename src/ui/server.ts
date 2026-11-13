@@ -6,9 +6,10 @@
 // POST /api/v1/packs/approvals (design 11-packs, issue #589; packs-api.ts), POST /api/v1/rules/verdict (design §9,
 // issue #571; rules-api.ts) and the task routes (design 02-tasks; tasks-api.ts TASK_WRITES: POST /api/v1/tasks, the quick-add box,
 // /api/v1/tasks/build, Build this, and /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions) and the
-// calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
+// (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing and improve routes then
-// check the owner (approve_spec), the rules and calendar routes the owner, the pack approvals route approve_tool, the task routes
+// check the owner (approve_spec), the rules, calendar and Ask routes the owner, the pack approvals route approve_tool, the task routes
 // the commands actor. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
@@ -33,6 +34,7 @@ import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRule
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
+import { DATA_ASK_PATH, askData } from "./data-ask.js";
 import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
 import { parseFilters } from "./filters.js";
 import { SCRIPT_HASH, STYLE_HASH, esc, page } from "./html.js";
@@ -131,13 +133,14 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "rules" | "tasks" | "calendar";
+type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "rules" | "tasks" | "calendar" | "ask";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
  * /api/v1/pauses/resume or /api/v1/standing when the pause routes (their owner check) are, or to exactly /api/v1/improve/run when both the pause routes and
  * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is, or
- * to exactly /api/v1/calendar/connect or /disconnect when the settings carry the Calendar section (a query string is ignored). Null for every other request.
+ * to exactly /api/v1/calendar/connect or /disconnect when the settings carry the Calendar section, or to exactly /api/v1/data/ask when they carry
+ * the Ask (a query string is ignored). Null for every other request.
  */
 function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (req.method !== "POST") return null;
@@ -150,6 +153,7 @@ function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (path === RULE_VERDICT_PATH && d.pauses !== undefined) return "rules";
   if (Object.hasOwn(TASK_WRITES, path) && d.commands !== undefined) return "tasks";
   if ((path === CALENDAR_CONNECT_PATH || path === CALENDAR_DISCONNECT_PATH) && d.settings?.calendar !== undefined) return "calendar";
+  if (path === DATA_ASK_PATH && d.settings?.ask !== undefined) return "ask";
   return null;
 }
 
@@ -160,12 +164,12 @@ function mediaType(value: string | undefined): string {
 
 /**
  * A write route after the Host check: Origin, then Content-Type, then the CSRF token, then the body, then the
- * route itself (the resume, standing and improve routes check the owner before they write). Every refusal comes
- * before any store write.
+ * route itself (the resume, standing and improve routes check the owner before they write, the Ask before its model
+ * call). Every refusal comes before any store write.
  */
 async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise<UiResponse> {
   const token =
-    route === "settings" || route === "calendar" ? d.settings!.csrfToken
+    route === "settings" || route === "calendar" || route === "ask" ? d.settings!.csrfToken
     : route === "tasks" ? d.commands!.token
     : d.pauses!.csrfToken;
   const own = `http://${(req.host ?? "").trim().toLowerCase()}`;
@@ -191,6 +195,7 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
     : route === "rules" ? await writeRuleVerdict(d, d.pauses!, body)
     : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
     : route === "calendar" ? await writeCalendar(d, pathOf(req.url), body)
+    : route === "ask" ? await askData(d, d.settings!.ask!, body)
     : await writeStanding(d, d.pauses!, body);
   return json(r.status, r.value);
 }
@@ -212,7 +217,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, rule verdict, task and calendar routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, rule verdict, task, calendar and data ask routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
