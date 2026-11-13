@@ -7,7 +7,7 @@ Interface (`src/bus/index.ts`): a plugin is a `BusPlugin`. `component({ db, comp
 Plugins:
 
 - `sql`: `SqlBus`, the default. Every topic is a set of tables in the store's own database (`bus_<topic>`, `_cursors`, `_retries`, `_dead_letters`), created by `npm run migrate` from the discovered topics and again, idempotently, when a role starts.
-  - Solo developer: SQLite, nothing to set up. Enterprise team: the shared MySQL store; several replicas claim with conditional updates and leases.
+  - SQLite, nothing to set up; several worker processes claim with conditional updates and leases.
   - Competing topics take `requires`: a consumer built with `capabilities` claims only messages whose `requires` are all among them.
   - Enable: `"plugins": { "bus": "sql", ... }`, or leave `bus` out: it is the default. Secrets: none. Settings: none.
 
@@ -17,4 +17,4 @@ The descriptor lives in `src/impl/bus/sql.plugin.ts` until `plugin-api.ts` moves
 
 ## History
 
-No earlier decision is recorded for this topic.
+- **Current text names SQLite only** (decision changed 2026-11-11, issue #567). Before: the deployment paragraph said an enterprise team used the shared MySQL store.

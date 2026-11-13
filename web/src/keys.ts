@@ -36,6 +36,27 @@ export const GO_KEYS: Readonly<Record<string, string>> = { n: BASE, w: `${BASE}i
 /** The Tasks page's quick-add field: `q` focuses it, so the key does nothing on a page without one. */
 export const QUICK_ADD_ATTR = "data-quick-add";
 
+/**
+ * The key that adds a task from the Tasks page quick-add field, the owner's `tasks_add_key` setting read through GET
+ * /api/v1/tasks (design 02-tasks): `enter` (the default) or `cmd-enter`, where plain Enter adds nothing.
+ */
+export type QuickAddKey = "enter" | "cmd-enter";
+
+/** The submit key as the hint shows it, and as `aria-keyshortcuts` names it. */
+export const QUICK_ADD_KEYS: Readonly<Record<QuickAddKey, { label: string; aria: string }>> = {
+  enter: { label: "Enter", aria: "Enter" },
+  "cmd-enter": { label: "⌘Enter", aria: "Meta+Enter" },
+};
+
+/**
+ * True when `e` adds the quick-add field's task under `key`: Enter alone, or ⌘Enter (metaKey only: no Ctrl, Alt or
+ * Shift). A key that ends an IME composition never adds.
+ */
+export function isQuickAddSubmit(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing">, key: QuickAddKey): boolean {
+  if (e.key !== "Enter" || e.isComposing || e.ctrlKey || e.altKey || e.shiftKey) return false;
+  return e.metaKey === (key === "cmd-enter");
+}
+
 /** How long `g` waits for its second key. */
 const G_MS = 1000;
 

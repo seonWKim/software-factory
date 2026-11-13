@@ -88,6 +88,8 @@ export interface TaskStore {
   addTask(t: NewTask): Promise<Task>;
   /** Open tasks (no done_at), oldest first, at most `limit`. Read-only. */
   listTasks(limit: number): Promise<Task[]>;
+  /** The Done view's read (design 02-tasks, Done view): the done tasks of `window` (doneWindow), most recently done first. Read-only. */
+  listDoneTasks(window: DoneWindow): Promise<DoneTasks>;
   /**
    * Sets done_at, conditional on it being unset, and for a recurring task inserts its next occurrence (parent_id
    * this task, unique) in the same transaction, so a second completion writes nothing.
@@ -119,6 +121,27 @@ export interface TaskStore {
    * date and time), and in the same transaction stores the notice; false (nothing written) when the condition fails.
    */
   remindTask(id: string, at: TaskTime, notice: NewNotice): Promise<boolean>;
+}
+
+/** How many days the Done view reads at a time: the last 30 days first, then Show older's 30 days before (owner answer 2). */
+export const DONE_WINDOW_DAYS = 30;
+
+/** The done tasks one Done view read takes: `from` <= done_at < `before` (no upper bound when `before` is null). */
+export interface DoneWindow {
+  from: Timestamp;
+  before: Timestamp | null;
+}
+
+/** One Done view read: its tasks, most recently done first, and `older`, whether a task was done before the window. */
+export interface DoneTasks {
+  tasks: Task[];
+  older: boolean;
+}
+
+/** The window of DONE_WINDOW_DAYS days that ends at `before` (Show older), or at `now` with no upper bound (the first read). Pure. */
+export function doneWindow(now: Date, before: Timestamp | null): DoneWindow {
+  const end = before === null ? now.getTime() : Date.parse(before);
+  return { from: new Date(end - DONE_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString() as Timestamp, before };
 }
 
 /** A task's time: its due date and due time. */

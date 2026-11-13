@@ -2,11 +2,11 @@
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
-// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z), delete, sub, and schedule, the timeline's drop) and POST /api/v1/data/ask
+// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and the Done tab), delete, sub, and schedule, the timeline's drop) and POST /api/v1/data/ask
 // (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
 
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { t } from "./i18n/index.js";
 
 /** The supervisor's status (the status page's banner); null when the factory is stopped. */
@@ -754,6 +754,21 @@ export interface TasksView {
   can_build: boolean;
 }
 
+/** One done task in the Done tab: a task row with the time it was done. */
+export interface DoneRow extends TaskRow {
+  done_at: string;
+}
+
+/**
+ * `/api/v1/tasks/done`: the done tasks of 30 days, most recently done first, all lists in one list (the last 30 days, or
+ * the 30 days before `?before=`). `older`: a task was done before them; `next_before`: Show older's `before`.
+ */
+export interface DoneView {
+  tasks: DoneRow[];
+  older: boolean;
+  next_before: string;
+}
+
 declare const __FACTORY_REV__: string | null | undefined;
 
 /** The git revision built into this app (Vite `define`, web/vite.config.ts); null in a test or a build without git. */
@@ -863,6 +878,7 @@ export const API = {
   ruleVerdict: "/api/v1/rules/verdict",
   ruleEntry: (id: string) => `/api/v1/rules/entry?id=${encodeURIComponent(id)}`,
   tasks: "/api/v1/tasks",
+  tasksDone: (before: string | null) => (before === null ? "/api/v1/tasks/done" : `/api/v1/tasks/done?before=${encodeURIComponent(before)}`),
   calendar: "/api/v1/calendar",
   calendarConnect: "/api/v1/calendar/connect",
   calendarDisconnect: "/api/v1/calendar/disconnect",
@@ -893,6 +909,19 @@ export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
     queryFn: () => getJson<T>(url),
     refetchInterval: pollMs,
     refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * The Done tab's read: the last 30 days, then a page per Show older. Its key starts with the tasks' key, so a row
+ * action's reload of the tasks (a completion, a reopen) reloads it too. Not polled.
+ */
+export function useDoneTasks() {
+  return useInfiniteQuery({
+    queryKey: [API.tasks, "done"],
+    queryFn: ({ pageParam }) => getJson<DoneView>(API.tasksDone(pageParam)),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last: DoneView) => (last.older ? last.next_before : undefined),
   });
 }
 

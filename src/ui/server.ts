@@ -15,7 +15,8 @@
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
-// /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts and GET
+// /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
+// /api/v1/tasks and /api/v1/tasks/done (the Done tab) in tasks-api.ts and GET
 // /api/v1/calendar in calendar-api.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
 
@@ -29,7 +30,7 @@ import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settin
 import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
 import { PACK_APPROVALS_PATH, writePackApproval } from "./packs-api.js";
-import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
+import { TASKS_PATH, TASK_DONE_PATH, TASK_WRITES, readDoneTasks, readTasks } from "./tasks-api.js";
 import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
@@ -234,6 +235,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
       : url.pathname === RULES_PATH ? await readRules(d)
       : url.pathname === RULE_ENTRY_PATH ? await readRuleEntry(d, url.searchParams.get("id"))
       : url.pathname === TASKS_PATH ? await readTasks(d)
+      : url.pathname === TASK_DONE_PATH ? await readDoneTasks(d, url.searchParams.get("before"))
       : url.pathname === CALENDAR_PATH ? await readCalendarStatus(d)
       : await api(d, url);
     return json(r.status, r.value);

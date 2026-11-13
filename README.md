@@ -10,7 +10,7 @@ A local-first software factory: agents take a work item from intake to a reviewe
 - **Merges:** a local change through the merge queue (its checks run on the merge result first); a GitHub PR from the dashboard's Merge button, at the head the review passed.
 - **Dashboard:** `factory ui` (served by `factory dev` too) at <http://127.0.0.1:4310/>: what needs you first, work items with their timelines, workers, queue, health, failures, settings and users, with commands and Merge on each item.
 - **Guards:** agents never see secrets; credentialed writes go through outbound and the tool broker; every outgoing text is scanned for secrets; size, scope and protected-path gates run before a push.
-- **Solo or team:** one machine with SQLite and no accounts, or many developers and replicas on a shared MySQL store with per-person roles and an audit trail.
+- **Solo or team:** one machine with SQLite and no accounts; several worker processes of the same owner share the SQLite file.
 
 Status: Phase 2 (the factory builds itself), with parts of Phase 3. Details: [`PLAN.md`](PLAN.md); the event-driven refactor (RFC 0015) landed on main on 2026-11-09: [`PROGRESS.md`](PROGRESS.md).
 

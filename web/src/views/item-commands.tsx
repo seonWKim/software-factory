@@ -1,6 +1,6 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type MouseEvent, type ReactNode, type RefObject, useId, useRef, useState } from "react";
-import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, type Session, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
+import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, POLL_MS, type Session, getJson, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
@@ -106,6 +106,9 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
   if (latest.refusal) return { tone: "error", text: plainRefusal(latest.refusal) };
   return { tone: "status", text: latest.handled_at === null ? t("commands.sent") : t("commands.done") };
 }
+
+/** Whether `outcome` is the "sent" state: a request queued, its reply not here yet. */
+export const awaitsReply = (outcome: Outcome): boolean => outcome?.tone === "status" && outcome.text === t("commands.sent");
 
 /**
  * Sending app commands for item `id`: `send` posts one with the session's token, keeps what this page did with each
@@ -394,17 +397,19 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
   const { on, busy, local, send: post } = useCommandSend(id);
   const send = () => post("merge", "");
   const outcome: Outcome = merge.enabled ? commandOutcome(replies, "merge", local.merge) : { tone: "status", text: merge.reason ?? "" };
+  // Merging… from the click until the controller's reply (handled or refused) arrives.
+  const merging = merge.enabled && (busy || awaitsReply(outcome));
   return (
     <span data-merge={merge.enabled ? "enabled" : "disabled"} className="inline-flex flex-wrap items-center gap-2">
       <Button
         variant="primary"
-        disabled={!merge.enabled || !on || busy}
+        disabled={!merge.enabled || !on || merging}
         title={source === "local"
           ? t("commands.mergeLocal")
           : t("commands.mergePr")}
         onClick={() => void send()}
       >
-        {t("commands.merge")}
+        {merging ? t("commands.merging") : t("commands.merge")}
       </Button>
       <OutcomeText outcome={outcome} />
     </span>
@@ -497,6 +502,18 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   const primary = group === "merge" ? undefined : primaryOf(commands);
   const others = commands.filter((c) => c !== primary);
   const off = !on || busy;
+  // A merge this row sent: its replies from the item's own query (the item page's key), read only until the reply.
+  const mergeSent = group === "merge" && !!local.merge && "seq" in local.merge;
+  const mergeOutcome = (replies: readonly CommandReply[] = []) => commandOutcome(replies, "merge", local.merge);
+  const detail = useQuery({
+    queryKey: [API.item(id)],
+    queryFn: () => getJson<ItemDetail>(API.item(id)),
+    enabled: mergeSent,
+    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) ? POLL_MS : false),
+  });
+  const outcome = mergeSent ? mergeOutcome(detail.data?.replies) : null;
+  // Merging… from the click until the controller's reply (handled or refused) arrives.
+  const merging = group === "merge" && (busy || awaitsReply(outcome));
   const send = async (command: string, note: string) => {
     if (!(await post(command, note))) return;
     announceStatus(t("commands.commandSent", { command }));
@@ -515,12 +532,13 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {group === "merge" ? (
-        <span data-command="merge" className="inline-flex">
+        <span data-command="merge" className="inline-flex items-center gap-2">
           <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
-            <Button variant="secondary" disabled={off || checking || !merge?.enabled} onClick={() => void send("merge", "")}>
-              {checking ? t("needs.checking") : t("commands.merge")}
+            <Button variant="secondary" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
+              {checking ? t("needs.checking") : merging ? t("commands.merging") : t("commands.merge")}
             </Button>
           </Tooltip>
+          {!awaitsReply(outcome) && <OutcomeText outcome={outcome} />}
         </span>
       ) : primary ? (
         <span data-command={primary.name} className="inline-flex">

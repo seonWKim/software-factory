@@ -239,3 +239,54 @@ describe("POST /api/v1/tasks/reopen: undo a completion (design 02-tasks)", () =>
     expect(await s.store.getTask(ID)).toEqual(before);
   });
 });
+
+describe("GET /api/v1/tasks: the quick-add submit key (design 02-tasks, tasks_add_key)", () => {
+  const get = (s: Awaited<ReturnType<typeof setup>>) => respond(s.d, { method: "GET", url: TASKS_PATH, host: HOST });
+  const set = (s: Awaited<ReturnType<typeof setup>>, value: string, project = "") =>
+    s.store.setSettingOverride({ key: "tasks_add_key", project, value, actor: ACTOR });
+
+  it("answers add_key enter with no stored value, and the stored global choice once one is set", async () => {
+    const s = await setup();
+    expect(JSON.parse((await get(s)).body).add_key).toBe("enter");
+    await set(s, JSON.stringify("cmd-enter"));
+    expect(JSON.parse((await get(s)).body).add_key).toBe("cmd-enter");
+    await set(s, JSON.stringify("enter"));
+    expect(JSON.parse((await get(s)).body).add_key).toBe("enter");
+  });
+
+  it("ignores a stored value that is not one of the choices, or not JSON, and a project's row", async () => {
+    for (const [value, project] of [[JSON.stringify("ctrl-enter"), ""], ["cmd-enter", ""], [JSON.stringify("cmd-enter"), "p1"]] as const) {
+      const s = await setup();
+      await set(s, value, project);
+      expect(JSON.parse((await get(s)).body).add_key, `${value} ${project}`).toBe("enter");
+    }
+  });
+});
+
+describe("GET /api/v1/tasks/done: the Done tab's read (design 02-tasks, Done view)", () => {
+  const get = (s: Awaited<ReturnType<typeof setup>>, query = "") => respond(s.d, { method: "GET", url: `${TASK_DONE_PATH}${query}`, host: HOST });
+
+  it("lists the tasks the page completed, newest done first, with title, list and done time; it writes nothing", async () => {
+    const s = await setup();
+    const other = "tk_fedcba9876543210";
+    await s.post({ id: ID, words: "call the bank #home" });
+    await s.post({ id: other, words: "water plants" });
+    await s.post({ id: ID }, { url: TASK_DONE_PATH });
+    (s.d.clock as FakeClock).advance(60_000);
+    await s.post({ id: other }, { url: TASK_DONE_PATH });
+    const before = await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
+    const r = await get(s);
+    expect(r.status).toBe(200);
+    const body = JSON.parse(r.body) as { tasks: { id: string; title: string; list: string | null; done_at: string }[]; older: boolean };
+    expect(body.tasks.map((t) => [t.id, t.title, t.list])).toEqual([[other, "water plants", null], [ID, "call the bank", "home"]]);
+    expect(body.tasks.every((t) => typeof t.done_at === "string")).toBe(true);
+    expect(body.older).toBe(false);
+    expect(await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id")).toEqual(before);
+  });
+
+  it("answers 400 for a `before` that is not a time, 200 for one that is", async () => {
+    const s = await setup();
+    expect((await get(s, "?before=soon")).status).toBe(400);
+    expect((await get(s, "?before=2026-11-01T00:00:00.000Z")).status).toBe(200);
+  });
+});
