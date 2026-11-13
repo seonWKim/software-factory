@@ -76,10 +76,10 @@ export interface TacitPromotion {
   readonly exception: string;
 }
 
-/** A promote refused before anything was written or any verdict sent (a check failed). */
+/** A promote or retire of a class refused before anything was written or any verdict sent (a check failed). */
 export class TacitRefusal extends Error {}
 
-/** A promote whose verdict was recorded but whose follow-up (sync-agents) failed; the rule stays written. */
+/** A promote or retire whose verdict was recorded but whose follow-up (sync-agents) failed; the rules file keeps the change. */
 export class TacitSyncFailed extends Error {}
 
 /** One promoted rule, as its section in the owner's rules file gives it; each value "" when the section has none. */
@@ -118,6 +118,13 @@ export interface TacitApplied {
   readonly elsewhere: readonly string[];
 }
 
+/** One retired class, from the ledger's newest `retire` verdict on it: the owner's reason and the day (YYYY-MM-DD). */
+export interface TacitRetired {
+  readonly id: string;
+  readonly reason: string;
+  readonly date: string;
+}
+
 /** The verdicts a ledger takes. `retire` is for a class only. */
 export type TacitDecision = "hold" | "promote" | "reject" | "retire";
 
@@ -140,13 +147,15 @@ export interface TacitLedger {
   show?(id: string): Promise<TacitEntryDetail | null>;
   /**
    * Records the owner's verdict on entry `id` with their reason; `rule`, the owner's rule, goes only with a promote of
-   * a class, which encodes it first. Throws for an ID that is neither a class nor a proposal, before any CLI runs;
-   * throws `TacitRefusal` when a promote is refused with nothing written, `TacitSyncFailed` when its verdict was
-   * recorded but the follow-up failed.
+   * a class, which encodes it first; a retire of a class removes its block from the rules file first. Throws for an ID
+   * that is neither a class nor a proposal, before any CLI runs; throws `TacitRefusal` when a promote or retire is
+   * refused with nothing written, `TacitSyncFailed` when its verdict was recorded but the follow-up failed.
    */
   verdict(id: string, decision: TacitDecision, reason: string, rule?: TacitPromotion): Promise<void>;
   /** The promoted rules, in the ledger's order; none when the ledger has no rules file. */
   rules(): Promise<readonly TacitRule[]>;
   /** Everything the rules file holds, for the Rules page's Applied group; nothing when there is no file. Reads only. Optional as `show` is: a ledger written before it has none. */
   applied?(): Promise<TacitApplied>;
+  /** The retired classes, newest first, from the ledger's `retire` verdicts; the Rules page's Retired list. Reads only. Optional as `applied` is. */
+  retired?(): Promise<readonly TacitRetired[]>;
 }

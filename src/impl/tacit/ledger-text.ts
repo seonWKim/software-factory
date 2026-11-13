@@ -1,7 +1,7 @@
 // The owner's CLIs print text, not JSON (checked 2026-11-12): these read the texts the agents-home plugin needs.
 // `evolve pending` lists what waits for a verdict; `evolve show <id>` gives one entry's detail (its form is assumed,
 // docs/plugins/tacit-ledger.md) and a class's draft (the owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
-// holds the promoted rules, and a promote adds one block to it.
+// holds the promoted rules, a promote adds one block to it and a retire removes one.
 
 import type { TacitApplied, TacitAppliedRule, TacitDraft, TacitEntryDetail, TacitPendingEntry, TacitPromotion, TacitRule } from "../../interfaces/tacit-ledger.js";
 
@@ -218,6 +218,18 @@ export function withRuleBlock(text: string, id: string, rule: TacitPromotion, dr
     `- 범위: ${oneLine(draft.scope)}`,
   ].join("\n");
   return `${text.slice(0, m.index)}${block}\n\n${text.slice(m.index)}`;
+}
+
+/**
+ * `text` without the block for `id`: its `## <id>` heading line up to the next `#` heading (or the end), blank lines
+ * included, so it undoes `withRuleBlock`; every other byte as it was. Null when the file has no `## <id>` heading.
+ */
+export function withoutRuleBlock(text: string, id: string): string | null {
+  const lines = text.split(/(?<=\n)/);
+  const at = lines.findIndex((l) => RULE_HEADING.exec(l.trim())?.[1] === id);
+  if (at < 0) return null;
+  const next = lines.findIndex((l, i) => i > at && l.trim().startsWith("#"));
+  return [...lines.slice(0, at), ...(next < 0 ? [] : lines.slice(next))].join("");
 }
 
 /** `- 기본값: …`, `근본 원인: …`, `kind: …`: a detail field line, with or without the list dash; the value follows the colon. */
