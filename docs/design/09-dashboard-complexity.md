@@ -1,6 +1,6 @@
 # 9. Dashboard complexity audit
 
-**Finding (audit of 2026-11-13; documentation only, no code changed).** The dashboard (`web/`) has 12 sidebar pages in three groups plus Settings, and an item page whose single "What you need to decide" box carries up to four ways to answer (command buttons, one-tap verdicts, a free-text command box and a note box) over four dialogs. The normal day needs two pages (Needs you, and an item page to approve or merge). Seven System pages and several overlapping answer paths add choices the owner does not need for it. Five proposals follow; none is built by this change. Each becomes its own follow-up issue after approval.
+**Finding (audit of 2026-11-13; documentation only, no code changed).** The dashboard (`web/`) has 11 sidebar pages in three groups plus Settings (12 including Settings), and an item page whose single "What you need to decide" box carries up to four ways to answer (command buttons, one-tap verdicts, a free-text command box and a note box) over four dialogs. The normal day needs two pages (Needs you, and an item page to approve or merge). Seven System pages and several overlapping answer paths add choices the owner does not need for it. Five proposals follow; none is built by this change. Each becomes its own follow-up issue after approval.
 
 Scope: the dashboard app only (`web/`), as decided at approval. The CLI, Slack commands and controller are not audited.
 
