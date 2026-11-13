@@ -23,6 +23,7 @@ import { needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
+import { spend } from "./spend.js";
 import { readGitHubBudget } from "./github-budget.js";
 import { effectiveGlobal, readSettings } from "./settings-api.js";
 import { readStanding } from "./standing-api.js";
@@ -67,10 +68,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return ok(await overview(c, url.searchParams));
     case "/items":
       return items(c, url.searchParams);
-    case "/runs":
-      return ok(await runs(c));
-    case "/queue":
-      return ok(await queue(c));
+    case "/runs": return ok(await runs(c));
+    case "/queue": return ok(await queue(c));
     case "/workers":
       return ok(await workers(c));
     case "/unreviewed-merges":
@@ -79,6 +78,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return ok(await health(c));
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
+    case "/spend": return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now }, url.searchParams);
     case "/settings":
       return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {

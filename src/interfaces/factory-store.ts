@@ -98,10 +98,10 @@ export interface NewRun {
   input?: RunInput | null;
 }
 
-/** The patterns the alarm step looks for across items (design 05-alarms). */
+/** The patterns the alarm step looks for across items (design 05-alarms); `spend_budget`: spend passed 80% or 100% of a budget (06-spend). */
 /** `auto_stopped`: a stop condition set auto mode back to manual (design 03-risk); the controller stores it, not the alarm step. */
 /** `dead_letter`: the bus dead-lettered a message (RFC 0015 §5.4); the controller's dead-letter-alarm handler stores it. */
-export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter";
+export type AlertPattern = "repeated_error" | "zero_tokens" | "child_restarts" | "auto_stopped" | "dead_letter" | "spend_budget";
 
 /** An alert as the alarm step builds it; the store adds `id` and `created_at`. */
 export interface NewAlert {
