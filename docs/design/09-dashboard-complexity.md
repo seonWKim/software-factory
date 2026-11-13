@@ -32,7 +32,7 @@ Scope: the dashboard app only (`web/`), as decided at approval. The CLI, Slack c
 | Data | System | `/app/data` |
 | Settings | bottom row | `/app/settings` |
 
-Old paths `workers` and `users` redirect (`REDIRECTS` in the same file). Beyond the sidebar there is a search dialog and a help dialog [code: `web/src/App.tsx`].
+One old path redirects: `workers` → `runners` (`REDIRECTS` in the same file). Beyond the sidebar there is a search dialog and a help dialog [code: `web/src/App.tsx`].
 
 ## Item-page flows that need more than one click or dialog
 
