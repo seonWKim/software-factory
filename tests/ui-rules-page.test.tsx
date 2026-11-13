@@ -216,12 +216,12 @@ describe("Rules page", () => {
     expect((within(card("C-013")).getByRole("button", { name: "Hold" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("hold and reject send only the reason; promote of a proposal asks for no wording and sends no text", async () => {
+  it("hold and reject send only the reason; they ask for no wording and no applied-to file", async () => {
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    for (const [label, reason] of [["Hold", "wait"], ["Reject", "not code"], ["Promote", "good shape"]] as const) {
+    for (const [label, reason] of [["Hold", "wait"], ["Reject", "not code"]] as const) {
       fireEvent.click(within(card("P-0007")).getByRole("button", { name: label }));
-      for (const name of ["Rule wording", "Default", "Exception"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
+      for (const name of ["Rule wording", "Default", "Exception", "Applied to"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
       fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: reason } });
       fireEvent.click(within(dialog()).getByRole("button", { name: `Send ${label.toLowerCase()}` }));
       await waitFor(() => expect(document.querySelector("dialog[data-dialog]")).toBeNull());
@@ -229,8 +229,43 @@ describe("Rules page", () => {
     expect(sent()).toEqual([
       { id: "P-0007", verdict: "hold", reason: "wait" },
       { id: "P-0007", verdict: "reject", reason: "not code" },
-      { id: "P-0007", verdict: "promote", reason: "good shape" },
     ]);
+  });
+
+  it("promote of a proposal asks for no wording and an Applied to file prefilled with its target; empty, Send is off and the field says why", async () => {
+    current = view({
+      entries: [{ id: "P-20261101-158e", title: "Quiet notify", state: "open", kind: "edit-asset", target: "private/bin/notify", judged: null, draft: null, draft_error: null }],
+    });
+    await show();
+    await screen.findByRole("list", { name: "Structure proposals" }, SLOW);
+    fireEvent.click(within(card("P-20261101-158e")).getByRole("button", { name: "Promote" }));
+    for (const name of ["Rule wording", "Default", "Exception"]) expect(within(dialog()).queryByRole("textbox", { name })).toBeNull();
+    expect(dialog().querySelector("[data-dialog-consequence]")!.textContent)
+      .toBe("Promoting records the verdict and names the file the change went into; you make the change by hand.");
+    const applied = within(dialog()).getByRole("textbox", { name: "Applied to" }) as HTMLInputElement;
+    expect(applied.value).toBe("private/bin/notify");
+    fireEvent.change(within(dialog()).getByRole("textbox", { name: "Reason" }), { target: { value: "good shape" } });
+    const confirm = within(dialog()).getByRole("button", { name: "Send promote" }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(false);
+    fireEvent.change(applied, { target: { value: "  " } });
+    expect(confirm.disabled).toBe(true);
+    expect(applied.parentElement!.textContent).toContain("Name the file the change went into: Send stays off until you do.");
+    fireEvent.change(applied, { target: { value: "private/bin/notify-quiet" } });
+    expect(confirm.disabled).toBe(false);
+    expect(applied.parentElement!.textContent).not.toContain("Send stays off");
+    fireEvent.click(confirm);
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(sent()).toEqual([{ id: "P-20261101-158e", verdict: "promote", reason: "good shape", applied_to: "private/bin/notify-quiet" }]);
+  });
+
+  it("promote of a class keeps its own help text and has no Applied to field", async () => {
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    fireEvent.click(within(card("C-012")).getByRole("button", { name: "Promote" }));
+    expect(dialog().querySelector("[data-dialog-consequence]")!.textContent).toBe(
+      "Promoting writes this rule into your rules file, records the verdict and runs sync-agents; it is part of every run's prompt from the next run on.",
+    );
+    expect(within(dialog()).queryByRole("textbox", { name: "Applied to" })).toBeNull();
   });
 
   it("a refusal stays in the dialog", async () => {

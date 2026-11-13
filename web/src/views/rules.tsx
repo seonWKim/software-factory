@@ -7,6 +7,7 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
+import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
@@ -20,7 +21,8 @@ import { t } from "../i18n/index.js";
 // (how many times it came up, the owner's words, the root reason) and where it applies, in that order. Promote, Hold
 // and Reject each open a dialog that asks for a reason before it sends; Promote of a class also asks for the rule's
 // wording, default and exception (the last two prefilled from the class's draft), which the server writes into the
-// owner's rules file before the verdict (a proposal takes none). A class whose draft could not be read offers no
+// owner's rules file before the verdict. Promote of a proposal asks for the file the change went into, "Applied to"
+// (prefilled with its target, required: an empty field says why and keeps Send off), sent as `applied_to`. A class whose draft could not be read offers no
 // Promote. An entry the ledger judged since its pending view was built shows that decision and no verdict buttons,
 // until the view is rebuilt. Only the owner sends; anyone
 // else sees the list with the reason. With the ledger off (design 08-settings, 2026-11-12) the page says whether it
@@ -39,7 +41,7 @@ import { t } from "../i18n/index.js";
 const muted = "text-xs text-pretty text-text-2";
 
 const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pending: "rules.statePending", held: "rules.stateHeld" };
-/** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal takes none. */
+/** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal the file it was applied to. */
 const isClass = (id: string): boolean => id.startsWith("C-");
 const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey }[] = [
   { verdict: "promote", label: "rules.promote" },
@@ -52,7 +54,7 @@ const GROUPS: readonly { classes: boolean; title: MessageKey; line: MessageKey }
   { classes: false, title: "rules.groupProposals", line: "rules.groupProposalsLine" },
 ];
 const CONSEQUENCE: Record<RuleVerdict, MessageKey> = {
-  promote: "rules.consequencePromote",
+  promote: "rules.consequencePromoteProposal",
   hold: "rules.consequenceHold",
   reject: "rules.consequenceReject",
   retire: "rules.consequenceRetire",
@@ -104,26 +106,30 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
 
 /**
  * The verdict dialog: a reason first, and for promote of a class the rule's wording (prefilled with its title) and its
- * default and exception (prefilled from its draft).
+ * default and exception (prefilled from its draft); for promote of a proposal the file it was applied to (prefilled
+ * with its target).
  */
 function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; verdict: RuleVerdict; token: string; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const [text, setText] = useState(entry.title);
   const [dflt, setDefault] = useState(entry.draft?.default ?? "");
   const [exception, setException] = useState(entry.draft?.exception ?? "");
+  const [appliedTo, setAppliedTo] = useState(entry.target ?? "");
   const { busy, error, send } = useSendVerdict(token, onClose);
   const promote = verdict === "promote" && isClass(entry.id);
+  const applies = verdict === "promote" && !isClass(entry.id);
   const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
+  const noFile = applies && appliedTo.trim() === "";
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
       title={t("rules.dialogTitle", { label, id: entry.id })}
       consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
-      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes(""))}
+      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noFile}
       danger={verdict === "reject"}
       error={error}
-      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label)}
+      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}), ...(applies ? { applied_to: appliedTo.trim() } : {}) }, label)}
       onClose={onClose}
     >
       {promote && (
@@ -132,6 +138,14 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
           <RuleText id={`${entry.id}-default`} label={t("rules.default")} help={t("rules.draftHelp")} value={dflt} onChange={setDefault} />
           <RuleText id={`${entry.id}-exception`} label={t("rules.exception")} value={exception} onChange={setException} />
         </>
+      )}
+      {applies && (
+        <Field label={t("rules.appliedTo")} htmlFor={`${entry.id}-applied-to`} help={t(noFile ? "rules.appliedToEmpty" : "rules.appliedToHelp")}>
+          <Input
+            id={`${entry.id}-applied-to`} aria-label={t("rules.appliedTo")} aria-invalid={noFile} className="font-mono" value={appliedTo} maxLength={1000}
+            onChange={(e) => setAppliedTo(e.target.value)}
+          />
+        </Field>
       )}
       <ReasonField id={entry.id} value={reason} onChange={setReason} />
     </Dialog>

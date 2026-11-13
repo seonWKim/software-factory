@@ -1047,10 +1047,13 @@ export async function postStanding(
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/rules/verdict: a verdict with its reason, and for promote of a class (C-) the owner's wording, default and exception (retire takes none). */
+/**
+ * POST /api/v1/rules/verdict: a verdict with its reason, for promote of a class (C-) the owner's wording, default and
+ * exception, and for promote of a proposal (P-) `applied_to`, the file the change went into (retire takes none).
+ */
 export async function postRuleVerdict(
   token: string,
-  body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string },
+  body: { id: string; verdict: RuleVerdict; reason: string; text?: string; default?: string; exception?: string; applied_to?: string },
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
   if (r.ok) return { ok: true };
