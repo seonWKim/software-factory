@@ -155,55 +155,17 @@ describe("service passports", () => {
 });
 
 describe("audited legacy auth", () => {
-  it("keeps the plugin's decision and writes it to authz_audit", async () => {
+  it("the deprecated wrapper keeps the plugin's decision and records nothing: the owner check audits itself", async () => {
     const { identity, audit } = await setup();
     const inner: AuthProvider = {
       resolve: async () => null,
-      authorize: async (p, action) => (action === "submit_work" ? { allow: true } : { allow: false, reason: "no_role" }),
+      authorize: async (p, action) => (action === "submit_work" ? { allow: true } : { allow: false, reason: "not_owner" }),
     };
     const auth = new AuditedAuthProvider(inner, identity);
     const who = { user_id: "local:ada" as never, attributes: {} };
     expect(await auth.authorize(who, "submit_work", { kind: "work_item", id: "wi_1" })).toEqual({ allow: true });
-    expect(await auth.authorize(who, "approve_merge", { kind: "work_item", id: "wi_1" })).toEqual({ allow: false, reason: "no_role" });
-    expect(await audit()).toEqual([
-      { principal: "local:ada", action: "submit_work", decision: "allow", reason: "allowed" },
-      { principal: "local:ada", action: "approve_merge", decision: "deny", reason: "no_role" },
-    ]);
-  });
-
-  it("with the command's passport, Identity checks it first and the plugin's grants decide the role, audited under it", async () => {
-    const db = new SqliteDriver(":memory:");
-    await db.migrate();
-    const ticks = new ManualTickGenerator();
-    let n = 0;
-    const identity = new PassportService({
-      db, keys: secretKeyring(KEY, { current: "K" }), providers: [new LocalAuthProvider()], ticks, newId: () => `pp_${++n}`,
-    });
-    await ticks.tick(REVOCATIONS_TICK, T0);
-    const allowAll: AuthProvider = { resolve: async () => null, authorize: async () => ({ allow: true }) };
-    const auth = new AuditedAuthProvider(allowAll, identity);
-    const ada = (await identity.authenticate({ provider: "local", subject: "ada" }, "cli")).passport.id;
-    const bob = (await identity.authenticate({ provider: "local", subject: "bob" }, "cli")).passport.id;
-    const who = { user_id: "local:ada" as never, attributes: {} };
-    const item = { kind: "work_item" as const, id: "wi_1" };
-    const at = (ms: number) => new Date(T0 + ms).toISOString();
-    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(0) })).toEqual({ allow: true });
-    // Another person's passport, or a revoked one, refuses although the plugin would allow.
-    expect(await auth.authorize(who, "approve_spec", item, { id: bob, at: at(0) })).toEqual({ allow: false, reason: "passport_principal_mismatch" });
-    // Two hours on (the passport lasts one): a command recorded while it was valid, which waited behind a failing
-    // command, is still decided under it; one recorded after it expired is not.
-    await ticks.tick(REVOCATIONS_TICK, T0 + 2 * 3_600_000);
-    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(60_000) })).toEqual({ allow: true });
-    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(2 * 3_600_000) })).toEqual({ allow: false, reason: "expired" });
-    await identity.revoke(ada, "local:owner", "lost laptop");
-    expect(await auth.authorize(who, "approve_spec", item, { id: ada, at: at(60_000) })).toEqual({ allow: false, reason: "revoked" });
-    expect(await db.all("SELECT passport_id, principal, decision, reason FROM authz_audit ORDER BY seq")).toEqual([
-      { passport_id: ada, principal: "local:ada", decision: "allow", reason: "allowed" },
-      { passport_id: bob, principal: "local:bob", decision: "deny", reason: "passport_principal_mismatch" },
-      { passport_id: ada, principal: "local:ada", decision: "allow", reason: "allowed" },
-      { passport_id: ada, principal: "local:ada", decision: "deny", reason: "expired" },
-      { passport_id: ada, principal: "local:ada", decision: "deny", reason: "revoked" },
-    ]);
+    expect(await auth.authorize(who, "approve_merge", { kind: "work_item", id: "wi_1" })).toEqual({ allow: false, reason: "not_owner" });
+    expect(await audit()).toEqual([]);
   });
 
   it("the controller's automatic steps act under its service passport, limited to its actions", async () => {

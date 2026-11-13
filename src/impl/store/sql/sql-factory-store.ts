@@ -26,7 +26,7 @@ import type { StatsRecord } from "../../../core/stats.js";
 import type { LinkedAccount } from "../../../interfaces/auth-provider.js";
 import type { Clock } from "../../../interfaces/clock.js";
 import { recordAction } from "../../../outbound/index.js";
-import { recordLocalUserChange } from "../../../identity/index.js";
+import { claimOwner, readOwner, recordOwnerDecision } from "../../../identity/index.js";
 import type {
   AbandonedAttempt,
   AppCommandRequest,
@@ -78,8 +78,7 @@ import type {
   BasePushOutcome,
   ThreadLinkField,
   RecordVerdictResult,
-  LocalRole,
-  LocalUser,
+  OwnerDecision,
   RedeemLinkResult,
   ResetSettingInput,
   SchemaVersion,
@@ -1758,74 +1757,18 @@ export class SqlFactoryStore implements FactoryStore {
     });
   }
 
-  // Local users (issue #318)
+  // The one owner (issue #577)
 
-  async getLocalUser(user_id: UserId): Promise<LocalUser | null> {
-    const [row] = await this.db.all("SELECT * FROM identity_local_users WHERE user_id = ?", [user_id]);
-    return row ? rowToLocalUser(row) : null;
+  async getOwner(): Promise<UserId | null> {
+    return (await readOwner(this.db)) as UserId | null;
   }
 
-  async listLocalUsers(): Promise<LocalUser[]> {
-    const rows = await this.db.all("SELECT * FROM identity_local_users ORDER BY CASE WHEN owner_slot = 1 THEN 0 ELSE 1 END, created_at, user_id");
-    return rows.map(rowToLocalUser);
+  async claimOwner(user_id: UserId): Promise<UserId> {
+    return (await claimOwner(this.db, user_id, this.now())) as UserId;
   }
 
-  async claimLocalOwner(user_id: UserId): Promise<LocalUser> {
-    const owner = async () => {
-      const [row] = await this.db.all("SELECT * FROM identity_local_users WHERE owner_slot = 1");
-      return row ? rowToLocalUser(row) : null;
-    };
-    const now = this.now();
-    try {
-      return await this.db.transaction(async (tx): Promise<LocalUser> => {
-        const [held] = await tx.all(`SELECT * FROM identity_local_users WHERE owner_slot = 1${this.db.dialect.forUpdate}`);
-        if (held) return rowToLocalUser(held);
-        const updated = await tx.run("UPDATE identity_local_users SET role = 'owner', owner_slot = 1, added_by = ? WHERE user_id = ?", [user_id, user_id]);
-        if (updated === 0) {
-          await tx.run("INSERT INTO identity_local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, 'owner', 1, ?, ?)", [user_id, user_id, now]);
-        }
-        const [row] = await tx.all("SELECT * FROM identity_local_users WHERE user_id = ?", [user_id]);
-        return rowToLocalUser(row!);
-      });
-    } catch (err) {
-      // Another claim won the one owner slot first (unique `owner_slot`): that owner stands.
-      const won = await owner();
-      if (won) return won;
-      throw err;
-    }
-  }
-
-  async setLocalUserRole(
-    user_id: UserId, role: Exclude<LocalRole, "owner">, added_by: UserId,
-  ): Promise<{ ok: true; created: boolean } | { ok: false; reason: "owner" }> {
-    const now = this.now();
-    return this.db.transaction(async (tx) => {
-      const [row] = await tx.all(`SELECT role FROM identity_local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
-      if (row && row.role === "owner") return { ok: false as const, reason: "owner" as const };
-      if (row) {
-        await tx.run("UPDATE identity_local_users SET role = ?, added_by = ? WHERE user_id = ?", [role, added_by, user_id]);
-        // Setting the role a user already has changes nothing, so it is not audited.
-        if (row.role !== role) await recordLocalUserChange(tx, { user_id, action: "change", old_role: String(row.role), new_role: role, actor: added_by, at: now });
-        return { ok: true as const, created: false };
-      }
-      await tx.run("INSERT INTO identity_local_users (user_id, role, owner_slot, added_by, created_at) VALUES (?, ?, NULL, ?, ?)", [user_id, role, added_by, now]);
-      await recordLocalUserChange(tx, { user_id, action: "add", old_role: null, new_role: role, actor: added_by, at: now });
-      return { ok: true as const, created: true };
-    });
-  }
-
-  /** The audit row's actor is the owner: only the owner may remove a user (`factory users remove`, the Users page). */
-  async removeLocalUser(user_id: UserId): Promise<"removed" | "missing" | "owner"> {
-    const now = this.now();
-    return this.db.transaction(async (tx) => {
-      const [row] = await tx.all(`SELECT role, added_by FROM identity_local_users WHERE user_id = ?${this.db.dialect.forUpdate}`, [user_id]);
-      if (!row) return "missing" as const;
-      if (row.role === "owner") return "owner" as const;
-      const [owner] = await tx.all("SELECT user_id FROM identity_local_users WHERE owner_slot = 1");
-      await tx.run("DELETE FROM identity_local_users WHERE user_id = ?", [user_id]);
-      await recordLocalUserChange(tx, { user_id, action: "remove", old_role: String(row.role), new_role: null, actor: String(owner?.user_id ?? row.added_by), at: now });
-      return "removed" as const;
-    });
+  async recordOwnerDecision(d: OwnerDecision): Promise<void> {
+    await recordOwnerDecision(this.db, d, this.now());
   }
 
   // Runtime settings overrides (design 2026-11-03)
@@ -2941,11 +2884,3 @@ function toCell(v: unknown): TableCell {
   return String(v);
 }
 
-function rowToLocalUser(r: Row): LocalUser {
-  return {
-    user_id: String(r.user_id) as UserId,
-    role: String(r.role) as LocalRole,
-    added_by: String(r.added_by) as UserId,
-    created_at: String(r.created_at) as Timestamp,
-  };
-}
