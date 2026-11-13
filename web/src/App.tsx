@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronRight, Monitor, Moon, RefreshCw, Search, Sun, Wrench } from "lucide-react";
+import { Monitor, Moon, RefreshCw, Search, Sun } from "lucide-react";
 import { type JSX, useEffect, useId, useState } from "react";
 import { API, type Overview, POLL_MS, WEB_REV, getJson } from "./api.js";
 import { Brand } from "./components/ui/brand.js";
@@ -161,17 +161,9 @@ export function App() {
           <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("nav.factory")} pages={pagesIn("factory")} current={current} titled />
           </div>
-          {/* Collapsed until opened, or while one of its pages shows; the chevron points right when closed, down when open. */}
-          <details className="group mt-3 border-t border-border pt-3" open={current.group === "system" || undefined}>
-            <summary className={cn(LINK_ROW, "cursor-pointer list-none rounded-control text-text-2 hover:bg-surface-2")}>
-              <Wrench aria-hidden className="size-4 shrink-0" />
-              <span className="max-sm:sr-only">{t("nav.system")}</span>
-              <ChevronRight aria-hidden data-chevron className="ml-auto size-4 shrink-0 group-open:rotate-90 max-sm:hidden" />
-            </summary>
-            <div className="mt-1">
-              <SideLinks label={t("nav.system")} pages={pagesIn("system")} current={current} />
-            </div>
-          </details>
+          <div className="mt-3 border-t border-border pt-3">
+            <SideLinks label={t("nav.system")} pages={pagesIn("system")} current={current} titled />
+          </div>
           <div className="mt-auto pt-3">
             <div className="border-t border-border pt-3">
               <SideLinks label={t("page.settings")} pages={pagesIn("bottom")} current={current} />
