@@ -181,6 +181,9 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
   );
 }
 
+/** Needs-you rows centre every cell on the row's buttons (the cell's own top alignment is overridden). */
+const MID = "align-middle!";
+
 /** One Needs-you row: the item, its state, why in one plain line, since, and its actions in the same place in every row. */
 function NeedRow({ it, now, titles, showIssue }: { it: ItemRow; now: number; titles: ItemTitles; showIssue: boolean }) {
   const cmd = useCommandSend(it.id);
@@ -190,7 +193,7 @@ function NeedRow({ it, now, titles, showIssue }: { it: ItemRow; now: number; tit
   const checking = it.merge_check?.state === "checking";
   return (
     <Tr data-key={it.id}>
-      <Td className="max-w-md">
+      <Td className={cn("max-w-md", MID)}>
         <span className="flex min-w-0 items-baseline gap-2">
           <Link href={itemPath(it.id)} title={t("needs.idHover", { id: it.id })} className="truncate font-medium text-text-1 hover:underline">
             {it.title ?? shortSource(it.source.id)}
@@ -200,21 +203,21 @@ function NeedRow({ it, now, titles, showIssue }: { it: ItemRow; now: number; tit
             : <span className="shrink-0 text-text-2 tabular-nums">#{it.change_ref}</span>)}
         </span>
       </Td>
-      <Td>
+      <Td className={MID}>
         <StatusBadge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</StatusBadge>
         {it.merge_check && !checking && <MergeCheckNote check={it.merge_check} />}
       </Td>
-      <Td className="max-w-xl text-text-2">
+      <Td className={cn("max-w-xl text-text-2", MID)}>
         <span data-need title={text} className="line-clamp-2 break-words">
           {anchor && text.match(TOKEN) === null
             ? <Link href={`${itemPath(it.id)}#${anchor}`} className={LINK_CLASS}>{text}</Link>
             : <WhyText why={refs} items={titles} onRetry={() => void cmd.send("retry", "")} />}
         </span>
       </Td>
-      <Td className="text-right whitespace-nowrap tabular-nums">{ago(it.since, now)}</Td>
-      {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
-      <Td className="w-44 text-right">
-        <NeedActions id={it.id} commands={it.commands ?? []} pr={it.change_ref} group={group} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(text)} />
+      <Td className={cn("text-right whitespace-nowrap tabular-nums", MID)}>{ago(it.since, now)}</Td>
+      {showIssue && <Td className={cn("tabular-nums", MID)}>{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
+      <Td className={cn("w-44 text-right", MID)}>
+        <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={group} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(text)} />
       </Td>
     </Tr>
   );

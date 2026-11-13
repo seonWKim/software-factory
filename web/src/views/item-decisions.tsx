@@ -132,30 +132,50 @@ export function DecisionsPanel({
   );
 }
 
-/** The approve confirm step: what is approved (the answers, which defaults are taken) and what happens next. */
-export function ApproveConfirm({ phase, answers, note }: { phase: ApprovePhase; answers: readonly ChosenAnswer[]; note: string }) {
+/** A command's button and dialog label in sentence case: Approve, Retry, Revise. */
+export const commandLabel = (name: string): string => name.charAt(0).toUpperCase() + name.slice(1);
+
+/**
+ * The approve dialog (the four approve phases): what is approved (each question with its answer, and whether it is
+ * the default), an optional note, then what happens next; Cancel on the left, Approve on the right. The note starts
+ * as the page's note box text; confirming sends the answers and the note as the approve note.
+ */
+export function ApproveDialog({
+  title, phase, answers, note: initialNote, busy, error, returnFocusTo, onSend, onClose,
+}: CommandDialogProps & { phase: ApprovePhase; answers: readonly ChosenAnswer[]; note: string }) {
+  const [note, setNote] = useState(initialNote);
   const p = PHASES[phase];
   return (
-    <div role="group" aria-label={t("decisions.confirmApprove")} data-approve-confirm={phase} className="w-full max-w-xl rounded-control border border-border-strong p-2 text-sm">
-      <p className="text-pretty">{t("decisions.youApprove", { what: t(p.what) })}</p>
-      {answers.length > 0 && (
-        <ul className="mt-1 list-disc pl-5" data-confirm-answers>
-          {answers.map((a) => (
-            <li key={a.n} className="break-words">
-              {a.n}. {a.question} → {a.answer ?? t("decisions.noAnswer")} ({a.answer === null ? t("decisions.noDefault") : a.isDefault ? t("decisions.defaultTaken") : t("decisions.yourAnswer")})
-            </li>
-          ))}
-        </ul>
-      )}
-      {note.trim() !== "" && <p className="mt-1 break-words text-text-2">{t("decisions.withNote")}</p>}
-      <p className="mt-1 text-pretty" data-confirm-next>{t("decisions.next", { next: t(p.next) })}</p>
-    </div>
+    <Dialog
+      title={title}
+      consequence={<span data-confirm-next>{t("decisions.next", { next: t(p.next) })}</span>}
+      confirmLabel={commandLabel("approve")}
+      confirmDisabled={busy}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => onSend(approveNote(answers, note))}
+      onClose={onClose}
+    >
+      <div role="group" aria-label={t("decisions.confirmApprove")} data-approve-confirm={phase} className="text-sm">
+        <p className="text-pretty">{t("decisions.youApprove", { what: t(p.what) })}</p>
+        {answers.length > 0 && (
+          <ul className="mt-1 list-disc pl-5" data-confirm-answers>
+            {answers.map((a) => (
+              <li key={a.n} className="break-words">
+                {a.n}. {a.question} → {a.answer ?? t("decisions.noAnswer")} ({a.answer === null ? t("decisions.noDefault") : a.isDefault ? t("decisions.defaultTaken") : t("decisions.yourAnswer")})
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <Textarea aria-label={t("commands.note")} rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder={t("decisions.optionalComment")} className="w-full" />
+    </Dialog>
   );
 }
 
-/** What every command dialog takes: the item, whether a send is in flight, the failed send's error, and the focus target. */
+/** What every command dialog takes: its title (the action and the item's title), whether a send is in flight, the failed send's error, and the focus target. */
 export interface CommandDialogProps {
-  id: string;
+  title: string;
   busy: boolean;
   error: string | null;
   returnFocusTo: RefObject<HTMLElement | null>;
@@ -180,13 +200,13 @@ export function rejectNote(reason: string | null, text: string): string {
 }
 
 /** The reject dialog: why (a reason and a free text), what closes (the item, and its PR when it has one), confirm or cancel. */
-export function RejectDialog({ id, pr, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps & { pr: string | null }) {
+export function RejectDialog({ title, pr, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps & { pr: string | null }) {
   const [reason, setReason] = useState<string | null>(null);
   const [text, setText] = useState("");
   const note = rejectNote(reason, text);
   return (
     <Dialog
-      title={t("decisions.rejectTitle", { id })}
+      title={title}
       consequence={pr === null ? t("decisions.rejectConsequence") : t("decisions.rejectConsequencePr", { pr })}
       confirmLabel={t("decisions.confirmReject")}
       confirmDisabled={busy || note === ""}
@@ -239,12 +259,12 @@ export function reviseNote(comments: readonly string[]): string {
 }
 
 /** The revise dialog: one optional comment per spec section, sent as one revise once any section has a comment. */
-export function ReviseDialog({ id, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps) {
+export function ReviseDialog({ title, busy, error, returnFocusTo, onSend, onClose }: CommandDialogProps) {
   const [comments, setComments] = useState<string[]>(() => SPEC_SECTIONS.map(() => ""));
   const note = reviseNote(comments);
   return (
     <Dialog
-      title={t("decisions.reviseTitle", { id })}
+      title={title}
       consequence={t("decisions.reviseConsequence")}
       confirmLabel={t("decisions.sendRevise")}
       confirmDisabled={busy || note === ""}

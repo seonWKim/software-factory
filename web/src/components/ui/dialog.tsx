@@ -11,7 +11,8 @@ import { ButtonRow } from "./button-row.js";
 // single-line field submits the form, which is the confirm button. Focus moves into the dialog when it opens and
 // goes back to `returnFocusTo` (else the element focused when it opened) when it closes. It is built from the
 // components/ui set: radius card, padding space-6, a text-base font-semibold title, and a right-aligned ButtonRow footer
-// with Cancel (secondary) before the confirm (primary, or danger filled with the failed colour).
+// with Cancel (secondary, outline) before the confirm (primary, filled accent; or danger filled with the failed colour).
+// The title is one line, truncated, with the full text in its tooltip. The backdrop dims in both themes.
 
 export interface DialogProps {
   /** The title: the action and the item it acts on. */
@@ -83,11 +84,11 @@ export function Dialog({ title, consequence, confirmLabel, confirmDisabled = fal
       className={cn(
         "m-auto max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-card p-0",
         "border border-border-strong bg-surface text-text-1",
-        "backdrop:bg-text-1/50",
+        "backdrop:bg-text-1/60 dark:backdrop:bg-bg/80",
       )}
     >
       <form onSubmit={submit} className="flex flex-col gap-3 p-6">
-        <h2 id={titleId} className="text-base font-semibold text-pretty break-words">
+        <h2 id={titleId} title={title} className="truncate text-base font-semibold">
           {title}
         </h2>
         {children}
