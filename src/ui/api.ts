@@ -26,6 +26,7 @@ import { failures } from "./failures.js";
 import { spend } from "./spend.js";
 import { readGitHubBudget } from "./github-budget.js";
 import { effectiveGlobal, readSettings } from "./settings-api.js";
+import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
 import { type SystemDeps, oneLine, parseRevision, systemActions } from "./system-actions.js";
@@ -69,8 +70,7 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
       return items(c, url.searchParams);
     case "/runs": return ok(await runs(c));
     case "/queue": return ok(await queue(c));
-    case "/workers":
-      return ok(await workers(c));
+    case "/workers": return ok(await workers(c));
     case "/unreviewed-merges":
       return unreviewedMerges(c, url.searchParams);
     case "/health":
@@ -78,8 +78,8 @@ export async function api(d: ApiDeps, url: URL): Promise<ApiResult> {
     case "/failures":
       return failures({ store: d.store, text: (v) => c.text(v, "run_outcome").then((t) => t!), now: c.now }, url.searchParams);
     case "/spend": return spend({ store: d.store, text: (v) => c.text(v).then((t) => t!), now: c.now }, url.searchParams);
-    case "/settings":
-      return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
+    case "/settings": return d.settings ? ok(await readSettings(d, d.settings)) : apiError(404, "Not found.");
+    case "/settings/capabilities": return d.settings ? ok(await readCapabilities(d, d.settings)) : apiError(404, "Not found.");
     case "/session": {
       const session = readSession(d, c.now);
       return session ? ok(session) : apiError(404, "Not found.");

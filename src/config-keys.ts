@@ -3,7 +3,7 @@
 // Only unknown keys are checked here; value and shape checks stay where they were.
 
 import type { FileConfig } from "./compose.js";
-import { COORDINATION_KEYS, TOOLCHAIN_KEYS, coordinationProblems } from "./core/config.js";
+import { CAPABILITIES_KEYS, COORDINATION_KEYS, TOOLCHAIN_KEYS, capabilitiesProblems, coordinationProblems } from "./core/config.js";
 import { pathCompanionProblems } from "./core/companions.js";
 import { packsProblems } from "./packs/packs.js";
 import { PROJECT_SETTING_KEYS } from "./core/settings.js";
@@ -16,9 +16,10 @@ import { SLACK_KEYS, slackConfigProblems } from "./impl/source/slack-config.js";
  * 2026-11-03, with `mechanical_paths` and `mechanical_weight` from issue #297, `hold_policy` and `hotspot_mode`
  * from issue #314) are checked here at load
  * (`coordinationProblems`) and read by compose.ts through `coordinationConfig`. `cli_user` (issue #200): the factory user ID the
- * local CLI commands act as, read by src/core/config.ts.
+ * local CLI commands act as, read by src/core/config.ts. `capabilities` (design 08-settings, 2026-11-13): the skill folders the
+ * Settings page's Capabilities list reads (`capabilitiesConfig`).
  */
-type CoreOnlyKey = "cli_user" | (typeof COORDINATION_KEYS)[number];
+type CoreOnlyKey = "cli_user" | "capabilities" | (typeof COORDINATION_KEYS)[number];
 
 export const TOP_LEVEL_KEYS = [
   "env",
@@ -87,6 +88,7 @@ export const TOP_LEVEL_KEYS = [
   "packs",
   "calendar",
   "calendar_ids",
+  "capabilities",
 ] as const satisfies readonly (keyof FileConfig | CoreOnlyKey)[];
 
 // Fails typecheck when FileConfig gains a key that is not listed above.
@@ -219,6 +221,7 @@ export function unknownConfigKeys(raw: unknown): string[] {
   check(raw.toolchain, "toolchain", "toolchain", TOOLCHAIN_KEYS);
   check(raw.packs, "packs", "packs", PACKS_KEYS);
   check(raw.retention, "retention", "retention", RETENTION_KEYS);
+  check(raw.capabilities, "capabilities", "capabilities", CAPABILITIES_KEYS);
   if (isObject(raw.stats)) check(raw.stats.weights, "stats.weights", "stats.weights", VERDICT_SEVERITIES);
   // Per-project settings (design 2026-11-01): `defaults` and each project block take only the per-project
   // keys. Anything else in a project (dials, plugins, repo, budget_min_sample, a guard) is an unknown key.
@@ -247,6 +250,7 @@ export function checkConfigKeys(raw: unknown): void {
     ...slackConfigProblems(raw),
     ...pathCompanionProblems(raw),
     ...packsProblems(raw),
+    ...capabilitiesProblems(raw),
   ];
   if (problems.length > 0) throw new ConfigKeyError(problems);
 }

@@ -22,11 +22,14 @@ Fallback chain (design 2026-11-07, `docs/design/08-plugins.md`): list several pr
 - `llm-check` checks the chain as one provider: it passes when any member answers.
 - Switch back: a single name again, e.g. `"llm": "claude-cli"` (a list of one is the same).
 
+Capabilities (design `08-settings.md`, 2026-11-13; before: see History): the Settings page lists each registered LLMProvider plugin as one entry, `llm:<plugin>`, enabled when `plugins.llm` selects it (a chain member too). A plugin with its own config block (`openai_compatible`) shows that endpoint's host and its own model names, never its key or the URL's path or user info; `claude-cli` shows the `models` names. An entry's role is the improve run; its last use is the newest stored improve run whose reported model is one of the entry's models. Nothing about how a provider is chosen or called changed.
+
 Smoke-test with `npm run factory -- llm-check` (`--model standard` or `--model strong` for the other classes): it builds the configured provider through the registry (`Plugins.llm()`) and makes two small real calls, one plain and one with an output schema, every printed line egress-scanned first. `npm run factory -- doctor --llm` runs the same check as one doctor line; plain `doctor` makes no model call. No factory workflow step calls the provider.
 
 Switch back / disable: `"llm": "claude-cli"`.
 
 ## History
 
+- **Capabilities entries** (2026-11-13, issue #572). Before: the selected providers were visible only in `plugins.llm` of factory.config.json, with no page showing which are on or when one was last used.
 - **`provider_setup`** (2026-11-07). Before: the chat client dropped the body of a 429, so `insufficient_quota` read as a rate limit, and other quota, key and model errors as a plain HTTP error.
 - **Fallback chain** (2026-11-07). Before: `plugins.llm` took one name only.

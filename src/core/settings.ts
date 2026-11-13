@@ -1,5 +1,5 @@
 import type { Budgets } from "./budget.js";
-import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, coordinationProblems } from "./config.js";
+import { ALARM_DEFAULTS, type FactoryConfig, STALL_DEFAULTS, type ToolGrants, coordinationProblems, toolGrantsShape } from "./config.js";
 import { DEFAULT_COORDINATION, type HoldPolicy, parseHoldPolicy } from "./coordination.js";
 import { DIFF_LIMIT_DEFAULTS } from "./diff-gate.js";
 import { errorText, type Logger } from "./log.js";
@@ -262,7 +262,7 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations", "calendar",
-  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd",
+  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd", "tool_grants",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -321,7 +321,7 @@ export interface SettableValues {
   notice_kinds: NoticeKind[]; quiet_hours: string; notify_channels: string[];
   integrations: Readonly<Record<string, string>>; calendar: readonly string[]; // interface → plugin name (no entry: the config's choice); calendar plugin names
   stall_ms: number; probe_interval_ms: number; auth_pause_ms: number;
-  max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number;
+  max_coordination_cost: number; hotspot_weight: number; mechanical_weight: number; tool_grants: ToolGrants; // run kind → granted tools (design 08-settings)
   intake_label: string | null; // null: no built-in default, and neither the file nor an override says
 }
 
@@ -353,7 +353,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   notice_kinds: [...NOTICE_KINDS], quiet_hours: "", notify_channels: [], integrations: {}, calendar: [],
   stall_ms: STALL_DEFAULTS.stall_ms, probe_interval_ms: STALL_DEFAULTS.probe_interval_ms,
   auth_pause_ms: 1_800_000, // shown as the default; with no override and no file value it follows the effective retry_max_ms
-  max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight,
+  max_coordination_cost: DEFAULT_COORDINATION.max_cost, hotspot_weight: DEFAULT_COORDINATION.hotspot_weight, mechanical_weight: DEFAULT_COORDINATION.mechanical_weight, tool_grants: {},
   intake_label: null, // no built-in default: the config file must say, and its value applies
 });
 
@@ -441,7 +441,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "notice_kinds": return parseNoticeKinds(value) as SettableValues[K];
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
-    case "integrations": return integrationEntries(value) as SettableValues[K];
+    case "integrations": return integrationEntries(value) as SettableValues[K]; case "tool_grants": return toolGrantsShape(value) as SettableValues[K];
     case "calendar": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error("calendar must be a list of distinct calendar plugin names, or [] for none"); } // the same list check
     case "max_coordination_cost": case "hotspot_weight": case "mechanical_weight": {
       const problem = coordinationProblems({ [key]: value ?? null })[0];
@@ -658,7 +658,7 @@ export function workersCap(base: SettingsBase): number {
 
 /** The base a FactoryConfig alone gives: every key from the config, as if the file set it. For tests and lone loops. */
 export function baseFromConfig(config: FactoryConfig, models?: { table: ModelTable; names?: ModelNames | undefined }): SettingsBase {
-  const file: Partial<Record<GlobalSettableKey, unknown>> = { intake_label: config.intake_label };
+  const file: Partial<Record<GlobalSettableKey, unknown>> = { intake_label: config.intake_label, ...(config.tool_grants ? { tool_grants: config.tool_grants } : {}) };
   for (const k of CONFIG_KEYS) if (config[k] !== undefined) file[k] = config[k];
   const c = config.coordination;
   if (c) Object.assign(file, { hold_policy: c.hold_policy, max_coordination_cost: c.max_cost, hotspot_weight: c.hotspot_weight, mechanical_weight: c.mechanical_weight });
@@ -767,7 +767,7 @@ export class LiveSettings {
       ...this.opts.config,
       ...(live ? { coordination } : {}),
       intake_label: v.intake_label ?? this.opts.config.intake_label, // null: no file value and no override, the config's own stays
-      settings: r.layers,
+      settings: r.layers, ...(r.global.tool_grants.source === "default" ? {} : { tool_grants: v.tool_grants }), // grants in force: an override, else the file's
       ...(Object.fromEntries(CONFIG_KEYS.map((k) => [k, v[k]])) as Pick<SettableValues, (typeof CONFIG_KEYS)[number]>),
     };
   }
