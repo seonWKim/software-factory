@@ -1,6 +1,7 @@
 // The Rules page and the learned rules in the prompt (issue #571). The page lists the ledger's pending entries through
 // TacitLedger.pending and sends promote, reject and hold through TacitLedger.verdict, owner only, with a reason, and for
-// promote of a class the owner's wording as the rule. A promoted rule reaches the next run's prompt under its own
+// promote of a class the owner's wording, default and exception, which the plugin writes into the home's rules.md
+// before the verdict (rolled back if the verdict fails). A promoted rule reaches the next run's prompt under its own
 // heading, read through the plugin's rules() only. Every test runs against a temp home with stub CLIs that take only
 // the real CLIs' forms: no real home, no network, no live model.
 //
@@ -8,7 +9,7 @@
 // and gives the owner the `integrations` value; POST /api/v1/settings stores it through the settings route's guards
 // and owner check, and the next GET uses the rebuilt ledger with no restart.
 
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -45,19 +46,28 @@ const SPAWNS = { timeout: 30_000 };
 
 type Entry = { id: string; title: string; state: string; kind?: string; target?: string };
 
+/** The owner's rules file before any promote: no rule yet, and the heading a promoted block goes before. */
+const RULES_MD = "# Rules\n\n## 다른 곳에 인코딩된 규칙\n- C-009 → CLAUDE.md\n";
+
 /**
  * A temp agents home whose stub CLIs take only the real forms and exit 2 with usage text on any other.
- * `bin/evolve pending` prints the open and held entries of `<root>/ledger.json` as the real CLI's text; `bin/tacit
- * verdict` (a C- class) and `bin/evolve verdict` (a P- proposal) log their argv to `<root>/verdicts` and move the
- * entry: promote → promoted, reject → rejected, hold → held, retire → retired. A promoted class is written, as the
- * real CLI does, to `<home>/private/tacit/rules.md` with its `--rule` (else its title) as the default. Node scripts.
+ * `bin/evolve pending` prints the open and held entries of `<root>/ledger.json` as the real CLI's text, and `bin/evolve
+ * show <C-id>` the class's draft in the owner's sample form (its title as the default, `없음` the exception, incidents
+ * T-1 and T-2, scope `software`); `bin/tacit verdict` (a C- class) and `bin/evolve verdict` (a P- proposal) log their
+ * argv to `<root>/verdicts` and move the entry: promote → promoted, reject → rejected, hold → held, retire → retired.
+ * As the real ledger does, `tacit verdict … promote` exits 1 without both `--rule` and `--encoded-to`, and writes no
+ * rules file: the factory does. `bin/sync-agents` logs each run to `<root>/synced`; `<root>/refuse` makes tacit
+ * verdict fail and `<root>/sync-fail` sync-agents. The home holds `private/tacit/rules.md` (RULES_MD). Node scripts.
  */
 function stubHome(entries: Entry[]) {
   const root = mkdtempSync(join(tmpdir(), "sf-rules-"));
   const home = join(root, "home");
   mkdirSync(join(home, "bin"), { recursive: true });
+  mkdirSync(join(home, "private", "tacit"), { recursive: true });
+  writeFileSync(join(home, "private", "tacit", "rules.md"), RULES_MD);
   const ledger = join(root, "ledger.json");
   const verdicts = join(root, "verdicts");
+  const synced = join(root, "synced");
   writeFileSync(ledger, JSON.stringify(entries));
   const node = (usage: string) => `#!${process.execPath}
 const fs = require("node:fs");
@@ -79,13 +89,9 @@ const verdict = (id, decisions, options) => {
 `;
   writeFileSync(join(home, "bin", "tacit"), `${node("usage: tacit {capture --agent <name> | verdict <class> {hold,promote,reject,retire} --reason <reason> [--rule <rule text>] [--encoded-to <file>]}")}
 if (a[0] === "capture") { if (a.length !== 3 || a[1] !== "--agent") usage(); process.exit(0); }
-const opts = verdict(/^C-/, ["hold", "promote", "reject", "retire"], ["--rule", "--encoded-to"]);
-if (a[2] === "promote") {
-  const e = read().find((x) => x.id === a[1]);
-  const file = path.join(${JSON.stringify(home)}, "private", "tacit", "rules.md");
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.appendFileSync(file, "## " + a[1] + " " + e.title + "\\n- 기본값: " + (opts["--rule"] ?? e.title) + "\\n- 예외: 없음\\n- 범위: software\\n\\n");
-}
+if (a[2] === "promote" && !(a.includes("--rule") && a.includes("--encoded-to"))) { process.stderr.write("promote requires --rule and --encoded-to\\n"); process.exit(1); }
+if (fs.existsSync(path.join(${JSON.stringify(root)}, "refuse"))) { process.stderr.write("ledger locked\\n"); process.exit(1); }
+verdict(/^C-/, ["hold", "promote", "reject", "retire"], ["--rule", "--encoded-to"]);
 `);
   writeFileSync(join(home, "bin", "evolve"), `${node("usage: evolve {pending | verdict <id> {hold,promote,reject} --reason <reason> [--applied-to <file>]}")}
 if (a[0] === "pending") {
@@ -96,18 +102,39 @@ if (a[0] === "pending") {
   const c = (s) => all.filter((e) => e.id.startsWith("C-") && e.state === s).map((e) => "- " + e.id + " " + e.title);
   process.stdout.write([...section("## proposals (open)", p("open")), ...section("## proposals (held)", p("held")),
     ...section("## tacit Pending", c("pending")), ...section("## tacit Held", c("held"))].join("\\n") + "\\n");
+} else if (a[0] === "show") {
+  const e = a.length === 2 && read().find((x) => x.id === a[1] && x.id.startsWith("C-"));
+  if (!e) { process.stderr.write("no class " + a[1] + "\\n"); process.exit(1); }
+  process.stdout.write(["### " + e.id + " " + e.title, "- 인시던트: T-1, T-2", "- 초안: 기본값: " + e.title + " / 예외: 없음", "- 범위: software", "", "# incidents", "# verdicts", ""].join("\\n"));
 } else {
   verdict(/^P-/, ["hold", "promote", "reject"], ["--applied-to"]);
 }
 `);
-  for (const cli of ["tacit", "evolve"]) chmodSync(join(home, "bin", cli), 0o755);
+  writeFileSync(join(home, "bin", "sync-agents"), `#!${process.execPath}
+const fs = require("node:fs");
+if (fs.existsSync(${JSON.stringify(join(root, "sync-fail"))})) { process.stderr.write("agents dir locked\\n"); process.exit(4); }
+fs.appendFileSync(${JSON.stringify(synced)}, "synced\\n");
+`);
+  for (const cli of ["tacit", "evolve", "sync-agents"]) chmodSync(join(home, "bin", cli), 0o755);
   return {
-    home,
+    root, home,
+    rulesFile: join(home, "private", "tacit", "rules.md"),
     ledger: new AgentsHomeTacitLedger(home),
     verdicts: () => (existsSync(verdicts) ? readFileSync(verdicts, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]) : []),
+    syncs: () => (existsSync(synced) ? readFileSync(synced, "utf8").trim().split("\n").length : 0),
     entries: () => JSON.parse(readFileSync(ledger, "utf8")) as Entry[],
   };
 }
+
+/** A promote of a class as the dialog sends it: wording, default and exception beside the reason. */
+const promote = (id: string, over: Record<string, unknown> = {}) =>
+  ({ id, verdict: "promote", reason: "seen twice", text: "Keep CLI flags", default: "Keep every existing CLI flag.", exception: "없음", ...over });
+
+/** An entry as GET lists it: not judged, a class with its stub draft (its title as the default), a proposal with none. */
+const listed = (e: Entry) => ({
+  id: e.id, title: e.title, state: e.state, judged: null, draft_error: null,
+  draft: e.id.startsWith("C-") ? { default: e.title, exception: "없음", incidents: ["T-1", "T-2"], scope: "software" } : null,
+});
 
 const PENDING: Entry[] = [
   { id: "C-012", title: "keep existing CLI flags", state: "pending" },
@@ -205,11 +232,26 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     const v = await (await page(s.ledger)).get();
     expect(v).toMatchObject({ enabled: true, error: null, judge: null });
     expect(typeof v.csrf_token).toBe("string");
-    expect(v.entries).toEqual([
-      { id: "P-0007", title: "Split the review prompt", state: "open" },
-      { id: "C-012", title: "keep existing CLI flags", state: "pending" },
-      { id: "C-013", title: "summary first", state: "held" },
-    ]);
+    expect(v.entries).toEqual([PENDING[1]!, PENDING[0]!, PENDING[2]!].map(listed));
+  });
+
+  it("an entry with a ledger verdict newer than rule-candidates.md is listed as judged with its decision and no draft", async () => {
+    const s = stubHome(PENDING);
+    const dir = join(s.home, "private", "tacit");
+    writeFileSync(join(dir, "rule-candidates.md"), "view");
+    const built = new Date("2026-11-13T08:30:00Z");
+    utimesSync(join(dir, "rule-candidates.md"), built, built);
+    writeFileSync(join(dir, "ledger.jsonl"), `${JSON.stringify({ type: "verdict", class: "C-012", ts: "2026-11-13T10:00:00Z", decision: "promote", reason: "r", by: "owner", rule: "x", encoded_to: "private/tacit/rules.md" })}\n`);
+    const v = await (await page(s.ledger)).get();
+    expect(v.entries.find((e: { id: string }) => e.id === "C-012")).toEqual({ id: "C-012", title: "keep existing CLI flags", state: "pending", judged: "promote", draft: null, draft_error: null });
+    expect(v.entries.find((e: { id: string }) => e.id === "C-013")).toEqual(listed(PENDING[2]!));
+  });
+
+  it("a class whose draft cannot be read gets a draft error and no draft", async () => {
+    const s = stubHome(PENDING);
+    writeFileSync(join(s.home, "bin", "evolve"), `#!/bin/sh\n[ "$1" = pending ] && { printf '## tacit Pending 1\\n- C-012 keep flags\\n'; exit 0; }\necho 'ledger locked' >&2\nexit 3\n`);
+    const v = await (await page(s.ledger)).get();
+    expect(v.entries).toEqual([{ id: "C-012", title: "keep flags", state: "pending", judged: null, draft: null, draft_error: expect.stringContaining("evolve show exited 3: ledger locked") }]);
   });
 
   it("names why a user who is not the owner cannot judge", async () => {
@@ -222,7 +264,7 @@ describe("Rules page: GET /api/v1/rules", SPAWNS, () => {
     for (const tacit of [new NoTacitLedger(), undefined]) {
       const p = await page(tacit);
       expect(await p.get()).toMatchObject({ enabled: false, entries: [], error: null, turn_on: null });
-      expect(await p.post({ id: "C-012", verdict: "promote", reason: "why" })).toMatchObject({ status: 409, value: { error: expect.stringContaining("turn it on from the Rules page") } });
+      expect(await p.post(promote("C-012"))).toMatchObject({ status: 409, value: { error: expect.stringContaining("turn it on from the Rules page") } });
     }
   });
 
@@ -288,14 +330,20 @@ describe("Rules page: Turn on", SPAWNS, () => {
 });
 
 describe("Rules page: POST /api/v1/rules/verdict", SPAWNS, () => {
-  it("a class goes to tacit verdict (the owner's wording as --rule on promote), a proposal to evolve verdict with no rule", async () => {
+  it("promote of a class writes its block, then tacit verdict with --rule and --encoded-to, then sync-agents; a proposal goes to evolve verdict", async () => {
     const s = stubHome(PENDING);
     const p = await page(s.ledger);
-    expect(await p.post({ id: "C-012", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag." })).toEqual({ status: 200, value: { id: "C-012", verdict: "promote" } });
+    expect(await p.post(promote("C-012"))).toEqual({ status: 200, value: { id: "C-012", verdict: "promote" } });
+    expect(readFileSync(s.rulesFile, "utf8")).toMatch(new RegExp(
+      "^# Rules\\n\\n## C-012 Keep CLI flags\\n- 기본값: Keep every existing CLI flag\\.\\n- 예외 \\(이럴 땐 override\\): 없음\\n"
+      + "- 근거: 인시던트 T-1, T-2 / 판정일 \\d{4}-\\d{2}-\\d{2}\\n- 범위: software\\n\\n## 다른 곳에 인코딩된 규칙\\n",
+    ));
+    expect(s.syncs()).toBe(1);
     expect((await p.post({ id: "P-0007", verdict: "promote", reason: "good shape" })).status).toBe(200);
     expect((await p.post({ id: "C-013", verdict: "reject", reason: "not for code" })).status).toBe(200);
+    expect(s.syncs()).toBe(1);
     expect(s.verdicts()).toEqual([
-      ["verdict", "C-012", "promote", "--reason", "seen twice", "--rule", "Keep every existing CLI flag."],
+      ["verdict", "C-012", "promote", "--reason", "seen twice", "--rule", "Keep CLI flags", "--encoded-to", "private/tacit/rules.md"],
       ["verdict", "P-0007", "promote", "--reason", "good shape"],
       ["verdict", "C-013", "reject", "--reason", "not for code"],
     ]);
@@ -308,18 +356,64 @@ describe("Rules page: POST /api/v1/rules/verdict", SPAWNS, () => {
     expect((await p.get()).entries).toEqual([]);
   });
 
-  it("refuses before the CLI runs: no reason, an unknown verdict, a text on reject or on a proposal, a user who is not the owner, a stale token", async () => {
+  it("refuses before the CLI runs: no reason, an unknown verdict, a rule field on reject or on a proposal, a missing or long rule field, a user who is not the owner, a stale token", async () => {
     const s = stubHome(PENDING);
     const p = await page(s.ledger);
     expect((await p.post({ id: "C-012", verdict: "promote" })).status).toBe(400);
+    for (const field of ["text", "default", "exception"]) {
+      expect(await p.post(promote("C-012", { [field]: undefined }))).toMatchObject({ status: 400, value: { error: `${field} must be 1 to 2000 characters` } });
+      expect((await p.post(promote("C-012", { [field]: " " }))).status).toBe(400);
+      expect((await p.post(promote("C-012", { [field]: "x".repeat(2001) }))).status).toBe(400);
+    }
+    expect(await p.post(promote("C-012", { scope: "x" }))).toMatchObject({ status: 400, value: { error: 'unknown field "scope"' } });
+    expect((await p.post({ id: "C-013", verdict: "hold", reason: "x", default: "y" })).status).toBe(400);
     expect((await p.post({ id: "C-012", verdict: "promote", reason: "  " })).status).toBe(400);
     expect((await p.post({ id: "C-012", verdict: "accept", reason: "x" })).status).toBe(400);
     expect((await p.post({ id: "C-013", verdict: "reject", reason: "x", text: "y" })).status).toBe(400);
     expect((await p.post({ id: "P-0007", verdict: "promote", reason: "x", text: "y" })).status).toBe(400);
     expect((await p.post({ id: "C-012", verdict: "hold", reason: "x" }, { csrfToken: "stale" })).status).toBe(403);
     const other = await page(s.ledger, OTHER);
-    expect(await other.post({ id: "C-012", verdict: "promote", reason: "x" })).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner") } });
+    expect(await other.post(promote("C-012"))).toMatchObject({ status: 403, value: { error: expect.stringContaining("Only the owner") } });
     expect(s.verdicts()).toEqual([]);
+    expect(readFileSync(s.rulesFile, "utf8")).toBe(RULES_MD);
+  });
+
+  it("a verdict the ledger refuses is a 502 naming the CLI error, and rules.md is byte-identical to before", async () => {
+    const s = stubHome(PENDING);
+    writeFileSync(join(s.root, "refuse"), "");
+    const before = readFileSync(s.rulesFile);
+    expect(await (await page(s.ledger)).post(promote("C-012"))).toEqual({
+      status: 502, value: { error: "The ledger refused the verdict: tacit verdict exited 1: ledger locked" },
+    });
+    expect(readFileSync(s.rulesFile).equals(before)).toBe(true);
+    expect(s.syncs()).toBe(0);
+  });
+
+  it("a sync-agents that fails after the verdict is a 502 that says the verdict was recorded; the block stays", async () => {
+    const s = stubHome(PENDING);
+    writeFileSync(join(s.root, "sync-fail"), "");
+    expect(await (await page(s.ledger)).post(promote("C-012"))).toEqual({
+      status: 502, value: { error: "The verdict was recorded, but sync-agents failed: sync-agents exited 4: agents dir locked" },
+    });
+    expect(s.verdicts()).toHaveLength(1);
+    expect(readFileSync(s.rulesFile, "utf8")).toContain("## C-012 Keep CLI flags\n");
+  });
+
+  it("a class already in rules.md, or a rules.md linked outside the home, is a 409 with nothing written and no CLI run", async () => {
+    const s = stubHome(PENDING);
+    const p = await page(s.ledger);
+    const inFile = `${RULES_MD}\n## C-012 keep existing CLI flags\n- 기본값: old\n`;
+    writeFileSync(s.rulesFile, inFile);
+    expect(await p.post(promote("C-012"))).toMatchObject({ status: 409, value: { error: expect.stringContaining("C-012 is already in private/tacit/rules.md") } });
+    expect(readFileSync(s.rulesFile, "utf8")).toBe(inFile);
+    const outside = join(s.root, "outside.md");
+    writeFileSync(outside, RULES_MD);
+    rmSync(s.rulesFile);
+    symlinkSync(outside, s.rulesFile);
+    expect(await p.post(promote("C-012"))).toMatchObject({ status: 409, value: { error: expect.stringContaining("resolves outside the agents home") } });
+    expect(readFileSync(outside, "utf8")).toBe(RULES_MD);
+    expect(s.verdicts()).toEqual([]);
+    expect(s.syncs()).toBe(0);
   });
 
   it("an ID that is neither a class nor a proposal is a 502 and no CLI runs", async () => {
@@ -342,7 +436,7 @@ describe("learned rules in the prompt", SPAWNS, () => {
   it("a class promoted through the page appears in the next run's prompt under its own heading, in the owner's wording", async () => {
     const s = stubHome(PENDING);
     expect(await nextRunPrompt(s.ledger)).not.toContain("## Learned rules");
-    await (await page(s.ledger)).post({ id: "C-012", verdict: "promote", reason: "seen twice", text: "Keep every existing CLI flag." });
+    expect((await (await page(s.ledger)).post(promote("C-012"))).status).toBe(200);
     const prompt = await nextRunPrompt(s.ledger);
     expect(prompt).toContain("## Learned rules");
     const section = prompt.slice(prompt.indexOf("## Learned rules"));
