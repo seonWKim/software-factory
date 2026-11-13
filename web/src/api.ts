@@ -431,6 +431,8 @@ export interface SettingsView {
   project_keys: string[];
   keys: SettingRow[];
   pr_only: { key: string; description: string }[];
+  /** The typed form of the file-only keys (design 08-settings); null or absent: this server has no file writer. */
+  file_keys?: FileKeysView | null;
   /** Each integration (design 08-settings): the plugin in force, and whether the `integrations` setting or the config chose it. Absent: none. */
   integrations?: IntegrationRow[];
   ignored: { key: string; project: string | null; value: string; reason: string }[];
@@ -446,10 +448,29 @@ export interface IntegrationRow {
   configured: string;
 }
 
-export type SettingsWrite = { action: "set"; key: string; value: string; project?: string } | { action: "reset"; key: string; project?: string };
+/** One key's value in factory.config.json as the server loaded it: JSON text, null when the file leaves it out. */
+export interface FileKeyValue {
+  key: string;
+  value: string | null;
+}
 
-/** The answer to a write: the CLI's lines, or its refusal. */
-export type WriteResult = { ok: true; lines: string[] } | { ok: false; error: string };
+/** `file_keys` of `/api/v1/settings`: what the Settings page's typed form edits and shows. */
+export interface FileKeysView {
+  /** The file-only keys the page edits, each saved through the file writer onto a local branch. */
+  editable: FileKeyValue[];
+  /** The keys shown with their value and no control. */
+  read_only: FileKeyValue[];
+  /** Each interface under `plugins`: its registered plugin names, whether it is a guard, and the plugin in force. */
+  plugins: { kind: string; interface: string; guard: boolean; names: string[]; selected: string | null }[];
+}
+
+export type SettingsWrite =
+  | { action: "set"; key: string; value: string; project?: string }
+  | { action: "reset"; key: string; project?: string }
+  | { action: "edit-file"; key: string; value: string; confirm: boolean };
+
+/** The answer to a write: the CLI's lines (an edit-file also with its filed item and branch), or its refusal. */
+export type WriteResult = { ok: true; lines: string[]; filed?: { item: string; branch: string } } | { ok: false; error: string };
 
 /** `/api/v1/data/tables`: every store table (design §9 Data page). */
 export interface DataTables {
@@ -821,10 +842,13 @@ async function postJson<T extends { error?: string }>(url: string, token: string
   return { ok: res.ok, status: res.status, value };
 }
 
-/** POST /api/v1/settings: a set or reset, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
+/** POST /api/v1/settings: a set, reset or edit-file, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
 export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
-  const r = await postJson<{ ok?: boolean; lines?: string[]; error?: string }>(API.settings, token, body);
-  if (r.ok && r.value.ok) return { ok: true, lines: r.value.lines ?? [] };
+  const r = await postJson<{ ok?: boolean; lines?: string[]; error?: string; item?: string; branch?: string }>(API.settings, token, body);
+  if (r.ok && r.value.ok) {
+    const { item, branch } = r.value;
+    return { ok: true, lines: r.value.lines ?? [], ...(item !== undefined && branch !== undefined ? { filed: { item, branch } } : {}) };
+  }
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
