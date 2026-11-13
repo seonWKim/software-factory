@@ -448,6 +448,8 @@ export async function loadConfig(
       dirname(secretsFile),
       join(stateDir, "db"),
       join(stateDir, "storage"),
+      // The owner's test MySQL login (SET_UP.md): agents may connect to localhost since the sandbox allows it.
+      join(stateDir, "test-mysql.url"),
       // The solo passport key (Identity): an agent that read it could mint passports.
       join(stateDir, LOCAL_KEY_FILE),
       join(home, ".ssh"),
