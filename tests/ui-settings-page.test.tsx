@@ -47,7 +47,38 @@ const view: SettingsView = {
   pr_only: [
     { key: "plugins", description: DESC("plugins") },
     { key: "secrets", description: DESC("secrets") },
+    { key: "deny_paths", description: DESC("deny_paths") },
+    { key: "auth", description: DESC("auth") },
   ],
+  file_keys: {
+    editable: [
+      { key: "plugins", value: '{"secrets":"env-file","runner":"claude-code","source":["local","slack"]}' },
+      { key: "models", value: '{"cheap":"haiku","standard":"sonnet","strong":"opus"}' },
+      { key: "model_by", value: '{"triage":"cheap","implement":{"1":"standard"},"retry_up":true}' },
+      { key: "slack", value: '{"channels":["C1"]}' },
+      { key: "repo.install_command", value: '["npm","ci"]' },
+      { key: "repo.test_command", value: '["sh","-c","npm test"]' },
+      { key: "repo.check_commands", value: '[["npm","run","typecheck"],["npm","test"]]' },
+      { key: "repo.path", value: '"."' },
+      { key: "toolchain", value: '{"env":{"CI":"1"},"warm_command":["npm","ci"]}' },
+      { key: "dials", value: '{"spec_gate_min_tier":1,"auto_merge_max_tier":0}' },
+      { key: "floors", value: '[{"prefix":"prompts/","tier":3}]' },
+      { key: "permissions", value: '{"grants":["static"],"static":{"roles":{}}}' },
+      { key: "hotspot_paths", value: '["src/core/"]' },
+      { key: "mechanical_paths", value: null },
+      { key: "path_companions", value: '[{"when":"docs/design.md","also":["docs/design/"]}]' },
+    ],
+    read_only: [
+      { key: "store", value: '{"type":"sqlite"}' }, { key: "env", value: '"local"' }, { key: "state_dir", value: '".factory"' }, { key: "worktrees_dir", value: '".worktrees"' },
+      { key: "ui", value: '{"port":4310}' }, { key: "outbound.batching", value: null }, { key: "cli_user", value: '"local:owner"' },
+    ],
+    plugins: [
+      { kind: "secrets", interface: "SecretStore", guard: true, names: ["env-file", "keychain"], selected: "env-file" },
+      { kind: "runner", interface: "AgentRunner", guard: false, names: ["claude-code", "fake"], selected: "claude-code" },
+      { kind: "source", interface: "SourceAdapter", guard: false, names: ["local", "slack", "github-issues"], selected: "local" },
+      { kind: "capability", interface: "CapabilitySearch", guard: false, names: ["bm25", "none"], selected: "bm25" },
+    ],
+  },
   ignored: [],
   history: [
     { seq: 2, at: AT, actor: "local:owner", key: "max_loops", project: null, old_value: null, new_value: "4" },
@@ -70,6 +101,7 @@ beforeEach(() => {
       return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "content-type": "application/json" } });
     }
     if (url === "/api/v1/settings") return new Response(JSON.stringify(view), { status: 200, headers: { "content-type": "application/json" } });
+    if (url.startsWith("/api/v1/items/")) return new Response(JSON.stringify({ item: { merge: { enabled: true, reason: null } } }), { status: 200, headers: { "content-type": "application/json" } });
     if (url === "/api/v1/session") return new Response(JSON.stringify(session), { status: 200, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 404 });
   }));
@@ -154,16 +186,20 @@ describe("Settings page", () => {
     expect(row.parentElement!.className.split(" ")).toContain("space-y-3");
   });
 
-  it("lists the PR-only keys read-only, with no control, under a heading that says where and why they change", async () => {
+  it("lists the remaining PR-only keys read-only, with no control, and says the editable keys change through a local branch", async () => {
     await show();
     const section = screen.getByRole("region", { name: PR_ONLY });
-    expect(section.textContent).toContain("a person must review every change");
-    expect(section.textContent).toContain("edit it in factory.config.json in a pull request");
+    expect(section.textContent).toContain("The remaining keys change only through a reviewed pull request to factory.config.json");
+    expect(section.textContent).toContain("change through a local branch you merge");
     const pr = screen.getByRole("table", { name: PR_ONLY });
-    for (const key of ["plugins", "secrets"]) {
+    // deny_paths is built at load, never a file key: it stays here with its description, as auth does.
+    for (const key of ["deny_paths", "auth"]) {
       const r = pr.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
-      expect(r.querySelectorAll("input, button, textarea, [role=switch]")).toHaveLength(0);
+      expect(r.textContent).toContain(DESC(key));
+      expect(r.querySelectorAll("input, button, textarea, select, [role=switch]")).toHaveLength(0);
     }
+    // The keys the typed form edits (plugins and the guard secrets) leave the table.
+    for (const key of ["plugins", "secrets"]) expect(pr.querySelector(`tr[data-key="${key}"]`), key).toBeNull();
   });
 
   it("shows each key's description from the API under its name, editable and PR-only rows alike", async () => {
@@ -174,7 +210,7 @@ describe("Settings page", () => {
       expect(cell.textContent).toContain(DESC(k.key));
     }
     const pr = screen.getByRole("table", { name: PR_ONLY });
-    for (const key of ["plugins", "secrets"]) {
+    for (const key of ["deny_paths", "auth"]) {
       const cell = pr.querySelector<HTMLElement>(`tr[data-key="${key}"] td`)!;
       expect(cell.textContent).toContain(DESC(key));
     }
@@ -353,5 +389,159 @@ describe("Settings page", () => {
     await show();
     const first = document.querySelector("section");
     expect(first?.getAttribute("aria-label")).toBe("Pending proposals");
+  });
+});
+
+describe("Settings page: the typed form of the file-only keys (design 08-settings)", () => {
+  const FILE_SECTION = "Change on a local branch";
+  async function form() {
+    await show();
+    return screen.getByRole("region", { name: FILE_SECTION });
+  }
+  const keyOf = (section: HTMLElement, key: string) => section.querySelector<HTMLElement>(`li[data-file-key="${key}"]`)!;
+  const sent = (n: number) => JSON.parse(posts[n]!.init.body as string) as { action: string; key: string; value: string; confirm: boolean };
+  const filedAnswer = () => {
+    answer = { status: 200, body: { ok: true, lines: ["filed"], item: "wi_9", branch: "factory/wi_9" } };
+  };
+
+  it("has a typed control for every file-only key the page edits", async () => {
+    const section = await form();
+    expect([...section.querySelectorAll("li[data-file-key]")].map((li) => li.getAttribute("data-file-key"))).toEqual(view.file_keys!.editable.map((e) => e.key));
+    for (const li of section.querySelectorAll<HTMLElement>("li[data-file-key]")) {
+      const key = li.getAttribute("data-file-key")!;
+      expect(within(li).getByRole("button", { name: `Save ${key}` }), key).not.toBeNull();
+    }
+    // Text fields per model class; a class select per model_by role and tier, a switch for retry_up.
+    expect((within(keyOf(section, "models")).getByLabelText("models strong") as HTMLInputElement).value).toBe("opus");
+    const triage = within(keyOf(section, "model_by")).getByLabelText("model_by triage") as HTMLSelectElement;
+    expect([...triage.options].map((o) => o.value)).toEqual(["cheap", "standard", "strong"]);
+    expect((within(keyOf(section, "model_by")).getByLabelText("model_by implement 1") as HTMLSelectElement).value).toBe("standard");
+    expect(within(keyOf(section, "model_by")).getByRole("switch", { name: "model_by retry_up" }).getAttribute("aria-checked")).toBe("true");
+    // slack: a list editor of channels and a text field per optional member.
+    expect((within(keyOf(section, "slack")).getByLabelText("slack channels 1") as HTMLInputElement).value).toBe("C1");
+    expect((within(keyOf(section, "slack")).getByLabelText("slack dashboard_url") as HTMLInputElement).value).toBe("");
+    // The repo commands: one line of arguments each, a quoted argument where it holds a space; check_commands a list of them.
+    expect((within(keyOf(section, "repo.install_command")).getByLabelText("repo.install_command") as HTMLInputElement).value).toBe("npm ci");
+    expect((within(keyOf(section, "repo.test_command")).getByLabelText("repo.test_command") as HTMLInputElement).value).toBe('sh -c "npm test"');
+    expect((within(keyOf(section, "repo.check_commands")).getByLabelText("repo.check_commands 1") as HTMLInputElement).value).toBe("npm run typecheck");
+    expect((within(keyOf(section, "repo.path")).getByLabelText("repo.path") as HTMLInputElement).value).toBe(".");
+    // toolchain: env as KEY=VALUE lines, warm_command as arguments.
+    expect((within(keyOf(section, "toolchain")).getByLabelText("toolchain env 1") as HTMLInputElement).value).toBe("CI=1");
+    expect((within(keyOf(section, "toolchain")).getByLabelText("toolchain warm_command") as HTMLInputElement).value).toBe("npm ci");
+    // dials, floors and permissions: typed inputs per member.
+    expect((within(keyOf(section, "dials")).getByLabelText("dials spec_gate_min_tier") as HTMLInputElement).type).toBe("number");
+    expect((within(keyOf(section, "floors")).getByLabelText("floors 1 prefix") as HTMLInputElement).value).toBe("prompts/");
+    expect((within(keyOf(section, "floors")).getByLabelText("floors 1 tier") as HTMLInputElement).value).toBe("3");
+    expect((within(keyOf(section, "permissions")).getByLabelText("permissions grants 1") as HTMLInputElement).value).toBe("static");
+    expect(within(keyOf(section, "permissions")).getByLabelText("permissions static").tagName).toBe("TEXTAREA");
+    // The path lists: list editors, nested for path_companions.
+    expect((within(keyOf(section, "hotspot_paths")).getByLabelText("hotspot_paths 1") as HTMLInputElement).value).toBe("src/core/");
+    expect(within(keyOf(section, "mechanical_paths")).getByRole("button", { name: "Add to mechanical_paths" })).not.toBeNull();
+    expect((within(keyOf(section, "path_companions")).getByLabelText("path_companions 1 also 1") as HTMLInputElement).value).toBe("docs/design/");
+  });
+
+  it("the plugin select of each interface lists only its registered names; no option turns a guard off", async () => {
+    const plugins = keyOf(await form(), "plugins");
+    for (const p of view.file_keys!.plugins.filter((x) => x.kind !== "source")) {
+      const select = within(plugins).getByLabelText(new RegExp(`^plugins ${p.kind}$`)) as HTMLSelectElement;
+      expect([...select.options].filter((o) => !o.disabled).map((o) => o.value), p.kind).toEqual(p.names);
+      // The file's choice; an interface the file leaves out shows the plugin in force and writes nothing until picked.
+      if (p.kind === "capability") {
+        expect(select.value).toBe("");
+        expect(select.selectedOptions[0]!.textContent).toBe("default: bm25");
+      } else expect(select.value, p.kind).toBe(p.selected);
+    }
+    const secrets = within(plugins).getByLabelText("plugins secrets") as HTMLSelectElement;
+    expect([...secrets.options].map((o) => o.value)).not.toContain("none");
+    // An interface the file lists several of is a list of selects.
+    expect((within(plugins).getByLabelText("plugins source 2") as HTMLSelectElement).value).toBe("slack");
+  });
+
+  it("Save sends edit-file through the writer, then shows the branch and a Merge button that merges the item locally", async () => {
+    filedAnswer();
+    const section = await form();
+    const hot = keyOf(section, "hotspot_paths");
+    fireEvent.click(within(hot).getByRole("button", { name: "Add to hotspot_paths" }));
+    fireEvent.change(within(hot).getByLabelText("hotspot_paths 2"), { target: { value: "src/ui/" } });
+    await act(async () => fireEvent.click(within(hot).getByRole("button", { name: "Save hotspot_paths" })));
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.url).toBe("/api/v1/settings");
+    expect(sent(0)).toEqual({ action: "edit-file", key: "hotspot_paths", value: '["src/core/","src/ui/"]', confirm: false });
+    const filed = hot.querySelector<HTMLElement>('[data-filed="wi_9"]')!;
+    expect(filed.textContent).toContain("factory/wi_9");
+    const merge = await within(filed).findByRole("button", { name: "Merge" });
+    await waitFor(() => expect((merge as HTMLButtonElement).disabled).toBe(false));
+    await act(async () => fireEvent.click(merge));
+    expect(posts[1]!.url).toBe("/api/v1/items/wi_9/commands");
+    expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ command: "merge" });
+    // A Remove takes an entry out; a command line goes back as its arguments; a text member left empty is left out.
+    fireEvent.click(within(hot).getByRole("button", { name: "Remove hotspot_paths 1" }));
+    await act(async () => fireEvent.click(within(hot).getByRole("button", { name: "Save hotspot_paths" })));
+    expect(sent(2).value).toBe("[]");
+    const test = keyOf(section, "repo.test_command");
+    fireEvent.change(within(test).getByLabelText("repo.test_command"), { target: { value: 'sh -c "npm run check"' } });
+    await act(async () => fireEvent.click(within(test).getByRole("button", { name: "Save repo.test_command" })));
+    expect(JSON.parse(sent(3).value)).toEqual(["sh", "-c", "npm run check"]);
+    const slack = keyOf(section, "slack");
+    fireEvent.change(within(slack).getByLabelText("slack channels 1"), { target: { value: "C2" } });
+    await act(async () => fireEvent.click(within(slack).getByRole("button", { name: "Save slack" })));
+    expect(JSON.parse(sent(4).value)).toEqual({ channels: ["C2"] });
+    // A non-guard plugin change writes the whole plugins object, the file's other members kept, with no Dialog.
+    const plugins = keyOf(section, "plugins");
+    fireEvent.change(within(plugins).getByLabelText("plugins runner"), { target: { value: "fake" } });
+    await act(async () => fireEvent.click(within(plugins).getByRole("button", { name: "Save plugins" })));
+    expect(document.querySelector("dialog")).toBeNull();
+    expect(sent(5)).toMatchObject({ key: "plugins", confirm: false });
+    expect(JSON.parse(sent(5).value)).toEqual({ secrets: "env-file", runner: "fake", source: ["local", "slack"] });
+  });
+
+  it("a guard, floor, permission or dial opens the danger Dialog: Cancel sends no write request, Confirm sends the confirm flag", async () => {
+    filedAnswer();
+    const section = await form();
+    const change: [string, () => void][] = [
+      ["plugins", () => fireEvent.change(within(keyOf(section, "plugins")).getByLabelText("plugins secrets"), { target: { value: "keychain" } })],
+      ["floors", () => fireEvent.change(within(keyOf(section, "floors")).getByLabelText("floors 1 tier"), { target: { value: "2" } })],
+      ["permissions", () => fireEvent.click(within(keyOf(section, "permissions")).getByRole("button", { name: "Remove permissions grants 1" }))],
+      ["dials", () => fireEvent.change(within(keyOf(section, "dials")).getByLabelText("dials auto_merge_max_tier"), { target: { value: "2" } })],
+    ];
+    for (const [key, edit] of change) {
+      edit();
+      await act(async () => fireEvent.click(within(keyOf(section, key)).getByRole("button", { name: `Save ${key}` })));
+      const dialog = document.querySelector<HTMLElement>("dialog[data-dialog]")!;
+      expect(dialog, key).not.toBeNull();
+      expect(dialog.textContent).toContain(`Change ${key}?`);
+      await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" })));
+      expect(document.querySelector("dialog[data-dialog]"), key).toBeNull();
+      expect(posts, key).toHaveLength(0);
+    }
+    // Confirm sends the write with the confirm flag.
+    await act(async () => fireEvent.click(within(keyOf(section, "floors")).getByRole("button", { name: "Save floors" })));
+    const dialog = document.querySelector<HTMLElement>("dialog[data-dialog]")!;
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Put on a branch" })));
+    expect(posts).toHaveLength(1);
+    expect(sent(0)).toEqual({ action: "edit-file", key: "floors", value: '[{"prefix":"prompts/","tier":2}]', confirm: true });
+    expect(document.querySelector("dialog[data-dialog]")).toBeNull();
+  });
+
+  it("each read-only key shows its value and the line to edit the file, with no control", async () => {
+    const section = await form();
+    for (const { key, value } of view.file_keys!.read_only) {
+      const li = section.querySelector<HTMLElement>(`li[data-read-only="${key}"]`)!;
+      expect(li, key).not.toBeNull();
+      expect(li.textContent).toContain(value ?? "not set");
+      expect(li.textContent).toContain("Edit factory.config.json to change this.");
+      expect(li.querySelectorAll("input, button, textarea, select, [role=switch]"), key).toHaveLength(0);
+      expect(section.querySelector(`li[data-file-key="${key}"]`), key).toBeNull();
+    }
+  });
+
+  it("shows no typed form when the server has no file writer", async () => {
+    const saved = view.file_keys;
+    view.file_keys = null;
+    afterEachReset = () => (view.file_keys = saved);
+    await show();
+    expect(screen.queryByRole("region", { name: FILE_SECTION })).toBeNull();
+    // Without the form every PR-only key stays in the table.
+    expect(screen.getByRole("table", { name: PR_ONLY }).querySelector('tr[data-key="plugins"]')).not.toBeNull();
   });
 });
