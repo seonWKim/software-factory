@@ -2,12 +2,13 @@
 // row cap and the time limit, on a SQLite file store (an in-memory one has no second connection).
 
 import { mkdtempSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { READ_ONLY_MAX_ROWS, READ_ONLY_TIME_LIMIT_MS, readOnlyQuery, statementProblem } from "../src/impl/store/sqlite/readonly-query.js";
-import { openReadOnly, runReadOnly } from "../src/impl/store/sqlite/readonly-query-worker.js";
+import { hasAuthorizer, ignoredReadProblem, openReadOnly, runReadOnly } from "../src/impl/store/sqlite/readonly-query-worker.js";
 import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 
@@ -79,13 +80,38 @@ describe("readOnlyQuery", () => {
     expect(await driver.all("SELECT name FROM worker_claim_locks WHERE name = 'x'")).toEqual([]);
   });
 
-  it("the child's run refuses a write and ATTACH with the statement checks bypassed", async () => {
+  it("the child's run refuses a write with the statement checks bypassed", async () => {
     const { path, driver } = await fileStore();
     await driver.run("INSERT INTO worker_claim_locks (name) VALUES ('kept')");
-    for (const sql of ["DELETE FROM worker_claim_locks", "ATTACH DATABASE ':memory:' AS x", "PRAGMA query_only = OFF"]) {
+    for (const sql of ["DELETE FROM worker_claim_locks", "INSERT INTO worker_claim_locks (name) VALUES ('x')"]) {
       expect(runReadOnly({ path, sql, max_rows: 10, ignore: {} }), sql).toEqual({ refused: expect.stringMatching(/^SQLite refused the query: /) });
     }
-    expect(await driver.all("SELECT name FROM worker_claim_locks WHERE name = 'kept'")).toEqual([{ name: "kept" }]);
+    expect(await driver.all("SELECT name FROM worker_claim_locks WHERE name IN ('kept', 'x')")).toEqual([{ name: "kept" }]);
+  });
+
+  // The authorizer exists from Node 24.10; CI runs Node 22, where ATTACH and PRAGMA run (the next test shows that
+  // nothing they leave can write).
+  it.runIf(hasAuthorizer())("with an authorizer, the child's run also refuses ATTACH and PRAGMA", async () => {
+    const { path } = await fileStore();
+    for (const sql of ["ATTACH DATABASE ':memory:' AS x", "PRAGMA query_only = OFF"]) {
+      expect(runReadOnly({ path, sql, max_rows: 10, ignore: {} }), sql).toEqual({ refused: expect.stringMatching(/^SQLite refused the query: /) });
+    }
+  });
+
+  it("an ATTACH or PRAGMA query_only = OFF that runs leaves nothing writable: attached databases open read-only", async () => {
+    const { path, driver } = await fileStore();
+    const db = openReadOnly(path);
+    try {
+      db.exec("PRAGMA query_only = OFF");
+      db.exec(`ATTACH DATABASE '${path}' AS again`);
+      expect(() => db.exec("INSERT INTO again.worker_claim_locks (name) VALUES ('x')")).toThrow(/readonly|read-only|attempt to write/i);
+      db.exec("ATTACH DATABASE ':memory:' AS scratch");
+      expect(() => db.exec("CREATE TABLE scratch.t (a)")).toThrow(/readonly|read-only|attempt to write/i);
+      expect(() => db.exec(`ATTACH DATABASE '${path}.new' AS fresh`)).toThrow(/unable to open/i);
+    } finally {
+      db.close();
+    }
+    expect(await driver.all("SELECT name FROM worker_claim_locks WHERE name = 'x'")).toEqual([]);
   });
 
   it(`returns at most ${READ_ONLY_MAX_ROWS} rows and says the result was cut`, async () => {
@@ -109,11 +135,61 @@ describe("readOnlyQuery", () => {
     expect(Date.now() - started).toBeLessThan(4000);
   });
 
-  it("a read of an ignored column gives NULL", async () => {
+  it.runIf(hasAuthorizer())("with an authorizer, a read of an ignored column gives NULL", async () => {
     const { path, driver } = await fileStore();
     await driver.run("INSERT INTO worker_claim_locks (name) VALUES ('kept')");
     const sql = "SELECT count(*) AS n, max(name) AS top FROM worker_claim_locks";
     expect(await readOnlyQuery(path, sql)).toMatchObject({ rows: [[expect.any(Number), expect.any(String)]] });
     expect(await readOnlyQuery(path, sql, { ignore: { worker_claim_locks: ["name"] } })).toMatchObject({ columns: ["n", "top"], rows: [[expect.any(Number), null]] });
+  });
+});
+
+/** A store file with a table whose `tok` is ignored (no index) and one whose `tok` has an index. */
+async function guardedStore() {
+  const { path, driver } = await fileStore();
+  await driver.run("CREATE TABLE t_plain (id INTEGER PRIMARY KEY, name TEXT, tok TEXT)");
+  await driver.run("CREATE TABLE t_indexed (id INTEGER PRIMARY KEY, name TEXT, tok TEXT)");
+  await driver.run("CREATE INDEX t_indexed_tok ON t_indexed (tok)");
+  await driver.run("INSERT INTO t_plain (name, tok) VALUES ('a', 'SECRET')");
+  await driver.run("INSERT INTO t_indexed (name, tok) VALUES ('a', 'SECRET')");
+  return { path, ignore: { t_plain: ["tok"], t_indexed: ["tok"] } };
+}
+
+describe("ignoredReadProblem (the hidden-column lock where no authorizer runs)", () => {
+  it("refuses a plan that reads an ignored column, also one it does not name, and passes the rest", async () => {
+    const { path, ignore } = await guardedStore();
+    const db = openReadOnly(path);
+    try {
+      for (const sql of [
+        "SELECT tok FROM t_plain",
+        "SELECT * FROM t_plain",
+        "WITH a(c1, c2, c3) AS (SELECT * FROM t_plain) SELECT c3 FROM a",
+        "SELECT count(*) FROM t_plain WHERE tok = 'SECRET'",
+        // An index seek compares the key without a column read: the open of an index holding tok is refused.
+        "WITH a(c1, c2, c3) AS (SELECT * FROM t_indexed) SELECT count(*) FROM a WHERE c3 = 'SECRET'",
+      ]) {
+        expect(ignoredReadProblem(db, sql, ignore), sql).toMatch(/reads a hidden column of t_(plain|indexed)/);
+      }
+      for (const sql of ["SELECT id, name FROM t_plain", "SELECT count(*) FROM t_plain", "SELECT name FROM t_indexed WHERE id = 1", "SELECT 1"]) {
+        expect(ignoredReadProblem(db, sql, ignore), sql).toBeNull();
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("the child's run on a Node without setAuthorizer refuses such a read instead of answering it", async () => {
+    const { path, ignore } = await guardedStore();
+    const proto = DatabaseSync.prototype as unknown as Record<string, unknown>;
+    const had = Object.getOwnPropertyDescriptor(proto, "setAuthorizer");
+    if (had) delete proto.setAuthorizer;
+    try {
+      expect(hasAuthorizer()).toBe(false);
+      const leak = runReadOnly({ path, sql: "WITH a(c1, c2, c3) AS (SELECT * FROM t_plain) SELECT c3 FROM a", max_rows: 10, ignore });
+      expect(leak).toEqual({ refused: expect.stringMatching(/hidden column of t_plain/) });
+      expect(runReadOnly({ path, sql: "SELECT name FROM t_plain", max_rows: 10, ignore })).toMatchObject({ rows: [["a"]] });
+    } finally {
+      if (had) Object.defineProperty(proto, "setAuthorizer", had);
+    }
   });
 });
