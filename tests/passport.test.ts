@@ -2,13 +2,11 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   LocalAuthProvider,
-  OwnerGrant,
   PassportService,
   REVOCATIONS_TICK,
   localIdentity,
   secretKeyring,
   type Action,
-  type GrantSource,
   type ResourceRef,
   type SecretProvider,
 } from "../src/identity/index.js";
@@ -44,14 +42,14 @@ const BACKENDS: [string, () => Promise<SqlExecutor>][] = [
 
 for (const [name, open] of BACKENDS) {
   describe(`passport (${name})`, () => {
-    async function setup(o: { keys?: Record<string, string>; previous?: string[]; grants?: GrantSource[]; db?: SqlExecutor } = {}) {
+    async function setup(o: { keys?: Record<string, string>; previous?: string[]; owner?: string; db?: SqlExecutor } = {}) {
       const db = o.db ?? (await open());
       const ticks = new ManualTickGenerator();
       const svc = new PassportService({
         db,
         keys: secretKeyring(secrets(o.keys ?? { SF_PASSPORT_KEY: KEY_A }), { current: "SF_PASSPORT_KEY", ...(o.previous ? { previous: o.previous } : {}) }),
         providers: [new LocalAuthProvider()],
-        grants: o.grants ?? [new OwnerGrant(OWNER)],
+        owner: o.owner ?? OWNER,
         ticks,
         newId: () => `pp_${name}_${++ids}`,
       });
@@ -79,12 +77,9 @@ for (const [name, open] of BACKENDS) {
       expect(await svc.authorize(other.passport.id, "submit_work", P)).toMatchObject({ allow: true });
     });
 
-    it("refuses an identity its providers do not resolve, and a deny from any grant source wins", async () => {
-      const deny: GrantSource = { remote: false, denies: async (s) => s.user_id === OWNER, roles: async () => [] };
-      const { svc, owner } = await setup({ grants: [new OwnerGrant(OWNER), deny] });
+    it("refuses an identity its providers do not resolve", async () => {
+      const { svc } = await setup();
       await expect(svc.authenticate({ provider: "github", subject: "1" }, "github")).rejects.toThrow(/no github identity/);
-      const { passport } = await owner();
-      expect(await svc.authorize(passport.id, "approve_spec", P)).toMatchObject({ allow: false, reason: "denied" });
     });
 
     it("detects a tampered token and a tampered store row", async () => {
@@ -255,7 +250,7 @@ for (const [name, open] of BACKENDS) {
 
     it("needs a tick before it decides anything", async () => {
       const db = await open();
-      const svc = new PassportService({ db, keys: secretKeyring(secrets({ K: KEY_A }), { current: "K" }), providers: [], grants: [], ticks: new ManualTickGenerator() });
+      const svc = new PassportService({ db, keys: secretKeyring(secrets({ K: KEY_A }), { current: "K" }), providers: [], ticks: new ManualTickGenerator() });
       await expect(svc.authorize("pp_x", "approve_spec", P)).rejects.toThrow(/no tick yet/);
       expect(await db.all("SELECT seq FROM authz_audit")).toEqual([]);
     });
@@ -307,9 +302,19 @@ describe("local identity (solo default)", () => {
   });
 
   it("the owner holds every role; anonymous never does", async () => {
-    expect(await new OwnerGrant("local:me").roles({ user_id: "local:me", accounts: [] })).toEqual(["owner"]);
-    expect(await new OwnerGrant("local:me").roles({ user_id: "local:you", accounts: [] })).toEqual([]);
-    expect(await new OwnerGrant("local:anonymous").roles({ user_id: "local:anonymous", accounts: [] })).toEqual([]);
+    const d = await sqlite();
+    const svc = async (owner: string) => {
+      const ticks = new ManualTickGenerator();
+      const s = new PassportService({ db: d, keys: secretKeyring(secrets({ K: KEY_A }), { current: "K" }), providers: [new LocalAuthProvider()], owner, ticks });
+      await ticks.tick(REVOCATIONS_TICK, T0);
+      return s;
+    };
+    const me = await svc("local:me");
+    const anon = await svc("local:anonymous");
+    const as = async (s: PassportService, subject: string) => (await s.authenticate({ provider: "local", subject }, "cli")).passport.id;
+    expect(await me.authorize(await as(me, "me"), "approve_tool", { project: null })).toMatchObject({ allow: true });
+    expect(await me.authorize(await as(me, "you"), "approve_spec", { project: null })).toMatchObject({ allow: false, reason: "no_role" });
+    expect(await anon.authorize(await as(anon, "anonymous"), "approve_spec", { project: null })).toMatchObject({ allow: false, reason: "no_role" });
   });
 
   it("a passport key shorter than 32 characters is refused", async () => {

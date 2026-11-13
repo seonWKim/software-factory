@@ -75,6 +75,13 @@ export type CompleteTaskResult =
   /** `completed`: false when it was already done (nothing written). `next`: the stored next occurrence of a recurring task. */
   | { ok: true; task: Task; completed: boolean; next: Task | null };
 
+export type ReopenTaskResult =
+  | { ok: false; reason: "not_found" }
+  /** The recurring task's next occurrence is done too: reopening it would leave two open occurrences. Nothing written. */
+  | { ok: false; reason: "next_done"; next: Task }
+  /** `reopened`: false when it was open already (nothing written). `removed_next`: the open next occurrence it deleted. */
+  | { ok: true; task: Task; reopened: boolean; removed_next: string | null };
+
 /** The store's task methods, part of FactoryStore; implemented once in the shared SQL store. */
 export interface TaskStore {
   /** Inserts the task unless its ID is stored; returns the stored row either way. */
@@ -86,6 +93,11 @@ export interface TaskStore {
    * this task, unique) in the same transaction, so a second completion writes nothing.
    */
   completeTask(id: string): Promise<CompleteTaskResult>;
+  /**
+   * Undoes completeTask (design 02-tasks, undo a completion): sets done_at to NULL, conditional on it being set, and for
+   * a recurring task deletes its open next occurrence in the same transaction; refused (next_done) when that one is done.
+   */
+  reopenTask(id: string): Promise<ReopenTaskResult>;
   getTask(id: string): Promise<Task | null>;
   /** Sets work_item_id, conditional on it being unset; returns the stored row (null: no such task). */
   linkTask(id: string, work_item_id: WorkItemId): Promise<Task | null>;

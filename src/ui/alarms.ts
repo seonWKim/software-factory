@@ -5,6 +5,8 @@
 
 import { ALERT_DEDUPE_MS, RESTART_WINDOW_MS } from "../core/alarms.js";
 import { MODEL_RUN_KINDS } from "../core/model-choice.js";
+import { AUTO_ACTOR } from "../core/policy.js";
+import { utcMinute } from "../core/spec-comment.js";
 import { type Run, type WorkItem, runTokenCount } from "../core/types.js";
 import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 
@@ -33,7 +35,7 @@ export function alarmUntil(a: Alert): string {
 export function alarmText(a: Alert): string {
   if (a.pattern === "repeated_error") return `Alarm: ${a.error_code} failed ${a.count} runs on several items`;
   if (a.pattern === "zero_tokens") return `Alarm: ${a.count} agent runs in a row used no tokens`;
-  if (a.pattern === "auto_stopped") return `Alarm: auto mode stopped (${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}); the mode is manual`;
+  if (a.pattern === "auto_stopped") return `Alarm: back to manual at ${utcMinute(a.created_at)}: ${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}`;
   if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? a.error_code})`;
   if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
@@ -45,6 +47,30 @@ const AUTO_STOP_TEXT: Readonly<Record<string, string>> = {
   failure_alert: "a failure alarm",
   budget_checkpoint: "a budget checkpoint",
 };
+
+/** The newest mode changes read to find the last one; far more than the mode changes between two stops. */
+const MODE_CHANGES_READ = 200;
+
+/** The last auto-mode stop while it is still in force, as the Mode toggle and the system banner show it. */
+export interface AutoStopNote {
+  /** The `auto_stopped` alert: the toggle and the banner link to it. */
+  alert_id: string;
+  /** When auto mode stopped (the alert's time). */
+  at: string;
+  /** Its cause, the alert's error code: `red_main`, `budget_checkpoint` or `failure_alert`. */
+  cause: string;
+}
+
+/**
+ * The last auto-mode stop (design 03-risk), or null when none is in force: the newest `mode` change was not the
+ * stop's (`system:auto` setting manual), so the owner set the mode since. Store reads only.
+ */
+export async function lastAutoStop(store: Pick<FactoryStore, "listAlerts" | "listSettingChanges">): Promise<AutoStopNote | null> {
+  const last = (await store.listSettingChanges(MODE_CHANGES_READ)).find((c) => c.key === "mode");
+  if (!last || last.actor !== AUTO_ACTOR) return null;
+  const a = (await store.listAlerts({ limit: ALERTS_READ })).find((x) => x.pattern === "auto_stopped");
+  return a ? { alert_id: a.id, at: a.created_at, cause: a.error_code } : null;
+}
 
 /** Why the bus dead-lettered a message (its dead letter's error code, RFC 0015 §5.4). */
 const DEAD_LETTER_TEXT: Readonly<Record<string, string>> = {

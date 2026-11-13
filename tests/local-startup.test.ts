@@ -81,12 +81,10 @@ describe("the removed auth and permissions keys (design 08-permissions, One owne
 });
 
 describe("the one rule: is a GitHub plugin selected", () => {
-  const sel = (over: Partial<Selection>): Selection => ({ ...({ source: "local", auth: "local", broker: "local" } as Selection), ...over });
+  const sel = (over: Partial<Selection>): Selection => ({ ...({ source: "local", broker: "local" } as Selection), ...over });
 
   it("no GitHub source, broker or forge: the local path", () => {
     expect(selectsGitHub(sel({}))).toBe(false);
-    // The auth kind is never built (One owner): its name selects nothing.
-    expect(selectsGitHub(sel({ auth: "github" }))).toBe(false);
   });
 
   it("any one GitHub plugin selects GitHub", () => {

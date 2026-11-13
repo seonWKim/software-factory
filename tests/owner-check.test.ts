@@ -1,3 +1,4 @@
+import { readFileSync, readdirSync } from "node:fs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -169,6 +170,14 @@ describe("the owner check", () => {
     expect(await changeApproval(deps("local:bob"), request)).toEqual({ ok: false, refusal: "not_allowed", reason: `approve needs approve_tool: ${NOT_OWNER}` });
     // The owner passes the check; the request then fails only because no such tool is stored.
     expect(await changeApproval(deps(OWNER), request)).toMatchObject({ ok: false, refusal: "no_entry" });
+  });
+
+  it("the controller decides a command only through its one authorize helper, and no code asks GitHub for a permission", () => {
+    const SRC = join(import.meta.dirname, "..", "src");
+    expect(readFileSync(join(SRC, "controller", "units", "auth", "auth.unit.ts"), "utf8").match(/\.authorize\(principal, action/g)).toHaveLength(1);
+    const files = (dir: string): string[] =>
+      readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
+    expect(files(SRC).filter((f) => /\/collaborators\//.test(readFileSync(f, "utf8")))).toEqual([]);
   });
 });
 

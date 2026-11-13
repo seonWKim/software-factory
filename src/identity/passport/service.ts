@@ -1,5 +1,5 @@
 // The passport service (RFC 0015 §7 Identity, §8 Passports). It authenticates once at the edge through an
-// AuthProvider, answers authorize() from the passport's caveats and the GrantSources' roles, narrows passports
+// AuthProvider, answers authorize() from the passport's caveats and the principal's role, narrows passports
 // for runs and tool calls, keeps the deny list, and writes every decision to authz_audit.
 //
 // Time comes only from Identity's `revocations` tick (no-clock rule): each tick sets the service's clock and
@@ -10,7 +10,8 @@ import { randomUUID } from "node:crypto";
 import type { TickGenerator } from "../../shared/ticks/tick-generator.js";
 import { addMs } from "../../shared/time.js";
 import type { SqlExecutor } from "../../state/index.js";
-import { SERVICE_PREFIX, ServiceAuthProvider, ServiceGrant, serviceRestrictions, type ServiceName } from "../plugins/service/service-identity.js";
+import { ANONYMOUS_USER } from "../plugins/local/local-identity.js";
+import { SERVICE_PREFIX, ServiceAuthProvider, serviceRestrictions, type ServiceName } from "../plugins/service/service-identity.js";
 import { ProfileStore, checkDisplayName } from "../profiles/profiles.js";
 import { checkRestrictions, outside } from "./restrictions.js";
 import { PassportStore } from "./store.js";
@@ -22,8 +23,6 @@ import {
   type Authorization,
   type AuthzResult,
   type ExternalIdentity,
-  type GrantSource,
-  type GrantSubject,
   type Issued,
   type NarrowRequest,
   type Origin,
@@ -34,7 +33,7 @@ import {
   type Restrictions,
 } from "./types.js";
 
-/** Actions any authenticated user may take unless a grant source denies them (as in the legacy check). */
+/** Actions any authenticated user may take. */
 const OPEN_ACTIONS: readonly Action[] = ["submit_work"];
 
 export const REVOCATIONS_TICK = "revocations";
@@ -47,8 +46,11 @@ export interface IdentityOptions {
   readonly keys: PassportKeyring;
   /** One per provider; a proof whose provider has none is refused. */
   readonly providers: readonly AuthProvider[];
-  /** In order; local sources are asked before remote ones. */
-  readonly grants: readonly GrantSource[];
+  /**
+   * The principal that holds the owner role beside the service principals. Absent in a running factory: a person's
+   * command takes the owner check instead (design 08-permissions, One owner). `local:anonymous` never holds it.
+   */
+  readonly owner?: string;
   readonly ticks: TickGenerator;
   /** Period of the `revocations` tick: how stale the clock and another replica's deny list may be. Default 10s. */
   readonly refreshMs?: number;
@@ -71,7 +73,6 @@ export class PassportService implements Authorization, PassportChecker {
   private readonly maxTtlMs: number;
   private readonly newId: () => string;
   private readonly providers: readonly AuthProvider[];
-  private readonly grants: readonly GrantSource[];
   private readonly refreshMs: number;
   /** This replica's own service passports, reissued before they expire. Each replica holds its own. */
   private readonly services = new Map<ServiceName, Issued>();
@@ -79,9 +80,8 @@ export class PassportService implements Authorization, PassportChecker {
   private revoked = new Set<string>();
 
   constructor(private readonly o: IdentityOptions) {
-    // The service provider and grant are built in: a component acting as itself needs no configuration.
+    // The service provider is built in: a component acting as itself needs no configuration.
     this.providers = [new ServiceAuthProvider(), ...o.providers.filter((p) => p.provider !== "service")];
-    this.grants = [new ServiceGrant(), ...o.grants];
     this.refreshMs = o.refreshMs ?? 10_000;
     this.store = new PassportStore(o.db);
     this.profiles = new ProfileStore(o.db);
@@ -268,7 +268,7 @@ export class PassportService implements Authorization, PassportChecker {
       const principal = chain.links[0]!.principal;
       const scopes = chain.links.map((l) => l.restrictions);
       const broken = outside(scopes, action, resource);
-      const granted = broken ? `outside_${broken}` : roles ? await roles(principal) : await this.grantsAllow(principal, action, resource.project);
+      const granted = broken ? `outside_${broken}` : roles ? await roles(principal) : this.roleAllows(principal, action);
       result = granted === "allowed" ? { allow: true, reason: "allowed", principal, scopes } : { allow: false, reason: granted, principal };
     }
     await this.store.audit({
@@ -283,16 +283,14 @@ export class PassportService implements Authorization, PassportChecker {
     return result;
   }
 
-  /** The legacy rule: any deny refuses; open actions pass; else a role covering the action, local sources first. */
-  private async grantsAllow(user_id: string, action: Action, project: string | null): Promise<string> {
-    const subject: GrantSubject = { user_id, accounts: await this.store.accounts(user_id) };
-    for (const g of this.grants) if (await g.denies(subject, project)) return "denied";
+  /**
+   * Open actions pass; else the owner role covers the action. A service principal holds the owner role: its passport's
+   * `actions` caveat is what limits it, safe because only the `service` provider resolves a `service:` principal
+   * (authenticate). The `owner` option holds it too, never `local:anonymous`. Anyone else: `no_role`.
+   */
+  private roleAllows(user_id: string, action: Action): string {
     if (OPEN_ACTIONS.includes(action)) return "allowed";
-    const ordered = [...this.grants.filter((g) => !g.remote), ...this.grants.filter((g) => g.remote)];
-    for (const g of ordered) {
-      const roles = await g.roles(subject, project);
-      if (roles.some((r) => ROLE_ACTIONS[r].includes(action))) return "allowed";
-    }
-    return "no_role";
+    const owner = user_id.startsWith(SERVICE_PREFIX) || (user_id === this.o.owner && user_id !== ANONYMOUS_USER);
+    return owner && ROLE_ACTIONS.owner.includes(action) ? "allowed" : "no_role";
   }
 }

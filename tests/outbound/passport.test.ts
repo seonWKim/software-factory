@@ -37,7 +37,7 @@ describe("outbound's service passport", () => {
     const ticks = new ManualTickGenerator();
     let n = 0;
     const identity = new PassportService({
-      db: f.store.db, keys: secretKeyring(KEY, { current: "K" }), providers: [], grants: [], ticks, newId: () => `pp_${++n}`,
+      db: f.store.db, keys: secretKeyring(KEY, { current: "K" }), providers: [], ticks, newId: () => `pp_${++n}`,
     });
     await ticks.tick(REVOCATIONS_TICK, f.clock.now().getTime());
     const it0 = await implemented(f, controllerWith(f, outboundServiceAuth(identity)));

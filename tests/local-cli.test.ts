@@ -10,7 +10,7 @@ import type { UserId, WorkItemId } from "../src/core/types.js";
 import { COMMAND_TABLE, SENTENCE_FORM, cliUsageOf } from "../src/core/command-table.js";
 import { helpReply, itemCommandState, refusalText, specNotWaiting } from "../src/core/commands.js";
 import { VERDICT_USAGE } from "../src/core/verdict.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
@@ -224,7 +224,7 @@ describe("verdict on an item of a sync source (issue #523)", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const github = new FakeSource();
-    const local = new LocalAuthProvider(store);
+    const local = new OwnerAuth(store);
     const controller = new ControllerRole({
       store, sources: [new LocalSource(store), github], auth: local, clock, config, log: silent, scanner: cleanScanner,
       repeated_failure_rule: false,
@@ -295,7 +295,7 @@ describe("a local resolve command at the controller", () => {
     const clock = new FakeClock();
     const { store } = await newStore(clock);
     const controller = new ControllerRole({
-      store, sources: [new LocalSource(store)], auth: new LocalAuthProvider(store), clock, config, log: silent, scanner: cleanScanner,
+      store, sources: [new LocalSource(store)], auth: new OwnerAuth(store), clock, config, log: silent, scanner: cleanScanner,
       repeated_failure_rule: false,
     });
     let n = 0;

@@ -144,11 +144,11 @@ describe("the http probe", () => {
   const sel = (over: Partial<Selection>): Selection => ({ ...base, ...over }) as Selection;
 
   it("targets only the endpoints of the selected plugins: no GitHub without a GitHub plugin", () => {
-    const local = sel({ broker: "local", source: "local", auth: "local", runner: "scripted", llm: "none" });
+    const local = sel({ broker: "local", source: "local", runner: "scripted", llm: "none" });
     expect(probeTargets(local, {})).toEqual([]);
-    const github = sel({ broker: "github", source: "local", auth: "local", runner: "claude-code", llm: "claude-cli" });
+    const github = sel({ broker: "github", source: "local", runner: "claude-code", llm: "claude-cli" });
     expect(probeTargets(github, {})).toEqual(["https://api.github.com", "https://api.anthropic.com"]);
-    const openai = sel({ broker: "local", source: "local", sources: ["local", "github-issues"], auth: "local", runner: "openai-compatible", llm: "openai-compatible" });
+    const openai = sel({ broker: "local", source: "local", sources: ["local", "github-issues"], runner: "openai-compatible", llm: "openai-compatible" });
     expect(probeTargets(openai, { openai_compatible: { base_url: "https://llm.corp.example/v1", models: { cheap: "a", standard: "b", strong: "c" } } }))
       .toEqual(["https://api.github.com", "https://llm.corp.example/v1"]);
   });

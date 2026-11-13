@@ -14,9 +14,8 @@ import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceAdapter } from "../src/interfaces/source-adapter.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { issue, newStore, system } from "./helpers/store.js";
 import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, alice, config, issueRef, pipeline, prompts, silent, triageSpec } from "./helpers/fakes.js";
@@ -72,13 +71,13 @@ class IssuesClient extends RecordingGitHubClient {
 /** The day the daily window covers: [2026-03-04, 2026-03-05). */
 const DAY: ImproveWindow = { window_start: "2026-03-04T00:00:00.000Z" as Timestamp, window_end: "2026-03-05T00:00:00.000Z" as Timestamp };
 
-async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf: (store: FactoryStore) => AuthProvider = () => new FakeAuth()) {
+async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf: (store: FactoryStore) => AuthProvider | Promise<AuthProvider> = () => new FakeAuth()) {
   const clock = new FakeClock("2026-03-04T01:00:00.000Z");
   const { store } = await newStore(clock);
   const storage = new MemoryStorage();
   const scanner = new RecordingScanner();
   const sources = sourcesOf(store);
-  const controller = new ControllerRole({ store, sources, auth: authOf(store), clock, config, log: silent, scanner });
+  const controller = new ControllerRole({ store, sources, auth: await authOf(store), clock, config, log: silent, scanner });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox: new FakeSandbox(), runner: noRunner, broker: new FakeBroker(), storage,
     clock, config, prompts, log: silent, scanner, toolEnv: {}, awake: new NoKeepAwake(),
@@ -114,11 +113,11 @@ async function setup(sourcesOf: (store: FactoryStore) => SourceAdapter[], authOf
 }
 
 const local = () => setup((store) => [new LocalSource(store)]);
-/** The GitHub source, with the real GitHub auth provider: any account may submit work, one owner approves. */
+/** The GitHub source, with the owner check: any account may submit work, the owner (github:1) approves. */
 async function github() {
   const client = new IssuesClient();
   const sources = (store: FactoryStore) => [new GitHubIssueSource(client, { owner: "o", name: "r" }, "factory", "factory/", "main", undefined, store)];
-  const auth = (store: FactoryStore) => new GitHubAuthProvider(store, [new StaticGrant({ roles: { "github:1": { "*": ["approver"] } }, deny: {} })]);
+  const auth = async (store: FactoryStore) => (await store.claimLocalOwner("github:1" as UserId), new OwnerAuth(store));
   return { client, ...(await setup(sources, auth)) };
 }
 

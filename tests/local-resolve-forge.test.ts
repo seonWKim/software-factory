@@ -9,11 +9,10 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import { autoResolveKey } from "../src/core/policy.js";
@@ -58,7 +57,7 @@ async function forgeFactory(opts: { resolve?: ConstructorParameters<typeof FakeR
   const { store } = await newStore(clock);
   const source = new LocalSource(store);
   const forge = new FakeForge();
-  const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
+  const auth = new OwnerAuth(store);
   // The selected sandbox reads origin; the local route's reads the factory repo's local branches (as compose builds them).
   const sandbox = new NoOpSandbox(join(root, "wt"));
   const localSandbox = new NoOpSandbox(join(root, "local-wt"), undefined, undefined, { local: true });

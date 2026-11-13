@@ -2,7 +2,7 @@
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
-// /api/v1/tasks (postTaskAction: edit, done, delete, sub, and schedule, the timeline's drop), each with the per-process CSRF token (from GET /api/v1/settings,
+// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z), delete, sub, and schedule, the timeline's drop), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules or /api/v1/tasks) in x-csrf-token.
 
 import { useQuery } from "@tanstack/react-query";
@@ -29,6 +29,16 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself, else null. */
   until: string | null;
+  /** On the alarm of the auto-mode stop still in force: the banner shows when and why, and a button back to auto. */
+  auto_stop?: AutoStop;
+}
+
+/** The last auto-mode stop while it is in force (design 03-risk): its alarm, when, and its cause code. */
+export interface AutoStop {
+  alert_id: string;
+  at: string;
+  /** `red_main`, `budget_checkpoint` or `failure_alert`. */
+  cause: string;
 }
 
 /** `/api/v1/overview`: the page's numbers. */
@@ -437,6 +447,8 @@ export interface SettingsView {
   integrations?: IntegrationRow[];
   ignored: { key: string; project: string | null; value: string; reason: string }[];
   history: { seq: number; at: string; actor: string; key: string; project: string | null; old_value: string | null; new_value: string | null }[];
+  /** The auto-mode stop still in force, which the Mode toggle shows; null or absent: none. */
+  auto_stop?: AutoStop | null;
 }
 
 /** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */
@@ -950,11 +962,11 @@ export async function postCalendarDisconnect(token: string, plugin: string): Pro
 }
 
 /** A Tasks page row action: the path segment of its route. */
-export type TaskAction = "edit" | "done" | "delete" | "sub" | "schedule";
+export type TaskAction = "edit" | "done" | "reopen" | "delete" | "sub" | "schedule";
 
 /**
  * POST /api/v1/tasks/<action>: a row action (edit `{ id, words }`, done and delete `{ id }`, sub `{ parent, id, words }`),
- * or a drop on the timeline (schedule `{ id, date, time }`).
+ * ⌘Z's undo of a completion (reopen `{ id }`), or a drop on the timeline (schedule `{ id, date, time }`).
  * A refusal (400, 404, 409, …) comes back as `{ ok: false, error }` with the server's reason.
  */
 export async function postTaskAction(token: string, action: TaskAction, body: Record<string, string>): Promise<{ ok: true } | { ok: false; error: string }> {

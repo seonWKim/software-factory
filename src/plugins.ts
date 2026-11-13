@@ -18,11 +18,8 @@
 import { pathToFileURL } from "node:url";
 import { ConfigKeyError, suggestion } from "./config-keys.js";
 import { findDescriptorFiles } from "./state/index.js";
-import type { GrantSource } from "./interfaces/auth-provider.js";
 import type {
   Contexts,
-  GrantContext,
-  GrantDescriptor,
   Instances,
   InterfaceEntry,
   KindDefaults,
@@ -39,8 +36,6 @@ import type {
 export type {
   BaseContext,
   Contexts,
-  GrantContext,
-  GrantDescriptor,
   InterfaceEntry,
   Instances,
   KindDefaults,
@@ -54,8 +49,7 @@ export type {
   SetupContext,
   SetupHook,
 } from "./plugin-api.js";
-export { connectHooks, declaredSecretNames, declaredSecrets, selectedSetups, defineGrant, definePlugin, selectedCalendars, selectedLlms, selectedLocalAuth, selectedRunners, selectedSources } from "./plugin-api.js";
-import { authByOrigin } from "./plugin-api.js";
+export { connectHooks, declaredSecretNames, declaredSecrets, selectedSetups, definePlugin, selectedCalendars, selectedLlms, selectedRunners, selectedSources } from "./plugin-api.js";
 
 interface KindInfo {
   /** The interface's TypeScript name; also its heading in docs/plugins.md. */
@@ -79,7 +73,6 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   sandbox: { interface: "Sandbox", configKey: "plugins.sandbox", guard: false, optional: false },
   runner: { interface: "AgentRunner", configKey: "plugins.runner", guard: false, optional: false },
   llm: { interface: "LLMProvider", configKey: "plugins.llm", guard: false, optional: false },
-  auth: { interface: "AuthProvider", configKey: "auth", guard: false, optional: false },
   secrets: { interface: "SecretStore", configKey: "plugins.secrets", guard: true, optional: false },
   egress: { interface: "EgressScanner", configKey: "plugins.egress", guard: true, optional: false },
   broker: { interface: "ToolBroker", configKey: "plugins.broker", guard: true, optional: false },
@@ -130,10 +123,10 @@ export function checkIntegrations(registry: Registry, value: unknown): Record<st
   return out;
 }
 
-/** Store, auth and calendar are selected by their own top-level config keys, so they take no default. */
-const TOP_LEVEL_KINDS: readonly PluginKind[] = ["store", "auth", "calendar"];
+/** Store and calendar are selected by their own top-level config keys, so they take no default. */
+const TOP_LEVEL_KINDS: readonly PluginKind[] = ["store", "calendar"];
 
-/** The interfaces selected under the `plugins` config object. Store, auth and calendar keep their own keys. */
+/** The interfaces selected under the `plugins` config object. Store and calendar keep their own keys. */
 export const PLUGINS_KEYS = PLUGIN_KINDS.filter((k) => !TOP_LEVEL_KINDS.includes(k));
 
 /** Values that mean "turn this off". Never accepted for a guard. */
@@ -147,9 +140,6 @@ export const PLUGIN_ROOT = import.meta.dirname;
 
 /** `*.plugin.ts` (source) or `*.plugin.js` (built); never a `*.d.ts`. */
 const DESCRIPTOR_FILE = /\.plugin\.(?:ts|js)$/;
-
-/** `*.grant.ts` (source) or `*.grant.js` (built): grant plugins (design 2026-11-01). */
-const GRANT_FILE = /\.grant\.(?:ts|js)$/;
 
 /** Every descriptor file under `dirs`, recursively, sorted by path so registration order is stable. */
 export function findPluginFiles(dirs: readonly string[], pattern: RegExp = DESCRIPTOR_FILE): string[] {
@@ -306,62 +296,6 @@ export async function withPackPlugins(registry: Registry, files: readonly string
   return out as unknown as Registry;
 }
 
-/** Grant plugins by name (design 2026-11-01): one `*.grant.ts` descriptor each, apart from REGISTRY. */
-export type GrantRegistry = Readonly<Record<string, GrantDescriptor>>;
-
-/** Imports every grant descriptor under `dirs`. A bad descriptor or a repeated name fails startup. */
-export async function loadGrants(dirs: readonly string[]): Promise<GrantRegistry> {
-  const out: Record<string, GrantDescriptor> = {};
-  for (const file of findPluginFiles(dirs, GRANT_FILE)) {
-    const d = ((await import(pathToFileURL(file).href)) as { default?: Partial<GrantDescriptor> }).default;
-    if (!d || typeof d.name !== "string" || d.name === "" || typeof d.create !== "function") {
-      throw new Error(`grant descriptor ${file}: write \`export default defineGrant({ name, create })\``);
-    }
-    if (Object.hasOwn(out, d.name)) throw new Error(`grant descriptor ${file}: a second grant named "${d.name}"`);
-    out[d.name] = d as GrantDescriptor;
-  }
-  return out;
-}
-
-/** The built-in grant plugins under PLUGIN_ROOT, loaded once at startup. */
-export const GRANTS: GrantRegistry = await loadGrants([PLUGIN_ROOT]);
-
-/**
- * `permissions` from factory.config.json: `grants` is a list of grant names, each once, in the order they are
- * asked (local before remote whatever the order; src/core/authorize.ts). Absent: the default grants
- * (`github-permission`). Unknown keys, an empty list or an unknown name fail at startup.
- */
-export function selectGrants(grants: GrantRegistry, permissions: unknown): string[] {
-  const names = Object.keys(grants);
-  if (permissions !== undefined && (permissions === null || typeof permissions !== "object" || Array.isArray(permissions))) {
-    throw new Error("permissions must be an object with `grants` (a list of grant names) and grant settings such as `static`");
-  }
-  const p = (permissions ?? {}) as Record<string, unknown>;
-  for (const key of Object.keys(p)) {
-    if (key !== "grants" && key !== "static") throw new ConfigKeyError([`unknown key permissions.${key}; known keys: grants, static${suggestion(key, ["grants", "static"])}`]);
-  }
-  if (p.grants === undefined) return names.filter((n) => grants[n]!.default === true);
-  if (!Array.isArray(p.grants) || p.grants.length === 0) {
-    throw new Error(`permissions.grants must be a non-empty list of grant names; available: ${names.join(", ")}`);
-  }
-  const out: string[] = [];
-  for (const v of p.grants) {
-    if (typeof v !== "string" || !Object.hasOwn(grants, v)) {
-      throw new Error(`unknown grant ${JSON.stringify(v)} at permissions.grants; available: ${names.join(", ")}${typeof v === "string" ? suggestion(v, names) : ""}`);
-    }
-    if (out.includes(v)) throw new Error(`permissions.grants lists ${JSON.stringify(v)} twice; name each grant once`);
-    out.push(v);
-  }
-  return out;
-}
-
-/** Builds the selected grants, in order. */
-export async function createGrants(grants: GrantRegistry, names: readonly string[], ctx: GrantContext): Promise<GrantSource[]> {
-  const out: GrantSource[] = [];
-  for (const n of names) out.push(await grants[n]!.create(ctx));
-  return out;
-}
-
 /**
  * The plugin each `plugins` key falls back to when config leaves it out (or all of them when there is no
  * `plugins` object), from the descriptors' `default` fields. Only `awake` depends on the host today:
@@ -442,7 +376,7 @@ export function checkList(registry: Registry, kind: ListKind | "calendar", value
  */
 export function selectPlugins(
   registry: Registry,
-  raw: { store: { type: unknown }; auth: unknown; calendar?: unknown; plugins?: unknown },
+  raw: { store: { type: unknown }; calendar?: unknown; plugins?: unknown },
   opts: { platform?: string | undefined } = {},
 ): Selection {
   const defaults: Partial<Record<PluginKind, string>> = defaultPlugins(opts.platform, registry);
@@ -467,11 +401,7 @@ export function selectPlugins(
     }
   }
   chosen.store = raw.store.type;
-  const auth = authByOrigin(raw.auth);
-  chosen.auth = auth.github_issue;
   const out = {} as Selection;
-  if (auth.local !== undefined) out.local_auth = checkPlugin(registry, "auth", auth.local);
-  if (auth.slack_thread !== undefined) out.slack_auth = checkPlugin(registry, "auth", auth.slack_thread);
   for (const kind of PLUGIN_KINDS) {
     if ((LIST_KINDS as readonly string[]).includes(kind) || kind === "calendar") continue;
     // An optional kind left out or set to an off value selects nothing: the key stays out of the selection.

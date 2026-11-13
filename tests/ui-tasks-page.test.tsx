@@ -121,6 +121,53 @@ describe("Tasks page", () => {
     expect((await within(card("tk_late")).findByRole("alert", undefined, SLOW)).textContent).toBe("no project is stored yet");
   });
 
+  describe("⌘Z undoes this page's completions (design 02-tasks, undo a completion)", () => {
+    const undo = (init: KeyboardEventInit = {}) => fireEvent.keyDown(document.body, { key: "z", metaKey: true, ...init });
+    const gets = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => url === "/api/v1/tasks" && (init as RequestInit | undefined)?.method !== "POST").length;
+
+    it("reopens the task the checkbox completed, then reloads the list so it shows open again", async () => {
+      await show();
+      const today = current.today;
+      answer = { status: 200, body: { task_id: "tk_now", completed: true, next_id: null } };
+      current = view({ today: { ...today, due: [] } });
+      fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
+      await waitFor(() => expect(document.querySelector('[data-task="tk_now"]')).toBeNull(), SLOW);
+      answer = { status: 200, body: { task_id: "tk_now", reopened: true, removed_next: null } };
+      current = view();
+      const before = gets();
+      undo();
+      await waitFor(() => expect(posts).toHaveLength(2));
+      expect(posts[1]!.url).toBe("/api/v1/tasks/reopen");
+      expect(new Headers(posts[1]!.init.headers).get("x-csrf-token")).toBe(TOKEN);
+      expect(JSON.parse(String(posts[1]!.init.body))).toEqual({ id: "tk_now" });
+      await waitFor(() => expect(gets()).toBeGreaterThan(before));
+      expect(await screen.findByRole("checkbox", { name: "Complete: tk_now" }, SLOW)).toBeTruthy();
+      // That completion is undone: a second ⌘Z has nothing left and sends nothing.
+      undo();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(posts).toHaveLength(2);
+    });
+
+    it("with nothing completed on this page it does nothing and sends no request; Ctrl, Alt or Shift is no undo", async () => {
+      await show();
+      undo();
+      fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
+      await waitFor(() => expect(posts).toHaveLength(1));
+      for (const init of [{ metaKey: false, ctrlKey: true }, { altKey: true }, { shiftKey: true }]) undo(init);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(posts.map((p) => p.url)).toEqual(["/api/v1/tasks/done"]);
+    });
+
+    it("a refusal shows its reason", async () => {
+      await show();
+      fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
+      await waitFor(() => expect(posts).toHaveLength(1));
+      answer = { status: 409, body: { error: "its next occurrence is done: undo that one first" } };
+      undo();
+      expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("its next occurrence is done: undo that one first");
+    });
+  });
+
   it("with no commands actor there is no Build this button", async () => {
     current = view({ can_build: false });
     await show();

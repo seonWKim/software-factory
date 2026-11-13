@@ -14,8 +14,7 @@ kebab-case (KeepAwake is `keep-awake.md`).
 |---|---|---|
 | How selection works | config keys, defaults, rules, the discovered registry, declared secrets | [selection.md](plugins/selection.md) |
 | FactoryStore | `sqlite` | [factory-store.md](plugins/factory-store.md) |
-| AuthProvider | `github`, `local`, `none` | [auth-provider.md](plugins/auth-provider.md) |
-| GrantSource | `github-permission`, `static` | [grant-source.md](plugins/grant-source.md) |
+| AuthProvider (not chosen in config: the one owner check, `OwnerAuth`) | none | [auth-provider.md](plugins/auth-provider.md) |
 | SecretStore (guard) | `env-file` | [secret-store.md](plugins/secret-store.md) |
 | EgressScanner (guard) | `pattern` | [egress-scanner.md](plugins/egress-scanner.md) |
 | ToolBroker (guard) | `github`, `local` | [tool-broker.md](plugins/tool-broker.md) |

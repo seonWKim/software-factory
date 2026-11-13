@@ -9,16 +9,18 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
 import { IMPROVER } from "../src/core/improver.js";
 import { AUTO_ACTOR } from "../src/core/policy.js";
+import { lastAutoStop, openAlarms } from "../src/ui/alarms.js";
+import { systemActions } from "../src/ui/system-actions.js";
+import type { ChildRestart } from "../src/interfaces/updater.js";
 import { utcMinute } from "../src/core/spec-comment.js";
 import { footerCommands } from "../src/impl/source/slack-format.js";
 import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
-import type { UserId, WorkerId, WorkItemId } from "../src/core/types.js";
+import { RECURRING_FAILURE, type UserId, type WorkerId, type WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { LocalToolBroker } from "../src/impl/broker/local-tool-broker.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
 import type { Sandbox } from "../src/interfaces/sandbox.js";
@@ -56,6 +58,8 @@ interface Opts {
   /** Wraps the controller's sandbox (the worker keeps the real one). */
   controllerSandbox?: (s: NoOpSandbox) => Sandbox;
   config?: Partial<FactoryConfig>;
+  /** The supervisor's restart list the alarm step reads. */
+  restarts?: () => Promise<readonly ChildRestart[]>;
 }
 
 async function autoFactory(opts: Opts = {}) {
@@ -77,13 +81,13 @@ async function autoFactory(opts: Opts = {}) {
   };
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  const auth = new LocalAuthProvider(store, [new StaticGrant({ roles: {}, deny: {} })]);
+  const auth = new OwnerAuth(store);
   const sandbox = new NoOpSandbox(join(root, "wt"), undefined, undefined, { local: true });
   const settings = new LiveSettings({ config: cfg, base: baseFromConfig(cfg), source: store });
   const controller = new ControllerRole({
     store, sources: [new LocalSource(store)], auth, clock, config: cfg, log: silent, scanner: cleanScanner,
     sandbox: opts.controllerSandbox ? opts.controllerSandbox(sandbox) : sandbox, repeated_failure_rule: false, settings,
-    check_env: { PATH: process.env.PATH ?? "" },
+    check_env: { PATH: process.env.PATH ?? "" }, ...(opts.restarts ? { restarts: opts.restarts } : {}),
   });
   const runner = new FakeRunner({
     triage: () => ({ output: spec }),
@@ -366,23 +370,52 @@ describe("auto mode: stop conditions", { timeout: 60_000 }, () => {
     await f.approveRun(first);
     expect(await f.store.getWorkItem(first)).toMatchObject({ stage: "CLOSED", close_reason: "completed" });
     await stopped(f, "red_main");
+    // The stop is in force: its time and cause reach the Mode toggle and the system banner.
+    const [alert] = (await f.store.listAlerts({ limit: 10 })).filter((a) => a.pattern === "auto_stopped");
+    expect(await lastAutoStop(f.store)).toEqual({ alert_id: alert!.id, at: alert!.created_at, cause: "red_main" });
+    const actions = await systemActions({ store: f.store, factory: null, deps: {}, now: f.clock.now(), dashboardRev: null });
+    const line = actions.find((a) => a.auto_stop)!;
+    expect(line.auto_stop).toMatchObject({ alert_id: alert!.id, cause: "red_main" });
+    expect(line.text).toContain(`Alarm: back to manual at ${utcMinute(alert!.created_at)}: the checks failed on the base branch after a merge`);
     // Manual again: the next spec waits.
     const next = await f.create();
     await f.step();
     expect(await f.store.getWorkItem(next)).toMatchObject({ stage: "READY", blocked_reason: "spec_pending" });
   });
 
-  it("a failure-burst alert sets the mode to manual, once, however often the alarm step runs", async () => {
+  it("a burst of agent-run failures leaves the mode auto: the alarm is open and the failing item is held", async () => {
     const f = await autoFactory({ spec: { tier: 9 } });
     await f.setting("alarm_repeat_count", 1);
     await f.mode("auto");
     const id = await f.create();
     // An invalid triage answer fails its run: one failed run is a burst at alarm_repeat_count 1.
     await f.step();
-    expect((await f.store.listRuns(id)).some((r) => r.status === "failed")).toBe(true);
+    const failed = (await f.store.listRuns(id)).find((r) => r.status === "failed");
+    expect(failed?.outcome).toMatchObject({ status: "failed", error_code: "invalid_output" });
+    await f.controller.tickAlarms();
+    await f.controller.tickAlarms();
+    // Auto mode goes on: no stop alert, no settings row by system:auto.
+    expect((await f.modeRows()).map((r) => [r.new_value, r.actor])).toEqual([['"auto"', ME]]);
+    expect((await f.store.listAlerts({ limit: 10 })).some((a) => a.pattern === "auto_stopped")).toBe(false);
+    expect(await lastAutoStop(f.store)).toBeNull();
+    // The alarm shows as open.
+    expect((await openAlarms(f.store, f.clock.now())).map((a) => [a.pattern, a.error_code])).toContainEqual(["repeated_error", "invalid_output"]);
+    // The failing item is held for a person: its queued runs are not claimed.
+    expect(await f.store.getWorkItem(id)).toMatchObject({ blocked_on: "human", blocked_reason: RECURRING_FAILURE });
+    await f.store.enqueueRun({ work_item_id: id, kind: "triage", idempotency_key: "after-hold" });
+    expect(await f.store.claimRun({ worker_id: "w9" as WorkerId, kinds: ["triage"], lease_ms: 60_000 })).toBeNull();
+  });
+
+  it("a child crash loop still sets the mode to manual, once, however often the alarm step runs", async () => {
+    let restarts: ChildRestart[] = [];
+    const f = await autoFactory({ restarts: async () => restarts });
+    await f.mode("auto");
+    const now = f.clock.now().getTime();
+    restarts = Array.from({ length: 5 }, (_, i) => ({ at: new Date(now - i * 60_000).toISOString(), reason: `exit ${i}` }));
     await f.controller.tickAlarms();
     await f.controller.tickAlarms();
     await stopped(f, "failure_alert");
+    expect(await lastAutoStop(f.store)).toMatchObject({ cause: "failure_alert" });
   });
 
   it("a stop whose settings write failed after its alert: the next stop sets manual, not one 6 h later", async () => {

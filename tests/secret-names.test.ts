@@ -87,8 +87,6 @@ describe("registry: each plugin declares its secrets", () => {
     expect(names("runner", "claude-code")).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
     expect(names("llm", "claude-cli")).toEqual(["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]);
     expect(names("source", "github-issues")).toEqual([]);
-    expect(names("auth", "github")).toEqual([]);
-    expect(names("auth", "none")).toEqual([]);
     expect(names("secrets", "env-file")).toEqual([]);
   });
 
@@ -122,7 +120,7 @@ describe("the secret set is the union of the selected plugins' declarations", ()
   });
 
   it("a name declared by several plugins appears once, with each purpose", () => {
-    const sel = selectPlugins(REGISTRY, { store: { type: "sqlite" }, auth: "github" }, { platform: "linux" });
+    const sel = selectPlugins(REGISTRY, { store: { type: "sqlite" } }, { platform: "linux" });
     const cred = declaredSecrets(REGISTRY, sel).filter((d) => d.name === "CLAUDE_CODE_OAUTH_TOKEN");
     expect(cred).toHaveLength(1);
     for (const plugin of [REGISTRY.runner.secrets["claude-code"]!, REGISTRY.llm.secrets["claude-cli"]!]) {
@@ -374,7 +372,7 @@ describe("docs and template follow the declarations", () => {
     const keys = new Set([...template.matchAll(/^\s*(?:export\s+)?([A-Z][A-Z0-9_]*)\s*=/gm)].map((m) => m[1]!));
     for (const platform of ["darwin", "linux"]) {
       // compose passes the auth kind's fixed, never-built name (One owner): factory.config.json has no `auth` key.
-      const sel = selectPlugins(REGISTRY, { ...(REAL as { store: { type: unknown }; plugins?: unknown }), auth: "local" }, { platform });
+      const sel = selectPlugins(REGISTRY, REAL as { store: { type: unknown }; plugins?: unknown }, { platform });
       for (const name of declaredSecretNames(REGISTRY, sel)) expect(keys, name).toContain(name);
     }
   });

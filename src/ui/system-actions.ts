@@ -12,7 +12,7 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 import { MIGRATION_PENDING } from "../interfaces/updater.js";
 import { type Check, TOKEN_WARN_DAYS } from "../setup.js";
 import type { FactoryStatus } from "./factory-status.js";
-import { alarmCommand, alarmText, alarmUntil, openAlarms } from "./alarms.js";
+import { type AutoStopNote, alarmCommand, alarmText, alarmUntil, lastAutoStop, openAlarms } from "./alarms.js";
 import { activePauses } from "./pause-api.js";
 
 export type SystemActionCode = "migration_pending" | "token_expiring" | "claim_pause" | "worker_pause" | "alarm" | "revision_mismatch";
@@ -25,6 +25,8 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself (a claim pause's end, model_stall's next probe, an alarm's close), else null. */
   until: string | null;
+  /** On the alarm of the auto-mode stop still in force (design 03-risk): the banner's stop line and its button. */
+  auto_stop?: AutoStopNote;
 }
 
 /** How many lines the actions take in Needs you: one each, but every open alarm together is one line (design 09). */
@@ -147,8 +149,10 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
     add("worker_pause", `${workerPauses.length} worker pause${workerPauses.length === 1 ? "" : "s"} in effect (factory workers pause)`, "factory workers resume");
   }
 
+  const stop = await lastAutoStop(x.store);
   for (const a of await openAlarms(x.store, x.now)) {
     add("alarm", a.detail === null ? alarmText(a) : `${alarmText(a)}: ${a.detail}`, alarmCommand(a), alarmUntil(a));
+    if (stop?.alert_id === a.id) out.at(-1)!.auto_stop = stop;
   }
 
   const server = x.deps.revision ?? null;
