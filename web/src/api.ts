@@ -29,6 +29,16 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself, else null. */
   until: string | null;
+  /** On the alarm of the auto-mode stop still in force: the banner shows when and why, and a button back to auto. */
+  auto_stop?: AutoStop;
+}
+
+/** The last auto-mode stop while it is in force (design 03-risk): its alarm, when, and its cause code. */
+export interface AutoStop {
+  alert_id: string;
+  at: string;
+  /** `red_main`, `budget_checkpoint` or `failure_alert`. */
+  cause: string;
 }
 
 /** `/api/v1/overview`: the page's numbers. */
@@ -437,6 +447,8 @@ export interface SettingsView {
   integrations?: IntegrationRow[];
   ignored: { key: string; project: string | null; value: string; reason: string }[];
   history: { seq: number; at: string; actor: string; key: string; project: string | null; old_value: string | null; new_value: string | null }[];
+  /** The auto-mode stop still in force, which the Mode toggle shows; null or absent: none. */
+  auto_stop?: AutoStop | null;
 }
 
 /** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */

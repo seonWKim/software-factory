@@ -1,8 +1,9 @@
 import { Fragment, useEffect, useId, useRef, useState } from "react";
-import { API, type Session, type SettingRow, type SettingsView, type SettingsWrite, useApi } from "../api.js";
+import { API, type AutoStop, type Session, type SettingRow, type SettingsView, type SettingsWrite, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Input } from "../components/ui/input.js";
+import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Switch } from "../components/ui/switch.js";
@@ -10,6 +11,8 @@ import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { ago, duration } from "../lib/format.js";
+import { Link } from "../nav.js";
+import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
 import { FileKeysSection, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
 import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
@@ -554,9 +557,53 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   const mode = v ? currentMode(v) : null;
   if (!v || !mode) return <span className="text-sm text-text-2">{t("settings.modeLoading")}</span>;
   return (
-    <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap">
+    <div data-testid="mode" className="flex items-center gap-2 text-sm whitespace-nowrap" title={v.auto_stop ? autoStopText(v.auto_stop) : undefined}>
       <span>{t("settings.mode")}</span>
       <ModeControl view={v} floating={floating} />
+    </div>
+  );
+}
+
+/** Each auto-mode stop's cause (its alarm's error code, design 03-risk), as the Mode toggle and the banner name it. */
+const STOP_CAUSE: Readonly<Record<string, MessageKey>> = {
+  red_main: "settings.autoStopRedMain",
+  budget_checkpoint: "settings.autoStopBudget",
+  failure_alert: "settings.autoStopFailure",
+};
+
+/** A time of day in the browser's time zone, hours and minutes (11:52). */
+const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+/** Where an alarm is shown: its line in the Needs-you notes (system-banner.tsx), by the alert's id. */
+export const alarmAnchor = (alertId: string) => `alarm-${alertId}`;
+
+/** "Back to manual at 11:52: <why>": the stop's time and cause. */
+export const autoStopText = (stop: AutoStop) => {
+  const cause = STOP_CAUSE[stop.cause];
+  return t("settings.autoStopped", { time: clockTime(stop.at), reason: cause ? t(cause) : stop.cause });
+};
+
+/**
+ * The auto-mode stop still in force (design 03-risk), beside the Mode toggle and in the system banner: when and why,
+ * a link to its alarm, and "Turn auto back on", which writes mode auto at once (no confirmation) through
+ * POST /api/v1/settings like the toggle. With no settings view yet (the banner's read is loading) there is no button.
+ */
+export function AutoStopNote({ stop, view, banner = false }: { stop: AutoStop; view: SettingsView | undefined; banner?: boolean }) {
+  const { busy, error, write } = useWrite(view?.csrf_token ?? "");
+  const mode = view ? currentMode(view) : null;
+  const target = mode?.project === undefined ? {} : { project: mode.project };
+  return (
+    <div data-auto-stop className="flex min-w-0 flex-col gap-1 text-sm">
+      <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="min-w-0 text-pretty break-words">{autoStopText(stop)}</span>
+        <Link href={`${BASE}#${alarmAnchor(stop.alert_id)}`} className={banner ? BANNER_LINK_CLASS : LINK_CLASS}>{t("settings.autoStopAlarm")}</Link>
+        {mode && (
+          <Button size="sm" disabled={busy} onClick={() => void write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...target })}>
+            {t("settings.autoStopTurnOn")}
+          </Button>
+        )}
+      </span>
+      <Outcome error={error} done={null} />
     </div>
   );
 }
@@ -581,6 +628,7 @@ function ModeSection({ view }: { view: SettingsView }) {
         <div className="flex max-w-md flex-col gap-1 text-sm">
           <span className="font-medium">{t("settings.mode")}</span>
           <ModeControl view={view} />
+          {view.auto_stop && currentMode(view)?.value === '"manual"' && <AutoStopNote stop={view.auto_stop} view={view} />}
         </div>
         {tier && (
           <div className="flex max-w-md flex-col gap-1 text-sm">
