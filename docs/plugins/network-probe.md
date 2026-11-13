@@ -7,7 +7,7 @@ Interface (`src/interfaces/network-probe.ts`): `probe(signal?)` returns `{ ok: t
 Plugins:
 
 - `http`: `HttpNetworkProbe`. One `HEAD` request to each endpoint the selected plugins already use, with no credential, no header and no body; any HTTP answer, whatever its status (a 401 too), passes. A DNS, connect or 10 s timeout error fails with that endpoint's host. The endpoints come from the existing config, with no setting of their own:
-  - `https://api.github.com` when a GitHub plugin is selected (`plugins.broker`, `plugins.forge` or `auth` set to `github`, or `github-issues` among the sources). With no GitHub plugin, GitHub is never probed (local first).
+  - `https://api.github.com` when a GitHub plugin is selected (`plugins.broker` or `plugins.forge` set to `github`, or `github-issues` among the sources). With no GitHub plugin, GitHub is never probed (local first).
   - `https://api.anthropic.com` when `claude-code` or `claude-cli` is in the runner or LLM chain.
   - `openai_compatible.base_url` when `openai-compatible` is in the runner or LLM chain.
   - With no remote plugin selected there is nothing to ask, so a probe passes at once.
