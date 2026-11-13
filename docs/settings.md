@@ -53,6 +53,8 @@ Direction: `tighten-only` keys may only be tightened by a lower level (owner →
 | `retry_max_ms` | controller | runtime | global | free |  | `1800000` | Longest wait between retries, and the pause after a rate limit with no reset time. |
 | `run_timeout_ms` | worker | runtime | global | free |  | `2700000` | Longest an agent run may take before it is stopped. |
 | `secrets` | guards | review | global | tighten-only | guard |  | Which secret store tools read credentials from; agents never see them. |
+| `spend.daily_budget_usd` | controller | runtime | global | free |  |  | Dollars per UTC day; spend at 80% and 100% of it alerts once each in Needs you. None: no budget. |
+| `spend.weekly_budget_usd` | controller | runtime | global | free |  |  | Dollars per week from Monday UTC; spend at 80% and 100% of it alerts once each. None: no budget. |
 | `stall_ms` | worker | runtime | global | free |  | `300000` | Longest an agent run may go with no model output and no open tool call before it counts as stalled. |
 | `standing_approvals.threshold` | controller | runtime | global | tighten-only |  | `10` | Spec approvals in a row, with the spec unchanged, before a standing rule is proposed. |
 | `store` | state | review | global | free |  |  | Where the factory keeps its state: the store's driver and location. |

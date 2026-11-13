@@ -6,6 +6,7 @@ import { errorText, type Logger } from "./log.js";
 import { parseMessageStyle, withMessageStyle } from "./message-style.js";
 import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, parseNotifyChannels, quietHoursSetting } from "./notifications.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
+import { usdBudget } from "./spend.js";
 import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
 
@@ -261,7 +262,7 @@ export const SETTABLE_KEYS = [
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
   "message_style", "notice_kinds", "quiet_hours", "notify_channels", "integrations",
-  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label",
+  "stall_ms", "probe_interval_ms", "auth_pause_ms", "max_coordination_cost", "hotspot_weight", "mechanical_weight", "intake_label", "spend.daily_budget_usd", "spend.weekly_budget_usd",
 ] as const;
 export type SettableKey = (typeof SETTABLE_KEYS)[number];
 
@@ -313,7 +314,7 @@ export interface SettableValues {
   alarm_repeat_count: number;
   alarm_window_minutes: number;
   alarm_restart_count: number;
-  "standing_approvals.threshold": number;
+  "standing_approvals.threshold": number; "spend.daily_budget_usd": number | null; "spend.weekly_budget_usd": number | null; // dollars; null: no budget
   mode: Mode;
   auto_merge_max_tier: number;
   message_style: string;
@@ -345,7 +346,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   phases_auto_approve: false,
   hold_policy: DEFAULT_COORDINATION.hold_policy,
   ...ALARM_DEFAULTS,
-  "standing_approvals.threshold": 10,
+  "standing_approvals.threshold": 10, "spend.daily_budget_usd": null, "spend.weekly_budget_usd": null,
   mode: "manual",
   auto_merge_max_tier: 0,
   message_style: "",
@@ -418,8 +419,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "max_diff_lines":
     case "max_diff_files":
       return parseSetting(key as GateSettableKey, value, key) as SettableValues[K];
-    case "models":
-      return parseModels(value) as SettableValues[K];
+    case "models": return parseModels(value) as SettableValues[K];
     case "model_by":
       if (value === undefined) throw new Error("model_by must be an object");
       return parseModelBy(value) as SettableValues[K];
@@ -427,8 +427,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
     case "phases_auto_approve": return booleanSetting(key, value) as SettableValues[K];
-    case "hold_policy":
-      return parseHoldPolicy(value) as SettableValues[K];
+    case "hold_policy": return parseHoldPolicy(value) as SettableValues[K];
     case "mode":
       if (!(MODES as readonly unknown[]).includes(value)) throw new Error(`mode must be ${MODES.map((m) => `"${m}"`).join(" or ")}`);
       return value as SettableValues[K];
@@ -449,6 +448,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
       return value as SettableValues[K];
     }
     case "intake_label": return (value === null ? null : intakeLabel(value)) as SettableValues[K]; // null: none, the file's applies
+    case "spend.daily_budget_usd": case "spend.weekly_budget_usd": return usdBudget(key, value) as SettableValues[K];
     default:
       return positiveInteger(key, value) as SettableValues[K];
   }

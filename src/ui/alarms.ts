@@ -35,6 +35,7 @@ export function alarmText(a: Alert): string {
   if (a.pattern === "zero_tokens") return `Alarm: ${a.count} agent runs in a row used no tokens`;
   if (a.pattern === "auto_stopped") return `Alarm: auto mode stopped (${AUTO_STOP_TEXT[a.error_code] ?? a.error_code}); the mode is manual`;
   if (a.pattern === "dead_letter") return `Alarm: a message on ${deadLetterTopic(a)} was dead-lettered (${DEAD_LETTER_TEXT[a.error_code] ?? a.error_code})`;
+  if (a.pattern === "spend_budget") return `Alarm: spending passed ${spendOf(a).pct}% of the ${spendOf(a).period} budget`;
   return `Alarm: the factory restarted ${a.count} times in ${RESTART_WINDOW_MS / 60_000} minutes`;
 }
 
@@ -57,8 +58,15 @@ function deadLetterTopic(a: Alert): string {
   return a.pattern_key.split(":")[1] ?? "the bus";
 }
 
+/** A spend_budget alert's period and threshold, from its error code `<daily|weekly>_<percent>` (design 06-spend). */
+function spendOf(a: Alert): { period: string; pct: string } {
+  const [period = "spend", pct = "?"] = a.error_code.split("_");
+  return { period, pct };
+}
+
 /** Where the operator looks into the alarm; no command resolves one (it closes once its pattern stops). */
 export function alarmCommand(a: Alert): string {
+  if (a.pattern === "spend_budget") return "Spend page (/app/spend)";
   if (a.pattern === "repeated_error") return "Failures page (/app/failures)";
   if (a.pattern === "zero_tokens") return "factory llm-check";
   if (a.pattern === "auto_stopped") return "factory mode auto (after the cause is fixed)";
@@ -78,8 +86,8 @@ export function alarmsFor(open: readonly Alert[], it: WorkItem, runs: readonly R
   const active = runs.some((r) => r.status === "queued" || r.status === "running");
   return open.filter((a) => {
     if (a.pattern === "child_restarts") return active;
-    // A stop of auto mode or a dead letter holds up no item: Needs you shows the alarm.
-    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter") return false;
+    // A stop of auto mode, a dead letter or a spend alert holds up no item: Needs you shows the alarm.
+    if (a.pattern === "auto_stopped" || a.pattern === "dead_letter" || a.pattern === "spend_budget") return false;
     if (last === null || Date.parse(last.finished_at!) < Date.parse(a.created_at) - ALERT_DEDUPE_MS) return false;
     if (a.pattern === "repeated_error") return last.outcome?.status === "failed" && last.outcome.error_code === a.error_code;
     return (MODEL_RUN_KINDS as readonly string[]).includes(last.kind) && runTokenCount(last) === 0;
