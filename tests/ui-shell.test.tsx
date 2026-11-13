@@ -607,7 +607,8 @@ function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(c
     </QueryClientProvider>,
   );
 }
-const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+const cap = (name: string) => name[0]!.toUpperCase() + name.slice(1);
+const button = (name: string) => screen.getByRole("button", { name: cap(name) }) as HTMLButtonElement;
 const rowOf = (name: string) => document.querySelector(`[data-command="${name}"]`) as HTMLElement;
 const typeNote = (text: string) => fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: text } });
 const settle = () => act(async () => void (await vi.advanceTimersByTimeAsync(10)));
@@ -615,7 +616,7 @@ const settle = () => act(async () => void (await vi.advanceTimersByTimeAsync(10)
 describe("item commands", () => {
   it("shows one button per command, in the API's order, labelled with its name", () => {
     mountCommands(["retry", "approve", "budget"].map(cmd));
-    expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["retry", "approve", "budget"]);
+    expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["Retry", "Approve", "Budget"]);
   });
 
   it("verdict shows Good, Bad and Feedback, each sending the verdict request; Feedback waits for the note box's text", async () => {
@@ -650,8 +651,8 @@ describe("item commands", () => {
     try {
       history.replaceState(null, "", "/app/items/wi_1");
       mount();
-      expect(await screen.findByRole("button", { name: "approve" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "reject" })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
     } finally {
       delete RESPONSES["/api/v1/session"];
       delete (detail as Record<string, unknown>).commands;
@@ -1034,7 +1035,7 @@ describe("Needs-you command buttons (issue #453)", () => {
   const menu = () => screen.getByRole("button", { name: "More commands" });
   const pick = (name: string) => {
     fireEvent.click(menu());
-    fireEvent.click(screen.getByRole("menuitem", { name }));
+    fireEvent.click(screen.getByRole("menuitem", { name: cap(name) }));
   };
 
   it("one primary button and one ⋯ menu per row, holding the other commands; Work items has none", () => {
@@ -1102,7 +1103,7 @@ describe("Needs-you command buttons (issue #453)", () => {
     mountNeeds(["approve", "reject", "revise", "verdict"].map(cmd));
     const tr = document.querySelector("tr")!;
     const before = [...tr.querySelectorAll("*")];
-    for (const [name, title] of [["Reject", "Reject wi_1"], ["Revise", "Revise wi_1"], ["Verdict", "Record a verdict on wi_1"]] as const) {
+    for (const [name, title] of [["reject", "Reject Spec waiting"], ["revise", "Revise Spec waiting"], ["verdict", "Verdict Spec waiting"]] as const) {
       pick(name);
       const dialog = screen.getByRole("dialog", { name: title });
       expect(tr.contains(dialog), name).toBe(false);
@@ -1114,8 +1115,8 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("reject opens the dialog and asks to confirm, naming the PR it closes; nothing is sent before the confirm", async () => {
     mountNeeds(["approve", "reject"].map(cmd), { change_ref: "42" });
-    pick("Reject");
-    const dialog = screen.getByRole("dialog", { name: "Reject wi_1" });
+    pick("reject");
+    const dialog = screen.getByRole("dialog", { name: "Reject Spec waiting" });
     expect(dialog.textContent).toContain("Rejecting closes this item and its PR #42, without a merge.");
     fireEvent.click(within(dialog).getByRole("radio", { name: "duplicate" }));
     await settle();
@@ -1128,8 +1129,8 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("revise opens its note fields and sends only once a section has text; Cancel sends nothing", async () => {
     mountNeeds([cmd("approve"), cmd("revise")]);
-    pick("Revise");
-    const dialog = screen.getByRole("dialog", { name: "Revise wi_1" });
+    pick("revise");
+    const dialog = screen.getByRole("dialog", { name: "Revise Spec waiting" });
     expect((within(dialog).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     await settle();
@@ -1141,14 +1142,17 @@ describe("Needs-you command buttons (issue #453)", () => {
     expect(posts.map((p) => p.body)).toEqual([{ command: "revise", note: "### Problem\nnarrower" }]);
   });
 
-  it("verdict opens a one-line dialog; Send verdict sends what was typed", async () => {
+  it("verdict opens a dialog with Accept, Changes and Reject; Changes needs a reason, then Send verdict sends it", async () => {
     mountNeeds([cmd("approve"), cmd("verdict")]);
-    pick("Verdict");
-    expect((button("Send verdict")).disabled).toBe(true);
-    fireEvent.change(screen.getByRole("textbox", { name: "Verdict" }), { target: { value: " accept none ok " } });
+    pick("verdict");
+    // Accept is chosen at first and needs no reason.
+    expect(button("Send verdict").disabled).toBe(false);
+    fireEvent.click(screen.getByRole("radio", { name: "Changes" }));
+    expect(button("Send verdict").disabled).toBe(true);
+    fireEvent.change(screen.getByRole("textbox", { name: "Reason" }), { target: { value: " ok " } });
     fireEvent.click(button("Send verdict"));
     await settle();
-    expect(posts.map((p) => p.body)).toEqual([{ command: "verdict", note: "accept none ok" }]);
+    expect(posts.map((p) => p.body)).toEqual([{ command: "verdict", note: "changes none ok" }]);
   });
 
   it("a command the viewer may not send stays in the menu, disabled, with its reason in plain text", async () => {
