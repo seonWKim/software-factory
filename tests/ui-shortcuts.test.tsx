@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- same reason as tests/data-page.test.tsx: tsconfig.test.json has no DOM and no JSX.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 import { GO_KEYS } from "../web/src/keys.js";
@@ -44,6 +44,7 @@ function mount() {
     </QueryClientProvider>,
   );
 }
+const fields = () => [screen.getByLabelText("field"), screen.getByLabelText("area"), screen.getByLabelText("pick"), screen.getByLabelText("edit")];
 const press = (key: string, init: KeyboardEventInit = {}, target: Element | Document = document.body) => fireEvent.keyDown(target, { key, ...init });
 
 describe("shortcuts", () => {
@@ -110,7 +111,6 @@ describe("shortcuts", () => {
   });
 
   describe("none fires inside a field", () => {
-    const fields = () => [screen.getByLabelText("field"), screen.getByLabelText("area"), screen.getByLabelText("pick"), screen.getByLabelText("edit")];
     it("⌘K, ?, g-keys, j, k and Enter do nothing", async () => {
       mount();
       await screen.findByText("First spec");
@@ -145,6 +145,39 @@ describe("shortcuts", () => {
     press("q");
     expect(document.activeElement).toBe(quick);
     delete RESPONSES["/api/v1/tasks"];
+  });
+
+  it("⌘Z on the Tasks page reopens the last task completed there; in a field it keeps the browser's own undo", async () => {
+    RESPONSES["/api/v1/tasks"] = {
+      today_date: "2026-11-12", inbox: [{ id: "tk_a", title: "pay rent", list: null, priority: null, due_date: null, due_time: null, recurrence: null, work_item_id: null }],
+      today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "t", can_build: true,
+    };
+    RESPONSES["/api/v1/tasks/done"] = { task_id: "tk_a", completed: true, next_id: null };
+    RESPONSES["/api/v1/tasks/reopen"] = { task_id: "tk_a", reopened: true, removed_next: null };
+    const reopens = () => vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/v1/tasks/reopen");
+    history.pushState(null, "", "/app/tasks");
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Inbox" }));
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Complete: pay rent" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => url === "/api/v1/tasks/done")).toBe(true));
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "Complete: pay rent" }).hasAttribute("disabled")).toBe(false));
+    for (const f of fields()) {
+      expect(press("z", { metaKey: true }, f)).toBe(true);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    expect(reopens()).toHaveLength(0);
+    expect(press("z", { metaKey: true })).toBe(false);
+    await waitFor(() => expect(reopens()).toHaveLength(1));
+    expect(JSON.parse(String((reopens()[0]![1] as RequestInit).body))).toEqual({ id: "tk_a" });
+    for (const k of ["/api/v1/tasks", "/api/v1/tasks/done", "/api/v1/tasks/reopen"]) delete RESPONSES[k];
+  });
+
+  it("lists ⌘Z in the shortcuts help", async () => {
+    mount();
+    press("?");
+    const box = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    expect(box.textContent).toContain("⌘Z");
+    expect(box.textContent).toContain("Undo the last task completed on this page");
   });
 
   it("lists q in the shortcuts help", async () => {
