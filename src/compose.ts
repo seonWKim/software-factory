@@ -399,7 +399,7 @@ export async function loadConfig(
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
   // No shared store (design 05-coordination.md, 2026-11-13): sharedStore stays false until phase 2 removes the option.
   const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore: false }));
-  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, auth: UNBUILT_AUTH, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
+  const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
   const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore: false, builtin: opts.registry ?? REGISTRY });
   const local = !selectsGitHub(plugins);
   if (!local) await checkGitHubSettings(file.github);
@@ -481,12 +481,6 @@ const GITHUB_PLUGINS: Readonly<Partial<Record<keyof Selection, readonly string[]
   broker: ["github"], forge: ["github"],
 };
 const GITHUB_SOURCES: readonly string[] = ["github-issues"];
-
-/**
- * The name selectPlugins still needs for the auth kind (src/plugins.ts). Nothing builds it: every command path takes
- * the owner check (`OwnerAuth`, design 08-permissions, One owner); phase B of issue #575 removes the kind.
- */
-const UNBUILT_AUTH = "local";
 
 /**
  * Whether config selects any GitHub plugin: a GitHub source, broker or forge. The one rule for the local path

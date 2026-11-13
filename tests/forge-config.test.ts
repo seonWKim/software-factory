@@ -133,7 +133,7 @@ describe("forge: selection at startup", () => {
 
   it("a guard left out still fails while the forge is set", () => {
     const { secrets: _, ...plugins } = REAL.plugins as Record<string, unknown>;
-    expect(() => selectPlugins(REGISTRY, { store: { type: "sqlite" }, auth: "none", plugins: { ...plugins, forge: "github" } })).toThrow(
+    expect(() => selectPlugins(REGISTRY, { store: { type: "sqlite" }, plugins: { ...plugins, forge: "github" } })).toThrow(
       /SecretStore is a guard/,
     );
   });

@@ -235,7 +235,7 @@ describe("FallbackLLM", () => {
 
 describe("selection: plugins.runner and plugins.llm take a list", () => {
   const select = (plugins: Record<string, unknown>) =>
-    selectPlugins(REGISTRY, { store: { type: "sqlite" }, auth: "github", plugins: { ...(REAL.plugins as object), ...plugins } }, { platform: "linux" });
+    selectPlugins(REGISTRY, { store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), ...plugins } }, { platform: "linux" });
   const failure = (plugins: Record<string, unknown>): string | null => {
     try {
       select(plugins);

@@ -1,29 +1,21 @@
 # AuthProvider
 
-What it does: resolves an external identity to a factory user and decides whether it may act (submit work, approve, reject, retry). Deny by default. Since 2026-11-01 (design §8) it decides through the one shared check in `src/core/authorize.ts`, which asks the grant plugins (GrantSource, [grant-source.md](grant-source.md)); no auth plugin asks GitHub for a permission itself.
+What it does: resolves an external identity to a factory user and decides whether it may act (submit work, approve, reject, retry, record a verdict, approve a pack tool). Deny by default.
 
-**`github`, `local` and `none` are deprecated, to be replaced by one owner check (decision changed 2026-11-11, owner decision; current).** The factory serves one owner ([08-enterprise.md](../design/08-enterprise.md), One owner, many workers), so deciding which of several people may act has no reason left. Replaced by: one owner check, which allows a command when its identity is the owner (from the environment, or the owner's own linked GitHub or Slack account) and refuses every other one. Removal plan: a follow-up issue (number added when filed) adds the owner check and removes the three plugins, the per-origin `auth` selection (`github_issue`, `local`, `slack_thread`) and the roles they read; the grants go with the GrantSource interface ([grant-source.md](grant-source.md)). Until then the plugins below still work as described.
+**One owner check, no plugins (decision changed 2026-11-13, issue #669, phase B of #575; current).** The decision that changed: **AuthProvider is no longer a plugin kind**: the `github`, `local` and `none` plugins, the per-origin `auth` selection and the GrantSource interface with its `github-permission` and `static` grants are deleted. Every person's command, whatever its origin (a GitHub comment, a Slack thread or tap, the CLI, the dashboard), takes the one owner check, `OwnerAuth` in `src/core/authorize.ts` ([08-permissions.md](../design/08-permissions.md), One owner):
 
-Selection is per command origin (issue #318): `auth` as a string selects the plugin for GitHub comments, and local commands (the CLI and the local UI) and Slack accounts (issue #498: a linked account acts as its factory user, whose stored role decides) use `local`; `"auth": { "github_issue": "github", "local": "local" }` names both. Local commands never depend on the GitHub plugin.
+- `resolve` maps the identity to a factory user: its linked user first (by provider and subject only, never a display name), else a local identity's own ID (`local:<x>`, or a `cli_user` such as `github:1`), else `<provider>:<subject>`.
+- `authorize` allows the store's local owner and refuses anyone else as `not_owner`, with the one reply "only the owner may send this command". The first local identity to send a command becomes the owner; `local:anonymous` never does. `submit_work` stays open to any caller but an unlinked chat account (the intake label is its gate).
+- It makes no remote call, so commands work while GitHub is down or rate limited. The controller wraps it in `AuditedAuthProvider`, which writes one `authz_audit` row per decision.
+- Service principals (the controller's auto-mode spec approvals and merges, the worker's and outbound's tool calls) never reach it: they keep their passport checks in Identity.
 
-Slack thread commands (identity provider `slack`) have their own origin, `slack_thread` (issue #486; current decision):
+Enable: nothing; it is always on. Secrets: none. Config: none; the top-level `auth` and `permissions` keys are no longer read (a config that still has them loads with one warning).
 
-- Solo default: no `slack_thread` key. Slack commands are judged by the `local` origin's plugin, the same instance (issue #498: a linked account acts as its factory user); no second plugin is built.
-- Enterprise: `"auth": { "github_issue": "github", "slack_thread": "<plugin>" }` names the plugin for Slack users, for example `github` to judge linked Slack accounts by the GitHub grants. Pick one that resolves them: an unlinked Slack account resolves to no factory user under `github` or `local` and is refused, and `none` allows everything. No Slack-specific auth plugin exists yet.
-- An unknown origin fails at load and lists the known ones (`github_issue`, `local`, `slack_thread`).
-
-Plugins:
-
-- `github`: `GitHubAuthProvider`. An account linked with `/link` resolves to its factory user (looked up by provider and subject only); any other GitHub account is `github:<numeric id>`; an unlinked account of another provider (Slack) resolves to no user and is refused with "not linked". Permission comes from `permissions.grants`; with the default `github-permission` grant, approvals need write permission on the repository, as before.
-  - Enable: `"auth": "github"` (top level). Secrets: none of its own; links live in the store, and the grants it asks are configured under `permissions`.
-- `local`: `LocalAuthProvider` (issue #318). The default for local commands. A local identity `local:<x>` (or a `cli_user` such as `github:1`) is its own factory user; a Slack account resolves to the factory user it is linked to (design 08-permissions, "Chat accounts act as their linked factory user"); any other unlinked account resolves to no user. Roles come from the store's local users (owner, approver, requester; the first identity to write becomes the owner, `anonymous` never does, `factory users add` grants the rest) and from the configured grants that make no remote call (`static`, whose denies still refuse). It never calls GitHub, so local approvals work while GitHub is down or rate limited. It judges local commands on an item of any source: an owner or approver may approve, retry, revise or reject a GitHub item from the CLI without GitHub write access, and the factory mirrors each such command to the issue as a comment, best effort (a failed post is retried on a later tick and never holds the transition).
-  - Enable: nothing for local commands (the default), or `"auth": { "github_issue": "github", "local": "local" }`. Selecting it for `github_issue` too gives a GitHub account no role unless `permissions.static` grants one. Secrets: none. Its table needs `npm run migrate` on MySQL (step 0026).
-- `none`: `NoAuthProvider`. Allows everything and ignores links and grants; local development only.
-  - Enable: `"auth": "none"`. Secrets: none.
-
-Switch back / disable: set `auth` to `github` (local commands keep `local`; set `"auth": { "github_issue": "github", "local": "github" }` to judge them by GitHub links again). Remove the `slack_thread` key to judge Slack commands by the `local` origin's plugin again. `none` is the "no checks" choice; there is no way to run without an `AuthProvider`.
+Switch back / disable: there is no other AuthProvider and no way to run without the owner check.
 
 ## History
+
+- **Owner check replaces the auth plugins and the grants** (decision changed 2026-11-13, issue #669, phase B of #575). Before: the `github` (`GitHubAuthProvider`), `local` (`LocalAuthProvider`) and `none` (`NoAuthProvider`) plugins, selected per command origin by `auth` (`github_issue`, `local`, `slack_thread`), judged commands through the grant plugins of the GrantSource interface (`github-permission`: write access on the repository; `static`: roles and denies from `permissions.static`), selected by `permissions.grants`. Phase A (#668) had already made the owner check decide every command and left them unused.
 
 - **`github`, `local` and `none` deprecated** (decision changed 2026-11-11, owner decision). Before: the three plugins, selected per command origin, judged several people by their links, stored local roles and grants.
 - **Slack accounts are judged by `local`** (decision changed 2026-11-09, issue #498). Before: the plugin selected for GitHub comments (`github`) judged Slack accounts through their links, so their rights came from GitHub grants, not from the stored local roles.

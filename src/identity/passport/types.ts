@@ -1,5 +1,5 @@
-// Identity's public types (RFC 0015 §6.2, §8 "Passports"). Names follow the legacy AuthProvider and
-// GrantSource (src/interfaces/auth-provider.ts) so the two can be bridged while the legacy code moves.
+// Identity's public types (RFC 0015 §6.2, §8 "Passports"). Names follow the command path's AuthProvider
+// (src/interfaces/auth-provider.ts).
 
 /** Who vouched for the principal at the edge. `service`: a factory process acting as itself. */
 export type Provider = "local" | "github" | "slack" | "oidc" | "service";
@@ -44,25 +44,6 @@ export const ROLE_ACTIONS: Readonly<Record<Role, readonly Action[]>> = {
   requester: ["submit_work"],
 };
 
-/** One account linked to a factory user (identity_user_links). */
-export interface LinkedAccount {
-  readonly provider: string;
-  readonly subject: string;
-}
-
-export interface GrantSubject {
-  readonly user_id: string;
-  readonly accounts: readonly LinkedAccount[];
-}
-
-/** A source of roles per project. A deny from any source overrides every grant. */
-export interface GrantSource {
-  /** True when `roles` calls a remote API: asked after local sources, and only when they gave no covering role. */
-  readonly remote: boolean;
-  denies(subject: GrantSubject, project: string | null): Promise<boolean>;
-  roles(subject: GrantSubject, project: string | null): Promise<readonly Role[]>;
-}
-
 /**
  * Caveats one link of a passport adds. Each field present limits the passport to the listed values; an absent
  * field adds no limit at this link. A request must satisfy the caveats of every link, so a later link can
@@ -99,7 +80,7 @@ export type PassportId = string;
 
 /**
  * The role half of a decision, for a passport whose chain, expiry, revocation and caveats already passed: `allowed`,
- * or the refusal reason. Given to `authorize` when the deciding grants are not Identity's own (an auth plugin's).
+ * or the refusal reason. Given to `authorize` when the role half is decided outside Identity (the owner check).
  */
 export type RoleCheck = (principal: string) => Promise<string>;
 
@@ -132,7 +113,7 @@ export type AuthzResult =
 /** RFC 0015 §6.2: the sync API other components call through identity/index.ts. */
 export interface Authorization {
   /**
-   * `roles`: the role half decided by the caller's grants (an auth plugin) in place of Identity's own. `valid_at`:
+   * `roles`: the role half decided by the caller (the owner check) in place of Identity's own. `valid_at`:
    * when the request was recorded (a queued command); expiry is checked then, revocation now.
    */
   authorize(passport: PassportId, action: Action, resource: ResourceRef, roles?: RoleCheck, valid_at?: string): Promise<AuthzResult>;

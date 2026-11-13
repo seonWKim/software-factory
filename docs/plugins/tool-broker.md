@@ -10,7 +10,7 @@ Plugins:
   - Enable: `"plugins": { "broker": "github", ... }`, or no `plugins` object.
   - Secrets: none of its own; the push uses the token from `GitHubCredentials`. Settings: `branch_prefix`, `repo`.
 - `local`: `LocalToolBroker` (since 2026-11-07), the solo default with no GitHub plugin (design `05-sources.md`, Local startup).
-  - Enable: `"plugins": { "broker": "local", ... }`. Selecting it with no other GitHub plugin (no `github-issues` source, no `github` auth, no `github-permission` grant, no forge) is the local path: no GitHub credential, no origin fetch, no PR.
+  - Enable: `"plugins": { "broker": "local", ... }`. Selecting it with no other GitHub plugin (no `github-issues` source, no forge) is the local path: no GitHub credential, no origin fetch, no PR.
   - Secrets: none. Settings: `branch_prefix`, `repo.path`, `repo.base_branch`.
   - Tools: `git.store_branch` (every run's push and `factory session finish`, RFC 0015 M7; content `forge: false`). It writes the run's HEAD to the local branch `refs/heads/<branch>` of the factory repo with git's local transport, never to a remote and never forced; the scanned diff starts at the factory repo's local `refs/heads/<base_branch>`. No `forge.preflight`: the worker skips the preflight's forge checks when the broker has no such tool. No broker comments on anything: a run's comments are thread entries that outbound delivers (RFC 0015 M7), and a local item's thread is its surface.
 

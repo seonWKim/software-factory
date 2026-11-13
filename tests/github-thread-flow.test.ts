@@ -9,7 +9,6 @@ import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { type CliAction, type LocalCliDeps, runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkerId, WorkItem, WorkItemId } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { GitHubError } from "../src/impl/github/github-client.js";
@@ -392,7 +391,7 @@ describe("GitHub comments in the local store (issue #284)", () => {
     const item = await f.specced();
     const log = recordingLog();
     const localOnly = new ControllerRole({
-      store: f.store, sources: [new LocalSource(f.store)], auth: new GitHubAuthProvider(f.store, []), clock: f.clock, config, log,
+      store: f.store, sources: [new LocalSource(f.store)], auth: new OwnerAuth(f.store), clock: f.clock, config, log,
       scanner: cleanScanner, repeated_failure_rule: false,
     });
     await f.store.appendCliCommand({ key: "github:180", actor: "github:1", command: "approve", args: { source: item.source, text: "" } });

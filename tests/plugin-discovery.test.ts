@@ -139,7 +139,7 @@ describe("plugin discovery: a new plugin file", () => {
     expect(Object.keys(registry.clock.plugins)).toContain("temp-clock");
     const sel = selectPlugins(
       registry,
-      { store: { type: "sqlite" }, auth: "none", plugins: { ...(REAL.plugins as object), clock: "temp-clock" } },
+      { store: { type: "sqlite" }, plugins: { ...(REAL.plugins as object), clock: "temp-clock" } },
       { platform: "linux" },
     );
     expect(sel.clock).toBe("temp-clock");

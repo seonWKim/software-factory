@@ -7,10 +7,9 @@ import { describe, expect, it } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import type { UserId, WorkerId, WorkItem } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
-import { GitHubAuthProvider } from "../src/impl/github/github-auth-provider.js";
+import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
-import { StaticGrant } from "../src/impl/grant/static.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import {
   FakeBroker, FakeGitHubClient, FakeRunner, FakeSandbox, MemoryStorage, cleanScanner, config, issueRef, prompts, recordingLog, triageSpec,
@@ -50,8 +49,9 @@ async function factory() {
   const { store } = await newStore(clock);
   const repo = new Repo();
   const source = new GitHubIssueSource(repo, { owner: "o", name: "r" }, "factory", "factory/", "main", "sf: ", store);
-  // The shipped GitHub auth plugin; only the factory user ANA has a role.
-  const auth = new GitHubAuthProvider(store, [new StaticGrant({ roles: { [ANA]: { "*": ["approver"] } }, deny: {} })]);
+  // The owner check; ANA is the owner.
+  await store.claimLocalOwner(ANA);
+  const auth = new OwnerAuth(store);
   const controller = new ControllerRole({ store, sources: [source], auth, clock, config, log: recordingLog(), scanner: cleanScanner, repeated_failure_rule: false });
   const runner = new FakeRunner({ triage: () => ({ output: triageSpec }) });
   const worker = new Worker({

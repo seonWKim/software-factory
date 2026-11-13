@@ -11,7 +11,6 @@ import type { AuthAction, AuthDecision, AuthProvider, ExternalIdentity, Principa
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import type { Secret, SecretName } from "../src/interfaces/secret-store.js";
-import { LocalAuthProvider } from "../src/impl/auth/local-auth-provider.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { HttpSlackApi, SLACK_BOT_TOKEN, type FetchFn } from "../src/impl/source/slack-api.js";
@@ -94,7 +93,7 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
   };
   // slack.dashboard_url and slack.notify_channel as slack.plugin.ts passes them: absent unless the test sets them.
   const optional = { ...(opts.dashboard_url ? { dashboard_url: opts.dashboard_url } : {}), ...(opts.notify_channel ? { notify_channel: opts.notify_channel } : {}) };
-  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, auth: new LocalAuthProvider(store), repo, log, settings, ...optional });
+  const slack = new SlackSource({ api, connect: socket.connect, channels: opts.channels ?? [CHANNEL], scanner, store, auth: new OwnerAuth(store), repo, log, settings, ...optional });
   const gh = new FakeSource();
   const forge = new FakeForge(gh);
   const auth = new SlackAuth();

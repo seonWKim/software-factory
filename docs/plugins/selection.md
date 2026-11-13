@@ -10,7 +10,6 @@ registry, so whatever config selects is what runs and what the canary tests.
 | Interface | Config key | Default (today) | Guard |
 |---|---|---|---|
 | FactoryStore | `store.type` | `sqlite` (the only store; there is no `mysql` plugin, and a `mysql` store is refused at startup) | no |
-| AuthProvider | `auth` (top level) | the checked-in config uses `github` | no |
 | SecretStore | `plugins.secrets` | `env-file` | **yes** |
 | EgressScanner | `plugins.egress` | `pattern` | **yes** |
 | ToolBroker | `plugins.broker` | `github` | **yes** |
@@ -30,7 +29,6 @@ registry, so whatever config selects is what runs and what the canary tests.
 ```jsonc
 // factory.config.json (the checked-in defaults)
 "store": { "type": "sqlite" },
-"auth": "github",
 "plugins": {
   "secrets": "env-file", "egress": "pattern", "broker": "github",
   "sandbox": "noop", "runner": "claude-code", "llm": "claude-cli",
@@ -42,11 +40,11 @@ registry, so whatever config selects is what runs and what the canary tests.
 
 Rules, checked by `loadConfig` at startup (and again by `build()`):
 
-- **No `plugins` object** means today's defaults for every interface in it that has one (`awake`'s default depends on the platform; the optional `forge` follows the sources: the default source `github-issues` selects the `github` forge). Store and auth keep their own keys.
+- **No `plugins` object** means today's defaults for every interface in it that has one (`awake`'s default depends on the platform; the optional `forge` follows the sources: the default source `github-issues` selects the `github` forge). Store and calendar keep their own keys.
 - **A `plugins` object** must name every guard (`secrets`, `egress`, `broker`) explicitly. A non-guard key you leave out falls back to its default; the optional `forge` left out follows `plugins.source`.
 - **Optional kinds** (`forge`) have no default plugin. `"none"`, `null`, `false` or `""` selects nothing: the selection has no entry for it and no plugin of it is built. Left out, the forge is derived from the sources (issue #273): `github` when `plugins.source` lists `github-issues`, else nothing; an off value next to `github-issues` fails startup, naming `plugins.forge`. An optional kind is never a guard.
 - **An unknown name** for any interface fails startup. The error names the interface, the bad value and every available name.
-- **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store`, `auth` and `calendar` under `plugins` are rejected with a pointer to their own top-level keys.
+- **An unknown key** under `plugins` fails startup (so a typo cannot silently fall back to a default). `store` and `calendar` under `plugins` are rejected with a pointer to their own top-level keys.
 - **Unknown config keys are rejected at load**, at every level of `factory.config.json` (top level, `store` for its `type`, `repo`, `dials`, each `floors[i]`, `models`, `agent_git_identity`, `ui`, `stats`, `plugins`): one error lists every unknown key with its path and the valid keys, and adds `did you mean "…"?` when a valid key is within edit distance 2. `npm run factory -- doctor` prints each as a FAIL line and exits 1.
 - **Guards cannot be disabled.** For `secrets`, `egress` and `broker`, leaving the key out of a `plugins` object, or setting it to `null`, `false`, `""`, `"none"` or anything that is not a registered name, fails startup with an error that the plugin is a guard and points to `docs/architecture.md` §5. You can switch a guard to another registered plugin; you cannot turn it off.
 

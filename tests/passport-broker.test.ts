@@ -23,7 +23,7 @@ async function setup() {
   await db.migrate();
   const ticks = new ManualTickGenerator();
   let n = 0;
-  const identity = new PassportService({ db, keys: secretKeyring(KEY, { current: "K" }), providers: [], grants: [], ticks, newId: () => `pp_${++n}` });
+  const identity = new PassportService({ db, keys: secretKeyring(KEY, { current: "K" }), providers: [], ticks, newId: () => `pp_${++n}` });
   await ticks.tick(REVOCATIONS_TICK, T0);
   const calls: string[] = [];
   const inner: ToolBroker = {
@@ -101,7 +101,7 @@ describe("ToolBroker run passports", () => {
   it("reaches another replica's broker on its next revocations tick", async () => {
     const t = await setup();
     const otherTicks = new ManualTickGenerator();
-    const replica = new PassportService({ db: t.db, keys: secretKeyring(KEY, { current: "K" }), providers: [], grants: [], ticks: otherTicks, newId: () => "pp_replica" });
+    const replica = new PassportService({ db: t.db, keys: secretKeyring(KEY, { current: "K" }), providers: [], ticks: otherTicks, newId: () => "pp_replica" });
     await otherTicks.tick(REVOCATIONS_TICK, T0);
     const run = await t.begin();
     await replica.revoke(run.passport.id, "local:owner", "from another replica");
@@ -177,7 +177,7 @@ describe("audited legacy auth", () => {
     const ticks = new ManualTickGenerator();
     let n = 0;
     const identity = new PassportService({
-      db, keys: secretKeyring(KEY, { current: "K" }), providers: [new LocalAuthProvider()], grants: [], ticks, newId: () => `pp_${++n}`,
+      db, keys: secretKeyring(KEY, { current: "K" }), providers: [new LocalAuthProvider()], ticks, newId: () => `pp_${++n}`,
     });
     await ticks.tick(REVOCATIONS_TICK, T0);
     const allowAll: AuthProvider = { resolve: async () => null, authorize: async () => ({ allow: true }) };
