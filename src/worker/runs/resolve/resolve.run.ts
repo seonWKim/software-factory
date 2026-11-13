@@ -1,5 +1,5 @@
 import type { ModelClass } from "../../../core/model-choice.js";
-import { checkCommands, checkedLines, commandText, redact, runChecks } from "../../../core/checks.js";
+import { checkCommands, checkedLines, commandText, runChecks } from "../../../core/checks.js";
 import { IMPLEMENT_SCHEMA, type NeedsHuman, parseImplement } from "../../../core/outputs.js";
 import { branchFor } from "../../../core/policy.js";
 import { mergeAppendedConflicts } from "../../../core/mechanical.js";
@@ -56,7 +56,7 @@ async function resolve(w: Worker, run: Run, item: WorkItem, ctx: ToolCallContext
     // local item's store is the commit on its local branch: no intent, nothing pushed.
     const passed = checkCommands(repo).map((command) => ({ command, ok: true, how: "passed", tail: "" }));
     const push_intent = await w.pushBranch({ run, item, ctx, step }, handle.workdir, branch, head, () =>
-      w.prRefresh(item, checkedLines(passed, { fixed: false, skipped: null })));
+      w.prRefresh(item, checkedLines(passed, { fixed: false })));
     return { result: "pushed", conflicts, head_sha: head, base_sha: baseSha, ...(push_intent ? { push_intent } : {}) };
   } finally {
     await sandbox.destroy(handle);
@@ -145,9 +145,9 @@ async function mergeAndResolve(
   }
 
   const head = await commitResolution(w, handle, { tree, tipSha, baseSha, branch, message: `Merge ${baseRef} into ${branch}` }, identity);
-  // install_command first, then the check list (design §4); only the checks get the test database.
-  await gate(w, run, handle, repo.install_command, signal, false);
-  for (const cmd of checkCommands(repo)) await gate(w, run, handle, cmd, signal, true);
+  // install_command first, then the check list (design §4).
+  await gate(w, handle, repo.install_command, signal);
+  for (const cmd of checkCommands(repo)) await gate(w, handle, cmd, signal);
   // The gate commands run repo code: they must not have moved HEAD off the commit they checked.
   const now = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
   if (now !== head) throw new RunFailure("head_moved", `HEAD moved from ${head.slice(0, 8)} to ${now.slice(0, 8)} during the gates`);
@@ -213,20 +213,16 @@ async function commitResolution(
   return head;
 }
 
-/**
- * One gate command (install, or a check) in the sandbox with the worker's tool env and slot env; a check also gets the
- * run's test database env, and its output is redacted. Non-zero: `tests_failed`.
- */
-async function gate(w: Worker, run: Run, handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal, check: boolean): Promise<void> {
-  const db = check ? await w.database(run) : null;
+/** One gate command (install, or a check) in the sandbox with the worker's tool env and slot env. Non-zero: `tests_failed`. */
+async function gate(w: Worker, handle: SandboxHandle, cmd: readonly string[], signal: AbortSignal): Promise<void> {
   const round = await runChecks({
     sandbox: w.d.sandbox,
     handle,
     commands: [cmd],
-    env: { ...w.d.toolEnv, ...w.slotEnv(), ...db?.env },
+    env: { ...w.d.toolEnv, ...w.slotEnv() },
     timeout_ms: w.cfg.run_timeout_ms,
     signal,
-    redact: db?.redact ?? [],
+    redact: [],
   });
   if (signal.aborted) throw new RunFailure("lease_lost", "run aborted", true);
   const f = round.failed;

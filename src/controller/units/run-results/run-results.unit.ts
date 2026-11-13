@@ -71,7 +71,6 @@ const FAILURES: Record<string, string> = {
   checks_failed: "a check before push (repo.check_commands) failed, also after one fix step; nothing was pushed to the PR branch",
   checks_env: "a check before push failed, also after one fix step, and its failing test files fail on the base commit too (flaky or broken on the base); retried without spending an attempt or a restart",
   toolchain_missing: "a check before push could not start its tools (a module under node_modules or a tool binary is missing); an infrastructure failure, retried without spending an attempt",
-  test_database_failed: "the run's test database for the checks could not be created",
   unresolved_conflicts: "conflicts were left unresolved",
   head_moved: "the install or test command moved HEAD off the commit the gates checked",
   prompt_missing: "prompts/resolve.md is missing",

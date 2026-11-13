@@ -50,7 +50,6 @@
     "clock": "system",
     "updater": "git-worktree",
     "github_auth": "app",
-    "test_database": "none",
     "network_probe": "http",
     "bus": "sql",
     "ticks": "time-based",

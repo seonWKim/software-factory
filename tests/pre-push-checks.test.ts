@@ -10,10 +10,8 @@ import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
-import { MYSQL_SKIPPED, NoTestDatabase } from "../src/impl/test-database/no-test-database.js";
 import type { AgentRunResult, AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions, ExecResult, SandboxHandle } from "../src/interfaces/sandbox.js";
-import type { TestDatabase } from "../src/interfaces/test-database.js";
 import { STORE_BRANCH, type ToolBroker, type ToolCallContext, type ToolDescriptor, type ToolResult } from "../src/interfaces/tool-broker.js";
 import { FakeForge, FAKE_GITHUB_TOOLS, FakeAuth, FakeRunner, FakeSource, MemoryStorage, alice, cleanScanner, config, issueRef, recordingLog, runComments } from "./helpers/fakes.js";
 import { git, gitTemplate } from "./helpers/git-fixture.js";
@@ -100,31 +98,8 @@ const failsWhile = (name: string, file: string, say: string, code = 1): string[]
 
 const TYPECHECK = failsWhile("typecheck", "src/type-error.txt", "src/a.ts(1,7): error TS2322: Type 'string' is not assignable to type 'number'.", 2);
 const SQLITE = failsWhile("sqlite-tests", "src/sqlite-fail.txt", "FAIL tests/store-contract.test.ts > sqlite > claims a run");
-/** Fails only when the run's database URL is set: the MySQL tests run only then. */
-const MYSQL = [
-  "sh", "-c",
-  "if [ -n \"$SF_TEST_MYSQL_URL\" ] && [ -f src/mysql-fail.txt ]; then echo 'FAIL tests/store-contract.test.ts > mysql > claims a run'; exit 1; fi",
-  "mysql-tests",
-];
-const CHECKS = [TYPECHECK, SQLITE, MYSQL];
-
-const PASSWORD = "Pw-9f8e7d6c5b4a3210";
-const DB_URL = `mysql://sf_test:${PASSWORD}@127.0.0.1:3306/sf_test_run`;
-
-/** A TestDatabase that records each run's lease and its release. */
-class FakeTestDatabase implements TestDatabase {
-  created: string[] = [];
-  released: string[] = [];
-  async create(run_id: string) {
-    this.created.push(run_id);
-    return {
-      env: { SF_TEST_MYSQL_URL: DB_URL },
-      redact: [DB_URL, PASSWORD],
-      skipped: null,
-      release: async () => void this.released.push(run_id),
-    };
-  }
-}
+const LINT = failsWhile("lint", "src/lint-fail.txt", "src/a.ts:1:1 error no-unused-vars");
+const CHECKS = [TYPECHECK, SQLITE, LINT];
 
 type AgentStep = (workdir: string, spec: AgentRunSpec) => void;
 
@@ -148,7 +123,6 @@ async function setup(opts: {
   checks?: string[][];
   implement?: AgentStep;
   fix?: AgentStep;
-  testDatabase?: TestDatabase;
   scanner?: PatternEgressScanner;
   max_attempts?: number;
 } = {}) {
@@ -192,7 +166,6 @@ async function setup(opts: {
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage, clock, config: cfg,
     prompts: { triage: "T", implement: "I", review: "R", resolve: "S" }, log, scanner, toolEnv, awake: new NoKeepAwake(),
-    ...(opts.testDatabase ? { testDatabase: opts.testDatabase } : {}),
   });
   const step = async () => {
     await controller.tickIntake();
@@ -229,12 +202,11 @@ const fixBy = (file: string): AgentStep => (wd) => removeFile(wd, file, `fix: re
 // Real git clone/push work per test: 2–5s each alone, more under a full parallel run, so 60 s.
 describe("implement run: checks before push, one fix step", { timeout: 60_000 }, () => {
   for (const c of [
-    { name: "a typecheck failure", file: "src/type-error.txt", cmd: TYPECHECK, say: "error TS2322", db: false },
-    { name: "a SQLite test failure", file: "src/sqlite-fail.txt", cmd: SQLITE, say: "FAIL tests/store-contract.test.ts > sqlite", db: false },
-    { name: "a MySQL test failure", file: "src/mysql-fail.txt", cmd: MYSQL, say: "FAIL tests/store-contract.test.ts > mysql", db: true },
+    { name: "a typecheck failure", file: "src/type-error.txt", cmd: TYPECHECK, say: "error TS2322" },
+    { name: "a SQLite test failure", file: "src/sqlite-fail.txt", cmd: SQLITE, say: "FAIL tests/store-contract.test.ts > sqlite" },
+    { name: "a lint failure", file: "src/lint-fail.txt", cmd: LINT, say: "error no-unused-vars" },
   ]) {
     it(`${c.name}: no push before the fix; the fix step gets the command and the output tail; the fixed branch is pushed`, async () => {
-      const db = new FakeTestDatabase();
       const f = await setup({
         implement: (wd) => commitFile(wd, c.file, "broken\n", "add a fault"),
         fix: (wd, s) => {
@@ -243,7 +215,6 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
           expect(s.prompt).toContain(`\`${c.cmd.join(" ")}\` failed`);
           fixBy(c.file)(wd, s);
         },
-        testDatabase: db,
       });
       const item = await f.approveAndImplement();
 
@@ -270,15 +241,11 @@ describe("implement run: checks before push, one fix step", { timeout: 60_000 },
       const failedAt = CHECKS.findIndex((x) => x === c.cmd);
       expect(ran).toEqual([...CHECKS.slice(0, failedAt + 1), ...CHECKS].map((x) => x.join(" ")));
       expect(f.broker.prBody()).toContain(`Checked before push: \`${c.cmd.join(" ")}\` passed (after one fix step)`);
-      expect(db.created).toEqual([run.id]);
-      expect(db.released).toEqual([run.id]);
-      // The MySQL check failed only because the run's database URL was in its environment.
-      if (c.db) expect(f.checkExecs().every((e) => e.env.SF_TEST_MYSQL_URL === DB_URL)).toBe(true);
     });
   }
 
   it("a successful run's PR body has a 'Checked before push' line per command, with its result", async () => {
-    const f = await setup({ testDatabase: new FakeTestDatabase() });
+    const f = await setup();
     await f.approveAndImplement();
     expect(f.fixSteps).toHaveLength(0);
     const body = f.broker.prBody();
@@ -494,61 +461,26 @@ describe("the base rerun's command", () => {
   });
 });
 
-describe("the test database's URL stays with the check commands", { timeout: 60_000 }, () => {
-  it("SF_TEST_MYSQL_URL is in every check command's environment and in no agent run's environment", async () => {
+// Checks run with no database (design §4, decision changed 2026-11-13): the tool env and the slot env only.
+describe("check commands get the tool env and the slot env only", { timeout: 60_000 }, () => {
+  it("no database env reaches a check command or an agent run, and the PR body has no skip line", async () => {
     const f = await setup({
-      testDatabase: new FakeTestDatabase(),
       implement: (wd) => commitFile(wd, "src/sqlite-fail.txt", "x\n", "add a fault"),
       fix: fixBy("src/sqlite-fail.txt"),
     });
-    await f.approveAndImplement();
-    expect(f.checkExecs().length).toBeGreaterThan(CHECKS.length);
-    for (const e of f.checkExecs()) expect(e.env.SF_TEST_MYSQL_URL, e.cmd).toBe(DB_URL);
-    for (const e of f.sandbox.execs.filter((x) => x.cmd.startsWith("git "))) expect(e.env).not.toHaveProperty("SF_TEST_MYSQL_URL");
-    expect(f.runner.specs.length).toBeGreaterThan(2);
-    for (const s of f.runner.specs) {
-      expect(s.env_allowlist).not.toHaveProperty("SF_TEST_MYSQL_URL");
-      expect(JSON.stringify(s)).not.toContain(PASSWORD);
-    }
-  });
-
-  it("a check that prints the URL: neither the URL nor its password reaches a prompt, the outcome, a comment or a log", async () => {
-    const printUrl = ["sh", "-c", "echo \"connecting to $SF_TEST_MYSQL_URL\"; echo \"pw=${SF_TEST_MYSQL_URL#*:*:}\"; exit 1", "print-url"];
-    const f = await setup({
-      checks: [printUrl],
-      testDatabase: new FakeTestDatabase(),
-      implement: () => undefined,
-      fix: () => undefined,
-    });
-    const item = await f.approveAndImplement();
-    const run = (await f.implementRuns(item.id))[0]!;
-    expect(run.outcome).toMatchObject({ status: "failed", error_code: "checks_failed" });
-
-    const seen = [
-      ...f.runner.specs.map((s) => `${s.system_prompt}\n${s.prompt}`),
-      JSON.stringify(run.outcome),
-      ...f.broker.calls.map((c) => JSON.stringify(c.args)),
-      ...f.source.comments.map((c) => c.body),
-      ...f.log.lines.map((l) => JSON.stringify(l)),
-      ...(await f.store.listStateChanges(item.id)).map((c) => JSON.stringify(c)),
-    ];
-    // The output did reach the fix step, redacted.
-    expect(f.fixSteps[0]!.prompt).toContain("connecting to [redacted]");
-    for (const text of seen) {
-      expect(text).not.toContain(DB_URL);
-      expect(text).not.toContain(PASSWORD);
-    }
-  });
-});
-
-describe("TestDatabase plugins", { timeout: 60_000 }, () => {
-  it("none sets no SF_TEST_MYSQL_URL, and the PR body says the MySQL checks were skipped", async () => {
-    const f = await setup({ testDatabase: new NoTestDatabase() });
     const item = await f.approveAndImplement();
     expect(item).toMatchObject({ stage: "REVIEW", change_ref: "42" });
-    for (const e of f.checkExecs()) expect(e.env).not.toHaveProperty("SF_TEST_MYSQL_URL");
-    expect(f.broker.prBody()).toContain(MYSQL_SKIPPED);
-    expect(MYSQL_SKIPPED).toMatch(/MySQL checks skipped/);
+    expect(f.checkExecs().length).toBeGreaterThan(CHECKS.length);
+    const allowed = new Set(["PATH", "HOME", "GIT_CONFIG_GLOBAL", "SF_WORKER_INDEX", "SF_TEST_WORKERS"]);
+    const database = /MYSQL|DATABASE|_DB_|DB_URL/;
+    for (const e of f.checkExecs()) {
+      for (const k of Object.keys(e.env)) expect(allowed.has(k), `${e.cmd}: ${k}`).toBe(true);
+      expect(Object.keys(e.env).some((k) => database.test(k)), e.cmd).toBe(false);
+    }
+    expect(f.runner.specs.length).toBeGreaterThan(2);
+    for (const s of f.runner.specs) expect(Object.keys(s.env_allowlist).some((k) => database.test(k))).toBe(false);
+    const body = f.broker.prBody();
+    expect(body).toContain("Checked before push:");
+    expect(body).not.toMatch(/skipped/i);
   });
 });
-

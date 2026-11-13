@@ -113,7 +113,6 @@ graph TB
     LLMP["LLMProvider<br/><b>claude-cli</b>, openai-compatible"]
     SBX["Sandbox<br/><b>noop</b> (git worktree)"]
     CAP["CapabilitySearch<br/><b>bm25</b>, list-all"]
-    TDB["TestDatabase<br/><b>none</b>"]
   end
 
   subgraph SYNC["Sync plugins"]
@@ -166,7 +165,6 @@ graph TB
   WRK -- "call: git.store_branch, preflight<br/>(under a run passport)" --> BRK
   WRK -- "call: narrow (run passport)" --> IDN
   WRK -- "call: before_run hooks" --> RT
-  WRK -- call --> TDB
   WRK -- call --> AWK
   WRK -- "file: transcripts" --> SHS
   RUN -- "exec: agent loop in sandbox" --> SBX
@@ -224,7 +222,6 @@ graph TB
 | `AuthProvider` | The role half of a command decision, per origin (`auth` for forge comments, `local_auth` for CLI and UI, `slack_auth` for Slack threads, default `local_auth`); Identity checks the passport half | GitHub permissions through grants; local users and roles in the store |
 | `GrantSource` | Roles a subject holds (`permissions.grants`) | GitHub collaborator permission; `static` from config |
 | `CapabilitySearch` | Finds docs and skills for an agent (finding is not permission) | none (local index) |
-| `TestDatabase` | A throwaway database for pre-push checks | local MySQL |
 | `SharedStorage` | Run transcripts and step bundles | local filesystem |
 | `KeepAwake` | Keeps the host awake during a run | `caffeinate` |
 | `Updater` | Keeps the running factory on the latest base commit; drains children, optional unattended migrations | git, npm build, process fork |

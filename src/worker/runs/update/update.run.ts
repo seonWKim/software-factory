@@ -78,7 +78,7 @@ async function update(w: Worker, c: RunCall) {
     const merge_sha = (await w.git(handle, ["rev-parse", "HEAD"])).trim();
     // Stored and recorded as keyed intents (RFC 0015 M7): outbound pushes it and refreshes the PR body behind it.
     const push_intent = await w.pushBranch(c, handle.workdir, branch, merge_sha, () =>
-      w.prRefresh(item, checkedLines(checks.results, { fixed: false, skipped: null })));
+      w.prRefresh(item, checkedLines(checks.results, { fixed: false })));
     const how = mechanical
       ? `with only appended lines on both sides in ${mechanical.map((f) => `\`${f}\``).join(", ")}, merged in code (base lines first),`
       : "cleanly";

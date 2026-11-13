@@ -50,7 +50,6 @@ export const FAILURE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   no_pr: "The work item has no pull request.",
   prompt_missing: "A prompt file the run needs is missing.",
   work_item_missing: "The run's work item does not exist.",
-  test_database_failed: "The run's test database could not be created.",
   unknown_tool: "The agent called a tool the broker does not know.",
   tool_error: "A tool call failed.",
 };

@@ -90,7 +90,6 @@ const KINDS: { readonly [K in PluginKind]: KindInfo } = {
   updater: { interface: "Updater", configKey: "plugins.updater", guard: false, optional: false },
   awake: { interface: "KeepAwake", configKey: "plugins.awake", guard: false, optional: false },
   github_auth: { interface: "GitHubCredentials", configKey: "plugins.github_auth", guard: false, optional: false },
-  test_database: { interface: "TestDatabase", configKey: "plugins.test_database", guard: false, optional: false },
   forge: { interface: "Forge", configKey: "plugins.forge", guard: false, optional: true },
   network_probe: { interface: "NetworkProbe", configKey: "plugins.network_probe", guard: false, optional: false },
   bus: { interface: "EventBus", configKey: "plugins.bus", guard: false, optional: false },
