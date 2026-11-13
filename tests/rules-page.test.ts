@@ -171,7 +171,7 @@ const fixed = (ledger: TacitLedger): UiTacit => ({
 async function page(tacit: TacitLedger | { agentsHome: string } | undefined, as: UserId = OWNER, known: readonly string[] = []) {
   const clock = new FakeClock();
   const { store } = await newStore(clock);
-  await store.claimLocalOwner(OWNER);
+  await store.claimOwner(OWNER);
   const log = new MemLog();
   const pauses: UiPauses = { principal: async () => as, authorize: async () => ({ allow: true }), csrfToken: newCsrfToken(), log };
   const settings: UiSettings = {

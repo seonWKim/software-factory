@@ -3,16 +3,15 @@
 // (Enter takes one; `--yes` takes every default without reading the terminal), then a ✓ or ✗ line. The shared
 // choices (the sync plugins) go to factory.config.json after a diff and a question; the mode and the auto-merge
 // tier are runtime settings, set through `factory settings`. After each finished step its name goes to the
-// progress record, so the next run offers to continue from the step that did not finish. `--me` only registers
-// the person.
+// progress record, so the next run offers to continue from the step that did not finish.
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { type Loaded, Plugins, buildStatsStore, settingsBase } from "../../../compose.js";
 import { cliUserConfig } from "../../../core/config.js";
-import { cliIdentity } from "../../../core/local-cli.js";
+import { type CliIdentity, cliIdentity } from "../../../core/local-cli.js";
 import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../../core/settings.js";
-import { ProfileStore } from "../../../identity/index.js";
+import { ProfileStore, checkDisplayName } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
 import {
   CONNECT_COMMANDS,
@@ -36,17 +35,14 @@ import {
 } from "../../../setup.js";
 import { type CommandContext, loadCommands } from "../../index.js";
 import { cliEnvironment, gitUserName } from "../../support.js";
-import { defaultsAsk, readHidden, terminalAsk } from "./ask.js";
+import { type Ask, defaultsAsk, readHidden, terminalAsk } from "./ask.js";
 import { applyChoices, configDiffLines, currentChoices, editConfigText, parseSlackChannels } from "./config-edit.js";
-import { registerMe } from "./me.js";
 import { clearProgress, readProgress, writeProgress } from "./progress.js";
 
 export interface GuidedOptions {
   rotate: SetupState["rotate"];
   /** Take every default without asking. */
   yes: boolean;
-  /** Only register the person (ID and display name); shared config and secrets are not touched. */
-  me: boolean;
 }
 
 /** The shared state plus the command context, for reloading the config and running `factory settings`. */
@@ -62,7 +58,6 @@ export async function guidedSetup(ctx: CommandContext, o: GuidedOptions): Promis
   const io = terminalIo(o.yes);
   const loaded = await ctx.load();
   const s: GuidedState = { loaded, github: loaded.config.local_only !== true, rotate: o.rotate, ctx };
-  if (o.me) return (await runStep(1, youStep, s, io)).ok ? 0 : 1;
   return runSetup(SETUP_STEPS, s, io);
 }
 
@@ -257,16 +252,61 @@ const databaseStep: SetupStep<GuidedState> = {
   },
 };
 
-/** Registers the person (`registerMe`): the ID, a display name, the owner claim. */
+/** Registers the person (`registerYou`): the ID, a display name, the owner claim. */
+export interface YouDeps {
+  store: { claimOwner(user_id: CliIdentity["user"]): Promise<string> };
+  profiles: Pick<ProfileStore, "get" | "set">;
+  identity: CliIdentity;
+  /** git user.name: the default name, never an ID. */
+  gitName: string | null;
+  ask: Pick<Ask, "text">;
+  /** ISO time of the write. */
+  now: string;
+}
+
+/**
+ * "You" (owner decision 2026-11-08): the person's ID stays the CLI identity; setup asks for a display name, prefilled
+ * from git user.name, and Identity stores it once against that ID. The first person becomes the owner, as on a first
+ * writing command (design 08-permissions, One owner). `ok` false when nothing could be stored (the anonymous identity).
+ */
+export async function registerYou(d: YouDeps): Promise<{ ok: boolean; lines: string[] }> {
+  const user = d.identity.user;
+  if (d.identity.from === "anonymous") {
+    return {
+      ok: false,
+      lines: [
+        `   you are ${user}: nothing in this environment names you, so nothing is stored.`,
+        "   Set git user.email (or cli_user in factory.config.json), then run `npm run setup` again.",
+      ],
+    };
+  }
+  const existing = await d.profiles.get(user);
+  const answer = await d.ask.text("   Your display name (shown next to your ID in the CLI and UI)", existing?.display_name ?? d.gitName ?? "", (a) => {
+    const c = checkDisplayName(a);
+    return c.ok ? null : c.reason;
+  });
+  const checked = checkDisplayName(answer);
+  const lines: string[] = [];
+  if (checked.ok) {
+    await d.profiles.set(user, checked.name, "self", d.now);
+    lines.push(`   you are ${user} (from ${d.identity.from}), shown as "${checked.name}"`);
+  } else {
+    lines.push(`   you are ${user} (from ${d.identity.from}); no display name stored (${checked.reason}; git user.name is not set either)`);
+  }
+  const owner = await d.store.claimOwner(user);
+  lines.push(owner === user ? "   you are the owner: you may approve and merge" : `   the owner is ${owner}: only the owner may send commands`);
+  return { ok: true, lines };
+}
+
 export const youStep: SetupStep<SetupState> = {
   name: "you",
   title: "You",
-  why: "Your display name, stored once against your ID; the first person to register becomes the local owner.",
+  why: "Your display name, stored once against your ID; the first person to register becomes the owner.",
   async run({ loaded }, io) {
     const store = await openStore(loaded, io.print);
-    if (!store) return { ok: false, line: "skipped: the store is not ready (run npm run migrate if the line above says so, then npm run setup -- --me)" };
+    if (!store) return { ok: false, line: "skipped: the store is not ready (run npm run migrate if the line above says so, then npm run setup)" };
     try {
-      const r = await registerMe({
+      const r = await registerYou({
         store,
         profiles: new ProfileStore(storeSql(store)),
         identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)),

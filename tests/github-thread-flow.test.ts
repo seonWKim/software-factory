@@ -112,8 +112,8 @@ function spied(inner: AuthProvider): AuthProvider & { asked: string[] } {
 
 /** One owner (design 08-permissions): ME, the CLI identity, with the GitHub account OWNER names linked to it. */
 async function ownedBy(store: FactoryStore): Promise<void> {
-  if (await store.getLocalUser(ME)) return;
-  await store.claimLocalOwner(ME);
+  if ((await store.getOwner()) === ME) return;
+  await store.claimOwner(ME);
   await store.createLinkCode(ME, "OWNERLINK1");
   await store.redeemLinkCode("OWNERLINK1", { provider: "github", subject: OWNER.slice("github:".length) });
 }
@@ -434,7 +434,7 @@ describe("CLI commands on a GitHub item (design 05-sources, CLI intake)", () => 
 
     f.hub.down = OUTAGE;
     expect((await f.cli(ME, approve(byCli.id))).code).toBe(0);
-    expect(await f.store.listLocalUsers()).toEqual([expect.objectContaining({ user_id: ME, role: "owner" })]);
+    expect(await f.store.getOwner()).toBe(ME);
     await f.controller.tickCommands();
 
     const state = (it: WorkItem | null) => ({ stage: it!.stage, blocked_on: it!.blocked_on, blocked_reason: it!.blocked_reason });
@@ -450,12 +450,10 @@ describe("CLI commands on a GitHub item (design 05-sources, CLI intake)", () => 
     expect((await f.store.listUnmirroredCliCommands(10)).map((c) => c.args.item)).toEqual([byCli.id]);
   });
 
-  it("only the owner is allowed: an approver, a requester or anonymous is refused with the owner reply, and nothing changes", async () => {
+  it("only the owner is allowed: other local users or anonymous are refused with the owner reply, and nothing changes", async () => {
     const f = await factory();
     const items = [await f.specced(7), await f.specced(8), await f.specced(9), await f.specced(10)];
     f.hub.down = OUTAGE;
-    expect((await f.cli(ME, { action: "users_add", user: "local:bob" as UserId, role: "approver" })).code).toBe(0);
-    expect((await f.cli(ME, { action: "users_add", user: "local:carol" as UserId, role: "requester" })).code).toBe(0);
     await f.cli(ME, approve(items[0]!.id));
     await f.cli("local:bob" as UserId, approve(items[1]!.id));
     await f.cli("local:carol" as UserId, approve(items[2]!.id));

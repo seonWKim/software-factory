@@ -4,7 +4,7 @@
 // process started for it, if any. POST /api/v1/calendar/connect and /api/v1/calendar/disconnect run the one connect flow
 // the CLI runs (src/setup.ts connectCalendar, wired by compose.ts buildUiParts): the plugin's connect hook, its secrets
 // through the setup writer, then the live setting and, on connect, one sync. The request guards (Host, Origin,
-// Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (the store's local owner only);
+// Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (the store's owner only);
 // every refusal comes before the flow runs.
 //
 // Connect never asks the terminal: the hook's hidden questions are answered from the request's `values`, keyed by the

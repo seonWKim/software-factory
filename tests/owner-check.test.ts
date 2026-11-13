@@ -33,7 +33,7 @@ const SYSTEM = { kind: "system" as const, id: "system:test" };
 
 async function setup() {
   const { store, clock } = await newStore();
-  await store.claimLocalOwner(OWNER);
+  await store.claimOwner(OWNER);
   // The owner links their GitHub and Slack accounts (`factory link-code`, then `/link <code>` from each).
   await store.createLinkCode(OWNER, "ABCDEFGHJK");
   await store.redeemLinkCode("ABCDEFGHJK", { provider: GITHUB_OWNER.provider, subject: GITHUB_OWNER.subject });
@@ -68,14 +68,14 @@ describe("the owner check", () => {
   it("allows the owner and refuses anyone else as not_owner; anonymous never claims the owner", async () => {
     const { store } = await newStore();
     expect(await authorizeOwner(store, "local:anonymous" as UserId, "approve_spec")).toEqual({ allow: false, reason: NOT_OWNER });
-    expect(await store.listLocalUsers()).toEqual([]);
+    expect(await store.getOwner()).toBeNull();
     // A store with no owner: the first local identity asked becomes it, as the CLI's first writing command does.
     expect(await authorizeOwner(store, OWNER, "approve_merge")).toEqual({ allow: true });
     expect(await authorizeOwner(store, "local:bob" as UserId, "approve_merge")).toEqual({ allow: false, reason: NOT_OWNER });
     // An account of another provider never claims it, even on a fresh store.
     const fresh = (await newStore()).store;
     expect(await authorizeOwner(fresh, "github:7" as UserId, "approve_spec")).toEqual({ allow: false, reason: NOT_OWNER });
-    expect(await fresh.listLocalUsers()).toEqual([]);
+    expect(await fresh.getOwner()).toBeNull();
     expect(NOT_OWNER_REPLY).toBe("only the owner may send this command");
   });
 
@@ -163,7 +163,7 @@ describe("the owner check", () => {
 
   it("approve_tool takes the same owner check", async () => {
     const { store } = await newStore();
-    await store.claimLocalOwner(OWNER);
+    await store.claimOwner(OWNER);
     const now = () => "2026-11-13T00:00:00.000Z";
     const deps = (user_id: string) => ({ auth: new OwnerAuth(store), entries: new PackEntriesStore(store.db, now), approvals: new PackApprovalsStore(store.db, now), user_id: user_id as UserId });
     const request = { action: "approve", kind: "tool", name: "docs-reader" } as const;

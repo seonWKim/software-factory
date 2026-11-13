@@ -21,7 +21,6 @@ export default defineCommand({
                (display name), mode and auto_merge_max_tier, plugin setup, checks, canary. A run that stopped
                offers "Continue from step N?" (record: <state_dir>/setup-progress.json, no secret in it)
                --yes  take every default without reading the terminal; missing secrets are reported, not asked
-               --me   only register yourself: your ID and display name, nothing shared (later team members)
                --rotate-github / --rotate-claude to replace a stored credential${connectUsage}`,
   async run(args, ctx) {
     const [kind, command, ...rest] = args;
@@ -36,11 +35,11 @@ export default defineCommand({
     const rotate: SecretName[] = [];
     for (const a of args) {
       if (a in ROTATE) rotate.push(secretName(ROTATE[a]!));
-      else if (a !== "--yes" && a !== "-y" && a !== "--me") {
+      else if (a !== "--yes" && a !== "-y") {
         console.error(`setup: unknown argument ${JSON.stringify(a)}\n${ctx.usage}`);
         return 1;
       }
     }
-    return guidedSetup(ctx, { rotate, yes: args.includes("--yes") || args.includes("-y"), me: args.includes("--me") });
+    return guidedSetup(ctx, { rotate, yes: args.includes("--yes") || args.includes("-y") });
   },
 });

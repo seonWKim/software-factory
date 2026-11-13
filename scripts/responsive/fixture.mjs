@@ -89,12 +89,6 @@ export async function startFixture() {
       },
       storage,
       commands: { actor: OWNER, source: "config", token: csrfToken, mergeAllowed: async () => true, localMerge: true },
-      users: {
-        identity: { user: OWNER, from: "config" },
-        permissions: { grants: ["static"], static: { roles: { [OWNER]: { "*": ["approver"] }, "github:69591622": { [PROJECT.key]: ["approver", "requester"] } } } },
-        csrfToken,
-        log: { info() {}, warn() {}, error() {} },
-      },
     },
     0,
   );

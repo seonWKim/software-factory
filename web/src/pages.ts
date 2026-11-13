@@ -35,8 +35,8 @@ export const BASE = "/app/";
 /** The Settings page's "Commands from the page" section: what to set when the page's commands are off. */
 export const PAGE_COMMANDS_PATH = `${BASE}settings#page-commands`;
 
-/** Old page paths and where they lead now (Workers became Runners; the Users page is gone, one owner). */
-const REDIRECTS: Readonly<Record<string, string>> = { workers: "runners", users: "" };
+/** Old page paths and where they lead now (Workers became Runners). */
+const REDIRECTS: Readonly<Record<string, string>> = { workers: "runners" };
 
 /** The path under /app/ without query, hash or trailing slash. */
 function restOf(pathname: string): string {

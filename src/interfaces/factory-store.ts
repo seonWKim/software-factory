@@ -8,7 +8,7 @@ import type {
   StateChangeDetail, Stage, Timestamp, UnreviewedMerge, UserId, Verdict, VerdictKind, VerdictSeverity, VerdictTarget, WorkItem, WorkItemId,
   WorkItemPatch, WorkerId, WorkerPause,
 } from "../core/types.js";
-import type { LinkedAccount } from "./auth-provider.js";
+import type { AuthAction, AuthResource, LinkedAccount } from "./auth-provider.js";
 import type { SourceEvent } from "./source-adapter.js";
 import type { StatsRecord } from "../core/stats.js";
 import type { MergeEvaluation } from "../core/merge-evaluation.js";
@@ -765,21 +765,17 @@ export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore
    */
   redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult>;
 
-  // Local users (issue #318): who may act from the local CLI and UI under the `local` auth plugin.
+  // The one owner (design 08-permissions, One owner; issue #577): identity_owner, at most one row.
 
-  /** The local user row for `user_id`, or null. */
-  getLocalUser(user_id: UserId): Promise<LocalUser | null>;
-  /** Every local user, the owner first, then oldest first. */
-  listLocalUsers(): Promise<LocalUser[]>;
+  /** The owner's user ID, or null while no local identity has claimed it. */
+  getOwner(): Promise<UserId | null>;
   /**
    * Makes `user_id` the owner when the store has no owner yet, and returns the owner (the existing one, or
    * `user_id`). At most one owner, whatever replicas or terminals race: a second claim returns the first owner.
    */
-  claimLocalOwner(user_id: UserId): Promise<LocalUser>;
-  /** Gives a non-owner user `role` (added or changed). The owner's row is never changed by this. */
-  setLocalUserRole(user_id: UserId, role: Exclude<LocalRole, "owner">, added_by: UserId): Promise<{ ok: true; created: boolean } | { ok: false; reason: "owner" }>;
-  /** Removes a non-owner user's row. */
-  removeLocalUser(user_id: UserId): Promise<"removed" | "missing" | "owner">;
+  claimOwner(user_id: UserId): Promise<UserId>;
+  /** Writes one owner-check decision's authz_audit row, with no passport (`none`). */
+  recordOwnerDecision(d: OwnerDecision): Promise<void>;
 
   // Runtime settings overrides (design 2026-11-03): rows as given; the caller checks keys and values (core/settings.ts).
 
@@ -1261,15 +1257,15 @@ export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
 /** Wrong codes after which every live code is locked. */
 export const LINK_CODE_MAX_FAILURES = 5;
 
-/** A local user's role (issue #318): `owner` (one, the first identity; may manage users) > `approver` > `requester`. */
-export type LocalRole = "owner" | "approver" | "requester";
-
-export interface LocalUser {
-  user_id: UserId;
-  role: LocalRole;
-  /** Who added the row: the owner's own ID for the owner. */
-  added_by: UserId;
-  created_at: Timestamp;
+/** One owner-check decision (allowed or refused), audited as one authz_audit row. */
+export interface OwnerDecision {
+  principal: UserId;
+  action: AuthAction;
+  /** Absent: a check with no resource. */
+  resource?: AuthResource;
+  allow: boolean;
+  /** `allowed`, or the refusal reason. */
+  reason: string;
 }
 
 export type RedeemLinkResult =

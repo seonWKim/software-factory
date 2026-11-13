@@ -25,7 +25,7 @@ async function harness() {
   const source = new FakeSource();
   const forge = new FakeForge(source);
   const local = new OwnerAuth(store);
-  await store.claimLocalOwner(ME);
+  await store.claimOwner(ME);
   const controller = new ControllerRole({
     store, sources: [source], forge, auth: local, clock, config, log: silent, scanner: cleanScanner,
   });

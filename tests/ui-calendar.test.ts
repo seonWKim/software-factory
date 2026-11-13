@@ -142,7 +142,7 @@ async function page(o: { secrets?: string; calendar?: string[]; as?: UserId } = 
   mkdirSync(join(loaded.stateDir, "db"), { recursive: true });
   const store = await buildStatsStore(loaded);
   await store.migrate();
-  await store.claimLocalOwner(OWNER);
+  await store.claimOwner(OWNER);
   const clock = new FakeClock(NOW);
   const base = settingsBase(loaded);
   const settings: UiSettings = {

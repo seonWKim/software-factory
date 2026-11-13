@@ -103,7 +103,7 @@ async function setup(opts: { store?: (s: FactoryStore) => FactoryStore; channels
     await real.createLinkCode(user as UserId, `code-${account}`);
     await real.redeemLinkCode(`code-${account}`, { provider: "slack", subject: account });
   }
-  await real.claimLocalOwner("github:1" as UserId);
+  await real.claimOwner("github:1" as UserId);
   const controller = new ControllerRole({
     store: real, sources: [gh, slack], forge, auth: new OwnerAuth(real), clock, config, log, scanner, llm: opts.llm ?? new ApproveLLM(),
   });
@@ -1023,19 +1023,15 @@ describe("slack source: factory commands (issue #498)", () => {
     expect(help).not.toContain("`list`");
   });
 
-  it("`users`, `mode` and `settings` writes get one refusal until #479 and write nothing; reads work", async () => {
+  it("`mode` and `settings` writes get one refusal until #479 and write nothing; reads work", async () => {
     const f = await setup();
-    const users = await f.store.listLocalUsers();
-    for (const [ts, text] of [["1800000032.000100", "users add local:dev@example.com --role approver"], ["1800000032.000200", "mode auto"], ["1800000032.000300", "settings set max_loops 9"]]) {
+    for (const [ts, text] of [["1800000032.000200", "mode auto"], ["1800000032.000300", "settings set max_loops 9"]]) {
       await deliver(f, eventEnvelope(mention(ts!, text!)));
       const replies = f.api.thread(ts!);
       expect(replies, text).toHaveLength(1);
       expect(replies[0]!.text).toContain("signed command passports (issue #479)");
     }
-    expect(await f.store.listLocalUsers()).toEqual(users);
     expect(await f.store.listSettingChanges(10)).toEqual([]);
-    await deliver(f, eventEnvelope(mention("1800000032.000400", "users list")));
-    expect(f.api.thread("1800000032.000400")[0]!.text).toContain("you are github:1 (from linked chat account)");
     await deliver(f, eventEnvelope(mention("1800000032.000500", "settings history")));
     expect(f.api.thread("1800000032.000500")[0]!.text).toContain("no settings changes yet");
   });

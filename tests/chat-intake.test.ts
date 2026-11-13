@@ -66,7 +66,7 @@ async function setup(llm: ScriptedLLM | null) {
     await store.createLinkCode(user as UserId, `code-${account}`);
     await store.redeemLinkCode(`code-${account}`, { provider: "slack", subject: account });
   }
-  await store.claimLocalOwner("github:1" as UserId);
+  await store.claimOwner("github:1" as UserId);
   const controller = new ControllerRole({
     store, sources: [gh, slack], forge: new FakeForge(gh), auth: new OwnerAuth(store), clock, config, log, scanner, ...(llm ? { llm } : {}),
   });
