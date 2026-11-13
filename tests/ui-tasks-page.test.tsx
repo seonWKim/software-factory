@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DoneRow, DoneView, EventRow, TaskRow, TasksView } from "../web/src/api.js";
+import type { DoneRow, DoneView, EventRow, ItemRow, TaskRow, TasksView } from "../web/src/api.js";
 import { PAGES, routeFor } from "../web/src/pages.js";
 
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
@@ -32,6 +32,12 @@ const view = (over: Partial<TasksView> = {}): TasksView => ({
   can_build: true,
   ...over,
 });
+const item = (id: string, over: Partial<ItemRow> = {}): ItemRow => ({
+  id, source: { type: "local", id: `local:${id}` }, title: `Work ${id}`, level: "needs_you", badges: [], stage: "REVIEW", tier: null, kind: null,
+  blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: null, change_url: null, since: "2026-11-12T00:00:00.000Z",
+  updated_at: "2026-11-12T00:00:00.000Z", version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, commands: [], ...over,
+} as ItemRow);
+let items: ItemRow[] = [];
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 let current: TasksView;
@@ -42,6 +48,7 @@ let answer: { status: number; body: unknown };
 
 beforeEach(() => {
   current = view();
+  items = [];
   donePages = {};
   posts = [];
   answer = { status: 200, body: { task_id: "tk_now", work_item_id: "wi_9", created: true } };
@@ -51,6 +58,7 @@ beforeEach(() => {
       return json(answer.status, answer.body);
     }
     if (url === "/api/v1/tasks") return json(200, current);
+    if (url === "/api/v1/items") return json(200, { as_of: "2026-11-12T00:00:00.000Z", total: items.length, items, facets: {} });
     if (url.startsWith("/api/v1/tasks/done")) return json(200, donePages[url] ?? { tasks: [], older: false, next_before: "2026-10-13T00:00:00.000Z" });
     return json(404, { error: "Not found." });
   }));
@@ -571,6 +579,43 @@ describe("Tasks page", () => {
       expect(overdue.getAttribute("data-level")).toBe("stuck");
       const event = within(document.querySelector<HTMLElement>("[data-event]")!).getByText("Event");
       expect(event.className).toContain("rounded-pill");
+    });
+  });
+
+  describe("Factory work", () => {
+    it("lists a work item that needs the owner above the tabs, in a Needs-you group", async () => {
+      items = [item("wi_1", { title: "Approve the spec", level: "needs_approval" }), item("wi_run", { title: "Busy", level: "running" })];
+      await show();
+      const section = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
+      expect(within(section).getByText("Approve the spec")).toBeTruthy();
+      expect(within(section).getByText("Approve")).toBeTruthy();
+      expect(within(section).queryByText("Busy")).toBeNull();
+      const tabs = screen.getByRole("group", { name: "Task view" });
+      expect(section.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("a built task shows its work item's state", async () => {
+      items = [item("wi_1", { level: "ready_to_merge" })];
+      await show();
+      tab("Project");
+      expect(await within(card("tk_built")).findByText("Ready to merge", {}, SLOW)).toBeTruthy();
+    });
+
+    it("a merged item reads Merged, and the state opens a dialog with the full-page link", async () => {
+      items = [item("wi_1", { level: "closed", close_reason: "completed", stage: "CLOSED" })];
+      await show();
+      tab("Project");
+      expect(await within(card("tk_built")).findByText("Merged", {}, SLOW)).toBeTruthy();
+      fireEvent.click(within(card("tk_built")).getByRole("button", { name: "Work item state: tk_built" }));
+      const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
+      expect(within(dialog).getByRole("link", { name: "Open the full item page" }).getAttribute("href")).toBe("/app/items/wi_1");
+    });
+
+    it("a checkbox still completes a task with the section on the page", async () => {
+      items = [item("wi_1")];
+      await show();
+      fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
+      await waitFor(() => expect(posts.some((p) => p.url.includes("done"))).toBe(true), SLOW);
     });
   });
 });
