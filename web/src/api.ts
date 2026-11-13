@@ -867,6 +867,8 @@ export const API = {
   // The app's own revision goes along, so the server lists a mismatch in Needs you.
   overview: WEB_REV ? `/api/v1/overview?rev=${encodeURIComponent(WEB_REV)}` : "/api/v1/overview",
   items: "/api/v1/items",
+  /** The items read, kept to the work items whose source task is in that task project when `project` is a slug. */
+  itemsIn: (project: string | null) => (project === null ? "/api/v1/items" : `/api/v1/items?project=${encodeURIComponent(project)}`),
   item: (id: string) => `/api/v1/items/${encodeURIComponent(id)}`,
   itemCommands: (id: string) => `/api/v1/items/${encodeURIComponent(id)}/commands`,
   session: "/api/v1/session",
@@ -924,6 +926,19 @@ export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
     queryKey: [url],
     queryFn: () => getJson<T>(url),
     refetchInterval: pollMs,
+    refetchIntervalInBackground: false,
+  });
+}
+
+/**
+ * The items read, polled as useApi is; `project` keeps the work items built from that task project's tasks. Its key
+ * starts with the items' key, so a command's reload of the items reloads it whatever the filter.
+ */
+export function useItems(project: string | null) {
+  return useQuery({
+    queryKey: project === null ? [API.items] : [API.items, "project", project],
+    queryFn: () => getJson<Items>(API.itemsIn(project)),
+    refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
   });
 }

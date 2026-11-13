@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { API, type ItemRow, type Items, useApi } from "../api.js";
+import { API, type ItemRow, type Items, useApi, useItems } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { Dialog } from "../components/ui/dialog.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -47,10 +47,13 @@ export function WorkState({ id, title }: { id: string; title: string }) {
   );
 }
 
-/** Factory work: the open items that need the owner, in the Needs-you groups with their row actions. */
-export function FactoryWork() {
+/**
+ * Factory work: the open items that need the owner, in the Needs-you groups with their row actions; with `project` (the
+ * Tasks page's switcher) only those built from a task in that project.
+ */
+export function FactoryWork({ project }: { project: string | null }) {
   const now = useNow();
-  const items = useApi<Items>(API.items);
+  const items = useItems(project);
   const rows = items.data?.items;
   const needs = useMemo(() => needsYou(rows ?? []), [rows]);
   const titles = useMemo(() => byId(rows), [rows]);
