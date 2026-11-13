@@ -86,7 +86,7 @@ graph LR
 - **Controller role** (`src/runtime/roles/controller-role.ts`): one process runs four components, each on its own TickGenerator (`plugins.ticks`): inbound (`intake`, `consume`, `records`, `relay`), the controller (`consume`, `relay`, and the units' `decide` schedule each `tick_ms`), outbound (`consume`, `outbound-flush`, `relay`) and the bus's retry scheduler. It owns the forge sync lease and hands it to inbound (fences cursor moves) and to the sync unit and outbound (only the holder writes the synced type). Never runs an agent.
 - **Worker pool** (`src/worker/`: `pool.ts`, `runner.ts`, one folder per run kind under `runs/`): claims runs from `worker_runs` through the store, hands each to the ExecutionEngine (`plugins.engine`, default `journal`), runs its kind's steps, and writes the outcome. Its comments are thread entries and its pushes and PRs are outbound intents, written through the store. Never decides a transition.
 - **UI server** (`src/ui/`): reads the store; its writes are app command requests (rows in `inbound_commands`, applied by the controller like any command), settings (through the same `runSettings` as the CLI), pause resumes and standing rules, each audited.
-- **CLI** (`src/main.ts` finds each command in `src/cli/handlers/<command>/<command>.command.ts`; `--config <path>` or `FACTORY_CONFIG`, the flag winning, picks the config file, made absolute once and passed on to a supervisor's children; a command's return value is the exit code; no command prints the usage and exits 0, an unknown command prints it and exits 1, and an uncaught error prints its message to stderr and exits 1, a supervised child first telling the supervisor why): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `inbound_commands` rows carrying the actor's passport, for any item, local or GitHub.
+- **CLI** (`src/main.ts` finds each command in `src/cli/handlers/<command>/<command>.command.ts`; `--config <path>` or `FACTORY_CONFIG`, the flag winning, picks the config file, made absolute once and passed on to a supervisor's children; a command's return value is the exit code; no command prints the usage and exits 0, an unknown command prints it and exits 1, and an uncaught error prints its message to stderr and exits 1, a supervised child first telling the supervisor why): `task create` writes a local item and its triage run; item commands (`approve`, `retry`, `revise`, `reject`, `resolve`, `merge`) become `inbound_commands` rows carrying the actor's user ID (no passport), for any item, local or GitHub.
 
 Solo default: one `factory dev` process tree on one machine, SQLite, every schedule of every component in one process, no replica id. Several worker processes of the same owner share that SQLite file; leases, claim tokens and conditional updates keep each message, run, batch and landing with one holder. A config that selects a `mysql` store fails at startup (decision 2026-11-11, `docs/design/05-coordination.md`).
 
@@ -151,10 +151,9 @@ graph TB
   OUT -- "publish deliveries.results" --> BUS
   INB -- "call: poll, subscribe" --> SRC
   INB -- "call: poll" --> FORGE
-  INB -- "call: commandPassport" --> IDN
   CTL -- "commit; store (ratcheted units)" --> STO
   CTL -- "call (reader): PR checks" --> FORGE
-  CTL -- "call: authorize under a passport" --> IDN
+  CTL -- "call: authorize auto mode under its service passport" --> IDN
   CTL -- "call: before_merge hooks" --> RT
   CTL -- "call: conflict probe, PR merge check" --> SBX
   WRK -- "store: claim + lease, outcome,<br/>thread entries, intents" --> STO
@@ -216,7 +215,7 @@ graph TB
 | `EgressScanner` (G5) | Scans every text before it leaves (stored branches, tool results, outbound texts, alerts, UI fields) | none (pure) |
 | `SecretStore` (G1) | Holds credentials; only plugin implementations read it | `~/.config/software-factory/.env` |
 | `GitHubCredentials` | Mints the GitHub token for the GitHub client (App installation token or PAT). A required kind, even with no GitHub plugin (RFC 0011) | GitHub App API |
-| `AuthProvider` | Not a plugin: the one owner check (`OwnerAuth`) decides every person's command, whatever its origin; service principals keep their passport checks in Identity | the store's local owner and linked accounts; no remote call |
+| `AuthProvider` | Not a plugin: the one owner check (`OwnerAuth`) decides every person's command, whatever its origin; service principals keep their passport checks in Identity | the store's owner (`identity_owner`) and linked accounts; writes one `authz_audit` row per decision; no remote call |
 | `CapabilitySearch` | Finds docs and skills for an agent (finding is not permission) | none (local index) |
 | `SharedStorage` | Run transcripts and step bundles | local filesystem |
 | `KeepAwake` | Keeps the host awake during a run | `caffeinate` |
@@ -272,7 +271,7 @@ graph LR
 
 | Topic (owner) | Messages | Published by | Consumed by (handler) | Partitioning, retention |
 |---|---|---|---|---|
-| `inbound.records` (inbound) | `InboundReceived{record_id, kind}` | inbound intake: each polled record (`intake` tick, with the fenced cursor move), each stream record after its cursor, each command row after the `commands` cursor (a comment command's edge passport is minted here) | inbound `normalize-source` | partitioned by stream (source type, `local` for CLI and UI); 7 days |
+| `inbound.records` (inbound) | `InboundReceived{record_id, kind}` | inbound intake: each polled record (`intake` tick, with the fenced cursor move), each stream record after its cursor, each command row after the `commands` cursor | inbound `normalize-source` | partitioned by stream (source type, `local` for CLI and UI); 7 days |
 | `controller.commands` (controller) | `CommandReceived{command_id}`, `SourceEventReceived{record_id, kind}` | inbound `normalize-source`, in its consumer's transaction | controller `legacy-controller` → the role's `consumeCommand` (the `commands` unit) or `consumeEvent` (the unit that takes the event kind) | partitioned by stream; 30 days; backoff 1 s to 60 s, 1,000 attempts (about 16 h) before a dead letter |
 | `controller.events` (controller) | `MergeCheckTimedOut{entry_id, run_key}` | the `merge-queue` unit, delayed until the check's time limit (`Kernel.emit`) | controller `unit-messages` → the unit that names the type (`merge-queue`) | partitioned; 30 days |
 | `deliveries.requests` (outbound) | `DeliveryRequested{commit_id, commit_count, destination, intent_ids, reply}` | the controller's outbox step (`announce`), for every intent not announced yet, the worker's included | outbound `aggregate` (joins a batch of the destination) | partitioned by destination (`<kind>:<ref>`); 7 days |
@@ -281,7 +280,7 @@ graph LR
 
 - **Every state change** is a conditional update with a version check (`Kernel.commitItem`, or the legacy store for ratcheted units), so two controllers can't apply the same transition twice; every transition is checked against the `WorkItem` state table.
 - **Runs are not on the bus yet.** The controller enqueues rows in `worker_runs`; workers claim them through the store's `claimRun` (coordination, claim pauses, one branch writer per item, a lease token), and the controller's `run-results` unit reads finished, unacknowledged runs. The controller's `reaper` unit is the one takeover path: it requeues an expired run and the next claim resumes it from the journal.
-- **Commands** from every origin become rows in `inbound_commands`: the CLI and the UI write them with the actor's passport; the `github-issues` source writes a comment command during its poll. Inbound relays them in seq order and the `commands` unit decides each under its passport.
+- **Commands** from every origin become rows in `inbound_commands`: the CLI and the UI write them with the actor's user ID and no passport; the `github-issues` source writes a comment command during its poll. Inbound relays them in seq order and the `commands` unit decides each with the owner check.
 - **Intents** reach outbound only through the controller's outbox step, the worker's too: the worker records thread entries and `push`/`pr` actions through the store, and the next outbox step announces them.
 - **Destinations.** A thread entry or action goes to `<source type>:<id>`; a run's push and PR, a merge queue landing and its base push go to a `git` destination that names the host whose factory repo holds the ref and the branch, so one destination's intents keep their order and only that host's outbound flushes them. Solo default: one process, which flushes every `git` destination. Enterprise setting: each replica flushes only its own host's.
 - **One forge sync per project**: only the `inbound_sync_leases` holder polls GitHub and writes the synced type; outbound's flush skips destinations this process cannot write now, so they wait for one that can.
@@ -295,7 +294,7 @@ Tables by owner (the full list is the generated `schema/sqlite.sql`):
 | controller | `controller_work_items`, `controller_state_changes`, `controller_verdicts`, `controller_handoffs`, `controller_dependency_edges`, `controller_file_conflicts`, `controller_unreviewed_merges`, `controller_item_thread`, `controller_claim_decisions`, `controller_budget_checkpoints`, `controller_merge_checks`, `controller_merge_queues`, `controller_merge_queue_entries`, `controller_alerts`, `controller_alert_patterns`, `controller_improve_reports`, `controller_filed_patterns`, `controller_standing_rules`, `controller_standing_proposals` |
 | worker | `worker_runs`, `worker_run_attempts`, `worker_run_steps`, `worker_claim_locks`, `worker_claim_pauses`, `worker_pauses`, `worker_processes`, `worker_host_sleeps` |
 | outbound | `outbound_intents`, `outbound_actions`, `outbound_requests`, `outbound_batches`, `outbound_batch_intents`, `outbound_deliveries`, `outbound_label_states`, `outbound_forge_budget`; `outbound_base_pushes` has no reader or writer left (dropped by a contract migration) |
-| identity | `identity_passports`, `identity_revocations`, `authz_audit`, `identity_profiles`, `identity_local_users`, `identity_user_links`, `identity_link_codes` |
+| identity | `identity_passports`, `identity_revocations`, `authz_audit`, `identity_profiles`, `identity_owner`, `identity_user_links`, `identity_link_codes` |
 | runtime | `runtime_settings_overrides`, `runtime_settings_changes`, `runtime_child_restarts`, `runtime_hook_decisions`, `runtime_schema_migrations`; `schema_migrations` (SQLite's frozen baseline) |
 | archived | `legacy_*` (the old names of M1's renames and M4's command tables), dropped only by `npm run migrate -- --contract` |
 
@@ -329,7 +328,7 @@ sequenceDiagram
   O->>C: publish deliveries.results, link the comment URL
   P->>F: /approve comment
   I->>DB: the source's poll stores a command row
-  I->>C: relay with edge passport, CommandReceived
+  I->>C: relay, CommandReceived
   C->>DB: authorize, enqueue implement (coordination may hold it)
   W->>DB: claim implement, mint run passport
   W->>A: run implementer in a run folder
@@ -375,7 +374,7 @@ sequenceDiagram
   P->>DB: factory task create (item + triage run)
   W->>DB: claim triage, outcome (spec)
   C->>DB: spec_pending, thread entry (no outbox row: the store is the surface)
-  P->>DB: factory approve id (command row with passport)
+  P->>DB: factory approve id (command row, no passport)
   I->>C: relay, CommandReceived
   C->>DB: authorize (owner check), enqueue implement
   W->>LB: git.store_branch (forge false, no intent)
@@ -437,7 +436,7 @@ graph LR
     AG["Agent (LLM)"]
   end
 
-  PPL -- "edge passport (CLI, UI rows; comment at the relay)" --> INBP
+  PPL -- "command rows (CLI, UI, comments), no passport" --> INBP
   INBP --> UNIT
   UNIT -- "call: owner check, audited" --> PS
   RPI -- "call: narrow (run passport)" --> PS
@@ -459,7 +458,7 @@ graph LR
 - **G3, G4** The sandbox's file view and the harness deny rules keep the secret file out of reach (details in `docs/architecture.md` §5).
 - **G5** Every text is egress-scanned before it leaves: the stored branch (broker), tool results (`ToolGate`), every outbound text at the flush (a flagged text is delivered once as a withheld notice), alert details and UI fields.
 - **G6** The canary test plants a secret and checks that a run cannot find it or is stopped by G5.
-- **Passports** (RFC 0015 M9). A person's command carries an edge passport: the CLI and UI write it on the command row, inbound mints one for a comment command at the relay. The controller decides a command under its passport (Identity checks chain, expiry, revocation and caveats; the owner check decides the role) and auto mode under `service:controller`. A run gets a narrowed run passport at its start, held in the worker process by run id; `PassportToolBroker` checks it on every broker call. Outbound delivers under `service:outbound`, `use_tool` per target; a denial retries the batch. Every decision is a row in `authz_audit`. Solo: the signing key is `<state>/passport.key` (0600, on `deny_paths`); enterprise: `SF_PASSPORT_KEY` through the SecretStore is not wired yet.
+- **Passports** (RFC 0015 M9). A person's command carries no passport: the owner check (`OwnerAuth`) decides it and writes one `authz_audit` row with passport `none`; auto mode is decided under `service:controller`. A run gets a narrowed run passport at its start, held in the worker process by run id; `PassportToolBroker` checks it on every broker call. Outbound delivers under `service:outbound`, `use_tool` per target; a denial retries the batch. Every decision is a row in `authz_audit`. Solo: the signing key is `<state>/passport.key` (0600, on `deny_paths`); enterprise: `SF_PASSPORT_KEY` through the SecretStore is not wired yet.
 - **Gates.** Floors (paths that force tier 4) and the protected paths (`PROTECTED_PATHS` in `src/core/standing.ts`: the controller, hooks, roles, broker, tools and every component's `settings/`) decide when a person must merge. Hooks may only veto after the guards allowed an action, and fail closed. Guards can be switched to another implementation, never turned off.
 
 ## 7. Review notes: where the architecture could improve

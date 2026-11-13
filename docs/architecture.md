@@ -177,7 +177,7 @@ sequenceDiagram
   C->>ST: REVIEW, no pr_number, enqueue review
   W->>R: review reads the local branch diff
   C->>ST: merge_pending (no PR checks)
-  OP->>ST: factory merge <id> (approver role)
+  OP->>ST: factory merge <id> (the owner)
   C->>ST: merge queue entry, enqueue merge-check run
   W->>R: merge-check run: install + checks on the merged result
   C->>R: landing through outbound's local target: move refs/heads/<base> only if still as checked (no push)
