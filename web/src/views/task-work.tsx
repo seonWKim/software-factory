@@ -23,7 +23,7 @@ const STATE_OF: Record<string, MessageKey> = {
   stuck: "tasks.state.needs",
 };
 
-export const stateKey = (it: ItemRow): MessageKey | null => (it.level === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.level] ?? null));
+const stateKey = (it: ItemRow): MessageKey | null => (it.level === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.level] ?? null));
 
 /** The work item's state as a button that opens its commands in a Dialog; nothing while the items list lacks the item. */
 export function WorkState({ id, title }: { id: string; title: string }) {
