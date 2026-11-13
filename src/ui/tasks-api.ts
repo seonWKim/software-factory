@@ -1,6 +1,6 @@
 // The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views with the stored calendar events; POST /api/v1/tasks/edit,
-// /done, /delete and /sub, the page's row actions, and /schedule, its timeline's drop, each calling the store method of its CLI command (`factory task
-// edit`, `done`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
+// /done, /reopen, /delete and /sub, the page's row actions, and /schedule, its timeline's drop, each calling the store method of its CLI command (`factory task
+// edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
 // its Build this button (task-build.ts, the same action as `factory task build`); and POST /api/v1/tasks, which
 // stores one plain task from quick-add words, for the desktop shell's quick-add box. The words go through the same parser as `factory task add` (src/core/quick-add.ts)
 // and the task through the same store method, with the ID the caller chose, so a retry stores one task. The task is
@@ -22,6 +22,7 @@ export const TASKS_PATH = "/api/v1/tasks";
 export const TASK_BUILD_PATH = "/api/v1/tasks/build";
 export const TASK_EDIT_PATH = "/api/v1/tasks/edit";
 export const TASK_DONE_PATH = "/api/v1/tasks/done";
+export const TASK_REOPEN_PATH = "/api/v1/tasks/reopen";
 export const TASK_DELETE_PATH = "/api/v1/tasks/delete";
 export const TASK_SUB_PATH = "/api/v1/tasks/sub";
 export const TASK_SCHEDULE_PATH = "/api/v1/tasks/schedule";
@@ -151,6 +152,20 @@ export async function writeTaskDone(d: UiDeps, body: unknown): Promise<ApiResult
 }
 
 /**
+ * POST /api/v1/tasks/reopen with `{ id }`, the store's reopenTask as `factory task reopen` (the Tasks page's ⌘Z): 404 for
+ * an unknown task; 409 when a recurring task's next occurrence is done (nothing written); else 200, `reopened` false
+ * when it was not done, `removed_next` the open next occurrence it deleted.
+ */
+export async function writeTaskReopen(d: UiDeps, body: unknown): Promise<ApiResult> {
+  if ((d.commands?.actor ?? null) === null) return OFF;
+  const b = parseBody(body, ["id"], true);
+  if ("error" in b) return refused(400, b.error);
+  const r = await d.store.reopenTask(b.id);
+  if (r.ok) return { status: 200, value: { task_id: r.task.id, reopened: r.reopened, removed_next: r.removed_next } };
+  return r.reason === "next_done" ? refused(409, "its next occurrence is done: undo that one first") : unknown(b.id);
+}
+
+/**
  * POST /api/v1/tasks/delete with `{ id }`, the store's deleteTask as `factory task delete`: 404 for an unknown task;
  * 409 naming its open sub-tasks while it has any (nothing written); else 200.
  */
@@ -220,6 +235,7 @@ export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => 
   [TASK_BUILD_PATH]: writeTaskBuild,
   [TASK_EDIT_PATH]: writeTaskEdit,
   [TASK_DONE_PATH]: writeTaskDone,
+  [TASK_REOPEN_PATH]: writeTaskReopen,
   [TASK_DELETE_PATH]: writeTaskDelete,
   [TASK_SUB_PATH]: writeTaskSub,
   [TASK_SCHEDULE_PATH]: writeTaskSchedule,

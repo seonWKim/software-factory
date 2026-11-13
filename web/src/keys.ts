@@ -2,12 +2,13 @@ import { useEffect, useRef } from "react";
 import { BASE } from "./pages.js";
 
 // The app's keyboard shortcuts (design §9). One listener on the document. None fires while focus is in an input,
-// textarea, select or contenteditable element, nor with Ctrl, Alt or Shift held (⌘K is the one chord).
+// textarea, select or contenteditable element, nor with Ctrl, Alt or Shift held (⌘K is the one chord here; ⌘Z is the
+// Tasks page's own listener, through isUndo).
 
 /** One shortcut for the help list: the keys as typed, and the catalog key of what they do. */
 export interface Shortcut {
   keys: string;
-  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask";
+  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
@@ -23,6 +24,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "q", what: "keys.addTask" },
   { keys: "e", what: "keys.editTask" },
   { keys: "Delete", what: "keys.deleteTask" },
+  { keys: "⌘Z", what: "keys.undoDone" },
 ];
 
 /**
@@ -44,6 +46,14 @@ export function inField(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
   if (!el || typeof el.closest !== "function") return false;
   return el.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])") !== null;
+}
+
+/**
+ * True for ⌘Z outside a field (metaKey only: no Ctrl, Alt or Shift), the Tasks page's undo of its last completion. In a
+ * field the browser keeps its own undo of the typing.
+ */
+export function isUndo(e: KeyboardEvent): boolean {
+  return !e.defaultPrevented && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "z" && !inField(e.target);
 }
 
 /**

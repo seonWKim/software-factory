@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useRef, useState } from "react";
+import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
 import {
   API, type DayRow, type EventRow, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postTaskAction, postTaskAdd, postTaskBuild, useApi,
 } from "../api.js";
@@ -13,7 +13,7 @@ import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { t } from "../i18n/index.js";
-import { QUICK_ADD_ATTR } from "../keys.js";
+import { QUICK_ADD_ATTR, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
@@ -31,6 +31,9 @@ import { itemPath } from "../pages.js";
 // its duration (30 minutes when none is stored), and each timed event, read-only. A task row dragged onto a
 // half-hour slot is scheduled there (POST /api/v1/tasks/schedule: today's date, the slot's time); typing a time in
 // the row's edit (3pm, 45m) does the same from the keyboard.
+// ⌘Z outside a field undoes the last completion this page made (POST /api/v1/tasks/reopen, `factory task reopen`), then
+// the one before it: the page keeps the completed tasks in memory only, so a reload forgets them, and it never undoes an
+// edit or a delete.
 
 const TABS = [
   { id: "inbox", label: t("tasks.inbox") },
@@ -49,8 +52,13 @@ function dayLabel(date: string): string {
   return new Date(y, m - 1, d).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
-/** What every row needs: the CSRF token for its actions (null with no commands actor) and each open task's title by ID. */
-const Rows = createContext<{ token: string | null; titles: ReadonlyMap<string, string> }>({ token: null, titles: new Map() });
+/**
+ * What every row needs: the CSRF token for its actions (null with no commands actor), each open task's title by ID,
+ * and `completed`, which keeps a task the row completed for ⌘Z.
+ */
+const Rows = createContext<{ token: string | null; titles: ReadonlyMap<string, string>; completed: (task: TaskRow) => void }>({
+  token: null, titles: new Map(), completed: () => {},
+});
 
 const ALERT = "text-xs text-pretty break-words text-pill-bad-fg";
 
@@ -265,7 +273,7 @@ function DeleteDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow; 
 }
 
 function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overdue?: boolean; sub?: boolean }) {
-  const { token, titles } = useContext(Rows);
+  const { token, titles, completed } = useContext(Rows);
   const row = useRef<HTMLLIElement>(null);
   const action = useTaskAction(token);
   const [mode, setMode] = useState<"view" | "edit" | "sub" | "delete">("view");
@@ -280,8 +288,10 @@ function TaskCard({ task, overdue = false, sub = false }: { task: TaskRow; overd
   };
   const complete = async () => {
     setChecked(true);
-    if (await action.run("done", { id: task.id })) announceStatus(t("tasks.completed", { title: task.title }));
-    else setChecked(false);
+    if (await action.run("done", { id: task.id })) {
+      completed(task);
+      announceStatus(t("tasks.completed", { title: task.title }));
+    } else setChecked(false);
   };
   // `e` and Delete act on the row itself when it has focus, not on a control inside it.
   const onKey = (e: KeyboardEvent<HTMLLIElement>) => {
@@ -594,20 +604,63 @@ const hasTasks = (v: TasksView, tab: Tab): boolean =>
   : v.projects.flatMap((p) => p.tasks)
   ).some((x) => !isEventRow(x));
 
+/**
+ * ⌘Z: the tasks this page completed, newest last, in memory only (a reload clears them). Each press outside a field
+ * reopens the newest one and reloads the tasks; with none kept it does nothing and sends nothing. A refusal (its next
+ * occurrence is done, say) shows beside the quick-add field.
+ */
+function useUndoDone(token: string | null) {
+  const client = useQueryClient();
+  const done = useRef<TaskRow[]>([]);
+  const tokenRef = useRef(token);
+  tokenRef.current = token;
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    const on = async (e: globalThis.KeyboardEvent) => {
+      if (!isUndo(e) || tokenRef.current === null) return;
+      const task = done.current.pop();
+      if (task === undefined) return;
+      e.preventDefault();
+      setError(null);
+      try {
+        const r = await postTaskAction(tokenRef.current, "reopen", { id: task.id });
+        if (!r.ok) {
+          setError(r.error);
+          return;
+        }
+        announceStatus(t("tasks.reopened", { title: task.title }));
+        await client.invalidateQueries({ queryKey: [API.tasks] });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    };
+    const listener = (e: globalThis.KeyboardEvent) => void on(e);
+    addEventListener("keydown", listener);
+    return () => removeEventListener("keydown", listener);
+  }, [client]);
+  return { error, completed: (task: TaskRow) => void done.current.push(task) };
+}
+
 export function TasksPage() {
   const [tab, setTab] = useState<Tab>("today");
   const q = useApi<TasksView>(API.tasks);
   const v = q.data;
   const token = v?.can_build ? v.csrf_token : null;
+  const undo = useUndoDone(token);
   // Every open task is in Projects, so its titles name each sub-task's parent.
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
   return (
     <>
       <QuickAdd token={v?.csrf_token ?? null} />
+      {undo.error !== null && (
+        <p role="alert" className={ALERT}>
+          {undo.error}
+        </p>
+      )}
       <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
       <Section label={TABS.find((x) => x.id === tab)!.label} count={v ? count(v, tab) : undefined}>
         {v && (tab === "today" || tab === "upcoming") && <StaleCalendars v={v} />}
-        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles }}>
+        {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, completed: undo.completed }}>
             <TabBody tab={tab} v={v} />
           </Rows.Provider>}
         {v?.can_build && hasTasks(v, tab) && <p className={`mt-3 ${muted}`}>{t("tasks.buildNote")}</p>}
