@@ -580,6 +580,15 @@ CREATE TABLE controller_outbox (
   published_at TEXT
 );
 
+CREATE TABLE controller_projects (
+    id           TEXT PRIMARY KEY,
+    slug         TEXT NOT NULL UNIQUE,
+    name         TEXT NOT NULL,
+    created_by   TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    archived_at  TEXT
+  );
+
 CREATE TABLE controller_signals (
     id            TEXT PRIMARY KEY,
     source        TEXT NOT NULL,
@@ -621,6 +630,13 @@ CREATE TABLE controller_state_changes (
     reason        TEXT NOT NULL,
     changes       TEXT NOT NULL, detail TEXT,
     UNIQUE (work_item_id, version)
+  );
+
+CREATE TABLE controller_task_projects (
+    task_id     TEXT NOT NULL,
+    project_id  TEXT NOT NULL,
+    added_at    TEXT NOT NULL,
+    PRIMARY KEY (task_id, project_id)
   );
 
 CREATE TABLE controller_tasks (
@@ -1720,6 +1736,8 @@ CREATE INDEX controller_outbox_pending ON controller_outbox (published_at, seq);
 CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
 
 CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
+
+CREATE INDEX controller_task_projects_project ON controller_task_projects (project_id);
 
 CREATE INDEX controller_tasks_open ON controller_tasks (done_at, created_at);
 
