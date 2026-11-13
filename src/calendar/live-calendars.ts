@@ -13,6 +13,7 @@ export class LiveCalendars {
   /** The feeds the sync reads, in the setting's order. Changed in place, so a holder of this array sees each change. */
   readonly feeds: NamedFeed[] = [];
   private names: readonly string[] = [];
+  private first = true;
 
   constructor(
     private readonly build: (name: string) => Promise<CalendarFeed>,
@@ -21,7 +22,7 @@ export class LiveCalendars {
 
   /** Rebuilds the feeds when `names` differ from the last list: kept names keep their source, new ones are built. */
   async apply(names: readonly string[]): Promise<void> {
-    if (names.length === this.names.length && names.every((n, i) => n === this.names[i])) return;
+    if (!this.first && names.length === this.names.length && names.every((n, i) => n === this.names[i])) return;
     this.names = [...names];
     const next: NamedFeed[] = [];
     for (const name of names) {
@@ -33,10 +34,13 @@ export class LiveCalendars {
       try {
         next.push({ name, source: await this.build(name) });
       } catch (err) {
-        // Not retried until the list changes: a bad name logs once, and the other calendars still sync.
+        // The first list is startup's: a bad plugin or `calendar_ids` fails it, as any plugin check does. Later, a bad
+        // name logs once and is not retried until the list changes; the other calendars still sync.
+        if (this.first) throw err;
         this.log.warn("calendar source could not be built; it is not synced", { source: name, error: err instanceof Error ? err.message : String(err) });
       }
     }
+    this.first = false;
     this.feeds.splice(0, this.feeds.length, ...next);
   }
 }
