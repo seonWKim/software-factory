@@ -1,7 +1,7 @@
 // The alarm patterns across items and the restart list.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
 
-import { HELD_ITEMS, type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, recurringStalls, releasePatch } from "../../../core/alarms.js";
+import { HELD_ITEMS, type HeldPattern, RESTART_WINDOW_MS, alarmStep, heldKey, holdPatch, isFailureAlert, recurringStalls, releasePatch } from "../../../core/alarms.js";
 import { ALARM_DEFAULTS, STALL_DEFAULTS } from "../../../core/config.js";
 import { SYSTEM } from "../support.js";
 import type { Ctx } from "../context.js";
@@ -18,6 +18,7 @@ export class AlarmsUnit {
    */
   async alarmsStep(): Promise<void> {
     const c = this.c.k.cfg;
+    const live = this.c.k.live.values();
     const store = this.c.k.d.store;
     const own = this.c.k.d.restarts;
     const restarts = async () => {
@@ -37,10 +38,11 @@ export class AlarmsUnit {
         alarm_window_minutes: c.alarm_window_minutes ?? ALARM_DEFAULTS.alarm_window_minutes,
         alarm_restart_count: c.alarm_restart_count ?? ALARM_DEFAULTS.alarm_restart_count,
         probe_interval_ms: c.probe_interval_ms ?? STALL_DEFAULTS.probe_interval_ms,
+        spend: { daily_usd: live["spend.daily_budget_usd"], weekly_usd: live["spend.weekly_budget_usd"] },
       },
     );
-    // A failure burst stops auto mode (design 03-risk).
-    const burst = stored.find((a) => a.pattern !== "auto_stopped");
+    // A failure burst stops auto mode (design 03-risk); a spend alert only alerts (design 06-spend).
+    const burst = stored.find(isFailureAlert);
     if (burst) await this.c.unit("local-merge").stopAuto(this.c.k.cfg.project.key, "failure_alert", `the ${burst.pattern} alarm (${burst.error_code}, ${burst.count})`);
     await this.releaseStep();
   }

@@ -135,7 +135,7 @@ describe("app shell", () => {
     const factory = screen.getByRole("navigation", { name: "Factory" });
     expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you", "Work", "Activity"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Rules", "Runners", "Queue", "Data"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Spend", "Rules", "Runners", "Queue", "Data"]);
     fireEvent.click(within(nav).getByText("Queue"));
     expect(await screen.findByRole("heading", { name: "Queue" })).toBeTruthy();
     expect(location.pathname).toBe("/app/queue");
@@ -433,7 +433,7 @@ describe("app pages", () => {
   });
 
   it("each page's heading matches its menu name", async () => {
-    const names: Record<string, string> = { items: "Work", activity: "Activity", runners: "Runners", queue: "Queue", health: "Health", failures: "Failures", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { items: "Work", activity: "Activity", runners: "Runners", queue: "Queue", health: "Health", failures: "Failures", spend: "Spend", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();

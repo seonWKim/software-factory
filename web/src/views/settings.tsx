@@ -269,12 +269,15 @@ function Editor({ row, label, value, token, project, floating = false }: { row: 
         form
       );
   } else {
-    const shown = draft ?? value;
+    // A key with no value (`null`: a spend budget left unset) shows an empty field.
+    const shown = draft ?? (value === "null" ? "" : value);
     control = (
       <form className="flex items-center gap-2" onSubmit={(e) => (e.preventDefault(), void save(shown))}>
+        {/* step any: a fraction such as 12.50 (a dollar budget) is a valid value; whole-number keys are the server's to check. */}
         <Input
           aria-label={label}
           type="number"
+          step="any"
           className="w-32 tabular-nums"
           value={shown}
           onChange={(e) => setDraft(e.target.value)}

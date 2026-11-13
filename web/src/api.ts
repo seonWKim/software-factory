@@ -717,6 +717,33 @@ export interface Failures {
   groups: FailureGroup[];
 }
 
+/** `/api/v1/spend`: cost and tokens of the agent runs per UTC day and per item. `unknown`: runs with no stored cost, never added as 0. */
+export interface SpendTotals {
+  cost_usd: number;
+  tokens: number;
+  runs: number;
+  unknown: number;
+}
+export interface SpendDay extends SpendTotals { day: string }
+export interface SpendItem extends SpendTotals {
+  work_item_id: string;
+  title: string | null;
+  kinds: string[];
+}
+export interface SpendView {
+  as_of: string;
+  /** Today's UTC day and the Monday its week began (YYYY-MM-DD). */
+  today: string;
+  week_start: string;
+  from: string;
+  to: string;
+  total: SpendTotals;
+  days: SpendDay[];
+  /** By cost, highest first; at most a cap of them, `items_total` in all. */
+  items: SpendItem[];
+  items_total: number;
+}
+
 export const API = {
   // The app's own revision goes along, so the server lists a mismatch in Needs you.
   overview: WEB_REV ? `/api/v1/overview?rev=${encodeURIComponent(WEB_REV)}` : "/api/v1/overview",
@@ -733,6 +760,7 @@ export const API = {
   workers: "/api/v1/workers",
   health: "/api/v1/health",
   failures: (window: string) => `/api/v1/failures?window=${window}`,
+  spend: "/api/v1/spend",
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
   pauses: "/api/v1/pauses",
