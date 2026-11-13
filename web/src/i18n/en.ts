@@ -486,7 +486,7 @@ export const en = {
   "rules.waiting": "Rules waiting for you",
   "rules.readOnly": "Read-only: ",
   "rules.empty": "Nothing waits for a verdict: new pushbacks show here once the ledger has them.",
-  "rules.footer": "A promoted rule reaches every run's prompt under Learned rules, with its exceptions and scope. The ledger lives in your agents home; this page only reads it and sends your verdicts.",
+  "rules.footer": "A promoted rule reaches every run's prompt under Learned rules, with its exceptions and scope. The ledger lives in your agents home; this page reads it, sends your verdicts and, on Promote of a class, writes the rule into your rules file.",
   "transcript.filterAll": "All steps",
   "transcript.filterEdits": "Edits",
   "transcript.filterCommands": "Commands",

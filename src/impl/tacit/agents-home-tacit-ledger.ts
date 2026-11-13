@@ -13,6 +13,7 @@ import {
   type TacitDecision, type TacitDraft, type TacitLedger, type TacitPendingEntry, type TacitPromotion, type TacitPushback, type TacitRule,
   TacitRefusal, TacitSyncFailed, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
+import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
 import {
   ENCODED_ELSEWHERE_HEADING, hasEncodedElsewhere, hasRuleHeading, parseDraft, parsePending, parseRules, withRuleBlock,
@@ -59,8 +60,8 @@ export class AgentsHomeTacitLedger implements TacitLedger {
   constructor(
     private readonly home: string,
     private readonly timeout_ms: number = TACIT_CLI_TIMEOUT_MS,
-    /** Today, for a promoted rule's judged date. */
-    private readonly now: () => Date = () => new Date(),
+    /** Today, for a promoted rule's judged date (a Clock's `now`). */
+    private readonly clock: { now(): Date } = new SystemClock(),
   ) {}
 
   async capture(p: TacitPushback): Promise<void> {
@@ -115,7 +116,7 @@ export class AgentsHomeTacitLedger implements TacitLedger {
     if (!hasEncodedElsewhere(text)) throw new TacitRefusal(`${RULES_FILE} has no "${ENCODED_ELSEWHERE_HEADING}" heading: nothing written`);
     if (!this.runnable("bin/sync-agents")) throw new TacitRefusal("bin/sync-agents is missing or not executable in the agents home: nothing written");
     const draft = await this.draft(id);
-    writeFileSync(file, withRuleBlock(text, id, rule, draft, localDate(this.now()))!);
+    writeFileSync(file, withRuleBlock(text, id, rule, draft, localDate(this.clock.now()))!);
     try {
       await this.run("tacit", ["verdict", id, "promote", "--reason", reason, "--rule", rule.wording, "--encoded-to", RULES_FILE]);
     } catch (err) {

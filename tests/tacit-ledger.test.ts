@@ -57,7 +57,7 @@ const RULES_SAMPLE = `# Rules
 const RULE: TacitPromotion = { wording: "keep CLI flags", default: "Keep every flag.", exception: "a deprecated flag" };
 
 /** A fixed today for the judged date. */
-const TODAY = () => new Date(2026, 10, 13, 9, 30);
+const TODAY = { now: () => new Date(2026, 10, 13, 9, 30) };
 
 /**
  * A temp agents home with stub `bin/tacit`, `bin/evolve` and `bin/sync-agents` that take only the real CLIs' forms
@@ -309,7 +309,7 @@ describe("plugin agents-home", () => {
     expect((await h.captureRows()).map((r) => r.intent_key)).toEqual([`tacit:${a.id}:c1`, `tacit:${b.id}:c2`, `tacit:${c.id}:c3`]);
     // The record goes on stdin; argv carries only the subcommand and the agent.
     expect(s.argv()).toEqual(Array(3).fill(`tacit|capture|--agent|${TACIT_AGENT}`));
-    // The factory never writes under the home: only the stubs ran, and they wrote outside it.
+    // A capture writes nothing under the home: only the stubs ran, and they wrote outside it.
     expect(snapshot(s.home)).toEqual(before);
   });
 
