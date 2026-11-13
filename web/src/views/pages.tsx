@@ -251,6 +251,12 @@ export function ActivityPage() {
 const STATE_FILTERS = ["needs", "ready_to_merge", "needs_approval", "needs_triage", "stuck", "running", "queued", "blocked_by_task", "closed"] as const;
 const FILTER_LABELS: Record<string, string> = { ...LEVEL_LABELS, needs: t("page.needs"), held: t("items.held") };
 
+/** The Work filter named by the `state` query parameter (the Queue page's old address leads here); an unknown value is no filter. */
+function initialState(): string | null {
+  const s = new URLSearchParams(location.search).get("state");
+  return s !== null && (s === HELD || (STATE_FILTERS as readonly string[]).includes(s)) ? s : null;
+}
+
 /** The saved view: the tree unless the browser chose the list. */
 function savedView(): View {
   try {
@@ -267,7 +273,7 @@ function rateLimitText(pauses: PausesView | undefined): string {
   return p ? t("items.ratePaused", { time: p.ends_at }) : t("items.rateOk");
 }
 
-/** The queued runs: the one source of the Queue page's list and count and of Work's "N queued" (the same runs as overview.queued). */
+/** The queued runs: the one source of Work's Queued list, its filter count and its "N queued" (the same runs as overview.queued). */
 function useQueuedRuns() {
   return useApi<{ queue: QueueRow[] }>(API.queue);
 }
@@ -290,10 +296,11 @@ function Summary({ rows, queued, rateLimit, onFilter }: { rows: readonly ItemRow
 export function ItemsPage() {
   const now = useNow();
   const [view, setViewState] = useState<View>(savedView);
-  const [state, setState] = useState<string | null>(null);
+  const [state, setState] = useState<string | null>(initialState);
   const [q, setQ] = useState("");
   const [showClosed, setShowClosed] = useState(false);
   const tree = view === "tree";
+  const queuedView = state === "queued";
   const setView = (v: View) => {
     setViewState(v);
     if (v === "list" && state === HELD) setState(null);
@@ -306,7 +313,7 @@ export function ItemsPage() {
   // One request per poll: the tree reads every row once and filters in the page, the list asks the server.
   const params = new URLSearchParams();
   if (tree) params.set("closed", "1");
-  else {
+  else if (!queuedView) {
     if (state) params.set("state", state);
     if (q.trim()) params.set("q", q.trim());
   }
@@ -319,7 +326,8 @@ export function ItemsPage() {
   const filter: TreeFilter = { state, q, showClosed };
   const nodes = useMemo(() => buildTree(rows, filter), [items.data, state, q, showClosed]);
   const [expanded, setExpanded] = useExpanded(defaultExpanded(nodes));
-  const counted = (s: string) => (tree ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed })).length : (items.data?.facets.state[s] ?? 0));
+  const itemsById = useMemo(() => byId(items.data?.items), [items.data]);
+  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : tree ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed })).length : (items.data?.facets.state[s] ?? 0));
   const allCount = tree ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
@@ -353,7 +361,11 @@ export function ItemsPage() {
           </Button>
         ))}
       </ButtonRow>
-      {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
+      {queuedView ? (
+        <Section title={t("queue.title")} count={queue.data?.queue.length}>
+          {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data || !items.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={itemsById} now={now} />}
+        </Section>
+      ) : items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading rows={6} /> : tree ? (
         nodes.length === 0 ? <Empty>{t("items.noMatch")}</Empty> : (
           <ItemsTree nodes={nodes} rows={rows} now={now} expanded={expanded} onExpanded={setExpanded} />
         )
@@ -661,18 +673,6 @@ export function RunnersPage() {
         {runs.data ? <RunningTable runs={runs.data.runs} items={map} now={now} /> : <Loading rows={2} />}
       </Section>
     </>
-  );
-}
-
-export function QueuePage() {
-  const now = useNow();
-  const queue = useQueuedRuns();
-  const items = useApi<Items>(API.items);
-  const map = useMemo(() => byId(items.data?.items), [items.data]);
-  return (
-    <Section title={t("queue.title")} count={queue.data?.queue.length}>
-      {queue.isError ? <ErrorNote error={queue.error} /> : !queue.data ? <Loading rows={4} /> : <QueueTable queue={queue.data.queue} items={map} now={now} />}
-    </Section>
   );
 }
 

@@ -308,7 +308,7 @@ export function QueueTable({ queue, items, now, limit }: { queue: readonly Queue
   if (queue.length === 0) return <Empty>{t("queue.empty")}</Empty>;
   const shown = limit ? queue.slice(0, limit) : queue;
   return (
-    <Table label={t("page.queue")} head={["#", t("col.item"), t("col.run"), t("col.attempt"), t("col.queued"), t("col.starts")]}>
+    <Table label={t("queue.title")} head={["#", t("col.item"), t("col.run"), t("col.attempt"), t("col.queued"), t("col.starts")]}>
       {shown.map((q) => {
         const it = items.get(q.work_item_id);
         return (
