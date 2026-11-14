@@ -11,7 +11,7 @@ import { REGISTRY, createPlugin, defaultPlugins } from "../src/plugins.js";
 import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import type { EgressScanner } from "../src/interfaces/egress-scanner.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
-import { type TacitLedger, type TacitPromotion, TacitRefusal, TacitSyncFailed } from "../src/interfaces/tacit-ledger.js";
+import { type TacitLedger, type TacitPromotion, TacitRefusal, TacitSyncFailed, appliedToError } from "../src/interfaces/tacit-ledger.js";
 import type { SqlDriver } from "../src/state/index.js";
 import { FakeAuth, FakeForge, FakeSource, alice, config, issueRef, silent } from "./helpers/fakes.js";
 import { PROJECT_KEY, newStore, system, w1 } from "./helpers/store.js";
@@ -75,7 +75,8 @@ const DETAIL_SAMPLE = `# C-012 keep existing CLI flags
 /**
  * A temp agents home with stub `bin/tacit`, `bin/evolve` and `bin/sync-agents` that take only the real CLIs' forms
  * (checked 2026-11-12 with `--help`; `evolve show` 2026-11-13) and exit 2 with usage text on any other. As the real
- * ledger does, `tacit verdict … promote` exits 1 without both `--rule` and `--encoded-to`. The stubs log each call's
+ * ledger does, `tacit verdict … promote` exits 1 without both `--rule` and `--encoded-to`, and `evolve verdict … promote`
+ * without `--applied-to`. The stubs log each call's
  * argv, one item per field, to `<root>/log/argv`, outside the home, read `<root>/control/{fail,sleep,refuse,sync}`
  * and `evolve show <id>` prints `<root>/drafts/<id>` (C-012's draft is SHOW_SAMPLE; an empty file prints nothing), so the stubs never write the
  * home. Only capture reads stdin; any other call that gets stdin fails.
@@ -150,11 +151,14 @@ case "$1" in
     [ "$#" -ge 5 ] && [ "$4" = "--reason" ] || usage
     case "$2" in P-*) ;; *) usage ;; esac
     case "$3" in hold|promote|reject) ;; *) usage ;; esac
+    decision="$3"
     shift 5
+    applied=""
     while [ "$#" -gt 0 ]; do
-      case "$1" in --applied-to) [ "$#" -ge 2 ] || usage; shift 2 ;; *) usage ;; esac
+      case "$1" in --applied-to) [ "$#" -ge 2 ] || usage; applied="$2"; shift 2 ;; *) usage ;; esac
     done
     no_stdin
+    [ "$decision" != promote ] || [ -n "$applied" ] || { echo "promote requires --applied-to (반영한 파일)" >&2; exit 1; }
     ;;
   *) usage ;;
 esac
@@ -515,12 +519,39 @@ describe("plugin agents-home", () => {
   it("a verdict on a P- ID runs evolve verdict with no --rule; an ID that is neither throws before any CLI runs", async () => {
     const s = stubHome();
     const ledger = new AgentsHomeTacitLedger(s.home);
-    await ledger.verdict("P-0007", "promote", "good shape", RULE);
+    await ledger.verdict("P-20261101-158e", "promote", "good shape", { applied_to: "private/bin/notify" });
     await ledger.verdict("P-0008", "reject", "not now");
-    expect(s.argv()).toEqual(["evolve|verdict|P-0007|promote|--reason|good shape", "evolve|verdict|P-0008|reject|--reason|not now"]);
+    expect(s.argv()).toEqual([
+      "evolve|verdict|P-20261101-158e|promote|--reason|good shape|--applied-to|private/bin/notify",
+      "evolve|verdict|P-0008|reject|--reason|not now",
+    ]);
     await expect(ledger.verdict("t1", "promote", "x")).rejects.toThrow(/neither a class \(C-\) nor a proposal \(P-\)/);
     await expect(ledger.verdict("P-0007", "retire", "x")).rejects.toThrow(/takes no retire/);
     expect(s.argv()).toHaveLength(2);
+  });
+
+  it("a promote of a P- ID with no, an empty, an absolute or a .. applied-to path is refused with no CLI run", async () => {
+    const s = stubHome();
+    const ledger = new AgentsHomeTacitLedger(s.home);
+    for (const detail of [undefined, RULE, { applied_to: "" }, { applied_to: "  " }, { applied_to: "/etc/passwd" }, { applied_to: "C:\\x" },
+      { applied_to: "../outside" }, { applied_to: "private/../../x" }, { applied_to: "private\\..\\x" }]) {
+      await expect(ledger.verdict("P-0007", "promote", "r", detail)).rejects.toBeInstanceOf(TacitRefusal);
+    }
+    expect(s.argv()).toEqual([]);
+  });
+
+  it("the stub evolve, as the real one, refuses a proposal promote without --applied-to", () => {
+    const s = stubHome();
+    expect(() => execFileSync(join(s.home, "bin", "evolve"), ["verdict", "P-1", "promote", "--reason", "r"], { stdio: ["ignore", "pipe", "pipe"] }))
+      .toThrow(/promote requires --applied-to/);
+  });
+
+  it("appliedToError takes a path relative to the agents home and names why it refuses any other", () => {
+    expect(appliedToError("private/bin/notify")).toBeNull();
+    expect(appliedToError("a..b/c")).toBeNull();
+    expect(appliedToError("")).toMatch(/name the file/);
+    expect(appliedToError("/abs")).toMatch(/relative to the agents home/);
+    expect(appliedToError("a/../b")).toMatch(/\.\. segment/);
   });
 
   it("a CLI that exits non-zero throws with the CLI and subcommand first", async () => {

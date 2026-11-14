@@ -25,7 +25,9 @@ import { t } from "../i18n/index.js";
 // (open, pending, held, or the judged decision) and its ID. "Why and where" (aria-expanded, a chevron) reads the entry's
 // detail on demand through GET /api/v1/rules/entry?id=, never on page load. Promote (primary, with a Tooltip when off),
 // Hold and Reject (danger, last) each open a dialog that shows the entry's why and where above a required reason;
-// Promote of a class also asks for the rule's wording, default and exception (prefilled from the class's draft).
+// Promote of a class also asks for the rule's wording, default and exception (prefilled from the class's draft);
+// Promote of a proposal asks for the file the change went into, "Applied to" (prefilled with its target, required: an
+// empty field says why and keeps Send off), sent as `applied_to`.
 // Only the owner sends. With the ledger off the page is an EmptyState whose action is Turn on (stores `integrations`
 // through POST /api/v1/settings, then loads the rules) or, with no agents home, says which CLI is missing.
 // Applied lists the promoted rules file in the file's order, one compact row per rule (ID, name, scope, judged date,
@@ -43,7 +45,7 @@ const STATE_LEVEL: Record<string, string> = { open: "running", pending: "needs_a
 const PAGE_WIDTH = "max-w-3xl";
 const TITLE_MAX = 60;
 const shorten = (title: string): string => (title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title);
-/** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal takes none. */
+/** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal the file it was applied to. */
 const isClass = (id: string): boolean => id.startsWith("C-");
 const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey; variant: "primary" | "secondary" | "danger" }[] = [
   { verdict: "promote", label: "rules.promote", variant: "primary" },
@@ -56,7 +58,7 @@ const GROUPS: readonly { classes: boolean; title: MessageKey; line: MessageKey }
   { classes: false, title: "rules.groupProposals", line: "rules.groupProposalsLine" },
 ];
 const CONSEQUENCE: Record<RuleVerdict, MessageKey> = {
-  promote: "rules.consequencePromote",
+  promote: "rules.consequencePromoteProposal",
   hold: "rules.consequenceHold",
   reject: "rules.consequenceReject",
   retire: "rules.consequenceRetire",
@@ -108,26 +110,30 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
 
 /**
  * The verdict dialog: a reason first, and for promote of a class the rule's wording (prefilled with its title) and its
- * default and exception (prefilled from its draft).
+ * default and exception (prefilled from its draft); for promote of a proposal the file it was applied to (prefilled
+ * with its target).
  */
 function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; verdict: RuleVerdict; token: string; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const [text, setText] = useState(entry.title);
   const [dflt, setDefault] = useState(entry.draft?.default ?? "");
   const [exception, setException] = useState(entry.draft?.exception ?? "");
+  const [appliedTo, setAppliedTo] = useState(entry.target ?? "");
   const { busy, error, send } = useSendVerdict(token, onClose);
   const promote = verdict === "promote" && isClass(entry.id);
+  const applies = verdict === "promote" && !isClass(entry.id);
   const rule = { text: text.trim(), default: dflt.trim(), exception: exception.trim() };
+  const noFile = applies && appliedTo.trim() === "";
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
       title={t("rules.dialogTitleEntry", { label, id: entry.id, title: shorten(entry.title) })}
       consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
-      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes(""))}
+      confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noFile}
       danger={verdict === "reject"}
       error={error}
-      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}) }, label)}
+      onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}), ...(applies ? { applied_to: appliedTo.trim() } : {}) }, label)}
       onClose={onClose}
     >
       <div className="max-h-40 overflow-y-auto">
@@ -139,6 +145,14 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
           <RuleText id={`${entry.id}-default`} label={t("rules.default")} help={t("rules.draftHelp")} value={dflt} onChange={setDefault} />
           <RuleText id={`${entry.id}-exception`} label={t("rules.exception")} value={exception} onChange={setException} />
         </>
+      )}
+      {applies && (
+        <Field label={t("rules.appliedTo")} htmlFor={`${entry.id}-applied-to`} help={t(noFile ? "rules.appliedToEmpty" : "rules.appliedToHelp")}>
+          <Input
+            id={`${entry.id}-applied-to`} aria-label={t("rules.appliedTo")} aria-invalid={noFile} className="font-mono" value={appliedTo} maxLength={1000}
+            onChange={(e) => setAppliedTo(e.target.value)}
+          />
+        </Field>
       )}
       <ReasonField id={entry.id} value={reason} onChange={setReason} />
     </Dialog>
