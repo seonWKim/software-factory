@@ -618,16 +618,15 @@ describe("ItemsTable columns and links (issue #240)", () => {
 });
 
 describe("Running now and Queue", () => {
-  it("keep the GitHub link on the source id beside the title", () => {
+  it("have no source link: the title links to the item page", () => {
     const items = new Map([["wi_1", trow(1)]]);
     const run = { id: "run_a", status: "running", kind: "implement", work_item_id: "wi_1", attempt: 1, owner: "h:1:0", heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT };
     const q = { position: 1, id: "run_b", kind: "implement", work_item_id: "wi_1", attempt: 0, created_at: AT, not_before: null };
     const a = render(<RunningTable runs={[run] as never} items={items} now={NOW_MS} />).container;
-    const links = [...a.querySelectorAll("tbody tr td:first-child a")].map((x) => [x.getAttribute("href"), x.textContent]);
-    expect(links).toEqual([["https://github.com/o/r/issues/1", "#1"], ["/app/items/wi_1", "Title 1"]]);
+    expect([...a.querySelectorAll("tbody tr td:first-child a")].map((x) => [x.getAttribute("href"), x.textContent])).toEqual([["/app/items/wi_1", "Title 1"]]);
     cleanup();
     const b = render(<QueueTable queue={[q] as never} items={items} now={NOW_MS} />).container;
-    expect([...b.querySelectorAll("tbody tr td:nth-child(2) a")].map((x) => x.getAttribute("href"))).toEqual(["https://github.com/o/r/issues/1", "/app/items/wi_1"]);
+    expect([...b.querySelectorAll("tbody tr td:nth-child(2) a")].map((x) => x.getAttribute("href"))).toEqual(["/app/items/wi_1"]);
   });
 });
 
