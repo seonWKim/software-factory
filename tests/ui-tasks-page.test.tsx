@@ -13,8 +13,9 @@ import { PAGES, routeFor } from "../web/src/pages.js";
 const PAGE_MODULE = "../web/src/views/tasks.js";
 const { TasksPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { TasksPage: FunctionComponent };
 
-// The Tasks page (design 02-tasks, issue #607): Inbox, Today (overdue first, in red), Upcoming (by day) and List
-// tabs over GET /api/v1/tasks, which places each task; Build this posts the task's ID once, a built task links to its item.
+// The Tasks page (design 02-tasks, issue #607): Today (overdue first, in red), Upcoming (the days after today, by day)
+// and All (every open task under its #list, with Show done) over GET /api/v1/tasks, which places each task; Build this
+// posts the task's ID once, a built task links to its item.
 
 const TOKEN = "tok_tasks";
 const SLOW = { timeout: 5_000 };
@@ -24,10 +25,13 @@ const row = (id: string, over: Partial<TaskRow> = {}): TaskRow => ({
 });
 const view = (over: Partial<TasksView> = {}): TasksView => ({
   today_date: "2026-11-12",
-  inbox: [row("tk_inbox")],
   today: { overdue: [row("tk_late", { due_date: "2026-11-10" })], due: [row("tk_now", { due_date: "2026-11-12", due_time: "09:00" })] },
-  upcoming: [{ date: "2026-11-13", tasks: [row("tk_soon", { due_date: "2026-11-13", list: "home" })] }],
-  projects: [{ list: "home", tasks: [row("tk_soon", { due_date: "2026-11-13", list: "home" })] }, { list: null, tasks: [row("tk_built", { work_item_id: "wi_1" })] }],
+  // The server's upcoming starts at today; the page shows the days after it.
+  upcoming: [
+    { date: "2026-11-12", tasks: [row("tk_now", { due_date: "2026-11-12", due_time: "09:00" })] },
+    { date: "2026-11-13", tasks: [row("tk_soon", { due_date: "2026-11-13", list: "home" })] },
+  ],
+  projects: [{ list: "home", tasks: [row("tk_soon", { due_date: "2026-11-13", list: "home" })] }, { list: null, tasks: [row("tk_built", { work_item_id: "wi_1" }), row("tk_inbox")] }],
   csrf_token: TOKEN,
   can_build: true,
   ...over,
@@ -85,6 +89,7 @@ async function show() {
 
 const card = (id: string) => document.querySelector<HTMLElement>(`[data-task="${id}"]`)!;
 const tab = (name: string) => fireEvent.click(screen.getByRole("button", { name }));
+const doneSwitch = () => screen.getByRole("switch", { name: "Show done" });
 
 describe("Tasks page", () => {
   it("is a sidebar page at /app/tasks", () => {
@@ -95,13 +100,13 @@ describe("Tasks page", () => {
   it("the view picker is one segmented control in one row, Today selected first, the clicked view selected next", async () => {
     await show();
     const group = screen.getByRole("group", { name: "Task view" });
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Inbox", "Today", "Upcoming", "List", "Done"]);
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Today", "Upcoming", "All"]);
     expect(group.className.split(" ")).toContain("flex-nowrap");
     expect(group.className.split(" ")).not.toContain("flex-wrap");
     const selected = () => [...group.querySelectorAll("button[aria-pressed=true]")].map((b) => b.textContent);
     expect(selected()).toEqual(["Today"]);
-    tab("List");
-    expect(selected()).toEqual(["List"]);
+    tab("All");
+    expect(selected()).toEqual(["All"]);
   });
 
   it("Today lists overdue tasks first, in red, then today's", async () => {
@@ -115,16 +120,15 @@ describe("Tasks page", () => {
     expect(card("tk_now").querySelector("p")!.className).not.toContain("text-pill-bad-fg");
   });
 
-  it("Inbox, Upcoming and List show their own tasks; a built task links to its work item instead of Build this", async () => {
+  it("Upcoming shows the days after today only; All shows every open task, undated included; a built task links to its work item", async () => {
     await show();
-    tab("Inbox");
-    expect(screen.getByRole("list", { name: "Inbox" }).textContent).toContain("tk_inbox");
     tab("Upcoming");
     expect(card("tk_soon").textContent).toContain("#home");
-    expect(document.querySelectorAll("[data-task]")).toHaveLength(1);
-    tab("List");
+    expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_soon"]);
+    tab("All");
     expect(screen.getByRole("list", { name: "#home" }).textContent).toContain("tk_soon");
-    const built = within(screen.getByRole("list", { name: "No list" }));
+    expect(screen.getByRole("list", { name: "No list" }).textContent).toContain("tk_inbox");
+    const built = within(card("tk_built"));
     expect(built.getByRole("link", { name: "wi_1" }).getAttribute("href")).toBe("/app/items/wi_1");
     expect(built.queryByRole("button", { name: /Build this/ })).toBeNull();
   });
@@ -188,7 +192,7 @@ describe("Tasks page", () => {
     });
   });
 
-  describe("the Done tab (design 02-tasks, Done view)", () => {
+  describe("All's Show done (design 02-tasks, Done view)", () => {
     /** A done row, done at the local time `y-m-d h:min`. */
     const doneRow = (id: string, at: [number, number, number, number, number], over: Partial<TaskRow> = {}): DoneRow => ({
       ...row(id, over), done_at: new Date(at[0], at[1] - 1, at[2], at[3], at[4]).toISOString(),
@@ -198,8 +202,24 @@ describe("Tasks page", () => {
     const doneIds = () => [...document.querySelectorAll<HTMLElement>("[data-done]")].map((e) => e.dataset.done);
     const openDone = async () => {
       await show();
-      tab("Done");
+      tab("All");
+      fireEvent.click(doneSwitch());
     };
+
+    it("is a switch on All, off by default: no done read and no done row until it is turned on", async () => {
+      donePages[FIRST] = { tasks: [doneRow("tk_a", [2026, 11, 13, 9, 0])], older: false, next_before: "2026-11-13T00:00:00.000Z" };
+      await show();
+      expect(screen.queryByRole("switch", { name: "Show done" })).toBeNull();
+      tab("All");
+      expect(doneSwitch().getAttribute("aria-checked")).toBe("false");
+      expect(doneIds()).toEqual([]);
+      expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).startsWith(FIRST))).toBe(false);
+      fireEvent.click(doneSwitch());
+      expect(doneSwitch().getAttribute("aria-checked")).toBe("true");
+      await waitFor(() => expect(doneIds()).toEqual(["tk_a"]), SLOW);
+      fireEvent.click(doneSwitch());
+      expect(doneIds()).toEqual([]);
+    });
 
     it("lists every list's done tasks in one list, in the server's order, each with its list label and done date and time", async () => {
       donePages[FIRST] = {
@@ -208,7 +228,7 @@ describe("Tasks page", () => {
       };
       await openDone();
       await waitFor(() => expect(doneIds()).toEqual(["tk_b", "tk_a"]), SLOW);
-      expect(screen.getAllByRole("list")).toHaveLength(1);
+      expect(within(screen.getByRole("list", { name: "Done" })).getAllByRole("listitem")).toHaveLength(2);
       expect(doneCard("tk_b")!.textContent).toContain("done 2026-11-13 09:05");
       expect(doneCard("tk_b")!.textContent).toContain("#home");
       expect(doneCard("tk_a")!.textContent).toContain("done 2026-11-02 18:30");
@@ -228,13 +248,14 @@ describe("Tasks page", () => {
       expect(screen.queryByRole("button", { name: "Show older" })).toBeNull();
     });
 
-    it("Reopen posts { id } to the reopen route with the token; the row leaves Done and the open views reload", async () => {
+    it("Reopen posts { id } to the reopen route with the token; the row leaves the done list and shows open in All", async () => {
       donePages[FIRST] = { tasks: [doneRow("tk_a", [2026, 11, 13, 9, 0])], older: false, next_before: "2026-11-13T00:00:00.000Z" };
       await openDone();
       const opens = () => vi.mocked(fetch).mock.calls.filter(([url, init]) => url === "/api/v1/tasks" && (init as RequestInit | undefined)?.method !== "POST").length;
       const before = opens();
       answer = { status: 200, body: { task_id: "tk_a", reopened: true, removed_next: null } };
       donePages[FIRST] = { tasks: [], older: false, next_before: "2026-10-15T00:00:00.000Z" };
+      current = view({ projects: [...view().projects, { list: "work", tasks: [row("tk_a", { list: "work" })] }] });
       fireEvent.click(await screen.findByRole("button", { name: "Reopen: tk_a" }, SLOW));
       await waitFor(() => expect(posts).toHaveLength(1));
       expect(posts[0]!.url).toBe("/api/v1/tasks/reopen");
@@ -243,6 +264,7 @@ describe("Tasks page", () => {
       await waitFor(() => expect(doneCard("tk_a")).toBeNull(), SLOW);
       expect(opens()).toBeGreaterThan(before);
       expect(screen.getByText("No task done in the last 30 days.")).toBeTruthy();
+      await waitFor(() => expect(within(screen.getByRole("list", { name: "#work" })).getByRole("checkbox", { name: "Complete: tk_a" })).toBeTruthy(), SLOW);
     });
 
     it("a refused reopen (its next occurrence is done) shows its reason above the Done list, and the row stays", async () => {
@@ -257,7 +279,7 @@ describe("Tasks page", () => {
       expect(doneCard("tk_r")).not.toBeNull();
     });
 
-    it("a task completed with its checkbox shows in Done once the route answers, with no page reload", async () => {
+    it("a task completed with its checkbox shows in the done list once the route answers, with no page reload; Show done stays on", async () => {
       await openDone();
       await screen.findByText("No task done in the last 30 days.", {}, SLOW);
       tab("Today");
@@ -265,7 +287,8 @@ describe("Tasks page", () => {
       donePages[FIRST] = { tasks: [doneRow("tk_now", [2026, 11, 12, 9, 10])], older: false, next_before: "2026-11-12T00:00:00.000Z" };
       fireEvent.click(within(card("tk_now")).getByRole("checkbox", { name: "Complete: tk_now" }));
       await waitFor(() => expect(posts).toHaveLength(1));
-      tab("Done");
+      tab("All");
+      expect(doneSwitch().getAttribute("aria-checked")).toBe("true");
       await waitFor(() => expect(doneIds()).toEqual(["tk_now"]), SLOW);
     });
 
@@ -287,7 +310,7 @@ describe("Tasks page", () => {
   describe("calendar events leave the Tasks views (design 02-tasks)", () => {
     const ev = (id: string, time: string | null): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: time === null, time });
 
-    it("Inbox, Today, Upcoming, List and Done show no event row and no stale-sync notice", async () => {
+    it("Today, Upcoming and All, with Show done on, show no event row and no stale-sync notice", async () => {
       current = view({
         today: { overdue: [], due: [ev("holiday", null), row("tk_call", { due_date: "2026-11-12", due_time: "11:00" })] },
         upcoming: [{ date: "2026-11-13", tasks: [ev("dentist", "08:00"), row("tk_soon", { due_date: "2026-11-13" })] }],
@@ -295,8 +318,9 @@ describe("Tasks page", () => {
       });
       render(createElement(QueryClientProvider, { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) }, createElement(TasksPage)));
       await screen.findByText("tk_call", undefined, SLOW);
-      for (const name of ["Today", "Inbox", "Upcoming", "List", "Done"]) {
+      for (const name of ["Today", "Upcoming", "All"]) {
         tab(name);
+        if (name === "All") fireEvent.click(doneSwitch());
         expect(document.querySelector("[data-event]")).toBeNull();
         expect(document.querySelector("[data-calendar-stale]")).toBeNull();
       }
@@ -338,14 +362,18 @@ describe("Tasks page", () => {
       expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_late", date: "2026-11-12", time: "15:30" });
     });
 
-    it("an inbox task is dragged onto the timeline from the Inbox tab; a refusal shows above the timeline", async () => {
+    it("shows on Today only, not on Upcoming or All; a refusal shows above the timeline", async () => {
       await show();
-      tab("Inbox");
+      for (const name of ["Upcoming", "All"]) {
+        tab(name);
+        expect(screen.queryByRole("button", { name: "Show timeline" })).toBeNull();
+      }
+      tab("Today");
       expand();
       answer = { status: 409, body: { error: "the task is done: a done task cannot be scheduled" } };
-      fireEvent.drop(slot("09:00"), carrying("tk_inbox"));
+      fireEvent.drop(slot("09:00"), carrying("tk_late"));
       await waitFor(() => expect(posts).toHaveLength(1));
-      expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_inbox", date: "2026-11-12", time: "09:00" });
+      expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ id: "tk_late", date: "2026-11-12", time: "09:00" });
       expect((await screen.findByRole("alert", undefined, SLOW)).textContent).toBe("the task is done: a done task cannot be scheduled");
     });
 
@@ -518,19 +546,18 @@ describe("Tasks page", () => {
       expect(tabs.className).not.toMatch(/\bm[bt]-/);
       // The count shows with a word or not at all: never a bare number.
       expect(view.firstElementChild!.querySelector("span")).toBeNull();
-      tab("Inbox");
-      expect(screen.getByRole("region", { name: "Inbox" })).not.toBeNull();
+      tab("All");
+      expect(screen.getByRole("region", { name: "All" })).not.toBeNull();
     });
 
-    it("every empty tab shows its message only, saying to add a task in the field above, with no button", async () => {
-      current = view({ inbox: [], today: { overdue: [], due: [] }, upcoming: [], projects: [] });
+    it("every empty view shows its message only, saying to add a task in the field above, with no button", async () => {
+      current = view({ today: { overdue: [], due: [] }, upcoming: [], projects: [] });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
       const titles: Record<string, string> = {
-        Inbox: "No open task without a due date. Add a task in the field above.",
         Today: "Nothing is due or overdue today. Add a task in the field above.",
-        Upcoming: "Nothing is due from today through the next 7 days. Add a task in the field above.",
-        List: "No open task. Add a task in the field above.",
+        Upcoming: "Nothing is due from tomorrow through the next 7 days. Add a task in the field above.",
+        All: "No open task. Add a task in the field above.",
       };
       for (const [name, title] of Object.entries(titles)) {
         tab(name);
@@ -556,13 +583,13 @@ describe("Tasks page", () => {
     });
 
     it("hides the Build line while loading and on an empty tab", async () => {
-      current = view({ inbox: [] });
+      current = view({ upcoming: [{ date: "2026-11-12", tasks: [row("tk_now", { due_date: "2026-11-12" })] }] });
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
       expect(document.body.textContent).not.toContain(BUILD);
       await screen.findByRole("list", { name: "Overdue" }, SLOW);
       expect(document.body.textContent).toContain(BUILD);
-      tab("Inbox");
+      tab("Upcoming");
       expect(document.body.textContent).not.toContain(BUILD);
     });
 
@@ -583,7 +610,6 @@ describe("Tasks page", () => {
     const reads = () => vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter((u) => u.startsWith("/api/v1/tasks"));
     const homeOnly = () =>
       view({
-        inbox: [row("tk_inbox", { projects: ["home"] })],
         today: { overdue: [], due: [row("tk_now", { due_date: "2026-11-12", projects: ["home"] })] },
         upcoming: [],
         projects: [{ list: null, tasks: [row("tk_inbox", { projects: ["home"] }), row("tk_now", { due_date: "2026-11-12", projects: ["home"] })] }],
@@ -603,7 +629,7 @@ describe("Tasks page", () => {
       expect(reads()).not.toContain("/api/v1/tasks");
     });
 
-    it("choosing a project sets ?project= and filters Inbox, Today, Upcoming and List; All projects clears it; Done is not filtered", async () => {
+    it("choosing a project sets ?project= and filters Today, Upcoming and All; All projects clears it; the done list is not filtered", async () => {
       current = view({ active_projects: PROJECTS });
       filtered = { home: homeOnly() };
       await show();
@@ -612,13 +638,11 @@ describe("Tasks page", () => {
       expect(new URLSearchParams(location.search).get("project")).toBe("home");
       expect(location.pathname).toBe("/app/tasks");
       await waitFor(() => expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_now"]), SLOW);
-      tab("Inbox");
-      expect(screen.getByRole("list", { name: "Inbox" }).textContent).toContain("tk_inbox");
       tab("Upcoming");
       expect(document.querySelectorAll("[data-task]")).toHaveLength(0);
-      tab("List");
+      tab("All");
       expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_inbox", "tk_now"]);
-      tab("Done");
+      fireEvent.click(doneSwitch());
       await waitFor(() => expect(reads()).toContain("/api/v1/tasks/done"), SLOW);
       expect(reads().filter((u) => u.startsWith("/api/v1/tasks/done")).every((u) => !u.includes("project"))).toBe(true);
       fireEvent.change(switcher(), { target: { value: "" } });
@@ -628,10 +652,10 @@ describe("Tasks page", () => {
     });
 
     it("Projects… opens the project dialog outside the row; a checkbox adds or removes the task's link", async () => {
-      current = view({ inbox: [row("tk_inbox", { projects: ["home"] })], active_projects: PROJECTS });
+      current = view({ projects: [{ list: null, tasks: [row("tk_inbox", { projects: ["home"] })] }], active_projects: PROJECTS });
       answer = { status: 200, body: { task_id: "tk_inbox", project: "garden", changed: true } };
       await show();
-      tab("Inbox");
+      tab("All");
       fireEvent.click(within(card("tk_inbox")).getByRole("button", { name: "More actions: tk_inbox" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Projects…" }));
       const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
@@ -649,9 +673,9 @@ describe("Tasks page", () => {
     });
 
     it("New project creates the project, then puts the task in it; a refusal stays in the dialog", async () => {
-      current = view({ inbox: [row("tk_inbox")], active_projects: [] });
+      current = view({ active_projects: [] });
       await show();
-      tab("Inbox");
+      tab("All");
       fireEvent.click(within(card("tk_inbox")).getByRole("button", { name: "More actions: tk_inbox" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Projects…" }));
       const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
@@ -675,7 +699,8 @@ describe("Tasks page", () => {
     it("a done row has no Projects… item", async () => {
       donePages = { "/api/v1/tasks/done": { tasks: [{ ...row("tk_old"), done_at: "2026-11-11T10:00:00.000Z" }], older: false, next_before: "2026-10-12T00:00:00.000Z" } };
       await show();
-      tab("Done");
+      tab("All");
+      fireEvent.click(doneSwitch());
       const done = await screen.findByText("tk_old", {}, SLOW);
       const li = done.closest("[data-done]")!;
       expect(within(li as HTMLElement).queryByRole("button", { name: /More actions/ })).toBeNull();
@@ -699,14 +724,14 @@ describe("Tasks page", () => {
     it("a built task shows its work item's state", async () => {
       items = [item("wi_1", { level: "ready_to_merge" })];
       await show();
-      tab("List");
+      tab("All");
       expect(await within(card("tk_built")).findByText("Ready to merge", {}, SLOW)).toBeTruthy();
     });
 
     it("a merged item reads Merged, and the state opens a dialog with the full-page link", async () => {
       items = [item("wi_1", { level: "closed", close_reason: "completed", stage: "CLOSED" })];
       await show();
-      tab("List");
+      tab("All");
       expect(await within(card("tk_built")).findByText("Merged", {}, SLOW)).toBeTruthy();
       fireEvent.click(within(card("tk_built")).getByRole("button", { name: "Work item state: tk_built" }));
       const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;

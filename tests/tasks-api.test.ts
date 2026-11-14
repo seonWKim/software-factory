@@ -459,7 +459,7 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     const before = await snapshot(s);
     const v = JSON.parse((await get(s)).body);
     expect(v.active_projects).toEqual([{ slug: "home", name: "Home" }]);
-    expect(v.inbox.find((t: { id: string }) => t.id === ID).projects).toEqual(["home"]);
+    expect(v.projects.flatMap((p: { tasks: { id: string; projects: string[] }[] }) => p.tasks).find((t: { id: string }) => t.id === ID).projects).toEqual(["home"]);
     // Old is archived: its link stays, but the row shows active projects only.
     expect(v.upcoming.flatMap((d: { tasks: { id: string; projects: string[] }[] }) => d.tasks).find((t: { id: string }) => t.id === "tk_fedcba9876543210").projects).toEqual([]);
     expect(await snapshot(s)).toEqual(before);
@@ -470,7 +470,7 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     await s.post({ id: "tk_home_tomorrow1", words: "buy washers tomorrow +home" });
     const ids = (rows: { id?: string }[]) => rows.map((t) => t.id);
     const v = JSON.parse((await get(s, "?project=home")).body);
-    expect(ids(v.inbox)).toEqual([ID]);
+    expect(v).not.toHaveProperty("inbox");
     expect(ids(v.upcoming.flatMap((d: { tasks: { id: string }[] }) => d.tasks))).toEqual(["tk_home_tomorrow1"]);
     expect(v.projects.flatMap((p: { tasks: { id: string }[] }) => ids(p.tasks)).sort()).toEqual([ID, "tk_home_tomorrow1"].sort());
     const all = JSON.parse((await get(s)).body);

@@ -2,7 +2,7 @@
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
-// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and the Done tab), delete, sub, and schedule, the timeline's drop), the
+// /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete, sub, and schedule, the timeline's drop), the
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
 // (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
@@ -765,10 +765,9 @@ export interface CalendarSync {
  */
 export interface TasksView {
   today_date: string;
-  inbox: TaskRow[];
   today: { overdue: TaskRow[]; due: DayRow[] };
   upcoming: { date: string; tasks: DayRow[] }[];
-  /** The List tab: every open task under its #list. */
+  /** The All view: every open task, undated included, under its #list. */
   projects: { list: string | null; tasks: TaskRow[] }[];
   /** The active task projects, by slug (absent from an older server). */
   active_projects?: ProjectChoice[];
@@ -779,7 +778,7 @@ export interface TasksView {
   can_build: boolean;
 }
 
-/** One done task in the Done tab: a task row with the time it was done. */
+/** One done task in All's done list: a task row with the time it was done. */
 export interface DoneRow extends TaskRow {
   done_at: string;
 }
@@ -971,7 +970,7 @@ export function useTasks<T>(project: string | null) {
 }
 
 /**
- * The Done tab's read: the last 30 days, then a page per Show older. Its key starts with the tasks' key, so a row
+ * All's done list read: the last 30 days, then a page per Show older. Its key starts with the tasks' key, so a row
  * action's reload of the tasks (a completion, a reopen) reloads it too. Not polled.
  */
 export function useDoneTasks() {

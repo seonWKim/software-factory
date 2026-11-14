@@ -200,14 +200,14 @@ describe("GET /api/v1/tasks", () => {
     await s.cli("add", "soon", "tomorrow", "#home");
     const v = await s.get();
     expect(v).toMatchObject({ today_date: "2026-11-12", csrf_token: s.token, can_build: true });
-    expect(v.inbox.map((t: { title: string }) => t.title)).toEqual(["inbox"]);
+    expect(v).not.toHaveProperty("inbox");
     expect(v.today.overdue.map((t: { title: string }) => t.title)).toEqual(["late"]);
     expect(v.today.due.map((t: { title: string }) => t.title)).toEqual(["now"]);
     expect(v.upcoming).toEqual([
       { date: "2026-11-12", tasks: [expect.objectContaining({ title: "now" })] },
       { date: "2026-11-13", tasks: [expect.objectContaining({ title: "soon", work_item_id: null })] },
     ]);
-    expect(v.projects.map((p: { list: string | null }) => p.list)).toEqual(["home", null]);
+    expect(v.projects.map((p: { list: string | null; tasks: { title: string }[] }) => [p.list, p.tasks.map((t) => t.title)])).toEqual([["home", ["soon"]], [null, ["late", "now", "inbox"]]]);
   });
 });
 
