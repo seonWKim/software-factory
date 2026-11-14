@@ -5,15 +5,17 @@
 // it fails), then `<home>/bin/sync-agents`. Each value is its own argv item and nothing goes through a shell; only a
 // captured record goes on stdin (as JSON). The forms are the owner's real CLIs (checked 2026-11-12, `evolve show`
 // 2026-11-13); they print text, read in ledger-text.ts. A retire of a class is the other write: its block leaves the
-// rules file, then `tacit verdict <id> retire` runs (the file is put back if it fails), then `sync-agents`. Factory
+// rules file, then `tacit verdict <id> retire` runs (the file is put back if it fails), then `sync-agents`. A promote of
+// a proposal writes nothing: `evolve verdict <id> promote --reason <r> --applied-to <path>`, the file the owner changed
+// by hand (a relative path with no `..`, checked before the CLI runs; evolve checks that it exists). Factory
 // processes only: an agent run never gets it.
 
 import { accessSync, constants, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import {
-  type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
-  type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, tacitIdKind,
+  type TacitApplication, type TacitApplied, type TacitDecision, type TacitDraft, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion,
+  type TacitPushback, type TacitRetired, type TacitRule, TacitRefusal, TacitSyncFailed, appliedToError, tacitIdKind,
 } from "../../interfaces/tacit-ledger.js";
 import { SystemClock } from "../clock/system-clock.js";
 import { baseEnv, runProcess } from "../process/run-process.js";
@@ -105,15 +107,23 @@ export class AgentsHomeTacitLedger implements TacitLedger {
   }
 
   /**
-   * `tacit verdict` for a class, `evolve verdict` for a proposal (never a rule). Promote of a class encodes `rule`
-   * first (`promote`); retire of a class removes its block first (`retire`).
+   * `tacit verdict` for a class, `evolve verdict` for a proposal (never a rule). Promote of a class encodes its rule
+   * first (`promote`); retire of a class removes its block first (`retire`). Promote of a proposal adds
+   * `--applied-to <path>`, the file the owner changed, checked first (a refusal runs no CLI); it writes nothing.
    */
-  async verdict(id: string, decision: TacitDecision, reason: string, rule?: TacitPromotion): Promise<void> {
+  async verdict(id: string, decision: TacitDecision, reason: string, detail?: TacitPromotion | TacitApplication): Promise<void> {
     const kind = kindOf(id);
     if (kind === "proposal" && decision === "retire") throw new Error(`evolve verdict takes no retire: "${id}" is a proposal`);
-    if (kind === "class" && decision === "promote") return this.promote(id, reason, rule);
+    if (kind === "class" && decision === "promote") return this.promote(id, reason, detail !== undefined && "wording" in detail ? detail : undefined);
     if (kind === "class" && decision === "retire") return this.retire(id, reason);
-    await this.run(kind === "class" ? "tacit" : "evolve", ["verdict", id, decision, "--reason", reason]);
+    const args = ["verdict", id, decision, "--reason", reason];
+    if (kind === "proposal" && decision === "promote") {
+      const appliedTo = detail !== undefined && "applied_to" in detail ? detail.applied_to : "";
+      const error = appliedToError(appliedTo);
+      if (error !== null) throw new TacitRefusal(`promote of ${id}: ${error}`);
+      args.push("--applied-to", appliedTo);
+    }
+    await this.run(kind === "class" ? "tacit" : "evolve", args);
   }
 
   /**
