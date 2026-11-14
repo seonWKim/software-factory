@@ -66,15 +66,26 @@ describe("Calendar section", () => {
     within(other).getByRole("button", { name: "Disconnect other" });
   });
 
-  it("Connect asks for the needed values in password fields, sends them once, opens the consent page and forgets them", { timeout: 15_000 }, async () => {
+  it("Connect opens the consent page at once, with no dialog", async () => {
+    await show();
+    answers = [{ status: 202, body: { plugin: NAME, state: "signing_in", consent_url: URL_ } }];
+    view = { plugins: [plugin({ attempt: { state: "signing_in", events: null, error: null } })] };
+    fireEvent.click(screen.getByRole("button", { name: `Connect ${NAME}` }));
+    expect(await screen.findByRole("link", { name: "Open the sign-in page" })).toHaveProperty("href", URL_);
+    expect(posts).toEqual([{ url: "/api/v1/calendar/connect", body: { plugin: NAME }, token: TOKEN }]);
+    expect(opened).toEqual([URL_]);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Use my own client (advanced) asks for the needed values in password fields, sends them once, opens the consent page and forgets them", { timeout: 15_000 }, async () => {
     await show();
     answers = [
       { status: 200, body: { plugin: NAME, state: "needs_input", needs: ["CLIENT_ID", "CLIENT_SECRET"] } },
       { status: 202, body: { plugin: NAME, state: "signing_in", consent_url: URL_ } },
     ];
-    fireEvent.click(screen.getByRole("button", { name: `Connect ${NAME}` }));
-    const dialog = await screen.findByRole("dialog", { name: `Connect ${NAME}` });
-    expect(posts).toEqual([{ url: "/api/v1/calendar/connect", body: { plugin: NAME }, token: TOKEN }]);
+    fireEvent.click(screen.getByRole("button", { name: `Use my own client for ${NAME}` }));
+    const dialog = await screen.findByRole("dialog", { name: `Connect ${NAME} with your own client` });
+    expect(posts).toEqual([{ url: "/api/v1/calendar/connect", body: { plugin: NAME, own_client: true }, token: TOKEN }]);
     const id = within(dialog).getByLabelText<HTMLInputElement>("CLIENT_ID");
     const secret = within(dialog).getByLabelText<HTMLInputElement>("CLIENT_SECRET");
     expect([id.type, secret.type]).toEqual(["password", "password"]);
@@ -85,7 +96,7 @@ describe("Calendar section", () => {
     view = { plugins: [plugin({ attempt: { state: "signing_in", events: null, error: null } })] };
     fireEvent.click(signIn);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(posts[1]).toEqual({ url: "/api/v1/calendar/connect", body: { plugin: NAME, values: { CLIENT_ID: "the-id", CLIENT_SECRET: "the-secret" } }, token: TOKEN });
+    expect(posts[1]).toEqual({ url: "/api/v1/calendar/connect", body: { plugin: NAME, own_client: true, values: { CLIENT_ID: "the-id", CLIENT_SECRET: "the-secret" } }, token: TOKEN });
     expect(opened).toEqual([URL_]);
     expect(await screen.findByRole("link", { name: "Open the sign-in page" })).toHaveProperty("href", URL_);
     expect(document.body.innerHTML).not.toContain("the-secret");
@@ -94,9 +105,10 @@ describe("Calendar section", () => {
     view = { plugins: [plugin()] };
     answers = [{ status: 200, body: { plugin: NAME, state: "needs_input", needs: ["CLIENT_ID", "CLIENT_SECRET"] } }];
     // The section polls GET /api/v1/calendar (every 3 s) until the sign-in is no longer open.
-    await waitFor(() => expect(screen.getByRole("button", { name: `Connect ${NAME}` })).toHaveProperty("disabled", false), { timeout: 5000 });
-    fireEvent.click(screen.getByRole("button", { name: `Connect ${NAME}` }));
-    const again = await screen.findByRole("dialog", { name: `Connect ${NAME}` });
+    const own = () => screen.getByRole("button", { name: `Use my own client for ${NAME}` });
+    await waitFor(() => expect(own()).toHaveProperty("disabled", false), { timeout: 5000 });
+    fireEvent.click(own());
+    const again = await screen.findByRole("dialog", { name: `Connect ${NAME} with your own client` });
     expect(within(again).getByLabelText<HTMLInputElement>("CLIENT_SECRET").value).toBe("");
   });
 
