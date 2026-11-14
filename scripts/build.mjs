@@ -14,6 +14,13 @@ const OLD = ".old-";
 const LOCK = "dist.swap-lock";
 /** The build stamp in dist/: the revision this build was made from (src/ui/system-actions.ts REVISION_STAMP). */
 const REVISION_STAMP = "revision";
+/**
+ * The build-time environment variable that holds the google-calendar default client's secret on a release build
+ * (docs/setup.md): set outside the repository, never in src/ or git. Unset or blank: no default client.
+ */
+const DEFAULT_CLIENT_SECRET_ENV = "SF_GOOGLE_DEFAULT_CLIENT_SECRET";
+/** Where the generated module goes in dist/: beside default-client.js, which imports it (src/calendar/plugins/google-calendar/default-client.ts). */
+const DEFAULT_CLIENT_SECRET_MODULE = join("calendar", "plugins", "google-calendar", "default-client-secret.js");
 
 /** True while a process with this pid exists (EPERM: it exists but belongs to someone else). */
 export function alive(pid) {
@@ -119,6 +126,19 @@ function stamp(root, outDir) {
   if (rev) writeFileSync(join(outDir, REVISION_STAMP), `${rev}\n`);
 }
 
+/**
+ * Writes the google-calendar default client's secret module into the staged `stagedDist` (mode 600) from the release
+ * `value`, and returns its path; writes nothing and returns null when `value` is unset or blank. Never prints it.
+ */
+export function writeDefaultClient(stagedDist, value) {
+  const secret = (value ?? "").trim();
+  if (secret === "") return null;
+  const file = join(stagedDist, DEFAULT_CLIENT_SECRET_MODULE);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, `export const DEFAULT_GOOGLE_CLIENT_SECRET = ${JSON.stringify(secret)};\n`, { mode: 0o600 });
+  return file;
+}
+
 /** Builds the checkout at `root` into staging folders, stamps the staged dist/ and swaps them in. */
 export function build(root) {
   const require = createRequire(join(root, "package.json"));
@@ -135,6 +155,7 @@ export function build(root) {
     run([vite, ...viteBuildArgs(root, stagedWeb)], root);
     // Before the swap: a failed build never gets this far, so the live dist/ keeps its own stamp.
     stamp(root, stagedDist);
+    writeDefaultClient(stagedDist, process.env[DEFAULT_CLIENT_SECRET_ENV]);
     withLock(root, () => {
       swapIn(stagedDist, dist);
       swapIn(stagedWeb, webDist);

@@ -1,11 +1,13 @@
 import { definePlugin, secretName } from "../../../plugin-api.js";
+import { loadDefaultClient } from "./default-client.js";
 import { googleCalendarConnect } from "./google-calendar-connect.js";
 import { GOOGLE_HTTP_TIMEOUT_MS, GoogleCalendarSource, calendarIds, timedFetch } from "./google-calendar-source.js";
 
 // Google Calendar, read-only (docs/plugins/calendar-source.md): on when the top-level `calendar` key lists
 // "google-calendar". Reads the primary calendar, or the calendars the top-level `calendar_ids` key lists.
 // `factory setup calendar google` and the dashboard's Calendar section connect the account through the one connect
-// hook (google-calendar-connect.ts); `--disconnect` and the section's Disconnect undo it.
+// hook (google-calendar-connect.ts); `--disconnect` and the section's Disconnect undo it. With neither client value in
+// the secret file, both use the factory's default client when the build has one (default-client.ts).
 export const GOOGLE_REFRESH_TOKEN = secretName("GOOGLE_REFRESH_TOKEN");
 export const GOOGLE_CLIENT_ID = secretName("GOOGLE_CLIENT_ID");
 export const GOOGLE_CLIENT_SECRET = secretName("GOOGLE_CLIENT_SECRET");
@@ -13,6 +15,7 @@ export const GOOGLE_CLIENT_SECRET = secretName("GOOGLE_CLIENT_SECRET");
 export { GOOGLE_HTTP_TIMEOUT_MS, timedFetch };
 
 const NAMES = { refreshToken: GOOGLE_REFRESH_TOKEN, clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET };
+const defaultClient = () => loadDefaultClient();
 
 export default definePlugin({
   kind: "calendar",
@@ -29,7 +32,8 @@ export default definePlugin({
       secrets: c.secrets,
       names: NAMES,
       calendarIds: calendarIds(c.loaded.file.calendar_ids),
+      defaultClient,
     }),
   // The token exchange is given up after GOOGLE_HTTP_TIMEOUT_MS too, so a hung Google never holds a dashboard request.
-  connect: googleCalendarConnect({ http: timedFetch(GOOGLE_HTTP_TIMEOUT_MS), names: NAMES }),
+  connect: googleCalendarConnect({ http: timedFetch(GOOGLE_HTTP_TIMEOUT_MS), names: NAMES, defaultClient }),
 });

@@ -1,6 +1,7 @@
 // `factory setup calendar google` (docs/plugins/calendar-source.md, Turn on): the OAuth consent that gives the
-// google-calendar plugin its refresh token. The client ID and secret are read from the secret file, or asked once
-// with hidden input; the browser opens Google's consent page for calendar.readonly only, with a PKCE S256 challenge,
+// google-calendar plugin its refresh token. The client ID and secret are read from the secret file; when it holds
+// neither, the factory's default client (default-client.ts) is used if the build has one, else both are asked once
+// with hidden input. The browser opens Google's consent page for calendar.readonly only, with a PKCE S256 challenge,
 // a random state and a redirect to a loopback listener on 127.0.0.1 that closes after 5 minutes. The code is
 // exchanged, the answer must grant exactly calendar.readonly and carry a refresh token, and only then are the three
 // secrets stored, together. Every value stays in memory until then; no message carries one. The token exchange is
@@ -10,6 +11,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { type DefaultClientLoader, defaultUnlessStored } from "./default-client.js";
 import { CALENDAR_READONLY_SCOPE, GOOGLE_HTTP_TIMEOUT_MS, type HttpClient, type SecretReader, TOKEN_URL, fail, json } from "./google-calendar-source.js";
 
 export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -42,6 +44,8 @@ export interface GoogleConnectOptions<N extends string> {
   http: HttpClient;
   /** The secret names the descriptor declares. */
   names: { refreshToken: N; clientId: N; clientSecret: N };
+  /** The factory's default client, used when the secret file holds neither client value. Absent: none. */
+  defaultClient?: DefaultClientLoader;
 }
 
 /** The descriptor's connect hook: `factory setup calendar google`, and `--disconnect`. */
@@ -62,8 +66,13 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
   const stored = async (name: N) => (await ctx.secrets.get(name))?.reveal() || null;
   let clientId = await stored(idName);
   let clientSecret = await stored(secretName);
+  const fallback = await defaultUnlessStored({ id: clientId, secret: clientSecret }, o.defaultClient);
   if (clientId && clientSecret) ctx.print(`   using the ${idName} and ${secretName} in ${ctx.secretsFile}`);
-  else {
+  else if (fallback) {
+    ctx.print("   using the factory's own Google client: nothing to set up");
+    clientId = fallback.clientId;
+    clientSecret = fallback.clientSecret.reveal();
+  } else {
     ctx.print("   An OAuth client of type Desktop app, with the Google Calendar API enabled (Google Cloud console,");
     ctx.print("   APIs & Services → Credentials). Its ID and secret are held in memory until the sign-in passes.");
     clientId ??= await askHidden(ctx, idName);
@@ -91,6 +100,12 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
   const answer = await exchange(o.http, ctx.clock, { code, clientId, clientSecret, redirectUri: loopback.redirectUri, verifier });
   if (!onlyReadonly(answer.scope)) throw fail("the token answer granted a scope other than exactly calendar.readonly: refused, nothing stored");
   if (typeof answer.refresh_token !== "string" || answer.refresh_token === "") throw fail("the token answer carried no refresh token: nothing stored");
+  // With the default client only the refresh token is stored: the client stays in the build, never in the secret file.
+  if (fallback) {
+    await ctx.storeSecrets(new Map([[refreshToken, answer.refresh_token]]));
+    ctx.print(`   stored ${refreshToken} in ${ctx.secretsFile}`);
+    return;
+  }
   await ctx.storeSecrets(new Map([[idName, clientId], [secretName, clientSecret], [refreshToken, answer.refresh_token]]));
   ctx.print(`   stored ${idName}, ${secretName} and ${refreshToken} in ${ctx.secretsFile}`);
 }
