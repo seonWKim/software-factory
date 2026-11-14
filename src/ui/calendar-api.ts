@@ -7,8 +7,12 @@
 // Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (the store's owner only);
 // every refusal comes before the flow runs.
 //
+// GET also says, per plugin, whether this build carries the default sign-in a plain connect takes (`default_client`,
+// from the hook's `hasDefault`), so the page offers no Connect that can only fail.
+//
 // Connect never asks the terminal. A plain connect (the plugin only) takes the hook's default sign-in: a hook that asks
-// for a value then fails before any write, naming the "own client" option. With `own_client: true` (that advanced
+// for a value then fails before any write, naming the "own client" option. A connect that ends before its consent
+// page opens (a refusal, or a stop for input) keeps no attempt: its reply carries the outcome, said once. With `own_client: true` (that advanced
 // option) the hook's hidden questions are answered from the request's `values`, keyed by the secret name the question
 // names; when the hook asks for a value the request lacks, the run stops at the browser step, before any write, and
 // the answer lists the names to ask for (`needs_input`). Otherwise the answer carries the consent
@@ -48,8 +52,11 @@ export interface CalendarIo {
 
 /** The connect flow as the UI composition gives it (compose.ts buildUiParts over src/setup.ts connectCalendar). */
 export interface CalendarFlow {
-  /** Each calendar plugin with a connect hook, in registry order, with the secret names it declares. */
-  plugins: readonly { name: string; secrets: readonly string[] }[];
+  /**
+   * Each calendar plugin with a connect hook, in registry order, with the secret names it declares and whether this
+   * build carries the default sign-in its plain connect takes.
+   */
+  plugins: readonly { name: string; secrets: readonly string[]; hasDefault(): Promise<boolean> }[];
   /** The effective `calendar` list: the live setting, else the config file's. */
   listed(): Promise<readonly string[]>;
   /** One connect or disconnect; a refusal throws before any write. */
@@ -78,6 +85,7 @@ export class UiCalendar {
   async connect(name: string, values: ReadonlyMap<string, string>, secrets: readonly string[], ownClient: boolean) {
     const missing: string[] = [];
     let opened!: (url: string) => void;
+    let consenting = false;
     const consent = new Promise<string>((resolve) => (opened = resolve));
     const run = this.flow.run(name, false, {
       async hidden(prompt) {
@@ -90,6 +98,7 @@ export class UiCalendar {
       },
       async openBrowser(url) {
         if (missing.length > 0) throw new NeedsInput(missing);
+        consenting = true;
         opened(url);
       },
       beforeWrite() {
@@ -100,7 +109,7 @@ export class UiCalendar {
     const attempt: Attempt = { state: "signing_in", events: null, error: null };
     this.attempts.set(name, attempt);
     const settled = run.then((out) => ({ out }), (err: unknown) => ({ err }));
-    void settled.then((r) => this.finish(name, attempt, r));
+    void settled.then((r) => this.finish(name, attempt, r, consenting));
     return Promise.race([consent.then((url) => ({ url })), settled]);
   }
 
@@ -112,10 +121,11 @@ export class UiCalendar {
     this.attempts.delete(name);
   }
 
-  private finish(name: string, attempt: Attempt, r: { out: { sync: SyncOutcome | null } } | { err: unknown }): void {
+  /** `consenting`: the consent page opened. A run that failed before it answered its POST with the error: no attempt stays. */
+  private finish(name: string, attempt: Attempt, r: { out: { sync: SyncOutcome | null } } | { err: unknown }, consenting: boolean): void {
     if (this.attempts.get(name) !== attempt) return;
     if ("err" in r) {
-      if (r.err instanceof NeedsInput) this.attempts.delete(name);
+      if (!consenting) this.attempts.delete(name);
       else Object.assign(attempt, { state: "failed", error: errorText(r.err) });
       return;
     }
@@ -132,7 +142,11 @@ export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: stri
   return new UiCalendar({
     plugins: connectHooks(loaded.registry)
       .filter((h) => h.kind === "calendar")
-      .map((h) => ({ name: h.name, secrets: (loaded.registry.calendar.secrets[h.name] ?? []).map((d) => d.name) })),
+      .map((h) => ({
+        name: h.name,
+        secrets: (loaded.registry.calendar.secrets[h.name] ?? []).map((d) => d.name),
+        hasDefault: async () => (h.hook.hasDefault ? h.hook.hasDefault() : true),
+      })),
     listed: async () => resolveSettings(o.base, await o.store.listSettingOverrides()).values.calendar,
     run: async (name, disconnect, io) =>
       (await import("../setup.js")).connectCalendar({
@@ -172,12 +186,13 @@ export async function readCalendarStatus(d: PauseDeps): Promise<ApiResult> {
   const listed = await c.flow.listed();
   const states = new Map((await readSyncStates(storeSql(d.store))).map((s) => [s.source, s]));
   const plugins = [];
-  for (const { name } of c.flow.plugins) {
+  for (const { name, hasDefault } of c.flow.plugins) {
     const s = states.get(name);
     const a = c.attempt(name);
     plugins.push({
       name,
       connected: listed.includes(name),
+      default_client: await hasDefault(),
       synced_at: s?.synced_at ?? null,
       error: await text(s?.error ?? null),
       attempt: a === null ? null : { state: a.state, events: a.events, error: await text(a.error) },

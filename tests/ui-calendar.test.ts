@@ -203,7 +203,16 @@ describe("GET /api/v1/calendar", () => {
     try {
       const r = await p.get("/api/v1/calendar");
       expect(r.status).toBe(200);
-      expect(r.value.plugins).toEqual([{ name: PLUGIN, connected: false, synced_at: null, error: null, attempt: null }]);
+      expect(r.value.plugins).toEqual([{ name: PLUGIN, connected: false, default_client: true, synced_at: null, error: null, attempt: null }]);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it("reports default_client false when the build carries no default client", async () => {
+    const p = await page({ defaultClient: null });
+    try {
+      expect((await p.get("/api/v1/calendar")).value.plugins).toMatchObject([{ name: PLUGIN, default_client: false }]);
     } finally {
       await p.close();
     }
@@ -272,6 +281,8 @@ describe("POST /api/v1/calendar/connect: a fresh setup, end to end", () => {
       expect(String(r.value.error)).toContain('"use my own client"');
       expect(read(p.secretsFile)).toBe(before);
       expect(await p.listed()).toEqual([]);
+      // The reply carries the refusal; no failed attempt repeats it on the next read.
+      expect((await settled(p)).attempt).toBeNull();
     } finally {
       await p.close();
     }

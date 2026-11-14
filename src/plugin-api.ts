@@ -155,6 +155,11 @@ export interface ConnectHook {
   command: string;
   connect(ctx: ConnectContext): Promise<void>;
   disconnect(ctx: ConnectContext): Promise<void>;
+  /**
+   * Whether this build carries the default sign-in a plain connect uses (a factory OAuth client). Absent: the hook
+   * has no such option, and its plain connect is its only way in, so it counts as present.
+   */
+  hasDefault?(): Promise<boolean>;
 }
 
 export type PluginFactory<K extends PluginKind> = (ctx: Contexts[K]) => Instances[K] | Promise<Instances[K]>;
