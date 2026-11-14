@@ -37,12 +37,10 @@ describe("defaultGoogleClient", () => {
 });
 
 describe("no client secret in the repository", () => {
-  it("the injected module is ignored by git and never tracked", () => {
-    for (const f of ["default-client-secret.ts", "default-client-secret.js"]) {
-      const path = `${PLUGIN_DIR}/${f}`;
-      expect(git("check-ignore", "--no-index", path).trim(), path).toBe(path);
-      expect(git("ls-files", "--", path), path).toBe("");
-    }
+  it("the injected module lives only in the ignored build output, never in the source tree", () => {
+    const built = `dist/calendar/plugins/google-calendar/${DEFAULT_SECRET_MODULE.slice(2)}`;
+    expect(git("check-ignore", "--no-index", built).trim()).toBe(built);
+    expect(git("ls-files", "--", PLUGIN_DIR).split("\n").filter((f) => f.includes("default-client-secret"))).toEqual([]);
   });
 
   it("no tracked file holds a Google OAuth client secret", () => {
