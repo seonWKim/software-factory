@@ -1,7 +1,8 @@
 // scripts/build.mjs (docs/design/08-self-update.md, "Build in place"): a build swaps finished folders in with
-// renames, never deletes the live one first, and concurrent swaps of the same target leave one complete folder.
+// renames, never deletes the live one first, and concurrent swaps of the same target leave one complete folder;
+// with --if-stale (the factory CLI) it skips when no build input changed since the last successful build.
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -115,4 +116,138 @@ describe("build script: the app build with a read-only node_modules", () => {
       chmodSync(viteTemp, 0o755);
     }
   }, 30_000);
+});
+
+describe("build script: --if-stale (the factory CLI's build)", () => {
+  // A fake checkout: the real script, the build inputs, and stub `tsc` and `vite` that log each run to steps.log
+  // and write a file into their --outDir. A `fail-<step>` file makes that step print an error and exit 1.
+  const stub = (step: string) => `
+    const { appendFileSync, existsSync, mkdirSync, writeFileSync } = require("node:fs");
+    const { join } = require("node:path");
+    appendFileSync("steps.log", "${step}\\n");
+    if (existsSync("fail-${step}")) { console.error("${step}: broken input"); process.exit(1); }
+    const out = process.argv[process.argv.indexOf("--outDir") + 1];
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, "${step}.out"), "built");
+  `;
+  const PAST = new Date(Date.now() - 3_600_000);
+
+  function checkout(): string {
+    // The real path: the script runs its build only when argv[1] is its own (resolved) path, and tmpdir() is a link on macOS.
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "sf-stale-")));
+    folder(join(root, "scripts"), {});
+    copyFileSync(SCRIPT, join(root, "scripts", "build.mjs"));
+    folder(root, { "package.json": "{}", "tsconfig.json": "{}" });
+    folder(join(root, "src", "core"), { "a.ts": "export {};" });
+    folder(join(root, "web", "src"), { "main.tsx": "export {};" });
+    folder(join(root, "web"), { "vite.config.ts": "export default {};", "index.html": "<p>t</p>" });
+    folder(join(root, "node_modules", "typescript", "bin"), { tsc: stub("tsc") });
+    folder(join(root, "node_modules", "typescript"), { "package.json": '{"name":"typescript"}' });
+    folder(join(root, "node_modules", "vite", "bin"), { "vite.js": stub("vite") });
+    folder(join(root, "node_modules", "vite"), { "package.json": '{"name":"vite"}' });
+    // Every input older than any build, so only what a test changes afterwards is newer than the marker.
+    for (const p of ["src", "src/core", "src/core/a.ts", "web", "web/src", "web/src/main.tsx", "web/vite.config.ts", "web/index.html", "package.json", "tsconfig.json"])
+      utimesSync(join(root, p), PAST, PAST);
+    return root;
+  }
+  function factoryBuild(root: string) {
+    return spawnSync(process.execPath, [join(root, "scripts", "build.mjs"), "--if-stale"], { cwd: root, encoding: "utf8" });
+  }
+  function steps(root: string): string[] {
+    return existsSync(join(root, "steps.log")) ? readFileSync(join(root, "steps.log"), "utf8").split("\n").filter(Boolean) : [];
+  }
+  /** Builds once (both steps run), then clears the log so the next run's steps are its own. */
+  function built(): string {
+    const root = checkout();
+    expect(factoryBuild(root).status).toBe(0);
+    expect(steps(root)).toEqual(["tsc", "vite"]);
+    rmSync(join(root, "steps.log"));
+    return root;
+  }
+
+  it("the factory script builds with --if-stale; build, check:responsive, migrate and setup build every time", () => {
+    const scripts = JSON.parse(readFileSync(join(import.meta.dirname, "..", "package.json"), "utf8")).scripts as Record<string, string>;
+    expect(scripts.factory).toMatch(/^npm run --silent build -- --if-stale && node .* dist\/main\.js$/);
+    expect(scripts.build).toBe("node scripts/build.mjs");
+    for (const name of ["check:responsive", "migrate", "setup"]) {
+      expect(scripts[name]).toContain("npm run --silent build &&");
+      expect(scripts[name]).not.toContain("--if-stale");
+    }
+  });
+
+  it("a second run with no source change starts no tsc and no vite", () => {
+    const root = built();
+    const r = factoryBuild(root);
+    expect(r.status).toBe(0);
+    expect(r.stdout + r.stderr).toBe("");
+    expect(steps(root)).toEqual([]);
+    expect(readdirSync(join(root, "dist"))).toEqual(["tsc.out"]);
+  });
+
+  it("without --if-stale the build runs every time", () => {
+    const root = built();
+    expect(spawnSync(process.execPath, [join(root, "scripts", "build.mjs")], { cwd: root }).status).toBe(0);
+    expect(steps(root)).toEqual(["tsc", "vite"]);
+  });
+
+  it.each(["src/core/a.ts", "web/src/main.tsx", "package.json", "tsconfig.json", "web/vite.config.ts", "web/index.html"])(
+    "a change to %s builds again, once",
+    (input) => {
+      const root = built();
+      writeFileSync(join(root, input), input.endsWith(".json") ? "{ }" : "changed");
+      expect(factoryBuild(root).status).toBe(0);
+      expect(steps(root)).toEqual(["tsc", "vite"]);
+      expect(factoryBuild(root).status).toBe(0);
+      expect(steps(root)).toEqual(["tsc", "vite"]);
+    },
+  );
+
+  it.each<[string, (root: string) => void]>([
+    ["adding a file", (root) => writeFileSync(join(root, "src", "core", "b.ts"), "export {};")],
+    ["removing a file", (root) => rmSync(join(root, "src", "core", "a.ts"))],
+    ["adding a folder", (root) => mkdirSync(join(root, "web", "src", "pages"))],
+    ["removing a folder", (root) => rmSync(join(root, "src", "core"), { recursive: true })],
+    ["removing a config file", (root) => rmSync(join(root, "web", "index.html"))],
+  ])("%s under the build inputs builds again", (_, change) => {
+    const root = built();
+    change(root);
+    expect(factoryBuild(root).status).toBe(0);
+    expect(steps(root)).toEqual(["tsc", "vite"]);
+  });
+
+  it.each(["dist", "web/dist"])("a missing %s builds again", (out) => {
+    const root = built();
+    rmSync(join(root, out), { recursive: true });
+    expect(factoryBuild(root).status).toBe(0);
+    expect(steps(root)).toEqual(["tsc", "vite"]);
+  });
+
+  it.each(["tsc", "vite"])("a failed %s step exits non-zero, prints its output, swaps nothing and writes no marker", (step) => {
+    const root = checkout();
+    writeFileSync(join(root, `fail-${step}`), "");
+    const r = factoryBuild(root);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain(`${step}: broken input`);
+    expect(existsSync(join(root, "dist"))).toBe(false);
+    expect(existsSync(join(root, "web", "dist"))).toBe(false);
+    // The next run tries again, and once the step is fixed it builds and the run after skips.
+    rmSync(join(root, `fail-${step}`));
+    rmSync(join(root, "steps.log"));
+    expect(factoryBuild(root).status).toBe(0);
+    expect(steps(root)).toEqual(["tsc", "vite"]);
+    expect(existsSync(join(root, "dist.fresh"))).toBe(true);
+    expect(existsSync(join(root, "web", "dist", "vite.out"))).toBe(true);
+  });
+
+  it("a failed rebuild keeps the previous output and its marker, and the next run builds again", () => {
+    const root = built();
+    writeFileSync(join(root, "src", "core", "a.ts"), "changed");
+    writeFileSync(join(root, "fail-vite"), "");
+    const marker = readFileSync(join(root, "dist.fresh"), "utf8");
+    expect(factoryBuild(root).status).not.toBe(0);
+    expect(readFileSync(join(root, "dist.fresh"), "utf8")).toBe(marker);
+    rmSync(join(root, "steps.log"));
+    expect(factoryBuild(root).status).not.toBe(0);
+    expect(steps(root)).toEqual(["tsc", "vite"]);
+  });
 });
