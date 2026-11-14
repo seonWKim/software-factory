@@ -69,7 +69,8 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
   const stored = async (name: N) => (await ctx.secrets.get(name))?.reveal() || null;
   let clientId = await stored(idName);
   let clientSecret = await stored(secretName);
-  const fallback = clientId && clientSecret ? null : ctx.ownClient ? null : await o.defaultClient();
+  // Both own lines win; else the default client, unless the dashboard's own-client option asks for the owner's.
+  const fallback = (clientId && clientSecret) || ctx.ownClient ? null : await o.defaultClient();
   if (clientId && clientSecret) ctx.print(`   using your own client: the ${idName} and ${secretName} in ${ctx.secretsFile}`);
   else if (fallback) {
     ({ id: clientId, secret: clientSecret } = fallback);

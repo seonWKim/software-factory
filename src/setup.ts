@@ -542,7 +542,7 @@ export async function connectCalendar(r: CalendarConnectRun): Promise<{ was: rea
   }
   // The secrets read as if the plugin were selected: it may not be listed yet. Each build reads the file afresh.
   const selected = new Plugins({ ...r.loaded, plugins: { ...r.loaded.plugins, calendars: [r.name] } });
-  // `ownClient` is read by a hook that offers a default client (google-calendar-connect.ts); others ignore it.
+  // `ownClient` is read by a hook that offers a default client (its own ConnectCtx says so); others ignore it.
   const ctx: ConnectContext & { ownClient: boolean } = {
     ...r.io,
     ownClient: r.ownClient === true,
