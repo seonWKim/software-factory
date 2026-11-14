@@ -667,7 +667,7 @@ export function RunnersPage() {
           </ul>
         )}
       </Section>
-      <Section title={t("running.label")}>
+      <Section title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
         {runs.data ? <RunningTable runs={runs.data.runs} items={map} now={now} /> : <Loading rows={2} />}
       </Section>
     </>

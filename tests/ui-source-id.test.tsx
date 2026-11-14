@@ -26,12 +26,13 @@ describe("shortSource", () => {
 });
 
 describe("ItemTitle", () => {
-  it("shows a local id short, with the full id in title and the link unchanged", () => {
-    render(<ItemTitle id="wi_1" title="Some work" source={{ id: LOCAL, link: `local:${LOCAL}` }} />);
-    const link = screen.getByText("30331a68");
-    expect(link.getAttribute("title")).toBe(LOCAL);
-    expect(link.getAttribute("href")).toBe(`local:${LOCAL}`);
-    expect(link.className).toContain("truncate");
-    expect(screen.queryByText(LOCAL)).toBeNull();
+  it("is the title linked to the item page: no source link, no truncate", () => {
+    const { container } = render(<ItemTitle id="wi_1" title="Some work" />);
+    const links = container.querySelectorAll("a");
+    expect(links).toHaveLength(1);
+    expect(links[0].getAttribute("href")).toBe("/app/items/wi_1");
+    expect(links[0].textContent).toBe("Some work");
+    expect(links[0].className).not.toContain("truncate");
+    expect(screen.queryByText("30331a68")).toBeNull();
   });
 });
