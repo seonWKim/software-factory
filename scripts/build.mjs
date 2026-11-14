@@ -3,8 +3,10 @@
 // folders beside the targets (`dist.build-<pid>-<n>`, `web/dist.build-<pid>-<n>`, same depth so source map paths
 // stay right), then swaps each in with two renames under a short lock: the old folder moves aside, the staged one
 // takes its name, and the old one is deleted after. Concurrent builds compile side by side; the last swap wins.
+// `--if-stale` (the `factory` script only): skip the build when no build input is newer than the freshness marker
+// the last successful build wrote beside dist/ (docs/design/08-self-update.md, "Skip the CLI build when nothing changed").
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,6 +23,41 @@ const REVISION_STAMP = "revision";
 const DEFAULT_CLIENT_SECRET_ENV = "SF_GOOGLE_DEFAULT_CLIENT_SECRET";
 /** Where the generated module goes in dist/: beside default-client.js, which imports it (src/calendar/plugins/google-calendar/default-client.ts). */
 const DEFAULT_CLIENT_SECRET_MODULE = join("calendar", "plugins", "google-calendar", "default-client-secret.js");
+/**
+ * The freshness marker beside dist/ (git-ignored like the staging folders): the start time (ms) of the last successful
+ * build, written after both swaps. Beside, not inside, so dist/ holds only the build's own output.
+ */
+const MARKER = "dist.fresh";
+/** What the build reads, relative to the checkout: folders are walked, and a folder's own time counts (add/remove). */
+const BUILD_INPUTS = ["src", join("web", "src"), "package.json", "tsconfig.json", join("web", "vite.config.ts"), join("web", "index.html")];
+
+/** True when any entry at or under `path` was changed at or after `since` (ms). A missing input counts as changed. */
+function changedSince(path, since) {
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch {
+    return true;
+  }
+  if (st.mtimeMs >= since) return true;
+  if (!st.isDirectory()) return false;
+  return readdirSync(path).some((e) => changedSince(join(path, e), since));
+}
+
+/**
+ * True when the checkout at `root` needs a build: no marker or output, or a build input (file or folder) changed, was
+ * added or removed since the last successful build started. Adding or removing an entry changes its folder's time.
+ */
+function stale(root) {
+  let since;
+  try {
+    since = Number(readFileSync(join(root, MARKER), "utf8"));
+  } catch {
+    return true;
+  }
+  if (!Number.isFinite(since) || !existsSync(join(root, "dist")) || !existsSync(join(root, "web", "dist"))) return true;
+  return BUILD_INPUTS.some((p) => changedSince(join(root, p), since));
+}
 
 /** True while a process with this pid exists (EPERM: it exists but belongs to someone else). */
 export function alive(pid) {
@@ -154,6 +191,8 @@ export function build(root) {
   sweep(webDist);
   const stagedDist = stagingPath(dist);
   const stagedWeb = stagingPath(webDist);
+  // Taken before the compile steps read anything, so an input edited during the build is newer than the marker.
+  const started = Date.now();
   try {
     run([tsc, "-p", join(root, "tsconfig.json"), "--outDir", stagedDist], root);
     run([vite, ...viteBuildArgs(root, stagedWeb)], root);
@@ -163,6 +202,8 @@ export function build(root) {
     withLock(root, () => {
       swapIn(stagedDist, dist);
       swapIn(stagedWeb, webDist);
+      // Only after both swaps: a failed build or a crash between them leaves no marker for the new output.
+      writeFileSync(join(root, MARKER), String(started));
     });
   } finally {
     rmSync(stagedDist, { recursive: true, force: true });
@@ -171,8 +212,9 @@ export function build(root) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   try {
-    build(join(dirname(fileURLToPath(import.meta.url)), ".."));
+    if (!process.argv.includes("--if-stale") || stale(root)) build(root);
   } catch (e) {
     console.error(e instanceof Error ? e.message : e);
     process.exit(1);
