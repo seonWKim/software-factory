@@ -52,6 +52,13 @@ export interface AgentRunSpec {
    * into the run's temp folder. Absent: the agent environment is as before.
    */
   toolchain_env?: Readonly<Record<string, string>>;
+  /**
+   * Warmed Gradle wrapper distributions (the owner's `~/.gradle/wrapper/dists`, design 05-sandbox.md): absolute
+   * folders a runner copies, before the agent starts, into the run's own `GRADLE_USER_HOME`
+   * (`<TMPDIR>/toolchain/gradle/wrapper/dists`). Copied only: never linked, never written, never readable to the
+   * agent. Set, even empty, only with a `toolchain` block; a missing folder is skipped.
+   */
+  toolchain_seeds?: readonly string[];
   model_class: "cheap" | "standard" | "strong";
   timeout_ms: number;
   /**

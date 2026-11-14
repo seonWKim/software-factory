@@ -9,6 +9,7 @@ import {
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks } from "./gate-hooks.js";
+import { copyToolchainSeeds } from "./toolchain-seeds.js";
 import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
 export interface ClaudeCodeRunnerOptions {
@@ -35,10 +36,8 @@ export interface HarnessCredential {
 }
 
 /**
- * The per-run toolchain homes (design 05-sandbox.md, issue #334): with a `toolchain` block, each tool's own cache
- * or home points into the run's TMPDIR (`<TMPDIR>/toolchain/<name>`), which the agent may already write, so a
- * build writes there and never into a shared cache. A `toolchain.env` entry may point one elsewhere (e.g. Gradle's
- * read-only `GRADLE_RO_DEP_CACHE` beside a per-run `GRADLE_USER_HOME`).
+ * The per-run toolchain homes (design 05-sandbox.md, issue #334): with a `toolchain` block, each tool's home is `<TMPDIR>/toolchain/<name>`, which the agent
+ * may write, never a shared cache; a `toolchain.env` entry may point one elsewhere. Gradle's starts with a copy of the warmed wrapper (`copyToolchainSeeds`).
  */
 export const TOOLCHAIN_HOMES: Readonly<Record<string, string>> = {
   npm_config_cache: "npm",
@@ -330,6 +329,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     // The run's TMPDIR (buildAgentEnv): the one folder outside the run folder Write and Edit may also use.
     const tmp = join(home, "tmp");
     await mkdir(tmp, { recursive: true });
+    await copyToolchainSeeds(spec.toolchain_seeds ?? [], join(tmp, "toolchain", TOOLCHAIN_HOMES.GRADLE_USER_HOME!, "wrapper", "dists"), spec.deny_paths);
 
     const env = buildAgentEnv(spec, await harnessCredential(this.opts.secrets), {
       home,

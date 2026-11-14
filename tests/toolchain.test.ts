@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,12 +7,12 @@ import { TOOLCHAIN_PLACEHOLDER, checkToolchainEnv, fillPrompt, loadConfig, toolc
 import type { FactoryConfig, ToolchainConfig } from "../src/core/config.js";
 import { keyRefusal, PR_ONLY_KEYS } from "../src/core/settings.js";
 import { Edit, FORBIDDEN_ENV, Read, Write, guardPolicy, type ToolContext } from "../src/core/tools/index.js";
-import { WARM_FAILED } from "../src/worker/index.js";
+import { WARM_FAILED, Worker } from "../src/worker/index.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { TOOLCHAIN_HOMES, buildAgentEnv, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
+import { ClaudeCodeRunner, TOOLCHAIN_HOMES, buildAgentEnv, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
 import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
-import type { ExecOptions } from "../src/interfaces/sandbox.js";
+import type { ExecOptions, ExecResult, Sandbox } from "../src/interfaces/sandbox.js";
 import { doctorChecks, toolchainChecks } from "../src/setup.js";
 import { config, pipeline } from "./helpers/fakes.js";
 
@@ -370,5 +371,148 @@ describe("read_only_inputs", () => {
     const { dir: cfg, home } = root({ read_only_inputs: ["~/data/resume"] });
     const lines = (await doctorChecks(await load(cfg))).map((c) => c.msg);
     expect(lines).toContain(`read-only input ${join(home, "data", "resume")} does not exist`);
+  });
+});
+
+// The warmed Gradle wrapper distribution (design 05-sandbox.md): with a toolchain block, the worker names the
+// owner's `~/.gradle/wrapper/dists` (when it exists and the run folder has gradlew) as a seed, and the runner copies
+// it into the run's own GRADLE_USER_HOME before the agent starts. The source is never written or made readable.
+describe("the warmed Gradle wrapper distribution", () => {
+  const toolchain: ToolchainConfig = { caches: ["/home/u/.gradle/caches"], env: { GRADLE_RO_DEP_CACHE: "/home/u/.gradle/caches" }, warm_command: ["./gradlew", "dependencies"] };
+  const HOME = "/home/u";
+  const SOURCE = "/home/u/.gradle/wrapper/dists";
+
+  async function world(cfg: Partial<FactoryConfig>) {
+    const f = await pipeline({ config: cfg });
+    for (const w of [f.w1, f.w2]) w.d.toolEnv = { HOME };
+    return f;
+  }
+
+  it("names the owner's wrapper dists as a seed when it exists and the run folder has gradlew", async () => {
+    const f = await world({ toolchain });
+    await f.submit();
+    await f.step();
+    const spec = f.runner.specs.find((s) => s.role === "implement")!;
+    expect(spec.toolchain_seeds).toEqual([SOURCE]);
+    expect(f.sandbox.commands).toContain("test -f gradlew");
+    expect(f.sandbox.commands).toContain(`test -d ${SOURCE}`);
+    // Never a readable cache or a write root.
+    expect(spec.readable_paths).toEqual(toolchain.caches);
+    expect(spec.writable_paths).toEqual([]);
+  });
+
+  it("a missing source or no gradlew: no seed, and the run goes on", async () => {
+    for (const missing of [`test -d ${SOURCE}`, "test -f gradlew"]) {
+      const f = await world({ toolchain });
+      f.sandbox.exits[missing] = 1;
+      await f.submit();
+      await f.step();
+      expect(f.agentCalls("implement"), missing).toBe(1);
+      expect(f.runner.specs.find((s) => s.role === "implement")!.toolchain_seeds, missing).toEqual([]);
+    }
+  });
+
+  it("no toolchain block: no seed field and no check", async () => {
+    const f = await world({});
+    await f.submit();
+    await f.step();
+    for (const spec of f.runner.specs) expect(spec).not.toHaveProperty("toolchain_seeds");
+    expect(f.sandbox.commands.some((c) => c.startsWith("test "))).toBe(false);
+  });
+
+  it("a source that overlaps a denied path fails startup, naming both paths", async () => {
+    const f = await pipeline({ config: { toolchain } });
+    for (const denied of ["/home/u/.gradle", "/home/u/.gradle/wrapper/dists/x"]) {
+      const config = { ...f.config, deny_paths: [...f.config.deny_paths, denied] };
+      expect(() => new Worker({ ...f.w1.d, config, toolEnv: { HOME } }), denied).toThrow(`${SOURCE} overlaps the denied path ${denied}`);
+      // No block: nothing to check.
+      const { toolchain: _block, ...without } = config;
+      expect(() => new Worker({ ...f.w1.d, config: without, toolEnv: { HOME } })).not.toThrow();
+    }
+  });
+
+  /** A real run folder: the owner's warmed dists with one file, and a runner whose sandbox records what the agent saw. */
+  function seeded() {
+    const base = mkdtempSync(join(tmpdir(), "sf-seeds-"));
+    const source = join(base, "owner", ".gradle", "wrapper", "dists");
+    const bin = join(source, "gradle-8.12.1-bin", "abc", "gradle-8.12.1", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "gradle"), "#!/bin/sh\n", { mode: 0o555 });
+    chmodSync(join(source, "gradle-8.12.1-bin", "abc"), 0o555); // a read-only source folder still gives a writable copy
+    const seen: { env: Record<string, string>; copied: boolean; writable: boolean }[] = [];
+    const sandbox: Sandbox = {
+      create: async () => ({ id: "s", workdir: base }),
+      updateBase: async () => "base",
+      exec: async (_h, _cmd, o): Promise<ExecResult> => {
+        const env = { ...o.env };
+        const dists = join(env.GRADLE_USER_HOME ?? join(base, "none"), "wrapper", "dists");
+        const copied = existsSync(join(dists, "gradle-8.12.1-bin", "abc", "gradle-8.12.1", "bin", "gradle"));
+        let writable = false;
+        if (copied) {
+          writeFileSync(join(dists, "gradle-8.12.1-bin", "abc", "gradle-8.12.1.zip.lck"), "");
+          writable = true;
+        }
+        seen.push({ env, copied, writable });
+        return { exit_code: 0, signal: null, stdout: "", stderr: "", timed_out: false };
+      },
+      copyIn: async () => {},
+      copyOut: async () => {},
+      destroy: async () => {},
+    };
+    const runner = new ClaudeCodeRunner({
+      sandbox, secrets: { get: async () => ({ reveal: () => "x" }) as never, valuesForScan: async () => [] },
+      claudeConfigDir: join(base, "cfg"), homesDir: join(base, "homes"), models: { cheap: "c", standard: "s", strong: "x" },
+    });
+    const spec = (over: Partial<AgentRunSpec>): AgentRunSpec => ({
+      run_id: "run_1", work_item_id: "wi_1", role: "implement", sandbox: { id: "s", workdir: base }, system_prompt: "s", prompt: "p",
+      tools: [Read], tool_grants: [], lease_token: 1, env_allowlist: {}, deny_paths: [], writable_paths: [], model_class: "standard",
+      timeout_ms: 30_000, signal: new AbortController().signal, ...over,
+    }) as AgentRunSpec;
+    const snapshot = () => execFileSync("ls", ["-lR", source], { encoding: "utf8" });
+    return { base, source, runner, spec, seen, snapshot };
+  }
+
+  it("the runner copies the seed into the run's GRADLE_USER_HOME before the agent starts; the copy is writable and the source unchanged", async () => {
+    const { base, source, runner, spec, seen, snapshot } = seeded();
+    const before = snapshot();
+    await runner.run(spec({ toolchain_env: {}, toolchain_seeds: [source] }));
+    expect(seen[0]!.env.GRADLE_USER_HOME).toBe(join(base, "homes", "run_1", "tmp", "toolchain", "gradle"));
+    expect(seen[0]).toMatchObject({ copied: true, writable: true });
+    expect(snapshot()).toBe(before);
+    expect(existsSync(join(source, "gradle-8.12.1-bin", "abc", "gradle-8.12.1.zip.lck"))).toBe(false);
+    // A second step of the same run keeps the copy it has.
+    await runner.run(spec({ toolchain_env: {}, toolchain_seeds: [source] }));
+    expect(seen[1]).toMatchObject({ copied: true, writable: true });
+  });
+
+  it("a link in the seed to a file outside it or to a denied path is not copied; a link inside it is kept", async () => {
+    const { base, source, runner, spec } = seeded();
+    const dir = join(source, "gradle-8.12.1-bin");
+    writeFileSync(join(base, "outside.txt"), "outside");
+    mkdirSync(join(base, "secret"));
+    writeFileSync(join(base, "secret", "id_rsa"), "key");
+    symlinkSync(join(base, "outside.txt"), join(dir, "outside-link"));
+    symlinkSync(join(base, "secret", "id_rsa"), join(dir, "denied-link"));
+    symlinkSync(join(dir, "abc", "gradle-8.12.1", "bin", "gradle"), join(dir, "inside-link"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await runner.run(spec({ toolchain_env: {}, toolchain_seeds: [source], deny_paths: [join(base, "secret")] }));
+    const copy = join(base, "homes", "run_1", "tmp", "toolchain", "gradle", "wrapper", "dists", "gradle-8.12.1-bin");
+    expect(existsSync(join(copy, "abc", "gradle-8.12.1", "bin", "gradle"))).toBe(true);
+    for (const link of ["outside-link", "denied-link"]) {
+      expect(() => lstatSync(join(copy, link)), link).toThrow();
+      expect(warn.mock.calls.flat().join("\n")).toContain(join(dir, link).replace(base, ""));
+    }
+    expect(readFileSync(join(copy, "inside-link"), "utf8")).toBe("#!/bin/sh\n");
+    expect(realpathSync(join(copy, "inside-link"))).toBe(realpathSync(join(copy, "abc", "gradle-8.12.1", "bin", "gradle")));
+    warn.mockRestore();
+  });
+
+  it("a missing seed or none makes no copy, and the run goes on", async () => {
+    const { base, runner, spec, seen } = seeded();
+    await runner.run(spec({ toolchain_env: {}, toolchain_seeds: [join(base, "nowhere")] }));
+    await runner.run(spec({ run_id: "run_2" as AgentRunSpec["run_id"], toolchain_env: {}, toolchain_seeds: [] }));
+    await runner.run(spec({ run_id: "run_3" as AgentRunSpec["run_id"] }));
+    expect(seen.map((s) => s.copied)).toEqual([false, false, false]);
+    for (const run of ["run_1", "run_2", "run_3"]) expect(existsSync(join(base, "homes", run, "tmp", "toolchain")), run).toBe(false);
   });
 });
