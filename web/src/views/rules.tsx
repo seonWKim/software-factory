@@ -1,4 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { ChevronDown } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import {
   API, type AppliedRule, type RetiredRule, type RuleDetail, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry,
@@ -8,45 +9,48 @@ import { ButtonRow } from "../components/ui/button-row.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { Markdown } from "../components/ui/markdown.js";
+import { Tooltip } from "../components/ui/menu.js";
+import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
+import { EmptyState, Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 
-// The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571): the owner's tacit ledger entries
-// waiting for a verdict, read through GET /api/v1/rules, in two groups, rule candidates (`C-…`) and structure proposals
-// (`P-…`), each under one line saying what promoting one does. A card shows its state, ID, title and one line of what it
-// would change (a candidate's rule, worded as its title until opened; a proposal's kind and target). "Why and where"
-// reads the entry's detail on demand through GET /api/v1/rules/entry?id=, never on page load: what it would change, why
-// (how many times it came up, the owner's words, the root reason) and where it applies, in that order. Promote, Hold
-// and Reject each open a dialog that asks for a reason before it sends; Promote of a class also asks for the rule's
-// wording, default and exception (the last two prefilled from the class's draft), which the server writes into the
-// owner's rules file before the verdict. Promote of a proposal asks for the file the change went into, "Applied to"
-// (prefilled with its target, required: an empty field says why and keeps Send off), sent as `applied_to`. A class whose draft could not be read offers no
-// Promote. An entry the ledger judged since its pending view was built shows that decision and no verdict buttons,
-// until the view is rebuilt. Only the owner sends; anyone
-// else sees the list with the reason. With the ledger off (design 08-settings, 2026-11-12) the page says whether it
-// found the agents home: found, one primary Turn on, which stores the `integrations` entry through POST /api/v1/settings
-// and then loads the rules with no reload; not found, which CLI is missing and how to point AGENTS_HOME at the home.
-// After the waiting groups, an Applied group lists the promoted rules file (design 09-dashboard-app.md, 2026-11-14):
-// each block's ID, name, default, exception, scope, evidence and judged date (a missing part reads "not given"), an
-// unparsable block as raw text, then the encoded-elsewhere lines. Not shown when there are none. Its Suggest button
-// reads each applied class's retire suggestions through GET /api/v1/rules/entry?id= (never on page load); a rule with
-// one shows a "Suggested to retire" badge and its reasons, kept until the next press or reload. Every applied class
-// has a Retire action (disabled for anyone but the owner) whose dialog asks for a reason; nothing is retired without
-// it. Then a collapsed Retired list: the ledger's retired classes with reason and date.
-// The app's page title is the one "Rules" heading.
+// The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571), under one PageHeader that says what
+// the page is for and how many entries wait, at most max-w-3xl wide, with a "How this works" disclosure. Only entries
+// the ledger has not judged (judged null) wait: they are counted and shown in two groups, rule candidates (`C-…`) and
+// structure proposals (`P-…`), each under one line saying what promoting one does; judged ones collapse into one
+// "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title, a StatusBadge
+// (open, pending, held, or the judged decision) and its ID. "Why and where" (aria-expanded, a chevron) reads the entry's
+// detail on demand through GET /api/v1/rules/entry?id=, never on page load. Promote (primary, with a Tooltip when off),
+// Hold and Reject (danger, last) each open a dialog that shows the entry's why and where above a required reason;
+// Promote of a class also asks for the rule's wording, default and exception (prefilled from the class's draft);
+// Promote of a proposal asks for the file the change went into, "Applied to" (prefilled with its target, required: an
+// empty field says why and keeps Send off), sent as `applied_to`.
+// Only the owner sends. With the ledger off the page is an EmptyState whose action is Turn on (stores `integrations`
+// through POST /api/v1/settings, then loads the rules) or, with no agents home, says which CLI is missing.
+// Applied lists the promoted rules file in the file's order, one compact row per rule (ID, name, scope, judged date,
+// the "Suggested to retire" badge and Retire) that expands to a label/value list, with a search over ID, name, default
+// and scope; it is collapsed while something waits. Suggest reads each class's retire suggestions on demand. Then a
+// collapsed Retired list. Scope and the encoded-elsewhere lines render through Markdown.
 // One card per entry at every width, so no table turns into cards.
 
 const muted = "text-xs text-pretty text-text-2";
 
 const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pending: "rules.statePending", held: "rules.stateHeld" };
+/** The StatusBadge level of each state, so open, pending and held look different. */
+const STATE_LEVEL: Record<string, string> = { open: "running", pending: "needs_approval" };
+/** The page's reading width, and the longest title a dialog heading shows. */
+const PAGE_WIDTH = "max-w-3xl";
+const TITLE_MAX = 60;
+const shorten = (title: string): string => (title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title);
 /** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal the file it was applied to. */
 const isClass = (id: string): boolean => id.startsWith("C-");
-const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey }[] = [
-  { verdict: "promote", label: "rules.promote" },
-  { verdict: "hold", label: "rules.hold" },
-  { verdict: "reject", label: "rules.reject" },
+const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey; variant: "primary" | "secondary" | "danger" }[] = [
+  { verdict: "promote", label: "rules.promote", variant: "primary" },
+  { verdict: "hold", label: "rules.hold", variant: "secondary" },
+  { verdict: "reject", label: "rules.reject", variant: "danger" },
 ];
 /** The two groups, candidates first, each with its line on what promoting one does. */
 const GROUPS: readonly { classes: boolean; title: MessageKey; line: MessageKey }[] = [
@@ -64,7 +68,7 @@ const CONSEQUENCE: Record<RuleVerdict, MessageKey> = {
 function RuleText({ id, label, help, value, onChange }: { id: string; label: string; help?: string; value: string; onChange: (v: string) => void }) {
   return (
     <Field label={label} htmlFor={id} help={help}>
-      <Textarea id={id} aria-label={label} className="min-h-16" value={value} maxLength={2000} onChange={(e) => onChange(e.target.value)} />
+      <Textarea id={id} aria-label={label} rows={2} className="min-h-12" value={value} maxLength={2000} onChange={(e) => onChange(e.target.value)} />
     </Field>
   );
 }
@@ -98,8 +102,8 @@ function useSendVerdict(token: string, onClose: () => void) {
 /** The required reason, "Why?", in a verdict's dialog. */
 function ReasonField({ id, value, onChange }: { id: string; value: string; onChange: (v: string) => void }) {
   return (
-    <Field label={t("rules.why")} htmlFor={`${id}-reason`}>
-      <Textarea id={`${id}-reason`} aria-label={t("rules.reason")} className="min-h-16" value={value} maxLength={1000} onChange={(e) => onChange(e.target.value)} />
+    <Field label={t("rules.reason")} htmlFor={`${id}-reason`}>
+      <Textarea id={`${id}-reason`} rows={2} className="min-h-12" value={value} maxLength={1000} onChange={(e) => onChange(e.target.value)} />
     </Field>
   );
 }
@@ -123,7 +127,7 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
-      title={t("rules.dialogTitle", { label, id: entry.id })}
+      title={t("rules.dialogTitleEntry", { label, id: entry.id, title: shorten(entry.title) })}
       consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
       confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noFile}
@@ -132,6 +136,9 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
       onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}), ...(applies ? { applied_to: appliedTo.trim() } : {}) }, label)}
       onClose={onClose}
     >
+      <div className="max-h-40 overflow-y-auto">
+        <EntryDetail entry={entry} />
+      </div>
       {promote && (
         <>
           <RuleText id={`${entry.id}-wording`} label={t("rules.wording")} help={t("rules.wordingHelp")} value={text} onChange={setText} />
@@ -229,36 +236,41 @@ function EntryDetail({ entry }: { entry: RuleRow }) {
   const d = q.data?.detail ?? null;
   if (d !== null) return <Detail entry={entry} d={d} />;
   return (
-    <p role="status" data-rule-detail className="text-sm text-pretty break-words text-pill-bad-fg">
-      {t("rules.detailUnread")}
-    </p>
+    <div data-rule-detail>
+      <Notice tone="info">{t("rules.detailUnread")}</Notice>
+    </div>
   );
 }
 
 function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
   const [open, setOpen] = useState<RuleVerdict | null>(null);
   const [detail, setDetail] = useState(false);
+  const noDraft = isClass(entry.id) && entry.draft === null;
   return (
     <li data-rule={entry.id} className="space-y-2 p-3">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <Badge>{STATE_LABEL[entry.state] ? t(STATE_LABEL[entry.state]!) : entry.state}</Badge>
-        <span className="min-w-0 font-mono text-xs break-all text-text-2">{entry.id}</span>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <p data-rule-title className="min-w-0 text-sm font-medium text-pretty break-words whitespace-pre-wrap">
+          {entry.title}
+        </p>
+        {entry.judged !== null ? (
+          <span data-judged>
+            <StatusBadge level="ready_to_merge" size="sm">{t("rules.judged", { decision: entry.judged })}</StatusBadge>
+          </span>
+        ) : (
+          <StatusBadge level={STATE_LEVEL[entry.state]} size="sm">{STATE_LABEL[entry.state] ? t(STATE_LABEL[entry.state]!) : entry.state}</StatusBadge>
+        )}
+        <span className="font-mono text-xs break-all text-text-2">{entry.id}</span>
       </div>
-      <p data-rule-title className="text-sm font-medium text-pretty break-words whitespace-pre-wrap">
-        {entry.title}
-      </p>
-      <p data-rule-what className={muted}>
-        {isClass(entry.id) ? t("rules.whatRule", { rule: entry.title }) : proposalLine(entry.kind, entry.target)}
-      </p>
-      <Button variant="ghost" size="sm" aria-expanded={detail} onClick={() => setDetail(!detail)}>
-        {t("rules.showDetail")}
-      </Button>
-      {detail && <EntryDetail entry={entry} />}
-      {entry.judged !== null && (
-        <p data-judged className={muted}>
-          {t("rules.judged", { decision: entry.judged })} {t("rules.judgedHint")}
+      {!isClass(entry.id) && (
+        <p data-rule-what className={muted}>
+          {proposalLine(entry.kind, entry.target)}
         </p>
       )}
+      <Button variant="ghost" size="sm" aria-expanded={detail} onClick={() => setDetail(!detail)}>
+        {t("rules.showDetail")}
+        <ChevronDown aria-hidden className={`size-4 motion-safe:transition-transform ${detail ? "rotate-180" : ""}`} />
+      </Button>
+      {detail && <EntryDetail entry={entry} />}
       {entry.judged === null && entry.draft_error !== null && (
         <p data-draft-error className="text-xs text-pretty break-words text-pill-bad-fg">
           {t("rules.draftError", { error: entry.draft_error })}
@@ -266,16 +278,20 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
       )}
       {token !== null && entry.judged === null && (
         <ButtonRow className="pt-1">
-          {VERDICTS.map((v) => (
-            <Button
-              key={v.verdict}
-              variant={v.verdict === "reject" ? "danger" : "secondary"}
-              disabled={v.verdict === "promote" && isClass(entry.id) && entry.draft === null}
-              onClick={() => setOpen(v.verdict)}
-            >
-              {t(v.label)}
-            </Button>
-          ))}
+          {VERDICTS.map((v) => {
+            const button = (
+              <Button key={v.verdict} variant={v.variant} disabled={v.verdict === "promote" && noDraft} onClick={() => setOpen(v.verdict)}>
+                {t(v.label)}
+              </Button>
+            );
+            return v.verdict === "promote" && noDraft ? (
+              <Tooltip key={v.verdict} text={t("rules.promoteOff")}>
+                {button}
+              </Tooltip>
+            ) : (
+              button
+            );
+          })}
         </ButtonRow>
       )}
       {open !== null && token !== null && <VerdictDialog entry={entry} verdict={open} token={token} onClose={() => setOpen(null)} />}
@@ -306,9 +322,21 @@ function LedgerOff({ view }: { view: RulesView }) {
       setBusy(false);
     }
   };
+  const canTurnOn = view.turn_on !== null && view.csrf_token !== null;
   return (
-    <div className="space-y-3">
-      <Empty>{t("rules.ledgerOff")}</Empty>
+    <div className={`${PAGE_WIDTH} space-y-3`}>
+      <EmptyState
+        title={t("rules.ledgerOff")}
+        action={
+          canTurnOn && (
+            <Button variant="primary" disabled={busy} onClick={() => void turnOn(view.csrf_token!, view.turn_on!)}>
+              {t("rules.turnOn")}
+            </Button>
+          )
+        }
+      >
+        {canTurnOn ? t("rules.turnOnHint") : undefined}
+      </EmptyState>
       {home !== null && home.missing === null && (
         <p data-home className="text-sm text-pretty break-words">
           {t("rules.homeFound")}<span className="font-mono break-all">{home.path}</span>
@@ -325,31 +353,30 @@ function LedgerOff({ view }: { view: RulesView }) {
           {t("rules.homeMissingEnd")}
         </p>
       )}
-      {view.judge !== null && (
-        <p role="note" className="rounded-control bg-pill-warn-bg px-3 py-2 text-sm text-pretty break-words text-pill-warn-fg">
-          {view.judge}
-        </p>
-      )}
-      {view.turn_on !== null && view.csrf_token !== null && (
-        <>
-          <Button variant="primary" disabled={busy} onClick={() => void turnOn(view.csrf_token!, view.turn_on!)}>
-            {t("rules.turnOn")}
-          </Button>
-          <p className={muted}>{t("rules.turnOnHint")}</p>
-        </>
-      )}
-      {error !== null && (
-        <p role="alert" className="text-sm text-pretty break-words text-pill-bad-fg">
-          {error}
-        </p>
-      )}
+      {view.judge !== null && <Notice tone="warn">{view.judge}</Notice>}
+      {error !== null && <Notice tone="bad">{error}</Notice>}
     </div>
   );
 }
 
-/** One part of an applied rule: its label and value, or "not given". */
-function AppliedPart({ label, value }: { label: MessageKey; value: string | null }) {
-  return <p className={line}>{t(label, { value: value ?? t("rules.notGiven") })}</p>;
+/** One label and its value in an applied rule's details; no value reads "not given". */
+function AppliedPart({ label, children }: { label: MessageKey; children: ReactNode }) {
+  return (
+    <>
+      <dt className="text-xs font-semibold text-text-2">{t(label)}</dt>
+      <dd className="min-w-0">{children ?? <span className="text-sm text-text-2">{t("rules.notGiven")}</span>}</dd>
+    </>
+  );
+}
+
+/** A text part through Markdown, or nothing when the rule has none. */
+const md = (value: string | null): ReactNode => (value === null || value === "" ? null : <Markdown text={value} />);
+
+/** The evidence as a count and the incident IDs once each; nothing when the block gave none. */
+function evidence(incidents: string[] | null): ReactNode {
+  if (incidents === null) return null;
+  const ids = [...new Set(incidents)];
+  return <p className="text-sm break-words">{t("rules.appliedEvidence", { count: ids.length, ids: ids.join(", ") })}</p>;
 }
 
 /** One promoted block: its ID, name and parts; an unparsable block shows its raw text. */
@@ -365,19 +392,27 @@ function AppliedCard({ rule, token, round }: { rule: AppliedRule; token: string 
 }
 
 /**
- * An applied class: its parts, its retire suggestions once Suggest was pressed (`round` > 0), and Retire, which opens
- * the reason dialog; disabled for anyone but the owner (no `token`).
+ * An applied class as a compact row: ID, name, scope and judged date, the "Suggested to retire" badge with its reasons
+ * once Suggest was pressed (`round` > 0), and Retire, which opens the reason dialog (disabled for anyone but the owner,
+ * no `token`); its details open under the row as a label/value list.
  */
 function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: string; token: string | null; round: number }) {
   const [retiring, setRetiring] = useState(false);
   const suggested = useRuleEntry(id, round > 0, round).data?.retire ?? [];
   return (
     <li data-applied={id} className="space-y-1 p-3">
-      <div className="flex flex-wrap items-baseline gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-mono text-xs break-all text-text-2">{id}</span>
+        <p className="min-w-0 text-sm font-medium text-pretty break-words">{rule.name}</p>
         {suggested.length > 0 && <Badge level="needs_approval">{t("rules.suggested")}</Badge>}
+        {rule.judged !== null && <span className={`${muted} tabular-nums`}>{rule.judged}</span>}
+        <div className="ml-auto">
+          <Button variant="danger" size="sm" disabled={token === null} title={token === null ? t("rules.retireOwner") : undefined} onClick={() => setRetiring(true)}>
+            {t("rules.retire")}
+          </Button>
+        </div>
       </div>
-      <p className="text-sm font-medium text-pretty break-words">{rule.name}</p>
+      {rule.scope !== null && rule.scope !== "" && <div className="line-clamp-2 text-text-2">{md(rule.scope)}</div>}
       {suggested.length > 0 && (
         <ul data-suggested className="space-y-0.5">
           {suggested.map((r) => (
@@ -387,56 +422,66 @@ function AppliedClass({ rule, id, token, round }: { rule: AppliedRule; id: strin
           ))}
         </ul>
       )}
-      <AppliedPart label="rules.appliedDefault" value={rule.default} />
-      <AppliedPart label="rules.appliedException" value={rule.exceptions} />
-      <AppliedPart label="rules.appliedScope" value={rule.scope} />
-      <AppliedPart label="rules.appliedIncidents" value={rule.incidents === null ? null : rule.incidents.join(", ")} />
-      <AppliedPart label="rules.appliedJudged" value={rule.judged} />
-      <ButtonRow className="pt-1">
-        <Button variant="danger" disabled={token === null} title={token === null ? t("rules.retireOwner") : undefined} onClick={() => setRetiring(true)}>
-          {t("rules.retire")}
-        </Button>
-      </ButtonRow>
+      <details>
+        <summary className="cursor-pointer text-xs text-text-2">{t("rules.appliedDetails")}</summary>
+        <dl className="mt-2 grid grid-cols-[5rem_minmax(0,1fr)] gap-x-3 gap-y-2">
+          <AppliedPart label="rules.appliedDefault">{md(rule.default)}</AppliedPart>
+          <AppliedPart label="rules.appliedException">{md(rule.exceptions)}</AppliedPart>
+          <AppliedPart label="rules.appliedIncidents">{evidence(rule.incidents)}</AppliedPart>
+          <AppliedPart label="rules.appliedJudged">{rule.judged === null ? null : <p className="text-sm">{rule.judged}</p>}</AppliedPart>
+        </dl>
+      </details>
       {retiring && token !== null && <RetireDialog id={id} token={token} onClose={() => setRetiring(false)} />}
     </li>
   );
 }
 
-/** The promoted rules and the encoded-elsewhere lines, with Suggest; not shown when there are none. */
-function Applied({ applied, token }: { applied: NonNullable<RulesView["applied"]>; token: string | null }) {
+/** Whether a rule matches the search: its ID, name, default and scope (or its raw text), case-insensitively. */
+const matches = (r: AppliedRule, query: string): boolean =>
+  [r.id, r.name, r.default, r.scope, r.raw].some((v) => v !== null && v.toLowerCase().includes(query));
+
+/**
+ * The promoted rules in the file's order with a search, and the encoded-elsewhere lines, with Suggest; collapsed while
+ * `collapsed` (something waits). Not shown when the file has none.
+ */
+function Applied({ applied, token, collapsed }: { applied: NonNullable<RulesView["applied"]>; token: string | null; collapsed: boolean }) {
   const { rules, elsewhere } = applied;
   // Each Suggest press is a new round of reads; 0 until the first press.
   const [round, setRound] = useState(0);
+  const [query, setQuery] = useState("");
   if (rules.length === 0 && elsewhere.length === 0) return null;
   const suggest = rules.some((r) => r.raw === null && r.id !== null) && (
     <Button size="sm" onClick={() => setRound(round + 1)}>
       {t("rules.suggest")}
     </Button>
   );
+  const q = query.trim().toLowerCase();
+  const shown = rules.filter((r) => matches(r, q));
   return (
     <Section title={t("rules.groupApplied")} count={rules.length} action={suggest}>
-      <p data-group-line className={`mb-2 ${muted}`}>
-        {t("rules.groupAppliedLine")}
-      </p>
-      {rules.length > 0 && (
-        <ul aria-label={t("rules.groupApplied")} className="divide-y divide-border rounded-control border border-border">
-          {rules.map((r, i) => (
-            <AppliedCard key={r.id ?? `raw${i}`} rule={r} token={token} round={round} />
-          ))}
-        </ul>
-      )}
-      {elsewhere.length > 0 && (
-        <div data-elsewhere className="mt-3 space-y-1">
-          <h3 className="text-xs font-semibold text-text-2">{t("rules.elsewhere")}</h3>
-          <ul className="space-y-1">
-            {elsewhere.map((l, i) => (
-              <li key={i} className={line}>
-                {l}
-              </li>
-            ))}
-          </ul>
+      <details open={!collapsed}>
+        <summary className="cursor-pointer text-xs text-pretty text-text-2">{t("rules.appliedShow")}</summary>
+        <div className="mt-2 space-y-2">
+          <p data-group-line className={muted}>
+            {t("rules.groupAppliedLine")} {t("rules.appliedOrder")}
+          </p>
+          {rules.length > 0 && <Input type="search" aria-label={t("rules.appliedSearch")} placeholder={t("rules.appliedSearch")} className="w-full" value={query} onChange={(e) => setQuery(e.target.value)} />}
+          {shown.length > 0 && (
+            <ul aria-label={t("rules.groupApplied")} className="divide-y divide-border rounded-control border border-border">
+              {shown.map((r, i) => (
+                <AppliedCard key={r.id ?? `raw${i}`} rule={r} token={token} round={round} />
+              ))}
+            </ul>
+          )}
+          {rules.length > 0 && shown.length === 0 && <p className={muted}>{t("rules.appliedNone")}</p>}
+          {elsewhere.length > 0 && (
+            <div data-elsewhere className="space-y-1">
+              <h3 className="text-xs font-semibold text-text-2">{t("rules.elsewhere")}</h3>
+              <Markdown text={elsewhere.join("\n")} />
+            </div>
+          )}
         </div>
-      )}
+      </details>
     </Section>
   );
 }
@@ -468,41 +513,51 @@ export function RulesPage() {
   if (!v) return <Loading rows={3} />;
   if (!v.enabled) return <LedgerOff view={v} />;
   const token = v.judge === null ? v.csrf_token : null;
+  // Only an entry the ledger has not judged waits; a judged one is decided.
+  const waiting = v.entries.filter((e) => e.judged === null);
+  const decided = v.entries.filter((e) => e.judged !== null);
   return (
-    <div>
-      {v.judge !== null && (
-        <p role="note" className="mb-2 rounded-control bg-pill-warn-bg px-3 py-2 text-sm text-pretty break-words text-pill-warn-fg">
-          {t("rules.readOnly")}{v.judge}
-        </p>
-      )}
-      {v.error !== null && (
-        <p role="alert" className="mb-2 text-sm text-pretty break-words text-pill-bad-fg">
-          {v.error}
-        </p>
-      )}
-      {v.entries.length === 0 && v.error === null && <Empty>{t("rules.empty")}</Empty>}
-      {GROUPS.map((g) => {
-        const entries = v.entries.filter((e) => isClass(e.id) === g.classes);
-        return (
-          entries.length > 0 && (
-            <Section key={g.title} title={t(g.title)} count={entries.length}>
-              <p data-group-line className={`mb-2 ${muted}`}>
-                {t(g.line)}
-              </p>
-              <ul aria-label={t(g.title)} className="divide-y divide-border rounded-control border border-border">
-                {entries.map((e) => (
-                  <RuleCard key={e.id} entry={e} token={token} />
-                ))}
-              </ul>
-            </Section>
-          )
-        );
-      })}
-      {v.applied !== null && <Applied applied={v.applied} token={token} />}
-      {v.retired && <Retired retired={v.retired} />}
-      <p className={`mt-3 ${muted}`}>
-        {t("rules.footer")}
-      </p>
+    <div className={`${PAGE_WIDTH} space-y-4`}>
+      <PageHeader title={t("rules.pageTitle")} description={t("rules.pageDescription")} actions={<span data-waiting className="text-sm font-medium tabular-nums">{t("rules.waiting", { count: waiting.length })}</span>} />
+      <details data-how className="rounded-control border border-border px-3 py-2">
+        <summary className="cursor-pointer text-sm font-medium">{t("rules.how")}</summary>
+        <p className={`mt-2 ${muted}`}>{t("rules.footer")}</p>
+      </details>
+      {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
+      {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
+      {waiting.length === 0 && v.error === null && <EmptyState title={t("rules.emptyTitle")}>{t("rules.empty")}</EmptyState>}
+      <div>
+        {GROUPS.map((g) => {
+          const entries = waiting.filter((e) => isClass(e.id) === g.classes);
+          return (
+            entries.length > 0 && (
+              <Section key={g.title} title={t(g.title)} count={entries.length}>
+                <p data-group-line className={`mb-2 ${muted}`}>
+                  {t(g.line)}
+                </p>
+                <ul aria-label={t(g.title)} className="divide-y divide-border rounded-control border border-border">
+                  {entries.map((e) => (
+                    <RuleCard key={e.id} entry={e} token={token} />
+                  ))}
+                </ul>
+              </Section>
+            )
+          );
+        })}
+        {decided.length > 0 && (
+          <details data-decided className="mt-6">
+            <summary className="cursor-pointer text-sm font-semibold">{t("rules.decided", { count: decided.length })}</summary>
+            <p className={`my-2 ${muted}`}>{t("rules.judgedHint")}</p>
+            <ul aria-label={t("rules.decidedList")} className="divide-y divide-border rounded-control border border-border">
+              {decided.map((e) => (
+                <RuleCard key={e.id} entry={e} token={token} />
+              ))}
+            </ul>
+          </details>
+        )}
+        {v.applied !== null && <Applied applied={v.applied} token={token} collapsed={waiting.length > 0} />}
+        {v.retired && <Retired retired={v.retired} />}
+      </div>
     </div>
   );
 }

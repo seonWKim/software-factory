@@ -8,6 +8,7 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "idle-agents": "node scripts/idle-agents.mjs",
     "build:tokens": "node scripts/build-tokens.mjs",
     "build:icons": "node scripts/build-icons.mjs",
     "build:desktop:macos": "node scripts/build-desktop-macos.mjs",

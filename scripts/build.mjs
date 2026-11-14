@@ -94,9 +94,13 @@ export function swapIn(staged, target) {
   if (moved) rmSync(old, { recursive: true, force: true });
 }
 
+/** Runs one build step with its output captured: silent on success (Vite's size warning), printed to stderr on failure. */
 function run(args, cwd) {
-  const r = spawnSync(process.execPath, args, { cwd, stdio: "inherit" });
-  if (r.status !== 0) throw new Error(`build step failed (exit ${r.status ?? r.signal}): ${args.slice(0, 3).join(" ")}`);
+  const r = spawnSync(process.execPath, args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) {
+    process.stderr.write(`${r.stdout ?? ""}${r.stderr ?? ""}`);
+    throw new Error(`build step failed (exit ${r.status ?? r.signal}): ${args.slice(0, 3).join(" ")}`);
+  }
 }
 
 /**

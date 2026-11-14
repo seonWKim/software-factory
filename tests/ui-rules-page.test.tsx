@@ -109,7 +109,12 @@ describe("Rules page", () => {
     expect(card("C-012").querySelector("[data-rule-title]")!.textContent).toBe("Keep existing CLI flags.");
     expect(card("C-012").textContent).toContain("Pending");
     expect(card("C-012").textContent).toContain("C-012");
-    expect(card("C-012").querySelector("[data-rule-what]")!.textContent).toBe("Rule: Keep existing CLI flags.");
+    // The card does not repeat its title in a "Rule: …" line; a proposal still says its kind and target.
+    expect(card("C-012").querySelector("[data-rule-what]")).toBeNull();
+    expect(card("C-012").textContent).not.toContain("Rule:");
+    // Title first, then the state badge, then the ID.
+    const order = [...card("C-012").firstElementChild!.children].map((c) => c.textContent);
+    expect(order).toEqual(["Keep existing CLI flags.", "Pending", "C-012"]);
     expect(card("P-0007").textContent).toContain("Held");
     expect(card("P-0007").querySelector("[data-rule-title]")!.textContent).toBe("Split the review prompt");
     expect(card("P-0007").querySelector("[data-rule-what]")!.textContent).toBe("edit-asset: prompts/review.md");
@@ -209,7 +214,8 @@ describe("Rules page", () => {
     });
     await show();
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
-    expect(card("C-012").querySelector("[data-judged]")!.textContent).toContain("Judged: promote");
+    expect(card("C-012").querySelector("[data-judged]")!.textContent).toBe("Judged: promote");
+    expect(card("C-012").textContent).not.toContain("Pending");
     expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
     expect(card("C-013").querySelector("[data-draft-error]")!.textContent).toContain("evolve show exited 1");
     expect((within(card("C-013")).getByRole("button", { name: "Promote" }) as HTMLButtonElement).disabled).toBe(true);
@@ -281,7 +287,7 @@ describe("Rules page", () => {
   it("a user who is not the owner sees the entries read-only with the reason, and no verdict buttons", async () => {
     current = view({ judge: "Only the owner judges rules; you are local:alice." });
     await show();
-    expect((await screen.findByRole("note", {}, SLOW)).textContent).toContain("Only the owner");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
     // Read-only: the detail opens, but no verdict button shows.
     expect(within(card("C-012")).getAllByRole("button").map((b) => b.textContent)).toEqual(["Why and where"]);
   });
@@ -300,8 +306,8 @@ describe("Rules page", () => {
     // The app's page title is the one "Rules"; the page adds no section titled Rules and no step list.
     expect(headings()).not.toContain("Rules");
     expect(document.querySelector("ol")).toBeNull();
-    // 12 px (space-y-3) between the empty box and what follows.
-    expect(turnOn.parentElement!.className.split(" ")).toContain("space-y-3");
+    // The empty state carries the action, and the page is capped at max-w-3xl.
+    expect(turnOn.closest("div.max-w-3xl")).not.toBeNull();
   });
 
   it("Turn on writes the integrations entry through POST /api/v1/settings, then loads the rules with no reload", async () => {
@@ -352,10 +358,14 @@ describe("Rules page", () => {
     const applied = await screen.findByRole("list", { name: "Applied" }, SLOW);
     expect(screen.getAllByRole("region").map((r) => r.getAttribute("aria-label")).at(-1)).toBe("Applied");
     const c = applied.querySelector<HTMLElement>('[data-applied="C-001"]')!.textContent!;
-    for (const part of ["C-001", "summary first", "Default: Open with a summary.", "Exception: not given", "Scope: 모든 문서", "Evidence: T-1, T-2", "Judged: 2026-11-13"]) expect(c).toContain(part);
+    for (const part of ["C-001", "summary first", "모든 문서", "2026-11-13", "Open with a summary.", "not given", "2: T-1, T-2"]) expect(c).toContain(part);
+    // Details are a label/value list.
+    expect([...applied.querySelectorAll('[data-applied="C-001"] dt')].map((d) => d.textContent)).toEqual(["Default", "Exception", "Evidence", "Judged"]);
     expect(applied.querySelector("[data-applied-raw]")!.textContent).toBe("## Notes\njust words");
     expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("Encoded elsewhere");
-    expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("- C-009 → CLAUDE.md");
+    // The elsewhere lines go through Markdown: a list item, no raw "- ".
+    expect(document.querySelector("[data-elsewhere]")!.textContent).toContain("C-009 → CLAUDE.md");
+    expect(document.querySelector("[data-elsewhere] li")!.textContent).toBe("C-009 → CLAUDE.md");
     // The raw block has no action; the class has Retire and no edit.
     expect(screen.getAllByRole("button", { name: "Retire" })).toHaveLength(1);
     expect(screen.queryAllByRole("button", { name: /edit/i })).toEqual([]);
@@ -436,6 +446,103 @@ describe("Rules page", () => {
     expect(screen.queryByRole("region", { name: "Retired" })).toBeNull();
   });
 
+  const judgedEntries = (): RulesView["entries"] => [
+    { id: "C-012", title: "Keep existing CLI flags.", state: "pending", judged: "promote", draft: null, draft_error: null },
+    { id: "P-0007", title: "Split the review prompt", state: "held", judged: "reject", draft: null, draft_error: null },
+  ];
+
+  it("with every entry judged: 0 waiting, an empty state with its next step, and one \"N decided\" line", async () => {
+    current = view({ entries: judgedEntries() });
+    await show();
+    await screen.findByText("Nothing waits for a verdict", {}, SLOW);
+    expect(document.querySelector("[data-waiting]")!.textContent).toBe("0 waiting");
+    expect(screen.queryByRole("list", { name: "Rule candidates" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Structure proposals" })).toBeNull();
+    expect(document.querySelector("[data-decided] summary")!.textContent).toBe("2 decided");
+    expect(card("P-0007").textContent).toContain("Judged: reject");
+  });
+
+  it("the waiting count and the group counts exclude judged entries; one PageHeader names the page and holds How this works", async () => {
+    current = view({ entries: [...judgedEntries(), ...view().entries] });
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    expect(document.querySelector("[data-waiting]")!.textContent).toBe("2 waiting");
+    expect(screen.getByRole("region", { name: "Rule candidates" }).querySelectorAll("li[data-rule]")).toHaveLength(1);
+    const h1 = screen.getAllByRole("heading", { level: 1 });
+    expect(h1).toHaveLength(1);
+    expect(h1[0]!.textContent).not.toBe("Rules");
+    const how = document.querySelector<HTMLDetailsElement>("details[data-how]")!;
+    expect(how.querySelector("summary")!.textContent).toBe("How this works");
+    expect(how.open).toBe(false);
+  });
+
+  it("Applied is collapsed while something waits and open when nothing does; it says its order", async () => {
+    current = view({ applied: APPLIED });
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    const details = () => document.querySelector<HTMLDetailsElement>("section[aria-label=Applied] > details")!;
+    expect(details().open).toBe(false);
+    expect(details().textContent).toContain("Listed in the order of your rules file.");
+    cleanup();
+    current = view({ applied: APPLIED, entries: judgedEntries() });
+    await show();
+    await screen.findByText("Nothing waits for a verdict", {}, SLOW);
+    expect(details().open).toBe(true);
+  });
+
+  it("the search filters Applied rows case-insensitively over ID, name, default and scope; evidence is counted once per incident", async () => {
+    current = view({
+      entries: [],
+      applied: {
+        rules: [
+          { id: "C-001", name: "Summary first", default: "Open with a summary.", exceptions: null, scope: "docs", incidents: ["T-1", "T-1", "T-2"], judged: "2026-10-01", raw: null },
+          { id: "C-002", name: "flags", default: "Keep every flag.", exceptions: null, scope: "CLI", incidents: ["T-2"], judged: "2026-11-13", raw: null },
+        ],
+        elsewhere: [],
+      },
+    });
+    await show();
+    await screen.findByRole("list", { name: "Applied" }, SLOW);
+    const ids = () => [...document.querySelectorAll<HTMLElement>("[data-applied]")].map((e) => e.dataset.applied);
+    expect(ids()).toEqual(["C-001", "C-002"]);
+    expect(applied("C-001").textContent).toContain("2: T-1, T-2");
+    const search = screen.getByRole("searchbox", { name: /search/i });
+    for (const [term, want] of [["SUMMARY", ["C-001"]], ["c-002", ["C-002"]], ["keep every", ["C-002"]], ["cli", ["C-002"]], ["", ["C-001", "C-002"]], ["zzz", []]] as const) {
+      fireEvent.change(search, { target: { value: term } });
+      expect(ids()).toEqual(want);
+    }
+    expect(screen.getByText("No applied rule matches.")).not.toBeNull();
+  });
+
+  it("a disabled Promote says why in a Tooltip; Promote is primary, Hold secondary, Reject danger and last", async () => {
+    current = view({ entries: [{ id: "C-013", title: "Summary first.", state: "pending", judged: null, draft: null, draft_error: "x" }, ...view().entries] });
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    const buttons = within(card("C-012")).getAllByRole("button").map((b) => b.textContent);
+    expect(buttons).toEqual(["Why and where", "Promote", "Hold", "Reject"]);
+    expect(within(card("C-012")).getByRole("button", { name: "Promote" }).className).toContain("bg-accent");
+    expect(within(card("C-012")).getByRole("button", { name: "Reject" }).className).toContain("text-failed");
+    const off = within(card("C-013")).getByRole("button", { name: "Promote" });
+    fireEvent.mouseEnter(off.parentElement!);
+    expect((await screen.findByRole("tooltip")).textContent).toContain("Promote is off");
+  });
+
+  it("the verdict dialog titles the entry (60 characters at most), shows its why and where above the fields, and labels the reason as it reads", async () => {
+    const long = "A".repeat(80);
+    current = view({ entries: [{ id: "C-037", title: long, state: "pending", judged: null, draft: { default: "d", exception: "e", incidents: ["T-1"], scope: "s" }, draft_error: null }] });
+    detail = { id: "C-037", error: null, detail: { id: "C-037", incidents: 2, scope: "software" } };
+    await show();
+    await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
+    fireEvent.click(within(card("C-037")).getByRole("button", { name: "Promote" }));
+    expect(within(dialog()).getByRole("heading", { level: 2 }).textContent).toBe(`Promote C-037: ${"A".repeat(59)}…`);
+    await waitFor(() => expect(dialog().querySelector("[data-detail-part]")).not.toBeNull(), SLOW);
+    const all = dialog().innerHTML;
+    expect(all.indexOf("data-detail-part")).toBeLessThan(all.indexOf("<textarea"));
+    const reason = within(dialog()).getByRole("textbox", { name: "Reason" });
+    expect(dialog().querySelector(`label[for="${reason.id}"]`)!.textContent).toBe("Reason");
+    expect(reason.getAttribute("aria-label")).toBeNull();
+  });
+
   it("no Applied group when the file holds nothing or the ledger is off", async () => {
     current = view({ applied: { rules: [], elsewhere: [] } });
     await show();
@@ -446,7 +553,7 @@ describe("Rules page", () => {
   it("ledger off for a user who is not the owner: the reason, and no Turn on", async () => {
     current = off({ judge: "Only the owner turns the ledger on; you are local:alice.", csrf_token: null, turn_on: null });
     await show();
-    expect((await screen.findByRole("note", {}, SLOW)).textContent).toContain("Only the owner");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Only the owner");
     expect(screen.queryAllByRole("button")).toEqual([]);
   });
 });

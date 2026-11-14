@@ -1,14 +1,15 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOLCHAIN_PLACEHOLDER, checkToolchainEnv, fillPrompt, loadConfig, toolchainConfig } from "../src/compose.js";
 import type { FactoryConfig, ToolchainConfig } from "../src/core/config.js";
 import { keyRefusal, PR_ONLY_KEYS } from "../src/core/settings.js";
-import { FORBIDDEN_ENV } from "../src/core/tools/index.js";
+import { Edit, FORBIDDEN_ENV, Read, Write, guardPolicy, type ToolContext } from "../src/core/tools/index.js";
 import { WARM_FAILED } from "../src/worker/index.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { TOOLCHAIN_HOMES, buildAgentEnv } from "../src/impl/runner/claude-code-runner.js";
+import { TOOLCHAIN_HOMES, buildAgentEnv, buildHarnessSettings } from "../src/impl/runner/claude-code-runner.js";
+import { NoOpSandbox } from "../src/impl/sandbox/noop-sandbox.js";
 import type { AgentRunSpec } from "../src/interfaces/agent-runner.js";
 import type { ExecOptions } from "../src/interfaces/sandbox.js";
 import { doctorChecks, toolchainChecks } from "../src/setup.js";
@@ -275,5 +276,99 @@ describe("factory doctor: toolchain caches", () => {
     const overlapping = { ...loaded, config: { ...loaded.config, toolchain: { ...loaded.config.toolchain!, caches: [home] } } };
     const failed = (await doctorChecks(overlapping)).filter((c) => !c.ok && !c.warn).map((c) => c.msg);
     expect(failed).toContain(`toolchain cache ${home} overlaps the denied path ${join(home, ".ssh")}`);
+  });
+});
+
+// Read-only input folders (design 05-sandbox.md): `read_only_inputs`, a project's source data outside its repo,
+// read by the agents and never written. The same parsing, deny-path check, read allow list and doctor report as
+// the toolchain caches. With no key, everything is as it was before the key existed.
+describe("read_only_inputs", () => {
+  it("parses absolute folders and a leading ~ (the owner's HOME), normalized like the caches", async () => {
+    const { dir, home } = root({ read_only_inputs: ["~/data/resume", "/srv/in/../inputs/"] });
+    expect((await load(dir)).config.read_only_inputs).toEqual([join(home, "data", "resume"), "/srv/inputs"]);
+  });
+
+  it("a relative folder or a non-list fails startup naming the entry", async () => {
+    await expect(load(root({ read_only_inputs: ["data/resume"] }).dir)).rejects.toThrow(/read_only_inputs\[0\] must be an absolute folder/);
+    await expect(load(root({ read_only_inputs: "/srv/inputs" }).dir)).rejects.toThrow(/read_only_inputs must be a list of absolute folders/);
+  });
+
+  it("a folder that is, holds or lies inside a denied path fails startup, naming both paths", async () => {
+    for (const input of ["~/.ssh", "~/.ssh/known", "~"]) {
+      const { dir, home } = root({ read_only_inputs: ["/srv/inputs", input] });
+      const err = await load(dir).catch((e: Error) => e);
+      expect(err, input).toBeInstanceOf(Error);
+      const path = input === "~" ? home : join(home, input.slice(2));
+      expect((err as Error).message, input).toContain(`read_only_inputs[1] ${path} overlaps the denied path ${join(home, ".ssh")}`);
+      expect((err as Error).message, input).not.toContain("read_only_inputs[0]");
+    }
+  });
+
+  it("an absent key changes nothing: no field, no readable path, no doctor line", async () => {
+    const loaded = await load(root().dir);
+    expect(loaded.config).not.toHaveProperty("read_only_inputs");
+    expect((await doctorChecks(loaded)).map((c) => c.msg).join("\n")).not.toMatch(/read-only input/);
+  });
+
+  it("the agents may read each input folder, never write it, with or without a toolchain block", async () => {
+    const inputs = ["/srv/inputs/resume"];
+    const only = await pipeline({ config: { read_only_inputs: inputs } });
+    await only.submit();
+    await only.step();
+    const spec = only.runner.specs.find((s) => s.role === "implement")!;
+    expect(spec.readable_paths).toEqual(inputs);
+    expect(spec.writable_paths).toEqual([]);
+    expect(spec).not.toHaveProperty("toolchain_env");
+    // No toolchain block: no warm step either.
+    expect(only.sandbox.commands.join("\n")).not.toContain("npm ci");
+    const toolchain: ToolchainConfig = { caches: ["/home/u/.gradle"], env: {}, warm_command: ["true"] };
+    const both = await pipeline({ config: { toolchain, read_only_inputs: inputs } });
+    await both.submit();
+    await both.step();
+    expect(both.runner.specs.find((s) => s.role === "implement")!.readable_paths).toEqual([...toolchain.caches, ...inputs]);
+  });
+
+  it("the harness settings read-allow and write-deny each input folder; the shared Write and Edit tools refuse it", async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "sf-inputs-")));
+    const workdir = join(base, "wt");
+    const input = join(base, "resume");
+    mkdirSync(workdir);
+    mkdirSync(input);
+    writeFileSync(join(input, "cv.md"), "experience\n");
+    const spec = { deny_paths: [join(base, "secrets")], writable_paths: [], readable_paths: [input] };
+    const s = buildHarnessSettings(spec, workdir) as {
+      permissions: { allow: string[]; deny: string[] };
+      sandbox: { filesystem: { allowWrite: string[]; allowRead?: string[]; denyWrite?: string[] } };
+    };
+    expect(s.sandbox.filesystem.allowRead).toContain(input);
+    expect(s.sandbox.filesystem.denyWrite).toContain(input);
+    expect(s.sandbox.filesystem.allowWrite).not.toContain(input);
+    expect(s.permissions.allow.some((r) => r.includes(input))).toBe(false);
+    expect(s.permissions.deny).toContain(`Edit(/${input}/**)`);
+    const ctx: ToolContext = {
+      sandbox: new NoOpSandbox(base),
+      handle: { id: "sbx_inputs", workdir, base_sha: "" },
+      policy: guardPolicy({ workdir, ...spec, env_allowlist: {} }),
+    };
+    expect(await Read.run({ file_path: join(input, "cv.md") }, ctx)).toMatchObject({ ok: true, content: expect.stringContaining("experience") });
+    expect(await Write.run({ file_path: join(input, "new.md"), content: "x" }, ctx)).toMatchObject({ ok: false });
+    expect(await Edit.run({ file_path: join(input, "cv.md"), old_string: "experience", new_string: "changed" }, ctx)).toMatchObject({ ok: false });
+    expect(readFileSync(join(input, "cv.md"), "utf8")).toBe("experience\n");
+    expect(existsSync(join(input, "new.md"))).toBe(false);
+  });
+
+  it("factory doctor lists each input folder, and a FAIL for one that overlaps a denied path", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-inputs-doctor-"));
+    const present = join(dir, "present");
+    mkdirSync(present);
+    const secrets = join(dir, "secrets");
+    expect(await toolchainChecks({ deny_paths: [secrets], read_only_inputs: [present, join(dir, "missing"), dir] })).toEqual([
+      { ok: true, msg: `read-only input ${present} exists (read-only for agents)` },
+      { ok: false, warn: true, msg: `read-only input ${join(dir, "missing")} does not exist` },
+      { ok: false, msg: `read-only input ${dir} overlaps the denied path ${secrets}` },
+    ]);
+    const { dir: cfg, home } = root({ read_only_inputs: ["~/data/resume"] });
+    const lines = (await doctorChecks(await load(cfg))).map((c) => c.msg);
+    expect(lines).toContain(`read-only input ${join(home, "data", "resume")} does not exist`);
   });
 });

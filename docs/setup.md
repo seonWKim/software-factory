@@ -16,6 +16,8 @@ Why outside the repo: agents work in git worktrees of this repo, so anything ins
 
 To use a different location, set `SOFTWARE_FACTORY_SECRETS_FILE=/path/to/file` in the environment that starts the factory.
 
+Google Calendar needs no secret from you up front: `factory setup calendar google` (or Settings → Calendar → Connect) signs in with the factory's own Google client and writes `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN` to this file itself. That default client's secret comes with the release build, never from the repository. To use your own OAuth client instead, see [calendar-source](plugins/calendar-source.md) (advanced).
+
 ## 1. Prerequisites
 
 - Node.js (LTS) and git

@@ -604,6 +604,15 @@ describe("plugin agents-home", () => {
     expect(parseApplied("")).toEqual({ rules: [], elsewhere: [] });
   });
 
+  it("applied skips fenced code blocks (``` and ~~~), and an unclosed fence runs to the end of the file", () => {
+    const fenced = ["# Rules", "", "```md", "## C-xxx 규칙 이름", "- 기본값: template", "```", "", "## C-001 real", "- 기본값: Keep.", "~~~", "## C-002 hidden", "- 기본값: no", "~~~", "", "## 다른 곳에 인코딩된 규칙", "- C-009 → CLAUDE.md"].join("\n");
+    const a = parseApplied(fenced);
+    expect(a.rules).toEqual([{ id: "C-001", name: "real", default: "Keep." }]);
+    expect(a.elsewhere).toEqual(["- C-009 → CLAUDE.md"]);
+    const open = ["## C-001 real", "- 기본값: Keep.", "", "```", "## C-002 after the fence", "- 기본값: no", "", "## 다른 곳에 인코딩된 규칙", "- C-009 → x"].join("\n");
+    expect(parseApplied(open)).toEqual({ rules: [{ id: "C-001", name: "real", default: "Keep." }], elsewhere: [] });
+  });
+
   it("applied reads through the plugin: no rules.md, nothing; the plugin none, nothing; it writes nothing", async () => {
     const s = stubHome();
     const ledger = new AgentsHomeTacitLedger(s.home);
