@@ -198,7 +198,6 @@ export function App() {
           </header>
           <RevisionBanner server={overview.data?.server_rev} web={WEB_REV} />
           <main className="min-w-0 p-4">
-            {!route.itemId && !transcript && route.page.path !== "" && <h1 className="mb-4 text-balance text-lg font-semibold">{pageLabel(route.page)}</h1>}
             {transcript ? (
               <TranscriptView key={`${transcript.itemId}/${transcript.runId}`} itemId={transcript.itemId} runId={transcript.runId} />
             ) : route.itemId ? (

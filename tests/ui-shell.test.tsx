@@ -460,6 +460,17 @@ describe("app pages", () => {
     expect(redirectFor("/app/users")).toBeNull();
   });
 
+  it("every sidebar page has exactly one h1, its menu name, from its own PageHeader", async () => {
+    const names: Record<string, string> = { "": "Needs you", tasks: "Tasks", calendar: "Calendar", items: "Work", activity: "Activity", runners: "Runners", health: "Health", failures: "Failures", spend: "Spend", rules: "Rules", data: "Data", settings: "Settings" };
+    for (const [path, name] of Object.entries(names)) {
+      history.replaceState(null, "", `/app/${path}`);
+      mount();
+      await screen.findByRole("heading", { level: 1, name });
+      expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+      cleanup();
+    }
+  });
+
   it("each page's heading matches its menu name", async () => {
     const names: Record<string, string> = { items: "Work", activity: "Activity", runners: "Runners", health: "Health", failures: "Failures", spend: "Spend", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {

@@ -10,6 +10,7 @@ import { ago } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { WorkerName, useNow } from "./common.js";
+import { PageHeader } from "../components/ui/notice.js";
 
 const WINDOWS = ["24h", "7d"] as const;
 type Window = (typeof WINDOWS)[number];
@@ -67,6 +68,7 @@ export function FailuresPage() {
   const titles = useMemo(() => new Map((items.data?.items ?? []).flatMap((i) => (i.title ? [[i.id, i.title] as const] : []))), [items.data]);
   return (
     <>
+      <PageHeader title={t("page.failures")} />
       <ButtonRow role="group" aria-label={t("failures.window")} className="mb-6">
         {WINDOWS.map((w) => (
           <Button key={w} aria-pressed={w === win} onClick={() => setWin(w)}>

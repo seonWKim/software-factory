@@ -509,16 +509,17 @@ function Retired({ retired }: { retired: RetiredRule[] }) {
 export function RulesPage() {
   const rules = useApi<RulesView>(API.rules);
   const v = rules.data;
-  if (rules.isError) return <ErrorNote error={rules.error} />;
-  if (!v) return <Loading rows={3} />;
-  if (!v.enabled) return <LedgerOff view={v} />;
+  const title = t("page.rules");
+  if (rules.isError) return <><PageHeader title={title} /><ErrorNote error={rules.error} /></>;
+  if (!v) return <><PageHeader title={title} /><Loading rows={3} /></>;
+  if (!v.enabled) return <><PageHeader title={title} /><LedgerOff view={v} /></>;
   const token = v.judge === null ? v.csrf_token : null;
   // Only an entry the ledger has not judged waits; a judged one is decided.
   const waiting = v.entries.filter((e) => e.judged === null);
   const decided = v.entries.filter((e) => e.judged !== null);
   return (
     <div className={`${PAGE_WIDTH} space-y-4`}>
-      <PageHeader title={t("rules.pageTitle")} description={t("rules.pageDescription")} actions={<span data-waiting className="text-sm font-medium tabular-nums">{t("rules.waiting", { count: waiting.length })}</span>} />
+      <PageHeader title={title} description={t("rules.pageDescription")} actions={<span data-waiting className="text-sm font-medium tabular-nums">{t("rules.waiting", { count: waiting.length })}</span>} />
       <details data-how className="rounded-control border border-border px-3 py-2">
         <summary className="cursor-pointer text-sm font-medium">{t("rules.how")}</summary>
         <p className={`mt-2 ${muted}`}>{t("rules.footer")}</p>

@@ -6,7 +6,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 
 ## Page layout
 
-- One `PageHeader` at the top: the page title, an optional count, the page's one primary action at the end.
+- One `PageHeader` at the top: the page title, an optional count, the page's one primary action at the end. Each page renders its own `PageHeader` (on the item and transcript pages with the item's or run's title); the app shell draws no title, so every page has exactly one h1.
 - Below it, `Section` blocks, each with an h2. One column of content at `sm` and below; the page never scrolls sideways.
 - A page with views (tabs, Day / Upcoming) puts its view switcher in the row under the page title, before the content; a page filter that is a few named choices (the projects on Tasks) is a `Tabs` row directly under the title, above the view switcher; never between blocks of content or below them.
 - Blocks of one page are stacked in one flex column with a `gap-6` (the Section gap), not with `mb-*` or `mt-*` on each block.
