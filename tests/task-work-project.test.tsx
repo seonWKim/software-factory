@@ -24,7 +24,7 @@ const PROJECTS = [{ slug: "home", name: "Home" }, { slug: "wonderful-ai-demo", n
 
 const row = (id: string): TaskRow => ({ id, title: id, list: null, priority: null, due_date: null, due_time: null, recurrence: null, work_item_id: null });
 const view: TasksView = {
-  today_date: "2026-11-14", inbox: [row("tk_inbox")], today: { overdue: [], due: [] }, upcoming: [], projects: [{ list: null, tasks: [row("tk_inbox")] }],
+  today_date: "2026-11-14", today: { overdue: [], due: [] }, upcoming: [], projects: [{ list: null, tasks: [row("tk_inbox")] }],
   csrf_token: "tok", can_build: true, active_projects: PROJECTS,
 };
 const item = (id: string, title: string): ItemRow => ({

@@ -79,7 +79,7 @@ describe("task views: the day boundary at local midnight (injected Clock)", () =
 });
 
 describe("task views: placement", () => {
-  it("Inbox holds the open tasks with no due date; Today lists overdue first, oldest due first, then today's", async () => {
+  it("Today lists overdue first, oldest due first, then today's; there is no inbox view, and an undated task is in projects", async () => {
     const s = await setup(at(12, 10, 0));
     await s.store.addTask(task("undated"));
     await s.store.addTask(task("today", { due: { date: "2026-11-12" } }));
@@ -88,7 +88,8 @@ describe("task views: placement", () => {
     await s.store.addTask(task("done", { due: { date: "2026-11-01" } }));
     await s.store.completeTask("done");
     const v = await s.views();
-    expect(ids(v.inbox)).toEqual(["undated"]);
+    expect(v).not.toHaveProperty("inbox");
+    expect(v.projects.flatMap((p) => ids(p.tasks))).toContain("undated");
     expect(ids(v.today.overdue)).toEqual(["last-week", "yesterday"]);
     expect(ids(v.today.due)).toEqual(["today"]);
   });

@@ -310,13 +310,13 @@ export interface TaskDay {
 /**
  * The dashboard's views of the open tasks and the stored calendar events (design 02-tasks), each task placed by its
  * due date and each event by the local days it overlaps, against `now`'s calendar date in this process's time zone,
- * so the day ends at local midnight. Inbox: no due date. Today: overdue tasks (due before today) first, then today's
- * tasks and events. Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an
- * event. Projects: every open task by its list label (unlabelled last), each by due date (undated last).
+ * so the day ends at local midnight. Today: overdue tasks (due before today) first, then today's tasks and events.
+ * Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an event (the Tasks page
+ * shows the days after today; the Calendar page shows today too). Projects: every open task, undated included, by its
+ * list label (unlabelled last), each by due date (undated last): the Tasks page's All view.
  */
 export interface TaskViews {
   today_date: string;
-  inbox: Task[];
   today: { overdue: Task[]; due: DayEntry[] };
   upcoming: TaskDay[];
   projects: { list: string | null; tasks: Task[] }[];
@@ -411,7 +411,6 @@ export function taskViews(open: readonly Task[], now: Date, events: readonly Cal
   const lists = [...new Set(sorted.map((t) => t.list))].sort((a, b) => (a === null ? 1 : b === null ? -1 : a.localeCompare(b)));
   return {
     today_date: today,
-    inbox: sorted.filter((t) => t.due_date === null),
     today: { overdue: sorted.filter((t) => t.due_date !== null && t.due_date < today), due: todays },
     upcoming,
     projects: lists.map((list) => ({ list, tasks: sorted.filter((t) => t.list === list) })),

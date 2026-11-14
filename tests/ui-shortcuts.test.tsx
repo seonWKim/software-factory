@@ -130,7 +130,7 @@ describe("shortcuts", () => {
   });
 
   it("q focuses the Tasks page's quick-add field when no field has focus, and does nothing elsewhere or in a field", async () => {
-    RESPONSES["/api/v1/tasks"] = { today_date: "2026-11-12", inbox: [], today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "t", can_build: true };
+    RESPONSES["/api/v1/tasks"] = { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "t", can_build: true };
     mount();
     press("q");
     expect(document.activeElement).toBe(document.body);
@@ -149,15 +149,16 @@ describe("shortcuts", () => {
 
   it("⌘Z on the Tasks page reopens the last task completed there; in a field it keeps the browser's own undo", async () => {
     RESPONSES["/api/v1/tasks"] = {
-      today_date: "2026-11-12", inbox: [{ id: "tk_a", title: "pay rent", list: null, priority: null, due_date: null, due_time: null, recurrence: null, work_item_id: null }],
-      today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "t", can_build: true,
+      today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [],
+      projects: [{ list: null, tasks: [{ id: "tk_a", title: "pay rent", list: null, priority: null, due_date: null, due_time: null, recurrence: null, work_item_id: null }] }],
+      csrf_token: "t", can_build: true,
     };
     RESPONSES["/api/v1/tasks/done"] = { task_id: "tk_a", completed: true, next_id: null };
     RESPONSES["/api/v1/tasks/reopen"] = { task_id: "tk_a", reopened: true, removed_next: null };
     const reopens = () => vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/v1/tasks/reopen");
     history.pushState(null, "", "/app/tasks");
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "Inbox" }));
+    fireEvent.click(await screen.findByRole("button", { name: "All" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Complete: pay rent" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => url === "/api/v1/tasks/done")).toBe(true));
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "Complete: pay rent" }).hasAttribute("disabled")).toBe(false));

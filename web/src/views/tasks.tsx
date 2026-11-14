@@ -15,6 +15,7 @@ import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
 import { Select } from "../components/ui/select.js";
+import { Switch } from "../components/ui/switch.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR, QUICK_ADD_KEYS, type QuickAddKey, isQuickAddSubmit, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
@@ -24,15 +25,15 @@ import { itemPath } from "../pages.js";
 import { FactoryWork, WorkState } from "./task-work.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's open plain tasks, read through GET
-// /api/v1/tasks, in four tabs. Inbox: no due date. Today: overdue first, in red, then today's tasks.
-// Upcoming: today through 7 days ahead, by day. List: every task under its #list. The server places each task and
-// orders each day, so the page does no date arithmetic. Calendar events are not shown here: the Calendar page (views/
+// /api/v1/tasks, in three views. Today: overdue first, in red, then today's tasks. Upcoming: tomorrow through 7 days
+// ahead, by day (the server's upcoming days after today_date). All: every open task, undated included, under its #list.
+// The server places each task and orders each day, so the page does no date arithmetic. Calendar events are not shown here: the Calendar page (views/
 // calendar.tsx) lists them, with the stale-sync notice. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
 // Each row's actions (design 02-tasks) post to the route that calls the CLI command's store method: the checkbox
 // completes it, `e` or Edit edits it in place (Enter saves, Esc cancels), and its overflow menu adds a sub-task (top-level
 // rows only) or deletes it through the danger Dialog. A sub-task shows indented under its parent, one level.
-// Inbox and Today end with today's timeline (design 02-tasks, schedule a task), collapsed until its control (aria-expanded)
+// Today ends with today's timeline (design 02-tasks, schedule a task), collapsed until its control (aria-expanded)
 // is pressed: the server places each timed task, drawn its duration (30 minutes when none is stored); events are not
 // drawn. A task row dragged onto a
 // half-hour slot is scheduled there (POST /api/v1/tasks/schedule: today's date, the slot's time); typing a time in
@@ -40,14 +41,14 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // ⌘Z outside a field undoes the last completion this page made (POST /api/v1/tasks/reopen, `factory task reopen`), then
 // the one before it: the page keeps the completed tasks in memory only, so a reload forgets them, and it never undoes an
 // edit or a delete.
-// Done, the fifth tab (design 02-tasks, Done view), reads GET /api/v1/tasks/done: the tasks done in the last 30 days, most
-// recently done first, one flat list across all lists with each row's list label and done time. Show older reads the 30
+// All's Show done switch (design 02-tasks, Done view), off on load, adds the done list below the open tasks. It reads
+// GET /api/v1/tasks/done: the tasks done in the last 30 days, most recently done first, one flat list across all lists with each row's list label and done time. Show older reads the 30
 // days before the oldest row shown, and is hidden when the server says none is older. Each row's Reopen posts the same
 // route as ⌘Z; a refusal (its next occurrence is done) shows above the list. Its read shares the tasks' query key, so a
 // completion or a reopen reloads it with the open views.
-// The Project switcher (design 09-dashboard-app, task projects) filters Inbox, Today, Upcoming and List to one active
+// The Project switcher (design 09-dashboard-app, task projects) filters Today, Upcoming and All to one active
 // task project's tasks (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
-// load and set on change, so a filtered view can be shared and reloaded. Done is not filtered. Factory work
+// load and set on change, so a filtered view can be shared and reloaded. The done list is not filtered. Factory work
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
@@ -55,11 +56,9 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 const TABS = [
-  { id: "inbox", label: t("tasks.inbox") },
   { id: "today", label: t("tasks.today") },
   { id: "upcoming", label: t("tasks.upcoming") },
-  { id: "list", label: t("tasks.list") },
-  { id: "done", label: t("tasks.done") },
+  { id: "all", label: t("tasks.all") },
 ] as const;
 type Tab = (typeof TABS)[number]["id"];
 
@@ -536,7 +535,7 @@ function TaskList({ label, tasks, overdue = false }: { label: string; tasks: rea
   );
 }
 
-/** One heading and its list, for the groups of Today, Upcoming and List. */
+/** One heading and its list, for the groups of Today, Upcoming and All. */
 function Group({ title, tasks, overdue = false }: { title: string; tasks: readonly TaskRow[]; overdue?: boolean }) {
   return (
     <div className="space-y-1">
@@ -657,8 +656,8 @@ function DoneCard({ task, busy, onReopen }: { task: DoneRow; busy: boolean; onRe
   );
 }
 
-/** The Done tab: its pages of done tasks as one list, Show older while the server says one is older, and Reopen's refusal above the list. */
-function DoneTab() {
+/** The done list under All's Show done: its pages of done tasks as one list, Show older while the server says one is older, and Reopen's refusal above the list. */
+function DoneList() {
   const { token } = useContext(Rows);
   const q = useDoneTasks();
   const action = useTaskAction(token);
@@ -694,54 +693,56 @@ function DoneTab() {
   );
 }
 
-function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
-  if (tab === "done") return <DoneTab />;
-  const today = tasksOf(v.today.due);
-  const upcoming = v.upcoming.map((d) => ({ date: d.date, tasks: tasksOf(d.tasks) })).filter((d) => d.tasks.length > 0);
-  const timeline = <Timeline date={v.today_date} blocks={v.timeline ?? []} />;
-  if (tab === "inbox") {
-    return (
-      <div className="space-y-3">
-        {v.inbox.length === 0 ? <EmptyState title={t("tasks.emptyInbox")} /> : <TaskList label={t("tasks.inbox")} tasks={v.inbox} />}
-        {timeline}
-      </div>
-    );
-  }
+/** Upcoming's days: the server's upcoming days after today (today's tasks are in Today), each with its tasks only. */
+const upcomingDays = (v: TasksView) =>
+  v.upcoming.filter((d) => d.date !== v.today_date).map((d) => ({ date: d.date, tasks: tasksOf(d.tasks) })).filter((d) => d.tasks.length > 0);
+
+/** All: every open task under its #list, then the Show done switch and, when on, the done list. */
+function AllView({ v, showDone, setShowDone }: { v: TasksView; showDone: boolean; setShowDone: (on: boolean) => void }) {
+  return (
+    <div className="space-y-3">
+      {v.projects.length === 0 ? (
+        <EmptyState title={t("tasks.emptyAll")} />
+      ) : (
+        v.projects.map((p) => <Group key={p.list ?? ""} title={p.list === null ? t("tasks.noList") : `#${p.list}`} tasks={p.tasks} />)
+      )}
+      <label className="flex items-center gap-2 text-sm text-text-2">
+        <Switch checked={showDone} onCheckedChange={setShowDone} />
+        {t("tasks.showDone")}
+      </label>
+      {showDone && <DoneList />}
+    </div>
+  );
+}
+
+function TabBody({ tab, v, showDone, setShowDone }: { tab: Tab; v: TasksView; showDone: boolean; setShowDone: (on: boolean) => void }) {
+  if (tab === "all") return <AllView v={v} showDone={showDone} setShowDone={setShowDone} />;
   if (tab === "today") {
+    const today = tasksOf(v.today.due);
     return (
       <div className="space-y-3">
         {today.length + v.today.overdue.length === 0 && <EmptyState title={t("tasks.emptyToday")} />}
         {v.today.overdue.length > 0 && <Group title={t("tasks.overdue")} tasks={v.today.overdue} overdue />}
         {today.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={today} />}
-        {timeline}
+        <Timeline date={v.today_date} blocks={v.timeline ?? []} />
       </div>
     );
   }
-  if (tab === "upcoming") {
-    if (upcoming.length === 0) return <EmptyState title={t("tasks.emptyUpcoming")} />;
-    return (
-      <div className="space-y-3">
-        {upcoming.map((d) => (
-          <Group key={d.date} title={dayLabel(d.date)} tasks={d.tasks} />
-        ))}
-      </div>
-    );
-  }
-  if (v.projects.length === 0) return <EmptyState title={t("tasks.emptyList")} />;
+  const upcoming = upcomingDays(v);
+  if (upcoming.length === 0) return <EmptyState title={t("tasks.emptyUpcoming")} />;
   return (
     <div className="space-y-3">
-      {v.projects.map((p) => (
-        <Group key={p.list ?? ""} title={p.list === null ? t("tasks.noList") : `#${p.list}`} tasks={p.tasks} />
+      {upcoming.map((d) => (
+        <Group key={d.date} title={dayLabel(d.date)} tasks={d.tasks} />
       ))}
     </div>
   );
 }
 
-/** True when the tab lists at least one task. */
+/** True when the view lists at least one open task. */
 const hasTasks = (v: TasksView, tab: Tab): boolean =>
-  tab !== "done" && (tab === "inbox" ? v.inbox
-  : tab === "today" ? [...v.today.overdue, ...tasksOf(v.today.due)]
-  : tab === "upcoming" ? v.upcoming.flatMap((d) => tasksOf(d.tasks))
+  (tab === "today" ? [...v.today.overdue, ...tasksOf(v.today.due)]
+  : tab === "upcoming" ? upcomingDays(v).flatMap((d) => d.tasks)
   : v.projects.flatMap((p) => p.tasks)
   ).length > 0;
 
@@ -815,12 +816,14 @@ function ProjectSwitcher({ projects, value, onChange }: { projects: readonly Pro
 
 export function TasksPage() {
   const [tab, setTab] = useState<Tab>("today");
+  // All's Show done: off on load, kept while the owner moves between views.
+  const [showDone, setShowDone] = useState(false);
   const [project, setProject] = useProjectParam();
   const q = useTasks<TasksView & { add_key?: QuickAddKey }>(project);
   const v = q.data;
   const token = v?.can_build ? v.csrf_token : null;
   const undo = useUndoDone(token);
-  // The List tab holds every open task the read returned, so its titles name each sub-task's parent.
+  // All's groups hold every open task the read returned, so its titles name each sub-task's parent.
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
   // Kept from the last read, so the switcher keeps its choices while a new filter loads.
   const known = useRef<readonly ProjectChoice[]>([]);
@@ -846,7 +849,7 @@ export function TasksPage() {
         <Section label={TABS.find((x) => x.id === tab)!.label}>
           <div className="space-y-3">
             {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
-                <TabBody tab={tab} v={v} />
+                <TabBody tab={tab} v={v} showDone={showDone} setShowDone={setShowDone} />
               </Rows.Provider>}
             {v?.can_build && hasTasks(v, tab) && <p className={muted}>{t("tasks.buildNote")}</p>}
           </div>

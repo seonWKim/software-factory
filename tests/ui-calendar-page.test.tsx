@@ -20,7 +20,7 @@ const SLOW = { timeout: 5_000 };
 const ev = (id: string, time: string | null, source = "google-calendar"): EventRow => ({ kind: "event", source, id, title: `event ${id}`, all_day: time === null, time });
 const task = (id: string): TaskRow => ({ id, title: id, list: null, priority: null, due_date: null, due_time: null, recurrence: null, work_item_id: null });
 const view = (over: Partial<TasksView> = {}): TasksView => ({
-  today_date: "2026-11-12", inbox: [], today: { overdue: [], due: [] }, upcoming: [], projects: [],
+  today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [],
   calendar: [{ source: "google-calendar", synced_at: "2026-11-12T08:00:00.000Z", failed: false }], csrf_token: "tok", can_build: true, ...over,
 });
 
