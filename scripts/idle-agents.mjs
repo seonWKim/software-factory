@@ -38,7 +38,8 @@ const PROJECTS = join(DIR, "projects.json");
 const IDLE_LEVELS = new Set(["blocked_by_task"]);
 const BUDGET = process.env.IDLE_AGENTS_BUDGET_USD || "3";
 
-const READ = ["Read", "Grep", "Glob", "Write(.factory/idle-agents/**)", "Edit(.factory/idle-agents/**)"];
+// Edit rules cover every file-writing tool, Write included.
+const READ = ["Read", "Grep", "Glob", "Edit(.factory/idle-agents/**)"];
 const SHELL = [
   "curl -s http://127.0.0.1", "npm run -s factory -- task create", "npm run -s factory -- task list", "npm run -s factory -- task show",
   "npm run -s factory -- help", "mkdir -p .factory/idle-agents", "ls", "cat", "wc", "grep", "date", "git log", "git show", "git diff",
