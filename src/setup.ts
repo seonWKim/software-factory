@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { type SyncOutcome, syncCalendars } from "./calendar/index.js";
 import { type Loaded, Plugins, settingsBase } from "./compose.js";
 import { runCanary } from "./canary.js";
-import { type LoadedConfig, toolchainCacheOverlaps } from "./core/config.js";
+import { type LoadedConfig, readOnlyOverlaps } from "./core/config.js";
 import { describeSettings, resolveSettings, settingsFor } from "./core/settings.js";
 import { llmCheckFromPlugins } from "./llm-check.js";
 import { GitHubError } from "./impl/github/github-client.js";
@@ -162,22 +162,27 @@ export function anthropicKeyCheck(value: string | undefined): Check {
 }
 
 /**
- * The declared toolchain caches (design 05-sandbox.md, issue #334): one line per cache. A cache that overlaps a
- * denied path (the secret file's folder is one) is a FAIL, one per overlap; one that does not exist yet is a warn
- * (the warm step may create it); otherwise ok. No `toolchain` block: no line.
+ * The declared read-only folders (design 05-sandbox.md): one line per toolchain cache (issue #334), then one per
+ * read-only input. A folder that overlaps a denied path (the secret file's folder is one) is a FAIL, one per
+ * overlap; one that does not exist yet is a warn (for a cache, the warm step may create it); otherwise ok. No
+ * `toolchain` block and no `read_only_inputs`: no line.
  */
-export async function toolchainChecks(config: Pick<LoadedConfig, "toolchain" | "deny_paths">): Promise<Check[]> {
+export async function toolchainChecks(config: Pick<LoadedConfig, "toolchain" | "read_only_inputs" | "deny_paths">): Promise<Check[]> {
+  const folders = [
+    ...(config.toolchain?.caches ?? []).map((path) => ({ path, label: "toolchain cache", missing: " (the warm step may create it)" })),
+    ...(config.read_only_inputs ?? []).map((path) => ({ path, label: "read-only input", missing: "" })),
+  ];
   const checks: Check[] = [];
-  for (const cache of config.toolchain?.caches ?? []) {
-    const overlaps = toolchainCacheOverlaps([cache], config.deny_paths);
+  for (const { path, label, missing } of folders) {
+    const overlaps = readOnlyOverlaps([path], config.deny_paths);
     if (overlaps.length > 0) {
-      checks.push(...overlaps.map((o) => ({ ok: false, msg: `toolchain cache ${cache} overlaps the denied path ${o.denied}` })));
+      checks.push(...overlaps.map((o) => ({ ok: false, msg: `${label} ${path} overlaps the denied path ${o.denied}` })));
       continue;
     }
-    const exists = await stat(cache).then((st) => st.isDirectory(), () => false);
+    const exists = await stat(path).then((st) => st.isDirectory(), () => false);
     checks.push(exists
-      ? { ok: true, msg: `toolchain cache ${cache} exists (read-only for agents)` }
-      : { ok: false, warn: true, msg: `toolchain cache ${cache} does not exist (the warm step may create it)` });
+      ? { ok: true, msg: `${label} ${path} exists (read-only for agents)` }
+      : { ok: false, warn: true, msg: `${label} ${path} does not exist${missing}` });
   }
   return checks;
 }
