@@ -8,7 +8,7 @@ import type { HookDescriptor } from "../shared/hook.js";
 import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { PACK_TOOL_REFUSED, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
-import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor } from "../core/config.js";
+import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyRunFields } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
 import { errorText, type LogFields } from "../core/log.js";
@@ -788,8 +788,8 @@ export class Worker {
       ...role,
       ...(on_tool_call ? { gate_hooks: { ...role.gate_hooks!, on_tool_call } } : {}),
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
-      // The toolchain block (design 05-sandbox.md): caches the agent may read, never write, and its env entries.
-      ...(toolchain ? { readable_paths: toolchain.caches, toolchain_env: toolchain.env } : {}),
+      // Design 05-sandbox.md: the caches and read-only inputs the agent may read, never write, and the toolchain env.
+      ...readOnlyRunFields(this.cfg),
       ...(session ? { session } : {}),
     });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.

@@ -14,9 +14,10 @@ import { useNow } from "./common.js";
 
 // The Settings page's Calendar section (design 08-settings, 2026-11-13): each calendar plugin the server lists from
 // the registry's connect hooks, by its own name (this file names no provider), connected or not, with its last sync time
-// and last error. Connect posts the plugin; when the server answers which secrets the sign-in needs, a Dialog asks for
-// them in password fields, and the values leave the page's state once the attempt is sent. The server then answers the
-// consent page, opened in a new tab (and linked, if the browser blocks it), and the section polls GET /api/v1/calendar
+// and last error. Connect posts the plugin alone: the server signs in with the plugin's default client and answers the
+// consent page at once, with no dialog. Only the advanced "Use my own client" option asks for values: when the server
+// answers which secrets that sign-in needs, a Dialog asks for them in password fields, and the values leave the page's
+// state once the attempt is sent. Either way the server answers the consent page, opened in a new tab (and linked, if the browser blocks it), and the section polls GET /api/v1/calendar
 // for the result. Disconnect asks first in the danger Dialog; nothing is sent until Confirm.
 
 export function CalendarSection({ token }: { token: string }) {
@@ -62,11 +63,12 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
   const signingIn = plugin.attempt?.state === "signing_in";
   const refresh = () => client.invalidateQueries({ queryKey: [API.calendar] });
 
-  const connect = async (sent?: Record<string, string>) => {
+  /** The default sign-in with no argument; the own-client option with `own` (and, from its Dialog, the typed values). */
+  const connect = async (own?: { values?: Record<string, string> }) => {
     setBusy(true);
     setError(null);
     try {
-      const r = await postCalendarConnect(token, plugin.name, sent);
+      const r = await postCalendarConnect(token, plugin.name, own);
       if (!r.ok) return setError(r.error);
       if (r.state === "needs_input") return setAsking({ needs: r.needs });
       setAsking(null);
@@ -121,9 +123,14 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
             {t("calendar.disconnect")}
           </Button>
         ) : (
-          <Button disabled={busy || signingIn} aria-label={t("calendar.connectLabel", { name: plugin.name })} onClick={() => void connect()}>
-            {t("calendar.connect")}
-          </Button>
+          <>
+            <Button disabled={busy || signingIn} aria-label={t("calendar.connectLabel", { name: plugin.name })} onClick={() => void connect()}>
+              {t("calendar.connect")}
+            </Button>
+            <Button variant="ghost" disabled={busy || signingIn} aria-label={t("calendar.ownClientLabel", { name: plugin.name })} onClick={() => void connect({})}>
+              {t("calendar.ownClient")}
+            </Button>
+          </>
         )}
       </ButtonRow>
       {error && asking === null && !confirming && (
@@ -133,12 +140,12 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
       )}
       {asking && (
         <Dialog
-          title={t("calendar.connectTitle", { name: plugin.name })}
+          title={t("calendar.ownClientTitle", { name: plugin.name })}
           consequence={t("calendar.connectConsequence")}
           confirmLabel={t("calendar.signIn")}
           confirmDisabled={busy || asking.needs.some((n) => !values[n]?.trim())}
           error={error}
-          onConfirm={() => void connect(Object.fromEntries(asking.needs.map((n) => [n, values[n] ?? ""])))}
+          onConfirm={() => void connect({ values: Object.fromEntries(asking.needs.map((n) => [n, values[n] ?? ""])) })}
           onClose={closeAsk}
         >
           {asking.needs.map((n) => (

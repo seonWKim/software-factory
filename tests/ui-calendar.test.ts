@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { GoogleClient } from "../src/calendar/plugins/google-calendar/default-client.js";
 import { googleCalendarConnect } from "../src/calendar/plugins/google-calendar/google-calendar-connect.js";
 import { CALENDAR_READONLY_SCOPE, EVENTS_API, GoogleCalendarSource, type HttpClient, TOKEN_URL } from "../src/calendar/plugins/google-calendar/google-calendar-source.js";
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } from "../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
@@ -25,8 +26,8 @@ import { FakeCalendarSource, calendarEvent } from "./calendar/fakes.js";
 // /api/v1/calendar lists the calendar plugins from the registry's connect hooks; POST /api/v1/calendar/connect and
 // /disconnect run the one connect flow the CLI runs, behind the write routes' guards and the owner check. No test calls
 // Google or opens a browser: the token endpoint and the event reads are a fake HTTP client, the test plays the browser
-// by calling the hook's 127.0.0.1 listener as Google's redirect would, and the 5-minute timeout runs on a FakeClock
-// that never reaches it.
+// by calling the hook's 127.0.0.1 listener as Google's redirect would, the 5-minute timeout runs on a FakeClock
+// that never reaches it, and the factory's default client is a fake one.
 
 const REPO_ROOT = join(import.meta.dirname, "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
@@ -38,12 +39,14 @@ const OWNER = "local:owner@example.com" as UserId;
 const OTHER = "local:other@example.com" as UserId;
 const PLUGIN = "google-calendar";
 
+/** The factory's default client, as this build would carry it. */
+const DEFAULT: GoogleClient = { id: "fake-default-client-id-77.example", secret: "fake-default-client-secret-e3b9" };
 const CLIENT_ID = "fake-client-id-0451.example";
 const CLIENT_SECRET = "fake-client-secret-77a1";
 const REFRESH = "fake-refresh-token-91be";
 const ACCESS = "fake-access-token-3c0d";
 const CODE = "fake-auth-code-5e2f";
-const SECRETS = [CLIENT_SECRET, REFRESH, ACCESS];
+const SECRETS = [DEFAULT.secret, CLIENT_SECRET, REFRESH, ACCESS];
 
 const consoleLines: string[] = [];
 beforeEach(() => {
@@ -109,8 +112,11 @@ interface Page {
   close(): Promise<void>;
 }
 
-/** A machine after `npm run setup`: a secret file with `secrets`, no calendar, the owner signed in on the page as `as`. */
-async function page(o: { secrets?: string; calendar?: string[]; as?: UserId } = {}): Promise<Page> {
+/**
+ * A machine after `npm run setup`: a secret file with `secrets`, no calendar, the owner signed in on the page as `as`,
+ * and a build that carries `defaultClient` (DEFAULT when left out; null: none).
+ */
+async function page(o: { secrets?: string; calendar?: string[]; as?: UserId; defaultClient?: GoogleClient | null } = {}): Promise<Page> {
   const dir = mkdtempSync(join(tmpdir(), "sf-ui-calendar-"));
   mkdirSync(join(dir, "prompts"));
   for (const p of ["triage", "implement", "review", "resolve"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
@@ -131,7 +137,7 @@ async function page(o: { secrets?: string; calendar?: string[]; as?: UserId } = 
       calendar: {
         ...entry,
         plugins: { ...entry.plugins, [PLUGIN]: (c) => new GoogleCalendarSource({ http: google.client, now: () => c.clock.now(), secrets: c.secrets, names: NAMES, calendarIds: [] }) },
-        connects: { ...entry.connects, [PLUGIN]: googleCalendarConnect({ http: google.client, names: NAMES }) },
+        connects: { ...entry.connects, [PLUGIN]: googleCalendarConnect({ http: google.client, names: NAMES, defaultClient: async () => (o.defaultClient === undefined ? DEFAULT : o.defaultClient) }) },
       },
     },
     "calendar",
@@ -205,28 +211,22 @@ describe("GET /api/v1/calendar", () => {
 });
 
 describe("POST /api/v1/calendar/connect: a fresh setup, end to end", () => {
-  it("asks for the client ID and secret, signs in, stores the three secrets, lists the plugin live, syncs, and the Tasks page shows the events", async () => {
+  it("with no client lines, one Connect opens the consent page with the default client, asks for nothing, stores the three secrets, lists the plugin live, syncs, and the Tasks page shows the events", async () => {
     const p = await page();
     try {
-      const before = { secrets: read(p.secretsFile), config: read(p.configFile) };
-      // No values: the hook's two questions come back as inputs to ask for; nothing is written, no sign-in opens.
-      const ask = await p.post(CONNECT, { plugin: PLUGIN });
-      expect(ask).toEqual({ status: 200, value: { plugin: PLUGIN, state: "needs_input", needs: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"] } });
-      expect(read(p.secretsFile)).toBe(before.secrets);
-      expect(await p.listed()).toEqual([]);
-      expect((await settled(p)).attempt).toBeNull();
-
-      const start = await p.post(CONNECT, { plugin: PLUGIN, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } });
+      const before = { config: read(p.configFile) };
+      const start = await p.post(CONNECT, { plugin: PLUGIN });
       expect(start.status).toBe(202);
       expect(start.value).toMatchObject({ plugin: PLUGIN, state: "signing_in" });
       const consent = String(start.value.consent_url);
+      expect(new URL(consent).searchParams.get("client_id")).toBe(DEFAULT.id);
       expect((await p.get("/api/v1/calendar")).value.plugins).toMatchObject([{ attempt: { state: "signing_in" } }]);
       await redirect(consent, consented);
 
       const row = await settled(p);
       expect(row).toMatchObject({ connected: true, error: null, attempt: { state: "connected", events: 2, error: null } });
       expect(row.synced_at).toBe(NOW);
-      expect(read(p.secretsFile)).toBe(`GITHUB_TOKEN=gh\n\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
+      expect(read(p.secretsFile)).toBe(`GITHUB_TOKEN=gh\n\nGOOGLE_CLIENT_ID=${DEFAULT.id}\nGOOGLE_CLIENT_SECRET=${DEFAULT.secret}\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
       expect(statSync(p.secretsFile).mode & 0o777).toBe(0o600);
       expect(await p.listed()).toEqual([PLUGIN]);
       // The live setting, never the file: the controller picks it up on its next refresh.
@@ -241,12 +241,48 @@ describe("POST /api/v1/calendar/connect: a fresh setup, end to end", () => {
     }
   });
 
+  it("use my own client (advanced): asks for the client ID and secret, writes nothing until the sign-in passes, then stores the owner's client", async () => {
+    const p = await page();
+    try {
+      const before = read(p.secretsFile);
+      // No values: the hook's two questions come back as inputs to ask for; nothing is written, no sign-in opens.
+      const ask = await p.post(CONNECT, { plugin: PLUGIN, own_client: true });
+      expect(ask).toEqual({ status: 200, value: { plugin: PLUGIN, state: "needs_input", needs: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"] } });
+      expect(read(p.secretsFile)).toBe(before);
+      expect(await p.listed()).toEqual([]);
+      expect((await settled(p)).attempt).toBeNull();
+
+      const start = await p.post(CONNECT, { plugin: PLUGIN, own_client: true, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } });
+      expect(start.status).toBe(202);
+      expect(new URL(String(start.value.consent_url)).searchParams.get("client_id")).toBe(CLIENT_ID);
+      await redirect(String(start.value.consent_url), consented);
+      expect(await settled(p)).toMatchObject({ connected: true, attempt: { state: "connected", events: 2 } });
+      expect(read(p.secretsFile)).toBe(`GITHUB_TOKEN=gh\n\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it("a build with no default client refuses a plain Connect before any write, naming the own-client option", async () => {
+    const p = await page({ defaultClient: null });
+    try {
+      const before = read(p.secretsFile);
+      const r = await p.post(CONNECT, { plugin: PLUGIN });
+      expect(r.status).toBe(422);
+      expect(String(r.value.error)).toContain('"use my own client"');
+      expect(read(p.secretsFile)).toBe(before);
+      expect(await p.listed()).toEqual([]);
+    } finally {
+      await p.close();
+    }
+  });
+
   it("the consent URL asks for calendar.readonly only, with PKCE S256, a random state and a redirect to 127.0.0.1 on the callback path", async () => {
     const p = await page({ secrets: `GITHUB_TOKEN=gh\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\n` });
     try {
       const urls: URL[] = [];
       for (let i = 0; i < 2; i++) {
-        // The client is in the secret file: no input is asked for.
+        // The owner's own client is in the secret file: it is used, and no input is asked for.
         const start = await p.post(CONNECT, { plugin: PLUGIN });
         expect(start.status).toBe(202);
         urls.push(new URL(String(start.value.consent_url)));
@@ -256,6 +292,7 @@ describe("POST /api/v1/calendar/connect: a fresh setup, end to end", () => {
       for (const u of urls) {
         expect(`${u.origin}${u.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
         expect(u.searchParams.getAll("scope")).toEqual([CALENDAR_READONLY_SCOPE]);
+        expect(u.searchParams.get("client_id")).toBe(CLIENT_ID);
         expect(u.searchParams.get("code_challenge_method")).toBe("S256");
         expect(u.searchParams.get("state")).toMatch(/^[A-Za-z0-9_-]{32}$/);
         const back = new URL(u.searchParams.get("redirect_uri")!);
@@ -304,7 +341,7 @@ describe("POST /api/v1/calendar/connect: refusals write nothing", () => {
       try {
         c.arrange?.(p.google);
         const before = { secrets: read(p.secretsFile), config: read(p.configFile) };
-        const start = await p.post(CONNECT, { plugin: PLUGIN, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } });
+        const start = await p.post(CONNECT, { plugin: PLUGIN });
         expect(start.status).toBe(202);
         await redirect(String(start.value.consent_url), c.query ?? consented);
         const row = await settled(p);
@@ -344,7 +381,7 @@ describe("POST /api/v1/calendar/disconnect", () => {
 
 describe("the calendar routes' guards", () => {
   const routes = [
-    [CONNECT, { plugin: PLUGIN, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } }],
+    [CONNECT, { plugin: PLUGIN, own_client: true, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } }],
     [DISCONNECT, { plugin: PLUGIN }],
   ] as const;
 
@@ -380,8 +417,11 @@ describe("the calendar routes' guards", () => {
     const p = await page();
     try {
       expect((await p.post(CONNECT, { plugin: "work" })).status).toBe(400);
-      expect((await p.post(CONNECT, { plugin: PLUGIN, values: { GITHUB_TOKEN: "x" } })).status).toBe(400);
-      expect((await p.post(CONNECT, { plugin: PLUGIN, values: { GOOGLE_CLIENT_ID: "" } })).status).toBe(400);
+      expect((await p.post(CONNECT, { plugin: PLUGIN, own_client: true, values: { GITHUB_TOKEN: "x" } })).status).toBe(400);
+      expect((await p.post(CONNECT, { plugin: PLUGIN, own_client: true, values: { GOOGLE_CLIENT_ID: "" } })).status).toBe(400);
+      // Values go only with the own-client option, and the option is a boolean.
+      expect((await p.post(CONNECT, { plugin: PLUGIN, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } })).status).toBe(400);
+      expect((await p.post(CONNECT, { plugin: PLUGIN, own_client: "yes" })).status).toBe(400);
       expect((await p.post(DISCONNECT, { plugin: PLUGIN, values: {} })).status).toBe(400);
       expect((await p.post(CONNECT, [])).status).toBe(400);
     } finally {
@@ -394,17 +434,17 @@ describe("no secret leaves", () => {
   it("no response, log line or store row holds the client secret, the refresh token or the access token", async () => {
     const p = await page();
     try {
-      await p.post(CONNECT, { plugin: PLUGIN });
-      const start = await p.post(CONNECT, { plugin: PLUGIN, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } });
+      await p.post(CONNECT, { plugin: PLUGIN, own_client: true });
+      const start = await p.post(CONNECT, { plugin: PLUGIN, own_client: true, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } });
       await redirect(String(start.value.consent_url), consented);
       await settled(p);
       await p.get("/api/v1/tasks");
       await p.get("/api/v1/settings");
       await p.post(DISCONNECT, { plugin: PLUGIN });
       await p.get("/api/v1/calendar");
-      // A refused connect too: its error reaches the page.
+      // A refused connect with the default client too: its error reaches the page.
       p.google.exchange = () => ({ status: 200, body: { access_token: ACCESS, refresh_token: REFRESH, expires_in: 3600, scope: "https://www.googleapis.com/auth/calendar" } });
-      const again = await p.post(CONNECT, { plugin: PLUGIN, values: { GOOGLE_CLIENT_ID: CLIENT_ID, GOOGLE_CLIENT_SECRET: CLIENT_SECRET } });
+      const again = await p.post(CONNECT, { plugin: PLUGIN });
       await redirect(String(again.value.consent_url), consented);
       await settled(p);
 

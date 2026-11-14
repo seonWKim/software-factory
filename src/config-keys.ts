@@ -85,6 +85,7 @@ export const TOP_LEVEL_KEYS = [
   "path_companions",
   "cli_user",
   "toolchain",
+  "read_only_inputs",
   "packs",
   "calendar",
   "calendar_ids",

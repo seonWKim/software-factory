@@ -4,7 +4,6 @@
 // caches: losing them costs one full read. Every HTTP call goes through the injected client, so no test calls Google.
 
 import type { CalendarFeed, FeedEvent } from "../../index.js";
-import { type DefaultClientLoader, defaultUnlessStored } from "./default-client.js";
 
 /** The one scope the plugin asks for, and the only one a token answer may carry. */
 export const CALENDAR_READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.readonly";
@@ -51,8 +50,6 @@ export interface GoogleCalendarOptions<N extends string> {
   names: { refreshToken: N; clientId: N; clientSecret: N };
   /** Checked by calendarIds(); [] reads the primary calendar. */
   calendarIds: readonly string[];
-  /** The factory's default client, used when the SecretStore holds neither client value. Absent: none. */
-  defaultClient?: DefaultClientLoader;
 }
 
 /** The `calendar_ids` config value: absent, or a list of non-empty strings. Anything else fails startup. */
@@ -83,11 +80,6 @@ interface CalendarCache {
 }
 
 export const fail = (what: string): Error => new Error(`google-calendar: ${what}`);
-
-const required = (name: string, value: string | null): string => {
-  if (!value) throw fail(`${name} is not set in the SecretStore`);
-  return value;
-};
 
 export class GoogleCalendarSource<N extends string> implements CalendarFeed {
   private access: { token: string; expiresAt: number } | null = null;
@@ -186,7 +178,11 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
   private async accessToken(): Promise<string> {
     const now = this.o.now().getTime();
     if (this.access && this.access.expiresAt > now) return this.access.token;
-    const [refresh, { clientId, clientSecret }] = await Promise.all([this.secret(this.o.names.refreshToken), this.client()]);
+    const [refresh, clientId, clientSecret] = await Promise.all([
+      this.secret(this.o.names.refreshToken),
+      this.secret(this.o.names.clientId),
+      this.secret(this.o.names.clientSecret),
+    ]);
     const body = new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refresh,
@@ -205,20 +201,10 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
     return this.access.token;
   }
 
-  /** The stored client; the default client when neither of its values is stored and the build has one. */
-  private async client(): Promise<{ clientId: string; clientSecret: string }> {
-    const [id, secret] = await Promise.all([this.stored(this.o.names.clientId), this.stored(this.o.names.clientSecret)]);
-    const fallback = await defaultUnlessStored({ id, secret }, this.o.defaultClient);
-    if (fallback) return { clientId: fallback.clientId, clientSecret: fallback.clientSecret.reveal() };
-    return { clientId: required(this.o.names.clientId, id), clientSecret: required(this.o.names.clientSecret, secret) };
-  }
-
   private async secret(name: N): Promise<string> {
-    return required(name, await this.stored(name));
-  }
-
-  private async stored(name: N): Promise<string | null> {
-    return (await this.o.secrets.get(name))?.reveal() || null;
+    const value = (await this.o.secrets.get(name))?.reveal();
+    if (!value) throw fail(`${name} is not set in the SecretStore`);
+    return value;
   }
 
   /** One HTTP call; a network failure throws without its cause, which may quote the request. */

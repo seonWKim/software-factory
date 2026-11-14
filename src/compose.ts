@@ -7,7 +7,7 @@ import { availableParallelism, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   AGENT_STOP_CHECKS_DEFAULT, ALARM_DEFAULTS, type FactoryConfig, type LoadedConfig, type Prompts, STALL_DEFAULTS, type StatsConfig, type ToolchainConfig, cliUserConfig, uiCheckConfig, uiCheckSentence,
-  coordinationConfig, retentionConfig, toolGrantsConfig, toolchainCacheOverlaps,
+  coordinationConfig, readOnlyFolders, readOnlyInputsConfig, retentionConfig, toolGrantsConfig,
 } from "./core/config.js";
 import { toolchainEnvKeyRefusal } from "./core/tools/policy.js";
 import { type ProjectRef, localProjectKey, projectLabel, rekeyProjectSettings } from "./core/project.js";
@@ -220,6 +220,11 @@ export interface FileConfig {
    * the network; absent: `repo.install_command`). Absent: none of it. A PR-only key. Checked by toolchainConfig.
    */
   toolchain?: unknown;
+  /**
+   * Read-only input folders (design 05-sandbox.md): a project's source data outside its repo, which the agents may
+   * read and never write, with the toolchain caches' rules. Absent: none. Checked by readOnlyInputsConfig.
+   */
+  read_only_inputs?: unknown;
   /**
    * Packs (design 11-packs.md): `order`, the layers in order (absent: base, org, project, learned; base first,
    * learned last), `org`, the org pack's folder (absent: no org layer), and `auto_approve_read_only` (absent: false).
@@ -468,6 +473,8 @@ export async function loadConfig(
   // The toolchain block (design 05-sandbox.md): its caches checked against every denied path, the secret folder included.
   const toolchain = toolchainConfig(file.toolchain, { home, install_command: config.repo.install_command, deny_paths: config.deny_paths });
   if (toolchain) config.toolchain = toolchain;
+  const inputs = readOnlyInputsConfig(file.read_only_inputs, { expand: expandHome(home), deny_paths: config.deny_paths });
+  if (inputs) config.read_only_inputs = inputs;
   // Each prompt through the pack layers, placeholders filled after the merge (design 11-packs.md). A required
   // prompt no layer has fails startup; owner-defaults is appended to triage.
   const prompts = await packPrompts(packs, (text) => fillPrompt(text, config.repo, plugins.forge ?? "local", config.toolchain));
@@ -1180,17 +1187,7 @@ export function toolchainConfig(
   if (raw === undefined) return undefined;
   if (!isRecord(raw)) throw new Error("toolchain must be an object with caches, env and warm_command");
   const problems: string[] = [];
-  const caches: string[] = [];
-  if (raw.caches !== undefined && !Array.isArray(raw.caches)) problems.push("toolchain.caches must be a list of absolute folders");
-  (Array.isArray(raw.caches) ? (raw.caches as unknown[]) : []).forEach((c, i) => {
-    const expanded = typeof c === "string" && (c === "~" || c.startsWith("~/")) && ctx.home !== "" ? join(ctx.home, c.slice(1)) : c;
-    if (typeof expanded !== "string" || !expanded.startsWith("/")) {
-      problems.push(`toolchain.caches[${i}] must be an absolute folder (or start with ~/), got ${JSON.stringify(c) ?? String(c)}`);
-    } else caches.push(resolve(expanded));
-  });
-  for (const o of toolchainCacheOverlaps(caches, ctx.deny_paths.map((d) => resolve(d)))) {
-    problems.push(`toolchain.caches[${o.index}] ${o.cache} overlaps the denied path ${o.denied}`);
-  }
+  const caches = readOnlyFolders("toolchain.caches", raw.caches ?? [], { expand: expandHome(ctx.home), deny_paths: ctx.deny_paths }, problems);
   const env: Record<string, string> = {};
   if (raw.env !== undefined && !isRecord(raw.env)) problems.push("toolchain.env must be an object of env var names to strings");
   for (const [key, value] of Object.entries(isRecord(raw.env) ? raw.env : {})) {
@@ -1208,6 +1205,9 @@ export function toolchainConfig(
   if (problems.length > 0) throw new Error(problems.join("\n"));
   return { caches, env, warm_command };
 }
+
+/** A configured path with a leading `~` taken as the owner's HOME (no HOME: unchanged, so it fails as relative). */
+const expandHome = (home: string) => (p: string): string => ((p === "~" || p.startsWith("~/")) && home !== "" ? join(home, p.slice(1)) : p);
 
 /**
  * G1 on the toolchain's env values at startup: each value goes through the configured egress scanner (known

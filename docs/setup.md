@@ -16,6 +16,8 @@ Why outside the repo: agents work in git worktrees of this repo, so anything ins
 
 To use a different location, set `SOFTWARE_FACTORY_SECRETS_FILE=/path/to/file` in the environment that starts the factory.
 
+Google Calendar needs no secret from you up front: `factory setup calendar google` (or Settings → Calendar → Connect) signs in with the factory's own Google client and writes `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `GOOGLE_REFRESH_TOKEN` to this file itself. That default client's secret comes with the release build, never from the repository. To use your own OAuth client instead, see [calendar-source](plugins/calendar-source.md) (advanced).
+
 ## 1. Prerequisites
 
 - Node.js (LTS) and git
@@ -151,9 +153,9 @@ Don't weaken these: never copy the secret file into the repo, never pass secrets
 
 ## Release builds: the Google default client
 
-Connect for `google-calendar` can work with no OAuth client of your own: when the secret file holds neither `GOOGLE_CLIENT_ID` nor `GOOGLE_CLIENT_SECRET`, it uses the factory's own Desktop-app client ([calendar-source.md](plugins/calendar-source.md), Turn on). Its ID is a constant in `src/calendar/plugins/google-calendar/default-client.ts` (empty until set, and empty means no default client). Its secret, the release value, is never in the repository or git:
+Connect for `google-calendar` can work with no OAuth client of your own: when the secret file does not hold both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`, it uses the factory's own Desktop-app client ([calendar-source.md](plugins/calendar-source.md), Turn on). Its ID is a constant in `src/calendar/plugins/google-calendar/default-client.ts` (empty until set, and empty means no default client). Its secret, the release value, is never in the repository or git:
 
 - **Where it lives.** In the environment of the one shell or job that makes the release build, as `SF_GOOGLE_DEFAULT_CLIENT_SECRET`, taken from wherever you keep release values outside the repository (for example a line in the secret file you export for that build only). Never in `factory.config.json`, `src/`, a commit or an agent's environment.
-- **Set at build time.** `npm run build` reads it once and writes `dist/calendar/plugins/google-calendar/default-client-secret.js` (mode 600) into the staged `dist/` before the swap; it writes nothing else and never prints it. `dist/` is gitignored. Unset or blank: no module, no default client, and Connect asks for both client values as before.
+- **Set at build time.** `npm run build` reads it once and writes `dist/calendar/plugins/google-calendar/default-client-secret.js` (mode 600) into the staged `dist/` before the swap; it writes nothing else and never prints it. `dist/` is gitignored. Unset or blank: no module and no default client: `factory setup calendar google` asks for the client values, and the dashboard's Connect points to its own-client option.
 - **Why a build output may hold it.** Google treats a Desktop-app client's secret as not confidential: it ships inside every copy of the app. It still stays out of git, logs, the store and dashboard responses.
 - **Rotating.** Make a new secret for the client in the Google Cloud console, rebuild with the new value, and delete the old secret there.

@@ -3,7 +3,7 @@ import type { PathCompanion } from "./companions.js";
 import { type CoordinationSettings, DEFAULT_COORDINATION, type HotspotMode, HOTSPOT_MODES, parseHoldPolicy } from "./coordination.js";
 import type { ProjectRef } from "./project.js";
 import type { SettingsLayers } from "./settings.js";
-import { isUnder } from "./tools/paths.js";
+import { isUnder, normalize } from "./tools/paths.js";
 import type { RunKind, Tier, UserId, VerdictSeverity } from "./types.js";
 import type { ToolBroker } from "../interfaces/tool-broker.js";
 
@@ -331,6 +331,12 @@ export interface LoadedConfig {
    * every run is exactly as before the block existed.
    */
   toolchain?: ToolchainConfig;
+  /**
+   * Read-only input folders (design 05-sandbox.md): `read_only_inputs` from factory.config.json, checked at load by
+   * compose.ts (`readOnlyInputsConfig`) with the caches' rules: absolute, normalized, none overlapping a denied
+   * path. The agents may read them and never write them. Absent: no input folder, every run as before the key.
+   */
+  read_only_inputs?: readonly string[];
 }
 
 /**
@@ -349,17 +355,79 @@ export interface ToolchainConfig {
 export const TOOLCHAIN_KEYS = ["caches", "env", "warm_command"] as const;
 
 /**
- * Each declared cache that cannot be read safely, with the denied path it overlaps: the cache is that path, lies
- * inside it, or holds it (the secret file's folder is a `deny_paths` entry). One entry per pair; `index` is the
- * cache's place in `caches`. Both lists normalized.
+ * Each read-only folder (a toolchain cache or a read-only input) that cannot be read safely, with the denied path
+ * it overlaps: the folder is that path, lies inside it, or holds it (the secret file's folder is a `deny_paths`
+ * entry). One entry per pair; `index` is the folder's place in `paths`. Both lists normalized.
  */
-export function toolchainCacheOverlaps(
-  caches: readonly string[],
+export function readOnlyOverlaps(
+  paths: readonly string[],
   denied: readonly string[],
-): { index: number; cache: string; denied: string }[] {
-  return caches.flatMap((cache, index) =>
-    denied.filter((d) => isUnder(cache, d) || isUnder(d, cache)).map((d) => ({ index, cache, denied: d })),
+): { index: number; path: string; denied: string }[] {
+  return paths.flatMap((path, index) =>
+    denied.filter((d) => isUnder(path, d) || isUnder(d, path)).map((d) => ({ index, path, denied: d })),
   );
+}
+
+/** What a read-only folder list is checked with: the HOME expansion of a configured path, and the denied paths. */
+export interface ReadOnlyContext {
+  expand: (path: string) => string;
+  deny_paths: readonly string[];
+}
+
+/**
+ * A list of read-only folders (`toolchain.caches`, `read_only_inputs`; design 05-sandbox.md): each an absolute
+ * folder after `ctx.expand` (the composition root's leading-`~` expansion to the owner's HOME), normalized, none
+ * overlapping a `deny_paths` entry in either direction. Each problem is pushed onto `problems`, naming
+ * `key[index]` and, for an overlap, both paths.
+ */
+export function readOnlyFolders(
+  key: string,
+  raw: unknown,
+  ctx: ReadOnlyContext,
+  problems: string[],
+): string[] {
+  if (!Array.isArray(raw)) {
+    problems.push(`${key} must be a list of absolute folders`);
+    return [];
+  }
+  const folders: string[] = [];
+  (raw as unknown[]).forEach((c, i) => {
+    const expanded = typeof c === "string" ? ctx.expand(c) : c;
+    if (typeof expanded !== "string" || !expanded.startsWith("/")) {
+      problems.push(`${key}[${i}] must be an absolute folder (or start with ~/), got ${JSON.stringify(c) ?? String(c)}`);
+    } else folders.push(normalize(expanded));
+  });
+  for (const o of readOnlyOverlaps(folders, ctx.deny_paths.map((d) => normalize(d)))) {
+    problems.push(`${key}[${o.index}] ${o.path} overlaps the denied path ${o.denied}`);
+  }
+  return folders;
+}
+
+/**
+ * `read_only_inputs` from factory.config.json (design 05-sandbox.md): absent → undefined (no input folder).
+ * Otherwise the folders the agents may read and never write, with the caches' rules (`readOnlyFolders`). Every
+ * problem fails startup at once, one per line.
+ */
+export function readOnlyInputsConfig(raw: unknown, ctx: ReadOnlyContext): string[] | undefined {
+  if (raw === undefined) return undefined;
+  const problems: string[] = [];
+  const inputs = readOnlyFolders("read_only_inputs", raw, ctx, problems);
+  if (problems.length > 0) throw new Error(problems.join("\n"));
+  return inputs;
+}
+
+/**
+ * The run spec's read-only fields (design 05-sandbox.md): `readable_paths`, the toolchain caches then the read-only
+ * inputs, and the toolchain's `toolchain_env`. Each is left out when nothing configures it.
+ */
+export function readOnlyRunFields(
+  cfg: Pick<LoadedConfig, "toolchain" | "read_only_inputs">,
+): { readable_paths?: string[]; toolchain_env?: Readonly<Record<string, string>> } {
+  const { toolchain, read_only_inputs: inputs } = cfg;
+  return {
+    ...(toolchain || inputs ? { readable_paths: [...(toolchain?.caches ?? []), ...(inputs ?? [])] } : {}),
+    ...(toolchain ? { toolchain_env: toolchain.env } : {}),
+  };
 }
 
 /** Days the controller's daily retention pass keeps each class of operational rows (design 08-retention). */

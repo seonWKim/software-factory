@@ -1,6 +1,6 @@
 import { access, constants, mkdir, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { toolchainCacheOverlaps } from "../../core/config.js";
+import { readOnlyOverlaps } from "../../core/config.js";
 import { FORBIDDEN_ENV, guardPolicy } from "../../core/tools/index.js";
 import { toolchainEnvKeyRefusal } from "../../core/tools/policy.js";
 import {
@@ -151,7 +151,7 @@ const PATH_SCOPED_TOOLS: ReadonlySet<string> = new Set(["Edit", "Write"]);
  * owner's live checkout included) never runs. No `workdir`: no run folder rule. The paths come from
  * `guardPolicy`, the same policy the shared tools enforce. Relative entries resolve against `workdir`.
  *
- * Toolchain caches (`readable_paths`, design 05-sandbox.md): in `sandbox.filesystem.allowRead` (the OS read allow
+ * Read-only folders (`readable_paths`: toolchain caches and read-only inputs, design 05-sandbox.md): in `sandbox.filesystem.allowRead` (the OS read allow
  * list) and, so no write root can cover them, in `denyWrite` and an `Edit(//<cache>/**)` deny rule; never in
  * `allowWrite` or `permissions.allow`. A cache that overlaps a `deny_paths` entry is dropped here too (startup
  * already refuses it), so `allowRead` never reopens a denied folder. None: no key is added.
@@ -170,7 +170,7 @@ export function buildHarnessSettings(
     workdir: workdir ?? "/", deny_paths: spec.deny_paths, writable_paths: spec.writable_paths, readable_paths: spec.readable_paths ?? [], env_allowlist: {},
   });
   const writeRoots = [...(workdir === undefined ? [] : [policy.workdir]), ...policy.writable_paths, ...tmp];
-  const caches = policy.readable_paths.filter((c) => toolchainCacheOverlaps([c], policy.deny_paths).length === 0);
+  const caches = policy.readable_paths.filter((c) => readOnlyOverlaps([c], policy.deny_paths).length === 0);
   return {
     env: { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1", npm_config_update_notifier: "false" },
     permissions: {
