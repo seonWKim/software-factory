@@ -14,7 +14,7 @@
     "build:desktop:macos": "node scripts/build-desktop-macos.mjs",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p web/tsconfig.json",
     "test": "vitest run --configLoader runner",
-    "factory": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js",
+    "factory": "npm run --silent build -- --if-stale && node --disable-warning=ExperimentalWarning dist/main.js",
     "check:responsive": "npm run --silent build && node --disable-warning=ExperimentalWarning scripts/responsive-check.mjs",
     "migrate": "npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js migrate",
     "setup": "npm install --silent && npm run --silent build && node --disable-warning=ExperimentalWarning dist/main.js setup",
