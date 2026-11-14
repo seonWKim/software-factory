@@ -14,6 +14,7 @@ import { ago, duration } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
+import { PageHeader } from "../components/ui/notice.js";
 import { CapabilitiesSection } from "./settings-capabilities.js";
 import { CalendarSection } from "./settings-calendar.js";
 import { FileKeysSection, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
@@ -648,14 +649,15 @@ function ModeSection({ view }: { view: SettingsView }) {
 export function SettingsPage() {
   const now = useNow();
   const settings = useApi<SettingsView>(API.settings);
-  if (settings.isError) return <ErrorNote error={settings.error} />;
-  if (!settings.data) return <Loading rows={8} />;
+  if (settings.isError) return <><PageHeader title={t("page.settings")} /><ErrorNote error={settings.error} /></>;
+  if (!settings.data) return <><PageHeader title={t("page.settings")} /><Loading rows={8} /></>;
   const v = settings.data;
   // The keys the typed form edits leave the PR-only table; the remaining keys change only by a reviewed PR.
   const editable = editableKeys(v);
   const prOnly = v.pr_only.filter((p) => !editable.has(p.key));
   return (
     <>
+      <PageHeader title={t("page.settings")} />
       <ProposalsSection />
       <ModeSection view={v} />
       <NoticesSection view={v} />

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { API, type StepFilter, type TranscriptPage, type TranscriptStep, getJson } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { PageHeader } from "../components/ui/notice.js";
 import { Badge, Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { cn } from "../lib/cn.js";
@@ -193,18 +194,19 @@ export function TranscriptView({ itemId, runId }: { itemId: string; runId: strin
     return (
       <>
         <Back itemId={itemId} />
+        <PageHeader title={t("app.runTranscript")} />
         <ErrorNote error={q.error} />
       </>
     );
   }
-  if (!last) return <Loading rows={6} />;
+  if (!last) return <><PageHeader title={t("app.runTranscript")} /><Loading rows={6} /></>;
   const first = pages[0]!;
   const run = first.run;
   const steps = pages.flatMap((p) => p.steps);
   return (
     <>
       <Back itemId={itemId} />
-      <h2 className="text-balance text-base font-semibold break-words">{t("transcript.title", { kind: run.kind, attempt: run.attempt })}</h2>
+      <PageHeader title={t("transcript.title", { kind: run.kind, attempt: run.attempt })} />
       <Outcome run={run} now={now} />
       <ButtonRow className="mt-6" role="group" aria-label={t("transcript.stepType")}>
         {FILTERS.map((f) => (

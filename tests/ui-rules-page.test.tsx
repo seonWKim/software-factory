@@ -294,7 +294,7 @@ describe("Rules page", () => {
 
   const off = (over: Partial<RulesView> = {}): RulesView =>
     view({ enabled: false, entries: [], home: { path: "/Users/me/.agents", missing: null }, turn_on: '{"tacit":"agents-home"}', ...over });
-  const headings = () => screen.queryAllByRole("heading").map((h) => h.textContent);
+  const h1s = () => screen.queryAllByRole("heading", { level: 1 }).map((h) => h.textContent);
 
   it("ledger off, home found: one line names the home and one primary Turn on is the only button", async () => {
     current = off();
@@ -303,8 +303,8 @@ describe("Rules page", () => {
     expect(screen.getAllByRole("button")).toEqual([turnOn]);
     expect(turnOn.className).toContain("bg-accent"); // the primary variant
     expect(document.querySelector("[data-home]")!.textContent).toBe("Found your agents home at /Users/me/.agents");
-    // The app's page title is the one "Rules"; the page adds no section titled Rules and no step list.
-    expect(headings()).not.toContain("Rules");
+    // The page's own header is the one "Rules"; the page adds no second h1 and no step list.
+    expect(h1s()).toEqual(["Rules"]);
     expect(document.querySelector("ol")).toBeNull();
     // The empty state carries the action, and the page is capped at max-w-3xl.
     expect(turnOn.closest("div.max-w-3xl")).not.toBeNull();
@@ -341,7 +341,7 @@ describe("Rules page", () => {
     expect(text).toContain("AGENTS_HOME");
     expect(screen.queryAllByRole("button")).toEqual([]);
     expect(screen.queryByRole("textbox")).toBeNull();
-    expect(headings()).not.toContain("Rules");
+    expect(h1s()).toEqual(["Rules"]);
   });
 
   it("Applied group after the waiting groups: each block's parts, \"not given\" for a missing one, raw text, the elsewhere lines; none when empty or off", async () => {
@@ -468,9 +468,7 @@ describe("Rules page", () => {
     await screen.findByRole("list", { name: "Rule candidates" }, SLOW);
     expect(document.querySelector("[data-waiting]")!.textContent).toBe("2 waiting");
     expect(screen.getByRole("region", { name: "Rule candidates" }).querySelectorAll("li[data-rule]")).toHaveLength(1);
-    const h1 = screen.getAllByRole("heading", { level: 1 });
-    expect(h1).toHaveLength(1);
-    expect(h1[0]!.textContent).not.toBe("Rules");
+    expect(h1s()).toEqual(["Rules"]);
     const how = document.querySelector<HTMLDetailsElement>("details[data-how]")!;
     expect(how.querySelector("summary")!.textContent).toBe("How this works");
     expect(how.open).toBe(false);

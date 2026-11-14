@@ -79,16 +79,14 @@ function factoryView(factory: FactoryState | null, now: number, pauses: readonly
   }
 }
 
-const BANNER_TONE = { ok: "bg-pill-ok-bg text-pill-ok-fg", warn: "bg-pill-warn-bg text-pill-warn-fg", bad: "bg-pill-bad-bg text-pill-bad-fg" } as const;
-
 /** The Runners page's supervisor banner: what the factory process is doing (the status page's words). */
 export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryState | null | undefined; now: number; pauses?: readonly PauseRow[] | undefined }) {
   if (factory === undefined) return null;
   const v = factoryView(factory, now, pauses);
   return (
-    <p role="status" data-testid="factory-banner" className={cn("mb-4 rounded-control px-3 py-2 text-sm text-pretty", BANNER_TONE[v.tone])}>
-      {v.text}
-    </p>
+    <div data-testid="factory-banner">
+      <Notice tone={v.tone}>{v.text}</Notice>
+    </div>
   );
 }
 
@@ -214,6 +212,7 @@ export function ActivityPage() {
   const o = overview.data;
   return (
     <>
+      <PageHeader title={t("page.activity")} />
       <Section title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Section>
@@ -329,6 +328,7 @@ export function ItemsPage() {
   const allCount = tree ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
+      <PageHeader title={t("page.work")} />
       <div className="mb-2 flex flex-wrap items-center gap-2">
         <Input
           type="search"
@@ -379,8 +379,8 @@ export function ItemPage({ id }: { id: string }) {
   const now = useNow();
   const q = useApi<ItemDetail>(API.item(id));
   const viewer = useViewer();
-  if (q.isError) return <ErrorNote error={q.error} />;
-  if (!q.data) return <Loading rows={6} />;
+  if (q.isError) return <><PageHeader title={t("app.workItem")} /><ErrorNote error={q.error} /></>;
+  if (!q.data) return <><PageHeader title={t("app.workItem")} /><Loading rows={6} /></>;
   const { item, runs, timeline } = q.data;
   // State changes and host sleeps of the item's runs, newest first.
   const entries: ({ kind: "change"; at: string; t: ItemDetail["timeline"][number] } | { kind: "sleep"; at: string; h: HostSleepRow })[] = [
@@ -398,7 +398,7 @@ export function ItemPage({ id }: { id: string }) {
         <span className="text-text-3"> / </span>
         <Link href={itemPath(item.id)} aria-current="page" title={item.source.id} className={cn("inline-block max-w-[16ch] truncate align-bottom tabular-nums", LINK_CLASS)}>{short}</Link>
       </nav>
-      <h2 className="text-balance text-base font-semibold break-words">{item.title ?? short}</h2>
+      <PageHeader title={item.title ?? short} />
       {item.parent_id && (
         <p data-testid="parent" className="mt-1 text-sm">
           {t("item.phase", { phase: item.phase ?? "?" })} <Link href={itemPath(item.parent_id)} className={LINK_CLASS}>{t("item.splitParent")}</Link>
@@ -650,26 +650,29 @@ export function RunnersPage() {
   const processes = workers.data?.processes ?? [];
   return (
     <>
-      <FactoryBanner factory={f} now={now} />
-      {f && (
-        <p data-testid="effective-workers" className="mb-4 text-sm">
-          {t("runners.setting")} <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
-        </p>
-      )}
-      <Section title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
-        {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
-          <ErrorNote error={new Error(workers.data.processes_error)} />
-        ) : processes.length === 0 ? (
-          <Empty>{t("runners.none")}</Empty>
-        ) : (
-          <ul aria-label={t("runners.processes")} className="space-y-2">
-            {processes.map((p) => <ProcessRow key={p.process_id} p={p} items={map} now={now} />)}
-          </ul>
+      <PageHeader title={t("page.runners")} />
+      <div className="flex flex-col gap-6">
+        <FactoryBanner factory={f} now={now} />
+        {f && (
+          <p data-testid="effective-workers" className="text-sm">
+            {t("runners.setting")} <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
+          </p>
         )}
-      </Section>
-      <Section title={t("running.label")}>
-        {runs.data ? <RunningTable runs={runs.data.runs} items={map} now={now} /> : <Loading rows={2} />}
-      </Section>
+        <Section title={t("runners.processes")} count={workers.data?.processes ? processes.length : undefined}>
+          {workers.isError ? <ErrorNote error={workers.error} /> : !workers.data ? <Loading rows={2} /> : workers.data.processes_error ? (
+            <ErrorNote error={new Error(workers.data.processes_error)} />
+          ) : processes.length === 0 ? (
+            <Empty>{t("runners.none")}</Empty>
+          ) : (
+            <ul aria-label={t("runners.processes")} className="space-y-2">
+              {processes.map((p) => <ProcessRow key={p.process_id} p={p} items={map} now={now} />)}
+            </ul>
+          )}
+        </Section>
+        <Section title={t("running.label")}>
+          {runs.data ? <RunningTable runs={runs.data.runs} items={map} now={now} /> : <Loading rows={2} />}
+        </Section>
+      </div>
     </>
   );
 }
@@ -696,8 +699,8 @@ export function HealthPage() {
   const health = useApi<Health>(API.health, 30_000);
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
   const viewer = useViewer();
-  if (health.isError) return <ErrorNote error={health.error} />;
-  if (!health.data) return <Loading rows={6} />;
+  if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
+  if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
   const checks = [...health.data.checks].sort((a, b) => order.indexOf(a.status) - order.indexOf(b.status));
   // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok").
@@ -706,6 +709,7 @@ export function HealthPage() {
   const sleeps = health.data.sleeps ?? [];
   return (
     <>
+      <PageHeader title={t("page.health")} />
       <ClaimPauses now={now} />
       <Section title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
         <CheckList checks={open} />

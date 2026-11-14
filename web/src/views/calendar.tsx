@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { type DayRow, type EventRow, type TasksView, isEventRow, useTasks } from "../api.js";
-import { EmptyState, Notice } from "../components/ui/notice.js";
+import { EmptyState, Notice, PageHeader } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
@@ -103,6 +103,8 @@ export function CalendarPage() {
   const q = useTasks<TasksView>(null);
   const v = q.data;
   return (
+    <>
+    <PageHeader title={t("page.calendar")} />
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center gap-2">
         <SegmentedControl label={t("calendarPage.view")} options={VIEWS} value={view} onChange={setView} />
@@ -118,5 +120,6 @@ export function CalendarPage() {
         </>
       )}
     </div>
+    </>
   );
 }
