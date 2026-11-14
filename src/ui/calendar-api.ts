@@ -54,9 +54,9 @@ export interface CalendarIo {
 export interface CalendarFlow {
   /**
    * Each calendar plugin with a connect hook, in registry order, with the secret names it declares and whether this
-   * build carries the default sign-in its plain connect takes.
+   * build carries the default sign-in its plain connect takes (absent, as on the ConnectHook: it does).
    */
-  plugins: readonly { name: string; secrets: readonly string[]; hasDefault(): Promise<boolean> }[];
+  plugins: readonly { name: string; secrets: readonly string[]; hasDefault?(): Promise<boolean> }[];
   /** The effective `calendar` list: the live setting, else the config file's. */
   listed(): Promise<readonly string[]>;
   /** One connect or disconnect; a refusal throws before any write. */
@@ -145,7 +145,7 @@ export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: stri
       .map((h) => ({
         name: h.name,
         secrets: (loaded.registry.calendar.secrets[h.name] ?? []).map((d) => d.name),
-        hasDefault: async () => (h.hook.hasDefault ? h.hook.hasDefault() : true),
+        ...(h.hook.hasDefault ? { hasDefault: h.hook.hasDefault.bind(h.hook) } : {}),
       })),
     listed: async () => resolveSettings(o.base, await o.store.listSettingOverrides()).values.calendar,
     run: async (name, disconnect, io) =>
@@ -192,7 +192,7 @@ export async function readCalendarStatus(d: PauseDeps): Promise<ApiResult> {
     plugins.push({
       name,
       connected: listed.includes(name),
-      default_client: await hasDefault(),
+      default_client: hasDefault ? await hasDefault() : true,
       synced_at: s?.synced_at ?? null,
       error: await text(s?.error ?? null),
       attempt: a === null ? null : { state: a.state, events: a.events, error: await text(a.error) },
