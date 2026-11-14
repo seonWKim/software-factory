@@ -9,7 +9,7 @@ import { FOCUS } from "../components/ui/control.js";
 import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { EmptyState, StatusBadge } from "../components/ui/notice.js";
+import { EmptyState, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
@@ -821,6 +821,8 @@ export function TasksPage() {
   const known = useRef<readonly ProjectChoice[]>([]);
   if (v?.active_projects !== undefined) known.current = v.active_projects;
   return (
+    <>
+    <PageHeader title={t("page.tasks")} />
     <div className="flex flex-col gap-6">
       <div className="flex flex-col items-start gap-3">
         <ProjectTabs projects={known.current} value={project} onChange={setProject} />
@@ -848,5 +850,6 @@ export function TasksPage() {
         </Section>
       </div>
     </div>
+    </>
   );
 }

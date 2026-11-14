@@ -5,7 +5,7 @@ import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { Notice } from "../components/ui/notice.js";
+import { Notice, PageHeader } from "../components/ui/notice.js";
 import { Empty, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Select } from "../components/ui/select.js";
@@ -40,6 +40,7 @@ export function DataPage() {
 
   return (
     <div className="min-w-0 space-y-3">
+      <PageHeader title={t("page.data")} />
       <AutonomyLine />
       {tables.data?.csrf_token ? <AskBox token={tables.data.csrf_token} /> : null}
       <div className="flex min-w-0 gap-4 max-md:flex-col">

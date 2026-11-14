@@ -1,5 +1,6 @@
 import { API, type SpendDay, type SpendItem, type SpendTotals, type SpendView, useApi } from "../api.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
+import { PageHeader } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { locale, t } from "../i18n/index.js";
@@ -65,12 +66,13 @@ const columns = (): readonly Column<SpendItem>[] => [
 /** Cost and tokens per day and per task over the last 30 UTC days (GET /api/v1/spend). */
 export function SpendPage() {
   const q = useApi<SpendView>(API.spend);
-  if (q.isError) return <ErrorNote error={q.error} />;
-  if (!q.data) return <Loading rows={4} />;
+  if (q.isError) return <><PageHeader title={t("page.spend")} /><ErrorNote error={q.error} /></>;
+  if (!q.data) return <><PageHeader title={t("page.spend")} /><Loading rows={4} /></>;
   const v = q.data;
   const unknown = v.total.unknown;
   return (
     <>
+      <PageHeader title={t("page.spend")} />
       <Section title={t("spend.totals")}>
         <dl className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <Total label={t("spend.today")} total={sum(v.days.filter((d) => d.day === v.today))} />
