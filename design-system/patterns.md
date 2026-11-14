@@ -8,7 +8,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 
 - One `PageHeader` at the top: the page title, an optional count, the page's one primary action at the end.
 - Below it, `Section` blocks, each with an h2. One column of content at `sm` and below; the page never scrolls sideways.
-- A page with views (tabs, Day / Upcoming) puts its view switcher in the header row under the page title, before the content, with the page's filter beside it (the Project switcher on Tasks); never between blocks of content or below them.
+- A page with views (tabs, Day / Upcoming) puts its view switcher in the row under the page title, before the content; a page filter that is a few named choices (the projects on Tasks) is a `Tabs` row directly under the title, above the view switcher; never between blocks of content or below them.
 - Blocks of one page are stacked in one flex column with a `gap-6` (the Section gap), not with `mb-*` or `mt-*` on each block.
 - Spacing comes from the scale in `foundations.md` (gap and padding classes), never a pixel value.
 - Colours are token classes. No hex colour, no Tailwind palette class (`tests/design-system.test.ts`).

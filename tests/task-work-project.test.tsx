@@ -14,7 +14,7 @@ const APP_MODULE = "../web/src/App.js";
 const { TasksPage } = (await import(/* @vite-ignore */ TASKS_MODULE)) as { TasksPage: FunctionComponent };
 const { App } = (await import(/* @vite-ignore */ APP_MODULE)) as { App: FunctionComponent };
 
-// Factory work follows the project switcher (design 09-dashboard-app): with a project picked it reads
+// Factory work follows the project tabs (design 09-dashboard-app): with a project picked it reads
 // GET /api/v1/items?project=<slug>, the items built from that project's tasks; with All projects, every item.
 // Needs you (the Factory page at /app/) keeps the unfiltered read.
 
@@ -73,7 +73,7 @@ afterEach(() => {
 
 const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const itemReads = () => vi.mocked(fetch).mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith("/api/v1/items"));
-const switcher = () => screen.getByRole("combobox", { name: "Project" }) as HTMLSelectElement;
+const pick = (name: string) => fireEvent.click(screen.getByRole("tab", { name }));
 const factoryWork = async () => (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
 /** The work item IDs Factory work lists, in page order. */
 const listed = async () => [...(await factoryWork()).querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key).sort();
@@ -83,7 +83,7 @@ function showTasks(path: string) {
   render(createElement(QueryClientProvider, { client: client() }, createElement(TasksPage)));
 }
 
-describe("Factory work on the Tasks page follows the project switcher", () => {
+describe("Factory work on the Tasks page follows the project tabs", () => {
   it("with a project picked on load, lists only the items built from that project's tasks", async () => {
     showTasks("/app/tasks?project=home");
     await waitFor(async () => expect(await listed()).toEqual(["wi_both", "wi_home"]), SLOW);
@@ -96,11 +96,11 @@ describe("Factory work on the Tasks page follows the project switcher", () => {
     showTasks("/app/tasks");
     await waitFor(async () => expect(await listed()).toEqual(["wi_bare", "wi_both", "wi_home", "wi_plain"]), SLOW);
     expect(itemReads()).toContain("/api/v1/items");
-    fireEvent.change(switcher(), { target: { value: "wonderful-ai-demo" } });
+    pick("Wonderful AI demo");
     await waitFor(async () => expect(await listed()).toEqual(["wi_both"]), SLOW);
-    fireEvent.change(switcher(), { target: { value: "home" } });
+    pick("Home");
     await waitFor(async () => expect(await listed()).toEqual(["wi_both", "wi_home"]), SLOW);
-    fireEvent.change(switcher(), { target: { value: "" } });
+    pick("All projects");
     await waitFor(async () => expect(await listed()).toEqual(["wi_bare", "wi_both", "wi_home", "wi_plain"]), SLOW);
   });
 });

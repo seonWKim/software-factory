@@ -14,8 +14,8 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { SegmentedControl } from "../components/ui/segmented-control.js";
-import { Select } from "../components/ui/select.js";
 import { Switch } from "../components/ui/switch.js";
+import { Tabs } from "../components/ui/tabs.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR, QUICK_ADD_KEYS, type QuickAddKey, isQuickAddSubmit, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
@@ -46,13 +46,13 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // days before the oldest row shown, and is hidden when the server says none is older. Each row's Reopen posts the same
 // route as ⌘Z; a refusal (its next occurrence is done) shows above the list. Its read shares the tasks' query key, so a
 // completion or a reopen reloads it with the open views.
-// The Project switcher (design 09-dashboard-app, task projects) filters Today, Upcoming and All to one active
+// The project tabs (design 09-dashboard-app, task projects) filter Today, Upcoming and All to one active
 // task project's tasks (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
 // load and set on change, so a filtered view can be shared and reloaded. The done list is not filtered. Factory work
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
-// The page's order (design 09-dashboard-app): the view tabs and the switcher, Quick add, Factory work, the view; the blocks
+// The page's order (design 09-dashboard-app): the project tabs and the view tabs, Quick add, Factory work, the view; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 const TABS = [
@@ -783,10 +783,10 @@ function useUndoDone(token: string | null) {
   return { error, completed: (task: TaskRow) => void done.current.push(task) };
 }
 
-/** The `project` query parameter: the switcher's choice, null for All projects. */
+/** The `project` query parameter: the project tab's choice, null for All projects. */
 const urlProject = (): string | null => new URLSearchParams(location.search).get("project") || null;
 
-/** The switcher's choice, read from the URL on load and written to it (in place, no new history entry) on change. */
+/** The project tab's choice, read from the URL on load and written to it (in place, no new history entry) on change. */
 function useProjectParam(): [string | null, (slug: string | null) => void] {
   const [project, setProject] = useState(urlProject);
   const choose = (slug: string | null) => {
@@ -799,19 +799,11 @@ function useProjectParam(): [string | null, (slug: string | null) => void] {
   return [project, choose];
 }
 
-/** The Project switcher: All projects, then the active projects; a slug the URL names that is not among them stays listed by its slug. */
-function ProjectSwitcher({ projects, value, onChange }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void }) {
+/** The project tabs: All projects (id ""), then the active projects; a slug the URL names that is not among them stays listed by its slug. */
+function ProjectTabs({ projects, value, onChange }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void }) {
   const choices = value === null || projects.some((p) => p.slug === value) ? projects : [...projects, { slug: value, name: `+${value}` }];
-  return (
-    <Select aria-label={t("tasks.project")} wrapperClassName="w-48 max-w-full" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)}>
-      <option value="">{t("tasks.allProjects")}</option>
-      {choices.map((p) => (
-        <option key={p.slug} value={p.slug}>
-          {p.name}
-        </option>
-      ))}
-    </Select>
-  );
+  const options = [{ id: "", label: t("tasks.allProjects") }, ...choices.map((p) => ({ id: p.slug, label: p.name }))];
+  return <Tabs label={t("tasks.project")} options={options} value={value ?? ""} onChange={(id) => onChange(id === "" ? null : id)} />;
 }
 
 export function TasksPage() {
@@ -825,14 +817,14 @@ export function TasksPage() {
   const undo = useUndoDone(token);
   // All's groups hold every open task the read returned, so its titles name each sub-task's parent.
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
-  // Kept from the last read, so the switcher keeps its choices while a new filter loads.
+  // Kept from the last read, so the tabs keep their choices while a new filter loads.
   const known = useRef<readonly ProjectChoice[]>([]);
   if (v?.active_projects !== undefined) known.current = v.active_projects;
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-col items-start gap-3">
+        <ProjectTabs projects={known.current} value={project} onChange={setProject} />
         <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
-        <ProjectSwitcher projects={known.current} value={project} onChange={setProject} />
       </div>
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} />
