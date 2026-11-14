@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -483,6 +483,28 @@ describe("the warmed Gradle wrapper distribution", () => {
     // A second step of the same run keeps the copy it has.
     await runner.run(spec({ toolchain_env: {}, toolchain_seeds: [source] }));
     expect(seen[1]).toMatchObject({ copied: true, writable: true });
+  });
+
+  it("a link in the seed to a file outside it or to a denied path is not copied; a link inside it is kept", async () => {
+    const { base, source, runner, spec } = seeded();
+    const dir = join(source, "gradle-8.12.1-bin");
+    writeFileSync(join(base, "outside.txt"), "outside");
+    mkdirSync(join(base, "secret"));
+    writeFileSync(join(base, "secret", "id_rsa"), "key");
+    symlinkSync(join(base, "outside.txt"), join(dir, "outside-link"));
+    symlinkSync(join(base, "secret", "id_rsa"), join(dir, "denied-link"));
+    symlinkSync(join(dir, "abc", "gradle-8.12.1", "bin", "gradle"), join(dir, "inside-link"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await runner.run(spec({ toolchain_env: {}, toolchain_seeds: [source], deny_paths: [join(base, "secret")] }));
+    const copy = join(base, "homes", "run_1", "tmp", "toolchain", "gradle", "wrapper", "dists", "gradle-8.12.1-bin");
+    expect(existsSync(join(copy, "abc", "gradle-8.12.1", "bin", "gradle"))).toBe(true);
+    for (const link of ["outside-link", "denied-link"]) {
+      expect(() => lstatSync(join(copy, link)), link).toThrow();
+      expect(warn.mock.calls.flat().join("\n")).toContain(join(dir, link).replace(base, ""));
+    }
+    expect(readFileSync(join(copy, "inside-link"), "utf8")).toBe("#!/bin/sh\n");
+    expect(realpathSync(join(copy, "inside-link"))).toBe(realpathSync(join(copy, "abc", "gradle-8.12.1", "bin", "gradle")));
+    warn.mockRestore();
   });
 
   it("a missing seed or none makes no copy, and the run goes on", async () => {

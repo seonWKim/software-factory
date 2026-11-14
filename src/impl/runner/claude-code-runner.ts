@@ -329,7 +329,7 @@ export class ClaudeCodeRunner implements AgentRunner {
     // The run's TMPDIR (buildAgentEnv): the one folder outside the run folder Write and Edit may also use.
     const tmp = join(home, "tmp");
     await mkdir(tmp, { recursive: true });
-    await copyToolchainSeeds(spec.toolchain_seeds ?? [], join(tmp, "toolchain", TOOLCHAIN_HOMES.GRADLE_USER_HOME!, "wrapper", "dists"));
+    await copyToolchainSeeds(spec.toolchain_seeds ?? [], join(tmp, "toolchain", TOOLCHAIN_HOMES.GRADLE_USER_HOME!, "wrapper", "dists"), spec.deny_paths);
 
     const env = buildAgentEnv(spec, await harnessCredential(this.opts.secrets), {
       home,
