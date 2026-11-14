@@ -261,6 +261,7 @@ export const en = {
   "items.noMatch": "No work item matches this filter.",
   "items.label": "Work items",
   "item.breadcrumb": "Breadcrumb",
+  "item.untitled": "Untitled item",
   "item.phase": "Phase {phase} of",
   "item.splitParent": "its split parent",
   "item.source": "Source",
