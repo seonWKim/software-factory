@@ -7,7 +7,8 @@
 // at most two evidence-backed tasks for this factory through `factory task create` (scripts/idle-agents/feedback.md).
 //
 //   node scripts/idle-agents.mjs run [--agent <name>] [--force]   one pass: idle check, pick an agent, run it
-//   node scripts/idle-agents.mjs loop [--every <minutes>]         a pass every N minutes (default 30)
+//   node scripts/idle-agents.mjs loop [--every <minutes>]         a pass every N minutes (default 30); each pass
+//                                                                 first fast-forwards main to origin/main
 //   node scripts/idle-agents.mjs status                           last runs, whether the factory is idle
 //
 // Start the loop the way the supervisor is started: detached, from a terminal (launchd cannot read ~/Desktop under
@@ -17,7 +18,8 @@
 // The due agent that ran longest ago goes first. Each run is capped by
 // IDLE_AGENTS_BUDGET_USD (default 3) and gets a throwaway sandbox Gongbang (scripts/idle-agents/sandbox.mjs) to
 // click through. State, notes, drafts and logs live in .factory/idle-agents/ (git-ignored).
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +38,8 @@ const PROJECTS = join(DIR, "projects.json");
 const IDLE_LEVELS = new Set(["blocked_by_task"]);
 const BUDGET = process.env.IDLE_AGENTS_BUDGET_USD || "3";
 
-const READ = ["Read", "Grep", "Glob", "Write(.factory/idle-agents/**)", "Edit(.factory/idle-agents/**)"];
+// Edit rules cover every file-writing tool, Write included.
+const READ = ["Read", "Grep", "Glob", "Edit(.factory/idle-agents/**)"];
 const SHELL = [
   "curl -s http://127.0.0.1", "npm run -s factory -- task create", "npm run -s factory -- task list", "npm run -s factory -- task show",
   "npm run -s factory -- help", "mkdir -p .factory/idle-agents", "ls", "cat", "wc", "grep", "date", "git log", "git show", "git diff",
@@ -53,7 +56,8 @@ const TOOLS = {
 };
 
 const log = (msg) => console.log(`${new Date().toISOString()} idle-agents: ${msg}`);
-const today = () => new Date().toISOString().slice(0, 10);
+/** Today's local date, YYYY-MM-DD: "once a day" follows the owner's day, not UTC's. */
+const today = () => new Date().toLocaleDateString("sv-SE");
 const readProjects = () => (existsSync(PROJECTS) ? JSON.parse(readFileSync(PROJECTS, "utf8")) : {});
 const readState = () => (existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { last: {} });
 
@@ -139,6 +143,30 @@ async function runAgent(agent, url, project) {
   await exec(process.env.CLAUDE_BIN || "claude", args, { stdio: ["ignore", out, out], env: { ...process.env, GONGBANG_SANDBOX_URL: url } });
 }
 
+const git = (...args) => execFileSync("git", args, { cwd: REPO, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+const fileHash = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
+const SELF = fileURLToPath(import.meta.url);
+const SELF_HASH = fileHash(SELF);
+
+/**
+ * Brings the checkout up to origin/main before a pass, so the agents, their rules and the sandbox run the latest
+ * code: a fast-forward only, and only while main is checked out (the owner's own branch or a detached merge is left
+ * alone; their uncommitted files are kept). Returns true when this script itself changed, so the loop restarts.
+ */
+function pullLatest() {
+  try {
+    git("fetch", "-q", "origin", "main");
+    if (git("branch", "--show-current") !== "main") return false;
+    if (git("rev-parse", "HEAD") === git("rev-parse", "origin/main")) return false;
+    git("merge", "--ff-only", "-q", "origin/main");
+    log(`pulled main to ${git("rev-parse", "--short", "HEAD")}`);
+    return fileHash(SELF) !== SELF_HASH;
+  } catch (err) {
+    log(`pull skipped: ${err.message.split("\n")[0]}`);
+    return false;
+  }
+}
+
 async function runOnce({ agent, force }) {
   mkdirSync(DIR, { recursive: true });
   if (existsSync(LOCK)) {
@@ -188,6 +216,11 @@ if (cmd === "run") await runOnce({ agent: flag("agent"), force: rest.includes("-
 else if (cmd === "loop") {
   const every = Number(flag("every") ?? 30) * 60_000;
   for (;;) {
+    if (pullLatest()) {
+      log("this script changed; restarting the loop");
+      spawn(process.execPath, [SELF, ...process.argv.slice(2)], { cwd: REPO, detached: true, stdio: "inherit" }).unref();
+      process.exit(0);
+    }
     await runOnce({});
     await new Promise((r) => setTimeout(r, every));
   }
