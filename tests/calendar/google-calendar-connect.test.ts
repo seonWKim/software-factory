@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type ConnectDeps, connectSetup } from "../../src/cli/handlers/setup/guided.js";
+import type { GoogleClient } from "../../src/calendar/plugins/google-calendar/default-client.js";
 import { CONNECT_TIMEOUT_MS, challengeOf, googleCalendarConnect, onlyReadonly } from "../../src/calendar/plugins/google-calendar/google-calendar-connect.js";
 import {
   CALENDAR_READONLY_SCOPE,
@@ -24,13 +25,15 @@ import { FakeCalendarSource, calendarEvent } from "./fakes.js";
 // the generic CLI flow, which runs the same connect flow as the dashboard (src/setup.ts connectCalendar) and writes the
 // live `calendar` setting, never factory.config.json. No test calls Google or opens a browser: the token endpoint and the event reads are a fake
 // HTTP client, the browser is a fake opener that calls the loopback listener on 127.0.0.1 the way Google's redirect
-// would, and the 5-minute timeout runs on a FakeClock.
+// would, the 5-minute timeout runs on a FakeClock, and the factory's default client is a fake one.
 
 const REPO_ROOT = join(import.meta.dirname, "..", "..");
 const REAL = JSON.parse(readFileSync(join(REPO_ROOT, "factory.config.json"), "utf8")) as Record<string, unknown>;
 const NAMES = { refreshToken: GOOGLE_REFRESH_TOKEN, clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET };
 const NOW = "2026-11-12T12:00:00.000Z";
 
+/** The factory's default client, as this build would carry it. */
+const DEFAULT: GoogleClient = { id: "fake-default-client-id-77.example", secret: "fake-default-client-secret-e3b9" };
 const CLIENT_ID = "fake-client-id-0451.example";
 const CLIENT_SECRET = "fake-client-secret-77a1";
 const REFRESH = "fake-refresh-token-91be";
@@ -99,7 +102,8 @@ interface Run {
 const redirect = (url: URL, query: Record<string, string>) =>
   fetch(`${url.searchParams.get("redirect_uri")}?${new URLSearchParams(query)}`).then((r) => r.text());
 
-function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r: Registry) => Registry } = {}): Run {
+/** `defaultClient`: the default client the build carries (DEFAULT when left out; null: none). */
+function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r: Registry) => Registry; defaultClient?: GoogleClient | null } = {}): Run {
   const dir = mkdtempSync(join(tmpdir(), "sf-calendar-connect-"));
   mkdirSync(join(dir, "prompts"));
   for (const p of ["triage", "implement", "review", "resolve"]) writeFileSync(join(dir, "prompts", `${p}.md`), p);
@@ -122,7 +126,7 @@ function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r
         ...entry.plugins,
         "google-calendar": (c) => new GoogleCalendarSource({ http: google.client, now: () => c.clock.now(), secrets: c.secrets, names: NAMES, calendarIds: [] }),
       },
-      connects: { ...entry.connects, "google-calendar": googleCalendarConnect({ http: google.client, names: NAMES }) },
+      connects: { ...entry.connects, "google-calendar": googleCalendarConnect({ http: google.client, names: NAMES, defaultClient: async () => (o.defaultClient === undefined ? DEFAULT : o.defaultClient) }) },
     },
   };
   registry = o.registry?.(registry) ?? registry;
@@ -184,7 +188,6 @@ describe("factory setup calendar google: the consent", () => {
       expect(`${u.origin}${u.pathname}`).toBe("https://accounts.google.com/o/oauth2/v2/auth");
       expect(u.searchParams.get("scope")).toBe(CALENDAR_READONLY_SCOPE);
       expect(u.searchParams.getAll("scope")).toHaveLength(1);
-      expect(u.searchParams.get("client_id")).toBe(CLIENT_ID);
       expect(u.searchParams.get("response_type")).toBe("code");
       const redirectUri = new URL(u.searchParams.get("redirect_uri")!);
       expect(redirectUri.protocol).toBe("http:");
@@ -195,12 +198,14 @@ describe("factory setup calendar google: the consent", () => {
     }
     // A fresh state and verifier per run.
     expect(ua.searchParams.get("state")).not.toBe(ub.searchParams.get("state"));
+    // No client lines: the default client; both lines: the owner's own.
+    expect([ua.searchParams.get("client_id"), ub.searchParams.get("client_id")]).toEqual([DEFAULT.id, CLIENT_ID]);
     expect(ua.searchParams.get("code_challenge")).not.toBe(ub.searchParams.get("code_challenge"));
     // The challenge is the S256 of the verifier the exchange sends, with the code and the same redirect.
     const [ex] = a.google.exchanges();
     expect(ex!.get("code")).toBe(CODE);
     expect(ex!.get("redirect_uri")).toBe(ua.searchParams.get("redirect_uri"));
-    expect(ex!.get("client_secret")).toBe(CLIENT_SECRET);
+    expect([ex!.get("client_id"), ex!.get("client_secret")]).toEqual([DEFAULT.id, DEFAULT.secret]);
     expect(challengeOf(ex!.get("code_verifier")!)).toBe(ua.searchParams.get("code_challenge"));
     expect(challengeOf("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk")).toBe("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
   });
@@ -215,12 +220,14 @@ describe("factory setup calendar google: the consent", () => {
 });
 
 describe("factory setup calendar google: end to end", () => {
-  it("asks the client ID and secret once, hidden; stores the three secrets; lists the plugin in the live setting; syncs once and prints the count", async () => {
-    const r = machine();
+  it("with no client lines uses the default client and asks nothing; stores the three secrets; lists the plugin in the live setting; syncs once and prints the count", async () => {
+    // `npm run setup` leaves empty lines for every declared secret: they count as no client.
+    const r = machine({ secrets: "GITHUB_TOKEN=gh\nGOOGLE_CLIENT_ID=\nGOOGLE_CLIENT_SECRET=\n" });
     const config = read(r.configFile);
     expect(await r.run()).toBe(0);
-    expect(r.hiddenPrompts).toEqual(["   Paste GOOGLE_CLIENT_ID (hidden): ", "   Paste GOOGLE_CLIENT_SECRET (hidden): "]);
-    expect(read(r.secretsFile)).toBe(`GITHUB_TOKEN=gh\n\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
+    expect(r.hiddenPrompts).toEqual([]);
+    expect(r.printed.join("\n")).toContain("using the factory's Google client");
+    expect(read(r.secretsFile)).toBe(`GITHUB_TOKEN=gh\nGOOGLE_CLIENT_ID=${DEFAULT.id}\nGOOGLE_CLIENT_SECRET=${DEFAULT.secret}\n\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
     expect(statSync(r.secretsFile).mode & 0o777).toBe(0o600);
     expect(await listed(r)).toEqual(["google-calendar"]);
     expect(read(r.configFile)).toBe(config);
@@ -235,11 +242,20 @@ describe("factory setup calendar google: end to end", () => {
     }
   });
 
-  it("reuses a client ID and secret already in the secret file without asking", async () => {
+  it("a build with no default client asks the client ID and secret once, hidden", async () => {
+    const r = machine({ defaultClient: null });
+    expect(await r.run()).toBe(0);
+    expect(r.hiddenPrompts).toEqual(["   Paste GOOGLE_CLIENT_ID (hidden): ", "   Paste GOOGLE_CLIENT_SECRET (hidden): "]);
+    expect(read(r.secretsFile)).toBe(`GITHUB_TOKEN=gh\n\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
+    expect(statSync(r.secretsFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("uses the owner's own client when the secret file holds both lines, without asking (the advanced path)", async () => {
     const r = machine({ secrets: `GOOGLE_CLIENT_ID=${CLIENT_ID}\nexport GOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nOTHER=x\n` });
     expect(await r.run()).toBe(0);
     expect(r.hiddenPrompts).toEqual([]);
     expect(r.google.exchanges()[0]!.get("client_secret")).toBe(CLIENT_SECRET);
+    expect(r.printed.join("\n")).toContain("using your own client");
     expect(read(r.secretsFile)).toBe(`GOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nOTHER=x\n\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
   });
 
@@ -250,7 +266,7 @@ describe("factory setup calendar google: end to end", () => {
     const output = [...r.printed, ...console_].join("\n");
     const outside = filesUnder(r.dir, r.secretsFile);
     expect(outside.some((f) => f.path.includes(join("state", "db")))).toBe(true);
-    for (const value of [CLIENT_SECRET, REFRESH, ACCESS, CODE, verifier]) {
+    for (const value of [DEFAULT.secret, REFRESH, ACCESS, CODE, verifier]) {
       expect(output, value).not.toContain(value);
       for (const f of outside) expect(f.text.includes(value), `${value} in ${f.path}`).toBe(false);
     }
@@ -258,13 +274,14 @@ describe("factory setup calendar google: end to end", () => {
     try {
       for (const t of await store.listTables()) {
         const rows = JSON.stringify(await storeSql(store).all(`SELECT * FROM ${t.name}`));
-        for (const value of [CLIENT_SECRET, REFRESH, ACCESS, CODE, verifier]) expect(rows.includes(value), `${value} in ${t.name}`).toBe(false);
+        for (const value of [DEFAULT.secret, REFRESH, ACCESS, CODE, verifier]) expect(rows.includes(value), `${value} in ${t.name}`).toBe(false);
       }
     } finally {
       await store.close();
     }
     // Only the consent URL shows the client ID.
-    expect(output.split("\n").filter((l) => l.includes(CLIENT_ID)).every((l) => l.includes("accounts.google.com"))).toBe(true);
+    expect(read(r.secretsFile)).toContain(`GOOGLE_CLIENT_SECRET=${DEFAULT.secret}`);
+    expect(output.split("\n").filter((l) => l.includes(DEFAULT.id)).every((l) => l.includes("accounts.google.com"))).toBe(true);
   });
 });
 

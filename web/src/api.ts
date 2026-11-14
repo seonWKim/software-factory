@@ -1107,11 +1107,13 @@ export type CalendarConnectResult =
   | { ok: true; state: "connected" | "failed"; events: number | null }
   | { ok: false; error: string };
 
-/** POST /api/v1/calendar/connect: the plugin, and the values the last answer asked for (none on the first try). */
-export async function postCalendarConnect(token: string, plugin: string, values?: Record<string, string>): Promise<CalendarConnectResult> {
-  const r = await postJson<{ state?: string; needs?: string[]; consent_url?: string; events?: number | null; error?: string }>(
-    API.calendarConnect, token, values === undefined ? { plugin } : { plugin, values },
-  );
+/**
+ * POST /api/v1/calendar/connect: the plugin alone (the default sign-in), or with `own` (the advanced "use my own
+ * client" option) and the values the last answer asked for (none on that option's first try).
+ */
+export async function postCalendarConnect(token: string, plugin: string, own?: { values?: Record<string, string> }): Promise<CalendarConnectResult> {
+  const body = own === undefined ? { plugin } : { plugin, own_client: true, ...(own.values === undefined ? {} : { values: own.values }) };
+  const r = await postJson<{ state?: string; needs?: string[]; consent_url?: string; events?: number | null; error?: string }>(API.calendarConnect, token, body);
   if (!r.ok) return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
   const v = r.value;
   if (v.state === "needs_input") return { ok: true, state: "needs_input", needs: v.needs ?? [] };

@@ -7,9 +7,11 @@
 // Content-Type, CSRF token, body size, JSON) run in server.ts; then the owner check (the store's owner only);
 // every refusal comes before the flow runs.
 //
-// Connect never asks the terminal: the hook's hidden questions are answered from the request's `values`, keyed by the
-// secret name the question names. When the hook asks for a value the request lacks, the run stops at the browser step,
-// before any write, and the answer lists the names to ask for (`needs_input`). Otherwise the answer carries the consent
+// Connect never asks the terminal. A plain connect (the plugin only) takes the hook's default sign-in: a hook that asks
+// for a value then fails before any write, naming the "own client" option. With `own_client: true` (that advanced
+// option) the hook's hidden questions are answered from the request's `values`, keyed by the secret name the question
+// names; when the hook asks for a value the request lacks, the run stops at the browser step, before any write, and
+// the answer lists the names to ask for (`needs_input`). Otherwise the answer carries the consent
 // URL to open, the sign-in goes on in the background on the hook's own 127.0.0.1 listener, and the page polls GET for
 // its result. A sign-in's state is held in this process only, because its listener lives here; a restart drops it and
 // the owner connects again. No secret value is returned, logged or stored: errors name steps, never values.
@@ -40,6 +42,8 @@ export interface CalendarIo {
   openBrowser(url: string): Promise<void>;
   /** Called before the flow writes a secret: throws to stop the write. */
   beforeWrite(): void;
+  /** The "use my own client" option: the hook asks for its client instead of using a default one. */
+  ownClient: boolean;
 }
 
 /** The connect flow as the UI composition gives it (compose.ts buildUiParts over src/setup.ts connectCalendar). */
@@ -71,13 +75,14 @@ export class UiCalendar {
   }
 
   /** Starts a connect; resolves once the consent URL is known, the run stopped for input, or it ended. */
-  async connect(name: string, values: ReadonlyMap<string, string>, secrets: readonly string[]) {
+  async connect(name: string, values: ReadonlyMap<string, string>, secrets: readonly string[], ownClient: boolean) {
     const missing: string[] = [];
     let opened!: (url: string) => void;
     const consent = new Promise<string>((resolve) => (opened = resolve));
     const run = this.flow.run(name, false, {
       async hidden(prompt) {
         const asked = askedName(prompt, secrets);
+        if (!ownClient) throw new Error(`the sign-in asks for ${asked}, which only the "use my own client" option sends: nothing stored`);
         const given = values.get(asked);
         if (given !== undefined) return given;
         missing.push(asked);
@@ -90,6 +95,7 @@ export class UiCalendar {
       beforeWrite() {
         if (missing.length > 0) throw new NeedsInput(missing);
       },
+      ownClient,
     });
     const attempt: Attempt = { state: "signing_in", events: null, error: null };
     this.attempts.set(name, attempt);
@@ -102,7 +108,7 @@ export class UiCalendar {
     const refuse = async () => {
       throw new Error("a disconnect asks nothing");
     };
-    await this.flow.run(name, true, { hidden: refuse, openBrowser: refuse, beforeWrite: () => undefined });
+    await this.flow.run(name, true, { hidden: refuse, openBrowser: refuse, beforeWrite: () => undefined, ownClient: false });
     this.attempts.delete(name);
   }
 
@@ -130,7 +136,7 @@ export function uiCalendar(loaded: Loaded, o: { store: FactoryStore; actor: stri
     listed: async () => resolveSettings(o.base, await o.store.listSettingOverrides()).values.calendar,
     run: async (name, disconnect, io) =>
       (await import("../setup.js")).connectCalendar({
-        loaded, store: o.store, actor: o.actor, clock: o.clock, name, disconnect, beforeWrite: io.beforeWrite,
+        loaded, store: o.store, actor: o.actor, clock: o.clock, name, disconnect, beforeWrite: io.beforeWrite, ownClient: io.ownClient,
         io: { ask: { hidden: io.hidden, yesNo: async (_q, dflt) => dflt }, print: () => undefined, openBrowser: io.openBrowser },
       }),
   });
@@ -206,7 +212,7 @@ export async function writeCalendar(d: PauseDeps, path: string, body: unknown): 
     }
     return { status: 200, value: { plugin: plugin.name, connected: false } };
   }
-  const first = await c.connect(plugin.name, b.values, plugin.secrets);
+  const first = await c.connect(plugin.name, b.values, plugin.secrets, b.ownClient);
   if ("url" in first) return { status: 202, value: { plugin: plugin.name, state: "signing_in", consent_url: first.url } };
   if ("err" in first) {
     if (first.err instanceof NeedsInput) return { status: 200, value: { plugin: plugin.name, state: "needs_input", needs: first.err.names } };
@@ -216,13 +222,16 @@ export async function writeCalendar(d: PauseDeps, path: string, body: unknown): 
   return { status: 200, value: { plugin: plugin.name, state: a?.state ?? "connected", events: a?.events ?? null } };
 }
 
-/** `{ plugin, values? }` (connect) or `{ plugin }` (disconnect), or why not. */
-function parseBody(body: unknown, disconnect: boolean): { plugin: string; values: ReadonlyMap<string, string> } | { error: string } {
+/** `{ plugin, own_client?, values? }` (connect; values only with own_client) or `{ plugin }` (disconnect), or why not. */
+function parseBody(body: unknown, disconnect: boolean): { plugin: string; ownClient: boolean; values: ReadonlyMap<string, string> } | { error: string } {
   if (typeof body !== "object" || body === null || Array.isArray(body)) return { error: "the body must be a JSON object" };
   const b = body as Record<string, unknown>;
-  const extra = Object.keys(b).find((k) => k !== "plugin" && (disconnect || k !== "values"));
+  const extra = Object.keys(b).find((k) => k !== "plugin" && (disconnect || (k !== "values" && k !== "own_client")));
   if (extra !== undefined) return { error: `unknown field "${extra}"` };
   if (typeof b.plugin !== "string" || b.plugin === "") return { error: "plugin must be a non-empty string" };
+  const ownClient = b.own_client ?? false;
+  if (typeof ownClient !== "boolean") return { error: "own_client must be true or false" };
+  if (!ownClient && b.values !== undefined) return { error: "values are sent only with own_client: true" };
   const raw = b.values ?? {};
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return { error: "values must be an object from secret name to value" };
   const values = new Map<string, string>();
@@ -230,5 +239,5 @@ function parseBody(body: unknown, disconnect: boolean): { plugin: string; values
     if (typeof v !== "string" || v.trim() === "" || v.length > MAX_VALUE) return { error: `values.${k} must be a non-empty string of at most ${MAX_VALUE} characters` };
     values.set(k, v.trim());
   }
-  return { plugin: b.plugin, values };
+  return { plugin: b.plugin, ownClient, values };
 }

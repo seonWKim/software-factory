@@ -523,6 +523,7 @@ export interface CalendarConnectRun {
   disconnect: boolean;
   io: Pick<ConnectContext, "ask" | "print" | "openBrowser">; // the terminal, or the dashboard's request
   beforeWrite?: () => void; // called before each secret write; a throw stops it (the dashboard's check that every asked value was given)
+  ownClient?: boolean; // the dashboard's "use my own client" option: the hook asks for a missing client instead of using its default
 }
 
 /**
@@ -541,8 +542,10 @@ export async function connectCalendar(r: CalendarConnectRun): Promise<{ was: rea
   }
   // The secrets read as if the plugin were selected: it may not be listed yet. Each build reads the file afresh.
   const selected = new Plugins({ ...r.loaded, plugins: { ...r.loaded.plugins, calendars: [r.name] } });
-  const ctx: ConnectContext = {
+  // `ownClient` is read by a hook that offers a default client (its own ConnectCtx says so); others ignore it.
+  const ctx: ConnectContext & { ownClient: boolean } = {
     ...r.io,
+    ownClient: r.ownClient === true,
     secretsFile: file,
     secrets: await selected.secrets(),
     async storeSecrets(values) {
