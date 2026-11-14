@@ -9,6 +9,7 @@ import {
 import type { Sandbox } from "../../interfaces/sandbox.js";
 import { type SecretStore, secretName } from "../../interfaces/secret-store.js";
 import { GATE_HOOKS_DIR, type RunningGateHooks, startGateHooks } from "./gate-hooks.js";
+import { copyToolchainSeeds } from "./toolchain-seeds.js";
 import { type BridgeArgs, type GrantedToolDeps, harnessToolName, withRunBridge } from "./tool-bridge.js";
 
 export interface ClaudeCodeRunnerOptions {
@@ -330,6 +331,8 @@ export class ClaudeCodeRunner implements AgentRunner {
     // The run's TMPDIR (buildAgentEnv): the one folder outside the run folder Write and Edit may also use.
     const tmp = join(home, "tmp");
     await mkdir(tmp, { recursive: true });
+    // The warmed Gradle wrapper distribution, copied into the run's own GRADLE_USER_HOME (design 05-sandbox.md).
+    await copyToolchainSeeds(spec.toolchain_seeds ?? [], join(tmp, "toolchain", TOOLCHAIN_HOMES.GRADLE_USER_HOME!, "wrapper", "dists"));
 
     const env = buildAgentEnv(spec, await harnessCredential(this.opts.secrets), {
       home,

@@ -22,6 +22,7 @@ import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackC
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
+import { checkWrapperSource, gradleWrapperSource, wrapperSeeds } from "./toolchain-seeds.js";
 import { AGENT_FAILED, HOST_SLEEP_MS, INDEX_SIZE, KINDS, LIVE_REPORT_PATHS, type LocalRoute, NETWORK_PAUSED_BY, NO_HOOKS, NO_USAGE, PAUSABLE_KINDS, type ResumePlan, RunFailure, RunPaused, type RunScratch, TEST_WORKERS_ENV, TRANSCRIPT_FAIL_RULES, TRUSTED_GIT_ENV, WARM_FAILED, WARM_KINDS, WORKER_INDEX_ENV, type WorkerDeps, addUsage, continues, fenced, gitIdentity, gitVerb, prTitle, type PrText, routeFor, runPushIntents, tail, threadDelivery, testWorkerShare, toolsNamed, untrustedGitConfig } from "./support.js";
 
 /** Agent plane host: claims runs, executes them in a Sandbox, reports outcomes. Never decides a transition; the controller does that from the outcome. Holds nothing between runs. */
@@ -69,6 +70,8 @@ export class Worker {
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     this.cfg = this.live.config();
     this.runModels = d.settings ? this.live.models() : d.models;
+    // Design 05-sandbox.md: the warmed wrapper distribution the runs copy follows the caches' deny_paths rule.
+    if (this.cfg.toolchain) checkWrapperSource(gradleWrapperSource(d.toolEnv), this.cfg.deny_paths);
   }
 
   get id(): WorkerId {
@@ -763,6 +766,8 @@ export class Worker {
       await this.warm(run, handle, signal, toolchain.warm_command);
       s.warmed = true;
     }
+    // The warmed wrapper distribution the runner copies into the run's own GRADLE_USER_HOME (design 05-sandbox.md).
+    const toolchain_seeds = toolchain ? await wrapperSeeds(this.d.sandbox, handle, { ...this.d.toolEnv, ...this.slotEnv() }, gradleWrapperSource(this.d.toolEnv)) : null;
     if (session) s?.sessions.add(session.id);
     if (s) s.step_session = session?.id ?? null;
     // The system prompt and tools are the role's (src/worker/roles/<role>.role.ts), never the run kind's own choice.
@@ -790,6 +795,7 @@ export class Worker {
       env_allowlist: { ...role.env_allowlist, ...this.slotEnv() },
       // Design 05-sandbox.md: the caches and read-only inputs the agent may read, never write, and the toolchain env.
       ...readOnlyRunFields(this.cfg),
+      ...(toolchain_seeds ? { toolchain_seeds } : {}),
       ...(session ? { session } : {}),
     });
     // Counted before anything below can fail the run, so a failed run keeps what this call used.
