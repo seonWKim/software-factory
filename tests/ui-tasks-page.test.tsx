@@ -531,16 +531,17 @@ describe("Tasks page", () => {
     const BUILD = "Build this sends a task to the factory.";
     const ev = (id: string): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: true, time: null });
 
-    it("the page stacks the view tabs and switcher, Quick add, Factory work, then the view, with no mb-/mt- on Quick add or Factory work", async () => {
+    it("the page stacks the project tabs, the view tabs, Quick add, Factory work, then the view, with no mb-/mt- on Quick add or Factory work", async () => {
       items = [item("wi_1", { title: "Approve the spec", level: "needs_approval" })];
       await show();
       const factory = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
       const tabs = screen.getByRole("group", { name: "Task view" });
-      const picker = screen.getByRole("combobox", { name: "Project" });
+      const picker = screen.getByRole("tablist", { name: "Project" });
+      expect(screen.queryByRole("combobox")).toBeNull();
       const form = screen.getByLabelText("Add a task").closest("form")!;
       const view = screen.getByRole("region", { name: "Today" });
       const follows = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
-      expect(follows(tabs, picker) && follows(picker, form) && follows(form, factory) && follows(factory, view)).toBe(true);
+      expect(follows(picker, tabs) && follows(tabs, form) && follows(form, factory) && follows(factory, view)).toBe(true);
       expect(form.className).not.toMatch(/\bm[bt]-/);
       expect(factory.parentElement!.className).not.toMatch(/\bm[bt]-/);
       expect(tabs.className).not.toMatch(/\bm[bt]-/);
@@ -606,7 +607,8 @@ describe("Tasks page", () => {
 
   describe("task projects (design 09-dashboard-app, project switcher and dialog)", () => {
     const PROJECTS = [{ slug: "home", name: "Home" }, { slug: "garden", name: "Garden" }];
-    const switcher = () => screen.getByRole("combobox", { name: "Project" }) as HTMLSelectElement;
+    const projectTab = (name: string) => screen.getByRole("tab", { name });
+    const selectedProject = () => screen.getAllByRole("tab").filter((b) => b.getAttribute("aria-selected") === "true").map((b) => b.textContent);
     const reads = () => vi.mocked(fetch).mock.calls.map(([url]) => String(url)).filter((u) => u.startsWith("/api/v1/tasks"));
     const homeOnly = () =>
       view({
@@ -623,8 +625,8 @@ describe("Tasks page", () => {
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
       await waitFor(() => expect(document.querySelector('[data-task="tk_now"]')).not.toBeNull(), SLOW);
-      expect([...switcher().options].map((o) => o.textContent)).toEqual(["All projects", "Home", "Garden"]);
-      expect(switcher().value).toBe("home");
+      expect(screen.getAllByRole("tab").map((b) => b.textContent)).toEqual(["All projects", "Home", "Garden"]);
+      expect(selectedProject()).toEqual(["Home"]);
       expect(reads()).toContain("/api/v1/tasks?project=home");
       expect(reads()).not.toContain("/api/v1/tasks");
     });
@@ -633,8 +635,9 @@ describe("Tasks page", () => {
       current = view({ active_projects: PROJECTS });
       filtered = { home: homeOnly() };
       await show();
-      expect(switcher().value).toBe("");
-      fireEvent.change(switcher(), { target: { value: "home" } });
+      expect(selectedProject()).toEqual(["All projects"]);
+      fireEvent.click(projectTab("Home"));
+      expect(selectedProject()).toEqual(["Home"]);
       expect(new URLSearchParams(location.search).get("project")).toBe("home");
       expect(location.pathname).toBe("/app/tasks");
       await waitFor(() => expect([...document.querySelectorAll<HTMLElement>("[data-task]")].map((e) => e.dataset.task)).toEqual(["tk_now"]), SLOW);
@@ -645,10 +648,34 @@ describe("Tasks page", () => {
       fireEvent.click(doneSwitch());
       await waitFor(() => expect(reads()).toContain("/api/v1/tasks/done"), SLOW);
       expect(reads().filter((u) => u.startsWith("/api/v1/tasks/done")).every((u) => !u.includes("project"))).toBe(true);
-      fireEvent.change(switcher(), { target: { value: "" } });
+      fireEvent.click(projectTab("All projects"));
       expect(location.search).toBe("");
       tab("Today");
       expect(await screen.findByRole("list", { name: "Overdue" }, SLOW)).toBeTruthy();
+    });
+
+    it("ArrowRight on a project tab selects the next one: the filtered read, the URL and aria-selected follow", async () => {
+      current = view({ active_projects: PROJECTS });
+      filtered = { home: homeOnly() };
+      await show();
+      projectTab("All projects").focus();
+      fireEvent.keyDown(projectTab("All projects"), { key: "ArrowRight" });
+      expect(selectedProject()).toEqual(["Home"]);
+      expect(document.activeElement).toBe(projectTab("Home"));
+      expect(new URLSearchParams(location.search).get("project")).toBe("home");
+      await waitFor(() => expect(reads()).toContain("/api/v1/tasks?project=home"), SLOW);
+      fireEvent.keyDown(projectTab("Home"), { key: "ArrowLeft" });
+      expect(selectedProject()).toEqual(["All projects"]);
+      expect(location.search).toBe("");
+    });
+
+    it("a ?project= slug that is not active stays listed by its slug", async () => {
+      current = view({ active_projects: PROJECTS });
+      history.replaceState(null, "", "/app/tasks?project=gone");
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
+      await screen.findByRole("tab", { name: "+gone" }, SLOW);
+      expect(selectedProject()).toEqual(["+gone"]);
     });
 
     it("Projects… opens the project dialog outside the row; a checkbox adds or removes the task's link", async () => {

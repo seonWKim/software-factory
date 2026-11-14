@@ -102,6 +102,10 @@ A `role=switch` button with `aria-checked`, 20 by 36 px; the thumb moves by a cl
 
 One choice among a few views (`role=group` with an `aria-label`): a 32 px box with a 1 px `border-strong` edge on `surface`, holding 28 px segments in one row that never wraps. Controlled by `value` and `onChange`; `options` gives each segment's `id` and label. States: selected (`aria-pressed`, `accent` fill, `on-solid` text), default (`text-2`), hover (`surface-2`, `text-1`), focus-visible.
 
+## Tabs
+
+One filter among named choices that may be many (`role=tablist` with an `aria-label`, each option a `role=tab` button with `aria-selected`): the look of SegmentedControl, a 32 px box with a 1 px `border-strong` edge holding 28 px tabs, token colours only and the shared `FOCUS` class. The row never wraps; when it is wider than its box it scrolls sideways inside it (`overflow-x-auto`), so the page does not. Controlled by `value` and `onChange`; `options` gives each tab's `id` and label. Roving tabindex: only the selected tab is in the tab order. Keys: ArrowRight and ArrowLeft move to the next and previous tab, wrapping at the ends; Home and End go to the first and last; the tab a key moves to is focused and selected at once. States: selected (`accent` fill, `on-solid` text), default (`text-2`), hover (`surface-2`, `text-1`), focus-visible. Use SegmentedControl for a few fixed views, Tabs for a list that grows.
+
 ## Dialog
 
 The native modal `<dialog>`, opened on mount and closed on unmount, rendered into `document.body`: radius `card`, padding 24 px, a `text-base` semibold title, optional children and a one-line `consequence`, and a right-aligned ButtonRow footer with Cancel (secondary Button) before the confirm. Variants: default (confirm is a `primary` Button), `danger` (confirm is a `danger` Button with `solid`). States: open, `confirmDisabled`, with an `error` (shown in the dialog, role alert). Esc and a click on the backdrop cancel; Enter in a one-line field confirms; focus returns to `returnFocusTo`, else to the element focused when it opened. `announceStatus` shows a short status line after a send.
