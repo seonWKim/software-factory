@@ -115,7 +115,7 @@ interface LegacyPlan {
 const quoted = (c: string) => `"${c}"`;
 
 /** Every `legacy_*` table in the database. */
-export async function legacyTables(db: MigrationDb): Promise<string[]> {
+async function legacyTables(db: MigrationDb): Promise<string[]> {
   const rows = await db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ? ESCAPE '\\' ORDER BY name", [`${LEGACY_PREFIX.replace("_", "\\_")}%`]);
   return rows.map((r) => String(r.name));
 }
