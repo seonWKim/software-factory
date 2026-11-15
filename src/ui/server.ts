@@ -27,7 +27,7 @@ import type { AddressInfo } from "node:net";
 import type { WorkItemId } from "../core/types.js";
 import { type ApiDeps, api, apiError, isApiPath } from "./api.js";
 import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
-import { MAX_COMMAND_BODY, commandsPathId, commandsPost } from "./commands.js";
+import { MAX_COMMAND_BODY, commandsPathId, commandsPost, staleCsrf } from "./commands.js";
 import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
 import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
@@ -183,7 +183,8 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
   }
   if (mediaType(req.contentType) !== "application/json") return json(415, apiError(415, "Content-Type must be application/json.").value);
   if (!csrfMatches(token, req.csrfToken)) {
-    return json(403, apiError(403, `Missing or stale ${CSRF_HEADER}; reload the page.`).value);
+    const r = staleCsrf();
+    return json(r.status, r.value);
   }
   if (req.bodyTooLarge) return json(413, apiError(413, "The body is too large.").value);
   let body: unknown;
