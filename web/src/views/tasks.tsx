@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
+import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
 import {
   API, type DayRow, type ProjectChoice, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postProject, postTaskAction,
   postTaskAdd, postTaskBuild, postTaskProject, useTasks,
@@ -758,10 +758,10 @@ function useProjectParam(): [string | null, (slug: string | null) => void] {
 }
 
 /** The project tabs: All projects (id ""), then the active projects; a slug the URL names that is not among them stays listed by its slug. */
-function ProjectTabs({ projects, value, onChange }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void }) {
+function ProjectTabs({ projects, value, onChange, action }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void; action: ReactNode }) {
   const choices = value === null || projects.some((p) => p.slug === value) ? projects : [...projects, { slug: value, name: `+${value}` }];
   const options = [{ id: "", label: t("tasks.allProjects") }, ...choices.map((p) => ({ id: p.slug, label: p.name }))];
-  return <Tabs label={t("tasks.project")} options={options} value={value ?? ""} onChange={(id) => onChange(id === "" ? null : id)} />;
+  return <Tabs label={t("tasks.project")} options={options} value={value ?? ""} onChange={(id) => onChange(id === "" ? null : id)} action={action} />;
 }
 
 /** The Add project dialog: one name field; a refusal stays in the dialog with its reason, and a created project's tab is selected. */
@@ -826,12 +826,16 @@ export function TasksPage() {
     <PageHeader title={t("page.tasks")} />
     <div className="flex flex-col gap-6">
       <div className="flex flex-col items-start gap-3">
-        <div className="flex max-w-full items-center gap-2">
-          <ProjectTabs projects={known.current} value={project} onChange={setProject} />
-          <Button ref={addButton} size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
-            +
-          </Button>
-        </div>
+        <ProjectTabs
+          projects={known.current}
+          value={project}
+          onChange={setProject}
+          action={
+            <Button ref={addButton} variant="ghost" size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
+              +
+            </Button>
+          }
+        />
         {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
       </div>
       <div className="space-y-1">
