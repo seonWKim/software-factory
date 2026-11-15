@@ -801,13 +801,15 @@ describe("Tasks page", () => {
       expect(screen.queryByRole("region", { name: "Needs you" })).toBeNull();
     });
 
-    it("a task whose work waits on a merge shows Merge on its row, and the item is not in the section", async () => {
+    it("a task whose work waits on a merge shows Merge on its row, and the item is a row of the section too", async () => {
       items = [item("wi_1", { title: "Ship it", level: "ready_to_merge", merge: { enabled: true, reason: null }, merge_check: { state: "mergeable", conflicts: [], head_sha: "a", base_sha: "b", checked_at: "2026-11-12T00:00:00.000Z" } } as Partial<ItemRow>)];
       await show();
       expect(await within(card("tk_built")).findByRole("button", { name: "Merge" }, SLOW)).toBeTruthy();
       expect(within(card("tk_built")).getByText("Ready to merge")).toBeTruthy();
       expect(within(card("tk_built")).queryByRole("button", { name: "Work item state: tk_built" })).toBeNull();
-      expect(screen.queryByRole("region", { name: "Needs you" })).toBeNull();
+      const el = await section();
+      expect([...el.querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key)).toEqual(["wi_1"]);
+      expect(el.querySelector("h2 + span")!.textContent).toBe("1");
     });
 
     it("a waiting item whose task is done stays in the section; the done row keeps its plain state", async () => {
@@ -820,12 +822,13 @@ describe("Tasks page", () => {
       expect(within(card("tk_built")).queryByRole("button", { name: "Approve" })).toBeNull();
     });
 
-    it("an item with a waiting task row and one with no task are listed once each, the first on its row only", async () => {
-      items = [item("wi_1", { title: "Linked", level: "needs_approval" }), item("wi_x", { title: "Loose", level: "needs_approval" })];
+    it("an item on an open task's row and one with no task are each listed once in the section; a stuck item is not", async () => {
+      items = [item("wi_1", { title: "Linked", level: "needs_approval" }), item("wi_x", { title: "Loose", level: "needs_approval" }), item("wi_s", { title: "Stuck", level: "stuck", blocked_on: "none" })];
       await show();
       const el = await section();
-      expect([...el.querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key)).toEqual(["wi_x"]);
-      expect(el.querySelector("h2 + span")!.textContent).toBe("1");
+      expect([...el.querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key)).toEqual(["wi_1", "wi_x"]);
+      expect(el.querySelector("h2 + span")!.textContent).toBe("2");
+      expect(within(el).queryByText("Stuck")).toBeNull();
     });
 
     it("a built task shows its work item's state", async () => {

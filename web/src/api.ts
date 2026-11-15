@@ -54,7 +54,7 @@ export interface Overview {
   /** The revision the UI server's build was made from (its dist/ stamp); compared with WEB_REV. Null: unknown. */
   server_rev?: string | null;
   stages: Record<string, number>;
-  /** Open items blocked on a person plus the system actions: "Needs you (N)". */
+  /** The number of Needs-you rows: open items blocked on a person or the budget, plus one per system action (each alarm its own): "Needs you (N)". */
   needs_you: number;
   system_actions?: SystemAction[];
   running: number;

@@ -190,35 +190,59 @@ describe("system actions: open alarms", () => {
 });
 
 describe("needs_you: the number of Needs-you rows (design 09-status-page)", () => {
+  /** The levels the Tasks page's Needs you section lists (web/src/views/common.tsx `needsYou`): never stuck. */
+  const WAITING = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage"];
+
   /** An item moved to `patch` (a block on a person or the budget, or nothing). */
   async function item(store: FactoryStore, n: number, patch: Parameters<FactoryStore["transition"]>[0]["patch"]) {
     const { item } = await store.createWorkItem({ ...issue(n), title: `Item ${n}` }, system);
     await store.transition({ id: item.id, expected_version: item.version, patch, actor: system, reason: "seed" });
   }
+  const alarm = (store: FactoryStore, code: string) =>
+    store.recordAlert({ pattern: "repeated_error", pattern_key: `repeated_error:${code}`, error_code: code, count: 4, detail: null }, ALERT_DEDUPE_MS);
+
+  /** The overview, checked against the rows the section lists for the same reads: the waiting items, then one per system action. */
+  async function counted(s: Awaited<ReturnType<typeof setup>>) {
+    const o = await s.overview();
+    const r = await respond(s.d, { method: "GET", url: "/api/v1/items", host: "127.0.0.1:4310" });
+    const levels = (JSON.parse(r.body) as { items: { level: string }[] }).items.map((i) => i.level);
+    expect(o.needs_you).toBe(levels.filter((l) => WAITING.includes(l)).length + o.system_actions.length);
+    return { o, levels };
+  }
 
   it("one waiting item and one open alarm give 2", async () => {
-    const { overview, store } = await setup();
-    await item(store, 1, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
-    await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
-    expect((await overview()).needs_you).toBe(2);
+    const s = await setup();
+    await item(s.store, 1, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    await alarm(s.store, "checks_failed");
+    expect((await counted(s)).o.needs_you).toBe(2);
   });
 
-  it("each item blocked on a person or the budget is one row; a stuck item (nothing moves it) is none", async () => {
-    const { overview, store } = await setup();
-    await item(store, 1, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
-    await item(store, 2, { stage: "RUNNING", blocked_on: "budget", blocked_reason: "budget_checkpoint" });
-    await item(store, 3, { stage: "RUNNING" });
-    expect((await overview()).needs_you).toBe(2);
+  it("waiting items only: each item blocked on a person or the budget is one row; a stuck item (nothing moves it) is none", async () => {
+    const s = await setup();
+    await item(s.store, 1, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    await item(s.store, 2, { stage: "RUNNING", blocked_on: "budget", blocked_reason: "budget_checkpoint" });
+    await item(s.store, 3, { stage: "RUNNING" });
+    const { o, levels } = await counted(s);
+    expect(levels).toContain("stuck");
+    expect(o.needs_you).toBe(2);
   });
 
-  it("each non-alarm system action counts once, each alarm once more", async () => {
-    const { overview, store } = await setup({ version: { applied: 3, latest: 8 } });
-    await store.pauseWorkers({ all: true }, "local:me");
-    const before = await overview();
-    expect(codes(before)).toEqual(["migration_pending", "worker_pause"]);
-    expect(before.needs_you).toBe(2);
-    await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
-    expect((await overview()).needs_you).toBe(3);
+  it("alarms only: two open alarms are two rows", async () => {
+    const s = await setup();
+    await alarm(s.store, "checks_failed");
+    await alarm(s.store, "agent_error");
+    expect((await counted(s)).o.needs_you).toBe(2);
+  });
+
+  it("non-alarm system actions: each counts once, and an alarm once more", async () => {
+    const s = await setup({ version: { applied: 3, latest: 8 } });
+    await s.store.pauseWorkers({ all: true }, "local:me");
+    await s.store.pauseWorkers({ all: true }, "local:me");
+    const before = await counted(s);
+    expect(codes(before.o)).toEqual(["migration_pending", "worker_pause"]);
+    expect(before.o.needs_you).toBe(2);
+    await alarm(s.store, "checks_failed");
+    expect((await counted(s)).o.needs_you).toBe(3);
   });
 });
 

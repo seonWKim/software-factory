@@ -1,5 +1,6 @@
 import { API, type AutoStop, type SettingsView, type SystemAction, useApi } from "../api.js";
-import { BANNER_LINK_CLASS } from "../components/ui/link-style.js";
+import { FOCUS } from "../components/ui/control.js";
+import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { Link } from "../nav.js";
@@ -20,43 +21,57 @@ export function RevisionBanner({ server, web }: { server: string | null | undefi
 }
 
 /**
- * What the factory needs from the operator besides a work item, under the Needs-you list (design 09-status-page):
- * each system action but the alarms on one line with the command that clears it; the open alarms as one line that
- * links to Failures, however many, except the auto-mode stop still in force, which has its own line with its time, cause
- * and "Turn auto back on" (design 03-risk). Nothing while there is none of these.
+ * One compact Needs-you row (a work item's or a system action's): the content grows from a 16rem basis, so the actions
+ * wrap below it before it truncates.
  */
-export function FloorNotes({ actions }: { actions: readonly SystemAction[] }) {
-  const stop = actions.find((a) => a.auto_stop)?.auto_stop;
-  const alarms = actions.filter((a) => a.code === "alarm" && !a.auto_stop).length;
-  const others = actions.filter((a) => a.code !== "alarm");
-  if (others.length === 0 && alarms === 0 && !stop) return null;
-  const line = "flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-control px-3 py-1.5 text-sm";
-  const red = "bg-pill-bad-bg text-pill-bad-fg";
+export const NEED_ROW = "flex flex-wrap items-center justify-between gap-x-3 gap-y-2 p-3";
+
+const FAILURES = `${BASE}failures`;
+
+/**
+ * One system action as a Needs-you row in the Check group (design 09-status-page): an open alarm (AlarmRow), else
+ * its sentence and the command that clears it.
+ */
+export function CheckRow({ action }: { action: SystemAction }) {
+  if (action.code === "alarm") return <AlarmRow action={action} />;
   return (
-    <ul aria-label={t("banner.systemActions")} className="mt-3 space-y-1">
-      {others.map((a, i) => (
-        <li key={`${a.code}:${i}`} data-action={a.code} className={cn(line, red)}>
-          <span className="min-w-0 text-pretty break-words">{a.text}</span>
-          <code className="font-mono text-xs break-words">{a.command}</code>
-        </li>
-      ))}
-      {stop && <AutoStopLine stop={stop} className={cn(line, red)} />}
-      {alarms > 0 && (
-        <li data-action="alarm" className={cn(line, red)}>
-          <span>{t("floor.alarms", { count: alarms })}</span>
-          <Link href={`${BASE}failures`} className={BANNER_LINK_CLASS}>{t("floor.alarmsLink")}</Link>
-        </li>
-      )}
-    </ul>
+    <li data-check={action.code} className={NEED_ROW}>
+      <span className="min-w-0 grow basis-64 text-sm text-pretty wrap-anywhere text-text-1">{action.text}</span>
+      <code className="min-w-0 font-mono text-xs wrap-anywhere text-text-2">{action.command}</code>
+    </li>
   );
 }
 
-/** The auto-mode stop's line, the target of its alarm link; it reads the settings view for the button's write. */
-function AutoStopLine({ stop, className }: { stop: AutoStop; className: string }) {
-  const settings = useApi<SettingsView>(API.settings);
+/**
+ * An open alarm's row: its text on one line, the full text (with the detail) behind a toggle, and one primary action,
+ * "Open on Failures". The auto-mode stop's alarm (design 03-risk) is the target of the Settings link to it and has
+ * "Turn auto back on" as its primary action, with Failures as a link. No dismiss: an alarm closes by itself.
+ */
+function AlarmRow({ action }: { action: SystemAction }) {
+  const stop = action.auto_stop;
   return (
-    <li id={alarmAnchor(stop.alert_id)} data-action="auto_stop" className={className}>
-      <AutoStopNote stop={stop} view={settings.data} banner />
+    <li data-check="alarm" {...(stop ? { id: alarmAnchor(stop.alert_id) } : {})} className={NEED_ROW}>
+      <div className="min-w-0 grow basis-64 space-y-1">
+        <p data-alarm-summary title={action.text} className="truncate text-sm font-medium text-text-1">{action.text}</p>
+        <details data-alarm-full className="min-w-0 text-xs text-text-2">
+          <summary className="cursor-pointer">{t("needs.alarmFull")}</summary>
+          <p className="mt-1 text-pretty wrap-anywhere">{action.text}</p>
+        </details>
+        {stop && <AutoStopLine stop={stop} />}
+      </div>
+      {stop ? (
+        <Link href={FAILURES} className={LINK_CLASS}>{t("needs.alarmFailures")}</Link>
+      ) : (
+        <Link href={FAILURES} data-command="failures" className={cn("inline-flex min-h-8 items-center rounded-control border border-border-strong bg-surface px-3 text-sm font-medium text-text-1 hover:bg-surface-2", FOCUS)}>
+          {t("needs.alarmOpen")}
+        </Link>
+      )}
     </li>
   );
+}
+
+/** The auto-mode stop's when and why with "Turn auto back on"; it reads the settings view for the button's write. */
+function AutoStopLine({ stop }: { stop: AutoStop }) {
+  const settings = useApi<SettingsView>(API.settings);
+  return <AutoStopNote stop={stop} view={settings.data} />;
 }

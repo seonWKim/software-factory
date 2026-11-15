@@ -941,15 +941,17 @@ describe("open alarms on the Tasks page and the why sentence (design 09-status-p
     await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS + 10)));
   }
 
-  it("the Tasks page shows the open alarms as one line linking to Failures, and drops it once resolved", () =>
+  it("the Tasks page lists the open alarm as a Needs-you row in the Check group that opens Failures, and drops it once resolved", () =>
     withAlarm(async () => {
       mount();
-      const list = await screen.findByRole("list", { name: "System actions" });
-      const li = list.querySelector('[data-action="alarm"]') as HTMLElement;
-      expect(li.textContent).toContain("Open alarms: 1.");
-      expect(within(li).getByRole("link").getAttribute("href")).toBe("/app/failures");
+      const list = await screen.findByRole("list", { name: "Check" });
+      const li = list.querySelector('[data-check="alarm"]') as HTMLElement;
+      expect(li.querySelector("[data-alarm-summary]")!.textContent).toBe(action.text);
+      expect(within(li).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
+      expect(document.body.textContent).not.toContain("Open alarms");
+      expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
       await resolve();
-      await vi.waitFor(() => expect(screen.queryByRole("list", { name: "System actions" })).toBeNull());
+      await vi.waitFor(() => expect(screen.queryByRole("list", { name: "Check" })).toBeNull());
     }));
 
   it("Work items and the item page name the alarm in the item's why, and drop it once it is resolved", () =>
@@ -1000,7 +1002,7 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
     }
   });
 
-  it("the Tasks page lists each system action with its command", async () => {
+  it("the Tasks page lists each system action with its command as a row in the Needs you section's Check group", async () => {
     const actions = [
       { code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null, work_item_id: null },
       { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
@@ -1008,15 +1010,15 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
     (overview as Record<string, unknown>).system_actions = actions;
     try {
       mount();
-      const list = await screen.findByRole("list", { name: "System actions" });
+      const list = await screen.findByRole("list", { name: "Check" });
       const rows = [...list.querySelectorAll("li")];
-      expect(rows.map((r) => r.getAttribute("data-action"))).toEqual(["migration_pending", "claim_pause"]);
+      expect(rows.map((r) => r.getAttribute("data-check"))).toEqual(["migration_pending", "claim_pause"]);
       expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
       expect(rows[0]!.querySelector("code")!.textContent).toBe("npm run migrate");
       expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
-      // The notes are lines after the Needs you section.
-      const section = screen.getByRole("region", { name: "Needs you" });
-      expect(section.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      // The rows are inside the Needs you section, not lines after it.
+      expect(screen.getByRole("region", { name: "Needs you" }).contains(list)).toBe(true);
+      expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
     } finally {
       delete (overview as Record<string, unknown>).system_actions;
     }
