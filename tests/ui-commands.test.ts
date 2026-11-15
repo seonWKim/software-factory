@@ -6,14 +6,14 @@ import type { SourceRef, UserId, WorkItem, WorkItemPatch } from "../src/core/typ
 import { parseVerdict } from "../src/core/verdict.js";
 // TS6142: tsconfig.test.json has no JSX, so this .tsx view stays untyped here; web/tsconfig.json checks it.
 // @ts-expect-error -- see above
-import { oneTapNote, verdictNote } from "../web/src/views/item-commands.js";
+import { oneTapNote, pendingFeedback, verdictNote } from "../web/src/views/item-commands.js";
 import type { AppCommandRequest } from "../src/interfaces/factory-store.js";
 import type { LLMProvider, LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { parseProposalMarker } from "../src/core/interpret.js";
 import type { PageAction } from "../src/ui/commands.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import { type ApiDeps, type UiDeps, respond } from "../src/ui/server.js";
-import { refusalText } from "../src/core/commands.js";
+import { REVISE_APPLIED, refusalText } from "../src/core/commands.js";
 import { runLocalCli } from "../src/core/local-cli.js";
 import { newCsrfToken } from "../src/ui/settings-api.js";
 import { FakeAuth, FakeSource, alice, cleanScanner, config, issueRef, silent, waitFor } from "./helpers/fakes.js";
@@ -406,7 +406,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     ["NEW (triaging)", {}, ["reject"]],
     ["READY at the spec gate", SPEC_PENDING, ["approve", "reject", "revise"]],
     ["READY at the revision limit", { stage: "READY", blocked_on: "human", blocked_reason: "max_revisions" }, ["approve", "reject"]],
-    ["RUNNING (implementing)", IMPLEMENTING, ["reject"]],
+    ["RUNNING (implementing)", IMPLEMENTING, ["reject", "revise"]],
     ["RUNNING after a failed implement run", { stage: "RUNNING", blocked_on: "human", blocked_reason: "run_failed:implement:agent_error" }, ["reject", "revise", "retry"]],
     ["REVIEW (reviewing)", { stage: "REVIEW", change_ref: "42" }, ["reject", "verdict"]],
     ["REVIEW waiting for a merge", { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", change_ref: "42" }, ["reject", "verdict"]],
@@ -462,7 +462,7 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     for (const it of [byPage, byCli]) expect((await h.store.getWorkItem(it.id))!.stage).toBe("RUNNING");
   });
 
-  it("an item that left the spec gate lists no approve or revise, only reject: the actions follow the item's state now (issue #586)", async () => {
+  it("an item that left the spec gate lists no approve, only reject and the queued revise: the actions follow the item's state now (issue #586)", async () => {
     const h = await harness({ localAuth: true });
     const me = "local:me@example.com" as UserId;
     const it1 = await h.itemIn(SPEC_PENDING, 1);
@@ -470,7 +470,26 @@ describe("the item API's commands: by phase and by the viewer's grants (issue #5
     await h.request("app-586", me, "approve", { work_item_id: it1.id });
     await h.controller.tickCommands();
     expect((await h.store.getWorkItem(it1.id))!.stage).toBe("RUNNING");
-    expect(names(await listed(page(h, me), it1))).toEqual(["reject"]);
+    expect(names(await listed(page(h, me), it1))).toEqual(["reject", "revise"]);
+  });
+
+  it("the item page lists a /revise queued while implementing until it is applied, and no longer after revise_applied", async () => {
+    const h = await harness({ localAuth: true });
+    const me = "local:me@example.com" as UserId;
+    const it1 = await h.itemIn(IMPLEMENTING, 1);
+    const r = await h.request("app-queued", me, "revise", { work_item_id: it1.id, note: "keep the old flag" });
+    await h.controller.tickCommands();
+    const timeline = async () => ((await listed(page(h, me), it1)) as unknown as { timeline: unknown[] }).timeline;
+    expect(pendingFeedback(await timeline())).toEqual([{ comment_id: `app-${r.seq}`, feedback: "keep the old flag" }]);
+    expect((await h.store.getAppCommandRequest(r.seq))!.refusal).toBeNull();
+
+    // The run end applies it (tests/flow.test.ts): its revise_applied row names the comment ID.
+    const cur = (await h.store.getWorkItem(it1.id))!;
+    await h.store.transition({
+      id: it1.id, expected_version: cur.version, actor: { kind: "system", id: "system:controller" }, reason: REVISE_APPLIED,
+      patch: { loop_count: 1 }, detail: { comment_ids: JSON.stringify([`app-${r.seq}`]), feedback: "keep the old flag" },
+    });
+    expect(pendingFeedback(await timeline())).toEqual([]);
   });
 });
 

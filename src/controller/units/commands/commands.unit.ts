@@ -3,8 +3,8 @@
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
-  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal,
-  failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
+  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, REVISE_APPLIED, REVISE_QUEUED, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal,
+  failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, pendingRevises, phaseLabel, refusalText, reviseQueuedReply, specNotWaiting, unknownCommandReply,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
@@ -43,6 +43,8 @@ const LINK_REFUSALS: Record<Exclude<RedeemLinkResult, { ok: true }>["reason"], s
 const SPLIT_PATHS = "`+paths` does not apply to a split spec, whose `/approve` files one sub-issue per phase; reply `/approve` without `+paths`, then add paths on a phase's issue";
 /** Characters of an approval note kept on the state change (design §4). */
 const MAX_NOTE_CHARS = 2000;
+/** The refusal of a `/revise` with no feedback after it. */
+const FEEDBACK_REQUIRED = "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`";
 /** State change reasons of PR feedback that started an implement run (design §4). */
 const PR_REVISE = "pr_revise_requested";
 const PR_CHANGES = "pr_changes_requested";
@@ -196,7 +198,14 @@ export class CommandsUnit {
     if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
     if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
+    if (refusal === null && e.kind === "revise_requested") await this.replyQueued(item, e.comment_id);
     return refusal;
+  }
+
+  /** A `/revise` stored as queued feedback (queueRevise) gets one reply naming the path it took, keyed on the comment ID. */
+  async replyQueued(item: WorkItem, comment_id: string): Promise<void> {
+    const queued = (await this.c.k.reader.listStateChanges(item.id)).some((c) => c.reason === REVISE_QUEUED && c.detail?.comment_id === comment_id);
+    if (queued) await this.c.unit("outbox").post(item, item.source, reviseQueuedReply(), `<!-- factory:revise-queued:${comment_id} -->`);
   }
 
   /**
@@ -256,13 +265,9 @@ export class CommandsUnit {
       return { refuse: `the item is ${phaseLabel(phase)}; feedback ${where} is taken only when it is ${accepted.map(phaseLabel).join(" or ")}` };
     }
     const feedback = f.text.trim();
-    if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
-    const scan = await this.c.k.d.scanner.scan("comment", feedback);
-    if (!scan.clean) {
-      const rules = scan.findings.map((x) => x.rule).join(",");
-      this.c.k.d.log.warn("PR feedback blocked by the egress scan", { work_item_id: it.id, rules });
-      return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
-    }
+    if (!feedback) return { refuse: FEEDBACK_REQUIRED };
+    const blocked = await this.feedbackScan(it, feedback);
+    if (blocked) return blocked;
     const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
     // The detail names the PR by its string ref, like the item (design 02-work-item); a local item has none.
     const detail = { ...f.key, ...(local ? {} : { change_ref: f.change_ref }) };
@@ -283,6 +288,63 @@ export class CommandsUnit {
       reason: f.reason,
       detail: { ...detail, feedback: kept },
       enqueue: { kind: "implement", idempotency_key: runKey(next, "implement"), input: { notes: kept } },
+    };
+  }
+
+  /** The refusal of feedback the egress scan flags (nothing is stored), else null. */
+  async feedbackScan(it: WorkItem, feedback: string): Promise<Refusal | null> {
+    const scan = await this.c.k.d.scanner.scan("comment", feedback);
+    if (scan.clean) return null;
+    const rules = scan.findings.map((x) => x.rule).join(",");
+    this.c.k.d.log.warn("feedback blocked by the egress scan", { work_item_id: it.id, rules });
+    return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
+  }
+
+  /**
+   * `/revise <feedback>` while implementing (design 04-gate-commands, 2026-11-15): no runner takes a message mid-run, so
+   * the feedback is queued as a `revise_queued` state change (no field changes) keyed on the comment ID, and applied when
+   * the run ends (`applyQueued`). Empty or flagged feedback is refused and nothing is stored; the same comment again is a no-op.
+   */
+  async queueRevise(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Promise<Decision | Refusal> {
+    const feedback = e.feedback.trim();
+    if (!feedback) return { refuse: FEEDBACK_REQUIRED };
+    const blocked = await this.feedbackScan(it, feedback);
+    if (blocked) return blocked;
+    if ((await this.c.k.reader.listStateChanges(it.id)).some((c) => c.reason === REVISE_QUEUED && c.detail?.comment_id === e.comment_id)) return null;
+    return { patch: {}, actor, reason: REVISE_QUEUED, detail: { comment_id: e.comment_id, feedback: feedback.slice(0, MAX_FEEDBACK_CHARS).trim() } };
+  }
+
+  /**
+   * The end of an implement run that would queue its review (`d`), with the item's queued `/revise` feedback applied
+   * (design 04-gate-commands, 2026-11-15): every pending feedback, oldest first, goes into one implement run on the
+   * branch (loop_count + 1, reason `revise_applied`, the key from the first feedback's comment ID) instead of the review,
+   * in `d`'s transaction. At the loop limit the item blocks with `max_loops` as `prFeedback` does. Both rows name the
+   * comment IDs, so a second apply (another worker on the same run end) finds none pending and returns `d` unchanged,
+   * which its acknowledged run then fences. None pending: `d` as it is.
+   */
+  async applyQueued(it: WorkItem, d: NonNullable<Decision>): Promise<NonNullable<Decision>> {
+    const pending = pendingRevises(await this.c.k.reader.listStateChanges(it.id));
+    if (pending.length === 0) return d;
+    const { enqueue: _review, ...rest } = d;
+    const detail = { ...d.detail, comment_ids: JSON.stringify(pending.map((p) => p.comment_id)) };
+    const limit = this.c.k.cfg.max_loops;
+    if (it.loop_count + 1 >= limit) {
+      const patch = { ...d.patch, blocked_on: "human" as const, blocked_reason: "max_loops" };
+      await this.c.unit("outbox").comment(it, `max-loops:queued-${pending[0]!.comment_id}`, [
+        `The feedback queued while implementing would start loop ${it.loop_count + 1} (limit \`max_loops\` = ${limit}), so the factory started no implement run. A human needs to decide.`,
+        "",
+        footerAfter({ ...it, ...patch }, patch),
+      ].join("\n"));
+      return { ...rest, patch, reason: "max_loops", detail };
+    }
+    const notes = pending.map((p) => p.feedback).join("\n\n").slice(0, MAX_FEEDBACK_CHARS).trim();
+    const next = { ...it, loop_count: it.loop_count + 1 };
+    return {
+      ...rest,
+      patch: { ...d.patch, stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: next.loop_count, failure_comment_url: null },
+      reason: REVISE_APPLIED,
+      detail: { ...detail, feedback: notes },
+      enqueue: { kind: "implement", idempotency_key: `${runKey(next, "implement")}:revise-${pending[0]!.comment_id}`, input: { notes } },
     };
   }
 
@@ -565,6 +627,7 @@ export class CommandsUnit {
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
       phase === "max_loops";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
+    if (e.kind === "revise_requested" && phase === "implementing" && it.stage === "RUNNING") return this.queueRevise(e, it, actor);
     if (!awaitingSpec(it)) {
       const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
         ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}`
@@ -574,7 +637,7 @@ export class CommandsUnit {
     switch (e.kind) {
       case "revise_requested": {
         const feedback = e.feedback.trim();
-        if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+        if (!feedback) return { refuse: FEEDBACK_REQUIRED };
         const limit = this.c.k.cfg.max_loops;
         if (it.blocked_reason === "max_revisions") {
           return { refuse: `the spec reached the revision limit (\`max_loops\` = ${limit}); reply \`/approve\` or \`/reject <reason>\`` };
@@ -641,7 +704,7 @@ export class CommandsUnit {
    */
   reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
     const feedback = e.feedback.trim();
-    if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+    if (!feedback) return { refuse: FEEDBACK_REQUIRED };
     const limit = this.c.k.cfg.max_loops;
     if (it.revision_count >= limit) {
       return {

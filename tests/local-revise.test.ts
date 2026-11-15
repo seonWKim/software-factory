@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
+import { REVISE_APPLIED, REVISE_QUEUED_PATH } from "../src/core/commands.js";
 import type { UserId, WorkerId, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -194,5 +195,29 @@ describe("revise on a local item at the merge wait (issue #563)", { timeout: 60_
     expect(refused).toHaveLength(1);
     expect(refused[0]).toContain("the spec is not waiting for approval (the item is blocked by a failed review run)");
     expect(refused[0]).not.toContain("PR #");
+  });
+
+  it("while implementing: the /revise is queued, then applied as one more implement run on the local branch before review", async () => {
+    const f = await localFactory();
+    const id = (await f.cli({ action: "create", title: "Add a", bodyFile: "body.md" })).lines[0] as WorkItemId;
+    await f.step();
+    await f.cli({ action: "command", command: "approve", id, text: "" });
+    await f.controller.tickIntake();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+    await f.revise(id, "name the file b.yml");
+    await f.controller.tickIntake();
+    expect(await f.messages(id, "<!-- factory:refused:")).toEqual([]);
+    expect((await f.messages(id, "<!-- factory:revise-queued:")).join("\n")).toContain(REVISE_QUEUED_PATH);
+
+    await f.step();
+    const keys = (await f.implementRuns(id)).map((r) => r.idempotency_key);
+    expect(keys[0]).toBe(`${id}:implement:l0:r0`);
+    expect(keys[1]).toMatch(new RegExp(`^${id}:implement:l1:r0:revise-`));
+    expect(keys).toHaveLength(2);
+    const reasons = (await f.store.listStateChanges(id)).map((c) => c.reason);
+    expect(reasons.indexOf(REVISE_APPLIED)).toBeGreaterThan(-1);
+    expect(reasons.indexOf(REVISE_APPLIED)).toBeLessThan(reasons.indexOf("implemented"));
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "REVIEW", blocked_reason: "merge_pending", loop_count: 1, change_ref: null });
+    expect(f.runner.specs.filter((s) => s.role === "implement")[1]!.prompt).toContain("name the file b.yml");
   });
 });

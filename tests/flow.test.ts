@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
+import { REVISE_APPLIED, REVISE_QUEUED, REVISE_QUEUED_PATH, pendingRevises } from "../src/core/commands.js";
 import type { Logger } from "../src/core/log.js";
 import { Worker } from "../src/worker/index.js";
 import type { Run, UserId, WorkerId } from "../src/core/types.js";
@@ -984,15 +985,15 @@ describe("spec gate: /revise and /reject", () => {
     expect(refusals(f)[0]!.body).toContain("feedback");
   });
 
-  it("/revise on an item that is not waiting for spec approval is refused, naming the state by its label", async () => {
+  it("/revise on an item in review is refused, naming the state by its label", async () => {
     const f = await atSpecGate(35);
-    f.source.queue.push({ kind: "spec_approved", source: f.src, comment_id: f.next(), approver: alice });
-    await f.controller.tickIntake();
+    const cur = (await f.store.getWorkItem(f.item.id))!;
+    await f.store.transition({ id: cur.id, expected_version: cur.version, actor: { kind: "system", id: "test" }, reason: "setup", patch: { stage: "REVIEW", blocked_on: "none", blocked_reason: null } });
     revise(f, "change it");
     await f.controller.tickIntake();
     expect(refusals(f)).toHaveLength(1);
-    expect(refusals(f)[0]!.body).toContain("implementing");
-    expect(refusals(f)[0]!.body).not.toContain("RUNNING");
+    expect(refusals(f)[0]!.body).toContain("in review");
+    expect(refusals(f)[0]!.body).not.toContain("REVIEW");
     expect((await f.store.getWorkItem(f.item.id))!.revision_count).toBe(0);
   });
 
@@ -1054,6 +1055,132 @@ describe("spec gate: /revise and /reject", () => {
     await g.step();
     expect(g.source.comments.filter((c) => c.marker.startsWith("<!-- factory:rejected:"))).toHaveLength(1);
     expect(g.source.closed).toEqual([g.src]);
+  });
+});
+
+describe("/revise while implementing: queued, applied when the run ends (design 04-gate-commands)", () => {
+  const SECRET = "known-secret-value-0123456789";
+  /** An approved item whose implement run is queued, not started yet; `implement` scripts its runs. */
+  async function implementing(n: number, implement: () => Record<string, unknown> = () => ({ output: { summary: "s", next_steps: "n" } })) {
+    const runner = new FakeRunner({ triage: () => ({ output: triageSpec }), implement, review: review("pass") });
+    const f = await factory(runner, [SECRET]);
+    const src = issueRef(n);
+    f.source.queue.push({ kind: "item_requested", source: src, requester: alice, title: "t", body: "b" });
+    await f.step();
+    const id = (await f.store.getWorkItemBySource("github_issue", src.id))!.id;
+    f.source.queue.push({ kind: "spec_approved", source: src, comment_id: `${n}-approve`, approver: alice });
+    await f.controller.tickIntake();
+    expect(await f.store.getWorkItem(id)).toMatchObject({ stage: "RUNNING", blocked_on: "none" });
+    let c = 0;
+    const revise = async (feedback: string) => {
+      const comment_id = `${n}-revise-${++c}`;
+      f.source.queue.push({ kind: "revise_requested", source: src, comment_id, requester: alice, feedback });
+      await f.controller.tickIntake();
+      return comment_id;
+    };
+    const changes = () => f.store.listStateChanges(id);
+    const refusals = () => f.source.comments.filter((x) => x.marker.startsWith("<!-- factory:refused:"));
+    const runs = async (kind: string) => (await f.store.listRuns(id)).filter((r) => r.kind === kind);
+    /** A second controller on the same store: another worker handling the same run ends. */
+    const other = new ControllerRole({ store: f.store, source: f.source, forge: f.forge, auth: new FakeAuth(), clock: f.clock, config, log: silent, scanner: new PatternEgressScanner(async () => [SECRET]), repeated_failure_rule: false });
+    return { ...f, runner, id, src, revise, changes, refusals, runs, other };
+  }
+
+  it("is stored as revise_queued, not refused, and the reply says queued", async () => {
+    const f = await implementing(3101);
+    const before = (await f.store.getWorkItem(f.id))!;
+    const cid = await f.revise("use the existing flag");
+    expect(f.refusals()).toEqual([]);
+    const row = (await f.changes()).find((c) => c.reason === REVISE_QUEUED)!;
+    expect(row.detail).toEqual({ comment_id: cid, feedback: "use the existing flag" });
+    expect(row.actor).toMatchObject({ kind: "user" });
+    expect(row.changes).toEqual({});
+    expect(await f.store.getWorkItem(f.id)).toMatchObject({ stage: before.stage, blocked_on: before.blocked_on, loop_count: before.loop_count });
+    const replies = f.source.comments.filter((x) => x.marker === `<!-- factory:revise-queued:${cid} -->`);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]!.body).toContain(REVISE_QUEUED_PATH);
+    expect(pendingRevises(await f.changes())).toEqual([{ comment_id: cid, feedback: "use the existing flag" }]);
+  });
+
+  it("with empty feedback or feedback the leak scanner flags: the existing refusal, and nothing is stored", async () => {
+    const f = await implementing(3102);
+    await f.revise("   ");
+    await f.revise(`the token is ${SECRET}`);
+    expect(f.refusals().map((x) => x.body)).toEqual([
+      expect.stringContaining("it needs feedback after the command, e.g. `/revise keep the existing CLI flag`"),
+      expect.stringContaining("the feedback was blocked by the leak scanner"),
+    ]);
+    expect((await f.changes()).some((c) => c.reason === REVISE_QUEUED)).toBe(false);
+    expect(JSON.stringify(await f.changes())).not.toContain(SECRET);
+    expect(f.source.comments.some((x) => x.marker.startsWith("<!-- factory:revise-queued:"))).toBe(false);
+  });
+
+  it("when the run succeeds, two workers apply the queued feedback once: one implement revise run before review", async () => {
+    const f = await implementing(3103);
+    const first = await f.revise("rename the flag");
+    const second = await f.revise("and keep the old one as an alias");
+    expect(await f.worker.tick()).toBe(true);
+    await Promise.all([f.controller.tickRuns(), f.other.tickRuns()]);
+
+    const applied = (await f.changes()).filter((c) => c.reason === REVISE_APPLIED);
+    expect(applied).toHaveLength(1);
+    expect(applied[0]!.detail).toMatchObject({ comment_ids: JSON.stringify([first, second]), feedback: "rename the flag\n\nand keep the old one as an alias" });
+    expect(applied[0]!.changes.loop_count).toEqual({ from: 0, to: 1 });
+    const item = (await f.store.getWorkItem(f.id))!;
+    expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", loop_count: 1 });
+    expect(item.change_ref).not.toBeNull();
+    const implement = await f.runs("implement");
+    expect(implement.map((r) => r.idempotency_key)).toEqual([`${f.id}:implement:l0:r0`, `${f.id}:implement:l1:r0:revise-${first}`]);
+    expect(implement[1]!.input).toEqual({ notes: "rename the flag\n\nand keep the old one as an alias" });
+    expect(await f.runs("review")).toEqual([]);
+    expect(pendingRevises(await f.changes())).toEqual([]);
+
+    // The second apply on the same run end finds the revise_applied row and changes nothing.
+    const version = (await f.store.getWorkItem(f.id))!.version;
+    await f.other.tickRuns();
+    await f.controller.tickRuns();
+    expect((await f.store.getWorkItem(f.id))!.version).toBe(version);
+
+    // The revise run gets the feedback, then the review follows on the next loop.
+    await f.step();
+    expect(f.runner.specs.filter((s) => s.role === "implement")[1]!.prompt).toContain("and keep the old one as an alias");
+    expect((await f.runs("review")).map((r) => r.idempotency_key)).toEqual([`${f.id}:review:l1:r0`]);
+    expect((await f.changes()).filter((c) => c.reason === REVISE_APPLIED)).toHaveLength(1);
+  });
+
+  it("a run that blocks keeps the feedback pending; the next successful run end applies it", async () => {
+    let ask = true;
+    const f = await implementing(3104, () => (ask ? { output: { needs_human: { reason: "r", question: "q" } } } : { output: { summary: "s", next_steps: "n" } }));
+    const cid = await f.revise("cover the CLI too");
+    await f.step();
+    expect(await f.store.getWorkItem(f.id)).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human" });
+    expect((await f.changes()).some((c) => c.reason === REVISE_APPLIED)).toBe(false);
+    expect(pendingRevises(await f.changes())).toEqual([{ comment_id: cid, feedback: "cover the CLI too" }]);
+
+    ask = false;
+    f.source.queue.push({ kind: "retry_requested", source: f.src, comment_id: "3104-retry", requester: alice, note: "" });
+    await f.controller.tickIntake();
+    expect(await f.worker.tick()).toBe(true);
+    await f.controller.tickRuns();
+    expect((await f.changes()).filter((c) => c.reason === REVISE_APPLIED).map((c) => c.detail?.comment_ids)).toEqual([JSON.stringify([cid])]);
+    expect(pendingRevises(await f.changes())).toEqual([]);
+  });
+
+  it("at the loop limit: blocks with max_loops as PR feedback does, and the comment says the feedback would start a loop", async () => {
+    const f = await implementing(3105);
+    const cur = (await f.store.getWorkItem(f.id))!;
+    await f.store.transition({ id: f.id, expected_version: cur.version, actor: { kind: "system", id: "test" }, reason: "setup", patch: { loop_count: config.max_loops - 1 } });
+    const cid = await f.revise("one more thing");
+    expect(await f.worker.tick()).toBe(true);
+    await f.controller.tickRuns();
+    expect(await f.store.getWorkItem(f.id)).toMatchObject({ blocked_on: "human", blocked_reason: "max_loops", loop_count: config.max_loops - 1 });
+    expect((await f.changes()).find((c) => c.reason === "max_loops")!.detail).toMatchObject({ comment_ids: JSON.stringify([cid]) });
+    await f.step();
+    const comment = f.source.comments.find((x) => x.marker === `<!-- factory:max-loops:queued-${cid} -->`)!;
+    expect(comment.body).toContain(`would start loop ${config.max_loops}`);
+    expect((await f.runs("implement")).filter((r) => r.status === "queued")).toEqual([]);
+    expect(await f.runs("review")).toEqual([]);
+    expect(pendingRevises(await f.changes())).toEqual([]);
   });
 });
 
