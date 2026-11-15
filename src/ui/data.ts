@@ -45,23 +45,22 @@ export function tableDoc(table: string): TableDoc | null {
 }
 
 /** Columns whose values never leave the server: fencing tokens and the stored link-code hash. */
-/** Each table appears twice until the contract migration: the legacy copy keeps its old name (RFC 0015 §12). */
 export const HIDDEN_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   worker_runs: ["lease_token"],
   inbound_listener_leases: ["token"],
   worker_run_attempts: ["lease_token"],
   identity_link_codes: ["code_hash"],
-  legacy_runs: ["lease_token"],
-  legacy_listener_leases: ["token"],
-  legacy_run_attempts: ["lease_token"],
-  legacy_link_codes: ["code_hash"],
 };
 
 /** What a hidden cell shows. */
 export const HIDDEN = "[hidden]";
 
+/**
+ * A listed column, or any column of a table no component describes: a `legacy_` copy left until the contract
+ * migration (RFC 0015 §12) can hold the same tokens under its old name, so none of its values leave.
+ */
 export function isHidden(table: string, column: string): boolean {
-  return HIDDEN_COLUMNS[table]?.includes(column) ?? false;
+  return HIDDEN_COLUMNS[table]?.includes(column) ?? tableDoc(table) === null;
 }
 
 /** What data.ts needs from the API: the store, the API's Withholder text function, and now. */

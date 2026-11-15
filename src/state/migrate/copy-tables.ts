@@ -92,6 +92,102 @@ export async function dropTables(db: MigrationDb, tables: readonly string[]): Pr
   for (const t of (await parentsFirst(db, present)).reverse()) await db.run(`DROP TABLE ${q(t)}`);
 }
 
+/**
+ * Where one `legacy_*` table's rows live now. `to: null`: a retired table with no replacement (`why` says so); its
+ * rows are only archived. `key` and `values` map a current column to a SQL expression over the legacy row `l`;
+ * by default the key is the legacy table's primary key and the values are the columns both tables have.
+ */
+export interface LegacySource {
+  readonly to: string | null;
+  readonly why?: string;
+  readonly key?: Readonly<Record<string, string>>;
+  readonly values?: Readonly<Record<string, string>>;
+}
+
+interface LegacyPlan {
+  readonly legacy: string;
+  readonly source: LegacySource;
+  readonly rows: number;
+  readonly key: Record<string, string>;
+  readonly values: Record<string, string>;
+}
+
+const quoted = (c: string) => `"${c}"`;
+
+/** Every `legacy_*` table in the database. */
+async function legacyTables(db: MigrationDb): Promise<string[]> {
+  const rows = await db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE ? ESCAPE '\\' ORDER BY name", [`${LEGACY_PREFIX.replace("_", "\\_")}%`]);
+  return rows.map((r) => String(r.name));
+}
+
+async function planOf(db: MigrationDb, legacy: string, source: LegacySource): Promise<LegacyPlan> {
+  const [count] = await db.all(`SELECT COUNT(*) AS n FROM ${q(legacy)}`);
+  const plan = { legacy, source, rows: Number(count?.n ?? 0), key: {}, values: {} };
+  if (source.to === null) return plan;
+  if (!(await tableExists(db, source.to))) throw new Error(`${legacy} maps to ${source.to}, which does not exist; nothing was dropped`);
+  const own = await tableColumns(db, legacy);
+  const pk = (await db.all(`SELECT name FROM pragma_table_info('${q(legacy)}') WHERE pk > 0 ORDER BY pk`)).map((r) => String(r.name));
+  const key = source.key ?? Object.fromEntries(pk.map((c) => [c, `l.${quoted(c)}`]));
+  if (Object.keys(key).length === 0) throw new Error(`${legacy} has no primary key and its mapping gives none; nothing was dropped`);
+  const target = await db.all(`SELECT name, "notnull" AS nn, dflt_value AS d, pk FROM pragma_table_info('${q(source.to)}')`);
+  const values = source.values ?? Object.fromEntries(target.filter((c) => own.includes(String(c.name))).map((c) => [String(c.name), `l.${quoted(String(c.name))}`]));
+  const required = target.filter((c) => Number(c.nn) === 1 && c.d === null && Number(c.pk) === 0 && !(String(c.name) in values)).map((c) => String(c.name));
+  if (required.length > 0) throw new Error(`${legacy} cannot fill ${source.to}.${required.join(", ")}; nothing was dropped`);
+  return { ...plan, key, values };
+}
+
+/** The legacy rows whose key is not in the current table: the SELECT list is the key's columns. */
+function missingSql(p: LegacyPlan, select: string): string {
+  const match = Object.entries(p.key).map(([c, e]) => `c.${quoted(c)} IS ${e}`).join(" AND ");
+  return `SELECT ${select} FROM ${q(p.legacy)} l WHERE NOT EXISTS (SELECT 1 FROM ${q(p.source.to!)} c WHERE ${match})`;
+}
+
+async function missingKeys(db: MigrationDb, p: LegacyPlan): Promise<string[]> {
+  if (p.source.to === null) return [];
+  const cols = Object.keys(p.key);
+  const rows = await db.all(`${missingSql(p, Object.entries(p.key).map(([c, e]) => `${e} AS ${quoted(c)}`).join(", "))} ORDER BY ${cols.map(quoted).join(", ")}`);
+  return rows.map((r) => cols.map((c) => `${c}=${String(r[c])}`).join(" "));
+}
+
+/**
+ * The contract for `legacy_*` tables (RFC 0015 §12 D2): every legacy table in the database must be in `sources`,
+ * else nothing happens and the error names the unmapped ones. Each legacy row whose key is not in its current table
+ * is copied there (parents before children), the copy is checked, and then every legacy table is dropped. Safe to
+ * rerun: a row already copied is not copied again, and a run that stopped before the drops only drops. The runner
+ * archived the rows first (D4). Prints one line per table, with the key of each row it copied.
+ */
+export async function dropLegacyTables(db: MigrationDb, sources: Readonly<Record<string, LegacySource>>, print: (line: string) => void): Promise<void> {
+  const present = await legacyTables(db);
+  const unmapped = present.filter((t) => !Object.hasOwn(sources, t));
+  if (unmapped.length > 0) throw new Error(`no current table is mapped for ${unmapped.join(", ")}; nothing was copied or dropped`);
+  const plans: LegacyPlan[] = [];
+  for (const t of present) plans.push(await planOf(db, t, sources[t]!));
+  const targets = await parentsFirst(db, [...new Set(plans.flatMap((p) => (p.source.to === null ? [] : [p.source.to])))]);
+  const copied = new Map<string, string[]>();
+  for (const to of targets) {
+    for (const p of plans.filter((x) => x.source.to === to)) {
+      const keys = await missingKeys(db, p);
+      copied.set(p.legacy, keys);
+      if (keys.length === 0) continue;
+      const cols = Object.keys(p.values);
+      try {
+        await db.run(`INSERT INTO ${q(to)} (${cols.map(quoted).join(", ")}) ${missingSql(p, Object.values(p.values).join(", "))}`);
+      } catch (e) {
+        throw new Error(`copy of ${p.legacy} into ${to} failed: ${(e as Error).message}; nothing was dropped`);
+      }
+      const left = await missingKeys(db, p);
+      if (left.length > 0) throw new Error(`${p.legacy}: ${left.length} rows still missing from ${to} after the copy; nothing was dropped`);
+    }
+  }
+  await dropTables(db, present);
+  for (const p of plans) {
+    const keys = copied.get(p.legacy) ?? [];
+    const into = p.source.to === null ? `retired (${p.source.why ?? "no replacement"}), nothing copied` : `copied ${keys.length} into ${p.source.to}`;
+    print(`${p.legacy}: ${p.rows} rows; ${into}; dropped ${p.rows}`);
+    for (const k of keys) print(`  copied ${k}`);
+  }
+}
+
 export interface CopyReport {
   readonly table: string;
   readonly to: string;

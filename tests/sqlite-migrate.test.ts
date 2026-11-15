@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { MIGRATION_PENDING } from "../src/interfaces/updater.js";
+import { parseMigrateArgs } from "../src/cli/handlers/migrate/migrate-args.js";
 import { migrateSqlite, sqlitePendingSteps } from "../src/impl/store/sqlite/rehearse.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { discoverMigrations, MIGRATIONS_TABLE } from "../src/state/index.js";
@@ -71,5 +72,17 @@ describe("SQLite: a pending breaking migration", () => {
     expect(await migrateSqlite(file, "apply", noSteps, () => undefined)).toBe(0);
     expect(await schema(file)).not.toEqual(before);
     expect(await sqlitePendingSteps(file)).toEqual([]);
+  });
+});
+
+describe("migrate arguments", () => {
+  it("--contract goes with --dry-run, as an argument or npm config; no other two modes combine", () => {
+    expect(parseMigrateArgs(["--contract"])).toBe("contract");
+    expect(parseMigrateArgs(["--contract", "--dry-run"])).toBe("contract-dry-run");
+    expect(parseMigrateArgs(["--dry-run", "--contract"])).toBe("contract-dry-run");
+    expect(parseMigrateArgs([], { npm_config_contract: "true", npm_config_dry_run: "true" })).toBe("contract-dry-run");
+    expect(parseMigrateArgs(["--dry-run"])).toBe("dry-run");
+    expect(parseMigrateArgs(["--status", "--dry-run"])).toEqual({ error: expect.stringContaining("only --contract goes with --dry-run") });
+    expect(parseMigrateArgs(["--contract", "--rehearse"])).toEqual({ error: expect.any(String) });
   });
 });

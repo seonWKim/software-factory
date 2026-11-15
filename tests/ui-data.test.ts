@@ -105,10 +105,12 @@ describe("ui api: data tables", () => {
     const { d } = await seeded();
     type Row = { name: string; description: string | null; owner: string | null; column_docs: Record<string, string> };
     const body = await json<{ tables: Row[]; csrf_token: string | null }>(d, "/api/v1/data/tables");
-    for (const t of body.tables) {
+    // A legacy_ copy (RFC 0015 §12) has no line until the contract migration drops it.
+    for (const t of body.tables.filter((x) => !x.name.startsWith("legacy_"))) {
       expect(t.description, t.name).toEqual(expect.any(String));
       expect(t.owner, t.name).toEqual(expect.any(String));
     }
+    expect(body.tables.find((t) => t.name === "legacy_runs")).toMatchObject({ description: null, owner: null, column_docs: {} });
     const by = new Map(body.tables.map((t) => [t.name, t]));
     expect(by.get("worker_runs")).toMatchObject({ owner: "worker", column_docs: { status: expect.stringContaining("failed") } });
     expect(by.get("controller_work_items")).toMatchObject({ owner: "controller", column_docs: { stage: expect.stringContaining("REVIEW") } });
@@ -193,10 +195,13 @@ describe("ui api: data tables", () => {
     }
     for (const [table, cols] of Object.entries(HIDDEN_COLUMNS)) {
       const p = await json<Page>(d, `/api/v1/data/tables/${table}`);
-      // Legacy copies (RFC 0015 §12) are empty in a new store; their hidden columns still never leave.
-      if (!table.startsWith("legacy_")) expect(p.rows.length, table).toBeGreaterThan(0);
+      expect(p.rows.length, table).toBeGreaterThan(0);
       for (const row of p.rows) for (const c of cols) expect(row[c], `${table}.${c}`).toBe("[hidden]");
     }
+    expect(Object.keys(HIDDEN_COLUMNS).filter((t) => t.startsWith("legacy_"))).toEqual([]);
+    // A table no doc describes (a legacy_ copy until the contract migration) shows none of its values.
+    const legacy = await json<Page>(d, "/api/v1/data/tables/legacy_runs");
+    expect(legacy.hidden).toEqual(legacy.columns);
   });
 
   it("a secret-like text value shows as [withheld: <rule>] and its text is in no response", async () => {

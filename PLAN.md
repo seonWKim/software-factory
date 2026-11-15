@@ -10,7 +10,7 @@ Goal: build a minimal factory by hand, then let the factory build the rest of it
 | 1 Minimal factory, by hand | done: issues go from intake to a merged PR with the full trail in `state_changes` |
 | 2 The factory builds itself | most of the order below is in; the golden set's replay is in progress (#317, #369) |
 | 3 Toward autonomy | started: auto mode, the improve loop, standing approvals, Slack, local and GitHub auth with grants |
-| RFC 0015 event-driven refactor | landed on main 2026-11-09 (`PROGRESS.md`); the `legacy_*` contract drops wait until 2026-11-23 |
+| RFC 0015 event-driven refactor | landed on main 2026-11-09 (`PROGRESS.md`); the `legacy_*` contract (copy missing rows, then drop; `--contract --dry-run` first) waits until about 2026-11-26 (14 days after the change-ref rebuild `20261112T1200` was applied) |
 
 ## Principles carried into every phase
 

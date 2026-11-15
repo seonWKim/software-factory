@@ -65,6 +65,7 @@ export async function pendingMigrations(db: MigrationDb, migrations?: readonly M
  */
 export async function contractNotReady(db: MigrationDb, m: Migration, now: string): Promise<string | null> {
   for (const id of m.after ?? []) {
+    if (!(await tableExists(db, MIGRATIONS_TABLE))) return `${id} is not applied`;
     const [row] = await db.all(`SELECT finished_at FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [id]);
     if (!row) return `${id} is not applied`;
     const days = (Date.parse(now) - Date.parse(String(row.finished_at))) / 86_400_000;
@@ -81,19 +82,57 @@ export interface ApplyOptions {
   readonly migrations?: readonly Migration[];
   /** Runs the pending contract migrations instead (and only those whose `after` is old enough). */
   readonly contract?: boolean;
+  /**
+   * Runs each migration that would apply inside a savepoint and rolls it back: its report lines print, nothing is
+   * backed up, recorded or changed (`npm run migrate -- --contract --dry-run`).
+   */
+  readonly dryRun?: boolean;
 }
 
-/** Applies every pending migration in order; returns the ids applied. */
+/** The database a migration's `up` gets from the runner: `print` reports what it did, one line at a time. */
+interface ReportingDb extends MigrationDb {
+  readonly print: (line: string) => void;
+}
+
+/** Where a migration's `up` prints its report: the runner's print, or nowhere when the caller gave none. */
+export function printerOf(db: MigrationDb): (line: string) => void {
+  return (db as Partial<ReportingDb>).print ?? (() => {});
+}
+
+function reporting(db: MigrationDb, print: (line: string) => void): ReportingDb {
+  return { dialect: db.dialect, all: (s, p) => db.all(s, p), run: (s, p) => db.run(s, p), print };
+}
+
+const DRY_RUN = "migrate_dry_run";
+
+/** `up` inside a savepoint that is always rolled back: what the migration would do, printed, and nothing changed. */
+async function dryRun(db: MigrationDb, m: Migration, print: (line: string) => void): Promise<void> {
+  print(`dry run of ${m.id} (rolled back, nothing changes):`);
+  await db.run(`SAVEPOINT ${DRY_RUN}`);
+  try {
+    await m.up(reporting(db, (l) => print(`  ${l}`)));
+  } finally {
+    await db.run(`ROLLBACK TO ${DRY_RUN}`);
+    await db.run(`RELEASE ${DRY_RUN}`);
+  }
+}
+
+/** Applies every pending migration in order; returns the ids applied (with `dryRun`: the ids that would apply). */
 export async function applyMigrations(db: MigrationDb, opts: ApplyOptions): Promise<string[]> {
   const pending = await pendingMigrations(db, opts.migrations, opts.contract);
   if (pending.length === 0) return [];
-  await db.run(CREATE);
+  if (!opts.dryRun) await db.run(CREATE);
   const out: string[] = [];
   for (const m of pending) {
     const started_at = opts.now();
     const wait = m.change === "contract" ? await contractNotReady(db, m, started_at) : null;
     if (wait) {
       opts.print?.(`skipping ${m.id}: ${wait}`);
+      continue;
+    }
+    if (opts.dryRun) {
+      await dryRun(db, m, opts.print ?? (() => {}));
+      out.push(m.id);
       continue;
     }
     let backup: string | null = null;
@@ -110,7 +149,7 @@ export async function applyMigrations(db: MigrationDb, opts: ApplyOptions): Prom
       }
     }
     opts.print?.(`applying ${m.id}`);
-    await m.up(db);
+    await m.up(reporting(db, opts.print ?? (() => {})));
     const problems = m.verify ? await m.verify(db) : [];
     if (problems.length > 0) throw new Error(`${m.id} failed verification, not recorded as applied: ${problems.join("; ")}`);
     await db.run(
