@@ -20,7 +20,13 @@ Do:
    - it duplicates an existing helper instead of reusing it
    - it adds a third copy of a block
    Note cleanup chances outside the change in `summary`, not as findings.
-7. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
+7. Design-system review: only when the project has `design-system/patterns.md` and the diff changes its UI (for this layout, a
+   change under `web/`); other diffs are unaffected. For a change under `web/`, check the diff against
+   `design-system/patterns.md` and `design-system/components.md`. Each rule it breaks is a finding of kind `code`
+   that names the rule by its number (for example "breaks decision rule 2: one value behind a disclosure") and asks
+   for the change. Attach the `check:responsive` screenshots as evidence when they exist; when they do not, list
+   them under `unverified`.
+8. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
 
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.
