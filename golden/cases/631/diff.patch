@@ -1,0 +1,957 @@
+diff --git a/SET_UP.md b/SET_UP.md
+index b930ef49..e570b55e 100644
+--- a/SET_UP.md
++++ b/SET_UP.md
+@@ -178,7 +178,9 @@ A `permissions.static.deny` still refuses a local user. On a shared store the id
+ `factory help` prints the same command list as a `/help` reply; `factory help <id>` marks the ones that apply to that item now, exactly as `/help` on its issue does. `factory approve <id>` checks first that approve applies to the item (the spec gate, the floor block, a run held for the Rule of Two or by coordination cost); anywhere else it prints the refusal the controller would give and stores nothing. The status page lists only the commands that apply now and that your role allows; the ones it leaves out are named once, with the reason, and every refusal there shows as plain text.
+ 
+ - `factory task create --title <t> --body-file <f>`: Create a work item from a title and a body; in chat, a mention with any other words, outside an item's thread, is the request. Who: anyone who may submit work. Prints: the new work item's ID.
+-- `factory task list`: List local work items. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason.
++- `factory task add <words>`: Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, `HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title. Who: anyone who may submit work. Prints: the task: ID, title, due, priority, list and recurrence.
++- `factory task done <task_id>`: Complete a plain task; a recurring one gets its next occurrence once, however often it is completed. Who: anyone who may submit work. Prints: that it is done (or already was), and the next occurrence.
++- `factory task list`: List local work items, then open plain tasks. Who: anyone. Prints: one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task.
+ - `factory task show <id>`: Show one work item. Who: anyone. Prints: its state, spec, sub-tasks, runs and stored messages.
+ - `factory approve <id> [notes]`: Store `/approve` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
+ - `factory retry <id> [text]`: Store `/retry` for the item. Who: the owner and approvers. Prints: the stored command's number; the controller applies it and answers in the item's thread.
+@@ -459,6 +461,8 @@ The factory's commands in Slack, from the same command table as the CLI (`@bot`
+ In Slack a command follows a mention of the bot, in the item's thread and with no slash: `@software-factory approve`, `@software-factory revise <feedback>`, and so for every command (`retry`, `reject`, `resolve`, `budget`, `merge`, `verdict`, `standing`, `link`). The slash form after a mention (`@software-factory /approve`) still works. Outside an item's thread, a mention that starts with a command word and no slash is a request and starts a work item; there `link` keeps its slash (`@software-factory /link <code>`). A reply in an item's thread with no mention still needs the slash. `@software-factory help` answers in the mention's thread: outside an item's thread with how to start work and `/link <code>`, in an item's thread with the commands that apply now, in the same words as `/help` on GitHub but without the slash.
+ 
+ - `@bot <request in plain words>`: as `factory task create --title <t> --body-file <f>`. Who: anyone who may submit work.
++- `@bot task add <words>`: as `factory task add <words>`. Who: anyone who may submit work.
++- `@bot task done <task_id>`: as `factory task done <task_id>`. Who: anyone who may submit work.
+ - `@bot list`: as `factory task list`. Who: anyone.
+ - `@bot show <id>`: as `factory task show <id>`. Who: anyone.
+ - `@bot approve [notes]`: as `factory approve <id> [notes]`, in the item's thread. Who: the owner and approvers.
+diff --git a/docs/design.md b/docs/design.md
+index 145d5995..2cebd239 100644
+--- a/docs/design.md
++++ b/docs/design.md
+@@ -13,6 +13,7 @@ the `05-*` files.
+ 
+ ## 2. Work item
+ - [02-work-item.md](design/02-work-item.md): the one work-item shape for every source, and projects keyed by the forge's repository ID.
++- [02-tasks.md](design/02-tasks.md): plain tasks in `controller_tasks`, never work items: quick-add words, `task add`, `task done`, recurring completion.
+ 
+ ## 3. Risk
+ - [03-risk.md](design/03-risk.md): how the tier is set and rechecked, which tiers need a human, and the safety ratchet.
+diff --git a/docs/design/02-tasks.md b/docs/design/02-tasks.md
+new file mode 100644
+index 00000000..0b8b378f
+--- /dev/null
++++ b/docs/design/02-tasks.md
+@@ -0,0 +1,14 @@
++# 2. Plain tasks
++
++- **Plain tasks beside the work items, never work items (new decision, 2026-11-11, issue #606, phase 1 of 2 of #591).** Until now the work item was the only entity, so a plain to-do ("pay rent", "call the bank") could only be stored as a work item, which triage would read and spec. Now `factory task add <words>` stores a task in its own table, which triage, implement, review and the status page never read.
++  - **Table.** `controller_tasks` (`id`, `title`, `list`, `priority`, `due_date`, `due_time`, `recurrence`, `created_by`, `created_at`, `done_at`, `parent_id`), unique on `parent_id`, indexed on (`done_at`, `created_at`). It carries the controller's prefix, as the table-ownership rule requires, and stays apart from `controller_work_items`, so no work-item query can return a task. Created by the timestamped migration `src/controller/migrations/20261111T1610-controller-tasks.migration.ts`, which holds the SQLite and the MySQL DDL; no numbered SQLite or MySQL step (those lists are frozen).
++  - **Fields.** `list` is a free label (`#home`), never a repository key: a task belongs to no project. `priority` is 1 to 3, 1 the highest. `due_date` is `YYYY-MM-DD`, `due_time` `HH:MM`, 24-hour. `recurrence` is `day`, `week` or `month`. `created_by` is the CLI identity's user ID (`cli_user`, else `local:<git user.email>`, else the OS user, else `local:anonymous`; a chat command's linked factory user), never a display name. `parent_id` names the task a recurring occurrence came from.
++  - **Quick-add.** `src/core/quick-add.ts` is a pure parser (no clock, no I/O, no import from outside `src/core`). It picks out, in any order: `today`, `tomorrow`, `YYYY-MM-DD` (the due day); `HH:MM` (the due time; alone, due today); `!1` to `!3`; `#label`; `every day`, `every week`, `every month`. The words left are the title. It refuses, with a reason and nothing stored: a date or a time that does not exist (`2026-13-01`, `25:00`), a priority outside 1 to 3, any other `every` form (`every fortnight`), a field given twice, a recurrence with no due day, and an empty title.
++  - **Today and tomorrow** are kept as "0 or 1 days from today" by the parser and resolved by the store with its injected Clock, as the calendar date in the process's time zone, so a test's FakeClock decides them and the system clock never does.
++  - **Commands.** `factory task add <words>` and `factory task done <task_id>` are entries of the one command table (`src/core/command-table.ts`), with the same permission as `task create` (anyone who may submit work), so they also exist in chat as `task add <words>` and `task done <task_id>`. `task list` shows the open tasks in a "Tasks" section after the local work items, only when there is one. Editing and deleting a task are not commands yet.
++  - **Writes.** Every write is conditional on the row's current state, so a retry, a redelivered chat message or a second worker changes nothing more. Add inserts with the ID the caller chose (`tk_<random>`, the chat message's ID in chat) and skips a stored one. Done sets `done_at` only where it is unset. A recurring task's completion, in the same transaction, inserts its next occurrence (`parent_id` this task, due a day, a week or a month later, on the month's last day when the month is shorter); the unique `parent_id` keeps a second completion from inserting another.
++  - **Solo and enterprise.** The same: SQLite applies the migration when the store opens; MySQL applies the same migration's MySQL DDL in `npm run migrate`. Reminders, due-date alerts, dashboard and status page views, and linking a task to a repository, an item or a pull request are not part of this decision.
++
++## History
++
++- **Plain tasks** (new decision, 2026-11-11, issue #606). Before: `factory task` meant work items only (create, list, show), and a plain to-do could only be stored as a work item that triage would read.
+diff --git a/schema/mysql.sql b/schema/mysql.sql
+index 2228938f..eb39e779 100644
+--- a/schema/mysql.sql
++++ b/schema/mysql.sql
+@@ -677,6 +677,23 @@ CREATE TABLE `controller_state_changes` (
+   CONSTRAINT `controller_state_changes_ibfk_1` FOREIGN KEY (`work_item_id`) REFERENCES `controller_work_items` (`id`)
+ ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
+ 
++CREATE TABLE `controller_tasks` (
++  `id` varchar(191) COLLATE utf8mb4_bin NOT NULL,
++  `title` text COLLATE utf8mb4_bin NOT NULL,
++  `list` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
++  `priority` tinyint DEFAULT NULL,
++  `due_date` char(10) COLLATE utf8mb4_bin DEFAULT NULL,
++  `due_time` char(5) COLLATE utf8mb4_bin DEFAULT NULL,
++  `recurrence` varchar(16) COLLATE utf8mb4_bin DEFAULT NULL,
++  `created_by` varchar(191) COLLATE utf8mb4_bin NOT NULL,
++  `created_at` char(24) COLLATE utf8mb4_bin NOT NULL,
++  `done_at` char(24) COLLATE utf8mb4_bin DEFAULT NULL,
++  `parent_id` varchar(191) COLLATE utf8mb4_bin DEFAULT NULL,
++  PRIMARY KEY (`id`),
++  UNIQUE KEY `controller_tasks_parent` (`parent_id`),
++  KEY `controller_tasks_open` (`done_at`,`created_at`)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin;
++
+ CREATE TABLE `controller_unreviewed_merges` (
+   `seq` bigint NOT NULL AUTO_INCREMENT,
+   `id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+diff --git a/schema/sqlite.sql b/schema/sqlite.sql
+index d856de99..f2dfa95c 100644
+--- a/schema/sqlite.sql
++++ b/schema/sqlite.sql
+@@ -576,6 +576,20 @@ CREATE TABLE controller_state_changes (
+     UNIQUE (work_item_id, version)
+   );
+ 
++CREATE TABLE controller_tasks (
++    id          TEXT PRIMARY KEY,
++    title       TEXT NOT NULL,
++    list        TEXT,
++    priority    INTEGER,
++    due_date    TEXT,
++    due_time    TEXT,
++    recurrence  TEXT,
++    created_by  TEXT NOT NULL,
++    created_at  TEXT NOT NULL,
++    done_at     TEXT,
++    parent_id   TEXT UNIQUE
++  );
++
+ CREATE TABLE controller_unreviewed_merges (
+     id          TEXT PRIMARY KEY,
+     project     TEXT NOT NULL,
+@@ -1603,6 +1617,8 @@ CREATE INDEX controller_signals_item ON controller_signals (work_item_id, at);
+ 
+ CREATE INDEX controller_signals_source_at ON controller_signals (source, at);
+ 
++CREATE INDEX controller_tasks_open ON controller_tasks (done_at, created_at);
++
+ CREATE INDEX controller_unreviewed_merges_at ON controller_unreviewed_merges (at);
+ 
+ CREATE UNIQUE INDEX controller_unreviewed_merges_change ON controller_unreviewed_merges (project, change_ref);
+diff --git a/src/controller/migrations/20261111T1610-controller-tasks.migration.ts b/src/controller/migrations/20261111T1610-controller-tasks.migration.ts
+new file mode 100644
+index 00000000..9a011eab
+--- /dev/null
++++ b/src/controller/migrations/20261111T1610-controller-tasks.migration.ts
+@@ -0,0 +1,50 @@
++// Plain tasks (design 02-tasks, issue #606): one `controller_tasks` row per task, kept apart from the work items so
++// triage never reads one. `list` is a free label, never a repository key; `created_by` a user ID, never a display
++// name. A recurring task's next occurrence names it in `parent_id`, unique, so completing it twice inserts one
++// occurrence. Additive: a new table only, safe to rerun.
++
++import { defineMigration } from "../../state/index.js";
++
++const SQLITE = [
++  `CREATE TABLE IF NOT EXISTS controller_tasks (
++    id          TEXT PRIMARY KEY,
++    title       TEXT NOT NULL,
++    list        TEXT,
++    priority    INTEGER,
++    due_date    TEXT,
++    due_time    TEXT,
++    recurrence  TEXT,
++    created_by  TEXT NOT NULL,
++    created_at  TEXT NOT NULL,
++    done_at     TEXT,
++    parent_id   TEXT UNIQUE
++  )`,
++  "CREATE INDEX IF NOT EXISTS controller_tasks_open ON controller_tasks (done_at, created_at)",
++];
++
++// Indexes inline, so the statement is whole and a rerun after a failure (MySQL DDL is not transactional) is a no-op.
++const MYSQL = [
++  `CREATE TABLE IF NOT EXISTS controller_tasks (
++    id          VARCHAR(191) NOT NULL PRIMARY KEY,
++    title       TEXT NOT NULL,
++    list        VARCHAR(191) NULL,
++    priority    TINYINT NULL,
++    due_date    CHAR(10) NULL,
++    due_time    CHAR(5) NULL,
++    recurrence  VARCHAR(16) NULL,
++    created_by  VARCHAR(191) NOT NULL,
++    created_at  CHAR(24) NOT NULL,
++    done_at     CHAR(24) NULL,
++    parent_id   VARCHAR(191) NULL,
++    UNIQUE KEY controller_tasks_parent (parent_id),
++    KEY controller_tasks_open (done_at, created_at)
++  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin`,
++];
++
++export default defineMigration({
++  change: "additive",
++  tables: [],
++  async up(db) {
++    for (const sql of db.dialect === "sqlite" ? SQLITE : MYSQL) await db.run(sql);
++  },
++});
+diff --git a/src/core/command-table.ts b/src/core/command-table.ts
+index 8c02b161..07be9e77 100644
+--- a/src/core/command-table.ts
++++ b/src/core/command-table.ts
+@@ -62,8 +62,19 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
+     prints: "the new work item's ID", chat: "<request in plain words>", chat_args: "request", item: false, edge: false,
+   },
+   {
+-    name: "task list", args: "", who: "anyone", group: "task", does: "List local work items",
+-    prints: "one line per local work item: ID, title, stage and blocked reason", chat: "list", chat_args: "none", item: false, edge: false,
++    name: "task add", args: "<words>", who: "submit_work", group: "task",
++    does: "Add a plain task, never a work item or a triage run; quick-add words set its fields: `today`, `tomorrow` or `YYYY-MM-DD`, " +
++      "`HH:MM`, `!1` to `!3`, `#label`, `every day`, `every week` or `every month`, and the words left are its title",
++    prints: "the task: ID, title, due, priority, list and recurrence", chat: "task add <words>", chat_args: "any", item: false, edge: false,
++  },
++  {
++    name: "task done", args: "<task_id>", who: "submit_work", group: "task",
++    does: "Complete a plain task; a recurring one gets its next occurrence once, however often it is completed",
++    prints: "that it is done (or already was), and the next occurrence", chat: "task done <task_id>", chat_args: "id", item: false, edge: false,
++  },
++  {
++    name: "task list", args: "", who: "anyone", group: "task", does: "List local work items, then open plain tasks",
++    prints: "one line per local work item: ID, title, stage and blocked reason; then a Tasks section, one line per open task", chat: "list", chat_args: "none", item: false, edge: false,
+   },
+   {
+     name: "task show", args: "<id>", who: "anyone", group: "task", does: "Show one work item",
+diff --git a/src/core/local-cli.ts b/src/core/local-cli.ts
+index e1023d8a..7c36bcb8 100644
+--- a/src/core/local-cli.ts
++++ b/src/core/local-cli.ts
+@@ -5,10 +5,13 @@ import { MERGE_COMMAND } from "./local-merge.js";
+ import { COMMAND_TABLE, cliUsageOf, commandLine, topWords } from "./command-table.js";
+ import { approveRefusal, helpReply, itemCommandState, refusalText } from "./commands.js";
+ import { VERDICT_USAGE, parseVerdict, verdictRefusal } from "./verdict.js";
++import { parseQuickAdd } from "./quick-add.js";
++import { type TaskFields, taskLine } from "./tasks.js";
+ 
+ /**
+  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
+- * creates a local work item with its triage run queued; `task list` and `task show` read the store; `approve`,
++ * creates a local work item with its triage run queued; `task add` stores a plain task from quick-add words and `task
++ * done` completes one (design 02-tasks: no work item, no triage); `task list` and `task show` read the store; `approve`,
+  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
+  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
+  * with its text before any write (issue #528), and `verdict` its parser and closed-item check (`verdictRefusal`,
+@@ -77,6 +80,8 @@ export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
+ 
+ export type CliAction =
+   | { action: "create"; title: string; bodyFile: string }
++  | { action: "add"; task: TaskFields }
++  | { action: "done"; id: string }
+   | { action: "list" }
+   | { action: "show"; id: WorkItemId }
+   | { action: "command"; command: ItemCommand; id: WorkItemId; text: string }
+@@ -109,6 +114,11 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
+   if (word === "task") {
+     const [sub, ...rest] = args;
+     if (sub === "list") return rest.length === 0 ? { action: "list" } : bad("task list takes no arguments");
++    if (sub === "add") {
++      const parsed = parseQuickAdd(rest.join(" "));
++      return parsed.ok ? { action: "add", task: parsed.task } : bad(`task add: ${parsed.reason}`);
++    }
++    if (sub === "done") return rest.length === 1 && rest[0] ? { action: "done", id: rest[0] } : bad("task done needs one task ID");
+     if (sub === "show") return rest.length === 1 && rest[0] ? { action: "show", id: rest[0] as WorkItemId } : bad("task show needs one work item ID");
+     if (sub === "create") {
+       const flags: Record<string, string> = {};
+@@ -163,7 +173,7 @@ export interface LocalCliDeps {
+   store: Pick<
+     FactoryStore,
+     "createWorkItem" | "getWorkItem" | "listWorkItems" | "listPhases" | "listRuns" | "listItemMessages" | "appendCliCommand"
+-    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser"
++    | "claimLocalOwner" | "listLocalUsers" | "setLocalUserRole" | "removeLocalUser" | "addTask" | "listTasks" | "completeTask"
+   >;
+   /** Who every command acts as (`cliIdentity`). */
+   identity: CliIdentity;
+@@ -171,7 +181,7 @@ export interface LocalCliDeps {
+   project: () => Promise<string | null>;
+   /** Reads a body file. */
+   read: (path: string) => Promise<string>;
+-  /** A new random ID: a local item's source ID, a command's idempotency key. */
++  /** A new random ID: a local item's source ID, a task's ID, a command's idempotency key. */
+   newId: () => string;
+   /** Display names by user ID (Identity's identity_profiles), looked up only to show; absent: IDs only. */
+   displayNames?: (user_ids: readonly string[]) => Promise<ReadonlyMap<string, string>>;
+@@ -189,7 +199,7 @@ export interface CliResult {
+   lines: string[];
+ }
+ 
+-/** The most items `task list` reads. */
++/** The most items, and the most open tasks, `task list` reads. */
+ export const TASK_LIST_LIMIT = 200;
+ 
+ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliResult> {
+@@ -214,10 +224,23 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
+       );
+       return { code: 0, lines: [item.id] };
+     }
++    case "add": {
++      await claim();
++      const task = await d.store.addTask({ ...a.task, id: `tk_${d.newId()}`, created_by: user });
++      return { code: 0, lines: [taskLine(task)] };
++    }
++    case "done": {
++      const r = await d.store.completeTask(a.id);
++      if (!r.ok) return fail(`no task ${a.id}`);
++      const done = r.completed ? `done ${a.id}` : `${a.id} was already done`;
++      return { code: 0, lines: [done, ...(r.next ? [`next: ${taskLine(r.next)}`] : [])] };
++    }
+     case "list": {
+       const items = (await d.store.listWorkItems(TASK_LIST_LIMIT)).filter((i) => i.source.type === "local");
+-      if (items.length === 0) return { code: 0, lines: ["no local work items"] };
+-      return { code: 0, lines: items.map((i) => [i.id, i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t")) };
++      const tasks = await d.store.listTasks(TASK_LIST_LIMIT);
++      const lines = items.length === 0 ? ["no local work items"] : items.map((i) => [i.id, i.title ?? "", i.stage, i.blocked_reason ?? "-"].join("\t"));
++      // Plain tasks in their own section after the work items (design 02-tasks), only when there are any.
++      return { code: 0, lines: tasks.length === 0 ? lines : [...lines, "", "Tasks", ...tasks.map(taskLine)] };
+     }
+     case "show": {
+       const item = await d.store.getWorkItem(a.id);
+diff --git a/src/core/quick-add.ts b/src/core/quick-add.ts
+new file mode 100644
+index 00000000..ef04fb72
+--- /dev/null
++++ b/src/core/quick-add.ts
+@@ -0,0 +1,78 @@
++import type { DueDay, Recurrence, TaskFields, TaskPriority } from "./tasks.js";
++
++/**
++ * The quick-add parser (design 02-tasks, issue #606): `factory task add <words>` picks these tokens out of the
++ * words, in any order, and the words left are the title:
++ * - `today`, `tomorrow`, `YYYY-MM-DD`: the due day (today and tomorrow are resolved later, by the store's Clock);
++ * - `HH:MM`: the due time, 24-hour (alone: due today);
++ * - `!1` to `!3`: the priority, 1 the highest;
++ * - `#label`: the list;
++ * - `every day`, `every week`, `every month`: the recurrence, which needs a due day.
++ * Each field at most once. Pure: no clock, no I/O.
++ */
++
++export type QuickAddResult = { ok: true; task: TaskFields } | { ok: false; reason: string };
++
++const RECURRENCES: readonly Recurrence[] = ["day", "week", "month"];
++
++/** A real calendar date, `YYYY-MM-DD`. */
++function validDate(s: string): boolean {
++  const [y, m, d] = s.split("-").map(Number) as [number, number, number];
++  const t = new Date(Date.UTC(y, m - 1, d));
++  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
++}
++
++export function parseQuickAdd(words: string): QuickAddResult {
++  const tokens = words.trim().split(/\s+/).filter((w) => w !== "");
++  const title: string[] = [];
++  let due: DueDay | null = null;
++  let due_time: string | null = null;
++  let priority: TaskPriority | null = null;
++  let list: string | null = null;
++  let recurrence: Recurrence | null = null;
++  const seen = new Set<string>();
++  const once = (field: string): string | null => {
++    if (seen.has(field)) return `repeated field: ${field} given twice`;
++    seen.add(field);
++    return null;
++  };
++  for (let i = 0; i < tokens.length; i++) {
++    const w = tokens[i]!;
++    const lower = w.toLowerCase();
++    let refused: string | null = null;
++    if (lower === "today" || lower === "tomorrow") {
++      refused = once("due date");
++      due = { days_from_today: lower === "today" ? 0 : 1 };
++    } else if (/^\d{4}-\d{2}-\d{2}$/.test(w)) {
++      if (!validDate(w)) return { ok: false, reason: `not a date: ${w}` };
++      refused = once("due date");
++      due = { date: w };
++    } else if (/^\d{1,2}:\d{2}$/.test(w)) {
++      const [h, m] = w.split(":").map(Number) as [number, number];
++      if (h > 23 || m > 59) return { ok: false, reason: `not a time: ${w}` };
++      refused = once("due time");
++      due_time = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
++    } else if (/^!\d+$/.test(w)) {
++      const p = Number(w.slice(1));
++      if (p < 1 || p > 3) return { ok: false, reason: `priority must be !1, !2 or !3, not ${w}` };
++      refused = once("priority");
++      priority = p as TaskPriority;
++    } else if (/^#[\w-]+$/.test(w)) {
++      refused = once("list");
++      list = w.slice(1);
++    } else if (lower === "every") {
++      const next = tokens[i + 1]?.toLowerCase();
++      if (next === undefined || !(RECURRENCES as readonly string[]).includes(next)) {
++        return { ok: false, reason: `unknown recurrence: every ${next ?? ""}`.trim() + " (use every day, every week or every month)" };
++      }
++      refused = once("recurrence");
++      recurrence = next as Recurrence;
++      i++;
++    } else title.push(w);
++    if (refused !== null) return { ok: false, reason: refused };
++  }
++  if (title.length === 0) return { ok: false, reason: "the title is empty: give some words besides the quick-add tokens" };
++  if (due === null && due_time !== null) due = { days_from_today: 0 };
++  if (recurrence !== null && due === null) return { ok: false, reason: `every ${recurrence} needs a due date (today, tomorrow or YYYY-MM-DD)` };
++  return { ok: true, task: { title: title.join(" "), list, priority, due, due_time, recurrence } };
++}
+diff --git a/src/core/tasks.ts b/src/core/tasks.ts
+new file mode 100644
+index 00000000..64b9a14c
+--- /dev/null
++++ b/src/core/tasks.ts
+@@ -0,0 +1,88 @@
++import type { Timestamp, UserId } from "./types.js";
++
++/**
++ * Plain tasks (design 02-tasks, issue #606): a to-do the owner keeps beside the work items, stored in
++ * `controller_tasks`, never a work item, so triage never reads one. No repository: `list` is a free label.
++ */
++
++export type Recurrence = "day" | "week" | "month";
++export type TaskPriority = 1 | 2 | 3;
++
++/** A due day as typed: a calendar date, or today/tomorrow, which the store resolves with its injected Clock. */
++export type DueDay = { date: string } | { days_from_today: 0 | 1 };
++
++/** What quick-add words say about a task (src/core/quick-add.ts). */
++export interface TaskFields {
++  title: string;
++  /** A free `#label`, without the `#`; never a repository key. */
++  list: string | null;
++  /** 1 is the highest. */
++  priority: TaskPriority | null;
++  due: DueDay | null;
++  /** `HH:MM`, 24-hour. */
++  due_time: string | null;
++  recurrence: Recurrence | null;
++}
++
++export interface NewTask extends TaskFields {
++  /** Chosen by the caller, so a repeated add (a retry, a redelivered chat message) stores nothing more. */
++  id: string;
++  /** The CLI user's ID from the environment, never a display name. */
++  created_by: UserId;
++}
++
++export interface Task extends Omit<TaskFields, "due"> {
++  id: string;
++  /** `YYYY-MM-DD`, or null. */
++  due_date: string | null;
++  created_by: UserId;
++  created_at: Timestamp;
++  done_at: Timestamp | null;
++  /** The task a recurring occurrence came from; null for a task someone added. */
++  parent_id: string | null;
++}
++
++export type CompleteTaskResult =
++  | { ok: false; reason: "not_found" }
++  /** `completed`: false when it was already done (nothing written). `next`: the stored next occurrence of a recurring task. */
++  | { ok: true; task: Task; completed: boolean; next: Task | null };
++
++/** The store's task methods, part of FactoryStore; implemented once in the shared SQL store. */
++export interface TaskStore {
++  /** Inserts the task unless its ID is stored; returns the stored row either way. */
++  addTask(t: NewTask): Promise<Task>;
++  /** Open tasks (no done_at), oldest first, at most `limit`. Read-only. */
++  listTasks(limit: number): Promise<Task[]>;
++  /**
++   * Sets done_at, conditional on it being unset, and for a recurring task inserts its next occurrence (parent_id
++   * this task, unique) in the same transaction, so a second completion writes nothing.
++   */
++  completeTask(id: string): Promise<CompleteTaskResult>;
++}
++
++const pad = (n: number) => String(n).padStart(2, "0");
++
++/** The calendar date of `now` in this process's time zone, `YYYY-MM-DD`; `days` later when given. */
++export function localDate(now: Date, days = 0): string {
++  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + days);
++  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
++}
++
++/** The next occurrence's due date: a day or a week later, or a month later on the same day (the month's last day when shorter). */
++export function nextDueDate(date: string, every: Recurrence): string {
++  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
++  if (every !== "month") {
++    const next = new Date(Date.UTC(y, m - 1, d + (every === "day" ? 1 : 7)));
++    return next.toISOString().slice(0, 10);
++  }
++  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
++  const next = new Date(Date.UTC(y, m, Math.min(d, last)));
++  return next.toISOString().slice(0, 10);
++}
++
++/** One line per task: ID, title, due, priority, list (as `#label`) and recurrence, `-` for each unset. */
++export function taskLine(t: Task): string {
++  const due = t.due_date === null ? "-" : t.due_time === null ? t.due_date : `${t.due_date} ${t.due_time}`;
++  const list = t.list === null ? "-" : "#" + t.list;
++  return [t.id, t.title, due, t.priority === null ? "-" : `!${t.priority}`, list, t.recurrence === null ? "-" : `every ${t.recurrence}`].join("\t");
++}
+diff --git a/src/impl/store/sql/sql-factory-store.ts b/src/impl/store/sql/sql-factory-store.ts
+index c336e976..e84bd9cc 100644
+--- a/src/impl/store/sql/sql-factory-store.ts
++++ b/src/impl/store/sql/sql-factory-store.ts
+@@ -118,6 +118,7 @@ import { placeholders, pruneDeliveredOutbox, pruneHandledCommands, pruneRecords
+ import * as signals from "./signals.js";
+ import * as evaluations from "./merge-evaluations.js";
+ import * as proposals from "./command-proposals.js";
++import * as tasks from "./tasks.js";
+ import * as posted from "./posted-comments.js";
+ 
+ /**
+@@ -383,15 +384,9 @@ export class SqlFactoryStore implements FactoryStore {
+   }
+ 
+   // Signal ledger (design 11-signal-ledger): in ./signals.ts.
+-  recordSignal(s: NewSignal): Promise<boolean> {
+-    return signals.recordSignal(this.db, s);
+-  }
+-  latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> {
+-    return signals.latestSignalTimes(this.db);
+-  }
+-  listSignalRefs(windows: Parameters<FactoryStore["listSignalRefs"]>[0]): Promise<{ source: string; source_ref: string }[]> {
+-    return signals.listSignalRefs(this.db, windows);
+-  }
++  recordSignal(s: NewSignal): Promise<boolean> { return signals.recordSignal(this.db, s); }
++  latestSignalTimes(): Promise<ReadonlyMap<string, Timestamp>> { return signals.latestSignalTimes(this.db); }
++  listSignalRefs(windows: Parameters<FactoryStore["listSignalRefs"]>[0]) { return signals.listSignalRefs(this.db, windows); }
+   listStateChangesSince(q: Parameters<FactoryStore["listStateChangesSince"]>[0]): Promise<StateChange[]> {
+     return signals.listStateChangesSince(this.db, q);
+   }
+@@ -407,6 +402,10 @@ export class SqlFactoryStore implements FactoryStore {
+   recordCommandProposals(rows: Parameters<FactoryStore["recordCommandProposals"]>[0]) { return proposals.recordCommandProposals(this.db, rows, this.now()); }
+   listCommandProposals(proposal_id: string) { return proposals.listCommandProposals(this.db, proposal_id); }
+   answerCommandProposal(a: Parameters<FactoryStore["answerCommandProposal"]>[0]) { return proposals.answerCommandProposal(this.db, a, this.now()); }
++  // Plain tasks (design 02-tasks, issue #606): tasks.ts
++  addTask(t: Parameters<FactoryStore["addTask"]>[0]) { return tasks.addTask(this.db, t, this.clock.now()); }
++  listTasks(limit: number) { return tasks.listTasks(this.db, limit); }
++  completeTask(id: string) { return tasks.completeTask(this.db, id, this.now()); }
+ 
+   // Budget checkpoints
+ 
+diff --git a/src/impl/store/sql/tasks.ts b/src/impl/store/sql/tasks.ts
+new file mode 100644
+index 00000000..a84d9786
+--- /dev/null
++++ b/src/impl/store/sql/tasks.ts
+@@ -0,0 +1,71 @@
++// Plain tasks (design 02-tasks, issue #606): the store methods of TaskStore over `controller_tasks`, kept out of
++// sql-factory-store.ts so that file stays within its line budget. Every write is conditional on the row's current
++// state (absent for an insert, done_at unset for a completion), so applying one twice changes nothing more.
++
++import { localDate, nextDueDate, type CompleteTaskResult, type NewTask, type Recurrence, type Task, type TaskPriority } from "../../../core/tasks.js";
++import type { Timestamp, UserId } from "../../../core/types.js";
++import type { Row, SqlDriver, SqlExecutor } from "../../../state/index.js";
++import { newId } from "./rows.js";
++
++const COLUMNS = "id, title, list, priority, due_date, due_time, recurrence, created_by, created_at, done_at, parent_id";
++
++const text = (v: unknown): string | null => (v == null ? null : String(v));
++
++function rowToTask(r: Row): Task {
++  return {
++    id: String(r.id), title: String(r.title), list: text(r.list), priority: r.priority == null ? null : (Number(r.priority) as TaskPriority),
++    due_date: text(r.due_date), due_time: text(r.due_time), recurrence: text(r.recurrence) as Recurrence | null,
++    created_by: String(r.created_by) as UserId, created_at: String(r.created_at) as Timestamp, done_at: text(r.done_at) as Timestamp | null,
++    parent_id: text(r.parent_id),
++  };
++}
++
++async function select(db: SqlExecutor, column: "id" | "parent_id", value: string): Promise<Task | null> {
++  const [row] = await db.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE ${column} = ?`, [value]);
++  return row ? rowToTask(row) : null;
++}
++
++/** Inserts `t` unless a row has its ID (or, for an occurrence, its parent); false when it inserted nothing. */
++async function insert(db: SqlDriver, tx: SqlExecutor, t: Task): Promise<boolean> {
++  try {
++    await tx.run(`INSERT INTO controller_tasks (${COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
++      t.id, t.title, t.list, t.priority, t.due_date, t.due_time, t.recurrence, t.created_by, t.created_at, t.done_at, t.parent_id,
++    ]);
++    return true;
++  } catch (err) {
++    if (db.isDuplicateKey(err)) return false;
++    throw err;
++  }
++}
++
++/** Today and tomorrow resolve against `now`, the store's injected Clock. */
++export async function addTask(db: SqlDriver, t: NewTask, now: Date): Promise<Task> {
++  const due_date = t.due === null ? null : "date" in t.due ? t.due.date : localDate(now, t.due.days_from_today);
++  const row: Task = {
++    id: t.id, title: t.title, list: t.list, priority: t.priority, due_date, due_time: t.due_time, recurrence: t.recurrence,
++    created_by: t.created_by, created_at: now.toISOString() as Timestamp, done_at: null, parent_id: null,
++  };
++  return db.transaction(async (tx) => {
++    await insert(db, tx, row);
++    return (await select(tx, "id", t.id))!;
++  });
++}
++
++export async function listTasks(db: SqlDriver, limit: number): Promise<Task[]> {
++  const rows = await db.all(`SELECT ${COLUMNS} FROM controller_tasks WHERE done_at IS NULL ORDER BY created_at, id LIMIT ?`, [limit]);
++  return rows.map(rowToTask);
++}
++
++export async function completeTask(db: SqlDriver, id: string, now: Timestamp): Promise<CompleteTaskResult> {
++  return db.transaction(async (tx) => {
++    const task = await select(tx, "id", id);
++    if (task === null) return { ok: false, reason: "not_found" } as const;
++    const completed = (await tx.run("UPDATE controller_tasks SET done_at = ? WHERE id = ? AND done_at IS NULL", [now, id])) === 1;
++    if (completed && task.recurrence !== null && task.due_date !== null) {
++      await insert(db, tx, {
++        ...task, id: newId("tk"), due_date: nextDueDate(task.due_date, task.recurrence), created_at: now, done_at: null, parent_id: id,
++      });
++    }
++    return { ok: true, task: (await select(tx, "id", id))!, completed, next: await select(tx, "parent_id", id) } as const;
++  });
++}
+diff --git a/src/interfaces/factory-store.ts b/src/interfaces/factory-store.ts
+index a47af315..069945b6 100644
+--- a/src/interfaces/factory-store.ts
++++ b/src/interfaces/factory-store.ts
+@@ -14,6 +14,7 @@ import type { StatsRecord } from "../core/stats.js";
+ import type { MergeEvaluation } from "../core/merge-evaluation.js";
+ import type { LearnedSettingsStore } from "../core/learned-settings.js";
+ import type { CommandProposalStore } from "../core/interpret.js";
++import type { TaskStore } from "../core/tasks.js";
+ import type { PostedCommentReads } from "../core/reaction-verdict.js";
+ 
+ // Contract for every implementation (SQLite now, Postgres later):
+@@ -36,8 +37,7 @@ export interface NewWorkItem {
+   adopted?: AdoptedPr;
+   /**
+    * The item starts held (design 2026-11-01, split specs): `NEW` with this blocker instead of `blocked_on:
+-   * none`. A later phase of a split waits here until the phase before it closes as completed. Ignored with
+-   * `adopted`.
++   * none`. A later phase of a split waits here until the phase before it closes as completed. Ignored with `adopted`.
+    */
+   hold?: { blocked_on: "upstream"; blocked_reason: string };
+   /** A phase of a split spec (design 2026-11-01): its parent and its place in merge order (1-based). */
+@@ -345,7 +345,7 @@ export interface SchemaVersion {
+   latest: number;
+ }
+ 
+-export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, PostedCommentReads {
++export interface FactoryStore extends LearnedSettingsStore, CommandProposalStore, TaskStore, PostedCommentReads {
+   migrate(): Promise<void>;
+   /**
+    * Read-only probe for health checks: reaches the database and reads the applied schema version. Writes
+diff --git a/tests/architecture/known-violations/file-budget.json b/tests/architecture/known-violations/file-budget.json
+index 1f901465..5b7dec28 100644
+--- a/tests/architecture/known-violations/file-budget.json
++++ b/tests/architecture/known-violations/file-budget.json
+@@ -7,7 +7,7 @@
+   "golden.ts": 690,
+   "impl/github/github-issue-source.ts": 720,
+   "impl/runner/claude-code-runner.ts": 661,
+-  "impl/store/sql/sql-factory-store.ts": 2977,
++  "impl/store/sql/sql-factory-store.ts": 2976,
+   "impl/store/sqlite/schema.ts": 735,
+   "impl/updater/git-worktree.ts": 912,
+   "interfaces/factory-store.ts": 1355,
+diff --git a/tests/quick-add.test.ts b/tests/quick-add.test.ts
+new file mode 100644
+index 00000000..3c23f3b3
+--- /dev/null
++++ b/tests/quick-add.test.ts
+@@ -0,0 +1,119 @@
++import { describe, expect, it } from "vitest";
++import { parseQuickAdd } from "../src/core/quick-add.js";
++import { localDate, nextDueDate } from "../src/core/tasks.js";
++
++// The quick-add parser (design 02-tasks, issue #606): one test per accepted form and per refusal.
++
++const ok = (words: string) => {
++  const r = parseQuickAdd(words);
++  if (!r.ok) throw new Error(r.reason);
++  return r.task;
++};
++const refused = (words: string) => {
++  const r = parseQuickAdd(words);
++  if (r.ok) throw new Error(`accepted: ${JSON.stringify(r.task)}`);
++  return r.reason;
++};
++
++describe("parseQuickAdd accepts", () => {
++  it("plain words: the title, every field unset", () => {
++    expect(ok("  buy   milk ")).toEqual({ title: "buy milk", list: null, priority: null, due: null, due_time: null, recurrence: null });
++  });
++
++  it("today", () => {
++    expect(ok("call mum today")).toMatchObject({ title: "call mum", due: { days_from_today: 0 } });
++  });
++
++  it("tomorrow", () => {
++    expect(ok("Tomorrow call mum")).toMatchObject({ title: "call mum", due: { days_from_today: 1 } });
++  });
++
++  it("YYYY-MM-DD", () => {
++    expect(ok("pay rent 2028-02-29")).toMatchObject({ title: "pay rent", due: { date: "2028-02-29" } });
++  });
++
++  it("HH:MM, alone due today", () => {
++    expect(ok("standup 9:05")).toMatchObject({ title: "standup", due: { days_from_today: 0 }, due_time: "09:05" });
++    expect(ok("standup tomorrow 23:59")).toMatchObject({ due: { days_from_today: 1 }, due_time: "23:59" });
++  });
++
++  it("!1 to !3", () => {
++    expect(ok("a !1").priority).toBe(1);
++    expect(ok("a !2").priority).toBe(2);
++    expect(ok("!3 a").priority).toBe(3);
++  });
++
++  it("#label", () => {
++    expect(ok("fix bike #home")).toMatchObject({ title: "fix bike", list: "home" });
++  });
++
++  it("every day", () => {
++    expect(ok("water plants every day today")).toMatchObject({ title: "water plants", recurrence: "day", due: { days_from_today: 0 } });
++  });
++
++  it("every week", () => {
++    expect(ok("review budget Every Week 2026-11-13")).toMatchObject({ title: "review budget", recurrence: "week", due: { date: "2026-11-13" } });
++  });
++
++  it("every month", () => {
++    expect(ok("pay rent every month 2026-01-31 !1 #home 08:00")).toEqual({
++      title: "pay rent", list: "home", priority: 1, due: { date: "2026-01-31" }, due_time: "08:00", recurrence: "month",
++    });
++  });
++});
++
++describe("parseQuickAdd rejects, with a reason", () => {
++  it("a date that is no date, such as 2026-13-01", () => {
++    expect(refused("pay 2026-13-01")).toContain("not a date: 2026-13-01");
++    expect(refused("pay 2026-02-30")).toContain("not a date");
++  });
++
++  it("a time that is no time, such as 25:00", () => {
++    expect(refused("call 25:00")).toContain("not a time: 25:00");
++    expect(refused("call 10:60")).toContain("not a time");
++  });
++
++  it("priority !0 or !4", () => {
++    expect(refused("a !0")).toContain("!1, !2 or !3");
++    expect(refused("a !4")).toContain("!1, !2 or !3");
++  });
++
++  it("an unknown every form, such as every fortnight", () => {
++    expect(refused("water every fortnight today")).toContain("unknown recurrence: every fortnight");
++    expect(refused("water today every")).toContain("unknown recurrence");
++  });
++
++  it("a repeated field", () => {
++    expect(refused("a today tomorrow")).toContain("repeated field: due date");
++    expect(refused("a 2026-01-01 today")).toContain("repeated field: due date");
++    expect(refused("a 09:00 10:00")).toContain("repeated field: due time");
++    expect(refused("a !1 !2")).toContain("repeated field: priority");
++    expect(refused("a #home #work")).toContain("repeated field: list");
++    expect(refused("a every day every week today")).toContain("repeated field: recurrence");
++  });
++
++  it("a recurrence with no due date", () => {
++    expect(refused("water plants every day")).toContain("every day needs a due date");
++  });
++
++  it("an empty title", () => {
++    expect(refused("")).toContain("the title is empty");
++    expect(refused("today !1 #home every week")).toContain("the title is empty");
++  });
++});
++
++describe("task dates", () => {
++  it("localDate is the calendar date of the given time, never the system clock's", () => {
++    expect(localDate(new Date(2020, 1, 28, 12))).toBe("2020-02-28");
++    expect(localDate(new Date(2020, 1, 28, 12), 1)).toBe("2020-02-29");
++    expect(localDate(new Date(2020, 11, 31, 12), 1)).toBe("2021-01-01");
++  });
++
++  it("nextDueDate: a day, a week, or a month later on the same day, the month's last day when shorter", () => {
++    expect(nextDueDate("2026-12-31", "day")).toBe("2027-01-01");
++    expect(nextDueDate("2026-02-25", "week")).toBe("2026-03-04");
++    expect(nextDueDate("2026-01-15", "month")).toBe("2026-02-15");
++    expect(nextDueDate("2026-01-31", "month")).toBe("2026-02-28");
++    expect(nextDueDate("2026-12-31", "month")).toBe("2027-01-31");
++  });
++});
+diff --git a/tests/store-contract.test.ts b/tests/store-contract.test.ts
+index 64dbdde2..1e11d009 100644
+--- a/tests/store-contract.test.ts
++++ b/tests/store-contract.test.ts
+@@ -1707,6 +1707,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
+       "controller_merge_queues", // RFC 0015 M8: src/controller/migrations/20261109T0300-controller-merge-queue
+       "controller_merge_queue_entries",
+       "controller_signals", // the signal ledger: src/controller/migrations/20261111T1210-controller-signals
++      "controller_tasks", // plain tasks: src/controller/migrations/20261111T1610-controller-tasks
+       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
+       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
+       // The sql bus's own tables (RFC 0015 M3).
+diff --git a/tests/tasks.test.ts b/tests/tasks.test.ts
+new file mode 100644
+index 00000000..93cdea23
+--- /dev/null
++++ b/tests/tasks.test.ts
+@@ -0,0 +1,180 @@
++import { describe, expect, it } from "vitest";
++import migration from "../src/controller/migrations/20261111T1610-controller-tasks.migration.js";
++import { type CliAction, type LocalCliDeps, parseLocalCliArgs, runLocalCli } from "../src/core/local-cli.js";
++import { type NewTask, localDate } from "../src/core/tasks.js";
++import type { UserId } from "../src/core/types.js";
++import { FakeClock } from "../src/impl/clock/fake-clock.js";
++import { MIGRATIONS_TABLE, type MigrationDb, type SqlDriver, tableExists } from "../src/state/index.js";
++import { PROJECT_KEY, issue, newStore, system } from "./helpers/store.js";
++
++// Plain tasks (design 02-tasks, issue #606): stored in controller_tasks, never a work item; quick-add on the CLI;
++// conditional, idempotent writes; one next occurrence per recurring completion.
++
++const USER = "local:dev@example.com" as UserId;
++const DAY = 24 * 60 * 60 * 1000;
++
++async function setup(clock = new FakeClock("2026-11-11T12:00:00.000Z")) {
++  const { store } = await newStore(clock);
++  let n = 0;
++  const d: LocalCliDeps = {
++    store, identity: { user: USER, from: "git user.email" }, project: async () => null, read: async () => "", newId: () => `id${++n}`,
++  };
++  /** As typed: `factory task <args...>`. */
++  const cli = (...args: string[]) => {
++    const a = parseLocalCliArgs("task", args);
++    if ("error" in a) throw new Error(a.error);
++    return runLocalCli(d, a as CliAction);
++  };
++  return { store, clock, d, cli };
++}
++
++const task = (over: Partial<NewTask> = {}): NewTask => ({
++  id: "tk_1", title: "water plants", list: null, priority: null, due: { date: "2026-11-11" }, due_time: null, recurrence: null, created_by: USER, ...over,
++});
++
++describe("factory task add", () => {
++  it("stores a task in controller_tasks with the words left as its title; no work item and no triage run", async () => {
++    const { store, cli } = await setup();
++    const r = await cli("add", "pay", "rent", "2026-12-01", "08:30", "!1", "#home", "every", "month");
++    expect(r.code).toBe(0);
++    const [stored] = await store.listTasks(10);
++    expect(stored).toMatchObject({
++      id: "tk_id1", title: "pay rent", list: "home", priority: 1, due_date: "2026-12-01", due_time: "08:30", recurrence: "month",
++      done_at: null, parent_id: null,
++    });
++    expect(r.lines).toEqual(["tk_id1\tpay rent\t2026-12-01 08:30\t!1\t#home\tevery month"]);
++    expect(await store.listWorkItems(10)).toEqual([]);
++    expect(await store.db.all("SELECT id FROM worker_runs")).toEqual([]);
++  });
++
++  it("stores the CLI user's ID from the environment in created_by, never a display name", async () => {
++    const { store, cli } = await setup();
++    await cli("add", "call", "mum");
++    expect((await store.listTasks(10))[0]!.created_by).toBe(USER);
++    expect(await store.db.all("SELECT created_by FROM controller_tasks")).toEqual([{ created_by: USER }]);
++  });
++
++  it("refuses quick-add words the parser refuses, storing nothing", () => {
++    expect(parseLocalCliArgs("task", ["add", "pay", "2026-13-01"])).toMatchObject({ error: expect.stringContaining("task add: not a date") });
++    expect(parseLocalCliArgs("task", ["add"])).toMatchObject({ error: expect.stringContaining("the title is empty") });
++  });
++
++  it("today and tomorrow resolve against the injected Clock, not the system clock", async () => {
++    const clock = new FakeClock("2020-02-28T12:00:00.000Z");
++    const { store, cli } = await setup(clock);
++    await cli("add", "a", "today");
++    clock.advance(1000);
++    await cli("add", "b", "tomorrow");
++    const [a, b] = await store.listTasks(10);
++    expect(a!.due_date).toBe(localDate(clock.now()));
++    expect(b!.due_date).toBe(localDate(clock.now(), 1));
++    expect(b!.due_date).toMatch(/^2020-0[23]-/);
++    expect(a!.created_at).toBe("2020-02-28T12:00:00.000Z");
++  });
++});
++
++describe("factory task list", () => {
++  it("shows open tasks in a section after the work items; a done task is left out", async () => {
++    const { store, cli, d } = await setup();
++    await cli("add", "first");
++    await cli("add", "second", "!2");
++    await cli("done", "tk_id1");
++    expect((await cli("list")).lines).toEqual(["no local work items", "", "Tasks", "tk_id2\tsecond\t-\t!2\t-\t-"]);
++    await runLocalCli({ ...d, project: async () => PROJECT_KEY }, { action: "create", title: "Item", bodyFile: "b" });
++    const lines = (await cli("list")).lines;
++    expect(lines.indexOf("Tasks")).toBeGreaterThan(0);
++    expect(lines[0]).toMatch(/\tItem\tNEW\t-$/);
++    // A work item from another source is not a task either way.
++    await store.createWorkItem(issue(1), system);
++    expect((await store.listTasks(10)).map((t) => t.id)).toEqual(["tk_id2"]);
++  });
++
++  it("with no task the list is the work items alone", async () => {
++    const { cli } = await setup();
++    expect((await cli("list")).lines).toEqual(["no local work items"]);
++  });
++});
++
++describe("factory task done and recurring completion", () => {
++  it("completing a recurring task twice creates exactly one next occurrence", async () => {
++    const { store, clock, cli } = await setup();
++    await cli("add", "water", "plants", "every", "week", "2026-11-11", "#home");
++    clock.advance(DAY);
++    const first = await cli("done", "tk_id1");
++    clock.advance(DAY);
++    const second = await cli("done", "tk_id1");
++    expect(first.lines[0]).toBe("done tk_id1");
++    expect(second.lines[0]).toBe("tk_id1 was already done");
++    const rows = await store.db.all("SELECT id, done_at, due_date, parent_id, list, recurrence FROM controller_tasks ORDER BY created_at");
++    expect(rows).toHaveLength(2);
++    expect(rows[0]).toMatchObject({ id: "tk_id1", done_at: "2026-11-12T12:00:00.000Z" });
++    expect(rows[1]).toMatchObject({ done_at: null, due_date: "2026-11-18", parent_id: "tk_id1", list: "home", recurrence: "week" });
++    expect(first.lines[1]).toBe(second.lines[1]);
++    expect(first.lines[1]).toContain(`next: ${String(rows[1]!.id)}\twater plants\t2026-11-18`);
++  });
++
++  it("a task that is not recurring gets no next occurrence; an unknown ID fails", async () => {
++    const { store, cli } = await setup();
++    await cli("add", "once");
++    expect((await cli("done", "tk_id1")).lines).toEqual(["done tk_id1"]);
++    expect(await store.listTasks(10)).toEqual([]);
++    expect(await cli("done", "tk_nope")).toEqual({ code: 1, lines: ["no task tk_nope"] });
++  });
++});
++
++describe("task writes are conditional and idempotent", () => {
++  it("adding the same task twice stores one row and returns the stored one", async () => {
++    const { store, clock } = await setup();
++    const a = await store.addTask(task());
++    clock.advance(DAY);
++    const b = await store.addTask(task({ title: "something else" }));
++    expect(b).toEqual(a);
++    expect(await store.listTasks(10)).toEqual([a]);
++  });
++
++  it("completing twice leaves the same state; the second completion writes nothing", async () => {
++    const { store, clock } = await setup();
++    await store.addTask(task({ recurrence: "day" }));
++    const first = await store.completeTask("tk_1");
++    const after = await store.db.all("SELECT * FROM controller_tasks ORDER BY id");
++    clock.advance(DAY);
++    const second = await store.completeTask("tk_1");
++    expect(first).toMatchObject({ ok: true, completed: true, next: { due_date: "2026-11-12", parent_id: "tk_1" } });
++    expect(second).toEqual({ ...first, completed: false });
++    expect(await store.db.all("SELECT * FROM controller_tasks ORDER BY id")).toEqual(after);
++  });
++
++  it("completes only a row whose done_at is unset: a row done elsewhere stays as it is", async () => {
++    const { store } = await setup();
++    await store.addTask(task({ recurrence: "month" }));
++    await store.db.run("UPDATE controller_tasks SET done_at = ? WHERE id = ?", ["2026-01-01T00:00:00.000Z", "tk_1"]);
++    expect(await store.completeTask("tk_1")).toMatchObject({ ok: true, completed: false, next: null, task: { done_at: "2026-01-01T00:00:00.000Z" } });
++    expect(await store.db.all("SELECT id FROM controller_tasks")).toEqual([{ id: "tk_1" }]);
++  });
++});
++
++describe("migration: controller_tasks", () => {
++  const ID = "20261111T1610-controller-tasks";
++  const mdb = (db: SqlDriver): MigrationDb => ({ dialect: "sqlite", all: (s, p) => db.all(s, p), run: (s, p) => db.run(s, p) });
++
++  it("a fresh database has controller_tasks and the migration recorded", async () => {
++    const { store } = await newStore();
++    expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(true);
++    expect(await store.db.all(`SELECT id FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID])).toEqual([{ id: ID }]);
++  });
++
++  it("a database at the previous version gets the table, keeps its rows, and a rerun changes nothing", async () => {
++    const { store } = await newStore();
++    const { item } = await store.createWorkItem(issue(1), system);
++    await store.db.run("DROP TABLE controller_tasks");
++    await store.db.run(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID]);
++    expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(false);
++    await store.migrate();
++    expect(await tableExists(mdb(store.db), "controller_tasks")).toBe(true);
++    expect(await store.db.all(`SELECT id FROM ${MIGRATIONS_TABLE} WHERE id = ?`, [ID])).toEqual([{ id: ID }]);
++    expect((await store.getWorkItem(item.id))?.id).toBe(item.id);
++    expect(migration).toMatchObject({ change: "additive" });
++    await migration.up(mdb(store.db));
++    expect(await store.addTask(task())).toMatchObject({ id: "tk_1", due_date: "2026-11-11" });
++  });
++});
