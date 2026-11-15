@@ -458,6 +458,17 @@ describe("app pages", () => {
     expect(screen.queryByRole("link", { name: "Users" })).toBeNull();
   });
 
+  it("the sidebar shows Plugins in its own group above System, linking to /app/plugins", () => {
+    mount();
+    const plugins = screen.getByRole("navigation", { name: "Plugins" });
+    expect([...plugins.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual(["/app/plugins"]);
+    const system = screen.getByRole("navigation", { name: "System" });
+    expect(plugins.compareDocumentPosition(system) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Tasks" }).contains(plugins)).toBe(false);
+    expect(system.contains(plugins)).toBe(false);
+    expect(plugins.closest("div")!.className.split(" ")).toEqual(expect.arrayContaining(["mt-3", "border-t", "pt-3"]));
+  });
+
   it("old paths redirect: /app/workers to Runners; /app/users is no longer an old path", async () => {
     history.replaceState(null, "", "/app/workers");
     mount();

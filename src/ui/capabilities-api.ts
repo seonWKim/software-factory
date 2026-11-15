@@ -1,7 +1,8 @@
-// The Settings page's Capabilities section (design 08-settings, 2026-11-13): GET /api/v1/settings/capabilities lists
-// the skills in the configured skill folders, the ToolBroker's tools and the provider entries (each registered LLM
-// provider and agent runner, one per configured endpoint), with whether each is enabled, the roles that may use it and
-// when a stored run last used it. Read only: grants change through the `tool_grants` setting (POST /api/v1/settings).
+// The capability list (design 08-settings, 2026-11-15): GET /api/v1/settings/capabilities lists the skills in the
+// configured skill folders, the ToolBroker's tools and the provider entries (each registered LLM provider and agent
+// runner, one per configured endpoint), with whether each is enabled, the roles that may use it and when a stored run
+// last used it. The Settings page shows its providers; the Plugins page's Skills and Tools tabs come from the same
+// builder (capabilityRows) through plugins-api.ts. Read only: grants change through the `tool_grants` setting.
 //
 // Names only, never a value: the sources are folder listings, tool descriptors and plugin names (capabilitySources),
 // an endpoint is shown as its host, and every string leaves through the Withholder. The broker is built here only to
@@ -12,7 +13,7 @@ import { TextDecoder } from "node:util";
 import type { Loaded } from "../compose.js";
 import { GRANT_RUN_KINDS, capabilitiesConfig } from "../core/config.js";
 import { MODEL_RUN_KINDS } from "../core/model-choice.js";
-import { resolveSettings } from "../core/settings.js";
+import { type SettingsBase, resolveSettings } from "../core/settings.js";
 import type { Run, RunKind } from "../core/types.js";
 import { harnessToolName } from "../impl/runner/tool-bridge.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -106,6 +107,9 @@ export async function capabilitySources(
 
 const NO_SOURCES: UiCapabilitySources = { skill_folders: [], tools: [], providers: [] };
 
+/** The sources the Settings wiring reads, again on each call; none without the config file's writer. */
+export const settingsSources = async (s: Pick<UiSettings, "editFile">): Promise<UiCapabilitySources> => (await s.editFile?.capabilities?.()) ?? NO_SOURCES;
+
 /** The model a finished run's usage reports, or null. */
 function runModel(run: Run): string | null {
   const o = run.outcome;
@@ -114,7 +118,7 @@ function runModel(run: Run): string | null {
 }
 
 /** A run's stored transcript parts, joined (each part cut at TRANSCRIPT_BYTES); null when none is stored. */
-async function transcriptText(d: UiDeps, item: string, run: StoredRun): Promise<string | null> {
+async function transcriptText(d: Pick<UiDeps, "storage">, item: string, run: StoredRun): Promise<string | null> {
   const storage = d.storage;
   if (!storage) return null;
   const keys = await storage.list(itemPrefix(item as Run["work_item_id"]));
@@ -129,12 +133,14 @@ async function transcriptText(d: UiDeps, item: string, run: StoredRun): Promise<
   return texts.join("\n");
 }
 
-/** GET /api/v1/settings/capabilities: the list, every string through the Withholder. */
-export async function readCapabilities(d: UiDeps, s: UiSettings) {
+/** What the list is read with: the store (runs, overrides), the scanner (the Withholder) and the transcript storage. */
+export type CapabilityDeps = Pick<UiDeps, "store" | "scanner" | "storage">;
+
+/** The capability list of `sources` with the settings in force over `base`, every string through the Withholder. */
+export async function capabilityRows(d: CapabilityDeps, base: SettingsBase, sources: UiCapabilitySources): Promise<Capability[]> {
   const w = new Withholder(d.scanner);
   const text = async (v: string) => (await w.plain(v)).text;
-  const sources = (await s.editFile?.capabilities?.()) ?? NO_SOURCES;
-  const values = resolveSettings(s.base, await d.store.listSettingOverrides()).values;
+  const values = resolveSettings(base, await d.store.listSettingOverrides()).values;
   const providers: ProviderSource[] = sources.providers.map((p) => ({ ...p, models: p.models ?? values.models }));
   const roles = { runner_roles: RUNNER_ROLES, llm_roles: LLM_ROLES };
 
@@ -161,13 +167,19 @@ export async function readCapabilities(d: UiDeps, s: UiSettings) {
       id: await text(c.id),
       name: await text(c.name),
       detail: c.detail === null ? null : await text(c.detail),
+      ...(c.description === undefined ? {} : { description: c.description === null ? null : await text(c.description) }),
       ...(c.models ? { models: await Promise.all(c.models.map(async (m) => ({ class: m.class, model: await text(m.model) }))) } : {}),
     });
   }
+  return capabilities;
+}
+
+/** GET /api/v1/settings/capabilities: the list, every string through the Withholder. */
+export async function readCapabilities(d: UiDeps, s: UiSettings) {
   return {
     as_of: d.clock.now().toISOString(),
     /** The roles a tool may be granted to (`tool_grants` keys). */
     roles: GRANT_RUN_KINDS,
-    capabilities,
+    capabilities: await capabilityRows(d, s.base, await settingsSources(s)),
   };
 }
