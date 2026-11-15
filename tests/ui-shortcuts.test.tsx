@@ -158,7 +158,6 @@ describe("shortcuts", () => {
     const reopens = () => vi.mocked(fetch).mock.calls.filter(([url]) => url === "/api/v1/tasks/reopen");
     history.pushState(null, "", "/app/tasks");
     mount();
-    fireEvent.click(await screen.findByRole("button", { name: "All" }));
     fireEvent.click(await screen.findByRole("checkbox", { name: "Complete: pay rent" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => url === "/api/v1/tasks/done")).toBe(true));
     await waitFor(() => expect(screen.getByRole("checkbox", { name: "Complete: pay rent" }).hasAttribute("disabled")).toBe(false));

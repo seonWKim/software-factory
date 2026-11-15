@@ -10,7 +10,7 @@ import { defaultSecretsFile } from "../src/impl/secrets/env-file-secret-store.js
 import { FsSharedStorage } from "../src/impl/storage/fs-shared-storage.js";
 import { type GitWorktreeOptions, GitWorktreeUpdater, PID_FILE, isCodePath, removeWorktree } from "../src/impl/updater/git-worktree.js";
 import { NoneUpdater } from "../src/impl/updater/none.js";
-import { autoMigrate } from "../src/impl/updater/auto-migrate.js";
+import { CODE_UPDATE_INTERVAL_MS, autoMigrate, codeUpdateIntervalMs } from "../src/impl/updater/config.js";
 import type { ExecResult } from "../src/interfaces/sandbox.js";
 import { CODE_VERSION_ENV, CONFIG_ENV, type ChildHandle, type ChildLauncher, type ChildSpec, type CommandRunner, WORKER_INDEX_BASE_ENV } from "../src/interfaces/updater.js";
 import { REGISTRY, createPlugin } from "../src/plugins.js";
@@ -48,6 +48,14 @@ class World {
   mainFfFails = false;
   failBuild = new Set<string>();
   failCi = new Set<string>();
+  /**
+   * A separate code checkout: `refs/remotes/origin/main` is `fetched`, which moves to `origin` only on a successful
+   * `git fetch` (off: it is `origin` at once, as if every push were fetched).
+   */
+  trackFetch = false;
+  fetched = "c1";
+  /** `git fetch` fails (offline, rate limit). */
+  failFetch = false;
   /** Pids of fake children that are alive, across launchers (the orphan sweep asks). */
   alive = new Set<number>();
   nextPid = 1;
@@ -72,6 +80,7 @@ class World {
 
   private resolveRef(ref: string): string {
     // `refs/heads/main`: the local base branch a `local` updater follows; this world keeps one main line.
+    if (this.trackFetch && (ref === "origin/main" || ref === "refs/remotes/origin/main^{commit}")) return this.fetched;
     return ref === "origin/main" || ref === "refs/remotes/origin/main^{commit}" || ref === "refs/heads/main^{commit}" ? this.origin : ref;
   }
 
@@ -106,8 +115,14 @@ class World {
     const args = rest.join(" ");
     switch (sub) {
       case "fetch":
-        this.events.push("fetch");
+        this.events.push(this.failFetch ? "fetch failed" : "fetch");
+        if (this.failFetch) return fail("fatal: unable to access 'https://github.com/x/y.git/': The requested URL returned error: 429", 128);
+        this.fetched = this.origin;
         return ok();
+      case "rev-list": {
+        const [from, to] = rest[1]!.split("..");
+        return ok(`${this.commits.indexOf(to!) - this.commits.indexOf(from!)}\n`);
+      }
       case "rev-parse":
         if (args === "HEAD") return this.heads.has(dir) ? ok(`${this.heads.get(dir)}\n`) : fail("not a git repository", 128);
         if (args === "--abbrev-ref HEAD") return ok(`${this.mainBranch}\n`);
@@ -233,7 +248,7 @@ class FakeLauncher implements ChildLauncher {
 function setup(
   opts: { runTimeoutMs?: number; statusFile?: string; world?: World } & Pick<
     GitWorktreeOptions,
-    "pendingMigrations" | "applyMigrations" | "autoMigrate" | "requestFile" | "configFile" | "local"
+    "pendingMigrations" | "applyMigrations" | "autoMigrate" | "requestFile" | "configFile" | "local" | "fetchIntervalMs"
   > = {},
 ) {
   const world = opts.world ?? new World();
@@ -258,6 +273,7 @@ function setup(
     ...(opts.requestFile ? { requestFile: opts.requestFile } : {}),
     ...(opts.configFile ? { configFile: opts.configFile } : {}),
     ...(opts.local ? { local: true } : {}),
+    ...(opts.fetchIntervalMs !== undefined ? { fetchIntervalMs: opts.fetchIntervalMs } : {}),
   });
   return { world, launcher, log, clock, updater };
 }
@@ -491,6 +507,175 @@ describe("updater: git-worktree with no GitHub plugin selected (local)", () => {
     expect(git).toContain("git rev-parse --verify refs/heads/main^{commit}");
     expect(launcher.children).toHaveLength(2);
     await updater.shutdown();
+  });
+});
+
+describe("updater: git-worktree with a separate code checkout (not the project repository)", () => {
+  const EVERY = 900_000;
+  const separate = (statusFile?: string) => {
+    const world = new World();
+    world.trackFetch = true;
+    return setup({ world, fetchIntervalMs: EVERY, ...(statusFile ? { statusFile } : {}) });
+  };
+  const fetches = (world: World) => world.calls.filter((c) => c.includes(": git fetch "));
+  const statusAt = () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sf-status-")), "supervisor.json");
+    return { file, read: () => JSON.parse(readFileSync(file, "utf8")) as { state: string; rev: string | null; behind?: number | null } };
+  };
+
+  it("a new commit on origin/main is built and started start-then-drain within one code update interval", async () => {
+    const { world, launcher, clock, updater } = separate();
+    await updater.start();
+    expect(world.calls).toContain(".: git fetch --quiet origin main");
+    world.push("c2", ["src/core/worker.ts"]);
+    world.events = [];
+    clock.advance(EVERY / 2);
+    await updater.poll(); // not due yet: the local origin ref has not moved
+    expect(world.events).toEqual([]);
+    clock.advance(EVERY / 2);
+    await updater.poll();
+    await settle();
+    expect(world.events).toEqual([
+      "fetch",
+      "ff . c2",
+      `worktree add ${V("c2")} c2`,
+      `build ${V("c2")}@c2`,
+      `launch 2 ${V("c2")}/dist/main.js (// built from c2)`,
+      "drain 1",
+      "exit 1",
+    ]);
+    expect(launcher.aliveAtLaunch[1]).toEqual([1]);
+    expect(updater.childPid()).toBe(2);
+    noForbidden(world);
+    await updater.shutdown();
+  });
+
+  it("no git fetch runs more often than the interval; polls between fetches read only the local origin ref", async () => {
+    const { world, clock, updater } = separate();
+    await updater.start();
+    expect(fetches(world)).toHaveLength(1);
+    const before = world.calls.length;
+    for (let i = 1; i <= 29; i++) {
+      clock.advance(30_000);
+      await updater.poll();
+      expect(fetches(world), `poll ${i}`).toHaveLength(i * 30_000 >= EVERY ? 2 : 1);
+    }
+    const between = world.calls.slice(before).map((c) => c.split(": ")[1]!).filter((c) => c.startsWith("git "));
+    expect(between.filter((c) => c.startsWith("git fetch"))).toEqual([]);
+    expect(between).toContain("git rev-parse --verify refs/remotes/origin/main^{commit}");
+    clock.advance(30_000); // 30 polls of 30 s: one interval since the first fetch
+    await updater.poll();
+    expect(fetches(world)).toHaveLength(2);
+    await updater.shutdown();
+  });
+
+  it("a failing fetch is logged; the running child keeps running and the next fetch is tried one interval later", async () => {
+    const { file, read } = statusAt();
+    const { world, launcher, log, clock, updater } = separate(file);
+    world.failFetch = true;
+    await updater.start(); // offline at start: it runs what the clone's origin ref already holds
+    expect(launcher.children).toHaveLength(1);
+    expect(read()).toMatchObject({ state: "running", rev: "c1", behind: null }); // not checked yet
+    const warned = () => log.lines.filter((l) => l.level === "warn" && l.msg.startsWith("git fetch of the code checkout failed"));
+    expect(warned()).toHaveLength(1);
+    expect(warned()[0]!.fields).toMatchObject({ retry_in_ms: EVERY });
+    expect(String(warned()[0]!.fields?.error)).toContain("429");
+
+    world.push("c2", ["src/core/worker.ts"]);
+    clock.advance(EVERY - 1);
+    await updater.poll(); // the failed try counts: no fetch again before the interval
+    expect(world.events.filter((e) => e.startsWith("fetch"))).toEqual(["fetch failed"]);
+    clock.advance(1);
+    await updater.poll();
+    expect(world.events.filter((e) => e.startsWith("fetch"))).toEqual(["fetch failed", "fetch failed"]);
+    expect(warned()).toHaveLength(2);
+    expect(launcher.children).toHaveLength(1);
+    expect(launcher.children[0]!.alive).toBe(true);
+    expect(launcher.children[0]!.kills).toEqual([]);
+    expect(world.events.some((e) => e.startsWith("drain "))).toBe(false);
+
+    world.failFetch = false; // back online: the next interval picks up c2
+    clock.advance(EVERY);
+    await updater.poll();
+    await settle();
+    expect(launcher.children).toHaveLength(2);
+    expect(read()).toMatchObject({ state: "running", rev: "c2", behind: 0 });
+    await updater.shutdown();
+  });
+
+  it("the status file says how many commits the running revision is behind origin/main after a fetch", async () => {
+    const { file, read } = statusAt();
+    const { world, clock, updater } = separate(file);
+    await updater.start();
+    expect(read()).toMatchObject({ state: "running", rev: "c1", behind: 0 });
+    world.failBuild.add("c3");
+    world.push("c2", ["docs/a.md"]);
+    world.push("c3", ["src/core/worker.ts"]);
+    clock.advance(EVERY);
+    await updater.poll(); // c3 fails to build: the child stays on c1, two commits behind
+    expect(read()).toMatchObject({ state: "build_failed", rev: "c1", behind: 2 });
+    expect(world.calls).toContain(".: git rev-list --count c1..c3");
+    await updater.shutdown();
+  });
+
+  it("self-hosting writes no behind count", async () => {
+    const { file, read } = statusAt();
+    const { updater } = setup({ local: true, statusFile: file });
+    await updater.start();
+    expect(read().state).toBe("running");
+    expect(read()).not.toHaveProperty("behind");
+    await updater.shutdown();
+  });
+});
+
+describe("updater: which branch the code updater follows (self-hosting = code checkout path is repo.path)", () => {
+  const LOCAL_SOURCE = { ...(REAL.plugins as object), source: ["local"], broker: "local" };
+  const optionsFor = async (config: Record<string, unknown>) => {
+    vi.stubEnv("SOFTWARE_FACTORY_SECRETS_FILE", "/nonexistent/.env");
+    const main = checkout({ ...REAL, store: { type: "sqlite" }, ...config }, "main");
+    const loaded = await loadConfig(main);
+    const world = new World();
+    const u = await createUpdater(loaded, { run: world.run, launcher: new FakeLauncher(world), clock: new FakeClock(), log: recordingLog() });
+    return { loaded, o: (u as unknown as { o: GitWorktreeOptions }).o };
+  };
+
+  it("self-hosting with a local source follows the local base branch and runs no git fetch", async () => {
+    const { loaded, o } = await optionsFor({ plugins: LOCAL_SOURCE, repo: { ...(REAL.repo as object), path: ".", base_branch: "trunk" } });
+    expect(loaded.config.repo.path).toBe(loaded.root);
+    expect(o).toMatchObject({ local: true, baseBranch: "trunk" });
+    expect(o.fetchIntervalMs).toBeUndefined();
+    const { world, clock, updater } = setup({ local: o.local! });
+    await updater.start();
+    world.push("c2", ["src/core/worker.ts"]);
+    clock.advance(CODE_UPDATE_INTERVAL_MS * 2);
+    await updater.poll();
+    await settle();
+    expect(world.events).toContain(`launch 2 ${V("c2")}/dist/main.js (// built from c2)`);
+    expect(world.calls.filter((c) => c.includes(" fetch "))).toEqual([]);
+    await updater.shutdown();
+  });
+
+  for (const [label, plugins] of [["a local source", LOCAL_SOURCE], ["the GitHub source", REAL.plugins]] as const) {
+    it(`a separate clone with ${label} follows origin/main of the code checkout, never repo.base_branch`, async () => {
+      const { loaded, o } = await optionsFor({ plugins, repo: { ...(REAL.repo as object), path: "../project", base_branch: "develop" } });
+      expect(loaded.config.repo.path).not.toBe(loaded.root);
+      expect(o).toMatchObject({ repoPath: loaded.root, baseBranch: "main", fetchIntervalMs: CODE_UPDATE_INTERVAL_MS });
+      expect(o.local).toBeUndefined();
+    });
+  }
+
+  it("updater.code_update_interval_ms: absent is 15 minutes; a set value is used; anything but a positive integer fails the config load", async () => {
+    expect(CODE_UPDATE_INTERVAL_MS).toBe(15 * 60_000);
+    expect(codeUpdateIntervalMs(undefined)).toBe(CODE_UPDATE_INTERVAL_MS);
+    expect(codeUpdateIntervalMs({})).toBe(CODE_UPDATE_INTERVAL_MS);
+    expect(codeUpdateIntervalMs({ code_update_interval_ms: 60_000 })).toBe(60_000);
+    const repo = { ...(REAL.repo as object), path: "../project" };
+    const { o } = await optionsFor({ repo, updater: { code_update_interval_ms: 60_000 } });
+    expect(o.fetchIntervalMs).toBe(60_000);
+    for (const bad of [0, -1, 1.5, "900000", null, true]) {
+      expect(() => codeUpdateIntervalMs({ code_update_interval_ms: bad }), String(bad)).toThrow("updater.code_update_interval_ms must be a positive integer");
+      await expect(optionsFor({ repo, updater: { code_update_interval_ms: bad } }), String(bad)).rejects.toThrow("updater.code_update_interval_ms");
+    }
   });
 });
 
