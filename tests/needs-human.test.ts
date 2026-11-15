@@ -3,6 +3,7 @@ import { commandState, commandsFor } from "../src/core/commands.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { IMPLEMENT_SCHEMA, NEEDS_HUMAN_MAX_CHARS, REVIEW_SCHEMA, parseImplement, parseReview } from "../src/core/outputs.js";
 import { blockingRunKind, failureLine, repeatsLastFailure } from "../src/core/policy.js";
+import { LiveSettings, baseFromConfig } from "../src/core/settings.js";
 import { type Run, type WorkerId, type WorkItem, outcomeTokens } from "../src/core/types.js";
 import { Worker } from "../src/worker/index.js";
 import type { AgentRunResult } from "../src/interfaces/agent-runner.js";
@@ -29,6 +30,7 @@ async function factory(runner: FakeRunner, opts: { repeated?: boolean } = {}) {
   const scanner = new PatternEgressScanner(async () => []);
   const controller = new ControllerRole({
     store, source, forge: new FakeForge(null, broker.calls), auth: new FakeAuth(), clock, config, log: silent, scanner, repeated_failure_rule: opts.repeated ?? true,
+    settings: new LiveSettings({ config, base: baseFromConfig(config), source: store }),
   });
   const worker = new Worker({
     id: "w1" as WorkerId, store, sandbox, runner, broker, storage: new MemoryStorage(), clock, config, prompts, log: silent, scanner,
@@ -174,6 +176,24 @@ describe("an implement run that returns needs_human", () => {
     expect(retry).toMatchObject({ status: "queued" });
     expect(await f.item(it0)).toMatchObject({ blocked_on: "none", blocked_reason: null });
     expect(f.asks()).toEqual([]);
+  });
+});
+
+describe("with auto_grant_test_paths off", () => {
+  const TEST_ASK = { ...ASK, paths: ["tests/ui-shortcuts.test.tsx"] };
+
+  it("every needs-human request waits on the owner, one asking only for test paths too, globally or for the project", async () => {
+    for (const project of ["", config.project.key]) {
+      const f = await factory(new FakeRunner({ triage: () => ({ output: triageSpec }), implement: () => ({ output: { needs_human: TEST_ASK } }) }));
+      if (project) await f.store.setSettingOverride({ key: "auto_grant_test_paths", project: "", value: "true", actor: "local:owner" });
+      await f.store.setSettingOverride({ key: "auto_grant_test_paths", project, value: "false", actor: "local:owner" });
+      const it0 = await f.approved(40 + (project ? 1 : 0));
+      expect(await f.item(it0), project).toMatchObject({ blocked_on: "human", blocked_reason: "agent_needs_human", allowed_paths: triageSpec.allowed_paths });
+      expect((await f.store.listStateChanges(it0.id)).map((c) => c.reason), project).not.toContain("retry_requested");
+      expect(await f.runs(it0, "implement"), project).toHaveLength(1);
+      expect(f.asks(), project).toHaveLength(1);
+      expect(f.asks()[0]!.body).toContain("/retry +paths tests/ui-shortcuts.test.tsx");
+    }
   });
 });
 

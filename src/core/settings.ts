@@ -6,7 +6,7 @@ import { errorText, type Logger } from "./log.js";
 import { parseMessageStyle, withMessageStyle } from "./message-style.js";
 import { NOTICE_KINDS, type NoticeKind, parseNoticeKinds, parseNotifyChannels, quietHoursSetting } from "./notifications.js";
 import { DEFAULT_MODEL_BY, MODEL_RUN_KINDS, type ModelNames, type ModelTable, TIER_KEYS, parseModelBy, parseModels } from "./model-choice.js";
-import { usdBudget } from "./spend.js";
+import { usdBudget } from "./spend.js"; import { testPathsOnly } from "./auto-grant.js";
 import type { RunId, Tier, Timestamp } from "./types.js";
 import type { SettingOverride } from "../interfaces/factory-store.js";
 
@@ -257,7 +257,7 @@ export const SETTABLE_KEYS = [
   "poll_interval_ms", "tick_ms",
   "heartbeat_ms", "lease_ms",
   "workers",
-  "phases_auto_approve", "hold_policy",
+  "phases_auto_approve", "hold_policy", "auto_grant_test_paths", "test_globs",
   "alarm_repeat_count", "alarm_window_minutes", "alarm_restart_count",
   "standing_approvals.threshold",
   "mode", "auto_merge_max_tier",
@@ -269,9 +269,8 @@ export type SettableKey = (typeof SETTABLE_KEYS)[number];
 /** Settable keys that are per-project gates: a project value may only tighten the global one. */
 export const GATE_SETTABLE_KEYS = ["max_attempts", "max_diff_lines", "max_diff_files"] as const;
 export type GateSettableKey = (typeof GATE_SETTABLE_KEYS)[number];
-/** Settable keys that take `--project`: the gates a project may tighten, and `mode` (design 08-settings). */
-export const PROJECT_SETTABLE_KEYS = [...GATE_SETTABLE_KEYS, "mode"] as const;
-export type ProjectSettableKey = (typeof PROJECT_SETTABLE_KEYS)[number];
+/** Settable keys that take `--project`: the gates a project may tighten, `mode` (design 08-settings), and `auto_grant_test_paths`, which a project may only turn off (05-restarts). */
+export const PROJECT_SETTABLE_KEYS = [...GATE_SETTABLE_KEYS, "mode", "auto_grant_test_paths"] as const; export type ProjectSettableKey = (typeof PROJECT_SETTABLE_KEYS)[number];
 export type GlobalSettableKey = Exclude<SettableKey, ProjectSettableKey>;
 
 /** The factory's two modes (design 03-risk): `manual` waits for a person at both gates; `auto` may pass them itself. */
@@ -310,7 +309,7 @@ export interface SettableValues {
   lease_ms: number;
   workers: number;
   phases_auto_approve: boolean;
-  hold_policy: HoldPolicy;
+  hold_policy: HoldPolicy; auto_grant_test_paths: boolean; test_globs: string[];
   alarm_repeat_count: number;
   alarm_window_minutes: number;
   alarm_restart_count: number;
@@ -344,7 +343,7 @@ export const SETTABLE_DEFAULTS: Readonly<Record<SettableKey, unknown>> = Object.
   lease_ms: 300_000,
   workers: 1,
   phases_auto_approve: false,
-  hold_policy: DEFAULT_COORDINATION.hold_policy,
+  hold_policy: DEFAULT_COORDINATION.hold_policy, auto_grant_test_paths: true, test_globs: ["tests/**", "**/*.test.*"],
   ...ALARM_DEFAULTS,
   "standing_approvals.threshold": 10, "spend.daily_budget_usd": null, "spend.weekly_budget_usd": null,
   mode: "manual",
@@ -426,7 +425,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "workers":
       if (value === undefined) throw new Error("workers must be an integer of 1 or more (got undefined)");
       return workerCount(value) as SettableValues[K];
-    case "phases_auto_approve": return booleanSetting(key, value) as SettableValues[K];
+    case "phases_auto_approve": case "auto_grant_test_paths": return booleanSetting(key, value) as SettableValues[K];
     case "hold_policy": return parseHoldPolicy(value) as SettableValues[K];
     case "mode":
       if (!(MODES as readonly unknown[]).includes(value)) throw new Error(`mode must be ${MODES.map((m) => `"${m}"`).join(" or ")}`);
@@ -442,7 +441,7 @@ export function parseSettable<K extends SettableKey>(key: K, value: unknown): Se
     case "quiet_hours": return quietHoursSetting(value) as SettableValues[K];
     case "notify_channels": return parseNotifyChannels(value) as SettableValues[K];
     case "integrations": return integrationEntries(value) as SettableValues[K]; case "tool_grants": return toolGrantsShape(value) as SettableValues[K];
-    case "calendar": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error("calendar must be a list of distinct calendar plugin names, or [] for none"); } // the same list check
+    case "calendar": case "test_globs": try { return parseNotifyChannels(value) as SettableValues[K]; } catch { throw new Error(`${key} must be a list of distinct ${key === "calendar" ? "calendar plugin names" : "globs"}, or [] for none`); } // the same list check
     case "max_coordination_cost": case "hotspot_weight": case "mechanical_weight": {
       const problem = coordinationProblems({ [key]: value ?? null })[0];
       if (problem) throw new Error(problem);
@@ -503,7 +502,7 @@ export interface ResolvedSettings {
   /** The per-project layers with the overrides applied, for settingsFor. */
   layers: SettingsLayers;
   /** Per project with a file block or a project override: the value and source of each key it sets. */
-  projects: Record<string, Partial<Record<ProjectSettableKey, { value: number | Mode; source: "override" | "file" }>>>;
+  projects: Record<string, Partial<Record<ProjectSettableKey, { value: number | Mode | boolean; source: "override" | "file" }>>>;
   /** Stored overrides that failed a check, with the reason. Their key keeps the file value. */
   ignored: IgnoredOverride[];
   /** The file's `max_workers` (else its `workers`, else 1): sizes the supervisor's index block, so no override goes above it. */
@@ -528,7 +527,7 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
   const ignored: IgnoredOverride[] = [];
   const ignore = (o: OverrideRow, reason: string) => ignored.push({ key: o.key, project: o.project, value: o.value, reason });
   const globalOv = new Map<SettableKey, { o: OverrideRow; value: unknown; raw: unknown }>();
-  const projectOv: { o: OverrideRow; key: ProjectSettableKey; value: number | Mode }[] = [];
+  const projectOv: { o: OverrideRow; key: ProjectSettableKey; value: number | Mode | boolean }[] = [];
   for (const o of overrides) {
     const refused = keyRefusal(o.key);
     if (refused) {
@@ -555,7 +554,7 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
       continue;
     }
     if (o.project === "") globalOv.set(key, { o, value, raw });
-    else projectOv.push({ o, key: key as ProjectSettableKey, value: value as number | Mode });
+    else projectOv.push({ o, key: key as ProjectSettableKey, value: value as number | Mode | boolean });
   }
 
   const fromFile = (k: SettableKey): ResolvedSetting => {
@@ -614,15 +613,14 @@ export function resolveSettings(base: SettingsBase, overrides: readonly Override
     }
   }
   for (const po of projectOv) {
-    // `mode` is no gate (design 08-settings): a project's mode stands on its own, outside the per-project layers.
-    if (isGateSettableKey(po.key)) {
+    if (isGateSettableKey(po.key)) { // `mode` is no gate (design 08-settings): a project's mode stands on its own, outside the per-project layers.
       const why = loosening(po.key, po.value as number, global[po.key].value);
       if (why !== null) {
         ignore(po.o, `${projectPath(label(po.o.project), po.key)} ${why}; a project may only tighten a gate`);
         continue;
       }
       projects[po.o.project] = { ...projects[po.o.project], [po.key]: po.value };
-    }
+    } else if (po.key === "auto_grant_test_paths" && po.value === true && !global.auto_grant_test_paths.value) { ignore(po.o, `${projectPath(label(po.o.project), po.key)} true is looser than the global false; a project may only turn it off`); continue; }
     (sources[po.o.project] ??= {})[po.key] = { value: po.value, source: "override" };
   }
 
@@ -744,6 +742,8 @@ export class LiveSettings {
     return withMessageStyle(system, this.current.values.message_style);
   }
 
+  /** Whether `paths` are granted without the owner on `project`: auto_grant_test_paths on and test paths only (design 05-restarts). */
+  autoGrantable(project: string, paths: readonly string[]): boolean { return effectiveSetting(this.current, "auto_grant_test_paths", project).value && testPathsOnly(paths, this.current.values.test_globs); }
   /** Worker slots that may claim: the effective `workers`, capped at the file's `max_workers`. */
   workers(): number {
     return this.current.values.workers;

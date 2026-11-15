@@ -8,6 +8,9 @@ Do:
 3. Run tests only to confirm a specific finding (one test file), not the whole suite and no acceptance tests of your own. The project's checks are {{check_commands}}.{{toolchain}} Run them, and any single test, through the project's own scripts, never the test runner directly; dependencies are already installed and the sandbox has no network, so do not install or download packages. A test that cannot run in the sandbox (no database, `listen EPERM`) goes under `unverified`, never in findings.{{ui_check}}
 4. Look for bugs, missed edge cases, changes outside the allowed paths, and anything that touches secrets,
    permissions, gates or prompts.
+   A test path added by an automatic grant (a note says it was granted automatically because the ask named test
+   paths only) must only follow the change: it updates what the change renamed, moved or removed. A deleted or
+   weakened assertion that hides a real bug is a finding.
 5. If the change alters a design decision, check that the docs the repository's agent instructions (AGENTS.md or
    CLAUDE.md) name for it were updated. Where the docs are an index of topic files: the topic files were updated
    (current decision first, the replaced one under History), and the index holds no decision text: one line or
