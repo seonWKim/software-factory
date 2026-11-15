@@ -74,6 +74,40 @@ describe("GET /api/v1/spend", () => {
     expect(body.items[0]).toMatchObject({ work_item_id: a.id, cost_usd: 1.5, runs: 3, unknown: 2 });
   });
 
+  it("names each day's top items by known cost, at most 3, never counting a run with no stored cost as $0", async () => {
+    const { d, store, clock } = await setup();
+    clock.advance(HOUR); // 2026-01-01
+    const a = await run(store, succeeded(1, 10), undefined, "implement", "Item A");
+    const b = await run(store, succeeded(4, 10), undefined, "implement", "Item B");
+    const c = await run(store, succeeded(2, 10), undefined, "implement", "Item C");
+    await run(store, succeeded(1.5, 10), a, "review"); // A: 2.5 in all
+    const dd = await run(store, succeeded(0.5, 10), undefined, "implement", "Item D");
+    await run(store, succeeded(null, 99), dd); // unknown: adds nothing to D's cost
+    const u = await run(store, succeeded(null, 10), undefined, "implement", "Unknown only");
+    clock.advance(24 * HOUR); // 2026-01-02
+    await run(store, succeeded(3, 10), dd);
+
+    const body = (await get(d, "/api/v1/spend?from=2026-01-01&to=2026-01-03")).body!;
+    const [d1, d2, d3] = body.days;
+    expect(d1.top).toEqual([
+      { work_item_id: b.id, title: "Item B", cost_usd: 4 },
+      { work_item_id: a.id, title: "Item A", cost_usd: 2.5 },
+      { work_item_id: c.id, title: "Item C", cost_usd: 2 },
+    ]);
+    expect(d1.top.map((x: any) => x.work_item_id)).not.toContain(u.id);
+    expect(d2.top).toEqual([{ work_item_id: dd.id, title: "Item D", cost_usd: 3 }]);
+    expect(d3.top).toEqual([]);
+  });
+
+  it("passes the day's top item titles through the Withholder", async () => {
+    const { d, store, clock } = await setup();
+    clock.advance(HOUR);
+    await run(store, succeeded(1, 1), undefined, "implement", `fix token ${SECRET}`);
+    const day = (await get(d, "/api/v1/spend?from=2026-01-01&to=2026-01-01")).body!.days[0];
+    expect(day.top[0].title).toMatch(/\[withheld: [^\]]+\]/);
+    expect(JSON.stringify(day)).not.toContain(SECRET);
+  });
+
   it("lists every day of the range, zero where nothing ran, and leaves out runs outside it", async () => {
     const { d, store, clock } = await setup();
     clock.advance(HOUR);
