@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import { stallConfig } from "../src/compose.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { AGENT_STALLED, failureClass, retryKey } from "../src/core/policy.js";
-import type { RunKind, RunOutcome, Timestamp } from "../src/core/types.js";
+import type { RunId, RunKind, RunOutcome, Timestamp } from "../src/core/types.js";
+import { recurringStalls } from "../src/core/alarms.js";
+import { normalizeDetail, patternKey } from "../src/core/improver.js";
+import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import type { LLMRequest, LLMResponse } from "../src/interfaces/llm-provider.js";
 import { modelStallChecks, modelStallLine } from "../src/ui/factory-status.js";
 import { HealthMonitor } from "../src/ui/health.js";
-import { FakeAuth, cleanScanner, pipeline } from "./helpers/fakes.js";
-import { issue, system, w1 } from "./helpers/store.js";
+import { FakeAuth, PROJECT, cleanScanner, pipeline } from "./helpers/fakes.js";
+import { issue, newStore, system, w1 } from "./helpers/store.js";
 
 // Design §5 Restarts, stalls: a run that ends `stalled` (the model printed nothing for stall_ms) spends no
 // attempt and no restart. Its retry is queued under the step's key, and every claim pauses (`model_stall`)
@@ -265,5 +268,49 @@ describe("stall config", () => {
       expect(() => stallConfig({ probe_interval_ms: bad as never })).toThrow(/probe_interval_ms must be a positive integer/);
       expect(() => stallConfig({ first_output_ms: bad as never })).toThrow(/first_output_ms must be a positive integer/);
     }
+  });
+});
+
+describe("recurring stall holds and host sleeps", () => {
+  /** Two items whose triage runs stall with one detail, then the pattern's repeated-error alert: a known pattern. */
+  async function knownStall(code = AGENT_STALLED) {
+    const clock = new FakeClock("2026-03-04T01:00:00.000Z");
+    const { store } = await newStore(clock);
+    const runs: RunId[] = [];
+    for (let n = 1; n <= 2; n++) {
+      await store.createWorkItem(issue(n), system, { enqueue: { kind: "triage", idempotency_key: `t${n}` } });
+      const run = (await store.claimRun({ worker_id: w1, kinds: ["triage"], lease_ms: 60_000 }))!;
+      await store.completeRun(run.id, run.lease!.token, { status: "failed", error_code: code, detail: "silent", infra: false });
+      runs.push(run.id);
+      clock.advance(1_000);
+    }
+    const key = patternKey({ error_code: code, detail: normalizeDetail("silent") });
+    await store.recordAlert({ pattern: "repeated_error", pattern_key: `repeated_error:${key}`, error_code: code, count: 2, detail: null }, 60_000);
+    const slept = (run: RunId | null) => store.recordHostSleep({ worker_id: w1, woke_at: clock.now().toISOString() as Timestamp, gap_ms: 600_000, run_id: run });
+    return { store, clock, runs, key, slept, held: () => recurringStalls({ store, project: PROJECT.key, clock }) };
+  }
+
+  it("a known stall pattern with no host sleep on its runs holds its items, as before", async () => {
+    const f = await knownStall();
+    await f.slept(null);
+    expect((await f.held()).map((p) => [p.pattern_key, p.work_item_ids.length])).toEqual([[f.key, 2]]);
+  });
+
+  it("a stall pattern one of whose runs held a host sleep holds nothing", async () => {
+    const f = await knownStall();
+    await f.slept(f.runs[1]!);
+    expect(await f.held()).toEqual([]);
+  });
+
+  it("a stall pattern the improver skipped for a host sleep (its host_sleep alert) holds nothing", async () => {
+    const f = await knownStall();
+    await f.store.recordAlert({ pattern: "repeated_error", pattern_key: `host_sleep:${f.key}`, error_code: AGENT_STALLED, count: 2, detail: null }, 86_400_000);
+    expect(await f.held()).toEqual([]);
+  });
+
+  it("another error code is never a recurring stall, slept or not", async () => {
+    const f = await knownStall("checks_failed");
+    await f.slept(f.runs[0]!);
+    expect(await f.held()).toEqual([]);
   });
 });

@@ -8,7 +8,7 @@
 // (design 06-spend): 80% and 100% of a daily or weekly budget alert once each per period, and never stop, pause or
 // hold anything. No forge, LLM or sandbox call; every text is scanned first.
 
-import { groupFailures, normalizeDetail, patternKey } from "./improver.js";
+import { groupFailures, normalizeDetail, patternKey, sleepAlertKey, stalledBySleep } from "./improver.js";
 import type { Logger } from "./log.js";
 import { AGENT_STALLED, MODEL_STALL } from "./policy.js";
 import { DAY_MS, dayStart, spendTotals, utcDay, weekStart } from "./spend.js";
@@ -343,14 +343,20 @@ async function knownSince(
  * The recurring stall patterns of the last hour, whose items are held once the model answers (design 05-restarts):
  * failed runs with `agent_stalled` sharing a normalized detail, two or more of them (a group, as the improver files
  * them), of a pattern already known by its alert or its filing. The model answered, so the stall is the pattern's.
+ * A pattern the improver skipped for a host sleep (its `host_sleep:<key>` alert), or whose runs of the hour held one
+ * (`stalledBySleep`, the improver's rule), holds nothing: no fix item is filed for it, so nothing would release it.
  */
-export async function recurringStalls(d: Pick<AlarmDeps, "store" | "project" | "clock">): Promise<HeldPattern[]> {
+export async function recurringStalls(
+  d: Pick<AlarmDeps, "project" | "clock"> & { store: AlarmDeps["store"] & Pick<FactoryStore, "listHostSleeps"> },
+): Promise<HeldPattern[]> {
   const out: HeldPattern[] = [];
   let newest: Map<string, number> | null = null;
   for (const g of recentPatterns(await d.store.listRunsFinishedWithin(RERAISE_WINDOW_MS), d.clock.now())) {
     if (g.error_code !== AGENT_STALLED || g.run_ids.length < 2) continue;
     newest ??= await newestAlerts(d.store);
-    if (await knownSince(d, patternKey(g), newest)) out.push({ pattern_key: patternKey(g), work_item_ids: g.work_item_ids });
+    const key = patternKey(g);
+    if (newest.has(sleepAlertKey(key)) || (await stalledBySleep(d.store, g))) continue;
+    if (await knownSince(d, key, newest)) out.push({ pattern_key: key, work_item_ids: g.work_item_ids });
   }
   return out;
 }
