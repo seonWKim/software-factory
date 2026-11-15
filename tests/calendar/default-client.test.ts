@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_CLIENT_SECRET_FILE, defaultClientSecret, writeDefaultClient } from "../../scripts/build.mjs";
 import { DEFAULT_GOOGLE_CLIENT_ID, DEFAULT_SECRET_MODULE, type GoogleClient, defaultGoogleClient } from "../../src/calendar/plugins/google-calendar/default-client.js";
 import { type ConnectCtx, googleCalendarConnect } from "../../src/calendar/plugins/google-calendar/google-calendar-connect.js";
 import { CALENDAR_READONLY_SCOPE, type HttpClient, TOKEN_URL } from "../../src/calendar/plugins/google-calendar/google-calendar-source.js";
@@ -17,13 +18,10 @@ const REPO_ROOT = join(import.meta.dirname, "..", "..");
 const PLUGIN_DIR = "src/calendar/plugins/google-calendar";
 const git = (...args: string[]) => execFileSync("git", args, { cwd: REPO_ROOT, encoding: "utf8" });
 
-/** The release build step, typed here: scripts/build.d.mts declares the swap helpers only. */
-type BuildScript = { writeDefaultClient(stagedDist: string, value: string | undefined): string | null };
-const buildScript = async () => (await import(pathToFileURL(join(REPO_ROOT, "scripts", "build.mjs")).href)) as BuildScript;
-
 const MODULE_PATH = join("calendar", "plugins", "google-calendar", "default-client-secret.js");
 const DEFAULT_ID = "fake-default-client-id-7d21.example";
 const DEFAULT_SECRET = "fake-default-client-secret-c3f9";
+const FILE_SECRET = "fake-file-client-secret-a82d";
 const OWN_ID = "fake-own-client-id-0451.example";
 const OWN_SECRET = "fake-own-client-secret-77a1";
 const REFRESH = "fake-refresh-token-91be";
@@ -38,7 +36,7 @@ async function stagedBuild(value: string | undefined): Promise<{ root: string; s
   const staged = join(root, "dist.build-1-1");
   mkdirSync(join(staged, "calendar", "plugins", "google-calendar"), { recursive: true });
   writeFileSync(join(staged, "calendar", "plugins", "google-calendar", "default-client.js"), "// compiled\n");
-  return { root, staged, written: (await buildScript()).writeDefaultClient(staged, value) };
+  return { root, staged, written: writeDefaultClient(staged, value) };
 }
 
 /** Every file under `dir`, relative to it. */
@@ -106,13 +104,81 @@ describe("the release build step", () => {
     expect(await loadFrom(b.written!, "")).toBeNull();
   });
 
-  it("runs before the swap, from the release value, never into src/, under the name the loader imports", () => {
+  it("runs before the swap, never into src/, under the name the loader imports", () => {
     const script = readFileSync(join(REPO_ROOT, "scripts", "build.mjs"), "utf8");
-    expect(script).toContain("writeDefaultClient(stagedDist, process.env[DEFAULT_CLIENT_SECRET_ENV])");
     expect(script.indexOf("writeDefaultClient(stagedDist")).toBeLessThan(script.indexOf("swapIn(stagedDist, dist)"));
     expect(MODULE_PATH.endsWith(DEFAULT_SECRET_MODULE.slice(2))).toBe(true);
     expect(existsSync(join(REPO_ROOT, "src", MODULE_PATH))).toBe(false);
     expect(existsSync(join(REPO_ROOT, "src", MODULE_PATH.replace(/\.js$/, ".ts")))).toBe(false);
+  });
+});
+
+describe("the release value: the variable, then the fixed file", () => {
+  /** A fake HOME holding the fixed file with `content`, or none when `content` is null. */
+  function home(content: string | null): string {
+    const dir = mkdtempSync(join(tmpdir(), "sf-home-"));
+    if (content !== null) {
+      mkdirSync(join(dir, ".config", "software-factory"), { recursive: true });
+      writeFileSync(join(dir, DEFAULT_CLIENT_SECRET_FILE), content, { mode: 0o600 });
+    }
+    return dir;
+  }
+  /** The lookup on `env`, with every console line it printed. */
+  function lookup(env: NodeJS.ProcessEnv): { value: string | null; printed: string } {
+    const lines: unknown[][] = [];
+    const spies = (["log", "warn", "error", "info"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a: unknown[]) => void lines.push(a)));
+    try {
+      return { value: defaultClientSecret(env), printed: JSON.stringify(lines) };
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+  }
+  const fileJson = JSON.stringify({ secret: FILE_SECRET });
+
+  it("the fixed file is ~/.config/software-factory/google-default-client.json", () => {
+    expect(DEFAULT_CLIENT_SECRET_FILE).toBe(join(".config", "software-factory", "google-default-client.json"));
+  });
+
+  it("with no variable and the file present, the file's secret is the value; the build module from it loads as the default client", async () => {
+    for (const unset of [{}, { SF_GOOGLE_DEFAULT_CLIENT_SECRET: "" }, { SF_GOOGLE_DEFAULT_CLIENT_SECRET: "  " }]) {
+      const r = lookup({ HOME: home(fileJson), ...unset });
+      expect(r.value).toBe(FILE_SECRET);
+      expect(r.printed).not.toContain(FILE_SECRET);
+    }
+    const b = await stagedBuild(lookup({ HOME: home(fileJson) }).value!);
+    expect(statSync(b.written!).mode & 0o777).toBe(0o600);
+    const client = await loadFrom(b.written!);
+    expect(client).toEqual({ id: DEFAULT_ID, secret: FILE_SECRET });
+    // What /api/v1/calendar reports as default_client (src/ui/calendar-api.ts, the hook's hasDefault).
+    expect(await googleCalendarConnect({ http: new FakeGoogle().client, names: NAMES, defaultClient: async () => client }).hasDefault!()).toBe(true);
+  });
+
+  it("with neither, the value is none, nothing is printed, and the hook reports no default", async () => {
+    const r = lookup({ HOME: home(null) });
+    expect(r).toEqual({ value: null, printed: "[]" });
+    expect(await googleCalendarConnect({ http: new FakeGoogle().client, names: NAMES, defaultClient: async () => null }).hasDefault!()).toBe(false);
+  });
+
+  it("a non-blank variable wins over the file", () => {
+    const r = lookup({ HOME: home(fileJson), SF_GOOGLE_DEFAULT_CLIENT_SECRET: DEFAULT_SECRET });
+    expect(r.value).toBe(DEFAULT_SECRET);
+    expect(r.printed).not.toContain(DEFAULT_SECRET);
+    expect(r.printed).not.toContain(FILE_SECRET);
+  });
+
+  it.each([
+    ["not JSON", `{"secret": "${FILE_SECRET}"`],
+    ["no secret key", JSON.stringify({ other: FILE_SECRET })],
+    ["a secret that is not a string", JSON.stringify({ secret: [FILE_SECRET] })],
+    ["a blank secret", JSON.stringify({ secret: "  " })],
+    ["not an object", JSON.stringify(FILE_SECRET)],
+  ])("a file with %s is no value and one warning naming the path, never the content; it does not throw", (_, content) => {
+    const dir = home(content);
+    const r = lookup({ HOME: dir });
+    expect(r.value).toBeNull();
+    expect(r.printed).toContain(DEFAULT_CLIENT_SECRET_FILE.split("/").pop());
+    expect(r.printed).not.toContain(FILE_SECRET);
+    expect(r.printed).not.toContain(content);
   });
 });
 
