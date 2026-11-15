@@ -2,13 +2,14 @@
 // renames, never deletes the live one first, and concurrent swaps of the same target leave one complete folder;
 // with --if-stale (the factory CLI) it skips when no build input changed since the last successful build.
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
-import { stagingPath, swapIn, sweep, viteBuildArgs, withLock } from "../scripts/build.mjs";
+import { DEFAULT_CLIENT_SECRET_FILE, stagingPath, swapIn, sweep, viteBuildArgs, withLock } from "../scripts/build.mjs";
+import { defaultGoogleClient } from "../src/calendar/plugins/google-calendar/default-client.js";
 
 const SCRIPT = join(import.meta.dirname, "..", "scripts", "build.mjs");
 
@@ -249,5 +250,62 @@ describe("build script: --if-stale (the factory CLI's build)", () => {
     rmSync(join(root, "steps.log"));
     expect(factoryBuild(root).status).not.toBe(0);
     expect(steps(root)).toEqual(["tsc", "vite"]);
+  });
+
+  describe("the Google default client, as the supervisor's update build runs it (no SF_ variable)", () => {
+    // The supervisor runs `npm run build` with its own environment (src/impl/updater/git-worktree.ts), which carries
+    // no SF_GOOGLE_DEFAULT_CLIENT_SECRET: the build reads the fixed file under a fake HOME instead. Fake values only.
+    const FILE_SECRET = "fake-file-client-secret-5b07";
+    const ENV_SECRET = "fake-env-client-secret-e1c4";
+    const MODULE = join("dist", "calendar", "plugins", "google-calendar", "default-client-secret.js");
+    const noSf = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("SF_")));
+    function home(content: string | null): string {
+      const dir = mkdtempSync(join(tmpdir(), "sf-home-"));
+      if (content !== null) {
+        mkdirSync(join(dir, ".config", "software-factory"), { recursive: true });
+        writeFileSync(join(dir, DEFAULT_CLIENT_SECRET_FILE), content, { mode: 0o600 });
+      }
+      return dir;
+    }
+    function updateBuild(content: string | null, extra: Record<string, string> = {}) {
+      const root = checkout();
+      const r = spawnSync(process.execPath, [join(root, "scripts", "build.mjs")], { cwd: root, encoding: "utf8", env: { ...noSf(), HOME: home(content), ...extra } });
+      return { root, r, out: `${r.stdout}${r.stderr}${r.error?.message ?? ""}` };
+    }
+    const load = (root: string) => defaultGoogleClient({ id: "fake-id.example", load: () => import(pathToFileURL(join(root, MODULE)).href) });
+
+    it("with the file present, the build writes the module mode 600 and the loader finds the default client", async () => {
+      const { root, r, out } = updateBuild(JSON.stringify({ secret: FILE_SECRET }));
+      expect(r.status).toBe(0);
+      expect(statSync(join(root, MODULE)).mode & 0o777).toBe(0o600);
+      expect(await load(root)).toEqual({ id: "fake-id.example", secret: FILE_SECRET });
+      expect(out).not.toContain(FILE_SECRET);
+    });
+
+    it("with neither the file nor the variable, the build writes no module, exits 0 and there is no default client", async () => {
+      const { root, r, out } = updateBuild(null);
+      expect(r.status).toBe(0);
+      expect(out).toBe("");
+      expect(existsSync(join(root, MODULE))).toBe(false);
+      expect(existsSync(join(root, "dist", "tsc.out"))).toBe(true);
+      expect(await load(root)).toBeNull();
+    });
+
+    it("a non-blank variable wins over the file", async () => {
+      const { root, r, out } = updateBuild(JSON.stringify({ secret: FILE_SECRET }), { SF_GOOGLE_DEFAULT_CLIENT_SECRET: ENV_SECRET });
+      expect(r.status).toBe(0);
+      expect(await load(root)).toEqual({ id: "fake-id.example", secret: ENV_SECRET });
+      expect(out).not.toContain(ENV_SECRET);
+      expect(out).not.toContain(FILE_SECRET);
+    });
+
+    it.each([`{"secret": "${FILE_SECRET}"`, JSON.stringify({ other: FILE_SECRET })])("an unusable file %#: no module, exit 0, a warning naming the path only", (content) => {
+      const { root, r, out } = updateBuild(content);
+      expect(r.status).toBe(0);
+      expect(existsSync(join(root, MODULE))).toBe(false);
+      expect(r.stderr).toContain(DEFAULT_CLIENT_SECRET_FILE);
+      expect(out).not.toContain(FILE_SECRET);
+      expect(out).not.toContain(content);
+    });
   });
 });

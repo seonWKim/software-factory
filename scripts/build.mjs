@@ -8,6 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,6 +22,11 @@ const REVISION_STAMP = "revision";
  * (docs/setup.md): set outside the repository, never in src/ or git. Unset or blank: no default client.
  */
 const DEFAULT_CLIENT_SECRET_ENV = "SF_GOOGLE_DEFAULT_CLIENT_SECRET";
+/**
+ * The fixed file outside the repository, under the home folder, read when the variable is unset or blank, so builds
+ * that do not carry it (the supervisor's update builds) keep the default client: `{"secret": "<value>"}`, mode 600.
+ */
+export const DEFAULT_CLIENT_SECRET_FILE = join(".config", "software-factory", "google-default-client.json");
 /** Where the generated module goes in dist/: beside default-client.js, which imports it (src/calendar/plugins/google-calendar/default-client.ts). */
 const DEFAULT_CLIENT_SECRET_MODULE = join("calendar", "plugins", "google-calendar", "default-client-secret.js");
 /**
@@ -180,6 +186,27 @@ export function writeDefaultClient(stagedDist, value) {
   return file;
 }
 
+/**
+ * The default client's secret for this build: a non-blank `SF_GOOGLE_DEFAULT_CLIENT_SECRET` in `env` first, then the
+ * "secret" string of DEFAULT_CLIENT_SECRET_FILE under `env.HOME` (or the OS home folder). Null when neither has one.
+ * A file that cannot be read or parsed, or has no string "secret", gets one warning naming its path, never its content.
+ */
+export function defaultClientSecret(env = process.env) {
+  const fromEnv = (env[DEFAULT_CLIENT_SECRET_ENV] ?? "").trim();
+  if (fromEnv !== "") return fromEnv;
+  const file = join(env.HOME || homedir(), DEFAULT_CLIENT_SECRET_FILE);
+  if (!existsSync(file)) return null;
+  let secret;
+  try {
+    secret = JSON.parse(readFileSync(file, "utf8"))?.secret;
+  } catch {
+    secret = undefined; // the parse error quotes the content: never shown
+  }
+  if (typeof secret === "string" && secret.trim() !== "") return secret.trim();
+  console.warn(`build: no default Google client: ${file} is not JSON with a "secret" string`);
+  return null;
+}
+
 /** Builds the checkout at `root` into staging folders, stamps the staged dist/ and swaps them in. */
 export function build(root) {
   const require = createRequire(join(root, "package.json"));
@@ -198,7 +225,7 @@ export function build(root) {
     run([vite, ...viteBuildArgs(root, stagedWeb)], root);
     // Before the swap: a failed build never gets this far, so the live dist/ keeps its own stamp.
     stamp(root, stagedDist);
-    writeDefaultClient(stagedDist, process.env[DEFAULT_CLIENT_SECRET_ENV]);
+    writeDefaultClient(stagedDist, defaultClientSecret());
     withLock(root, () => {
       swapIn(stagedDist, dist);
       swapIn(stagedWeb, webDist);
