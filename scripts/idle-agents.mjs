@@ -9,7 +9,8 @@
 //   node scripts/idle-agents.mjs run [--agent <name>] [--force]   one pass: idle check, pick an agent, run it
 //   node scripts/idle-agents.mjs loop [--every <minutes>]         a pass every N minutes (default 30); each pass
 //                                                                 first fast-forwards main to origin/main
-//   node scripts/idle-agents.mjs status                           last runs, whether the factory is idle
+//   node scripts/idle-agents.mjs status                           last runs (length, browser use), whether the
+//                                                                 factory is idle
 //
 // Start the loop the way the supervisor is started: detached, from a terminal (launchd cannot read ~/Desktop under
 // macOS privacy rules, so a launchd job would fail here):
@@ -17,13 +18,17 @@
 //
 // The due agent that ran longest ago goes first. Each run is capped by
 // IDLE_AGENTS_BUDGET_USD (default 3) and gets a throwaway sandbox Gongbang (scripts/idle-agents/sandbox.mjs) to
-// click through. State, notes, drafts and logs live in .factory/idle-agents/ (git-ignored).
+// click through. State, notes, drafts and logs live in .factory/idle-agents/ (git-ignored). Each run's claude output
+// is stream-json, so state.json can record the run's length and its browser tool calls (`runs`), shown by `status`.
+// Before a user agent runs, its project factory's revision (<repo>/.factory/supervisor.json `rev`) is compared
+// with origin/main here, since the agent cannot run git rev-parse, and the lag goes into its prompt.
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
+import { countBrowserCalls, describeRun, localDate, pick, revisionLine } from "./idle-agents/schedule.mjs";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIR = join(REPO, ".factory", "idle-agents");
@@ -56,10 +61,9 @@ const TOOLS = {
 };
 
 const log = (msg) => console.log(`${new Date().toISOString()} idle-agents: ${msg}`);
-/** Today's local date, YYYY-MM-DD: "once a day" follows the owner's day, not UTC's. */
-const today = () => new Date().toLocaleDateString("sv-SE");
+const today = () => localDate(new Date());
 const readProjects = () => (existsSync(PROJECTS) ? JSON.parse(readFileSync(PROJECTS, "utf8")) : {});
-const readState = () => (existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : { last: {} });
+const readState = () => ({ last: {}, runs: {}, ...(existsSync(STATE) ? JSON.parse(readFileSync(STATE, "utf8")) : {}) });
 
 /** The open work items that keep the factory busy, or null when the dashboard does not answer. */
 async function busyItems() {
@@ -81,13 +85,6 @@ async function answers(dashboard) {
   } catch {
     return false;
   }
-}
-
-/** The agent to run now: not run today, allowed now, longest ago first; null when none is due. */
-function pick(state, allowed) {
-  const due = AGENTS.filter((a) => allowed(a) && (state.last[a] ?? "").slice(0, 10) !== today());
-  due.sort((a, b) => (state.last[a] ?? "").localeCompare(state.last[b] ?? ""));
-  return due[0] ?? null;
 }
 
 /** Builds, starts the sandbox, and resolves with its URL and a stop function. */
@@ -114,6 +111,27 @@ function exec(cmd, args, opts = {}) {
   });
 }
 
+/** Commit time in seconds of a revision in this checkout, or null when it is not here. */
+function commitTime(rev) {
+  try {
+    return Number(git("show", "-s", "--format=%ct", `${rev}^{commit}`)) || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The prompt line on how far the project factory's running revision is behind origin/main; unknown, never an error. */
+function projectRevision(project) {
+  let rev = null;
+  try {
+    rev = JSON.parse(readFileSync(join(project.repo, ".factory", "supervisor.json"), "utf8")).rev ?? null;
+  } catch {
+    // No supervisor.json, or not readable: the line says unknown.
+  }
+  return revisionLine(rev, rev ? commitTime(rev) : null, commitTime("origin/main"));
+}
+
+/** Runs the agent; resolves with the run's length in seconds and its browser tool calls. */
 async function runAgent(agent, url, project) {
   mkdirSync(join(DIR, "logs"), { recursive: true });
   mkdirSync(join(DIR, "drafts"), { recursive: true });
@@ -125,6 +143,7 @@ async function runAgent(agent, url, project) {
       ? [
           `Your project: ${project.project}. Goal: ${project.goal}`,
           `Repository: ${project.repo} (read only for you). Its Gongbang: ${project.dashboard} (yours). Its CLI: ${project.cli} <command>.`,
+          projectRevision(project),
         ]
       : []),
     "Read scripts/idle-agents/feedback.md and your notes file, do one focused pass as your agent file describes, file at most two tasks for the software-factory, then append to your notes.",
@@ -137,10 +156,14 @@ async function runAgent(agent, url, project) {
     tools.push(`Bash(${join(project.repo, "bin")}/:*)`);
     extra.push("--add-dir", project.repo);
   }
-  const args = ["-p", prompt, "--agent", agent, "--max-budget-usd", BUDGET, ...extra, "--allowedTools", ...tools];
+  const args = ["-p", prompt, "--agent", agent, "--output-format", "stream-json", "--verbose", "--max-budget-usd", BUDGET, ...extra, "--allowedTools", ...tools];
   log(`running ${agent} (budget $${BUDGET}), log ${logFile}`);
+  const from = existsSync(logFile) ? statSync(logFile).size : 0;
   const out = openSync(logFile, "a");
+  const started = Date.now();
   await exec(process.env.CLAUDE_BIN || "claude", args, { stdio: ["ignore", out, out], env: { ...process.env, GONGBANG_SANDBOX_URL: url } });
+  const seconds = Math.round((Date.now() - started) / 1000);
+  return { seconds, browserCalls: countBrowserCalls(readFileSync(logFile).subarray(from).toString("utf8")) };
 }
 
 const git = (...args) => execFileSync("git", args, { cwd: REPO, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -186,7 +209,7 @@ async function runOnce({ agent, force }) {
   for (const [a, p] of Object.entries(projects)) up[a] = await answers(p.dashboard);
   const allowed = (a) => (IDLE_ONLY.has(a) ? idle : Boolean(projects[a] && up[a]));
   const state = readState();
-  const chosen = agent ?? pick(state, allowed);
+  const chosen = agent ?? pick(AGENTS, state.last, allowed, new Date());
   if (!chosen) return log(`nothing due (factory ${idle ? "idle" : `busy, ${busy.length} open items`})`);
   if (!AGENTS.includes(chosen)) throw new Error(`unknown agent ${chosen}; agents: ${AGENTS.join(", ")}`);
   if (!IDLE_ONLY.has(chosen) && !up[chosen]) return log(`${chosen}: its project's Gongbang does not answer; skipped`);
@@ -194,7 +217,7 @@ async function runOnce({ agent, force }) {
   let sandbox = null;
   try {
     sandbox = await startSandbox();
-    await runAgent(chosen, sandbox.url, projects[chosen]);
+    state.runs[chosen] = await runAgent(chosen, sandbox.url, projects[chosen]);
     state.last[chosen] = new Date().toISOString();
     writeFileSync(STATE, JSON.stringify(state, null, 2));
     log(`${chosen} done`);
@@ -232,7 +255,7 @@ else if (cmd === "loop") {
   for (const a of AGENTS) {
     const p = projects[a];
     const where = p ? `, project ${p.project} (${(await answers(p.dashboard)) ? "up" : "down"})` : IDLE_ONLY.has(a) ? ", when idle" : ", no project";
-    console.log(`${a}: last run ${state.last[a] ?? "never"}${where}`);
+    console.log(`${a}: last run ${state.last[a] ?? "never"} (${describeRun(state.runs[a])})${where}`);
   }
 } else {
   console.log("usage: node scripts/idle-agents.mjs run [--agent <name>] [--force] | loop [--every <minutes>] | status");
