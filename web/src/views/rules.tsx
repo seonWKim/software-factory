@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import {
-  API, type AppliedRule, type RetiredRule, type RuleDetail, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry,
+  API, type AppliedRule, type RetiredRule, type RuleDetail, type RuleEvidence, type RuleRow, type RuleVerdict, type RulesView, postRuleVerdict, postSettings, useApi, useRuleEntry,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
@@ -23,8 +23,11 @@ import { t } from "../i18n/index.js";
 // structure proposals (`P-…`), each under one line saying what promoting one does; judged ones collapse into one
 // "N decided" line, and with none waiting an EmptyState gives the next step. A card lists its title, a StatusBadge
 // (open, pending, held, or the judged decision) and its ID. "Why and where" (aria-expanded, a chevron) reads the entry's
-// detail on demand through GET /api/v1/rules/entry?id=, never on page load. Promote (primary, with a Tooltip when off),
-// Hold and Reject (danger, last) each open a dialog that shows the entry's why and where above a required reason;
+// detail on demand through GET /api/v1/rules/entry?id=, never on page load: a description, what it would change,
+// before → after, why, the evidence (newest first, 3 shown, the rest behind "Show all N"), where it applies and the
+// related applied rules (sharing an incident ID or naming the target file), each part left out when it has nothing.
+// Promote (primary, with a Tooltip when off), Hold and Reject (danger, last) each open a dialog that shows the
+// entry's full title and that detail above a required reason;
 // Promote of a class also asks for the rule's wording, default and exception (prefilled from the class's draft);
 // Promote of a proposal asks for the file the change went into, "Applied to" (prefilled with its target, required: an
 // empty field says why and keeps Send off), sent as `applied_to`.
@@ -41,10 +44,8 @@ const muted = "text-xs text-pretty text-text-2";
 const STATE_LABEL: Record<string, MessageKey> = { open: "rules.stateOpen", pending: "rules.statePending", held: "rules.stateHeld" };
 /** The StatusBadge level of each state, so open, pending and held look different. */
 const STATE_LEVEL: Record<string, string> = { open: "running", pending: "needs_approval" };
-/** The page's reading width, and the longest title a dialog heading shows. */
+/** The page's reading width. */
 const PAGE_WIDTH = "max-w-3xl";
-const TITLE_MAX = 60;
-const shorten = (title: string): string => (title.length > TITLE_MAX ? `${title.slice(0, TITLE_MAX - 1)}…` : title);
 /** A candidate class (`C-…`) takes the owner's wording as its rule on promote; a structure proposal the file it was applied to. */
 const isClass = (id: string): boolean => id.startsWith("C-");
 const VERDICTS: readonly { verdict: RuleVerdict; label: MessageKey; variant: "primary" | "secondary" | "danger" }[] = [
@@ -109,11 +110,11 @@ function ReasonField({ id, value, onChange }: { id: string; value: string; onCha
 }
 
 /**
- * The verdict dialog: a reason first, and for promote of a class the rule's wording (prefilled with its title) and its
+ * The verdict dialog: the entry's full title and its detail above the fields, then a reason, and for promote of a class the rule's wording (prefilled with its title) and its
  * default and exception (prefilled from its draft); for promote of a proposal the file it was applied to (prefilled
  * with its target).
  */
-function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; verdict: RuleVerdict; token: string; onClose: () => void }) {
+function VerdictDialog({ entry, applied, verdict, token, onClose }: { entry: RuleRow; applied: AppliedRule[]; verdict: RuleVerdict; token: string; onClose: () => void }) {
   const [reason, setReason] = useState("");
   const [text, setText] = useState(entry.title);
   const [dflt, setDefault] = useState(entry.draft?.default ?? "");
@@ -127,7 +128,7 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
   const label = t(VERDICTS.find((v) => v.verdict === verdict)!.label);
   return (
     <Dialog
-      title={t("rules.dialogTitleEntry", { label, id: entry.id, title: shorten(entry.title) })}
+      title={t("rules.dialogTitle", { label, id: entry.id })}
       consequence={t(promote ? "rules.consequencePromoteClass" : CONSEQUENCE[verdict])}
       confirmLabel={t("rules.send", { label: label.toLowerCase() })}
       confirmDisabled={busy || reason.trim() === "" || (promote && Object.values(rule).includes("")) || noFile}
@@ -136,9 +137,10 @@ function VerdictDialog({ entry, verdict, token, onClose }: { entry: RuleRow; ver
       onConfirm={() => void send({ id: entry.id, verdict, reason: reason.trim(), ...(promote ? rule : {}), ...(applies ? { applied_to: appliedTo.trim() } : {}) }, label)}
       onClose={onClose}
     >
-      <div className="max-h-40 overflow-y-auto">
-        <EntryDetail entry={entry} />
-      </div>
+      <p data-dialog-summary className="min-w-0 text-sm font-medium text-pretty break-words whitespace-pre-wrap">
+        {entry.title}
+      </p>
+      <EntryDetail entry={entry} applied={applied} />
       {promote && (
         <>
           <RuleText id={`${entry.id}-wording`} label={t("rules.wording")} help={t("rules.wordingHelp")} value={text} onChange={setText} />
@@ -184,57 +186,134 @@ function RetireDialog({ id, token, onClose }: { id: string; token: string; onClo
 const proposalLine = (kind: string | undefined, target: string | undefined): string =>
   t("rules.whatProposal", { kind: kind ?? t("rules.notGiven"), target: target ?? t("rules.notGiven") });
 
-/** One part of the detail: its label, then its lines, or "not given" when it has none. */
+/** One part of the detail: its label, then its lines; nothing at all when it has none. */
 function DetailPart({ label, part, children }: { label: MessageKey; part: string; children: ReactNode[] }) {
   const lines = children.filter(Boolean);
+  if (lines.length === 0) return null;
   return (
-    <div data-detail-part={part}>
+    <div data-detail-part={part} className="space-y-1">
       <h3 className="text-xs font-semibold text-text-2">{t(label)}</h3>
-      {lines.length > 0 ? lines : <p className={muted}>{t("rules.notGiven")}</p>}
+      {lines}
     </div>
   );
 }
 
 const line = "text-sm text-pretty break-words whitespace-pre-wrap";
+const quote = `${line} border-l-2 border-border-strong pl-2`;
+/** How many incidents show before "Show all N". */
+const EVIDENCE_SHOWN = 3;
 
-/** The detail in its order: what it would change, why, where it applies. */
-function Detail({ entry, d }: { entry: RuleRow; d: RuleDetail }) {
+/** The incidents, newest first: the first EVIDENCE_SHOWN, the rest behind "Show all N". */
+function Evidence({ items }: { items: RuleEvidence[] }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? items : items.slice(0, EVIDENCE_SHOWN);
+  return (
+    <DetailPart label="rules.detailEvidence" part="evidence">
+      {[
+        <ol key="list" className="space-y-2">
+          {shown.map((e, i) => (
+            <li key={`${e.ref ?? ""}${i}`} data-evidence={e.ref ?? ""} className="min-w-0 space-y-0.5">
+              {(e.ref !== undefined || e.date !== undefined) && (
+                <p className="flex flex-wrap gap-x-2 text-xs text-text-2">
+                  {e.ref !== undefined && <span className="font-mono break-all">{e.ref}</span>}
+                  {e.date !== undefined && <span data-evidence-date className="tabular-nums">{e.date}</span>}
+                </p>
+              )}
+              {e.proposal !== undefined && <p className={line}>{t("rules.evidenceProposal", { proposal: e.proposal })}</p>}
+              {e.quote !== undefined && <blockquote data-quote className={quote}>{e.quote}</blockquote>}
+              {e.root_reason !== undefined && <p className={line}>{t("rules.detailRoot", { reason: e.root_reason })}</p>}
+            </li>
+          ))}
+        </ol>,
+        !all && items.length > EVIDENCE_SHOWN && (
+          <Button key="all" variant="ghost" size="sm" onClick={() => setAll(true)}>
+            {t("rules.showAll", { count: items.length })}
+          </Button>
+        ),
+      ]}
+    </DetailPart>
+  );
+}
+
+/** Lines of a file, kept as written. */
+const fileLines = "rounded-control bg-surface p-2 font-mono text-xs break-words whitespace-pre-wrap";
+
+/** The applied rules that share an incident ID with the entry or name its target file. */
+function related(applied: AppliedRule[], ids: ReadonlySet<string>, target: string | undefined): AppliedRule[] {
+  return applied.filter(
+    (r) => (r.incidents ?? []).some((i) => ids.has(i)) || (target !== undefined && target !== "" && [r.name, r.default, r.exceptions, r.scope, r.raw].some((v) => v?.includes(target))),
+  );
+}
+
+/**
+ * The detail in its order: a description, what it would change (a proposal's kind and target), before → after, why,
+ * the evidence, where it applies, and the related applied rules. A part with nothing to show is left out; only "what"
+ * says "not given".
+ */
+function Detail({ entry, d, applied }: { entry: RuleRow; d: RuleDetail; applied: AppliedRule[] }) {
   const kind = d.kind ?? entry.kind;
   const target = d.target ?? entry.target;
+  const rule = d.default ?? entry.draft?.default;
+  const exception = d.exceptions ?? entry.draft?.exception;
+  const evidence = d.evidence ?? [];
+  const ids = new Set([...evidence.flatMap((e) => (e.ref === undefined ? [] : [e.ref])), ...(entry.draft?.incidents ?? [])]);
+  const overlaps = related(applied, ids, target);
   return (
-    <div data-rule-detail className="space-y-2 rounded-control bg-surface-2 p-3">
-      <DetailPart label="rules.detailWhat" part="what">
+    <div data-rule-detail className="min-w-0 space-y-3 rounded-control bg-surface-2 p-3">
+      {d.description !== undefined && <p data-detail-description className={line}>{d.description}</p>}
+      {!isClass(entry.id) && (
+        <DetailPart label="rules.detailWhat" part="what">
+          {kind === undefined && target === undefined
+            ? [<p key="none" className={muted}>{t("rules.notGiven")}</p>]
+            : [
+              kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind })}</p>,
+              target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
+            ]}
+        </DetailPart>
+      )}
+      <DetailPart label="rules.detailChange" part="change">
         {[
-          d.default !== undefined && <p key="rule" className={line}>{t("rules.whatRule", { rule: d.default })}</p>,
-          d.exceptions !== undefined && <p key="except" className={line}>{t("rules.whatExcept", { exceptions: d.exceptions })}</p>,
-          kind !== undefined && <p key="kind" className={line}>{t("rules.whatKind", { kind })}</p>,
-          target !== undefined && <p key="target" className={`${line} font-mono`}>{t("rules.whatTarget", { target })}</p>,
+          rule !== undefined && <p key="rule" className={line}>{t("rules.whatRule", { rule })}</p>,
+          exception !== undefined && <p key="except" className={line}>{t("rules.whatExcept", { exceptions: exception })}</p>,
+          d.current !== undefined && <p key="nowl" className="text-xs text-text-2">{t("rules.changeNow")}</p>,
+          d.current !== undefined && <pre key="now" data-change="current" className={fileLines}>{d.current}</pre>,
+          d.proposed !== undefined && <p key="nextl" className="text-xs text-text-2">{t("rules.changeProposed")}</p>,
+          d.proposed !== undefined && <pre key="next" data-change="proposed" className={fileLines}>{d.proposed}</pre>,
         ]}
       </DetailPart>
       <DetailPart label="rules.detailWhy" part="why">
         {[
           d.incidents !== undefined && <p key="count" className={line}>{d.incidents === 1 ? t("rules.detailOnce") : t("rules.detailCount", { count: d.incidents })}</p>,
-          ...(d.quotes ?? []).map((q, i) => (
-            <blockquote key={`q${i}`} data-quote className={`${line} border-l-2 border-border-strong pl-2`}>
-              {q}
-            </blockquote>
-          )),
           d.root_reason !== undefined && <p key="root" className={line}>{t("rules.detailRoot", { reason: d.root_reason })}</p>,
         ]}
       </DetailPart>
+      {evidence.length > 0 && <Evidence items={evidence} />}
       <DetailPart label="rules.detailWhere" part="where">
-        {[d.scope !== undefined && <p key="scope" className={line}>{d.scope}</p>]}
+        {[d.scope !== undefined && <Markdown key="scope" text={d.scope} />]}
+      </DetailPart>
+      <DetailPart label="rules.detailRelated" part="related">
+        {[
+          overlaps.length > 0 && (
+            <ul key="list" className="space-y-0.5">
+              {overlaps.map((r, i) => (
+                <li key={r.id ?? `raw${i}`} data-related={r.id ?? ""} className={line}>
+                  {r.id !== null ? <><span className="font-mono text-xs">{r.id}</span> {r.name}</> : r.raw?.split("\n")[0]}
+                </li>
+              ))}
+            </ul>
+          ),
+        ]}
       </DetailPart>
     </div>
   );
 }
 
 /** The detail, read once when the card opens; "could not be read" when the ledger gave none or failed. */
-function EntryDetail({ entry }: { entry: RuleRow }) {
+function EntryDetail({ entry, applied }: { entry: RuleRow; applied: AppliedRule[] }) {
   const q = useRuleEntry(entry.id, true);
   if (q.isPending) return <Loading rows={2} />;
   const d = q.data?.detail ?? null;
-  if (d !== null) return <Detail entry={entry} d={d} />;
+  if (d !== null) return <Detail entry={entry} d={d} applied={applied} />;
   return (
     <div data-rule-detail>
       <Notice tone="info">{t("rules.detailUnread")}</Notice>
@@ -242,7 +321,7 @@ function EntryDetail({ entry }: { entry: RuleRow }) {
   );
 }
 
-function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
+function RuleCard({ entry, applied, token }: { entry: RuleRow; applied: AppliedRule[]; token: string | null }) {
   const [open, setOpen] = useState<RuleVerdict | null>(null);
   const [detail, setDetail] = useState(false);
   const noDraft = isClass(entry.id) && entry.draft === null;
@@ -270,7 +349,7 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
         {t("rules.showDetail")}
         <ChevronDown aria-hidden className={`size-4 motion-safe:transition-transform ${detail ? "rotate-180" : ""}`} />
       </Button>
-      {detail && <EntryDetail entry={entry} />}
+      {detail && <EntryDetail entry={entry} applied={applied} />}
       {entry.judged === null && entry.draft_error !== null && (
         <p data-draft-error className="text-xs text-pretty break-words text-pill-bad-fg">
           {t("rules.draftError", { error: entry.draft_error })}
@@ -294,7 +373,7 @@ function RuleCard({ entry, token }: { entry: RuleRow; token: string | null }) {
           })}
         </ButtonRow>
       )}
-      {open !== null && token !== null && <VerdictDialog entry={entry} verdict={open} token={token} onClose={() => setOpen(null)} />}
+      {open !== null && token !== null && <VerdictDialog entry={entry} applied={applied} verdict={open} token={token} onClose={() => setOpen(null)} />}
     </li>
   );
 }
@@ -517,6 +596,7 @@ export function RulesPage() {
   // Only an entry the ledger has not judged waits; a judged one is decided.
   const waiting = v.entries.filter((e) => e.judged === null);
   const decided = v.entries.filter((e) => e.judged !== null);
+  const applied = v.applied?.rules ?? [];
   return (
     <div className={`${PAGE_WIDTH} space-y-4`}>
       <PageHeader title={title} description={t("rules.pageDescription")} actions={<span data-waiting className="text-sm font-medium tabular-nums">{t("rules.waiting", { count: waiting.length })}</span>} />
@@ -538,7 +618,7 @@ export function RulesPage() {
                 </p>
                 <ul aria-label={t(g.title)} className="divide-y divide-border rounded-control border border-border">
                   {entries.map((e) => (
-                    <RuleCard key={e.id} entry={e} token={token} />
+                    <RuleCard key={e.id} entry={e} applied={applied} token={token} />
                   ))}
                 </ul>
               </Section>
@@ -551,7 +631,7 @@ export function RulesPage() {
             <p className={`my-2 ${muted}`}>{t("rules.judgedHint")}</p>
             <ul aria-label={t("rules.decidedList")} className="divide-y divide-border rounded-control border border-border">
               {decided.map((e) => (
-                <RuleCard key={e.id} entry={e} token={token} />
+                <RuleCard key={e.id} entry={e} applied={applied} token={token} />
               ))}
             </ul>
           </details>

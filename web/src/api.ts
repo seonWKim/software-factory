@@ -642,15 +642,30 @@ export interface RuleRow {
   target?: string;
 }
 
+/** One incident behind an entry: its linked ID (T-, L-, E-), day, the agent's proposal, the owner's quote, its root reason. */
+export interface RuleEvidence {
+  ref?: string;
+  date?: string;
+  proposal?: string;
+  quote?: string;
+  root_reason?: string;
+}
+
 /** One entry's detail from `/api/v1/rules/entry?id=`; a field the ledger did not print is absent. */
 export interface RuleDetail {
   id: string;
+  /** One line on what the entry is. */
+  description?: string;
   default?: string;
   exceptions?: string;
   kind?: string;
   target?: string;
+  /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
+  current?: string;
+  proposed?: string;
   incidents?: number;
-  quotes?: string[];
+  /** The incidents, newest first. */
+  evidence?: RuleEvidence[];
   root_reason?: string;
   scope?: string;
 }
