@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CALENDAR_SYNC_MS, syncCalendars } from "../../src/calendar/index.js";
+import { syncWindow as windowAt } from "../../src/calendar/calendar-sync.js";
 import descriptor, { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN } from "../../src/calendar/plugins/google-calendar/google-calendar.plugin.js";
 import {
   CALENDAR_READONLY_SCOPE,
@@ -97,11 +98,8 @@ function setup(ids: readonly string[] = [], secrets: Record<string, string> = SE
   return { clock, http, store, source };
 }
 
-/** The window the sync asks for: a day back to 30 days ahead. */
-function syncWindow(clock: FakeClock) {
-  const t = clock.now().getTime();
-  return { from: new Date(t - 86_400_000).toISOString(), to: new Date(t + 30 * 86_400_000).toISOString() };
-}
+/** The window the sync asks for at the clock's time (the sync's own syncWindow). */
+const syncWindow = (clock: FakeClock) => windowAt(clock.now().getTime());
 
 function localDay(clock: FakeClock, offset: number): string {
   const n = clock.now();
@@ -155,29 +153,51 @@ describe("google-calendar: scope", () => {
 });
 
 describe("google-calendar: window and calendars", () => {
-  it("reads the start of today through the end of the day 14 days ahead, local time, and drops events outside it", async () => {
+  it("reads the whole local days the sync's window touches (yesterday's midnight to 31 days ahead) and returns every event that overlaps that window", async () => {
     const { http, source, clock } = setup();
-    const from = localDay(clock, 0);
-    const to = localDay(clock, 15);
+    const w = syncWindow(clock);
+    const from = Date.parse(w.from);
+    const to = Date.parse(w.to);
+    const iso = (ms: number) => new Date(ms).toISOString();
     http.events = () => ({
       status: 200,
       body: {
         items: [
-          timed("yesterday", localDay(clock, -1), new Date(Date.parse(from) - 1000).toISOString()),
-          timed("today", from, new Date(Date.parse(from) + 3600_000).toISOString()),
-          timed("last", new Date(Date.parse(to) - 3600_000).toISOString(), to),
-          timed("too-late", to, localDay(clock, 16)),
+          timed("before", localDay(clock, -1), iso(from - 1000)),
+          timed("first", iso(from - 3600_000), iso(from + 3600_000)),
+          timed("far", localDay(clock, 29), iso(Date.parse(localDay(clock, 29)) + 3600_000)),
+          timed("last", iso(to - 3600_000), iso(to + 3600_000)),
+          timed("too-late", iso(to), iso(to + 3600_000)),
         ],
         nextSyncToken: "s1",
       },
     });
-    const events = await source.events(syncWindow(clock));
+    const events = await source.events(w);
     const [read] = http.eventReads();
-    expect(read!.url.searchParams.get("timeMin")).toBe(from);
-    expect(read!.url.searchParams.get("timeMax")).toBe(to);
+    expect(read!.url.searchParams.get("timeMin")).toBe(localDay(clock, -1));
+    expect(read!.url.searchParams.get("timeMax")).toBe(localDay(clock, 31));
     expect(read!.url.searchParams.get("singleEvents")).toBe("true");
-    expect(events.map((e) => e.id)).toEqual(["today", "last"]);
-    expect(events[0]).toEqual({ id: "today", title: "event today", starts_at: from, ends_at: new Date(Date.parse(from) + 3600_000).toISOString(), all_day: false, updated_at: "2026-11-01T00:00:00.000Z" });
+    expect(events.map((e) => e.id)).toEqual(["first", "far", "last"]);
+    expect(events[0]).toEqual({ id: "first", title: "event first", starts_at: iso(from - 3600_000), ends_at: iso(from + 3600_000), all_day: false, updated_at: "2026-11-01T00:00:00.000Z" });
+  });
+
+  it("a sync asks for its window up to 30 days ahead, and a second sync on the same local day sends the sync token", async () => {
+    const { store } = await newStore(new FakeClock(NOW));
+    const db = (store as unknown as { db: SqlDriver }).db;
+    const { http, source, clock } = setup();
+    // Local noon, so the next sync 5 minutes later is on the same local day in any time zone.
+    const n = clock.now();
+    clock.advance(new Date(n.getFullYear(), n.getMonth(), n.getDate() + 1, 12).getTime() - n.getTime());
+    const ahead = timed("ahead", localDay(clock, 29), localDay(clock, 30));
+    http.events = (_c, params) => ({ status: 200, body: { items: params.get("syncToken") === null ? [ahead] : [], nextSyncToken: "s2" } });
+    const feeds = [{ name: "google-calendar", source }];
+    await syncCalendars(db, feeds, clock.now().getTime());
+    clock.advance(CALENDAR_SYNC_MS);
+    await syncCalendars(db, feeds, clock.now().getTime());
+    const reads = http.eventReads().map((r) => r.url.searchParams);
+    expect(Date.parse(reads[0]!.get("timeMax")!)).toBeGreaterThanOrEqual(Date.parse(windowAt(clock.now().getTime()).to));
+    expect(reads.map((p) => p.get("syncToken"))).toEqual([null, "s2"]);
+    expect(await db.all("SELECT event_id FROM calendar_events WHERE source = 'google-calendar'")).toEqual([{ event_id: "ahead" }]);
   });
 
   it("an all-day event spans its local days", async () => {
@@ -258,7 +278,7 @@ describe("google-calendar: sync token and ETag", () => {
     expect(reads.map((r) => r.url.searchParams.get("syncToken"))).toEqual([null, "s1", null]);
     // The full read after the 410 sends no ETag of the refused token's answer.
     expect(reads[2]!.init.headers["if-none-match"]).toBeUndefined();
-    expect(reads[2]!.url.searchParams.get("timeMin")).toBe(localDay(clock, 0));
+    expect(reads[2]!.url.searchParams.get("timeMin")).toBe(localDay(clock, -1));
   });
 
   it("sends the last answer's ETag as If-None-Match; a 304 reuses the stored events", async () => {
@@ -285,7 +305,7 @@ describe("google-calendar: sync token and ETag", () => {
     await source.events(syncWindow(clock));
     const second = http.eventReads()[1]!;
     expect(second.url.searchParams.get("syncToken")).toBeNull();
-    expect(second.url.searchParams.get("timeMin")).toBe(localDay(clock, 0));
+    expect(second.url.searchParams.get("timeMin")).toBe(localDay(clock, -1));
     expect(second.init.headers["if-none-match"]).toBeUndefined();
   });
 });
