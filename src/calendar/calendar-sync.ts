@@ -7,7 +7,6 @@ import type { SqlDriver, SqlExecutor } from "../state/index.js";
 
 /** How often each source syncs. */
 export const CALENDAR_SYNC_MS = 5 * 60_000;
-/** The window each sync asks about: from a day back to 30 days ahead of the sync's time. */
 const WINDOW_BACK_MS = 86_400_000;
 const WINDOW_AHEAD_MS = 30 * 86_400_000;
 /** A stored error is cut to this many characters. */
@@ -43,6 +42,15 @@ export type SyncOutcome = { source: string; ok: true; events: number } | { sourc
 const iso = (ms: number): string => new Date(ms).toISOString();
 
 /**
+ * The window a sync at `atMs` asks about, as ISO instants: from a day back to 30 days ahead of the sync's time. The
+ * sync passes it to each source, and the dashboard's Calendar read (src/ui/calendar-events-api.ts) takes a day as
+ * synced only when it lies inside the window of each source's last successful sync, so the two never disagree.
+ */
+export function syncWindow(atMs: number): { from: string; to: string } {
+  return { from: iso(atMs - WINDOW_BACK_MS), to: iso(atMs + WINDOW_AHEAD_MS) };
+}
+
+/**
  * Syncs every source in `feeds` that is due at `nowMs`: one read of the state rows, then for each due source the
  * claim, the source's read, and its rows. No feeds: nothing is read or written. Safe to run twice and on several
  * replicas: a source whose claim another caller won is skipped. Returns what each synced source did.
@@ -61,7 +69,7 @@ export async function syncCalendars(db: SqlDriver, feeds: readonly NamedFeed[], 
     if (due !== undefined && due > now) continue;
     if (!(await claim(db, name, due === undefined, now, next))) continue;
     try {
-      const events = await source.events({ from: iso(nowMs - WINDOW_BACK_MS), to: iso(nowMs + WINDOW_AHEAD_MS) });
+      const events = await source.events(syncWindow(nowMs));
       await db.transaction((tx) => replaceEvents(tx, name, events, now));
       out.push({ source: name, ok: true, events: events.length });
     } catch (err) {
