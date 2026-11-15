@@ -14,9 +14,9 @@ const APP_MODULE = "../web/src/App.js";
 const { TasksPage } = (await import(/* @vite-ignore */ TASKS_MODULE)) as { TasksPage: FunctionComponent };
 const { App } = (await import(/* @vite-ignore */ APP_MODULE)) as { App: FunctionComponent };
 
-// Factory work follows the project tabs (design 09-dashboard-app): with a project picked it reads
-// GET /api/v1/items?project=<slug>, the items built from that project's tasks; with All projects, every item.
-// Needs you (the Factory page at /app/) keeps the unfiltered read.
+// The Tasks page's Needs you section follows the project tabs (design 09-dashboard-app): with a project picked it reads
+// GET /api/v1/items?project=<slug>, the items built from that project's tasks; with All projects, every item. The
+// factory's notice, system actions and claim pauses show under All projects only.
 
 const AT = "2026-11-14T00:00:00.000Z";
 const SLOW = { timeout: 5_000 };
@@ -44,12 +44,14 @@ const PLAIN = item("wi_plain", "No task");
 const BY_PROJECT: Record<string, ItemRow[]> = { "": [BOTH, HOME, BARE, PLAIN], home: [BOTH, HOME], "wonderful-ai-demo": [BOTH] };
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const overview = {
+const RUNNING = { state: "running", rev: "0ff810f1234", target_rev: "0ff810f1234", child_pid: 1, since: AT, workers: 1, workers_source: "default", error: null, pending: [] };
+const overview: Record<string, unknown> = {
   as_of: AT, stages: {}, needs_you: 4, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [],
-  factory: { state: "running", rev: "0ff810f1234", target_rev: "0ff810f1234", child_pid: 1, since: AT, workers: 1, workers_source: "default", error: null, pending: [] },
+  factory: RUNNING,
 };
 
 beforeEach(() => {
+  overview.factory = RUNNING;
   vi.stubGlobal("fetch", vi.fn(async (input: string) => {
     const url = new URL(input, "http://localhost");
     if (url.pathname === "/api/v1/items") {
@@ -74,8 +76,8 @@ afterEach(() => {
 const client = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 const itemReads = () => vi.mocked(fetch).mock.calls.map(([u]) => String(u)).filter((u) => u.startsWith("/api/v1/items"));
 const pick = (name: string) => fireEvent.click(screen.getByRole("tab", { name }));
-const factoryWork = async () => (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
-/** The work item IDs Factory work lists, in page order. */
+const factoryWork = () => screen.findByRole("region", { name: "Needs you" }, SLOW);
+/** The work item IDs Needs you lists, in page order. */
 const listed = async () => [...(await factoryWork()).querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key).sort();
 
 function showTasks(path: string) {
@@ -105,14 +107,22 @@ describe("Factory work on the Tasks page follows the project tabs", () => {
   });
 });
 
-describe("Needs you (the Factory page at /app/)", () => {
-  it("is unchanged: it lists every item that needs the owner and reads the items with no project filter", async () => {
-    history.replaceState(null, "", "/app/?project=home");
+describe("the factory's notes follow the project tabs too", () => {
+  it("show the notice under All projects only", async () => {
+    overview.factory = null;
+    showTasks("/app/tasks");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Factory stopped");
+    pick("Home");
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull(), SLOW);
+    pick("All projects");
+    expect((await screen.findByRole("alert", {}, SLOW)).textContent).toContain("Factory stopped");
+  });
+
+  it("the top bar's count links to /app/, which leads to Tasks with every waiting item", async () => {
+    history.replaceState(null, "", "/app/");
     render(createElement(QueryClientProvider, { client: client() }, createElement(App)));
-    const tables = await screen.findAllByRole("table", { name: "Needs you" }, SLOW);
-    const keys = tables.flatMap((t) => [...t.querySelectorAll<HTMLElement>("tr[data-key]")].map((r) => r.dataset.key)).sort();
-    expect(keys).toEqual(["wi_bare", "wi_both", "wi_home", "wi_plain"]);
-    expect(itemReads().length).toBeGreaterThan(0);
-    expect(itemReads().every((u) => !u.includes("project"))).toBe(true);
+    expect(screen.getByTestId("needs-you").getAttribute("href")).toBe("/app/");
+    await waitFor(() => expect(location.pathname).toBe("/app/tasks"));
+    await waitFor(async () => expect(await listed()).toEqual(["wi_bare", "wi_both", "wi_home", "wi_plain"]), SLOW);
   });
 });

@@ -16,7 +16,7 @@ const OPTIONS = [
 
 function Host({ start = "" }: { start?: string }) {
   const [value, setValue] = useState(start);
-  return <Tabs label="Project" options={OPTIONS} value={value} onChange={setValue} />;
+  return <Tabs label="Project" options={OPTIONS} value={value} onChange={setValue} action={<button type="button" aria-label="Add project">+</button>} />;
 }
 
 const tabs = () => screen.getAllByRole("tab");
@@ -69,5 +69,34 @@ describe("Tabs", () => {
     expect(list.className).toMatch(/flex-nowrap/);
     expect(tabs()[0].className).toMatch(/whitespace-nowrap/);
     expect(readFileSync("web/src/components/ui/tabs.tsx", "utf8")).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+
+  it("is an underline row: a full-width bottom border, an accent underline on the selected tab and no fill", () => {
+    render(<Host start="home" />);
+    const row = screen.getByRole("tablist").parentElement!;
+    expect(row.className).toMatch(/\bborder-b\b/);
+    expect(row.className).toMatch(/\bborder-border\b/);
+    expect(row.className).toMatch(/\bw-full\b/);
+    const [, home, garden] = tabs();
+    expect(home.className).not.toMatch(/bg-accent/);
+    expect(home.className).toMatch(/aria-selected:border-accent/);
+    expect(home.className).toMatch(/border-b-2/);
+    expect(garden.className).toMatch(/\btext-text-2\b/);
+    expect(garden.className).toMatch(/hover:text-text-1/);
+    expect(garden.className).not.toMatch(/\bbg-/);
+  });
+
+  it("draws the action inside the row, after the tabs, as no tab; arrow keys skip it", () => {
+    render(<Host start="garden" />);
+    const add = screen.getByRole("button", { name: "Add project" });
+    expect(add.getAttribute("role")).toBeNull();
+    expect(tabs()).toHaveLength(3);
+    expect(add.parentElement).toBe(screen.getByRole("tablist").parentElement);
+    expect(screen.getByRole("tablist").contains(add)).toBe(false);
+    tabs()[2].focus();
+    fireEvent.keyDown(tabs()[2], { key: "ArrowRight" });
+    expect(selected()).toEqual(["All projects"]);
+    fireEvent.keyDown(document.activeElement, { key: "ArrowLeft" });
+    expect(selected()).toEqual(["Garden"]);
   });
 });

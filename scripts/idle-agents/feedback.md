@@ -12,11 +12,20 @@ Shared rules for the local idle-time agents in `.claude/agents/gongbang-*.md`. T
    - `npm run -s factory -- task list`: local work items and open plain tasks.
 3. Pick one area you have not covered recently, using your notes. Go deep on it rather than wide.
 
+## Every user agent run
+
+These hold for the two user agents (`gongbang-user-en`, `gongbang-user-ko`), which own a project:
+
+- **Revision check first.** The prompt has a "Project factory revision" line, computed by the script from the project's `.factory/supervisor.json` `rev` and this repository's `origin/main`. If it says the project factory is more than a day behind, write that in your notes and file it as a problem. Before filing any other problem, check it is not already fixed on main. "Unknown" is not a problem by itself; note it.
+- **One real step.** Each run takes one real step toward the project goal: it moves an item forward, reviews a diff, or files the next project task. Checking status alone is not a step. Name the step in your notes.
+- **The browser, every run.** Each run opens its project dashboard in the browser at least once. Take the page from your notes' "not checked" list, oldest first, so the list rotates instead of rolling over day after day.
+
 ## What is worth filing
 
 - **Real problems only.** A problem must be something you saw or measured, with the steps to repeat it or the numbers. A guess or a taste you can't back with evidence is not filed. Write it in your notes as "to check next".
 - **Product problems only.** File it only if a Gongbang user on another project would also hit it. A problem that only helps develop this repository (a dev script, a local check) goes in your notes, not to the factory.
 - **Some things are never filed:** a request to loosen a guard (secrets, egress, tool broker, sandbox, auth), a request to raise auto-merge tiers, and a feature whose only reason is another person (Gongbang serves one owner).
+- **Seen in two runs is evidence.** An observation written in your notes in two separate runs, on different local dates, meets the evidence bar: file it, with both dates as evidence under "Found by". Your notes keep a "seen" count per observation (see the end of every run); raise it each run you see it again. Do not leave a repeat as "seen once, not filed".
 - **At most 2 tasks per run.** When nothing meets the bar, file nothing, and say so in your notes. A run that files nothing is a fine run.
 
 ## How to file
@@ -38,6 +47,7 @@ The body is short and plain. Write it in English, and quote Korean text exactly 
 
 ## Found by
 - Local idle agent <name>, <YYYY-MM-DD>: how you found it (page, width, steps, or the command and its output)
+- (for a repeat) the second date you saw it, and what you saw then
 
 ## Done when
 - 1 to 3 checks a test or a person can run
@@ -60,9 +70,14 @@ Append to your notes file:
 ```
 ## <YYYY-MM-DD HH:MM>
 - Checked: <area, pages, commands>
+- Step: <user agents: the one real step toward the project goal>
+- Browser: <user agents: the dashboard pages opened, or "browser unavailable">
+- Revision: <user agents: the project factory revision line, and whether it is behind>
+- Seen: <each open observation, one line each: "<observation> (seen N: <dates>)">; filed ones are dropped
 - Filed: <work item IDs and titles, or "nothing">
 - Fine: <what worked well, in one line>
 - Next: <1 to 3 things to check on a later run>
+- Not checked: <pages or areas still to visit, oldest first; the next run's browser visit takes the first>
 ```
 
-Keep the notes under about 200 lines. When they grow past that, fold the oldest entries into a short "Covered so far" list at the top.
+Keep the notes under about 200 lines. When they grow past that, fold the oldest entries into a short "Covered so far" list at the top, keeping every open "seen" line with its dates.

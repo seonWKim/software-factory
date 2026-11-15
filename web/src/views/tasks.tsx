@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { type DragEvent, type FormEvent, type KeyboardEvent, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
+import { type DragEvent, type FormEvent, type KeyboardEvent, type ReactNode, type RefObject, createContext, useContext, useEffect, useRef, useState } from "react";
 import {
   API, type DayRow, type ProjectChoice, type TaskAction, type TaskRow, type TasksView, type TimelineRow, isEventRow, postProject, postTaskAction,
   postTaskAdd, postTaskBuild, postTaskProject, useTasks,
@@ -21,7 +21,7 @@ import { cn } from "../lib/cn.js";
 import { localDateTime } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { FactoryWork, WorkState } from "./task-work.js";
+import { NeedsYou, WorkState } from "./task-work.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's plain tasks, read through GET
 // /api/v1/tasks, as one list with no view tabs (design 02-tasks, one list): every task in the groups overdue (in red),
@@ -45,11 +45,11 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // edit or a delete.
 // The project tabs (design 09-dashboard-app, task projects) filter the list to one active
 // task project's tasks, open and done (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
-// load and set on change, so a filtered view can be shared and reloaded. Factory work
+// load and set on change, so a filtered view can be shared and reloaded. Needs you
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
-// The page's order (design 09-dashboard-app): the project tabs, Quick add, Factory work, the list; the blocks
+// The page's order (design 09-dashboard-app): the project tabs, Quick add, Needs you, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 const muted = "text-xs text-pretty text-text-2";
@@ -500,7 +500,7 @@ function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: Tas
       <div className="flex items-start gap-2">
         {task.work_item_id !== null ? (
           <>
-            <WorkState id={task.work_item_id} title={task.title} />
+            <WorkState id={task.work_item_id} title={task.title} open={!done} />
             <Link href={itemPath(task.work_item_id)} className={cn(LINK_CLASS, "font-mono text-xs break-all")}>
               {task.work_item_id}
             </Link>
@@ -758,10 +758,10 @@ function useProjectParam(): [string | null, (slug: string | null) => void] {
 }
 
 /** The project tabs: All projects (id ""), then the active projects; a slug the URL names that is not among them stays listed by its slug. */
-function ProjectTabs({ projects, value, onChange }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void }) {
+function ProjectTabs({ projects, value, onChange, action }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void; action: ReactNode }) {
   const choices = value === null || projects.some((p) => p.slug === value) ? projects : [...projects, { slug: value, name: `+${value}` }];
   const options = [{ id: "", label: t("tasks.allProjects") }, ...choices.map((p) => ({ id: p.slug, label: p.name }))];
-  return <Tabs label={t("tasks.project")} options={options} value={value ?? ""} onChange={(id) => onChange(id === "" ? null : id)} />;
+  return <Tabs label={t("tasks.project")} options={options} value={value ?? ""} onChange={(id) => onChange(id === "" ? null : id)} action={action} />;
 }
 
 /** The Add project dialog: one name field; a refusal stays in the dialog with its reason, and a created project's tab is selected. */
@@ -818,6 +818,8 @@ export function TasksPage() {
   const undo = useUndoDone(token);
   // `projects` holds every task the read returned, so its titles name each sub-task's parent.
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
+  // The items of the open tasks: each shows its need on its own row, so Needs you leaves it out. Null while the read loads.
+  const linked = v ? new Set(v.projects.flatMap((p) => p.tasks.flatMap((x) => (x.work_item_id !== null && x.done_at == null ? [x.work_item_id] : [])))) : q.isError ? new Set<string>() : null;
   // Kept from the last read, so the tabs keep their choices while a new filter loads.
   const known = useRef<readonly ProjectChoice[]>([]);
   if (v?.active_projects !== undefined) known.current = v.active_projects;
@@ -826,12 +828,16 @@ export function TasksPage() {
     <PageHeader title={t("page.tasks")} />
     <div className="flex flex-col gap-6">
       <div className="flex flex-col items-start gap-3">
-        <div className="flex max-w-full items-center gap-2">
-          <ProjectTabs projects={known.current} value={project} onChange={setProject} />
-          <Button ref={addButton} size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
-            +
-          </Button>
-        </div>
+        <ProjectTabs
+          projects={known.current}
+          value={project}
+          onChange={setProject}
+          action={
+            <Button ref={addButton} variant="ghost" size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
+              +
+            </Button>
+          }
+        />
         {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
       </div>
       <div className="space-y-1">
@@ -842,9 +848,7 @@ export function TasksPage() {
           </p>
         )}
       </div>
-      <div className="empty:hidden">
-        <FactoryWork project={project} />
-      </div>
+      <NeedsYou project={project} linked={linked} />
       <div>
         <Section label={t("tasks.listLabel")}>
           <div className="space-y-3">

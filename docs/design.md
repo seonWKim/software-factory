@@ -70,6 +70,7 @@ the `05-*` files.
 
 ## 11. Packs
 - [11-packs.md](design/11-packs.md): pack layers (base, org, project, learned) for prompts, skills and plugins, the `packs` key, and the guard and shared-store rules for pack plugins.
+- [11-plugin-import.md](design/11-plugin-import.md): `factory plugins import`, which finds skills and MCP servers in the user-level Claude Code and Codex configs and stores them as skill references and pending pack entries, never an env value.
 
 ## 11. Signal ledger
 - [11-signal-ledger.md](design/11-signal-ledger.md): the `controller_signals` table, its discovered signal sources, tags, idempotency and backfill.

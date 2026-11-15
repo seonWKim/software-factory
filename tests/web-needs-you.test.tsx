@@ -5,8 +5,8 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
-// The Needs you page (design 09-dashboard-app): a PageHeader with the count, rows grouped Merge, Approve, Answer or
-// fix, one primary action per row with the "⋯" menu last, a plain why text, and j, k, Enter and p on the rows.
+// The Needs you section of the Tasks page (design 09-dashboard-app), which /app/ opens: its count, compact rows grouped
+// Merge, Approve, Answer or fix, one primary action per row with the "⋯" menu last, and j, k, Enter and p on the rows.
 
 const AT = "2026-11-12T00:00:00.000Z";
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
@@ -42,6 +42,7 @@ beforeEach(() => {
     const bodies: Record<string, unknown> = {
       "/api/v1/overview": overview,
       "/api/v1/items": { as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} } },
+      "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
       "/api/v1/pauses": { pauses: [], csrf_token: null },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
     };
@@ -63,69 +64,60 @@ function mount() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
 }
-const rowsOf = (el: HTMLElement) => [...el.querySelectorAll("tbody tr")] as HTMLElement[];
-const ready = () => screen.findAllByRole("table", { name: "Needs you" });
+const rowsOf = (el: HTMLElement) => [...el.querySelectorAll("li[data-key]")] as HTMLElement[];
+const ready = async () => {
+  const section = await screen.findByRole("region", { name: "Needs you" });
+  // The rows' commands are on once the session is read.
+  await waitFor(() => expect(within(section).queryAllByRole("button", { name: "Merge" }).some((b) => !b.disabled) || list.length === 0).toBe(true));
+  return [...section.querySelectorAll("ul")] as HTMLElement[];
+};
 
-describe("the Needs you page", () => {
-  it("has one header with the count, groups Merge, Approve, Answer or fix in that order, and counts them only when there are several", async () => {
+describe("the Needs you section", () => {
+  it("leads from /app/ to the Tasks page, with the count and the groups Merge, Approve, Answer or fix in that order", async () => {
     mount();
-    const tables = await ready();
-    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Needs you"]);
-    expect(screen.getByText("5 waiting")).toBeTruthy();
-    const sections = [...document.querySelectorAll("main section")];
-    expect(sections.map((s) => s.getAttribute("aria-label"))).toEqual(["Merge", "Approve", "Answer or fix"]);
-    expect(sections.map((s) => s.querySelector("h2 + span")?.textContent)).toEqual(["2", "1", "2"]);
-    expect(tables.map((t) => rowsOf(t).map((r) => r.getAttribute("data-key")))).toEqual([["wi_m1", "wi_m2"], ["wi_a1"], ["wi_r1", "wi_n1"]]);
+    const lists = await ready();
+    expect(location.pathname).toBe("/app/tasks");
+    expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Tasks"]);
+    const section = screen.getByRole("region", { name: "Needs you" });
+    expect(section.querySelector("h2 + span")!.textContent).toBe("5");
+    expect(lists.map((l) => l.getAttribute("aria-label"))).toEqual(["Merge", "Approve", "Answer or fix"]);
+    expect(lists.map((l) => rowsOf(l).map((r) => r.getAttribute("data-key")))).toEqual([["wi_m1", "wi_m2"], ["wi_a1"], ["wi_r1", "wi_n1"]]);
     cleanup();
-    list = [APPROVE];
+    list = [];
     mount();
-    await ready();
-    expect(document.querySelector("main section h2 + span")).toBeNull();
-    expect(document.querySelectorAll("main section")).toHaveLength(1);
+    await screen.findByRole("heading", { name: "Tasks" });
+    expect(screen.queryByRole("region", { name: "Needs you" })).toBeNull();
   });
 
-  it("shows the factory as a header indicator, and a Notice only when it is paused, stopped or failing", async () => {
+  it("shows a Notice only when the factory is stopped, paused or failing", async () => {
     mount();
     await ready();
-    const status = screen.getByTestId("factory-status");
-    expect(status.textContent).toBe("Running");
     expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.queryByTestId("factory-banner")).toBeNull();
-    fireEvent.focus(status);
-    expect(screen.getByRole("tooltip").textContent).toContain("0ff810f");
+    expect(screen.queryByTestId("factory-status")).toBeNull();
     cleanup();
     overview.factory = null;
     mount();
     await ready();
-    expect(screen.getByTestId("factory-status").textContent).toBe("Stopped");
+    expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.getByRole("alert").textContent).toContain("Factory stopped");
   });
 
-  it("has the columns Item, State, Why, Since, Actions, and leaves out Issue and PR while no row has them", async () => {
+  it("shows a compact row per item without a table: title, a PR as a muted number, the state once, and no Issue", async () => {
+    list = [{ ...MERGE, issue: { number: 12, url: "https://github.com/o/r/issues/12" } }, APPROVE];
     mount();
     const [first] = await ready();
-    expect([...first!.querySelectorAll("thead th")].map((h) => h.textContent)).toEqual(["Item", "State", "Why", "Since", "Actions"]);
-    const cells = [...rowsOf(first!)[0]!.querySelectorAll("td")];
-    expect(cells[3]!.className).toMatch(/text-right.*tabular-nums|tabular-nums.*text-right/);
-    expect(cells[4]!.className).toMatch(/text-right/);
-    // A PR is a muted link after the title.
-    const pr = within(cells[0]!).getByRole("link", { name: "PR #644" });
-    expect(pr.textContent).toBe("#644");
-    expect(pr.className).toContain("text-text-2");
-    expect(cells[0]!.querySelectorAll("a")[0]!.textContent).toBe("Ship the parser");
-    cleanup();
-    list = [{ ...APPROVE, issue: { number: 12, url: "https://github.com/o/r/issues/12" } }];
-    mount();
-    const [withIssue] = await ready();
-    expect([...withIssue!.querySelectorAll("thead th")].map((h) => h.textContent)).toEqual(["Item", "State", "Why", "Since", "Issue", "Actions"]);
+    expect(document.querySelector("main table")).toBeNull();
+    const merge = rowsOf(first!)[0]!;
+    expect(within(merge).getByRole("link", { name: "Ship the parser" })).toBeTruthy();
+    expect(merge.textContent).toContain("#644");
+    expect(merge.textContent).not.toContain("#12");
   });
 
   it("gives every row one primary action with the ⋯ menu last, in the same place", async () => {
     mount();
-    const tables = await ready();
-    const labels = tables.flatMap(rowsOf).map((r) => {
-      const actions = [...r.querySelectorAll("td")].at(-1)!;
-      const controls = [...actions.querySelectorAll("button, a[data-command]")].filter((c) => !c.closest("[role=menu]"));
+    const lists = await ready();
+    const labels = lists.flatMap(rowsOf).map((r) => {
+      const controls = [...r.querySelectorAll("button, a[data-command]")].filter((c) => !c.closest("[role=menu]"));
       expect(controls.at(-1)!.getAttribute("aria-label"), r.getAttribute("data-key")).toBe("More commands");
       expect(controls, r.getAttribute("data-key")).toHaveLength(2);
       return controls[0]!.textContent;
@@ -135,46 +127,30 @@ describe("the Needs you page", () => {
 
   it("disables Merge as 'Checking…' while the merge check runs, with no separate line or duplicate text", async () => {
     mount();
-    const tables = await ready();
-    const checking = rowsOf(tables[0]!)[1]!;
+    const lists = await ready();
+    const checking = rowsOf(lists[0]!)[1]!;
     const button = within(checking).getByRole("button", { name: "Checking…" });
     expect(button.disabled).toBe(true);
     expect(checking.textContent!.match(/Checking…/g)).toHaveLength(1);
     expect(checking.textContent).not.toContain("merge check running");
-    expect(within(rowsOf(tables[0]!)[0]!).getByRole("button", { name: "Merge" }).disabled).toBe(false);
+    expect(within(rowsOf(lists[0]!)[0]!).getByRole("button", { name: "Merge" }).disabled).toBe(false);
   });
 
-  it("renders a why text for people: the item ID as its title link, /retry as a button, the path in code style, the +paths reply in the menu", async () => {
+  it("shows an Answer-or-fix reason as plain text, with the +paths reply in the menu and /retry sent from it", async () => {
     mount();
-    const tables = await ready();
-    const why = rowsOf(tables[2]!)[0]!.querySelector("[data-need]")!;
-    const link = within(why).getByRole("link", { name: "Add the input component" });
-    expect(link.getAttribute("href")).toBe("/app/items/wi_5b2b");
-    const retry = within(why).getByRole("button", { name: "Retry after it merges" });
-    expect(why.querySelector("code")!.textContent).toBe("web/src/components/ui/input.tsx");
-    expect(why.textContent).not.toMatch(/\/retry|\+paths|wi_5b2b/);
-    fireEvent.click(retry);
-    await waitFor(() => expect(posts).toHaveLength(1));
-    expect(posts[0]).toEqual({ url: "/api/v1/items/wi_r1/commands", body: { command: "retry" } });
-    posts = [];
-    fireEvent.click(within(rowsOf(tables[2]!)[0]!).getByRole("button", { name: "More commands" }));
+    const lists = await ready();
+    const row = rowsOf(lists[2]!)[0]!;
+    expect(row.querySelector("[data-need]")!.textContent).toBe(WHY);
+    fireEvent.click(within(row).getByRole("button", { name: "More commands" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Allow input.tsx and retry" }));
     await waitFor(() => expect(posts).toHaveLength(1));
-    expect(posts[0]!.body).toEqual({ command: "retry", note: "+paths web/src/components/ui/input.tsx" });
-  });
-
-  it("names an ID that is not in the loaded list by the ID, linked to its item page", async () => {
-    list = [{ ...RETRY, need: { reason: "Please merge wi_zz99, then /retry this item.", anchor: null } }];
-    mount();
-    const [table] = await ready();
-    const link = within(table!).getByRole("link", { name: "wi_zz99" });
-    expect(link.getAttribute("href")).toBe("/app/items/wi_zz99");
+    expect(posts[0]).toEqual({ url: "/api/v1/items/wi_r1/commands", body: { command: "retry", note: "+paths web/src/components/ui/input.tsx" } });
   });
 
   it("moves between rows with j and k, opens the item with Enter, presses the primary action with p (never Merge)", async () => {
     mount();
-    const tables = await ready();
-    const rows = tables.flatMap(rowsOf);
+    const lists = await ready();
+    const rows = lists.flatMap(rowsOf);
     const selected = () => rows.filter((r) => r.dataset.selected === "true").map((r) => r.getAttribute("data-key"));
     fireEvent.keyDown(document.body, { key: "j" });
     expect(selected()).toEqual(["wi_m1"]);
@@ -195,8 +171,8 @@ describe("the Needs you page", () => {
 
   it("shows the primary action's shortcut in its tooltip, and none on Merge", async () => {
     mount();
-    const tables = await ready();
-    fireEvent.focus(within(rowsOf(tables[1]!)[0]!).getByRole("button", { name: "Approve" }));
+    const lists = await ready();
+    fireEvent.focus(within(rowsOf(lists[1]!)[0]!).getByRole("button", { name: "Approve" }));
     expect(screen.getByRole("tooltip").textContent).toBe("Approve (p)");
     cleanup();
     mount();

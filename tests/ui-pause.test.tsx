@@ -10,9 +10,11 @@ import type { PausesView } from "../web/src/api.js";
 // tsconfig.test.json checks this file without JSX, so the pages are built with createElement and their .tsx
 // module is loaded by a specifier the node check skips (as tests/ui-settings-page.test.tsx does).
 const PAGE_MODULE = "../web/src/views/pages.js";
-const { NeedsYouPage, HealthPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { NeedsYouPage: FunctionComponent; HealthPage: FunctionComponent };
+const TASKS_MODULE = "../web/src/views/tasks.js";
+const { HealthPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { HealthPage: FunctionComponent };
+const { TasksPage } = (await import(/* @vite-ignore */ TASKS_MODULE)) as { TasksPage: FunctionComponent };
 
-// Claim pauses on the Floor and Health pages (issue #291, design §5 Restarts and §9): each pause in effect with
+// Claim pauses on the Tasks page (under All projects) and the Health page (issue #291, design §5 Restarts and §9): each pause in effect with
 // when it ends and a "Resume now" button that posts to /api/v1/pauses/resume with the CSRF token; a refusal
 // shows next to that button.
 
@@ -52,7 +54,7 @@ function show(page: FunctionComponent) {
   return screen.findByRole("list", { name: "Claim pauses" });
 }
 
-describe.each([["Needs you", () => NeedsYouPage], ["Health", () => HealthPage]] as const)("%s page claim pauses", (_name, page) => {
+describe.each([["Tasks", () => TasksPage], ["Health", () => HealthPage]] as const)("%s page claim pauses", (_name, page) => {
   it("lists each active pause with its name, when it ends and a Resume now button", async () => {
     const list = await show(page());
     const items = [...list.querySelectorAll<HTMLElement>("li[data-pause]")];
@@ -87,10 +89,10 @@ describe.each([["Needs you", () => NeedsYouPage], ["Health", () => HealthPage]] 
 });
 
 describe("no pause in effect", () => {
-  it("shows no pause list on the Floor page", async () => {
+  it("shows no pause list on the Tasks page", async () => {
     view = { pauses: [], csrf_token: TOKEN };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(createElement(QueryClientProvider, { client }, createElement(NeedsYouPage)));
+    render(createElement(QueryClientProvider, { client }, createElement(TasksPage)));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => u === "/api/v1/pauses")).toBe(true));
     expect(screen.queryByRole("list", { name: "Claim pauses" })).toBeNull();
   });
