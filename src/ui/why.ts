@@ -8,9 +8,10 @@
 // queue position, and last nothing (no run moves it). An open alarm that affects the item is named after the
 // sentence (withAlarms), whichever rule gave it.
 
-import { IMPLEMENT_KINDS } from "../core/policy.js";
+import { type FailureClass, IMPLEMENT_KINDS, failureClass, retryClears } from "../core/policy.js";
 import { PHASE_HOLD, PHASES_OPEN } from "../core/split.js";
-import type { BlockedOn, ClaimDecision, CloseReason, RunKind, Stage } from "../core/types.js";
+import { type BlockedOn, type ClaimDecision, type CloseReason, RECURRING_FAILURE, type RunKind, type RunOutcome, type Stage } from "../core/types.js";
+import { FAILURE_DESCRIPTIONS } from "./failures.js";
 
 /** Which rule gave the sentence. */
 export type WhyCode =
@@ -64,6 +65,18 @@ export interface WhyInput {
   not_before: string | null;
   /** What a split item waits on (list.ts `waitingOn`). */
   phases: { waiting_on: number; waiting_on_number: number | null };
+  /** The last failed run of an item held as `recurring_failure` (need.ts heldFailureOf); null or absent: none. */
+  failure?: HeldFailure | null;
+}
+
+/**
+ * The last failed run of a held item: its outcome, read only to classify it and find its plain words, and its
+ * code and detail as shown, already through the Withholder (run-outcome channel).
+ */
+export interface HeldFailure {
+  outcome: Extract<RunOutcome, { status: "failed" }>;
+  code: string;
+  detail: string;
 }
 
 /** `#N` not part of `owner/name#N`: the issue numbers of the item's own repository. */
@@ -109,7 +122,29 @@ const STAGE_WORDS: Record<Stage, string> = {
   CLOSED: "closed",
 };
 
-function human(i: WhyInput["item"]): Why {
+/** Why a plain retry is likely enough, by the failure class that makes it so (policy retryClears). */
+const RETRY_CLEARS: Partial<Record<FailureClass, string>> = {
+  stalled: "The model stalled",
+  rate_limited: "A usage or rate limit stopped it",
+  infra: "The factory's own infrastructure failed, not the task",
+};
+
+/**
+ * What a recurring-failure hold says (design 05-alarms), the same text for the explanation and the decision box
+ * (need.ts): the last failed run's failure in plain words (FAILURE_DESCRIPTIONS), and whether a plain retry is
+ * likely enough. With no failed run it names no failure.
+ */
+export function heldFailureText(f: HeldFailure | null): string {
+  if (f === null) return "Held by a recurring failure; its runs hold no failed run to name it. A person retries it (/retry) or rejects it";
+  const said = FAILURE_DESCRIPTIONS[f.outcome.error_code]?.replace(/\.$/, "") ?? `Its last run failed with ${f.code}`;
+  const failure = f.detail ? `${said} (${f.detail})` : said;
+  const next = retryClears(f.outcome)
+    ? `${RETRY_CLEARS[failureClass(f.outcome)]}, so a plain retry is likely enough: /retry`
+    : "It is the task's own failure, so a plain retry will likely fail again: change the spec, the code or the setup first, then /retry";
+  return `Held by a recurring failure. ${failure}. ${next}`;
+}
+
+function human(i: WhyInput["item"], failure: HeldFailure | null): Why {
   if (i.blocked_on === "budget") return why("human", "Waiting for a person to answer the budget check", "human");
   const r = i.blocked_reason ?? "";
   if (r === "merge_pending") return why("human", "Ready to merge: waiting for a person to merge the PR", "human");
@@ -122,6 +157,7 @@ function human(i: WhyInput["item"]): Why {
   }
   if (r === "max_loops") return why("human", "Too many review loops: a person decides what happens next", "human");
   if (r === "merge_conflict_pending") return why("human", "A merge conflict needs a person", "human");
+  if (r === RECURRING_FAILURE) return why("human", heldFailureText(failure), "human");
   if (FAILED.test(r)) return why("human", `The run failed (${r}): a person decides what happens next`, "human");
   // No stored reason: the item's state and what moves it next, never an empty or "no reason" text.
   if (!r) return why("human", `Waiting for a person: the item is ${STAGE_WORDS[i.stage]}; next, a person retries, resolves or rejects it`, "human");
@@ -165,7 +201,7 @@ const HOLDER: Record<ClaimDecision["holder_kind"], string> = {
 export function whyWaiting(x: WhyInput): Why {
   const { item: i, run } = x;
   if (i.stage === "CLOSED") return why("closed", i.close_reason ? `Closed: ${i.close_reason.replace(/_/g, " ")}` : "Closed", "none");
-  if (i.blocked_on === "human" || i.blocked_on === "budget") return human(i);
+  if (i.blocked_on === "human" || i.blocked_on === "budget") return human(i, x.failure ?? null);
   if (deadlocked(x.decision, run)) {
     const other = x.decision!.holder_title ? `"${x.decision!.holder_title}"` : "another item";
     return why("deadlock", `Running at the same time as ${other}, which changes some of the same files. If they clash, you'll be asked when it merges.`, "factory");

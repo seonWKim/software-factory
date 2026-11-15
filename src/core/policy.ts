@@ -111,6 +111,15 @@ export function failureClass(outcome: RunOutcome | null): FailureClass {
 }
 
 /**
+ * True when a plain retry is likely to clear the failed run's outcome (design 05-alarms, held items): a stall,
+ * a usage or rate limit, or an infra failure. Any other failure is the task's own, which a retry alone repeats.
+ */
+export function retryClears(outcome: RunOutcome | null): boolean {
+  const c = failureClass(outcome);
+  return c === "stalled" || c === "rate_limited" || c === "infra";
+}
+
+/**
  * The error code of a run whose agent printed nothing for `stall_ms` while no tool call was open (design §5
  * Restarts). Not an attempt; it pauses every claim (`model_stall`) until a probe on the cheap model answers.
  */
