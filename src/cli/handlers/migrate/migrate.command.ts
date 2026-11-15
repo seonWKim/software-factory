@@ -13,13 +13,15 @@ import { SQLITE_MIGRATE_MESSAGE, parseMigrateArgs } from "./migrate-args.js";
 
 export default defineCommand({
   names: ["migrate"],
-  usage: `  migrate [--status | --dry-run | --rehearse | --contract]
+  usage: `  migrate [--status | --dry-run | --rehearse | --contract [--dry-run]]
                SQLite: the breaking migrations, then the project-key data step (owner/name →
                github:<host>:<repo id>): --status lists the state and pending steps,
                --dry-run prints what would run and each row it would change, --rehearse runs them on a
                copy and checks no row was lost, no flag applies them (back up first). The other commands
-               refuse to start while steps or owner/name rows remain. --contract drops the legacy_* tables
-               a rename left, 14 days after it, archiving their rows to db/backups first`,
+               refuse to start while steps or owner/name rows remain. --contract copies each legacy_* row
+               missing from its current table, then drops the legacy_* tables, 14 days after the
+               migrations that left them, archiving their rows to db/backups first; with --dry-run it
+               prints each table, its row count and the rows it would copy, and changes nothing`,
   async run(argv, ctx) {
     const args = [...argv];
     // --json (with --status): one JSON line for the supervisor's check. --no-drain: apply without asking a
@@ -52,7 +54,7 @@ export default defineCommand({
           return resolveProject(github, { owner, name });
         };
       };
-      if (mode === "contract") return contract(loaded, file, print);
+      if (mode === "contract" || mode === "contract-dry-run") return contract(loaded, file, print, mode === "contract-dry-run");
       if (mode === "rehearse") return rehearseSqlite(file, print);
       print(SQLITE_MIGRATE_MESSAGE);
       await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
@@ -67,16 +69,16 @@ export default defineCommand({
   },
 });
 
-/** `--contract`: the contract migrations whose breaking migration is old enough (RFC 0015 §12 D2, D4). */
-async function contract(loaded: Loaded, file: string, print: (line: string) => void): Promise<number> {
+/** `--contract [--dry-run]`: the contract migrations whose breaking migrations are old enough (RFC 0015 §12 D2, D4). */
+async function contract(loaded: Loaded, file: string, print: (line: string) => void, dryRun: boolean): Promise<number> {
   const clock = await new Plugins(loaded).clock();
   const driver = new SqliteDriver(file);
   try {
     const done = await applyMigrations(
       { dialect: "sqlite", all: (s, p) => driver.all(s, p), run: (s, p) => driver.run(s, p) },
-      { backupDir: join(loaded.stateDir, "db", "backups"), now: () => clock.now().toISOString(), print, contract: true },
+      { backupDir: join(loaded.stateDir, "db", "backups"), now: () => clock.now().toISOString(), print, contract: true, dryRun },
     );
-    print(done.length === 0 ? "contract: nothing to apply" : `contract: applied ${done.join(", ")}`);
+    print(done.length === 0 ? "contract: nothing to apply" : `contract: ${dryRun ? "would apply" : "applied"} ${done.join(", ")}`);
     return 0;
   } finally {
     await driver.close();

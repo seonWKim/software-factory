@@ -460,7 +460,8 @@ export function ciResults(run: Run): string {
   ].join("\n");
 }
 
-export const LOOP_STARTS = ["review_bug", "checks_failed", "pr_revise_requested", "pr_changes_requested"];
+/** State change reasons that start an implement loop; the last three carry the owner's feedback in `detail.feedback`. */
+export const LOOP_STARTS = ["review_bug", "checks_failed", "pr_revise_requested", "pr_changes_requested", "revise_applied"];
 
 /** A code block whose fence is longer than any backtick run in `text`, so the text cannot close it. */
 export function fenced(text: string): string {

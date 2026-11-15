@@ -42,7 +42,8 @@ import {
 // box (command-box.tsx), sent through the same app request route.
 // All of it sits in one "What you need to decide" box at the top of the item page (design 09-dashboard-app): the
 // reason, In short, the decisions with their defaults, the buttons that apply now (the one the state asks for is the
-// primary button) and the same command for a terminal, naming the item's short number.
+// primary button) and the same command for a terminal, naming the item's short number. Feedback a `/revise` queued while
+// implementing is listed there until the run that applies it starts (pendingFeedback).
 
 /** Commands sent from their own dialog, not with the note box. */
 const FORMS = ["reject", "revise"];
@@ -83,6 +84,54 @@ export function oneTapNote(choice: OneTapChoice, reason: string): string | null 
   if (choice === "good") return verdictNote("accept", "none", reason);
   if (choice === "bad") return verdictNote("changes", "minor", reason.trim() || "Bad");
   return reason.trim() === "" ? null : verdictNote("changes", "none", reason);
+}
+
+/** A `/revise` queued while implementing, as the item page lists it until it is applied. */
+export type QueuedFeedback = { comment_id: string; feedback: string };
+
+/** The comment IDs a `revise_applied` or `max_loops` row settles (its `comment_ids` detail, JSON). */
+function settledIds(detail: Record<string, string | null> | null): string[] {
+  try {
+    const ids: unknown = JSON.parse(detail?.comment_ids ?? "[]");
+    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The item's queued `/revise` feedback not applied yet (design 09-dashboard-app), oldest first: each `revise_queued`
+ * row of the timeline whose comment ID no `revise_applied` or `max_loops` row names. The server's rule is
+ * pendingRevises in src/controller/units/commands/queued-revise.ts.
+ */
+export function pendingFeedback(timeline: ItemDetail["timeline"]): QueuedFeedback[] {
+  const settled = new Set(timeline.filter((r) => r.reason === "revise_applied" || r.reason === "max_loops").flatMap((r) => settledIds(r.detail)));
+  const out: QueuedFeedback[] = [];
+  for (const r of timeline) {
+    const id = r.detail?.comment_id, feedback = r.detail?.feedback;
+    if (r.reason === "revise_queued" && id && feedback && !settled.has(id) && !out.some((p) => p.comment_id === id)) out.push({ comment_id: id, feedback });
+  }
+  return out;
+}
+
+/** The feedback queued for the implementer, listed until the run that applies it starts; nothing when none waits. */
+function QueuedFeedbackList({ timeline }: { timeline: ItemDetail["timeline"] | undefined }) {
+  const pending = pendingFeedback(timeline ?? []);
+  if (pending.length === 0) return null;
+  return (
+    <section aria-label={t("commands.feedback")} data-queued-feedback className="mt-3">
+      <h3 className="text-sm font-medium">
+        {t("commands.feedback")} <span className="text-xs font-normal text-text-2">({t("items.queued")})</span>
+      </h3>
+      <ul className="mt-1 space-y-1">
+        {pending.map((p) => (
+          <li key={p.comment_id} data-queued={p.comment_id} className="text-sm text-pretty break-words whitespace-pre-wrap text-text-1">
+            {p.feedback}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 /** What this page did with a command since it loaded: the request it sent, or the error its send got. */
@@ -197,6 +246,7 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
       <div className="mt-2">
         {reason}
         <InShort spec={data?.spec} />
+        <QueuedFeedbackList timeline={data?.timeline} />
         <p data-commands-none className="mt-2 text-sm text-pretty text-text-2">
           {t("commands.none")}
         </p>
@@ -226,6 +276,7 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
       <h2 className="mb-1 text-balance text-sm font-semibold">{t("decide.title")}</h2>
       {reason}
       <InShort spec={data?.spec} />
+      <QueuedFeedbackList timeline={data?.timeline} />
       <section aria-label={t("commands.label")} className="mt-3">
         {off && (
           <p role="status" data-commands-off className="mb-2 text-sm text-pretty text-text-2">
@@ -483,6 +534,13 @@ export interface NeedActionsProps {
   cmd: ReturnType<typeof useCommandSend>;
   /** Overflow entries from the Why text (`Allow x and retry`): each sends `retry` with `note`. */
   allow: readonly { label: string; note: string }[];
+  /** False: the row shows the failed sends itself (SendErrors on its own line, design-system C-050), not this cell. */
+  inlineErrors?: boolean;
+}
+
+/** The errors of a row's failed sends, one alert each (NeedActions' `cmd.local`). */
+export function SendErrors({ local }: { local: Record<string, LocalSend> }) {
+  return Object.values(local).flatMap((l) => ("error" in l ? [<OutcomeText key={l.error} outcome={{ tone: "error", text: l.error }} />] : []));
 }
 
 /**
@@ -491,9 +549,10 @@ export interface NeedActionsProps {
  * viewer may send), else "Open" to the item page. The menu holds every other command and the Why text's allow
  * entries; one the viewer may not send stays, disabled, with its reason. Reject, revise and verdict open a dialog
  * (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
- * a failed send shows its error in the row, a sent one in a short status message that outlives the row.
+ * a failed send shows its error in the cell (or, with `inlineErrors` false, where the row puts SendErrors), a sent
+ * one in a short status message that outlives the row.
  */
-export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow }: NeedActionsProps) {
+export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow, inlineErrors = true }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
   const [open, setOpen] = useState<FormName | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
@@ -528,7 +587,6 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
     })),
     ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
-  const failed = Object.values(local).flatMap((l) => ("error" in l ? [l.error] : []));
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {group === "merge" ? (
@@ -554,9 +612,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
         </Link>
       )}
       <OverflowMenu label={t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
-      {failed.map((text) => (
-        <OutcomeText key={text} outcome={{ tone: "error", text }} />
-      ))}
+      {inlineErrors && <SendErrors local={local} />}
       {open !== null && (
         <CommandDialog
           command={open}

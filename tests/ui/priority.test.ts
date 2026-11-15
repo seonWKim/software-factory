@@ -116,7 +116,7 @@ describe("ui priority", () => {
   it("a deadlock claim on the item's run is blocked by another task and names the item it waits on", () => {
     const d = item("d", { run: running("implement", 0), deadlock: true, waiting_on_number: 7 });
     expect(levelOf(d, NOW, LEASE)).toBe("blocked_by_task");
-    expect(rank([d], NOW, LEASE)[0]!.badges).toEqual(["deadlock with #7"]);
+    expect(rank([d], NOW, LEASE)[0]!.badges).toEqual(["waits on #7"]);
   });
 
   it("a triage run's ask needs triage", () => {

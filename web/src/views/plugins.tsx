@@ -8,6 +8,7 @@ import { Input } from "../components/ui/input.js";
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
 import { Tabs } from "../components/ui/tabs.js";
+import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
@@ -32,22 +33,10 @@ const TABS: readonly { id: Tab; label: MessageKey }[] = [
   { id: "tools", label: "plugins.tabTools" },
 ];
 
-/** The `tab` query parameter, MCP when it names no tab. */
-const urlTab = (): Tab => {
-  const v = new URLSearchParams(location.search).get("tab");
-  return TABS.some((x) => x.id === v) ? (v as Tab) : "mcp";
-};
-
-/** The selected tab, read from the URL on load and written to it (in place, no new history entry) on change. */
+/** The selected tab: the `tab` query parameter, MCP when it names no tab. */
 function useTabParam(): [Tab, (tab: Tab) => void] {
-  const [tab, setTab] = useState(urlTab);
-  const choose = (next: Tab) => {
-    const url = new URL(location.href);
-    url.searchParams.set("tab", next);
-    history.replaceState(history.state, "", url.pathname + url.search + url.hash);
-    setTab(next);
-  };
-  return [tab, choose];
+  const [tab, choose] = useUrlParam("tab", (v) => TABS.some((x) => x.id === v));
+  return [(tab ?? "mcp") as Tab, choose];
 }
 
 /** Rows whose name or description holds every word of the search, any case. */

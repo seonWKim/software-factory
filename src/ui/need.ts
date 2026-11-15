@@ -5,8 +5,10 @@
 import { LOCAL_SOURCE } from "../core/local-merge.js";
 import { parseNeedsHuman } from "../core/outputs.js";
 import { AGENT_NEEDS_HUMAN } from "../core/policy.js";
-import type { Run, WorkItem } from "../core/types.js";
+import { RECURRING_FAILURE, type Run, type WorkItem } from "../core/types.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
+import { type HeldFailure, heldFailureText } from "./why.js";
+import type { Withholder } from "./withhold.js";
 
 /** What a waiting item's row says. `reason` is plain text (the caller escapes it for HTML). */
 export interface Need {
@@ -21,6 +23,11 @@ export interface NeedCtx {
   store: Pick<FactoryStore, "listRuns">;
   /** The value through the Withholder (cut to `max`), as plain text. */
   text(value: string, opts?: { channel?: "run_outcome"; max?: number }): Promise<string>;
+}
+
+/** needOf's context from the store and the page's Withholder. */
+export function needCtx(store: NeedCtx["store"], w: Pick<Withholder, "plain">): NeedCtx {
+  return { store, text: async (v, o) => (await w.plain(v, o)).text };
 }
 
 /** A ready-to-merge item's merge check: its state and how many files conflict. */
@@ -64,6 +71,9 @@ export async function needOf(c: NeedCtx, it: WorkItem, check: MergeCheckNeed | n
     const code = await c.text(failed, { channel: "run_outcome", max: 80 });
     return { reason: `failed: ${code}`, ...stored(it.failure_comment_url, "failure comment"), command: "/retry" };
   }
+  if (reason === RECURRING_FAILURE) {
+    return { reason: heldFailureText(await heldFailureOf(c, it)), ...issue, command: "/retry" };
+  }
   if (reason === AGENT_NEEDS_HUMAN) {
     const ask = await latestAsk(c.store, it);
     if (ask) return { reason: await c.text(ask.question, { max: 200 }), ...stored(it.failure_comment_url, "Answer"), command: null };
@@ -76,11 +86,32 @@ export async function needOf(c: NeedCtx, it: WorkItem, check: MergeCheckNeed | n
   return { reason: plain, ...issue, command: null };
 }
 
+/** The item's latest failed run's outcome, or null when it has none. */
+function lastFailure(runs: readonly Run[]): HeldFailure["outcome"] | null {
+  const failed = runs.filter((r) => r.outcome?.status === "failed");
+  const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
+  return last?.outcome?.status === "failed" ? last.outcome : null;
+}
+
 /** The error code of the item's latest failed run ("unknown" when it has none). */
 async function latestErrorCode(store: NeedCtx["store"], it: WorkItem): Promise<string> {
-  const failed = (await store.listRuns(it.id)).filter((r) => r.outcome?.status === "failed");
-  const last = failed.reduce<Run | null>((a, r) => (a === null || (r.finished_at ?? r.updated_at) >= (a.finished_at ?? a.updated_at) ? r : a), null);
-  return last?.outcome?.status === "failed" ? last.outcome.error_code : "unknown";
+  return lastFailure(await store.listRuns(it.id))?.error_code ?? "unknown";
+}
+
+/**
+ * The last failed run of an item held as `recurring_failure` (design 05-alarms), its code and detail through the
+ * Withholder (run-outcome channel); null when it has none, and null with no read for any other item. `runs` are
+ * the item's runs when the caller has read them.
+ */
+export async function heldFailureOf(c: NeedCtx, it: Pick<WorkItem, "id" | "blocked_reason">, runs?: readonly Run[]): Promise<HeldFailure | null> {
+  if (it.blocked_reason !== RECURRING_FAILURE) return null;
+  const outcome = lastFailure(runs ?? (await c.store.listRuns(it.id)));
+  if (outcome === null) return null;
+  return {
+    outcome,
+    code: await c.text(outcome.error_code, { channel: "run_outcome", max: 80 }),
+    detail: outcome.detail ? await c.text(outcome.detail, { channel: "run_outcome", max: 200 }) : "",
+  };
 }
 
 /** The latest run's ask (needs_human) of an item blocked on `agent_needs_human`, else null. */

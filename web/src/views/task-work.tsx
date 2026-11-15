@@ -11,7 +11,7 @@ import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } from "./common.js";
-import { ItemCommands, NeedActions, useCommandSend } from "./item-commands.js";
+import { ItemCommands, NeedActions, SendErrors, useCommandSend } from "./item-commands.js";
 import { FloorStatus } from "./pages.js";
 
 /** The five states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
@@ -27,12 +27,16 @@ const STATE_OF: Record<string, MessageKey> = {
 
 const stateKey = (it: ItemRow): MessageKey | null => (it.level === "closed" ? (it.close_reason === "completed" ? "tasks.state.merged" : null) : (STATE_OF[it.level] ?? null));
 
-/** The primary action and overflow menu of a waiting item (Merge, Approve, Retry, Answer, or Open), as in every Needs you row. */
-function RowActions({ it }: { it: ItemRow }) {
-  const cmd = useCommandSend(it.id);
+/** An Answer-or-fix item's reason (the need's, else the Why text); empty for Merge and Approve, which say it with the badge. */
+const needReason = (it: ItemRow): string => (needGroup(it) === "answer" ? (it.need?.reason ?? it.why?.text ?? "") : "");
+
+/**
+ * The primary action and overflow menu of a waiting item (Merge, Approve, Retry, Answer, or Open), as in every Needs
+ * you row. `cmd`: the row's sends (useCommandSend); `inlineErrors` false leaves a failed send's error to the row.
+ */
+function RowActions({ it, cmd, inlineErrors = true }: { it: ItemRow; cmd: ReturnType<typeof useCommandSend>; inlineErrors?: boolean }) {
   const checking = it.merge_check?.state === "checking";
-  const reason = needGroup(it) === "answer" ? (it.need?.reason ?? it.why?.text ?? "") : "";
-  return <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={needGroup(it)} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(reason)} />;
+  return <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={needGroup(it)} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(needReason(it))} inlineErrors={inlineErrors} />;
 }
 
 /**
@@ -45,13 +49,14 @@ export function WorkState({ id, title, open: taskOpen }: { id: string; title: st
   const items = useApi<Items>(API.items).data?.items;
   const it = items?.find((i) => i.id === id);
   const [open, setOpen] = useState(false);
+  const cmd = useCommandSend(id);
   const key = it ? stateKey(it) : null;
   if (!it || key === null) return null;
   if (taskOpen && needsYou([it]).length > 0) {
     return (
       <>
         <StatusBadge level={it.level} size="sm">{t(key)}</StatusBadge>
-        <RowActions it={it} />
+        <RowActions it={it} cmd={cmd} />
       </>
     );
   }
@@ -76,14 +81,16 @@ const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"
  * One compact Needs you row: the item (and its PR), its state as one badge, a merge check only when it is not
  * "mergeable", the reason only for an Answer-or-fix item (Merge and Approve say it with the badge; it links to the item's latest
  * thread entry when the need names one), and the primary action.
+ * The title grows from a 16rem basis, so the actions wrap below it before it truncates; a failed send's error takes its
+ * own full-width line below the row's content, never the actions cell (design-system/patterns.md C-050).
  */
 function WorkRow({ it }: { it: ItemRow }) {
-  const group = needGroup(it);
+  const cmd = useCommandSend(it.id);
   const checking = it.merge_check?.state === "checking";
-  const reason = group === "answer" ? (it.need?.reason ?? it.why?.text ?? "") : "";
+  const reason = needReason(it);
   return (
     <li data-key={it.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 p-3">
-      <div className="min-w-0 flex-1 space-y-1">
+      <div className="min-w-0 grow basis-64 space-y-1">
         <span className="flex min-w-0 items-baseline gap-2">
           <Link href={itemPath(it.id)} title={t("needs.idHover", { id: it.id })} className="truncate font-medium text-text-1 hover:underline">
             {it.title ?? shortSource(it.source.id)}
@@ -100,7 +107,12 @@ function WorkRow({ it }: { it: ItemRow }) {
           </p>
         )}
       </div>
-      <RowActions it={it} />
+      <RowActions it={it} cmd={cmd} inlineErrors={false} />
+      {Object.values(cmd.local).some((l) => "error" in l) && (
+        <div data-row-error className="flex basis-full flex-col gap-1">
+          <SendErrors local={cmd.local} />
+        </div>
+      )}
     </li>
   );
 }

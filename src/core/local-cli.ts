@@ -11,13 +11,14 @@ import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMes
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
 import { type Project, projectSlug } from "./projects.js";
 import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
-import { buildTask, createLocalItem } from "./task-build.js";
+import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask } from "./task-build.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
- * creates a local work item with its triage run queued; `task add` stores a plain task from quick-add words and `task
+ * creates a local work item with its triage run queued, and with `--project <slug>` also a task in that project linked
+ * to it, as `task build` links one (design 02-tasks); `task add` stores a plain task from quick-add words and `task
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
- * work item, no triage); `project …` keeps the task projects and `task project` links a task to one or unlinks it
+ * work item, no triage); `project …` keeps the task projects and `task project` links a task to one, unlinks it or moves it
  * (design 02-tasks, task projects); `task list` and `task show` read the store; `approve`,
  * `retry`, `revise`, `reject`, `resolve` and `verdict` append one row to the CLI command log (`command_inbox`) and change no item
  * state, for an item of any source; `approve` first runs the controller's phase check (`approveRefusal`) and refuses
@@ -97,7 +98,8 @@ const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdi
 export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
 
 export type CliAction =
-  | { action: "create"; title: string; bodyFile: string }
+  /** `project`: the `--project` task project's slug; left out, the work item only. */
+  | { action: "create"; title: string; bodyFile: string; project?: string }
   | { action: "add"; task: TaskFields }
   | { action: "done"; id: string }
   | { action: "reopen"; id: string }
@@ -108,6 +110,7 @@ export type CliAction =
   /** `project`: the `--project` filter's name as typed; left out, every open task. */
   | { action: "list"; project?: string }
   | { action: "task_project"; id: string; slug: string; add: boolean }
+  | { action: "task_move"; id: string; from: string; to: string }
   | { action: "project"; verb: "create"; name: string }
   | { action: "project"; verb: "list"; archived: boolean }
   | { action: "project"; verb: "rename"; slug: string; name: string }
@@ -145,10 +148,18 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       return rest.length === 2 && rest[0] === "--project" && rest[1] ? { action: "list", project: rest[1] } : bad("task list takes only --project <project_slug>");
     }
     if (sub === "project") {
-      const [id, link] = rest;
-      const slug = link && /^[+-]/.test(link) ? projectSlug(link.slice(1)) : null;
-      if (rest.length !== 2 || !id || slug === null) return bad("task project needs a task ID and +<slug> to add it to a project or -<slug> to take it out");
-      return { action: "task_project", id, slug, add: link!.startsWith("+") };
+      const [id, ...links] = rest;
+      const slugOf = (sign: "+" | "-") => {
+        const w = links.filter((l) => l.startsWith(sign));
+        return w.length === 1 ? projectSlug(w[0]!.slice(1)) : null;
+      };
+      const [to, from] = [slugOf("+"), slugOf("-")];
+      if (id && links.length === 2 && from !== null && to !== null && from !== to) return { action: "task_move", id, from, to };
+      const slug = links.length === 1 ? to ?? from : null;
+      if (!id || slug === null) {
+        return bad("task project needs a task ID and +<slug> to add it to a project, -<slug> to take it out, or -<from> +<to> to move it");
+      }
+      return { action: "task_project", id, slug, add: links[0]!.startsWith("+") };
     }
     if (sub === "add") {
       const parsed = parseQuickAdd(rest.join(" "));
@@ -176,13 +187,15 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       for (let i = 0; i < rest.length; i += 2) {
         const k = rest[i]!;
         const v = rest[i + 1];
-        if ((k !== "--title" && k !== "--body-file") || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
+        if (!["--title", "--body-file", "--project"].includes(k) || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
         flags[k] = v;
       }
       const title = flags["--title"]?.trim();
       const bodyFile = flags["--body-file"];
       if (!title || !bodyFile) return bad("task create needs --title <t> and --body-file <f>");
-      return { action: "create", title, bodyFile };
+      if (flags["--project"] === undefined) return { action: "create", title, bodyFile };
+      const project = projectSlug(flags["--project"].replace(/^\+/, ""));
+      return project === null ? bad("task create: --project needs a project slug, e.g. home-repairs") : { action: "create", title, bodyFile, project };
     }
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
@@ -253,7 +266,7 @@ export interface LocalCliDeps {
     | "claimOwner" | "addTask" | "listTasks" | "completeTask" | "reopenTask" | "listCommandProposals"
     | "getTask" | "linkTask" | "updateTask" | "deleteTask" | "addSubTask"
     | "createProject" | "listProjects" | "renameProject" | "archiveProject" | "restoreProject" | "deleteProject" | "getProjectBySlug"
-    | "addTaskToProject" | "removeTaskFromProject" | "listTaskProjectSlugs"
+    | "addTaskToProject" | "removeTaskFromProject" | "moveTaskToProject" | "listTaskProjectSlugs"
   >;
   /** Who every command acts as (`cliIdentity`). */
   identity: CliIdentity;
@@ -286,11 +299,15 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
   switch (a.action) {
     case "create": {
       const project = await d.project();
-      if (project === null) {
-        return fail("no project is stored yet: start the factory once (`npm run factory -- dev`) so it records the configured repo");
+      if (project === null) return fail(NO_PROJECT_KEY);
+      const body = (await d.read(a.bodyFile)).trim();
+      if (a.project !== undefined) {
+        const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
+        if (!r.ok) return fail(r.reason);
+        await claim();
+        return { code: 0, lines: [r.item.id, `task ${r.task.id} in +${a.project}`] };
       }
       await claim();
-      const body = (await d.read(a.bodyFile)).trim();
       const { item } = await createLocalItem(d.store, { source_id: `local-${d.newId()}`, title: a.title, body, project, user });
       return { code: 0, lines: [item.id] };
     }
@@ -369,6 +386,19 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
       if (!r.ok) return fail(r.reason === "task_not_found" ? `no task ${a.id}` : projectRefusal(a.slug, r.reason === "archived" ? "archived" : "not_found"));
       if (r.changed) await claim();
       return { code: 0, lines: [r.changed ? `added ${a.id} to +${a.slug}` : `${a.id} was already in +${a.slug}`] };
+    }
+    case "task_move": {
+      const from = await d.store.getProjectBySlug(a.from);
+      if (from === null) return fail(projectRefusal(a.from, "not_found"));
+      const to = await d.store.getProjectBySlug(a.to);
+      if (to === null) return fail(projectRefusal(a.to, "not_found"));
+      const r = await d.store.moveTaskToProject(a.id, from.id, to.id);
+      if (!r.ok) {
+        if (r.reason === "task_not_found") return fail(`no task ${a.id}`);
+        return fail(r.reason === "not_linked" ? `${a.id} was not in +${a.from}` : projectRefusal(a.to, r.reason === "archived" ? "archived" : "not_found"));
+      }
+      if (r.changed) await claim();
+      return { code: 0, lines: [r.changed ? `moved ${a.id} from +${a.from} to +${a.to}` : `${a.id} was already moved from +${a.from} to +${a.to}`] };
     }
     case "project":
       return runProject(d, a, fail, claim);

@@ -6,3 +6,6 @@ export function withLock<T>(dir: string, fn: () => T): T;
 export function swapIn(staged: string, target: string): void;
 export function viteBuildArgs(root: string, outDir: string): string[];
 export function build(root: string): void;
+export const DEFAULT_CLIENT_SECRET_FILE: string;
+export function defaultClientSecret(env?: NodeJS.ProcessEnv): string | null;
+export function writeDefaultClient(stagedDist: string, value: string | undefined | null): string | null;

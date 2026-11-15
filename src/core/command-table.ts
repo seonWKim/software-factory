@@ -111,9 +111,10 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
       "after its list (`-`, or `+a,+b`; a sub-task with its parent's ID)", chat: "list", chat_args: "none", item: false, edge: false,
   },
   {
-    name: "task project", args: "<task_id> +<slug>|-<slug>", who: "submit_work", group: "task",
-    does: "Add a plain task to a task project, or take it out",
-    prints: "that it was added or taken out (or already was)", chat: "task project <task_id> +<slug>|-<slug>", chat_args: "any", item: false, edge: false,
+    name: "task project", args: "<task_id> [-<from>] +<slug>|-<slug>", who: "submit_work", group: "task",
+    does: "Add, remove or move a task's project",
+    prints: "that it was added, taken out or moved (or already was)", chat: "task project <task_id> [-<from>] +<slug>|-<slug>", chat_args: "any",
+    item: false, edge: false,
   },
   {
     name: "project create", args: "<name>", who: "submit_work", group: "task",

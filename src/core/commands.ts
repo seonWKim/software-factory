@@ -87,6 +87,8 @@ export interface CommandSpec {
   /** Phases where it also applies to a local item with no PR, with the meaning in `local_description` (issue #563). */
   local_phases?: readonly CommandPhase[];
   local_description?: string;
+  /** What it means in the `implementing` phase, when that differs (`/revise` queued, design 04-gate-commands). */
+  implementing_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
 }
@@ -119,7 +121,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: "revise",
     usage: "/revise <feedback>",
     description: "Get a new spec written with your feedback",
-    phases: ["spec_pending", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
+    // While implementing it is queued, not sent into the running session (design 04-gate-commands).
+    implementing_description: "While implementing: queue your feedback for one more implement run on the item's branch when the run ends, before review",
+    phases: ["spec_pending", "implementing", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
     needs_pr: false,
     changes_state: true,
     pr_phases: ["merge_pending", "failed_review"],
@@ -305,13 +309,15 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 /** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
   const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name);
-  return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (appliesLocally(c, s) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
+  const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description);
+  return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (own(c) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
 }
 
 /** What `c` does in `s`: its local meaning where that applies (issue #563), else every meaning it has (`s` null: the table). */
 function meaning(c: CommandSpec, s: CommandState | null): string {
   if (s !== null && appliesLocally(c, s) && c.local_description) return c.local_description;
-  return [c.description, c.pr_description, c.local_description].filter((d) => d).join(". ");
+  if (s?.phase === "implementing" && c.implementing_description) return c.implementing_description;
+  return [c.description, c.implementing_description, c.pr_description, c.local_description].filter((d) => d).join(". ");
 }
 
 /** One command as every list shows it: the issue footer and `/help`, Slack's help in an item's thread. */

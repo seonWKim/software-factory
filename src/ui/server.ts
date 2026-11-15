@@ -29,7 +29,7 @@ import type { AddressInfo } from "node:net";
 import type { WorkItemId } from "../core/types.js";
 import { type ApiDeps, api, apiError, isApiPath } from "./api.js";
 import { DEFAULT_APP_DIR, appText, isAppPath, serveApp } from "./app.js";
-import { MAX_COMMAND_BODY, commandsPathId, commandsPost } from "./commands.js";
+import { MAX_COMMAND_BODY, commandsPathId, commandsPost, staleCsrf } from "./commands.js";
 import { CSRF_HEADER, SETTINGS_PATH, csrfMatches, writeSettings } from "./settings-api.js";
 import { RESUME_PATH, resumePause } from "./pause-api.js";
 import { STANDING_PATH, writeStanding } from "./standing-api.js";
@@ -167,8 +167,11 @@ function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   return null;
 }
 
-/** A missing or stale x-csrf-token. */
-const staleToken = (): UiResponse => json(403, apiError(403, `Missing or stale ${CSRF_HEADER}; reload the page.`).value);
+/** A missing or stale x-csrf-token: the coded 403 (stale_csrf) the page retries once with a fresh token. */
+const staleToken = (): UiResponse => {
+  const r = staleCsrf();
+  return json(r.status, r.value);
+};
 
 /** The Content-Type's media type, lowercased, without parameters. */
 function mediaType(value: string | undefined): string {

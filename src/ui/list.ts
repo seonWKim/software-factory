@@ -11,7 +11,8 @@ import { alarmText, alarmsFor, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
 import { esc } from "./html.js";
 import { type PriorityInput, rank } from "./priority.js";
-import { type ClaimPauses, type Why, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
+import { heldFailureOf, needCtx } from "./need.js";
+import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
 
 /** Most rows any list or section reads from the store. */
@@ -60,6 +61,8 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
   // One read for every row's latest claim decision; only an active implement run gets one.
   const decisions = await c.store.listLatestClaimDecisions(items.filter((it) => active.get(it.id)?.kind === "implement").map((it) => it.id));
 
+  const titles = await holderTitles(c.store, [...decisions.values()]);
+
   const inputs: (PriorityInput & { item: WorkItem; conflicts: ConflictCounts; why: Why; decision: ClaimDecision | null; alarms: Alert[] })[] = [];
   const phases = items.filter((it) => it.parent_id !== null);
   for (const it of items) {
@@ -87,7 +90,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       conflicts: conflictCounts(runs, changes),
       decision,
       alarms,
-      why: whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, pauses, waiting, c.now, alarms),
+      why: whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, titles), pauses, waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs)),
     });
   }
 
@@ -197,19 +200,35 @@ export async function latestDecision(store: FactoryStore, id: WorkItemId, run: R
   return run?.kind === "implement" ? ((await store.listClaimDecisions(id)).at(-1) ?? null) : null;
 }
 
+/** The titles of the work items that hold a deadlock claim of one of `decisions`: one store read per distinct holder. */
+export async function holderTitles(store: FactoryStore, decisions: readonly (ClaimDecision | null)[]): Promise<Map<WorkItemId, string | null>> {
+  const out = new Map<WorkItemId, string | null>();
+  for (const d of decisions) {
+    const id = d?.decision === "deadlock" ? d.holder_work_item_id : null;
+    if (id && !out.has(id)) out.set(id, (await store.getWorkItem(id))?.title ?? null);
+  }
+  return out;
+}
+
+/** The decision with its holder's title, for whyWaiting; as is when it has no holder item. */
+export function withTitle(decision: ClaimDecision | null, titles: ReadonlyMap<WorkItemId, string | null>) {
+  return decision && { ...decision, holder_title: decision.holder_work_item_id ? (titles.get(decision.holder_work_item_id) ?? null) : null };
+}
+
 /**
  * whyWaiting's input from the stored item and run; `not_before` counts only while it is after `now`. The open
- * alarms that affect the item are named after the sentence.
+ * alarms that affect the item are named after the sentence; `failure` is a held item's last failed run (heldFailureOf).
  */
 export function whyOf(
   it: WorkItem,
   run: Run | null,
   position: number | null,
-  decision: ClaimDecision | null,
+  decision: WhyInput["decision"],
   pauses: ClaimPauses,
   phases: { waiting_on: number; waiting_on_number: number | null },
   now: Date,
   alarms: readonly Alert[],
+  failure: HeldFailure | null = null,
 ): Why {
   const active = run && (run.status === "queued" || run.status === "running") ? run : null;
   const notBefore = active?.status === "queued" && active.not_before && Date.parse(active.not_before) > now.getTime() ? active.not_before : null;
@@ -220,6 +239,7 @@ export function whyOf(
     pauses,
     not_before: notBefore,
     phases,
+    failure,
   }), alarms.map(alarmText));
 }
 

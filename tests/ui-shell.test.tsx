@@ -520,6 +520,23 @@ describe("app pages", () => {
     expect(fetched).toContain("/api/v1/items?state=needs");
   });
 
+  it("Health tabs: Checks by default, counts in the labels, a failing check marks its tab, an unknown tab selects Checks, a click keeps the history length", async () => {
+    history.replaceState(null, "", "/app/health?tab=nonsense");
+    mount();
+    await screen.findByText("push access denied");
+    const tabs = screen.getAllByRole("tab");
+    expect(tabs.map((x) => x.textContent!.replace(/\s*\(.*$/, ""))).toEqual(["Checks", "Host sleeps", "Merged without review"]);
+    expect(tabs[0]!.getAttribute("aria-selected")).toBe("true");
+    expect(tabs[0]!.textContent).toContain("(2)");
+    expect(tabs[0]!.textContent).toContain("failing");
+    expect(tabs[1]!.textContent).toContain("(0)");
+    const length = history.length;
+    fireEvent.click(tabs[1]!);
+    expect(location.search).toBe("?tab=sleeps");
+    expect(history.length).toBe(length);
+    expect(screen.getByText("No host sleep recorded.")).toBeTruthy();
+  });
+
   it("health lists failing checks first", async () => {
     history.replaceState(null, "", "/app/health");
     mount();
@@ -550,7 +567,7 @@ describe("unreviewed merges", () => {
   });
 
   it("Health lists them in a table: PR (linked only with a URL), merged by, short sha, when", async () => {
-    history.replaceState(null, "", "/app/health");
+    history.replaceState(null, "", "/app/health?tab=merges");
     mount();
     const t = await screen.findByRole("table", { name: "Merged without review" });
     expect([...t.querySelectorAll("th")].map((h) => h.textContent)).toEqual(["PR", "Merged by", "Merge commit", "When"]);
@@ -558,10 +575,11 @@ describe("unreviewed merges", () => {
     expect(rows.map((r) => r.children[0]!.textContent)).toEqual(["#9", "#8"]);
     expect(rows[0]!.querySelector("a")!.getAttribute("href")).toBe("https://github.com/o/r/pull/9");
     expect(rows[1]!.querySelector("a")).toBeNull();
-    // A person shows by name ("a person"; "you" for the viewer), the ID behind it in a details element.
-    const by = rows[0]!.children[1]!.querySelector("details")!;
-    expect(by.querySelector("summary")!.textContent).toBe("a person");
-    expect(by.textContent).toContain("github:7");
+    // A person shows as plain text ("a person"; "you" for the viewer), the ID as the cell's tooltip: no disclosure, no Copy button.
+    const by = rows[0]!.children[1]!;
+    expect(by.textContent).toBe("a person");
+    expect(by.querySelector("[title]")!.getAttribute("title")).toBe("github:7");
+    expect(by.querySelector("details, button")).toBeNull();
     expect(rows[0]!.children[2]!.textContent).toBe("abcdef1");
   });
 });
@@ -808,8 +826,11 @@ describe("item commands", () => {
   it("with commands on the page says who it acts as and where that came from", () => {
     mountCommands(undefined, [], SESSION);
     const actor = document.querySelector("[data-commands-actor]")!;
-    expect(actor.querySelector("summary")!.textContent).toBe("you");
-    expect(actor.querySelector("details")!.textContent).toContain("local:me");
+    const you = actor.querySelector("[data-id]")!;
+    expect(you.textContent).toBe("you");
+    expect(actor.querySelector("details")).toBeNull();
+    fireEvent.mouseEnter(you.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("local:me");
     expect(actor.textContent).toMatch(/^Acting as you.*\(from environment\)$/);
   });
 

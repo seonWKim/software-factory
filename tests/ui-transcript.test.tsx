@@ -133,7 +133,10 @@ describe("item page: Runs section", () => {
     expect(head.indexOf("Worker")).toBeLessThan(head.indexOf("Tokens"));
     const failed = table.querySelector(`tr[data-run="${FAILED}"]`)!;
     expect(failed.textContent).toContain("checks_failed");
-    expect(failed.textContent).toContain("host:1:0");
+    const worker = failed.querySelector("[data-id]")!;
+    expect(failed.querySelector("details")).toBeNull();
+    fireEvent.mouseEnter(worker.parentElement!);
+    expect(within(failed).getByRole("tooltip").textContent).toBe("host:1:0");
     expect(failed.textContent).toContain("1.5k");
     expect(within(failed).getByRole("link", { name: "Open" }).getAttribute("href")).toBe(`/app/items/${ITEM}/runs/${FAILED}`);
     expect(within(table.querySelector(`tr[data-run="run_none"]`)!).queryByRole("link")).toBeNull();

@@ -1,14 +1,15 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { t } from "../../i18n/index.js";
 import { cn } from "../../lib/cn.js";
+import { Tooltip } from "./menu.js";
 
 // Raw IDs (design 09-dashboard-app, readable names): a page shows a name ("worker 3", "you", the item's title) and
-// keeps the full ID one step away, in a details element or a copy element, never in running text.
+// keeps the full ID one step away, in a tooltip on its name or a copy element, never in running text.
 
 const SMALL = "rounded-control border border-border-strong px-1 text-xs font-sans text-text-2 hover:bg-surface-2";
 
-/** A Copy button: writes `value` to the clipboard and says so for a moment. `what` names it ("Copy item ID"). */
-export function CopyButton({ value, what }: { value: string; what: string }) {
+/** Copies `value` to the clipboard; `done` is true for 1.5 s after. With no clipboard it does nothing. */
+function useCopy(value: string) {
   const [done, setDone] = useState(false);
   useEffect(() => {
     if (!done) return;
@@ -23,8 +24,14 @@ export function CopyButton({ value, what }: { value: string; what: string }) {
       // No clipboard (an insecure origin, a test): the text stays selectable.
     }
   };
+  return { done, copy: () => void copy() };
+}
+
+/** A Copy button: writes `value` to the clipboard and says so for a moment. `what` names it ("Copy item ID"). */
+export function CopyButton({ value, what }: { value: string; what: string }) {
+  const { done, copy } = useCopy(value);
   return (
-    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 shrink-0", SMALL)} onClick={() => void copy()}>
+    <button type="button" aria-label={t("copy.label", { what })} title={t("copy.label", { what })} className={cn("ml-1 shrink-0", SMALL)} onClick={copy}>
       {done ? t("copy.done") : t("copy.button")}
     </button>
   );
@@ -40,17 +47,14 @@ export function CopyText({ value, what, children }: { value: string; what: strin
   );
 }
 
-// A closed details is as narrow as its summary ("worker 3"), and Chrome still lays out its hidden content when a
-// script measures it, so the ID would break letter by letter there: while closed, its content is not laid out at all.
-const ID_DETAILS = "inline-block max-w-full align-baseline font-mono text-xs break-words [&:not([open])::details-content]:hidden";
-
-/** A readable name that opens to the full ID and a Copy button, both inside the details element. */
-export function IdDetails({ label, id, what }: { label: string; id: string; what: string }) {
+/** A readable name: the full ID shows in a tooltip on hover and focus, and a click copies it ("Copied" in place of the name for a moment). */
+export function IdDetails({ label, id }: { label: string; id: string; what: string }) {
+  const { done, copy } = useCopy(id);
   return (
-    <details data-id className={ID_DETAILS}>
-      <summary className="cursor-pointer font-sans text-sm">{label}</summary>
-      {id}
-      <CopyButton value={id} what={what} />
-    </details>
+    <Tooltip text={id}>
+      <button type="button" data-id className="cursor-pointer text-left font-sans text-sm" onClick={copy}>
+        {done ? t("copy.done") : label}
+      </button>
+    </Tooltip>
   );
 }

@@ -330,11 +330,11 @@ const SECRET = "sekret-token-value-0123456789";
 
 describe("Rules page: GET /api/v1/rules/entry", () => {
   it("returns each detail field read through TacitLedger.show, in its place; a field the ledger lacks is absent", async () => {
-    const f = fakeLedger(async (id) => ({ id, default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, quotes: ["keep --json"], root_reason: "renames skip callers", scope: "CLI" }));
+    const f = fakeLedger(async (id) => ({ id, default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, evidence: [{ ref: "T-1", date: "2026-11-02", quote: "keep --json" }], root_reason: "renames skip callers", scope: "CLI" }));
     const p = await page(f.ledger);
     expect(await p.entry("?id=C-012")).toEqual({
       status: 200,
-      value: { id: "C-012", error: null, retire: null, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, quotes: ["keep --json"], root_reason: "renames skip callers", scope: "CLI" } },
+      value: { id: "C-012", error: null, retire: null, detail: { id: "C-012", default: "Keep every flag.", exceptions: "deprecated ones", incidents: 2, evidence: [{ ref: "T-1", date: "2026-11-02", quote: "keep --json" }], root_reason: "renames skip callers", scope: "CLI" } },
     });
     const bare = fakeLedger(async (id) => ({ id, kind: "edit-asset", target: "prompts/review.md" }));
     expect((await (await page(bare.ledger)).entry("?id=P-20261103-34e9")).value.detail).toEqual({ id: "P-20261103-34e9", kind: "edit-asset", target: "prompts/review.md" });
@@ -343,12 +343,19 @@ describe("Rules page: GET /api/v1/rules/entry", () => {
   });
 
   it("passes every text of the detail through the Withholder", async () => {
-    const f = fakeLedger(async (id) => ({ id, default: `use ${SECRET}`, quotes: ["fine", `paste ${SECRET}`], root_reason: SECRET, scope: "CLI" }));
+    const f = fakeLedger(async (id) => ({
+      id, default: `use ${SECRET}`, root_reason: SECRET, scope: "CLI", description: `about ${SECRET}`, current: `old ${SECRET}`, proposed: `new ${SECRET}`,
+      evidence: [
+        { ref: "T-1", date: "2026-11-03", quote: "fine", proposal: "keep it" },
+        { ref: "L-2", quote: `paste ${SECRET}`, proposal: `run ${SECRET}`, root_reason: `leaked ${SECRET}` },
+      ],
+    }));
     const v = (await (await page(f.ledger, OWNER, [SECRET])).entry("?id=C-012")).value;
     expect(JSON.stringify(v)).not.toContain(SECRET);
-    expect(v.detail.default).toMatch(/^\[withheld: /);
-    expect(v.detail.quotes[0]).toBe("fine");
-    expect(v.detail.quotes[1]).toMatch(/^\[withheld: /);
+    for (const key of ["default", "description", "current", "proposed"]) expect(v.detail[key]).toMatch(/^\[withheld: /);
+    expect(v.detail.evidence[0]).toEqual({ ref: "T-1", date: "2026-11-03", quote: "fine", proposal: "keep it" });
+    for (const key of ["quote", "proposal", "root_reason"]) expect(v.detail.evidence[1][key]).toMatch(/^\[withheld: /);
+    expect(v.detail.evidence[1].ref).toBe("L-2");
     expect(v.detail.scope).toBe("CLI");
   });
 

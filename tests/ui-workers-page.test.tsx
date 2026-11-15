@@ -134,7 +134,9 @@ describe("Failures page", () => {
     fireEvent.click(within(g).getByRole("button"));
     const table = within(g).getByRole("table", { name: "Runs failed with tests_failed" });
     expect(table.textContent).toContain("tests_failed detail 1");
-    expect(table.textContent).toContain("h1:1:0");
+    expect(table.querySelector("details")).toBeNull();
+    fireEvent.mouseEnter(table.querySelector("[data-id]")!.parentElement!);
+    expect(within(table).getByRole("tooltip").textContent).toBe("h1:1:0");
     expect(within(table).getAllByRole("link", { name: "wi_9" })[0]!.getAttribute("href")).toBe("/app/items/wi_9");
   });
 

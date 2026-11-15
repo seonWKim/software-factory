@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import axe from "axe-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
@@ -119,18 +119,21 @@ describe("item page: What you need to decide", () => {
     await vi.waitFor(() => expect(copied).toEqual(["factory approve wi_9f3c2a"]));
   });
 
-  it("shows the owner as you and a worker as worker N, each ID behind a details element", async () => {
+  it("shows the owner as you and a worker as worker N, each ID in a tooltip on its name", async () => {
     mount();
     await box();
     const timeline = screen.getByRole("region", { name: "Timeline" });
-    const people = [...timeline.querySelectorAll("details > summary")].map((s) => s.textContent);
+    const people = [...timeline.querySelectorAll("[data-id]")].map((s) => s.textContent);
     expect(people).toContain("you");
     expect(people).toContain("a person");
     const runs = screen.getByRole("table", { name: "Runs" });
-    const worker = runs.querySelector("details")!;
-    expect(worker.querySelector("summary")!.textContent).toBe("worker 3");
-    expect(worker.textContent).toContain("mac-mini:4242:3");
+    const worker = runs.querySelector("[data-id]")!;
+    expect(worker.tagName).toBe("BUTTON");
+    expect(worker.textContent).toBe("worker 3");
+    expect(runs.querySelector("details")).toBeNull();
+    fireEvent.mouseEnter(worker.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("mac-mini:4242:3");
     // "Acting as" names the viewer as you too.
-    expect(document.querySelector("[data-commands-actor] summary")!.textContent).toBe("you");
+    expect(document.querySelector("[data-commands-actor] [data-id]")!.textContent).toBe("you");
   });
 });

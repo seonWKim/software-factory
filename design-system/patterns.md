@@ -19,6 +19,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Then its state as a `StatusBadge`, then the facts that decide what to do next, then the time (`writing.md`, compact times).
 - A table of rows uses `DataTable`: a table at `sm` and up, one card per row below it.
 - The row opens the item page. Row actions sit at the end of the row.
+- **C-050** (2026-11-15). An action's error shows on its own line below the row's content, full width, or in the shared `Notice` or toast; never in the actions column. The title keeps its space and truncates only at the row's real width; the status badge and the actions never overlap, at every `check:responsive` size. The Tasks page's Factory work row follows it (`SendErrors` on a `basis-full` line); the Needs you table moves onto it in a follow-up.
 
 ## Actions
 
@@ -45,7 +46,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Loading: `Loading` in the place the content will be. The page keeps its header.
 - Empty: `EmptyState` says what the page is for and what makes something appear here, with the next step as an action when there is one. `Empty` is the one-line version inside a section.
 - Error: `ErrorNote` says what failed in plain words and how to retry. It never shows a stack trace or a raw status code alone.
-- A refused action shows its reason beside the button that was pressed.
+- A refused action shows its reason beside the button that was pressed; in a list row, on its own line below the row (C-050).
 
 ## Forms and keyboard
 
@@ -54,3 +55,30 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Controls share one focus ring and one disabled look (`tests/design-system.test.ts`). Never remove the focus ring.
 - A keyboard shortcut is shown with `Kbd`, listed in the shortcuts view, and never the only way to do something.
 - Every control is reachable by Tab in reading order, and a menu opens and closes by keyboard.
+
+## Decision rules
+
+Six short rules from the owner's review of 2026-11-15. Each can be checked on a page or in a diff; a reviewer names a broken rule by its number ("breaks decision rule 2"). Rule 1 puts the primary action first; `components.md` (`ButtonRow`, the `Dialog` footer) still shows it last until a follow-up issue aligns them.
+
+1. **One decision = one action row. Primary action first, the rest in the same row or in the "…" menu. No wrapping into stacked rows at desktop width.**
+   - Good: the item page shows Approve, then Revise, in one `ButtonRow`, with Reject in the `OverflowMenu`.
+   - Bad: Approve on one row, Revise and Reject on a second row under it, and a third row for Retry, all for the same decision.
+2. **Only collapse what is long (more than ~3 lines or a list). Never put a single value behind a disclosure.**
+   - Good: Health shows "Merged by you (github:69591622)" as plain text, and a list of twelve runs behind "Show runs".
+   - Bad: Health shows "Merged by ▶ you", and the reader opens the triangle to see one short value, github:69591622.
+3. **A page with more than 3 unrelated sections uses the shared underline Tabs, one section per tab, tab in the URL.**
+   - Good: Health puts Merges, Plugins, Stalls and Budget on four `Tabs`, and a link to the Stalls tab opens that tab.
+   - Bad: Health stacks Merges, Plugins, Stalls and Budget on one long page, and the reader scrolls past three to reach the fourth.
+4. **A decision dialog shows what the decision is based on (evidence, source, before/after) above the inputs.**
+   - Good: the Rules promote dialog shows the pushbacks the rule came from and the rule text before and after, then the note field and Promote.
+   - Bad: the Rules promote dialog shows only a note field and Promote, so the owner decides without seeing what is promoted or why.
+5. **One input per purpose; no second box that does the same thing.**
+   - Good: one `Textarea` labelled "Note" takes the owner's words.
+   - Bad: a note box and a second "Say it in your own words" box on the same form, both sent as the owner's text.
+6. **Show only actions that apply now; no "what you need to decide" box when nothing waits on the person.**
+   - Good: an item that waits on an agent shows its state and the next step the factory takes, with no decision box.
+   - Bad: an item that waits on an agent still shows a "What you need to decide" box, with buttons that do nothing yet.
+
+## History
+
+- **A list row's failed send showed in its actions column** (until 2026-11-15, replaced by C-050). Before: the row's error text sat in the actions cell beside the primary button, so a long error shrank the title ("Tas…" in Factory work) and pushed the button onto the status badge.

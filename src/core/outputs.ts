@@ -336,6 +336,16 @@ function isSafePath(p: string): boolean {
 }
 
 /**
+ * Triage refuses `.claude/` paths (design 04-triage.md, 2026-11-15): they are owner-only and the agent sandbox
+ * refuses every write there. The error for a field naming one, null when it names none.
+ */
+function ownerOnlyError(field: string, paths: readonly string[]): string | null {
+  const named = paths.filter((p) => p.split("/").filter((s) => s !== "" && s !== ".")[0] === ".claude");
+  if (named.length === 0) return null;
+  return `${field}: ${named.join(", ")}: .claude/ paths are owner-only; an agent run cannot write them, so a spec never names one`;
+}
+
+/**
  * Tool-call markup (issue #454): an opening or closing parameter, invoke or function_calls tag, or any tag in the
  * runner's antml namespace. Text in backticks or a fenced code block is not checked, so a spec can quote markup.
  */
@@ -421,6 +431,8 @@ function parsePhases(v: unknown): Validation<TriagePhase[] | undefined> {
     if (!isStr(p.problem) || p.problem.trim() === "") return bad("problem");
     if (!isStrs(p.done_criteria) || p.done_criteria.length === 0) return bad("done_criteria");
     if (!isStrs(p.allowed_paths) || p.allowed_paths.length === 0 || !p.allowed_paths.every(isSafePath)) return bad("allowed_paths");
+    const ownerOnly = ownerOnlyError(`phases[${i}].allowed_paths`, p.allowed_paths);
+    if (ownerOnly) return { ok: false, error: ownerOnly };
     const markup = markupError({ title: p.title, problem: p.problem, done_criteria: p.done_criteria });
     if (markup) return { ok: false, error: `phases[${i}].${markup}` };
     phases.push({ title: p.title, problem: p.problem, done_criteria: p.done_criteria, allowed_paths: p.allowed_paths });
@@ -468,6 +480,8 @@ export function parseTriage(v: unknown, limits?: SplitLimits): Validation<Triage
     return { ok: false, error: "allowed_paths" };
   }
   if (!isStrs(files_to_change) || !files_to_change.every(isSafePath)) return { ok: false, error: "files_to_change" };
+  const ownerOnly = ownerOnlyError("allowed_paths", allowed_paths) ?? ownerOnlyError("files_to_change", files_to_change);
+  if (ownerOnly) return { ok: false, error: ownerOnly };
   const uncovered = files_to_change.filter((p) => !isCovered(p, allowed_paths));
   if (uncovered.length > 0) {
     return { ok: false, error: `files_to_change not covered by allowed_paths: ${uncovered.join(", ")}` };
