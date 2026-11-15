@@ -1,5 +1,7 @@
 // The google-calendar CalendarSource (docs/plugins/calendar-source.md): reads events, read-only, from the owner's
-// primary calendar or the calendars `calendar_ids` lists, for today through 14 days ahead in the process's time zone.
+// primary calendar or the calendars `calendar_ids` lists: every event that overlaps the window the sync passes. It reads
+// Google for the whole local days that window touches, so the read's bounds hold for a local day and one sync per day
+// after the first reads incrementally.
 // It asks only for the calendar.readonly scope. Its access token, sync tokens, ETags and last events are in-process
 // caches: losing them costs one full read. Every HTTP call goes through the injected client, so no test calls Google.
 
@@ -11,8 +13,6 @@ export const TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const EVENTS_API = "https://www.googleapis.com/calendar/v3/calendars";
 /** The calendar read when `calendar_ids` lists none. */
 export const PRIMARY = "primary";
-/** Days after today the window covers. */
-const DAYS_AHEAD = 14;
 /** An access token is refreshed this long before Google says it expires. */
 const EXPIRY_MARGIN_MS = 60_000;
 
@@ -93,10 +93,9 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
   }
 
   async events(window: { from: string; to: string }): Promise<readonly FeedEvent[]> {
-    const { timeMin, timeMax } = this.window();
-    // The sync's window is wider; the source narrows it to its own.
-    const from = Math.max(Date.parse(window.from), Date.parse(timeMin));
-    const to = Math.min(Date.parse(window.to), Date.parse(timeMax));
+    const { timeMin, timeMax } = readWindow(window);
+    const from = Date.parse(window.from);
+    const to = Date.parse(window.to);
     const out: FeedEvent[] = [];
     for (const id of this.calendars) {
       for (const e of await this.read(id, timeMin, timeMax)) {
@@ -108,17 +107,10 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
     return out;
   }
 
-  /** The start of today through the end of the day DAYS_AHEAD ahead, in the process's time zone. */
-  private window(): { timeMin: string; timeMax: string } {
-    const now = this.o.now();
-    const day = (offset: number) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset).toISOString();
-    return { timeMin: day(0), timeMax: day(DAYS_AHEAD + 1) };
-  }
-
   /** One calendar's events: incremental with its sync token, conditional on its ETag; a 410 runs a full read. */
   private async read(id: string, timeMin: string, timeMax: string): Promise<Iterable<FeedEvent>> {
     let cache = this.caches.get(id);
-    // A new day moves the window: the old sync token and ETag describe the old one.
+    // A new day moves the read's window: the old sync token and ETag describe the old one.
     if (!cache || cache.timeMin !== timeMin || cache.timeMax !== timeMax) {
       cache = { timeMin, timeMax, syncToken: null, etag: null, events: new Map() };
       this.caches.set(id, cache);
@@ -215,6 +207,19 @@ export class GoogleCalendarSource<N extends string> implements CalendarFeed {
       throw fail(`${what} failed (no answer)`);
     }
   }
+}
+
+/**
+ * What Google is asked for: from the local midnight of the day `window.from` falls on to the local midnight after the
+ * day `window.to` falls on, in the process's time zone. The sync's window (a day back to 30 days ahead) moves every
+ * sync; these bounds move only at local midnight (yesterday's midnight to 31 days ahead), so the sync token stays valid all day.
+ */
+function readWindow(window: { from: string; to: string }): { timeMin: string; timeMax: string } {
+  const midnight = (iso: string, days: number) => {
+    const t = new Date(iso);
+    return new Date(t.getFullYear(), t.getMonth(), t.getDate() + days).toISOString();
+  };
+  return { timeMin: midnight(window.from, 0), timeMax: midnight(window.to, 1) };
 }
 
 class SyncTokenGone extends Error {

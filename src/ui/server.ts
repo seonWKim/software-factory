@@ -18,7 +18,8 @@
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
 // /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
 // /api/v1/tasks (`?project=<slug>`: the project switcher) in tasks-api.ts and GET
-// /api/v1/calendar in calendar-api.ts; errors as JSON) and the app under /app (app.ts; its own
+// /api/v1/calendar in calendar-api.ts, GET /api/v1/calendar/events (the Calendar page's range read) in
+// calendar-events-api.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
 
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
@@ -36,6 +37,7 @@ import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRule
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
+import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
 import { RUN_NOW_SCRIPT, RUN_NOW_SCRIPT_HASH } from "./health.js";
 import { parseFilters } from "./filters.js";
@@ -237,6 +239,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
       : url.pathname === RULE_ENTRY_PATH ? await readRuleEntry(d, url.searchParams.get("id"))
       : url.pathname === TASKS_PATH ? await readTasks(d, url.searchParams.get("project"))
       : url.pathname === CALENDAR_PATH ? await readCalendarStatus(d)
+      : url.pathname === CALENDAR_EVENTS_PATH ? await readCalendarEvents(d, url.searchParams.get("from"), url.searchParams.get("to"))
       : await api(d, url);
     return json(r.status, r.value);
   }
