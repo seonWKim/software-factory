@@ -483,18 +483,34 @@ export interface CapabilitiesView {
   capabilities: CapabilityRow[];
 }
 
-/** An MCP server's approval status on the Plugins page: `waiting` until approved, `off` once revoked (design 11-packs). */
+/** An MCP server's or pack tool's approval status on the Plugins page: `waiting` until approved, `off` once revoked (design 11-packs). */
 export type McpStatus = "approved" | "waiting" | "off";
 
-/** `/api/v1/plugins` (design 09-dashboard-app, 2026-11-15): what the agents can use, one list per tab. Names and descriptions only. */
+/** `/api/v1/plugins` (design 09-dashboard-app, 2026-11-16): what the agents can use, one list per tab. Names and descriptions only. */
 export interface PluginsView {
   as_of: string;
-  /** The pack approvals route's token; null when this server cannot approve from the page. */
+  /** The pack write route's token (approve, revoke, import, add); null when this server cannot write packs from the page. */
   csrf_token: string | null;
   mcp: { name: string; description: string | null; source: "pack"; status: McpStatus }[];
   skills: { name: string; folder: string; description: string | null; roles: string[]; last_used: string | null }[];
   tools: { name: string; description: string; read_only: boolean; origin: "broker" | "pack"; roles: string[]; last_used: string | null }[];
+  /** Each pack tool's status, by its row name (`pack:tool:<name>`). Absent from an older server. */
+  tool_status?: Record<string, McpStatus>;
+  /** The configured skill folders as the config file holds them; [] when none. Absent from an older server. */
+  skill_folders?: string[];
+  /** The Settings route's token the skill folder edits are sent with; null when this server has no config file writer. */
+  settings_token?: string | null;
 }
+
+/** One item `factory plugins import` finds in the user-level configs: what the Import dialog lists and sends back. */
+export interface FoundPlugin {
+  kind: "skill" | "mcp_server";
+  source: "claude" | "codex";
+  name: string;
+}
+
+/** The answer to an import or add: the CLI's lines, `refused` when a scan refused an item. */
+export type PackWriteResult = { ok: true; lines: string[]; refused: boolean } | { ok: false; error: string };
 
 /** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */
 export interface IntegrationRow {
@@ -1119,10 +1135,24 @@ export async function postRuleVerdict(
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/packs/approvals: approve or revoke an MCP server's current description, as `factory pack approve|revoke`. */
-export async function postPackApproval(token: string, action: "approve" | "revoke", name: string): Promise<{ ok: true; line: string } | { ok: false; error: string }> {
-  const r = await postJson<{ line?: string; error?: string }>(API.packApprovals, token, { action, kind: "mcp_server", name });
+/** POST /api/v1/packs/approvals: approve or revoke an MCP server's or pack tool's current description, as `factory pack approve|revoke`. */
+export async function postPackApproval(token: string, action: "approve" | "revoke", name: string, kind: "mcp_server" | "tool" = "mcp_server"): Promise<{ ok: true; line: string } | { ok: false; error: string }> {
+  const r = await postJson<{ line?: string; error?: string }>(API.packApprovals, token, { action, kind, name });
   if (r.ok) return { ok: true, line: r.value.line ?? "" };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/packs/approvals `scan`: what the user-level Claude Code and Codex configs hold. Writes nothing. */
+export async function postPluginScan(token: string): Promise<{ ok: true; found: FoundPlugin[]; errors: string[] } | { ok: false; error: string }> {
+  const r = await postJson<{ found?: FoundPlugin[]; errors?: string[]; error?: string }>(API.packApprovals, token, { action: "scan" });
+  if (r.ok) return { ok: true, found: r.value.found ?? [], errors: r.value.errors ?? [] };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/packs/approvals `import` (the picked items) or `add` (a pack folder or descriptor file): stored as pending. */
+export async function postPackWrite(token: string, body: { action: "import"; items: FoundPlugin[] } | { action: "add"; path: string }): Promise<PackWriteResult> {
+  const r = await postJson<{ lines?: string[]; refused?: boolean; error?: string }>(API.packApprovals, token, body);
+  if (r.ok) return { ok: true, lines: r.value.lines ?? [], refused: r.value.refused === true };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 

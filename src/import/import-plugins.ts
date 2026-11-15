@@ -6,9 +6,10 @@
 
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { insertOrSkip } from "../bus/index.js";
-import { type Loaded, Plugins } from "../compose.js";
+import type { Loaded } from "../compose.js";
 import { cliUserConfig } from "../core/config.js";
 import { type CliEnvironment, cliIdentity } from "../core/local-cli.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
@@ -41,8 +42,11 @@ export class SkillRefsStore {
   }
 }
 
-/** Stores every found item in order; an MCP server that fails a scan is refused and not stored. */
-async function importFound(o: { db: SqlDriver; now: () => string; scanner: EgressScanner; added_by: string; found: readonly Found[] }): Promise<ImportOutcome[]> {
+/**
+ * Stores every found item in order; an MCP server that fails a scan is refused and not stored. `factory plugins
+ * import` (storeFound) and the Plugins page's Import (packs-api.ts) both run it.
+ */
+export async function importFound(o: { db: SqlDriver; now: () => string; scanner: EgressScanner; added_by: string; found: readonly Found[] }): Promise<ImportOutcome[]> {
   const entries = new PackEntriesStore(o.db, o.now);
   const refs = new SkillRefsStore(o.db, o.now);
   const out: ImportOutcome[] = [];
@@ -71,6 +75,8 @@ async function importFound(o: { db: SqlDriver; now: () => string; scanner: Egres
  */
 export async function storeFound(loaded: Loaded, env: CliEnvironment, found: readonly Found[]): Promise<ImportOutcome[]> {
   const added_by = cliIdentity(cliUserConfig(loaded.file), env).user;
+  // Loaded here, not at the top: the Plugins page's Import (packs-api.ts) imports importFound without the whole registry.
+  const { Plugins } = await import("../compose.js");
   const p = new Plugins(loaded);
   const clock = await p.clock();
   const secrets = await p.secrets();
@@ -84,6 +90,9 @@ export async function storeFound(loaded: Loaded, env: CliEnvironment, found: rea
     await store.close();
   }
 }
+
+/** The home whose user-level configs the Plugins page's Import scans, as `factory plugins import` does. */
+export const userConfigHome = (): string => homedir();
 
 const what = (i: Found): string => `${i.kind} ${i.name} from ${i.source}`;
 
