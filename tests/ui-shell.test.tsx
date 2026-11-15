@@ -3,7 +3,8 @@ import { QueryClient, QueryClientProvider, focusManager } from "@tanstack/react-
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { redirectFor } from "../web/src/pages.js";
-import { ItemsTable, NeedsGroups, QueueTable, RunningTable } from "../web/src/views/common.js";
+import { ItemsTable, QueueTable, RunningTable } from "../web/src/views/common.js";
+import { NeedsList } from "../web/src/views/task-work.js";
 import { FactoryBanner } from "../web/src/views/pages.js";
 import { ItemCommands, commandOutcome } from "../web/src/views/item-commands.js";
 import { API, type Items, type ItemRow, useApi } from "../web/src/api.js";
@@ -49,6 +50,7 @@ const detail = {
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": overview,
   "/api/v1/items": items,
+  "/api/v1/tasks": { today_date: "2026-11-07", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
   "/api/v1/runs": runs,
   "/api/v1/queue": queue,
   "/api/v1/workers": { as_of: AT, workers: [{ owner: "host:7:0", running: 1 }] },
@@ -133,12 +135,13 @@ describe("app shell", () => {
   it("shows the sidebar pages, Needs you (N) from /api/v1/overview, and fetches only /api/v1/* URLs", async () => {
     mount();
     expect(await screen.findByText("Needs you (4)")).toBeTruthy();
-    const factory = screen.getByRole("navigation", { name: "Factory" });
-    expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you"]);
+    // No Needs you entry and no Factory group: Tasks leads, with the waiting count as its badge.
+    expect(screen.queryByRole("navigation", { name: "Factory" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Needs you" })).toBeNull();
+    const tasks = screen.getByRole("navigation", { name: "Tasks" });
+    expect([...tasks.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Tasks4", "Calendar"]);
     const nav = screen.getByRole("navigation", { name: "System" });
     expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Activity", "Health", "Failures", "Spend", "Rules", "Runners", "Data"]);
-    expect(within(factory).queryByRole("link", { name: "Work" })).toBeNull();
-    expect(within(factory).queryByRole("link", { name: "Activity" })).toBeNull();
     fireEvent.click(within(nav).getByText("Runners"));
     expect(await screen.findByRole("heading", { name: "Runners" })).toBeTruthy();
     expect(location.pathname).toBe("/app/runners");
@@ -308,9 +311,9 @@ describe("sidebar", () => {
     expect(content.className.split(" ")).toContain("overflow-y-auto");
   });
 
-  it("the Tasks and Factory groups show small grey titles that name them, and so does System", () => {
+  it("the Tasks group shows a small grey title that names it, and so does System", () => {
     mount();
-    for (const name of ["Tasks", "Factory", "System"]) {
+    for (const name of ["Tasks", "System"]) {
       const nav = screen.getByRole("navigation", { name });
       const title = document.getElementById(nav.getAttribute("aria-labelledby")!)!;
       expect(title.textContent).toBe(name);
@@ -394,7 +397,7 @@ describe("sidebar in the icon-only layout", () => {
     try {
       mount();
       await screen.findByText("Needs you (4)");
-      for (const nav of [screen.getByRole("navigation", { name: "Factory" }), screen.getByRole("navigation", { name: "System" })]) {
+      for (const nav of [screen.getByRole("navigation", { name: "Tasks" }), screen.getByRole("navigation", { name: "System" })]) {
         const links = [...nav.querySelectorAll("a")];
         expect(links.length).toBeGreaterThan(0);
         for (const a of links) {
@@ -427,13 +430,14 @@ describe("top bar on a narrow screen", () => {
 });
 
 describe("app pages", () => {
-  it("Needs you shows its status in the header and what needs you; Activity shows what runs", async () => {
+  it("/app/ opens the Tasks page with what needs you in its section; Activity shows what runs", async () => {
     mount();
-    // An update in progress is no page banner: only the header's one-word status, with its sentence on hover.
-    expect((await screen.findByTestId("factory-status")).textContent).toContain("Updating");
+    // An update in progress is no page banner and there is no header status.
+    expect(await screen.findByRole("heading", { level: 1, name: "Tasks" })).toBeTruthy();
+    expect(screen.queryByTestId("factory-status")).toBeNull();
     expect(screen.queryByTestId("factory-banner")).toBeNull();
-    expect(screen.getAllByRole("heading", { level: 1, name: "Needs you" })).toHaveLength(1);
-    const needs = await screen.findByRole("table", { name: "Needs you" });
+    await vi.waitFor(() => expect(location.pathname).toBe("/app/tasks"));
+    const needs = await screen.findByRole("region", { name: "Needs you" });
     expect(within(needs).getByText("Spec waiting")).toBeTruthy();
     expect(within(needs).queryByText("Being built")).toBeNull();
     expect(screen.queryByRole("table", { name: "Running now" })).toBeNull();
@@ -463,7 +467,7 @@ describe("app pages", () => {
   });
 
   it("every sidebar page has exactly one h1, its menu name, from its own PageHeader", async () => {
-    const names: Record<string, string> = { "": "Needs you", tasks: "Tasks", calendar: "Calendar", items: "Work", activity: "Activity", runners: "Runners", health: "Health", failures: "Failures", spend: "Spend", rules: "Rules", data: "Data", settings: "Settings" };
+    const names: Record<string, string> = { "": "Tasks", tasks: "Tasks", calendar: "Calendar", items: "Work", activity: "Activity", runners: "Runners", health: "Health", failures: "Failures", spend: "Spend", rules: "Rules", data: "Data", settings: "Settings" };
     for (const [path, name] of Object.entries(names)) {
       history.replaceState(null, "", `/app/${path}`);
       mount();
@@ -811,7 +815,7 @@ describe("item commands", () => {
 describe("Floor item links (issue #228)", () => {
   it("Needs you and Work items rows link their title to the item page", async () => {
     mount();
-    const needs = await screen.findByRole("table", { name: "Needs you" });
+    const needs = await screen.findByRole("region", { name: "Needs you" });
     expect(within(needs).getByRole("link", { name: "Spec waiting" }).getAttribute("href")).toBe("/app/items/wi_1");
     cleanup();
     localStorage.setItem(VIEW_KEY, "list");
@@ -842,14 +846,6 @@ describe("why an item waits (issue #310)", () => {
     });
   }
   const dependencyLinks = [["#12", `${REF_URL}12`], ["#13", `${REF_URL}13`]];
-
-  it("Needs you shows the sentence with #N linked", () =>
-    withWhy(async () => {
-      mount();
-      const needs = await screen.findByRole("table", { name: "Needs you" });
-      expect(within(needs).getByText("Waiting for", { exact: false }).textContent).toBe(dep.text);
-      expect(refLinks(needs)).toEqual(dependencyLinks);
-    }));
 
   it("Work items and the Queued filter show the same sentences, #N linked", () =>
     withWhy(async () => {
@@ -887,7 +883,7 @@ describe("why an item waits (issue #310)", () => {
   });
 });
 
-describe("open alarms in Needs you and the why sentence (design 09-status-page)", () => {
+describe("open alarms on the Tasks page and the why sentence (design 09-status-page)", () => {
   const ALARM = "Alarm: checks_failed failed 4 runs on several items";
   const action = { code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: "2026-11-07T06:00:00.000Z", work_item_id: null };
   const alarmed = { code: "queued", text: `Queued at position 1. ${ALARM}`, next_actor: "factory" as const, refs: [], ref_url: null };
@@ -913,18 +909,15 @@ describe("open alarms in Needs you and the why sentence (design 09-status-page)"
     await act(async () => void (await vi.advanceTimersByTimeAsync(POLL_MS + 10)));
   }
 
-  it("the Floor's Needs you shows the open alarms as one line linking to Failures, and drops it once resolved", () =>
+  it("the Tasks page shows the open alarms as one line linking to Failures, and drops it once resolved", () =>
     withAlarm(async () => {
       mount();
       const list = await screen.findByRole("list", { name: "System actions" });
       const li = list.querySelector('[data-action="alarm"]') as HTMLElement;
       expect(li.textContent).toContain("Open alarms: 1.");
       expect(within(li).getByRole("link").getAttribute("href")).toBe("/app/failures");
-      const needs = screen.getByRole("table", { name: "Needs you" });
-      expect(within(needs).getByText(ALARM, { exact: false }).textContent).toBe(alarmed.text);
       await resolve();
       await vi.waitFor(() => expect(screen.queryByRole("list", { name: "System actions" })).toBeNull());
-      expect(within(screen.getByRole("table", { name: "Needs you" })).queryByText(ALARM, { exact: false })).toBeNull();
     }));
 
   it("Work items and the item page name the alarm in the item's why, and drop it once it is resolved", () =>
@@ -962,20 +955,20 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
   it("the tab title leads with the Needs you count, and has no prefix at 0", async () => {
     mount();
     await screen.findByText("Needs you (4)");
-    await vi.waitFor(() => expect(document.title).toBe("(4) Needs you · Gongbang"));
+    await vi.waitFor(() => expect(document.title).toBe("(4) Tasks · Gongbang"));
     cleanup();
     const before = overview.needs_you;
     overview.needs_you = 0;
     try {
       mount();
       await screen.findByText("Needs you (0)");
-      await vi.waitFor(() => expect(document.title).toBe("Needs you · Gongbang"));
+      await vi.waitFor(() => expect(document.title).toBe("Tasks · Gongbang"));
     } finally {
       overview.needs_you = before;
     }
   });
 
-  it("the Floor's Needs you lists each system action with its command", async () => {
+  it("the Tasks page lists each system action with its command", async () => {
     const actions = [
       { code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null, work_item_id: null },
       { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
@@ -989,8 +982,9 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
       expect(rows[0]!.querySelector("code")!.textContent).toBe("npm run migrate");
       expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
-      // The header counts the rows that wait on the owner; the notes are lines under them.
-      expect(screen.getByText("1 waiting")).toBeTruthy();
+      // The notes are lines after the Needs you section.
+      const section = screen.getByRole("region", { name: "Needs you" });
+      expect(section.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     } finally {
       delete (overview as Record<string, unknown>).system_actions;
     }
@@ -1049,12 +1043,11 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
     expect(due).not.toContain("2026-11-06T23:30:00.000Z");
   });
 
-  it("the Why column shows the need's reason, not the badges, and no command to type", () => {
+  it("an Answer-or-fix row shows the need's reason, not the badges, and no command to type", () => {
     const need = { reason: "failed: diff_too_large" };
     const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", badges: ["failed"], need };
-    render(<QueryClientProvider client={new QueryClient()}><NeedsGroups items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} now={NOW} titles={new Map()} empty="none" /></QueryClientProvider>);
-    const cell = document.querySelector("[data-need]")!.closest("td")!;
-    expect(cell.textContent).toBe("failed: diff_too_large");
+    render(<QueryClientProvider client={new QueryClient()}><NeedsList items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} /></QueryClientProvider>);
+    expect(document.querySelector("[data-need]")!.textContent).toBe("failed: diff_too_large");
   });
 });
 
@@ -1067,7 +1060,7 @@ describe("Needs-you command buttons (issue #453)", () => {
     const it = row(1, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", need: { reason: "spec ready", anchor: null }, commands, ...extra });
     return render(
       <QueryClientProvider client={client}>
-        <NeedsGroups items={[it as unknown as ItemRow]} now={Date.parse(AT)} titles={new Map()} empty="none" />
+        <NeedsList items={[it as unknown as ItemRow]} />
       </QueryClientProvider>,
     );
   }
@@ -1104,7 +1097,7 @@ describe("Needs-you command buttons (issue #453)", () => {
       await settle();
       expect(posts.map((p) => [p.url, p.body]), name).toEqual([["/api/v1/items/wi_1/commands", { command: name }]]);
       expect(posts[0]!.headers["x-csrf-token"]).toBe("tok-123");
-      expect(document.querySelector("tr")!.textContent).not.toContain("sent");
+      expect(document.querySelector("li")!.textContent).not.toContain("sent");
       expect(screen.getByRole("status").textContent).toBe(`Command sent: ${name}`);
       cleanup();
     }
@@ -1117,7 +1110,7 @@ describe("Needs-you command buttons (issue #453)", () => {
     client.setQueryData(["/api/v1/items"], { ...items, items: [it] });
     function Listed() {
       const list = useApi<Items>(API.items, false).data;
-      return <NeedsGroups items={list?.items ?? []} now={Date.parse(AT)} titles={new Map()} empty="none" />;
+      return <NeedsList items={list?.items ?? []} />;
     }
     const saved = RESPONSES["/api/v1/items"];
     RESPONSES["/api/v1/items"] = { ...items, items: [] };
@@ -1141,7 +1134,7 @@ describe("Needs-you command buttons (issue #453)", () => {
 
   it("opening reject, revise or verdict leaves the row's children as they were; the dialog sits outside the row", () => {
     mountNeeds(["approve", "reject", "revise", "verdict"].map(cmd));
-    const tr = document.querySelector("tr")!;
+    const tr = document.querySelector("li")!;
     const before = [...tr.querySelectorAll("*")];
     for (const [name, title] of [["reject", "Reject Spec waiting"], ["revise", "Revise Spec waiting"], ["verdict", "Verdict Spec waiting"]] as const) {
       pick(name);

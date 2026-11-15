@@ -12,9 +12,11 @@ import { describe, expect, it, vi } from "vitest";
 import { type ItemDetail, type ItemRow, type MergeCheckView, type MergeReadiness, API, mergeCheckLabel, postCommand } from "../web/src/api.js";
 // TS6142: tsconfig.test.json has no JSX, so these .tsx views stay untyped here; web/tsconfig.json checks them.
 // @ts-expect-error -- see above
-import { ItemsTable, NeedsGroups } from "../web/src/views/common.js";
+import { ItemsTable } from "../web/src/views/common.js";
 // @ts-expect-error -- see above
 import { ItemPage } from "../web/src/views/pages.js";
+// @ts-expect-error -- see above
+import { NeedsList } from "../web/src/views/task-work.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
 import { APP_CSP, DEFAULT_APP_DIR, contentType } from "../src/ui/app.js";
@@ -249,7 +251,7 @@ describe("ui app: merge check labels", () => {
       items: [row("1", check("mergeable")), row("2", check("conflicts", ["src/a.ts", "docs/b.md"])), row("3", check("checking")), row("4", null)],
       now: Date.parse(AT), label: "Needs you", empty: "none",
     }));
-    const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</tr>", html.indexOf(`data-key="${id}"`)));
+    const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</li>", html.indexOf(`data-key="${id}"`)));
     expect(cell("1")).toContain("Mergeable");
     expect(cell("2")).toContain("Conflicts: 2 files");
     expect(cell("2")).toContain('title="src/a.ts\ndocs/b.md"');
@@ -376,8 +378,8 @@ describe("ui app: the Merge button", () => {
       need: { reason: "mergeable", anchor: null },
     });
     const items = [row("1", ENABLED), row("2", { enabled: false, reason: "1 conflicting file" })];
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(NeedsGroups, { items, now: Date.parse(AT), titles: new Map(), empty: "none" })));
-    const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</tr>", html.indexOf(`data-key="${id}"`)));
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(NeedsList, { items })));
+    const cell = (id: string) => html.slice(html.indexOf(`data-key="${id}"`), html.indexOf("</li>", html.indexOf(`data-key="${id}"`)));
     expect(cell("1")).toMatch(/<span data-command="merge"[^>]*><span[^>]*><button[^>]*>Merge<\/button>/);
     expect(cell("1")).not.toContain("disabled=\"\"");
     expect(cell("2")).toMatch(/<span data-command="merge"[^>]*><span[^>]*><button[^>]*disabled=""[^>]*>Merge<\/button>/);
@@ -423,7 +425,7 @@ describe("ui app: the Needs-you commands and the verdict control", () => {
       tier: 2, kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: "42", change_url: null, issue: null, since: AT,
       updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "spec ready", anchor: null }, commands,
     } as unknown as ItemRow;
-    return renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedsGroups, { items: [it], now: Date.parse(AT), titles: new Map(), empty: "none" })));
+    return renderToStaticMarkup(createElement(QueryClientProvider, { client: client() }, createElement(NeedsList, { items: [it] })));
   };
 
   it("a row shows its primary button and one ⋯ menu, no inline form and no dialog", () => {

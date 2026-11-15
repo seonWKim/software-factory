@@ -48,7 +48,7 @@ const fields = () => [screen.getByLabelText("field"), screen.getByLabelText("are
 const press = (key: string, init: KeyboardEventInit = {}, target: Element | Document = document.body) => fireEvent.keyDown(target, { key, ...init });
 
 describe("shortcuts", () => {
-  it("g n, g w and g a go to Needs you, Work and Activity; g i, g t and g u do nothing yet", async () => {
+  it("g w and g a go to Work and Activity; g n, g i, g t and g u do nothing", async () => {
     mount();
     press("g");
     press("w");
@@ -57,16 +57,14 @@ describe("shortcuts", () => {
     press("a");
     expect(location.pathname).toBe("/app/activity");
     press("g");
-    press("n");
-    expect(location.pathname).toBe("/app/");
-    press("g");
     press("w");
-    for (const k of ["i", "t", "u"]) {
+    for (const k of ["n", "i", "t", "u"]) {
       press("g");
       press(k);
       expect(location.pathname).toBe("/app/items");
     }
     expect(Object.keys(GO_KEYS)).not.toContain("i");
+    expect(Object.keys(GO_KEYS)).not.toContain("n");
     press("q");
     expect(location.pathname).toBe("/app/items");
   });
@@ -123,7 +121,7 @@ describe("shortcuts", () => {
         press("k", {}, f);
         press("Enter", {}, f);
         expect(screen.queryByRole("dialog")).toBeNull();
-        expect(location.pathname).toBe("/app/");
+        expect(location.pathname).toBe("/app/tasks");
         expect(document.querySelector("[data-selected]")).toBeNull();
       }
     });
@@ -131,6 +129,7 @@ describe("shortcuts", () => {
 
   it("q focuses the Tasks page's quick-add field when no field has focus, and does nothing elsewhere or in a field", async () => {
     RESPONSES["/api/v1/tasks"] = { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "t", can_build: true };
+    history.replaceState(null, "", "/app/items");
     mount();
     press("q");
     expect(document.activeElement).toBe(document.body);

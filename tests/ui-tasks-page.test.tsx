@@ -82,6 +82,9 @@ beforeEach(() => {
       return filtered[slug] ? json(200, filtered[slug]) : json(404, { error: `no project "${slug}"` });
     }
     if (url === "/api/v1/items") return json(200, { as_of: "2026-11-12T00:00:00.000Z", total: items.length, items, facets: {} });
+    if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: null });
+    if (url === "/api/v1/overview") return json(200, { as_of: "2026-11-12T00:00:00.000Z", stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [] });
+    if (url === "/api/v1/session") return json(200, { as_of: "2026-11-12T00:00:00.000Z", csrf_token: TOKEN, commands_enabled: true, actor: "local:me", actor_source: "environment" });
     return json(404, { error: "Not found." });
   }));
 });
@@ -553,10 +556,10 @@ describe("Tasks page", () => {
     const BUILD = "Build this sends a task to the factory.";
     const ev = (id: string): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: true, time: null });
 
-    it("the page stacks the project tabs, Quick add, Factory work, then the list, with no mb-/mt- on Quick add or Factory work", async () => {
-      items = [item("wi_1", { title: "Approve the spec", level: "needs_approval" })];
+    it("the page stacks the project tabs, Quick add, Needs you, then the list, with no mb-/mt- on Quick add or Needs you", async () => {
+      items = [item("wi_x", { title: "Approve the spec", level: "needs_approval" })];
       await show();
-      const factory = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
+      const factory = await screen.findByRole("region", { name: "Needs you" }, SLOW);
       const picker = screen.getByRole("tablist", { name: "Project" });
       expect(screen.queryByRole("combobox")).toBeNull();
       const form = screen.getByLabelText("Add a task").closest("form")!;
@@ -774,17 +777,55 @@ describe("Tasks page", () => {
     });
   });
 
-  describe("Factory work", () => {
-    it("lists a work item that needs the owner as one compact list under its group label, with its state once and no table header", async () => {
-      items = [item("wi_1", { title: "Approve the spec", level: "needs_approval" }), item("wi_run", { title: "Busy", level: "running" })];
+  describe("Needs you", () => {
+    const section = () => screen.findByRole("region", { name: "Needs you" }, SLOW);
+
+    it("lists a waiting item with no task as one compact list under its group label, with its count, its state once, its one primary action and no table header", async () => {
+      items = [item("wi_x", { title: "Approve the spec", level: "needs_approval", commands: [{ name: "approve", usage: "/approve", description: "approve", allowed: true, reason: null }] }), item("wi_run", { title: "Busy", level: "running" })];
       await show();
-      const section = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
-      expect(within(section).getByText("Approve the spec")).toBeTruthy();
-      expect(within(section).getByRole("heading", { name: "Approve" })).toBeTruthy();
-      expect(within(section).getAllByText("Needs approval")).toHaveLength(1);
-      expect(within(section).queryByText("Busy")).toBeNull();
-      expect(section.querySelector("table, thead, th")).toBeNull();
-      expect(section.textContent).not.toMatch(/Mergeable|spec ready/);
+      const el = await section();
+      expect(within(el).getByText("Approve the spec")).toBeTruthy();
+      expect(within(el).getByRole("heading", { name: "Approve" })).toBeTruthy();
+      expect(el.querySelector("h2 + span")!.textContent).toBe("1");
+      expect(within(el).getAllByText("Needs approval")).toHaveLength(1);
+      expect(within(el).getByRole("button", { name: "Approve" })).toBeTruthy();
+      expect(within(el).queryByText("Busy")).toBeNull();
+      expect(el.querySelector("table, thead, th")).toBeNull();
+      expect(el.textContent).not.toMatch(/Mergeable|spec ready/);
+    });
+
+    it("is not rendered when nothing waits", async () => {
+      items = [item("wi_run", { title: "Busy", level: "running" })];
+      await show();
+      await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => u === "/api/v1/items")).toBe(true));
+      expect(screen.queryByRole("region", { name: "Needs you" })).toBeNull();
+    });
+
+    it("a task whose work waits on a merge shows Merge on its row, and the item is not in the section", async () => {
+      items = [item("wi_1", { title: "Ship it", level: "ready_to_merge", merge: { enabled: true, reason: null }, merge_check: { state: "mergeable", conflicts: [], head_sha: "a", base_sha: "b", checked_at: "2026-11-12T00:00:00.000Z" } } as Partial<ItemRow>)];
+      await show();
+      expect(await within(card("tk_built")).findByRole("button", { name: "Merge" }, SLOW)).toBeTruthy();
+      expect(within(card("tk_built")).getByText("Ready to merge")).toBeTruthy();
+      expect(within(card("tk_built")).queryByRole("button", { name: "Work item state: tk_built" })).toBeNull();
+      expect(screen.queryByRole("region", { name: "Needs you" })).toBeNull();
+    });
+
+    it("a waiting item whose task is done stays in the section; the done row keeps its plain state", async () => {
+      items = [item("wi_1", { title: "Ship it", level: "needs_approval" })];
+      current = view({ projects: [{ list: null, tasks: [{ ...row("tk_built", { work_item_id: "wi_1" }), done_at: "2026-11-12T08:00:00.000Z" }, row("tk_inbox")] }] });
+      await show();
+      expect(within(await section()).getByText("Ship it")).toBeTruthy();
+      expect(await within(card("tk_built")).findByRole("button", { name: "Work item state: tk_built" }, SLOW)).toBeTruthy();
+      expect(within(card("tk_built")).queryByRole("link", { name: "Open" })).toBeNull();
+      expect(within(card("tk_built")).queryByRole("button", { name: "Approve" })).toBeNull();
+    });
+
+    it("an item with a waiting task row and one with no task are listed once each, the first on its row only", async () => {
+      items = [item("wi_1", { title: "Linked", level: "needs_approval" }), item("wi_x", { title: "Loose", level: "needs_approval" })];
+      await show();
+      const el = await section();
+      expect([...el.querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key)).toEqual(["wi_x"]);
+      expect(el.querySelector("h2 + span")!.textContent).toBe("1");
     });
 
     it("a built task shows its work item's state", async () => {
@@ -805,8 +846,7 @@ describe("Tasks page", () => {
     const STALE = { error: "Missing or stale x-csrf-token; reload the page.", code: "stale_csrf" };
     const mergeRow = () => item("wi_m", { title: "Task title that keeps its space", level: "ready_to_merge", merge: { enabled: true, reason: null } });
     const workRow = async (id: string) => {
-      const section = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
-      return section.querySelector<HTMLElement>(`li[data-key="${id}"]`)!;
+      return (await section()).querySelector<HTMLElement>(`li[data-key="${id}"]`)!;
     };
     const pressMerge = async (row: HTMLElement) => {
       const button = within(row).getByRole("button", { name: "Merge" });

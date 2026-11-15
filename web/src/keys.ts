@@ -8,13 +8,12 @@ import { BASE } from "./pages.js";
 /** One shortcut for the help list: the keys as typed, and the catalog key of what they do. */
 export interface Shortcut {
   keys: string;
-  what: "keys.search" | "keys.help" | "keys.goNeeds" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
+  what: "keys.search" | "keys.help" | "keys.goWork" | "keys.goActivity" | "keys.next" | "keys.prev" | "keys.open" | "keys.primary" | "keys.addTask" | "keys.editTask" | "keys.deleteTask" | "keys.undoDone";
 }
 
 export const SHORTCUTS: readonly Shortcut[] = [
   { keys: "⌘K", what: "keys.search" },
   { keys: "?", what: "keys.help" },
-  { keys: "g n", what: "keys.goNeeds" },
   { keys: "g w", what: "keys.goWork" },
   { keys: "g a", what: "keys.goActivity" },
   { keys: "j", what: "keys.next" },
@@ -31,7 +30,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
  * After `g`, the page a key goes to. `g i`, `g t` and `g u` (Inbox, Today, Upcoming) have no view until the task
  * views exist, so they are not listed and do nothing;.
  */
-export const GO_KEYS: Readonly<Record<string, string>> = { n: BASE, w: `${BASE}items`, a: `${BASE}activity` };
+export const GO_KEYS: Readonly<Record<string, string>> = { w: `${BASE}items`, a: `${BASE}activity` };
 
 /** The Tasks page's quick-add field: `q` focuses it, so the key does nothing on a page without one. */
 export const QUICK_ADD_ATTR = "data-quick-add";
