@@ -3,7 +3,7 @@ import { API, type AutoStop, type Session, type SettingRow, type SettingsView, t
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { Input } from "../components/ui/input.js";
-import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Switch } from "../components/ui/switch.js";
@@ -570,7 +570,7 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   );
 }
 
-/** Each auto-mode stop's cause (its alarm's error code, design 03-risk), as the Mode toggle and the banner name it. */
+/** Each auto-mode stop's cause (its alarm's error code, design 03-risk), as the Mode toggle and its alarm row name it. */
 const STOP_CAUSE: Readonly<Record<string, MessageKey>> = {
   red_main: "settings.autoStopRedMain",
   budget_checkpoint: "settings.autoStopBudget",
@@ -580,7 +580,7 @@ const STOP_CAUSE: Readonly<Record<string, MessageKey>> = {
 /** A time of day in the browser's time zone, hours and minutes (11:52). */
 const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
-/** Where an alarm is shown: its line in the Needs-you notes (system-banner.tsx), by the alert's id. */
+/** The auto-mode stop's alarm row in the Needs you section's Check group (system-banner.tsx), by the alert's id. */
 export const alarmAnchor = (alertId: string) => `alarm-${alertId}`;
 
 /** "Back to manual at 11:52: <why>": the stop's time and cause. */
@@ -590,11 +590,11 @@ export const autoStopText = (stop: AutoStop) => {
 };
 
 /**
- * The auto-mode stop still in force (design 03-risk), beside the Mode toggle and in the system banner: when and why,
- * a link to its alarm, and "Turn auto back on", which writes mode auto at once (no confirmation) through
- * POST /api/v1/settings like the toggle. With no settings view yet (the banner's read is loading) there is no button.
+ * The auto-mode stop still in force (design 03-risk), beside the Mode toggle and on its alarm row in Needs you: when
+ * and why, a link to its alarm, and "Turn auto back on", which writes mode auto at once (no confirmation) through
+ * POST /api/v1/settings like the toggle. With no settings view yet (its read is loading) there is no button.
  */
-export function AutoStopNote({ stop, view, banner = false }: { stop: AutoStop; view: SettingsView | undefined; banner?: boolean }) {
+export function AutoStopNote({ stop, view }: { stop: AutoStop; view: SettingsView | undefined }) {
   const { busy, error, write } = useWrite(view?.csrf_token ?? "");
   const mode = view ? currentMode(view) : null;
   const target = mode?.project === undefined ? {} : { project: mode.project };
@@ -602,7 +602,7 @@ export function AutoStopNote({ stop, view, banner = false }: { stop: AutoStop; v
     <div data-auto-stop className="flex min-w-0 flex-col gap-1 text-sm">
       <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="min-w-0 text-pretty break-words">{autoStopText(stop)}</span>
-        <Link href={`${BASE}#${alarmAnchor(stop.alert_id)}`} className={banner ? BANNER_LINK_CLASS : LINK_CLASS}>{t("settings.autoStopAlarm")}</Link>
+        <Link href={`${BASE}#${alarmAnchor(stop.alert_id)}`} className={LINK_CLASS}>{t("settings.autoStopAlarm")}</Link>
         {mode && (
           <Button size="sm" disabled={busy} onClick={() => void write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...target })}>
             {t("settings.autoStopTurnOn")}
