@@ -19,6 +19,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Then its state as a `StatusBadge`, then the facts that decide what to do next, then the time (`writing.md`, compact times).
 - A table of rows uses `DataTable`: a table at `sm` and up, one card per row below it.
 - The row opens the item page. Row actions sit at the end of the row.
+- **C-050** (2026-11-15). An action's error shows on its own line below the row's content, full width, or in the shared `Notice` or toast; never in the actions column. The title keeps its space and truncates only at the row's real width; the status badge and the actions never overlap, at every `check:responsive` size. The Tasks page's Factory work row follows it (`SendErrors` on a `basis-full` line); the Needs you table moves onto it in a follow-up.
 
 ## Actions
 
@@ -45,7 +46,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Loading: `Loading` in the place the content will be. The page keeps its header.
 - Empty: `EmptyState` says what the page is for and what makes something appear here, with the next step as an action when there is one. `Empty` is the one-line version inside a section.
 - Error: `ErrorNote` says what failed in plain words and how to retry. It never shows a stack trace or a raw status code alone.
-- A refused action shows its reason beside the button that was pressed.
+- A refused action shows its reason beside the button that was pressed; in a list row, on its own line below the row (C-050).
 
 ## Forms and keyboard
 
@@ -54,3 +55,7 @@ These are rules for new and changed pages. Existing pages move onto them in foll
 - Controls share one focus ring and one disabled look (`tests/design-system.test.ts`). Never remove the focus ring.
 - A keyboard shortcut is shown with `Kbd`, listed in the shortcuts view, and never the only way to do something.
 - Every control is reachable by Tab in reading order, and a menu opens and closes by keyboard.
+
+## History
+
+- **A list row's failed send showed in its actions column** (until 2026-11-15, replaced by C-050). Before: the row's error text sat in the actions cell beside the primary button, so a long error shrank the title ("Tas…" in Factory work) and pushed the button onto the status badge.
