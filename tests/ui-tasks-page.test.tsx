@@ -500,7 +500,7 @@ describe("Tasks page", () => {
       it("enter (the default, and with no add_key): Enter adds the task, ⌘Enter does not, and the hint says Enter", async () => {
         await show();
         const before = layout();
-        expect(field().placeholder).toBe("e.g. rent friday p1 #home, then Enter");
+        expect(field().placeholder).toBe("e.g. rent tomorrow !1 #home, then Enter");
         expect(field().getAttribute("aria-keyshortcuts")).toBe("Enter");
         type("buy milk");
         press({ metaKey: true });
@@ -518,7 +518,7 @@ describe("Tasks page", () => {
         cleanup();
         current = { ...view(), add_key: "cmd-enter" } as TasksView;
         await show();
-        expect(field().placeholder).toBe("e.g. rent friday p1 #home, then ⌘Enter");
+        expect(field().placeholder).toBe("e.g. rent tomorrow !1 #home, then ⌘Enter");
         expect(field().getAttribute("aria-keyshortcuts")).toBe("Meta+Enter");
         expect(layout()).toEqual(enterLayout);
         type("buy milk");
