@@ -1,6 +1,6 @@
 // Table docs (design 09-dashboard-app, Data page): every table of a freshly migrated SQLite store has a one-line
 // description and an owning component, kept in the table-docs.ts beside that component's migrations; no line names
-// a table or column the store does not have.
+// a table or column the store does not have. `legacy_` copies, which the contract migration drops, get none.
 
 import { describe, expect, it } from "vitest";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -29,19 +29,26 @@ function docProblems(tables: readonly StoreTable[], docs: typeof TABLE_DOCS): { 
       return !columns.has(table!) || (column !== undefined && !columns.get(table!)!.includes(column));
     }),
   );
-  return { undescribed: tables.map((t) => t.name).filter((n) => !described.has(n)), unknown };
+  return { undescribed: tables.map((t) => t.name).filter((n) => !n.startsWith("legacy_") && !described.has(n)), unknown };
 }
 
 describe("table docs", () => {
   it("every table on a freshly migrated store has a one-line description and an owner", async () => {
     const tables = await catalog();
     expect(docProblems(tables, TABLE_DOCS).undescribed).toEqual([]);
-    for (const t of tables) {
+    for (const t of tables.filter((x) => !x.name.startsWith("legacy_"))) {
       const doc = tableDoc(t.name)!;
       expect(doc.owner, t.name).toMatch(/^[a-z]+$/);
       expect(doc.description, t.name).toMatch(/^\S.*\.$/);
       expect(doc.description, t.name).not.toContain("\n");
     }
+  });
+
+  it("no line describes a legacy_ copy: it has no doc until the contract migration drops it", async () => {
+    const tables = await catalog();
+    expect(tables.some((t) => t.name.startsWith("legacy_"))).toBe(true);
+    for (const t of tables.filter((x) => x.name.startsWith("legacy_"))) expect(tableDoc(t.name), t.name).toBeNull();
+    expect(Object.values(TABLE_DOCS).flatMap((d) => Object.keys(d)).filter((k) => k.startsWith("legacy_"))).toEqual([]);
   });
 
   it("no line names a table or a column the store does not have", async () => {

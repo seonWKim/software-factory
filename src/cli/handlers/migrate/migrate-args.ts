@@ -1,7 +1,10 @@
 // The arguments of `factory migrate` (npm run migrate) and the message it prints before applying.
 
-/** `contract`: only the contract migrations that drop `legacy_*` (RFC 0015 §12 D2). */
-type MigrateMode = "apply" | "status" | "dry-run" | "rehearse" | "contract";
+/**
+ * `contract`: only the contract migrations that drop `legacy_*` (RFC 0015 §12 D2); `contract-dry-run` prints what
+ * they would do and changes nothing.
+ */
+type MigrateMode = "apply" | "status" | "dry-run" | "rehearse" | "contract" | "contract-dry-run";
 
 export const SQLITE_MIGRATE_MESSAGE =
   "SQLite has no schema scripts: the factory applies additive migrations when it opens the database. `npm run migrate` applies the breaking ones (they rename tables, so a running factory drains first) and the data steps (project keys).";
@@ -16,6 +19,7 @@ export function parseMigrateArgs(args: readonly string[], env: Record<string, st
   const unknown = args.filter((a) => !names.some((n) => a === `--${n}`));
   if (unknown.length > 0) return { error: `unknown argument: ${unknown.join(" ")} (use --status, --dry-run, --rehearse or --contract)` };
   const modes = names.filter((m) => flag(m));
-  if (modes.length > 1) return { error: "use one of --status, --dry-run, --rehearse and --contract" };
+  if (modes.length === 2 && modes[0] === "dry-run" && modes[1] === "contract") return "contract-dry-run";
+  if (modes.length > 1) return { error: "use one of --status, --dry-run, --rehearse and --contract (only --contract goes with --dry-run)" };
   return modes[0] ?? "apply";
 }
