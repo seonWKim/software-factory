@@ -86,7 +86,8 @@ const view: SettingsView = {
   ],
 };
 
-// The Capabilities section's read (design 08-settings, 2026-11-13): a skill, a granted tool, a tool that writes, a provider entry.
+// The capability list's read (design 08-settings, 2026-11-15): a skill, a granted tool, a tool that writes, a provider entry;
+// the Settings page's Providers section shows only the provider entries.
 const capabilities: CapabilitiesView = {
   as_of: AT,
   roles: ["triage", "implement", "review", "update", "resolve", "manual"],
@@ -142,24 +143,20 @@ const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
 
 describe("Settings page", () => {
-  it("has a Capabilities section: each skill, tool and provider entry with its state, roles and last use", async () => {
+  it("has a Providers section: each provider entry with its state, roles and last use, and a link to the Plugins page instead of skills and tools", async () => {
     capabilitiesReads = 0;
     await show();
-    const table = await screen.findByRole("table", { name: "Capabilities" });
+    expect(screen.queryByRole("table", { name: "Capabilities" })).toBeNull();
+    const table = await screen.findByRole("table", { name: "Providers" });
     const rows = [...table.querySelectorAll("tbody > tr")];
-    expect(rows.map((r) => r.querySelector("td")!.textContent)).toEqual([
-      "deploy/home/me/.claude/skills",
-      "forge.preflightRead-only check.",
-      "git.store_branchStore a branch.",
-      "runner:claude-codecheap: haiku · standard: sonnet · strong: opus",
-    ]);
-    expect(rows[1]!.textContent).toContain("Enabled");
-    expect(rows[1]!.textContent).toContain("review, triage");
-    expect(rows[1]!.textContent).toContain("ago");
-    expect(rows[2]!.textContent).toContain("Off");
-    expect(rows[2]!.textContent).toContain("writes; never granted");
-    expect(rows[0]!.textContent).toContain("No role");
-    expect(rows[0]!.textContent).toContain("Not in recent runs");
+    expect(rows.map((r) => r.querySelector("td")!.textContent)).toEqual(["runner:claude-codecheap: haiku · standard: sonnet · strong: opus"]);
+    expect(rows[0]!.textContent).toContain("Enabled");
+    expect(rows[0]!.textContent).toContain("triage, implement, review, resolve");
+    expect(rows[0]!.textContent).toContain("ago");
+    const section = screen.getByRole("region", { name: "Providers" });
+    expect(within(section).getByRole("link", { name: "Plugins page" }).getAttribute("href")).toBe("/app/plugins");
+    expect(section.textContent).not.toContain("forge.preflight");
+    expect(section.textContent).not.toContain("deploy");
     // Read once when the page opens, never polled: it reads stored transcripts.
     expect(capabilitiesReads).toBe(1);
   });

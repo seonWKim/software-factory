@@ -16,6 +16,7 @@ import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
 import { FailuresPage } from "./views/failures.js";
 import { ActivityPage, HealthPage, ItemPage, ItemsPage, NeedsYouPage, RunnersPage } from "./views/pages.js";
+import { PluginsPage } from "./views/plugins.js";
 import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
 import { TranscriptView, transcriptRoute } from "./views/transcript.js";
@@ -49,6 +50,7 @@ const VIEWS: Record<string, () => JSX.Element> = {
   rules: RulesPage,
   settings: SettingsPage,
   data: DataPage,
+  plugins: PluginsPage,
 };
 
 /** A page's name in the active locale: its menu name and its heading. */
@@ -161,6 +163,10 @@ export function App() {
           <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} titled />
           <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("nav.factory")} pages={pagesIn("factory")} current={current} titled />
+          </div>
+          {/* Plugins: what the agents can use, its own group above System. One entry, so no title over it. */}
+          <div className="mt-3 border-t border-border pt-3">
+            <SideLinks label={t("page.plugins")} pages={pagesIn("plugins")} current={current} />
           </div>
           <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("nav.system")} pages={pagesIn("system")} current={current} titled />

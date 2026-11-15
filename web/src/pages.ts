@@ -1,7 +1,10 @@
-import { Activity, CalendarCheck, CalendarDays, CircleDollarSign, Database, HeartPulse, ListTodo, OctagonAlert, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
+import { Activity, CalendarCheck, CalendarDays, CircleDollarSign, Database, HeartPulse, ListTodo, OctagonAlert, Puzzle, ScrollText, Settings, Siren, Waypoints, type LucideIcon } from "lucide-react";
 
-/** Where a page sits in the sidebar: the Tasks group, the Factory group, the System group, or the row at its bottom (Settings). */
-export type PageGroup = "tasks" | "factory" | "system" | "bottom";
+/**
+ * Where a page sits in the sidebar: the Tasks group, the Factory group, the Plugins group (its own, above System),
+ * the System group, or the row at its bottom (Settings).
+ */
+export type PageGroup = "tasks" | "factory" | "plugins" | "system" | "bottom";
 
 /** One routable page. `key` names it in the English catalog (`page.<key>`), which also names its heading. */
 export interface PageDef {
@@ -17,6 +20,7 @@ export const PAGES: readonly PageDef[] = [
   { path: "tasks", label: "Tasks", key: "tasks", icon: CalendarCheck, group: "tasks" },
   { path: "calendar", label: "Calendar", key: "calendar", icon: CalendarDays, group: "tasks" },
   { path: "", label: "Needs you", key: "needs", icon: Siren, group: "factory" },
+  { path: "plugins", label: "Plugins", key: "plugins", icon: Puzzle, group: "plugins" },
   { path: "items", label: "Work", key: "work", icon: ListTodo, group: "system" },
   { path: "activity", label: "Activity", key: "activity", icon: Activity, group: "system" },
   { path: "health", label: "Health", key: "health", icon: HeartPulse, group: "system" },
