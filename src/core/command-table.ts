@@ -112,7 +112,7 @@ export const COMMAND_TABLE: readonly TableCommand[] = [
   },
   {
     name: "task project", args: "<task_id> [-<from>] +<slug>|-<slug>", who: "submit_work", group: "task",
-    does: "Add a plain task to a task project (+<slug>), take it out (-<slug>), or move it from one to another in one step (-<from> +<to>)",
+    does: "Add, remove or move a task's project",
     prints: "that it was added, taken out or moved (or already was)", chat: "task project <task_id> [-<from>] +<slug>|-<slug>", chat_args: "any",
     item: false, edge: false,
   },
