@@ -25,6 +25,8 @@ import { withNodes } from "./standing.js";
 // /api/v1/plugins/import, the skills (Skills tab) or MCP servers (MCP and Tools tabs: tools come from MCP servers) of
 // the user-level Claude Code and Codex configs, each with a checkbox; one already stored shows as imported and one a
 // scan refuses shows its rules, neither selectable. Import posts the checked ones to POST /api/v1/plugins/import.
+// The Tools tab also lists the tools of each approved imported MCP server, origin MCP (design 11-plugin-import,
+// phase 3): the read asks a worker to list them, so they appear on a later read; the page starts no server.
 
 type Tab = "mcp" | "skills" | "tools";
 const TABS: readonly { id: Tab; label: MessageKey }[] = [
@@ -135,11 +137,17 @@ function SkillsTab({ view, query, now }: { view: PluginsView; query: string; now
   );
 }
 
+/**
+ * A tool row's origin label. `mcp`: a tool an approved imported MCP server listed (design 11-plugin-import, phase 3),
+ * or that server's own row while it has none; its description names the server. No approve or revoke here.
+ */
+const ORIGIN: Record<string, MessageKey> = { broker: "plugins.originBroker", pack: "plugins.originPack", mcp: "plugins.tabMcp" };
+
 function ToolsTab({ view, query, now }: { view: PluginsView; query: string; now: number }) {
   type Row = PluginsView["tools"][number];
   const columns: Column<Row>[] = [
     { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} /> },
-    { key: "origin", header: t("plugins.colOrigin"), render: (r) => <span className="text-xs whitespace-nowrap">{t(r.origin === "pack" ? "plugins.originPack" : "plugins.originBroker")}</span> },
+    { key: "origin", header: t("plugins.colOrigin"), render: (r) => <span className="text-xs whitespace-nowrap">{t(ORIGIN[r.origin] ?? "plugins.originBroker")}</span> },
     { key: "read_only", header: t("plugins.colReadOnly"), render: (r) => <span className="text-xs text-pretty">{r.read_only ? t("plugins.readOnly") : t("plugins.writes")}</span> },
     { key: "roles", header: t("plugins.colRoles"), render: (r) => <Roles roles={r.roles} /> },
     { key: "last_used", header: t("plugins.colLastUsed"), render: (r) => <LastUsed at={r.last_used} now={now} /> },
