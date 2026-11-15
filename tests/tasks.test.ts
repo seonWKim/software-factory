@@ -98,7 +98,7 @@ describe("factory task list", () => {
 describe("factory task done and recurring completion", () => {
   it("completing a recurring task twice creates exactly one next occurrence", async () => {
     const { store, clock, cli } = await setup();
-    await cli("add", "water", "plants", "every", "week", "2026-11-11", "#home");
+    await cli("add", "water", "plants", "2026-11-11", "#home", "every", "week");
     clock.advance(DAY);
     const first = await cli("done", "tk_id1");
     clock.advance(DAY);

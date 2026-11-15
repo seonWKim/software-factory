@@ -34,7 +34,8 @@ describe("whyWaiting: every case", () => {
     ["failed run", input({ item: { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large" } }), "The run failed (run_failed:implement:diff_too_large): a person decides what happens next", "human", []],
     ["other human", input({ item: { blocked_on: "human", blocked_reason: "needs a decision on #7" } }), "Waiting for a person: needs a decision on #7", "human", [7]],
     ["human, no stored reason", input({ item: { stage: "REVIEW", blocked_on: "human", blocked_reason: null } }), "Waiting for a person: the item is in review; next, a person retries, resolves or rejects it", "human", []],
-    ["deadlock", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null } }), "Started past a deadlock with #92: a person checks the overlap", "factory", [92]],
+    ["deadlock", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null, holder_title: "Other item" } }), `Running at the same time as "Other item", which changes some of the same files. If they clash, you'll be asked when it merges.`, "factory", []],
+    ["deadlock, holder without a title", input({ run: running, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "pr", approved_by: null } }), "Running at the same time as another item, which changes some of the same files. If they clash, you'll be asked when it merges.", "factory", []],
     ["running", input({ run: running }), "Running implement", "factory", []],
     ["rate limit", input({ run: queued("triage"), pauses: { rate_limit: UNTIL } }), "Paused by a usage or rate limit until 2026-11-07 12:30 UTC", "factory", []],
     ["model stall", input({ run: queued("review"), pauses: { model_stall: UNTIL } }), "Paused: the model is not answering; runs start again once a probe answers", "factory", []],
@@ -150,5 +151,13 @@ describe("refsOf and deadlocked", () => {
     expect(deadlocked(d, { id: "run_r" })).toBe(true);
     expect(deadlocked(d, { id: "run_other" })).toBe(false);
     expect(deadlocked(d, null)).toBe(false);
+  });
+});
+
+describe("the deadlock sentence", () => {
+  it("names no number and none of the internal words", () => {
+    const w = whyWaiting(input({ run: { id: "run_r", kind: "implement", status: "running", position: null }, decision: { run_id: "run_r", decision: "deadlock", holder_ref: "#92", holder_kind: "waiting", approved_by: null, holder_title: "Other item" } }));
+    expect(w.code).toBe("deadlock");
+    expect(w.text).not.toMatch(/#\d|deadlock|claim|overlap/i);
   });
 });

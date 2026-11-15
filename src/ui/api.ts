@@ -17,7 +17,7 @@ import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, listRows, readClaimPauses, readPhases, waitingOn, whyOf } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./pages.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
@@ -210,7 +210,7 @@ class ApiCtx {
     const decision = await latestDecision(s, it.id, run);
     const waiting = waitingOn(it, await readPhases(s, [it]));
     const alarms = await itemAlarms(s, await openAlarms(s, this.now), it);
-    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, decision, await readClaimPauses(s), waiting, this.now, alarms, await heldFailureOf(needCtx(s, this.w), it)), it);
+    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(s, [decision])), await readClaimPauses(s), waiting, this.now, alarms, await heldFailureOf(needCtx(s, this.w), it)), it);
   }
 }
 
@@ -567,7 +567,7 @@ async function queue(c: ApiCtx) {
       // The item's own active run decides its sentence (a running run wins), as on Items and the item page.
       const run = active.get(it.id) ?? r;
       const decision = await latestDecision(s, it.id, run);
-      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, decision, pauses, waitingOn(it, phases), c.now, await itemAlarms(s, open, it), await heldFailureOf(needCtx(s, c.w), it)), it);
+      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, withTitle(decision, await holderTitles(s, [decision])), pauses, waitingOn(it, phases), c.now, await itemAlarms(s, open, it), await heldFailureOf(needCtx(s, c.w), it)), it);
     }
     out.push({
       position: i + 1,

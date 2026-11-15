@@ -111,7 +111,7 @@ export function levelOf(i: PriorityInput, now: Date, lease_ms: number): Level {
 /** The other item a blocked item waits on, in fixed words and numbers. */
 function blockedBadge(i: PriorityInput): string {
   const n = i.waiting_on_number;
-  if (i.deadlock) return n ? `deadlock with #${n}` : "deadlock";
+  if (i.deadlock) return n ? `waits on #${n}` : "waits on another task";
   if (n) return `waits on #${n}`;
   if (i.waiting_on > 0) return `waits on ${i.waiting_on} ${i.waiting_on === 1 ? "issue" : "issues"}`;
   return i.held ? "held by another task" : "waits on another issue";

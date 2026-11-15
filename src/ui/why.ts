@@ -54,7 +54,12 @@ export interface WhyInput {
   /** The item's queued or running run (running wins), with its 1-based place in the queue when queued. */
   run: { id: string; kind: RunKind; status: "queued" | "running"; position: number | null } | null;
   /** The latest claim decision of the item's runs, if any. */
-  decision: (Pick<ClaimDecision, "decision" | "holder_ref" | "holder_kind"> & { run_id: string; approved_by: string | null }) | null;
+  decision: (Pick<ClaimDecision, "decision" | "holder_ref" | "holder_kind"> & {
+    run_id: string;
+    approved_by: string | null;
+    /** The title of the holder's work item (list.ts `holderTitle`); absent or null when it has none. */
+    holder_title?: string | null;
+  }) | null;
   pauses: ClaimPauses;
   /** The run's not_before when it is still ahead (the caller compares it with its now), else null. */
   not_before: string | null;
@@ -198,7 +203,8 @@ export function whyWaiting(x: WhyInput): Why {
   if (i.stage === "CLOSED") return why("closed", i.close_reason ? `Closed: ${i.close_reason.replace(/_/g, " ")}` : "Closed", "none");
   if (i.blocked_on === "human" || i.blocked_on === "budget") return human(i, x.failure ?? null);
   if (deadlocked(x.decision, run)) {
-    return why("deadlock", `Started past a deadlock with ${x.decision!.holder_ref}: a person checks the overlap`, "factory");
+    const other = x.decision!.holder_title ? `"${x.decision!.holder_title}"` : "another item";
+    return why("deadlock", `Running at the same time as ${other}, which changes some of the same files. If they clash, you'll be asked when it merges.`, "factory");
   }
   if (run?.status === "running") return why("running", `Running ${run.kind}`, "factory");
   const paused = run ? pause(x.pauses, run.kind) : null;

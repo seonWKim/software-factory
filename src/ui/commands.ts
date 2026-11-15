@@ -4,7 +4,8 @@
 // it on its next tick, or refuses it with a reply (design §4, app requests). This module never applies a command.
 //
 // Guards, in order, every refusal before any store write: Host (server.ts), then an Origin equal to the Host's own
-// http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403), a
+// http origin (403), Content-Type application/json (415), the per-process token in x-csrf-token (403, with code
+// "stale_csrf": STALE_CSRF, which the page retries once with a fresh token), a
 // an actor (503), a body of at most 16 KB (413), JSON (400), a known command with a valid note (400),
 // a known item (404). Success is 202 with the request's ID. GET /api/v1/session hands out the token behind the
 // same Host guard. The item API's `commands` (each with the viewer's `allowed` and `reason`), `replies`, `spec` and
@@ -92,6 +93,11 @@ export interface CommandsResult {
 
 const err = (status: number, error: string): CommandsResult => ({ status, value: { error } });
 
+/** The code of the missing-or-stale-token 403: the page fetches a fresh token from GET /api/v1/session and retries once. */
+export const STALE_CSRF = "stale_csrf";
+/** The 403 for a missing or stale x-csrf-token, on every write route; the only 403 that carries a code. */
+export const staleCsrf = (): CommandsResult => ({ status: 403, value: { error: "Missing or stale x-csrf-token; reload the page.", code: STALE_CSRF } });
+
 /** The Content-Type's media type, lowercased, without parameters. */
 function mediaType(value: string | undefined): string {
   return (value ?? "").split(";", 1)[0]!.trim().toLowerCase();
@@ -144,7 +150,7 @@ export async function commandsPost(d: UiDeps, rawId: string, req: CommandsReques
   const c = d.commands;
   const off = err(503, "Commands are off: this server is not on loopback, so it needs ui.user_id. Settings (/app/settings#page-commands) says what to set.");
   if (!c) return off;
-  if (!csrfMatches(c.token, req.csrfToken)) return err(403, "Missing or stale x-csrf-token; reload the page.");
+  if (!csrfMatches(c.token, req.csrfToken)) return staleCsrf();
   if (c.actor === null) return off;
   if (req.bodyTooLarge || Buffer.byteLength(req.body ?? "", "utf8") > MAX_COMMAND_BODY) return err(413, "The body is too large.");
   let body: unknown;
