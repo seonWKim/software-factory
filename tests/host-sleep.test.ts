@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { HOST_SLEEP_MS, Worker } from "../src/worker/index.js";
 import type { RunId, WorkerId } from "../src/core/types.js";
@@ -283,7 +283,12 @@ describe("host sleep: the app's pages", () => {
   const AT = "2026-11-07T08:30:00.000Z";
   const health = (sleeps: unknown[]) => ({ checked_at: AT, checks: [{ status: "ok", msg: "fine" }], sleeps });
 
+  // The page reads its tab from the URL; on the server there is no window, so a test names the tab with a stub.
+  const onTab = (tab: string) => vi.stubGlobal("location", { search: `?tab=${tab}`, href: `http://x/app/health?tab=${tab}` });
+  afterEach(() => vi.unstubAllGlobals());
+
   it("Health lists the recent sleeps as 'host slept N min' with the time", async () => {
+    onTab("sleeps");
     const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
     const html = await renderPage("HealthPage", {
       [API.health]: health([
@@ -301,7 +306,22 @@ describe("host sleep: the app's pages", () => {
     expect(html).not.toContain("No host sleep recorded.");
   });
 
+  it("Health shows 5 worker entries of one sleep as one row, 'workers 0–4', with the largest gap", async () => {
+    onTab("sleeps");
+    const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
+    const html = await renderPage("HealthPage", {
+      [API.health]: health([0, 1, 2, 3, 4].map((slot) => ({ worker_id: `host:1:${slot}`, woke_at: AT, gap_ms: (slot === 2 ? 7 : 5) * 60_000, run_id: null }))),
+      [API.unreviewedMerges]: { as_of: AT, merges: [] },
+    });
+    expect(html.match(/data-testid="host-sleep"/g)).toHaveLength(1);
+    expect(html.match(/host slept/g)).toHaveLength(1);
+    expect(html).toContain("host slept 7 min");
+    expect(html).toContain("workers 0–4");
+    expect(html).toContain("Host sleeps (1)");
+  });
+
   it("Health shows an empty state when there are no sleeps", async () => {
+    onTab("sleeps");
     const { API } = (await import(WEB_API)) as { API: { health: string; unreviewedMerges: string } };
     const html = await renderPage("HealthPage", { [API.health]: health([]), [API.unreviewedMerges]: { as_of: AT, merges: [] } });
     expect(html).toContain("No host sleep recorded.");

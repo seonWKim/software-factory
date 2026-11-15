@@ -12,7 +12,9 @@ import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../com
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
+import { Tabs } from "../components/ui/tabs.js";
 import { cn } from "../lib/cn.js";
+import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { LEVEL_LABELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
@@ -153,6 +155,15 @@ function PauseItem({ pause, token, now }: { pause: PauseRow; token: string | nul
   );
 }
 
+/** The claim pauses in effect, each with "Resume now". */
+function PauseList({ view, now }: { view: PausesView; now: number }) {
+  return (
+    <ul aria-label={t("pause.title")} className="space-y-1">
+      {view.pauses.map((p) => <PauseItem key={p.name} pause={p} token={view.csrf_token} now={now} />)}
+    </ul>
+  );
+}
+
 /** Every claim pause in effect, each with "Resume now". Hidden while there is none. */
 export function ClaimPauses({ now }: { now: number }) {
   const q = useApi<PausesView>(API.pauses);
@@ -160,9 +171,7 @@ export function ClaimPauses({ now }: { now: number }) {
   if (!q.data || q.data.pauses.length === 0) return null;
   return (
     <Section title={t("pause.title")} count={q.data.pauses.length}>
-      <ul aria-label={t("pause.title")} className="space-y-1">
-        {q.data.pauses.map((p) => <PauseItem key={p.name} pause={p} token={q.data.csrf_token} now={now} />)}
-      </ul>
+      <PauseList view={q.data} now={now} />
     </Section>
   );
 }
@@ -680,13 +689,40 @@ function CheckList({ checks }: { checks: Health["checks"] }) {
   );
 }
 
+type HealthTab = "checks" | "pauses" | "sleeps" | "merges";
+
+/** One row per sleep event: entries with the same `woke_at` (one per worker) merge, the gap being the largest. */
+function groupSleeps(sleeps: readonly HostSleepRow[]): { woke_at: string; gap_ms: number; slots: number[] }[] {
+  const groups = new Map<string, { woke_at: string; gap_ms: number; slots: number[] }>();
+  for (const h of sleeps) {
+    const g = groups.get(h.woke_at) ?? { woke_at: h.woke_at, gap_ms: 0, slots: [] };
+    g.gap_ms = Math.max(g.gap_ms, h.gap_ms);
+    const slot = /:(\d+)$/.exec(h.worker_id)?.[1];
+    if (slot !== undefined) g.slots.push(Number(slot));
+    groups.set(h.woke_at, g);
+  }
+  return [...groups.values()];
+}
+
+/** "workers 0–4" for consecutive slots, "workers 0, 2" otherwise, "worker 3" for one. */
+function workersText(slots: readonly number[]): string {
+  const s = [...new Set(slots)].sort((a, b) => a - b);
+  if (s.length === 0) return "";
+  if (s.length === 1) return t("health.worker", { slots: String(s[0]) });
+  const run = s.every((n, i) => n === s[0]! + i);
+  return t("health.workers", { slots: run ? `${s[0]}–${s.at(-1)}` : s.join(", ") });
+}
+
 export function HealthPage() {
   const now = useNow();
   // Each read runs the checks: every 30 s, not every 3 s.
   const health = useApi<Health>(API.health, 30_000);
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
+  const pauses = useApi<PausesView>(API.pauses);
   const overview = useApi<Overview>(API.overview);
   const viewer = useViewer();
+  const held = (pauses.data?.pauses.length ?? 0) > 0;
+  const [picked, pick] = useUrlParam("tab", (v) => ["checks", "pauses", "sleeps", "merges"].includes(v));
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
   const order = ["fail", "warn", "ok"];
@@ -694,56 +730,72 @@ export function HealthPage() {
   // Warn and fail rows stay in view; ok rows fold behind their count ("22 ok").
   const open = checks.filter((c) => c.status !== "ok");
   const fine = checks.filter((c) => c.status === "ok");
-  const sleeps = health.data.sleeps ?? [];
+  const sleeps = groupSleeps(health.data.sleeps ?? []);
+  const failing = checks.some((c) => c.status === "fail");
+  const mergeList = merges.data?.merges;
+  const options: { id: HealthTab; label: string }[] = [
+    { id: "checks", label: `${t("health.tabChecks")} (${checks.length})${failing ? ` ${t("health.failMark")}` : ""}` },
+    ...(held ? [{ id: "pauses" as const, label: `${t("pause.title")} (${pauses.data!.pauses.length})` }] : []),
+    { id: "sleeps", label: `${t("health.sleeps")} (${sleeps.length})` },
+    { id: "merges", label: `${t("health.merges")}${mergeList ? ` (${mergeList.length})` : ""}` },
+  ];
+  const tab = options.some((o) => o.id === picked) ? (picked as HealthTab) : "checks";
   return (
     <>
       <PageHeader title={t("page.health")} />
       <CodeRevision factory={overview.data?.factory} />
-      <ClaimPauses now={now} />
-      <Section title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
-        <CheckList checks={open} />
-        {fine.length > 0 && (
-          <details data-testid="ok-checks" className="mt-2 text-sm">
-            <summary className="cursor-pointer text-text-2">{t("health.okCount", { count: fine.length })}</summary>
-            <CheckList checks={fine} />
-          </details>
-        )}
-      </Section>
-      <Section title={t("health.sleeps")} count={sleeps.length}>
-        {sleeps.length === 0 ? (
-          <Empty>{t("health.noSleep")}</Empty>
-        ) : (
-          <ul className="space-y-1 text-sm">
-            {sleeps.map((h) => (
-              <li key={`${h.worker_id}:${h.woke_at}`} className="flex items-baseline gap-3" data-testid="host-sleep">
-                <span className="font-medium">{sleptText(h.gap_ms)}</span>
-                <span className="tabular-nums text-text-2">{t("health.sleepWhen", { when: h.woke_at.slice(0, 16).replace("T", " "), time: ago(h.woke_at, now) })}</span>
-                <span className="min-w-0 text-text-3"><WorkerName id={h.worker_id} /></span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Section>
-      <div id="unreviewed-merges">
-        <Section title={t("health.merges")} count={merges.data?.merges.length}>
-          {merges.isError ? <ErrorNote error={merges.error} /> : !merges.data ? <Loading rows={2} /> : merges.data.merges.length === 0 ? (
-            <Empty>{t("health.noMerges")}</Empty>
-          ) : (
-            <Table label={t("health.merges")} head={[t("col.pr"), t("health.mergedBy"), t("health.mergeCommit"), t("col.when")]}>
-              {merges.data.merges.map((m) => (
-                <Tr key={`${m.project}#${m.change_ref}`}>
-                  <Td className="tabular-nums">
-                    {m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`}
-                  </Td>
-                  <Td className="text-xs break-words">{m.merged_by && m.merged_by !== "unknown" ? <PersonName id={m.merged_by} viewer={viewer} /> : t("format.unknown")}</Td>
-                  <Td className="font-mono text-xs">{m.merge_sha}</Td>
-                  <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(m.recorded_at, now) })}</Td>
-                </Tr>
-              ))}
-            </Table>
+      <Tabs label={t("health.tabs")} options={options} value={tab} onChange={pick} />
+      {tab === "checks" && (
+        <Section title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
+          <CheckList checks={open} />
+          {fine.length > 0 && (
+            <details data-testid="ok-checks" className="mt-2 text-sm">
+              <summary className="cursor-pointer text-text-2">{t("health.okCount", { count: fine.length })}</summary>
+              <CheckList checks={fine} />
+            </details>
           )}
         </Section>
-      </div>
+      )}
+      {tab === "pauses" && pauses.data && <PauseList view={pauses.data} now={now} />}
+      {tab === "sleeps" && (
+        <Section title={t("health.sleeps")} count={sleeps.length}>
+          {sleeps.length === 0 ? (
+            <Empty>{t("health.noSleep")}</Empty>
+          ) : (
+            <ul className="space-y-1 text-sm">
+              {sleeps.map((h) => (
+                <li key={h.woke_at} className="flex items-baseline gap-3" data-testid="host-sleep">
+                  <span className="font-medium">{sleptText(h.gap_ms)}</span>
+                  <span className="tabular-nums text-text-2">{t("health.sleepWhen", { when: h.woke_at.slice(0, 16).replace("T", " "), time: ago(h.woke_at, now) })}</span>
+                  <span className="min-w-0 text-text-3">{workersText(h.slots)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Section>
+      )}
+      {tab === "merges" && (
+        <div id="unreviewed-merges">
+          <Section title={t("health.merges")} count={mergeList?.length}>
+            {merges.isError ? <ErrorNote error={merges.error} /> : !mergeList ? <Loading rows={2} /> : mergeList.length === 0 ? (
+              <Empty>{t("health.noMerges")}</Empty>
+            ) : (
+              <Table label={t("health.merges")} head={[t("col.pr"), t("health.mergedBy"), t("health.mergeCommit"), t("col.when")]}>
+                {mergeList.map((m) => (
+                  <Tr key={`${m.project}#${m.change_ref}`}>
+                    <Td className="tabular-nums">
+                      {m.change_url ? <a href={m.change_url} target="_blank" rel="noreferrer" className={LINK_CLASS}>#{m.change_ref}</a> : `#${m.change_ref}`}
+                    </Td>
+                    <Td className="text-xs break-words">{m.merged_by && m.merged_by !== "unknown" ? <span title={m.merged_by}>{m.merged_by === viewer ? t("person.you") : t("person.other")}</span> : t("format.unknown")}</Td>
+                    <Td className="font-mono text-xs">{m.merge_sha}</Td>
+                    <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(m.recorded_at, now) })}</Td>
+                  </Tr>
+                ))}
+              </Table>
+            )}
+          </Section>
+        </div>
+      )}
     </>
   );
 }
