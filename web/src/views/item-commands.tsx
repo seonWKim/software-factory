@@ -68,9 +68,11 @@ export function verdictNote(kind: VerdictChoice, severity: VerdictSeverityChoice
   return [kind, severity, reason.trim()].filter((s) => s !== "").join(" ");
 }
 
-/** The one-tap verdicts (design §9), as Slack's result messages offer them, with their labels. */
+/**
+ * The one-tap verdicts (design §9), as Slack's result messages offer them. Good and Bad are the two segments of the
+ * one-tap control; Feedback is a button, as it waits for the note box's text.
+ */
 export type OneTapChoice = "good" | "bad" | "feedback";
-/** Good and Bad are the two segments of the one-tap control; Feedback is a button, as it waits for the note box's text. */
 
 /**
  * The verdict note a one-tap button sends, with `reason` the note box's text: Good `accept none`, Bad `changes minor`
