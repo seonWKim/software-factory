@@ -121,7 +121,8 @@ describe("build script: the app build with a read-only node_modules", () => {
 
 describe("build script: --if-stale (the factory CLI's build)", () => {
   // A fake checkout: the real script, the build inputs, and stub `tsc` and `vite` that log each run to steps.log
-  // and write a file into their --outDir. A `fail-<step>` file makes that step print an error and exit 1.
+  // and write a file into their --outDir. A `fail-<step>` file makes that step print an error and exit 1; a
+  // `with-google-calendar` file makes them also write the google-calendar plugin's folder, where its secret module goes.
   const stub = (step: string) => `
     const { appendFileSync, existsSync, mkdirSync, writeFileSync } = require("node:fs");
     const { join } = require("node:path");
@@ -130,6 +131,7 @@ describe("build script: --if-stale (the factory CLI's build)", () => {
     const out = process.argv[process.argv.indexOf("--outDir") + 1];
     mkdirSync(out, { recursive: true });
     writeFileSync(join(out, "${step}.out"), "built");
+    if (existsSync("with-google-calendar")) mkdirSync(join(out, "calendar", "plugins", "google-calendar"), { recursive: true });
   `;
   const PAST = new Date(Date.now() - 3_600_000);
 
@@ -269,6 +271,7 @@ describe("build script: --if-stale (the factory CLI's build)", () => {
     }
     function updateBuild(content: string | null, extra: Record<string, string> = {}) {
       const root = checkout();
+      writeFileSync(join(root, "with-google-calendar"), "");
       const r = spawnSync(process.execPath, [join(root, "scripts", "build.mjs")], { cwd: root, encoding: "utf8", env: { ...noSf(), HOME: home(content), ...extra } });
       return { root, r, out: `${r.stdout}${r.stderr}${r.error?.message ?? ""}` };
     }

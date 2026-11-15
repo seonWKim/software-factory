@@ -175,13 +175,14 @@ function stamp(root, outDir) {
 
 /**
  * Writes the google-calendar default client's secret module into the staged `stagedDist` (mode 600) from the release
- * `value`, and returns its path; writes nothing and returns null when `value` is unset or blank. Never prints it.
+ * `value`, beside the compiled plugin that imports it, and returns its path. Writes nothing and returns null when
+ * `value` is unset or blank, or when the build compiled no google-calendar plugin (a checkout without it, such as a
+ * test's fake checkout, gets no secret it would never load). Never prints it.
  */
 export function writeDefaultClient(stagedDist, value) {
   const secret = (value ?? "").trim();
-  if (secret === "") return null;
   const file = join(stagedDist, DEFAULT_CLIENT_SECRET_MODULE);
-  mkdirSync(dirname(file), { recursive: true });
+  if (secret === "" || !existsSync(dirname(file))) return null;
   writeFileSync(file, `export const DEFAULT_GOOGLE_CLIENT_SECRET = ${JSON.stringify(secret)};\n`, { mode: 0o600 });
   return file;
 }
