@@ -719,6 +719,19 @@ CREATE TABLE "controller_work_items" (
     UNIQUE (source_type, source_id)
   );
 
+CREATE TABLE ext_mcp_tool_lists (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL,
+    description_hash  TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    tools             TEXT,
+    requested_by      TEXT NOT NULL,
+    claimed_by        TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (name, description_hash)
+  );
+
 CREATE TABLE ext_packs_approvals (
     seq               INTEGER PRIMARY KEY AUTOINCREMENT,
     kind              TEXT NOT NULL,
