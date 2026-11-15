@@ -17,7 +17,8 @@ import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { GitHubIssueSource } from "../src/impl/github/github-issue-source.js";
 import { LocalSource } from "../src/impl/source/local-source.js";
-import { issue, newStore, system } from "./helpers/store.js";
+import { issue, newStore, system, w1 } from "./helpers/store.js";
+import { AGENT_STALLED } from "../src/core/policy.js";
 import { FakeAuth, FakeBroker, FakeSandbox, MemoryStorage, PROJECT, alice, config, issueRef, pipeline, prompts, silent, triageSpec } from "./helpers/fakes.js";
 import { RecordingGitHubClient } from "./helpers/github.js";
 
@@ -423,5 +424,97 @@ describe("improve filing: a fix item runs without a person", () => {
     expect(await reasons(f.store, fix)).toContain("fix_spec_approved");
     const spec = (await f.store.listItemMessages(fix.id)).find((m) => m.marker.startsWith("<!-- factory:spec:"))!;
     expect(spec.body).toContain("It touches the gate list (`prompts/`), so its change waits for a person's merge.");
+  });
+});
+
+describe("improve filing: a stall group that followed a host sleep", () => {
+  /** Records a host sleep the worker saw while it held `run` (null: an idle tick). */
+  const slept = (w: { store: FactoryStore; clock: FakeClock }, run: RunId | null) =>
+    w.store.recordHostSleep({ worker_id: w1, woke_at: w.clock.now().toISOString() as Timestamp, gap_ms: 600_000, run_id: run });
+
+  it("is not filed: no item, no triage run, its filing skipped with host_sleep, one information alert a day that holds nothing", async () => {
+    const w = await local();
+    const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
+    await slept(w, runs[1]!);
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    const report = await w.improve();
+
+    expect(report.groups.map((g) => [g.error_code, g.filing])).toEqual([[AGENT_STALLED, { status: "skipped", reason: "host_sleep" }]]);
+    expect(await filedItems(w.store)).toEqual([]);
+    expect(await w.store.listRunsByKind("triage", ["queued"])).toEqual([]);
+    expect(await w.store.getFiledPattern(PROJECT.key, patternKey(report.groups[0]!))).toBeNull();
+    const alerts = await w.store.listAlerts({ limit: 10 });
+    expect(alerts.map((a) => [a.pattern, a.pattern_key, a.error_code, a.count])).toEqual([
+      ["repeated_error", `host_sleep:${patternKey(report.groups[0]!)}`, AGENT_STALLED, 2],
+    ]);
+    expect(alerts[0]!.detail).toContain("followed a host sleep, so no fix item was filed");
+    expect(w.scanner.scans.some((s) => s.channel === "ui" && s.content === alerts[0]!.detail)).toBe(true);
+    // The alert holds no item: the stalled items are not blocked.
+    for (const id of report.groups[0]!.work_item_ids) expect(await w.store.getWorkItem(id)).toMatchObject({ blocked_on: "none" });
+    // Another improve run the same day stores no second alert and files nothing.
+    expect((await w.improve()).groups[0]!.filing).toEqual({ status: "skipped", reason: "host_sleep" });
+    expect(await w.store.listAlerts({ limit: 10 })).toHaveLength(1);
+    expect(await filedItems(w.store)).toEqual([]);
+  });
+
+  it("posts nothing to the GitHub source", async () => {
+    const { client, ...w } = await github();
+    const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
+    await slept(w, runs[0]!);
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    const report = await w.improve();
+    expect(report.groups[0]!.filing).toEqual({ status: "skipped", reason: "host_sleep" });
+    expect(client.calls.filter((c) => c.method === "POST")).toEqual([]);
+  });
+
+  it("runs before the other checks: an open filed item of its pattern gets no comment", async () => {
+    const w = await local();
+    const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
+    await slept(w, runs[0]!);
+    const report = await draftedReport(w.store, w.clock, [{ ...(await groupOf(w.store, AGENT_STALLED, runs, { status: "skipped", reason: "call_cap" })), detail: "silent" }]);
+    const earlier = await draftedReport(w.store, w.clock, []);
+    const row = await w.store.claimFiledPattern({ project: PROJECT.key, pattern_key: patternKey(report.groups[0]!), error_code: AGENT_STALLED, detail: "silent", report_id: earlier.id });
+    await w.store.setFiledPatternRef(row.id, row.report_id, issueRef(7));
+    const comments: string[] = [];
+    const done = await fileReport({ store: w.store, scanner: w.scanner, clock: w.clock, file: null, comment: async (_r, body) => void comments.push(body) }, report);
+    expect(done.groups[0]!.filing).toEqual({ status: "skipped", reason: "host_sleep" });
+    expect(comments).toEqual([]);
+  });
+
+  it("a flagged alert text is stored without its detail", async () => {
+    const w = await local();
+    const runs = [await w.fail(AGENT_STALLED, "silent"), await w.fail(AGENT_STALLED, "silent")];
+    await slept(w, runs[0]!);
+    const report = await draftedReport(w.store, w.clock, [{ ...(await groupOf(w.store, AGENT_STALLED, runs, { status: "skipped", reason: "call_cap" })), detail: "silent" }]);
+    const flagUi: EgressScanner = { scan: async (channel) => (channel === "ui" ? { clean: false, findings: [{ rule: "test_leak", channel }] } : { clean: true }) };
+    const source = w.sources[0]!;
+    await fileReport({ store: w.store, scanner: flagUi, clock: w.clock, file: source.fileIssue!.bind(source), comment: async () => {} }, report);
+    expect((await w.store.listAlerts({ limit: 10 })).map((a) => [a.pattern_key, a.detail])).toEqual([[`host_sleep:${patternKey(report.groups[0]!)}`, null]]);
+  });
+
+  it("a stall group with no host sleep on its runs is filed and triaged as before; a sleep of another run or an idle tick does not count", async () => {
+    const w = await local();
+    await w.fail(AGENT_STALLED, "silent");
+    await w.fail(AGENT_STALLED, "silent");
+    await slept(w, null);
+    await slept(w, await w.fail("checks_failed", "once"));
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    const report = await w.improve();
+    const items = await filedItems(w.store);
+    expect(items).toHaveLength(1);
+    expect(report.groups.map((g) => g.filing)).toEqual([{ status: "filed", ref: items[0]!.source }]);
+    expect((await w.store.listRuns(items[0]!.id)).map((r) => [r.kind, r.status])).toEqual([["triage", "queued"]]);
+    expect((await w.store.listAlerts({ limit: 10 })).filter((a) => a.pattern_key.startsWith("host_sleep:"))).toEqual([]);
+  });
+
+  it("a group with another error code is filed as before, even when its runs held a host sleep", async () => {
+    const w = await local();
+    const runs = [await w.fail("checks_failed"), await w.fail("checks_failed")];
+    await slept(w, runs[0]!);
+    w.clock.set("2026-03-05T06:00:00.000Z");
+    const report = await w.improve();
+    const items = await filedItems(w.store);
+    expect(items).toHaveLength(1);
+    expect(report.groups.map((g) => g.filing)).toEqual([{ status: "filed", ref: items[0]!.source }]);
   });
 });

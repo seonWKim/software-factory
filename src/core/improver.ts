@@ -7,6 +7,7 @@ export { NO_SCORER, type Grade, type GradeSubject, type Scorer, improvePrompts, 
 
 import { cyrb53 } from "./hash.js";
 import { PUSHBACK, groupFailures, pushbacksIn, reviewable } from "./failure-groups.js";
+import { AGENT_STALLED } from "./policy.js";
 import { parseJson } from "./scorer.js";
 import { PROTECTED_PATHS } from "./standing.js";
 import type { FactoryStore } from "../interfaces/factory-store.js";
@@ -362,7 +363,8 @@ const RECENT_MS = 30 * DAY_MS;
 export interface FilingDeps {
   store: Pick<
     FactoryStore,
-    "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource" | "recordAlert"
+    | "getFiledPattern" | "claimFiledPattern" | "setFiledPatternRef" | "listImproveReports" | "setImproveGroups" | "getWorkItemBySource" | "recordAlert"
+    | "listHostSleeps"
   >;
   scanner: EgressScanner;
   clock: Clock;
@@ -393,7 +395,8 @@ function commentMarker(key: string, report: string): string {
 }
 
 /**
- * Files the groups of `report` (design §7) and stores each group's filing on the report. A group whose pattern
+ * Files the groups of `report` (design §7) and stores each group's filing on the report. First, a stall group one of
+ * whose runs held a host sleep (`stalledBySleep`) is not filed or commented: one information alert (`host_sleep`). A group whose pattern
  * has an open filed item gets one comment naming its runs not linked there yet (none: `linked`); one whose item
  * closed in the last 30 days is skipped; one whose draft needs a person or touches the gate list is not filed but
  * goes to Needs you as an alert with the cause (`needs_person`); any other is filed as a fix item, which runs
@@ -420,10 +423,12 @@ export async function fileReport(d: FilingDeps, report: ImproveReport): Promise<
 }
 
 async function fileGroup(d: FilingDeps, report: ImproveReport, g: FailureGroup, caps: { issues: number; comments: number }): Promise<ImproveFiling> {
+  const key = patternKey(g);
+  // First: a stall that followed a host sleep is the host's, not the repo's, so nothing is filed or commented.
+  if (await stalledBySleep(d.store, g)) return toSleepAlert(d, g, key);
   const file = d.file;
   const person = needsPerson(g.draft);
   if (!file && !person) return { status: "skipped", reason: "no_source" };
-  const key = patternKey(g);
   const row = await d.store.getFiledPattern(report.project, key);
   if (row?.filed_ref && row.report_id !== report.id) {
     const item = await d.store.getWorkItemBySource(row.filed_ref.type, row.filed_ref.id);
@@ -474,6 +479,43 @@ async function toPerson(d: FilingDeps, g: FailureGroup, key: string): Promise<Im
     DAY_MS,
   );
   return { status: "skipped", reason: "needs_person" };
+}
+
+/** Host sleeps read per work item of a stall group: far more than the sleeps of one item's recent runs. */
+const SLEEPS_READ = 100;
+
+/** The information alert's key of a pattern skipped for a host sleep. */
+export const sleepAlertKey = (key: string) => `host_sleep:${key}`;
+
+/**
+ * Whether `g` is a stall group (`agent_stalled`) one of whose runs held a recorded host sleep (design §7): the machine
+ * slept, so the stall is the host runtime's and the repo holds no code to fix. One host sleep read per item of the
+ * group, matched by run ID. The improver's filing and the stall hold (`recurringStalls`) both read this rule.
+ */
+export async function stalledBySleep(
+  store: Pick<FactoryStore, "listHostSleeps">, g: Pick<FailureGroup, "error_code" | "run_ids" | "work_item_ids">,
+): Promise<boolean> {
+  if (g.error_code !== AGENT_STALLED) return false;
+  const runs = new Set<RunId>(g.run_ids);
+  for (const id of g.work_item_ids) {
+    const sleeps = await store.listHostSleeps({ limit: SLEEPS_READ, work_item_id: id });
+    if (sleeps.some((s) => s.run_id !== null && runs.has(s.run_id))) return true;
+  }
+  return false;
+}
+
+/**
+ * A stall group that followed a host sleep is not filed: one information alert (pattern `repeated_error`, key
+ * `host_sleep:<key>`), scanned as UI text first (dropped if flagged), once a day per pattern. It holds no item.
+ */
+async function toSleepAlert(d: FilingDeps, g: FailureGroup, key: string): Promise<ImproveFiling> {
+  const text = `Host sleep: these ${g.run_ids.length} ${g.error_code} runs followed a host sleep, so no fix item was filed; the stall is the host's, not this repo's code.`;
+  const scan = await d.scanner.scan("ui", text);
+  await d.store.recordAlert(
+    { pattern: "repeated_error", pattern_key: sleepAlertKey(key), error_code: g.error_code, count: g.run_ids.length, detail: scan.clean ? text : null },
+    DAY_MS,
+  );
+  return { status: "skipped", reason: "host_sleep" };
 }
 
 async function commentGroup(
