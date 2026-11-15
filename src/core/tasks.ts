@@ -313,7 +313,7 @@ export interface TaskDay {
  * by the local days it overlaps, against `now`'s calendar date in this process's time zone, so the day ends at local
  * midnight. Today: overdue tasks (due before today; open, or done today) first, then today's tasks and events.
  * Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an event (the Tasks page
- * shows the days after today; the Calendar page shows today too). Projects: every task, undated included, by its
+ * shows the days after today). Projects: every task, undated included, by its
  * list label (unlabelled last), each by due date (undated last): the Tasks page's All view. The timeline holds open tasks only.
  */
 export interface TaskViews {
