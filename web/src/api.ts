@@ -1,11 +1,12 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict) and POST
+// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict), POST
+// /api/v1/packs/approvals (postPackApproval, the Plugins page's Approve and Revoke) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
 // /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete, sub, and schedule, the timeline's drop), the
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
 // (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
-// /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
+// /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks, /api/v1/plugins or /api/v1/data/tables) in x-csrf-token.
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { t } from "./i18n/index.js";
@@ -496,8 +497,8 @@ export interface SettingsView {
 }
 
 /**
- * One entry of the Settings page's Capabilities list (design 08-settings, 2026-11-13): a skill, a broker tool or a provider
- * entry. `id` names it (`runner:claude-code`); `last_used` is the newest stored run that used it, null when none did.
+ * One entry of the capability list (design 08-settings, 2026-11-15): a skill, a tool or a provider entry; the Settings
+ * page shows the provider entries. `id` names it (`runner:claude-code`); `last_used` is the newest stored run that used it, null when none did.
  */
 export interface CapabilityRow {
   kind: "skill" | "tool" | "provider";
@@ -519,6 +520,19 @@ export interface CapabilitiesView {
   /** The roles a tool may be granted to (the `tool_grants` keys). */
   roles: string[];
   capabilities: CapabilityRow[];
+}
+
+/** An MCP server's approval status on the Plugins page: `waiting` until approved, `off` once revoked (design 11-packs). */
+export type McpStatus = "approved" | "waiting" | "off";
+
+/** `/api/v1/plugins` (design 09-dashboard-app, 2026-11-15): what the agents can use, one list per tab. Names and descriptions only. */
+export interface PluginsView {
+  as_of: string;
+  /** The pack approvals route's token; null when this server cannot approve from the page. */
+  csrf_token: string | null;
+  mcp: { name: string; description: string | null; source: "pack"; status: McpStatus }[];
+  skills: { name: string; folder: string; description: string | null; roles: string[]; last_used: string | null }[];
+  tools: { name: string; description: string; read_only: boolean; origin: "broker" | "pack"; roles: string[]; last_used: string | null }[];
 }
 
 /** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */
@@ -941,6 +955,8 @@ export const API = {
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
   capabilities: "/api/v1/settings/capabilities",
+  plugins: "/api/v1/plugins",
+  packApprovals: "/api/v1/packs/approvals",
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",
@@ -1096,6 +1112,13 @@ export async function postRuleVerdict(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const r = await postJson<{ error?: string }>(API.ruleVerdict, token, body);
   if (r.ok) return { ok: true };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/packs/approvals: approve or revoke an MCP server's current description, as `factory pack approve|revoke`. */
+export async function postPackApproval(token: string, action: "approve" | "revoke", name: string): Promise<{ ok: true; line: string } | { ok: false; error: string }> {
+  const r = await postJson<{ line?: string; error?: string }>(API.packApprovals, token, { action, kind: "mcp_server", name });
+  if (r.ok) return { ok: true, line: r.value.line ?? "" };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 

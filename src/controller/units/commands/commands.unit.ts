@@ -25,7 +25,7 @@ import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEv
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
-import { scanClean } from "./scan.js";
+import { FEEDBACK_REQUIRED, applyQueued, feedbackScan, queueRevise, replyQueued } from "./queued-revise.js"; import { scanClean } from "./scan.js";
 
 type AppSender = { user_id: UserId } | null;
 type ItemCommandEvent = Exclude<CommandEvent, { kind: "budget_continue" }>;
@@ -241,8 +241,12 @@ export class CommandsUnit {
     if (refusal === null) await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, principal.user_id));
     if (refusal === null && e.kind === "spec_rejected") await this.c.unit("closes").afterReject(item.id);
     if (refusal === null && (e.kind === "spec_rejected" || e.kind === "revise_requested")) await this.c.unit("outbox").captureTacit(item, e.comment_id, e.kind === "spec_rejected" ? e.reason : e.feedback);
+    if (refusal === null && e.kind === "revise_requested") await replyQueued(this.c, item, e.comment_id);
     return refusal;
   }
+
+  /** applyQueued (queued-revise.ts) at a run end that would queue review; the revise run's key starts with the next loop's `runKey`. */
+  applyQueued = (it: WorkItem, d: NonNullable<Decision>) => applyQueued(this.c, it, d, runKey({ ...it, loop_count: it.loop_count + 1 }, "implement"));
 
   /**
    * The work item of a PR: a factory PR's from its head branch, any other PR's adopted item by number; null
@@ -301,13 +305,8 @@ export class CommandsUnit {
       return { refuse: `the item is ${phaseLabel(phase)}; feedback ${where} is taken only when it is ${accepted.map(phaseLabel).join(" or ")}` };
     }
     const feedback = f.text.trim();
-    if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
-    const scan = await this.c.k.d.scanner.scan("comment", feedback);
-    if (!scan.clean) {
-      const rules = scan.findings.map((x) => x.rule).join(",");
-      this.c.k.d.log.warn("PR feedback blocked by the egress scan", { work_item_id: it.id, rules });
-      return { refuse: `the feedback was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed` };
-    }
+    if (!feedback) return { refuse: FEEDBACK_REQUIRED };
+    const blocked = await feedbackScan(this.c, it, feedback); if (blocked) return blocked;
     const kept = feedback.slice(0, MAX_FEEDBACK_CHARS).trim();
     // The detail names the PR by its string ref, like the item (design 02-work-item); a local item has none.
     const detail = { ...f.key, ...(local ? {} : { change_ref: f.change_ref }) };
@@ -581,6 +580,7 @@ export class CommandsUnit {
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
       phase === "max_loops";
     if (afterFailure && e.kind === "revise_requested") return this.reviseAfterFailure(e, it, actor);
+    if (e.kind === "revise_requested" && phase === "implementing" && it.stage === "RUNNING") return queueRevise(this.c, e, it, actor);
     if (!awaitingSpec(it)) {
       const onPr = e.kind === "revise_requested" && it.change_ref !== null && commandSpec("revise").pr_phases?.includes(phase)
         ? `; to send feedback to the implementer, reply \`/revise <feedback>\` on PR #${it.change_ref}`
@@ -590,7 +590,7 @@ export class CommandsUnit {
     switch (e.kind) {
       case "revise_requested": {
         const feedback = e.feedback.trim();
-        if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+        if (!feedback) return { refuse: FEEDBACK_REQUIRED };
         const limit = this.c.k.cfg.max_loops;
         if (it.blocked_reason === "max_revisions") {
           return { refuse: `the spec reached the revision limit (\`max_loops\` = ${limit}); reply \`/approve\` or \`/reject <reason>\`` };
@@ -641,7 +641,7 @@ export class CommandsUnit {
    */
   reviseAfterFailure(e: Extract<ItemCommandEvent, { kind: "revise_requested" }>, it: WorkItem, actor: Actor): Decision | Refusal {
     const feedback = e.feedback.trim();
-    if (!feedback) return { refuse: "it needs feedback after the command, e.g. `/revise keep the existing CLI flag`" };
+    if (!feedback) return { refuse: FEEDBACK_REQUIRED };
     const limit = this.c.k.cfg.max_loops;
     if (it.revision_count >= limit) {
       return {
