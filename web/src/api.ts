@@ -958,15 +958,15 @@ export function useItems(project: string | null) {
   });
 }
 
-/**
- * The tasks' read, polled as useApi is; `project` filters it to that task project's tasks. Its key starts with the
- * tasks' key, so a row action's reload of the tasks reloads it whatever the filter.
- */
 /** The stored calendar events of the days `from` through `to`, polled like the other reads; never a calendar source call. */
 export function useCalendarEvents(from: string, to: string) {
   return useApi<CalendarEvents>(API.calendarEvents(from, to));
 }
 
+/**
+ * The tasks' read, polled as useApi is; `project` filters it to that task project's tasks. Its key starts with the
+ * tasks' key, so a row action's reload of the tasks reloads it whatever the filter.
+ */
 export function useTasks<T>(project: string | null) {
   const url = API.tasksIn(project);
   return useQuery({
