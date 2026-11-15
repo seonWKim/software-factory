@@ -1,8 +1,9 @@
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-import { API, type McpStatus, type PluginsView, postPackApproval, useApi } from "../api.js";
+import { API, type ImportItem, type McpStatus, type PluginsView, getPluginsImport, postPackApproval, postPluginsImport, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
+import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Input } from "../components/ui/input.js";
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
@@ -19,6 +20,10 @@ import { withNodes } from "./standing.js";
 // name and description, and an empty state that says how to add one. An MCP server's Approve or Revoke is POST
 // /api/v1/packs/approvals, the same path as `factory pack approve|revoke`. Read once when the page opens (it reads
 // stored transcripts for "last used"), and again after an approval; never polled.
+// Each tab has an Import button (design 11-plugin-import, phase 2): a dialog that lists, from GET
+// /api/v1/plugins/import, the skills (Skills tab) or MCP servers (MCP and Tools tabs: tools come from MCP servers) of
+// the user-level Claude Code and Codex configs, each with a checkbox; one already stored shows as imported and one a
+// scan refuses shows its rules, neither selectable. Import posts the checked ones to POST /api/v1/plugins/import.
 
 type Tab = "mcp" | "skills" | "tools";
 const TABS: readonly { id: Tab; label: MessageKey }[] = [
@@ -161,6 +166,113 @@ function ToolsTab({ view, query, now }: { view: PluginsView; query: string; now:
   );
 }
 
+/** Which dialog a tab's Import opens: the kind of item it lists and what importing does. */
+const IMPORT_OF: Record<Tab, { kind: ImportItem["kind"]; title: MessageKey; consequence: MessageKey }> = {
+  mcp: { kind: "mcp_server", title: "plugins.importTitleMcp", consequence: "plugins.importConsequenceMcp" },
+  skills: { kind: "skill", title: "plugins.importTitleSkills", consequence: "plugins.importConsequenceSkills" },
+  tools: { kind: "mcp_server", title: "plugins.importTitleMcp", consequence: "plugins.importConsequenceTools" },
+};
+
+const SOURCE: Record<ImportItem["source"], MessageKey> = { claude: "plugins.sourceClaude", codex: "plugins.sourceCodex" };
+const itemKey = (i: ImportItem) => `${i.kind}\n${i.source}\n${i.name}`;
+
+/** The Import dialog: the found items of one kind, each with a checkbox; Import stores the checked ones. */
+function ImportDialog({ tab, token, onClose }: { tab: Tab; token: string; onClose: () => void }) {
+  const client = useQueryClient();
+  const of = IMPORT_OF[tab];
+  // Read each time the dialog opens: the configs can change between opens.
+  const q = useQuery({ queryKey: [API.pluginsImport], queryFn: () => getPluginsImport(token), staleTime: 0, gcTime: 0 });
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const items = (q.data?.items ?? []).filter((i) => i.kind === of.kind);
+  const toggle = (key: string) => {
+    const next = new Set(checked);
+    if (!next.delete(key)) next.add(key);
+    setChecked(next);
+  };
+  const confirm = async () => {
+    setBusy(true);
+    setError(null);
+    const r = await postPluginsImport(token, items.filter((i) => checked.has(itemKey(i))));
+    setBusy(false);
+    if (!r.ok) {
+      setError(r.error);
+      return;
+    }
+    await client.invalidateQueries({ queryKey: [API.plugins] });
+    const failed = r.results.filter((x) => x.outcome === "refused" || x.outcome === "not_found");
+    if (failed.length > 0) {
+      setChecked(new Set());
+      setError(failed.map((x) => x.line).join("; "));
+      await q.refetch();
+      return;
+    }
+    const stored = r.results.filter((x) => x.outcome === "stored").length;
+    announceStatus(t("plugins.importDone", { stored, skipped: r.results.length - stored }));
+    onClose();
+  };
+  return (
+    <Dialog
+      title={t(of.title)}
+      consequence={t(of.consequence)}
+      confirmLabel={t("plugins.importConfirm", { count: checked.size })}
+      confirmDisabled={busy || checked.size === 0}
+      error={error}
+      onConfirm={() => void confirm()}
+      onClose={onClose}
+    >
+      <p className="text-sm text-pretty text-text-2">{t("plugins.importIntro")}</p>
+      {q.data?.errors.map((e) => (
+        <Notice key={e.source} tone="warn">
+          {e.message}
+        </Notice>
+      ))}
+      {q.isError ? (
+        <ErrorNote error={q.error} />
+      ) : !q.data ? (
+        <Loading rows={2} />
+      ) : items.length === 0 ? (
+        <p className="text-sm text-pretty">{t("plugins.importNone")}</p>
+      ) : (
+        <ul aria-label={t(of.title)} className="max-h-72 divide-y divide-border overflow-y-auto rounded-control border border-border">
+          {items.map((i) => {
+            const key = itemKey(i);
+            const locked = i.imported || i.refused.length > 0;
+            const on = i.imported || checked.has(key);
+            return (
+              <li key={key} data-import-item={i.name} className="flex items-start gap-3 px-3 py-2">
+                {/* The shared Button as a checkbox, as on the Tasks page: components/ui has no checkbox. */}
+                <Button
+                  size="icon"
+                  role="checkbox"
+                  aria-checked={on}
+                  aria-label={t("plugins.importSelect", { name: i.name, source: t(SOURCE[i.source]) })}
+                  disabled={busy || locked}
+                  onClick={() => toggle(key)}
+                >
+                  <span aria-hidden>{on ? "✓" : ""}</span>
+                </Button>
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="font-mono text-xs wrap-anywhere">{i.name}</span>
+                  <span className="text-xs text-pretty wrap-anywhere text-text-2">{i.path ?? t(SOURCE[i.source])}</span>
+                  {i.env_keys.length > 0 && <span className="text-xs text-pretty wrap-anywhere text-text-2">{t("plugins.importEnvKeys", { keys: i.env_keys.join(", ") })}</span>}
+                  {i.refused.length > 0 && <span className="text-xs text-pretty wrap-anywhere text-pill-bad-fg">{t("plugins.importRefused", { rules: i.refused.join(", ") })}</span>}
+                </div>
+                {i.imported && (
+                  <StatusBadge size="sm" level="ready_to_merge">
+                    {t("plugins.imported")}
+                  </StatusBadge>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Dialog>
+  );
+}
+
 /** A search that matched nothing says so; an empty list says how to add one. */
 function empty(query: string, how: MessageKey, nodes: Record<string, ReactNode>): ReactNode {
   return query.trim() !== "" ? t("plugins.noMatch", { query: query.trim() }) : withNodes(how, nodes);
@@ -170,7 +282,9 @@ export function PluginsPage() {
   const now = useNow();
   const [tab, setTab] = useTabParam();
   const [query, setQuery] = useState("");
+  const [importing, setImporting] = useState(false);
   const q = useApi<PluginsView>(API.plugins, false);
+  const token = q.data?.csrf_token ?? null;
   const choose = (next: Tab) => {
     setQuery("");
     setTab(next);
@@ -180,7 +294,13 @@ export function PluginsPage() {
       <PageHeader title={t("page.plugins")} description={t("plugins.intro")} />
       <div className="flex flex-col gap-3">
         <Tabs label={t("plugins.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={choose} />
-        <Input type="search" aria-label={t("plugins.search")} placeholder={t("plugins.search")} className="w-full sm:max-w-sm" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <div className="flex flex-wrap items-center gap-2">
+          <Input type="search" aria-label={t("plugins.search")} placeholder={t("plugins.search")} className="w-full sm:max-w-sm" value={query} onChange={(e) => setQuery(e.target.value)} />
+          <Button disabled={token === null} title={token === null ? t("plugins.importFromCli") : undefined} onClick={() => setImporting(true)}>
+            {t("plugins.import")}
+          </Button>
+        </div>
+        {importing && token !== null && <ImportDialog tab={tab} token={token} onClose={() => setImporting(false)} />}
         {q.isError ? (
           <ErrorNote error={q.error} />
         ) : !q.data ? (
