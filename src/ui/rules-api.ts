@@ -6,7 +6,8 @@
 // `applied` (the Applied group) is the promoted rules file read through `TacitLedger.applied` only: its blocks and its
 // encoded-elsewhere lines, null with the ledger off; `retired` the classes the ledger's retire verdicts name
 // (`TacitLedger.retired`), with reason and date.
-// GET /api/v1/rules/entry?id= reads one entry's detail on demand (what it would change, why, where it applies) through
+// GET /api/v1/rules/entry?id= reads one entry's detail on demand (a description, what it would change, why, where it
+// applies, and each incident's ID, date, proposal, quote and root reason as `evidence`) through
 // `TacitLedger.show` only; for an applied class it adds `retire`, the reasons it looks ready to retire
 // (src/core/rule-retirement.ts: the rules file, the detail's incident count, the other applied rules and this repo's
 // paths; no model call). The page's Suggest button reads it once per applied rule; it writes nothing. Every ledger text
@@ -34,7 +35,7 @@ import { checkAgentsHome } from "../impl/tacit/agents-home-tacit-ledger.js";
 import { LiveTacit } from "../runtime/live-tacit.js";
 import type { UserId } from "../core/types.js";
 import {
-  type TacitApplication, type TacitEntryDetail, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed,
+  type TacitApplication, type TacitEntryDetail, type TacitEvidence, type TacitLedger, type TacitPendingEntry, type TacitPromotion, TacitRefusal, TacitSyncFailed,
   appliedToError, tacitIdKind,
 } from "../interfaces/tacit-ledger.js";
 import type { ApiResult } from "./api.js";
@@ -196,6 +197,16 @@ async function readApplied(tacit: TacitLedger, text: (v: string) => Promise<stri
   }
 }
 
+/** One incident of the detail with each of its texts through the Withholder; a part it lacks stays absent. */
+async function withheld(e: TacitEvidence, text: (v: string) => Promise<string>): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const key of ["ref", "date", "proposal", "quote", "root_reason"] as const) {
+    const v = e[key];
+    if (v !== undefined) out[key] = await text(v);
+  }
+  return out;
+}
+
 /**
  * GET /api/v1/rules/entry?id=: one entry's detail through `TacitLedger.show`, each text through the Withholder. 400
  * for an ID that is neither `C-` nor `P-`, before the ledger runs. `detail` is null when the ledger is off, has no
@@ -225,12 +236,12 @@ export async function readRuleEntry(d: PauseDeps, rawId: string | null): Promise
   const reasons = retire === null ? null : await Promise.all(retire.map(text));
   if (detail === null) return { status: 200, value: { id: await text(id), detail: null, error: error === null ? null : await text(error), retire: reasons } };
   const shown: Record<string, unknown> = { id: await text(detail.id) };
-  for (const key of ["default", "exceptions", "kind", "target", "root_reason", "scope"] as const) {
+  for (const key of ["description", "default", "exceptions", "kind", "target", "current", "proposed", "root_reason", "scope"] as const) {
     const v = detail[key];
     if (v !== undefined) shown[key] = await text(v);
   }
   if (detail.incidents !== undefined) shown.incidents = detail.incidents;
-  if (detail.quotes !== undefined) shown.quotes = await Promise.all(detail.quotes.map(text));
+  if (detail.evidence !== undefined) shown.evidence = await Promise.all(detail.evidence.map((e) => withheld(e, text)));
   return { status: 200, value: { id: shown.id, detail: shown, error: null, retire: reasons } };
 }
 
