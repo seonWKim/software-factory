@@ -7,7 +7,10 @@
 // descriptions only: an MCP server's row is its name, its descriptor's `description`, its source and its approval
 // status; its descriptor body (command, args, env) never leaves the store read. A skill's description is its file's
 // front matter `description`, never its body. Every string leaves through the Withholder. Reading writes nothing.
-// Approve and Revoke go through POST /api/v1/packs/approvals (packs-api.ts), the same path as `factory pack approve|revoke`.
+// Approve and Revoke go through POST /api/v1/packs/approvals (packs-api.ts), the same path as `factory pack approve|revoke`,
+// for an MCP server and for a pack tool: the page's read adds each pack tool's status (`tool_status`), the configured
+// skill folders as the file holds them (`skill_folders`, [] when none) and the Settings route's token the skill folder
+// edits are sent with (`settings_token`, null without the config file's writer). `factory plugins list` prints none of these.
 // The tools of an approved imported MCP server (design 11-plugin-import, phase 3) are read from `ext_mcp_tool_lists`:
 // GET /api/v1/plugins asks for a listing when the server's current description has none (a store row, as the page's
 // factory user); a worker starts the server and stores the names. This process never starts a server.
@@ -17,9 +20,12 @@ import { storeSql } from "../impl/store/sql/store-sql.js";
 import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
 import type { ApiDeps, ApiResult } from "./api.js";
+import type { UiSettings } from "./settings-api.js";
 import { Withholder } from "./withhold.js";
 
 export const PLUGINS_PATH = "/api/v1/plugins";
+/** The config file key the Plugins page's skill folder edits write (core/config-writer.ts FILE_ONLY_KEYS). */
+export const SKILL_FOLDERS_KEY = "capabilities.skill_folders";
 
 /** The page's tabs and the CLI's `--kind` values, in tab order. */
 export const PLUGIN_KINDS = ["mcp", "skill", "tool"] as const;
@@ -36,7 +42,7 @@ export interface McpRow {
   name: string;
   /** The descriptor's `description`; null when it has none. */
   description: string | null;
-  /** Where it comes from: a pack (`factory pack add`). Imported config is not read (decision 2). */
+  /** Where it comes from: a pack, added or imported. */
   source: "pack";
   status: McpStatus;
 }
@@ -76,11 +82,11 @@ function descriptionOf(descriptor: unknown): string | null {
   }
 }
 
-/** Each stored MCP server's current description (the one added last) and its status, by name. */
-async function mcpRows(d: Pick<CapabilityDeps, "store">): Promise<McpRow[]> {
+/** Each stored entry of `kind`: its current description (the one added last) and its status, by name. */
+async function entryRows(d: Pick<CapabilityDeps, "store">, kind: "mcp_server" | "tool"): Promise<McpRow[]> {
   const db = storeSql(d.store);
-  const entries = await db.all("SELECT name, description_hash, descriptor FROM ext_packs_entries WHERE kind = 'mcp_server' ORDER BY name, created_at DESC, id DESC");
-  const approvals = await db.all("SELECT name, description_hash, action FROM ext_packs_approvals WHERE kind = 'mcp_server' ORDER BY seq");
+  const entries = await db.all("SELECT name, description_hash, descriptor FROM ext_packs_entries WHERE kind = ? ORDER BY name, created_at DESC, id DESC", [kind]);
+  const approvals = await db.all("SELECT name, description_hash, action FROM ext_packs_approvals WHERE kind = ? ORDER BY seq", [kind]);
   const latest = new Map(approvals.map((a) => [`${String(a.name)}\n${String(a.description_hash)}`, String(a.action)]));
   const out: McpRow[] = [];
   const seen = new Set<string>();
@@ -126,7 +132,7 @@ export async function pluginRows(d: CapabilityDeps, base: SettingsBase, sources:
   const text = async (v: string) => (await w.plain(v)).text;
   const caps = await capabilityRows(d, base, sources);
   const mcp: McpRow[] = [];
-  for (const m of await mcpRows(d)) mcp.push({ ...m, name: await text(m.name), description: m.description === null ? null : await text(m.description) });
+  for (const m of await entryRows(d, "mcp_server")) mcp.push({ ...m, name: await text(m.name), description: m.description === null ? null : await text(m.description) });
   const mcpTools: ToolRow[] = [];
   for (const r of await mcpToolRows(d)) mcpTools.push({ ...r, name: await text(r.name), description: await text(r.description) });
   return {
@@ -139,17 +145,42 @@ export async function pluginRows(d: CapabilityDeps, base: SettingsBase, sources:
   };
 }
 
+/** The configured skill folders as the file holds them, each through the Withholder; [] when none is configured. */
+async function skillFolders(s: UiSettings, w: Withholder): Promise<string[]> {
+  const raw = s.editFile?.fileKeys?.().editable.find((k) => k.key === SKILL_FOLDERS_KEY)?.value ?? null;
+  const list = raw === null ? [] : (JSON.parse(raw) as unknown);
+  const out: string[] = [];
+  for (const f of Array.isArray(list) ? list : []) if (typeof f === "string") out.push((await w.plain(f)).text);
+  return out;
+}
+
 /**
- * GET /api/v1/plugins: the three lists, and the token of the approvals route (null when the page cannot approve).
- * With a factory user it first asks for the tool listing of each approved imported MCP server that has none (a
- * request row only: the worker starts the server); with none, nothing is asked.
+ * GET /api/v1/plugins: the three lists; the token of the pack write route (null when the page cannot approve, import
+ * or add); each pack tool's status by its row name; the configured skill folders; and the Settings route's token for
+ * the skill folder edits (null when this process has no config file writer). With a factory user it first asks for
+ * the tool listing of each approved imported MCP server that has none (a request row only: the worker starts the
+ * server); with none, nothing is asked.
  */
 export async function readPlugins(d: ApiDeps): Promise<ApiResult> {
   if (!d.settings) return { status: 404, value: { error: "Not found." } };
   const user = d.pauses ? await d.pauses.principal() : null;
   if (user !== null) await requestMcpToolLists(storeSql(d.store), () => d.clock.now().toISOString(), user);
   const rows = await pluginRows(d, d.settings.base, await settingsSources(d.settings));
-  return { status: 200, value: { as_of: d.clock.now().toISOString(), csrf_token: d.pauses?.auth !== undefined ? d.pauses.csrfToken : null, ...rows } };
+  const stored = new Map((await entryRows(d, "tool")).map((t) => [`pack:tool:${t.name}`, t.status]));
+  const tool_status: Record<string, McpStatus> = {};
+  for (const t of rows.tools) if (t.origin === "pack") tool_status[t.name] = stored.get(t.name) ?? "waiting";
+  const writer = d.settings.editFile?.fileKeys !== undefined;
+  return {
+    status: 200,
+    value: {
+      as_of: d.clock.now().toISOString(),
+      csrf_token: d.pauses?.auth !== undefined ? d.pauses.csrfToken : null,
+      ...rows,
+      tool_status,
+      skill_folders: await skillFolders(d.settings, new Withholder(d.scanner)),
+      settings_token: writer ? d.settings.csrfToken : null,
+    },
+  };
 }
 
 const roles = (r: readonly string[]) => (r.length > 0 ? r.join(",") : "-");

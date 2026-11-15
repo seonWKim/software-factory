@@ -95,12 +95,14 @@ describe("Plugins page", () => {
     expect(JSON.parse(String(posts[1]!.init.body))).toEqual({ action: "revoke", kind: "mcp_server", name: "tracker" });
   });
 
-  it("without the approvals route the buttons are off and the page names the CLI command", async () => {
+  it("without the approvals route the buttons are off and the page names no CLI command", async () => {
     view = { ...FULL, csrf_token: null };
     show();
     const table = await screen.findByRole("table", { name: "MCP" });
     expect((within(rowsOf(table)[0]!).getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(document.body.textContent).toContain("factory pack approve mcp_server <name>");
+    expect((screen.getByRole("button", { name: "Import…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(document.body.textContent).not.toContain("factory pack");
+    expect(document.body.textContent).not.toContain("Approve from the CLI");
   });
 
   it("opening /app/plugins?tab=skills selects Skills, and choosing a tab writes it to the URL", async () => {
@@ -135,14 +137,19 @@ describe("Plugins page", () => {
     expect(document.body.textContent).toContain('Nothing matches "nothing-like-this".');
   });
 
-  it("each tab's empty state says how to add one", async () => {
+  it("each tab's empty state says how to add one, with Import and Add, and names no command or config file", async () => {
     view = { ...FULL, mcp: [], skills: [], tools: [] };
     show();
-    await waitFor(() => expect(document.body.textContent).toContain("factory pack add <path>"));
-    expect(document.body.textContent).toContain("mcp_servers/*.json");
+    await waitFor(() => expect(document.body.textContent).toContain("No MCP server yet."));
+    for (const tab of ["MCP", "Skills", "Tools"]) {
+      fireEvent.click(screen.getByRole("tab", { name: tab }));
+      expect(screen.getByRole("button", { name: "Import…" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
+      for (const gone of ["factory pack", "factory.config.json", "by hand"]) expect(document.body.textContent, `${tab}: ${gone}`).not.toContain(gone);
+    }
     fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
-    expect(document.body.textContent).toContain("capabilities.skill_folders");
+    expect(document.body.textContent).toContain("No skill yet.");
     fireEvent.click(screen.getByRole("tab", { name: "Tools" }));
-    expect(document.body.textContent).toContain("tools/*.json");
+    expect(document.body.textContent).toContain("No tool yet.");
   });
 });
