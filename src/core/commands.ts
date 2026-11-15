@@ -444,22 +444,24 @@ export function commandPathProblem(p: string): string | null {
 }
 
 /**
- * Splits `+paths <path>...` off the text after `/approve`, `/retry` or `/resolve` (design §4, issue #280). The flag starts
- * the text's first line; the paths are the rest of that line, separated by whitespace (a path may be wrapped
- * in backticks, and a leading `./` is dropped); the note is the lines below. Without the flag, no paths and
- * the whole text is the note. A refusal for no paths, more than MAX_COMMAND_PATHS, or a path that is empty,
- * absolute, has `..` or has a glob. Duplicates are dropped; coverage against allowed_paths is the caller's.
+ * Splits `+paths <path>...` off the text after `command` (`/approve`, `/retry` or `/resolve`; issue #280): the flag starts the first
+ * line, the paths are the rest of it (in backticks or not, a leading `./` dropped), the note the lines below. No flag: the text is the
+ * note, unless a first-line `+` word has a `/` or `.`, refused with the corrected command (design 04-gate-commands). Refused: no paths,
+ * over MAX_COMMAND_PATHS, an empty, absolute, `..` or glob path. Duplicates dropped; coverage against allowed_paths is the caller's.
  */
-export function parseCommandPaths(text: string): { paths: string[]; note: string } | { refuse: string } {
+export function parseCommandPaths(text: string, command = "/retry"): { paths: string[]; note: string } | { refuse: string } {
   const [first = "", ...rest] = text.trim().split(/\r?\n/);
   const m = PATHS_FLAG.exec(first.trim());
-  if (!m) return { paths: [], note: text.trim() };
-  const tokens = first.trim().slice(m[0].length).split(/\s+/).filter((t) => t !== "")
-    .map((t) => t.replace(/^`([^`]*)`$/, "$1").replace(/^(\.\/)+/, ""));
-  if (tokens.length === 0) return { refuse: "`+paths` needs at least one path after it on the same line, e.g. `+paths src/core/x.ts`" };
-  if (tokens.length > MAX_COMMAND_PATHS) {
-    return { refuse: `\`+paths\` takes at most ${MAX_COMMAND_PATHS} paths per command, not ${tokens.length}` };
+  const clean = (t: string) => t.replace(/^`([^`]*)`$/, "$1").replace(/^(\.\/)+/, "");
+  if (!m) {
+    const missed = first.trim().split(/\s+/).filter((t) => /^\+\S*[/.]/.test(t)).map((t) => clean(t.slice(1)));
+    if (missed.length === 0) return { paths: [], note: text.trim() };
+    const fix = retryPathsReply(missed, command);
+    return { refuse: `a path on the first line needs \`+paths\` before it, so nothing changed; ${fix ? `did you mean \`${fix}\`?` : `the usage is \`${command} +paths <path>...\``}` };
   }
+  const tokens = first.trim().slice(m[0].length).split(/\s+/).filter((t) => t !== "").map(clean);
+  if (tokens.length === 0) return { refuse: "`+paths` needs at least one path after it on the same line, e.g. `+paths src/core/x.ts`" };
+  if (tokens.length > MAX_COMMAND_PATHS) return { refuse: `\`+paths\` takes at most ${MAX_COMMAND_PATHS} paths per command, not ${tokens.length}` };
   for (const t of tokens) {
     const problem = commandPathProblem(t);
     if (problem) return { refuse: `\`+paths\` takes repo-relative paths only, and ${t === "" ? "one" : `\`${t}\``} is ${problem}` };
@@ -467,16 +469,17 @@ export function parseCommandPaths(text: string): { paths: string[]; note: string
   return { paths: [...new Set(tokens)], note: rest.join("\n").trim() };
 }
 
-/**
- * The exact `/retry +paths ...` reply that allows `paths`, or null when no such reply exists: none given, more
- * than MAX_COMMAND_PATHS, or one the parser would refuse or split (whitespace, a backtick).
- */
-export function retryPathsReply(paths: readonly string[]): string | null {
+/** The exact `<command> +paths ...` reply that allows `paths`, or null: none, over MAX_COMMAND_PATHS, or a path the parser would refuse or split. */
+export function retryPathsReply(paths: readonly string[], command = "/retry"): string | null {
   const unique = [...new Set(paths)];
   if (unique.length === 0 || unique.length > MAX_COMMAND_PATHS) return null;
   if (unique.some((p) => commandPathProblem(p) !== null || /[\s`]/.test(p) || p.startsWith("./"))) return null;
-  return `/retry +paths ${unique.join(" ")}`;
+  return `${command} +paths ${unique.join(" ")}`;
 }
+
+/** An agent's text without its own `/retry +`, `/approve +` or `/resolve +` lines: only the controller's reply is shown. */
+export const withholdReplyLines = (text: string): string =>
+  text.split(/\r?\n/).filter((l) => !/\/(?:retry|approve|resolve)\s+\+/i.test(l)).join("\n").trim() || "(withheld: a reply command the agent wrote)";
 
 /**
  * `/link <code>` (design 2026-11-01): the code, or "" when the line has none. Null for any other comment. The

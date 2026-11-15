@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { beforeAll, describe, expect, it } from "vitest";
 import {
   COMMANDS, COMMAND_PHASES, type CommandName, type CommandPhase, applies, appliesOnPr, approveRefusal, chatHelpReply, commandFooter, commandPhase, commandSpec,
-  commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, refusalText, retryPathsReply,
+  commandState, commandsFor, commandTableMarkdown, helpReply, parseCommandPaths, parseComment, phaseLabel, prCommandsFor, refusalText, retryPathsReply, withholdReplyLines,
   unknownCommandReply, withSlash,
 } from "../src/core/commands.js";
 import { autoApprovedFooter, utcMinute } from "../src/core/spec-comment.js";
@@ -85,6 +85,32 @@ describe("+paths (issue #280)", () => {
     expect(retryPathsReply(["a b.ts"])).toBeNull();
     expect(retryPathsReply(["src/*.ts"])).toBeNull();
     expect(retryPathsReply(Array.from({ length: 11 }, (_, i) => `f${i}`))).toBeNull();
+  });
+
+  it("a first-line `+` path without `+paths` is refused with the corrected command for the command typed (design 04-gate-commands)", () => {
+    const lead = "a path on the first line needs `+paths` before it, so nothing changed; ";
+    expect(parseCommandPaths("+src/x.ts")).toEqual({ refuse: `${lead}did you mean \`/retry +paths src/x.ts\`?` });
+    expect(parseCommandPaths("+tests/a.json +tests/b.json\nplease", "/retry"))
+      .toEqual({ refuse: `${lead}did you mean \`/retry +paths tests/a.json tests/b.json\`?` });
+    expect(parseCommandPaths("+src/x.ts", "/approve")).toEqual({ refuse: `${lead}did you mean \`/approve +paths src/x.ts\`?` });
+    expect(parseCommandPaths("+src/x.ts", "/resolve")).toEqual({ refuse: `${lead}did you mean \`/resolve +paths src/x.ts\`?` });
+    // retryPathsReply gives no reply for these paths: the usage only, no corrected line.
+    for (const text of ["+src/*.ts", `${Array.from({ length: 11 }, (_, i) => `+f${i}.ts`).join(" ")}`]) {
+      const r = parseCommandPaths(text, "/approve");
+      expect(r).toEqual({ refuse: `${lead}the usage is \`/approve +paths <path>...\`` });
+      expect(JSON.stringify(r)).not.toContain("did you mean");
+    }
+  });
+
+  it("a first-line `+` word that does not look like a path stays a note", () => {
+    expect(parseCommandPaths("+1 looks good")).toEqual({ paths: [], note: "+1 looks good" });
+    expect(parseCommandPaths("+ok\n+src/x.ts below the first line")).toEqual({ paths: [], note: "+ok\n+src/x.ts below the first line" });
+  });
+
+  it("an agent's own /retry +, /approve + and /resolve + lines are withheld; other lines stay", () => {
+    expect(withholdReplyLines("It needs src/x.ts.\nReply: /retry +tests/a.json\n`/approve +paths a.ts`\n/Resolve  +x")).toBe("It needs src/x.ts.");
+    expect(withholdReplyLines("Reply /retry +paths src/x.ts")).toBe("(withheld: a reply command the agent wrote)");
+    expect(withholdReplyLines("Use /retry to run again.")).toBe("Use /retry to run again.");
   });
 
   it("/help and the command table show the +paths usage of /approve, /retry and /resolve", () => {
