@@ -6,7 +6,7 @@ import { commandFooter, commandState, retryPathsReply } from "../../../core/comm
 import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, findingLine, parseNeedsHuman, parseReview, parseTriage, specFindings } from "../../../core/outputs.js";
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
-import { dependencyStop } from "./dependency-stop.js";
+import { dependencyStop } from "./dependency-stop.js"; import { autoGrant } from "./auto-grant.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
@@ -936,8 +936,8 @@ export class RunResultsUnit {
     const answer = run.kind === "resolve"
       ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
       : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
-    // The paths an implementer names are shown as the exact reply only; they never change allowed_paths (issue #280).
-    const reply = run.kind === "implement" ? retryPathsReply((ask.paths ?? []).filter((p) => !isCovered(p, it.allowed_paths))) : null;
+    const asked = [...new Set((ask.paths ?? []).filter((p) => !isCovered(p, it.allowed_paths)))], reply = run.kind === "implement" ? retryPathsReply(asked) : null;
+    const granted = run.kind === "implement" ? await autoGrant(this.c, { ...it, ...patch }, run, asked, reply, tokens) : undefined; if (granted !== undefined) return granted; // test paths only: once (design 05-restarts)
     const body = (withText: boolean) => [
       "## Factory: the agent needs a human",
       "",

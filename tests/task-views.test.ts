@@ -79,7 +79,7 @@ describe("task views: the day boundary at local midnight (injected Clock)", () =
 });
 
 describe("task views: placement", () => {
-  it("Today lists overdue first, oldest due first, then today's; there is no inbox view, and an undated task is in projects", async () => {
+  it("Today lists overdue first, oldest due first, then today's, the undated task added today last; there is no inbox view", async () => {
     const s = await setup(at(12, 10, 0));
     await s.store.addTask(task("undated"));
     await s.store.addTask(task("today", { due: { date: "2026-11-12" } }));
@@ -91,7 +91,44 @@ describe("task views: placement", () => {
     expect(v).not.toHaveProperty("inbox");
     expect(v.projects.flatMap((p) => ids(p.tasks))).toContain("undated");
     expect(ids(v.today.overdue)).toEqual(["last-week", "yesterday"]);
-    expect(ids(v.today.due)).toEqual(["today"]);
+    expect(ids(v.today.due)).toEqual(["today", "undated"]);
+  });
+
+  it("an undated task added at 10:00 is in Today on its day, and from the next local midnight only in projects", async () => {
+    const s = await setup(at(12, 10, 0));
+    await s.store.addTask(task("undated"));
+    let v = await s.views();
+    expect(ids(v.today.due)).toEqual(["undated"]);
+    expect(v.today.overdue).toEqual([]);
+    expect(v.upcoming.flatMap((d) => ids(d.tasks))).not.toContain("undated");
+    expect(v.timeline).toEqual([]);
+    s.clock.advance(at(13, 0, 0).getTime() - s.clock.now().getTime());
+    v = await s.views();
+    expect(ids(v.today.due)).not.toContain("undated");
+    expect(ids(v.today.overdue)).not.toContain("undated");
+    expect(v.upcoming.flatMap((d) => ids(d.tasks))).not.toContain("undated");
+    expect(v.projects.map((p) => [p.list, ids(p.tasks)])).toEqual([[null, ["undated"]]]);
+  });
+
+  it("Today: undated tasks added today come after today's dated ones, timed and untimed, in their order", async () => {
+    const s = await setup(at(12, 8, 0));
+    await s.store.addTask(task("undated-old"));
+    await s.store.addTask(task("undated-p1", { priority: 1 }));
+    await s.store.addTask(task("dated", { due: { date: "2026-11-12" } }));
+    await s.store.addTask(task("call", { due: { date: "2026-11-12" }, due_time: "11:00" }));
+    await s.store.addTask(task("undated-done"));
+    await s.store.completeTask("undated-done");
+    const v = await s.views();
+    expect(ids(v.today.due)).toEqual(["call", "dated", "undated-p1", "undated-old"]);
+    expect(v.timeline.map((b) => b.id)).toEqual(["call"]);
+  });
+
+  it("a task added today with a due date next week is in that day's Upcoming group, not in Today", async () => {
+    const s = await setup(at(12, 10, 0));
+    await s.store.addTask(task("next-week", { due: { date: "2026-11-19" } }));
+    const v = await s.views();
+    expect(ids(v.today.due)).toEqual([]);
+    expect(v.upcoming.map((d) => [d.date, ids(d.tasks)])).toEqual([["2026-11-19", ["next-week"]]]);
   });
 
   it("Upcoming groups today through 7 days ahead by day, in date order, with only the days that have a task", async () => {

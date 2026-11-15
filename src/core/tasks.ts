@@ -311,7 +311,8 @@ export interface TaskDay {
  * The dashboard's views of the tasks, open and done (the done window's, design 02-tasks, done tasks stay), and the
  * stored calendar events (design 02-tasks), each task placed by its due date, a done one as an open one, and each event
  * by the local days it overlaps, against `now`'s calendar date in this process's time zone, so the day ends at local
- * midnight. Today: overdue tasks (due before today; open, or done today) first, then today's tasks and events.
+ * midnight. Today: overdue tasks (due before today; open, or done today) first, then today's tasks and events, then the
+ * open undated tasks created on today's local date.
  * Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an event (the Tasks page
  * shows the days after today). Projects: every task, undated included, by its
  * list label (unlabelled last), each by due date (undated last): the Tasks page's All view. The timeline holds open tasks only.
@@ -419,7 +420,9 @@ export function taskViews(tasks: readonly Task[], now: Date, events: readonly Ca
   // A task done today stays where it was; one done earlier is no longer overdue.
   const overdue = (t: Task) => t.due_date !== null && t.due_date < today && (t.done_at === null || localDate(new Date(t.done_at)) === today);
   const day = (date: string) => dayEntries(sorted.filter((t) => t.due_date === date), eventsOn(events, date));
-  const todays = day(today);
+  // An open undated task added today is listed in Today, after the dated ones (byDue sorts undated last).
+  const addedToday = (t: Task) => t.due_date === null && t.done_at === null && localDate(new Date(t.created_at)) === today;
+  const todays = dayEntries(sorted.filter((t) => t.due_date === today || addedToday(t)), eventsOn(events, today));
   const upcoming: TaskDay[] = [];
   for (let n = 0; n <= UPCOMING_DAYS; n++) {
     const date = localDate(now, n);
