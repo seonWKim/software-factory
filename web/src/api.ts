@@ -780,6 +780,21 @@ export interface TasksView {
   can_build: boolean;
 }
 
+/** One day of `/api/v1/calendar/events`: its events (all-day first, then timed by time) and whether every source's last sync covered it. */
+export interface CalendarDay {
+  date: string;
+  synced: boolean;
+  events: EventRow[];
+}
+
+/** `/api/v1/calendar/events?from=&to=`: each day from `from` through `to`, and each source's last sync. */
+export interface CalendarEvents {
+  from: string;
+  to: string;
+  days: CalendarDay[];
+  calendar: CalendarSync[];
+}
+
 declare const __FACTORY_REV__: string | null | undefined;
 
 /** The git revision built into this app (Vite `define`, web/vite.config.ts); null in a test or a build without git. */
@@ -898,6 +913,8 @@ export const API = {
   calendar: "/api/v1/calendar",
   calendarConnect: "/api/v1/calendar/connect",
   calendarDisconnect: "/api/v1/calendar/disconnect",
+  /** The Calendar page's read of the stored events of the local days `from` through `to` (YYYY-MM-DD, inclusive). */
+  calendarEvents: (from: string, to: string) => `/api/v1/calendar/events?from=${from}&to=${to}`,
   taskBuild: "/api/v1/tasks/build",
   taskAction: (action: TaskAction) => `/api/v1/tasks/${action}`,
   dataTables: "/api/v1/data/tables",
@@ -939,6 +956,11 @@ export function useItems(project: string | null) {
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
   });
+}
+
+/** The stored calendar events of the days `from` through `to`, polled like the other reads; never a calendar source call. */
+export function useCalendarEvents(from: string, to: string) {
+  return useApi<CalendarEvents>(API.calendarEvents(from, to));
 }
 
 /**
