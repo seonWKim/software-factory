@@ -92,7 +92,7 @@ describe("POST /api/v1/tasks", () => {
       [{ id: "bad id", words: "x" }, /id/],
       [{ id: ID }, /words/],
       [{ id: ID, words: "x", extra: 1 }, /unknown field "extra"/],
-      [{ id: ID, words: "every fortnight call mum" }, /unknown recurrence/],
+      [{ id: ID, words: "call mum every week" }, /every week needs a due date/],
       [{ id: ID, words: "!1 #home" }, /title is empty/],
       [{ id: ID, words: "call 13pm" }, /not a time: 13pm/],
       [{ id: ID, words: "call 12:61pm" }, /not a time: 12:61pm/],

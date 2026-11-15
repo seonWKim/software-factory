@@ -1,12 +1,18 @@
 import type { FactoryStore } from "../interfaces/factory-store.js";
-import type { Task } from "./tasks.js";
+import { ProjectRefused, type Task, projectRefusal } from "./tasks.js";
 import type { UserId, WorkItem } from "./types.js";
 
 /**
  * Build this (design 02-tasks, issue #607): a plain task sent to intake as one local work item, the link stored on
  * the task. The item's source ID is `local-task-<task id>`, so createWorkItem (idempotent on the source) returns the
  * same item on a retry, and the link is set only while unset, so a second build changes nothing.
+ *
+ * Create under a project (createProjectTask): `factory task create --project <slug>` and POST /api/v1/tasks/create
+ * store a plain task in that project and build it, with the request's body, as above.
  */
+
+/** Why a local item cannot be made yet: the configured repo's project key is not stored. */
+export const NO_PROJECT_KEY = "no project is stored yet: start the factory once (`npm run factory -- dev`) so it records the configured repo";
 
 /** A local work item with its triage run queued: `task create` and `task build` both make one. */
 export function createLocalItem(
@@ -29,7 +35,7 @@ export type BuildTaskResult =
 export const taskSourceId = (taskId: string) => `local-task-${taskId}`;
 
 /**
- * Builds task `id` as `user` in `project`. Refused, with nothing written: an unknown task, a done task, and no stored
+ * Builds task `id` as `user` in `project`, `body` below the title in the item's problem. Refused, with nothing written: an unknown task, a done task, and no stored
  * project key (null). A task already linked answers its item and writes nothing.
  */
 export async function buildTask(
@@ -37,6 +43,7 @@ export async function buildTask(
   id: string,
   project: string | null,
   user: UserId,
+  body = "",
 ): Promise<BuildTaskResult> {
   const task = await store.getTask(id);
   if (task === null) return { ok: false, reason: `no task ${id}` };
@@ -46,9 +53,32 @@ export async function buildTask(
     if (item) return { ok: true, task, item, created: false };
   }
   if (project === null) {
-    return { ok: false, reason: "no project is stored yet: start the factory once (`npm run factory -- dev`) so it records the configured repo" };
+    return { ok: false, reason: NO_PROJECT_KEY };
   }
-  const { item, created } = await createLocalItem(store, { source_id: taskSourceId(task.id), title: task.title, body: "", project, user });
+  const { item, created } = await createLocalItem(store, { source_id: taskSourceId(task.id), title: task.title, body, project, user });
   const linked = await store.linkTask(task.id, item.id);
   return { ok: true, task: linked ?? task, item, created };
+}
+
+/**
+ * A new task `task_id` titled `title` in task project `slug`, built at once as a local work item whose problem holds
+ * `body` (buildTask). Refused, with nothing written: no stored project key (null), and an unknown or archived project.
+ * A retry with the same task ID adds nothing and answers the same item.
+ */
+export async function createProjectTask(
+  store: Pick<FactoryStore, "getProjectBySlug" | "addTask" | "getTask" | "linkTask" | "createWorkItem" | "getWorkItem">,
+  i: { task_id: string; title: string; body: string; slug: string; project: string | null; user: UserId },
+): Promise<BuildTaskResult> {
+  if (i.project === null) return { ok: false, reason: NO_PROJECT_KEY };
+  const p = await store.getProjectBySlug(i.slug);
+  if (p === null) return { ok: false, reason: projectRefusal(i.slug, "not_found") };
+  if (p.archived_at !== null) return { ok: false, reason: projectRefusal(p.slug, "archived") };
+  try {
+    await store.addTask({ id: i.task_id, title: i.title, list: null, priority: null, due: null, due_time: null, recurrence: null, created_by: i.user, projects: [p.slug] });
+  } catch (err) {
+    // Archived or deleted since the read above: the store rolled the task back.
+    if (err instanceof ProjectRefused) return { ok: false, reason: err.message };
+    throw err;
+  }
+  return buildTask(store, i.task_id, i.project, i.user, i.body);
 }
