@@ -202,7 +202,7 @@ describe("GET /api/v1/tasks", () => {
     expect(v).toMatchObject({ today_date: "2026-11-12", csrf_token: s.token, can_build: true });
     expect(v).not.toHaveProperty("inbox");
     expect(v.today.overdue.map((t: { title: string }) => t.title)).toEqual(["late"]);
-    expect(v.today.due.map((t: { title: string }) => t.title)).toEqual(["now"]);
+    expect(v.today.due.map((t: { title: string }) => t.title)).toEqual(["now", "inbox"]);
     expect(v.upcoming).toEqual([
       { date: "2026-11-12", tasks: [expect.objectContaining({ title: "now" })] },
       { date: "2026-11-13", tasks: [expect.objectContaining({ title: "soon", work_item_id: null })] },
