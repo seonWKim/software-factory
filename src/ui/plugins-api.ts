@@ -11,9 +11,13 @@
 // for an MCP server and for a pack tool: the page's read adds each pack tool's status (`tool_status`), the configured
 // skill folders as the file holds them (`skill_folders`, [] when none) and the Settings route's token the skill folder
 // edits are sent with (`settings_token`, null without the config file's writer). `factory plugins list` prints none of these.
+// The tools of an approved imported MCP server (design 11-plugin-import, phase 3) are read from `ext_mcp_tool_lists`:
+// GET /api/v1/plugins asks for a listing when the server's current description has none (a store row, as the page's
+// factory user); a worker starts the server and stores the names. This process never starts a server.
 
 import type { SettingsBase } from "../core/settings.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
+import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
 import type { ApiDeps, ApiResult } from "./api.js";
 import type { UiSettings } from "./settings-api.js";
@@ -53,11 +57,11 @@ export interface SkillRow {
 }
 
 export interface ToolRow {
-  /** The name `tool_grants` gives it (`pack:tool:<name>` for a pack's). */
+  /** The name `tool_grants` gives it (`pack:tool:<name>` for a pack's); `mcp:<server>:<tool>` or `mcp:<server>` for an imported MCP server's. */
   name: string;
   description: string;
   read_only: boolean;
-  origin: "broker" | "pack";
+  origin: "broker" | "pack" | "mcp";
   roles: string[];
   last_used: string | null;
 }
@@ -96,6 +100,32 @@ async function entryRows(d: Pick<CapabilityDeps, "store">, kind: "mcp_server" | 
   return out;
 }
 
+/** What an imported server's row says while it has no tool names: listing, not stdio, or did not start (no error text). */
+const MCP_LIST_NOTE = {
+  requested: "listing its tools",
+  running: "listing its tools",
+  not_approved: "listing its tools",
+  not_stdio: "not a stdio server: its tools are not listed",
+  did_not_start: "did not start",
+} as const;
+
+/**
+ * The Tools tab's rows of each approved imported MCP server, from its current description's stored listing: one per
+ * tool name, or one for the server saying why there is none. Reads only. Not read-only: never granted to a run.
+ */
+async function mcpToolRows(d: Pick<CapabilityDeps, "store">): Promise<ToolRow[]> {
+  const db = storeSql(d.store);
+  const lists = new Map((await new McpToolListsStore(db, () => "").all()).map((l) => [`${l.name}\n${l.description_hash}`, l]));
+  const out: ToolRow[] = [];
+  const row = (name: string, description: string): ToolRow => ({ name, description, read_only: false, origin: "mcp", roles: [], last_used: null });
+  for (const server of await approvedImportedServers(db)) {
+    const list = lists.get(`${server.name}\n${server.description_hash}`);
+    if (list?.status === "listed") out.push(...list.tools.map((tool) => row(`mcp:${server.name}:${tool}`, `From MCP server ${server.name}`)));
+    else out.push(row(`mcp:${server.name}`, `MCP server ${server.name}: ${MCP_LIST_NOTE[list?.status ?? "requested"]}`));
+  }
+  return out;
+}
+
 /** The three lists: MCP servers, skills and tools, every string through the Withholder. */
 export async function pluginRows(d: CapabilityDeps, base: SettingsBase, sources: UiCapabilitySources): Promise<PluginRows> {
   const w = new Withholder(d.scanner);
@@ -103,12 +133,15 @@ export async function pluginRows(d: CapabilityDeps, base: SettingsBase, sources:
   const caps = await capabilityRows(d, base, sources);
   const mcp: McpRow[] = [];
   for (const m of await entryRows(d, "mcp_server")) mcp.push({ ...m, name: await text(m.name), description: m.description === null ? null : await text(m.description) });
+  const mcpTools: ToolRow[] = [];
+  for (const r of await mcpToolRows(d)) mcpTools.push({ ...r, name: await text(r.name), description: await text(r.description) });
   return {
     mcp,
     skills: caps.filter((c) => c.kind === "skill").map((c) => ({ name: c.name, folder: c.detail ?? "", description: c.description ?? null, roles: c.roles, last_used: c.last_used })),
     tools: caps
       .filter((c) => c.kind === "tool")
-      .map((c) => ({ name: c.name, description: c.detail ?? "", read_only: c.read_only === true, origin: c.origin ?? "broker", roles: c.roles, last_used: c.last_used })),
+      .map((c): ToolRow => ({ name: c.name, description: c.detail ?? "", read_only: c.read_only === true, origin: c.origin ?? "broker", roles: c.roles, last_used: c.last_used }))
+      .concat(mcpTools),
   };
 }
 
@@ -124,10 +157,14 @@ async function skillFolders(s: UiSettings, w: Withholder): Promise<string[]> {
 /**
  * GET /api/v1/plugins: the three lists; the token of the pack write route (null when the page cannot approve, import
  * or add); each pack tool's status by its row name; the configured skill folders; and the Settings route's token for
- * the skill folder edits (null when this process has no config file writer).
+ * the skill folder edits (null when this process has no config file writer). With a factory user it first asks for
+ * the tool listing of each approved imported MCP server that has none (a request row only: the worker starts the
+ * server); with none, nothing is asked.
  */
 export async function readPlugins(d: ApiDeps): Promise<ApiResult> {
   if (!d.settings) return { status: 404, value: { error: "Not found." } };
+  const user = d.pauses ? await d.pauses.principal() : null;
+  if (user !== null) await requestMcpToolLists(storeSql(d.store), () => d.clock.now().toISOString(), user);
   const rows = await pluginRows(d, d.settings.base, await settingsSources(d.settings));
   const stored = new Map((await entryRows(d, "tool")).map((t) => [`pack:tool:${t.name}`, t.status]));
   const tool_status: Record<string, McpStatus> = {};

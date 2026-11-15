@@ -75,6 +75,8 @@ import {
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
+import { importedMcpRefusals, listRequestedMcpTools } from "./import/mcp-tool-lists.js";
+import { startPackMcpServer } from "./impl/runner/pack-mcp-client.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 
@@ -854,25 +856,19 @@ export async function build(
     check_env: baseEnv(),
   });
 
+  const id_prefix = `${hostname()}:${process.pid}`;
   const worker = new WorkerPool({
-    id_prefix: `${hostname()}:${process.pid}`,
+    id_prefix,
     // A run's push and PR go to this machine's git destination (`git:<host id>:<branch>`), which its controller flushes.
     host: hostId(stateDir),
     // The supervisor's block for this child (git-worktree updater); unset: 0.
     index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
     // The revision the supervisor built this child from, stamped on each run (`worker_runs.code_version`); unset: dev.
     ...codeVersion(process.env[CODE_VERSION_ENV]),
-    store,
-    sandbox,
-    runner,
-    broker: guarded,
-    local,
-    passports,
-    scanner,
-    storage,
-    llm,
-    clock,
-    config,
+    store, sandbox, runner,
+    broker: guarded, local, passports,
+    scanner, storage, llm,
+    clock, config,
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
@@ -886,6 +882,10 @@ export async function build(
     pack_checks: new PackCheckRunner(checks, { sandbox, audit: new SqlHookAudit(storeSql(store)), now: () => clock.now().toISOString() }),
     // A run's PR comment is a thread entry on this ref; outbound posts it (RFC 0015 M7).
     ...(forge ? { prRef: (pr: number) => forge.prRef(pr) } : {}),
+    // Imported MCP servers (design 11-plugin-import): never started for a run (owner answer 1); an approved one's
+    // tools are listed here, in the worker, once per request, with an empty env and no credential (owner answer 3).
+    imported_mcp_refusals: (servers) => importedMcpRefusals(storeSql(store), servers),
+    list_mcp_tools: () => listRequestedMcpTools({ db: storeSql(store), now: () => clock.now().toISOString(), by: id_prefix, start: startPackMcpServer }),
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };
