@@ -76,13 +76,9 @@ describe("Needs you on the Tasks page", () => {
     expect(main.querySelectorAll("h1")).toHaveLength(1);
     expect(within(section).getByRole("list", { name: "Approve" })).toBeTruthy();
     expect(section.querySelector("h2")!.nextElementSibling!.textContent).toBe("1");
-    // The deadlocks are one line after the section, linking to Work items; no row and no count of their own.
-    const notes = screen.getByRole("list", { name: "System actions" });
-    expect(section.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    const line = notes.querySelector("[data-deadlocks]") as HTMLElement;
-    expect(notes.querySelectorAll("li")).toHaveLength(1);
-    expect(line.textContent).toContain("Started past a deadlock: 5.");
-    expect(within(line).getByRole("link").getAttribute("href")).toBe("/app/items");
+    // Items started past a deadlock go on by themselves: no row, no count and no line.
+    expect(document.querySelector("[data-deadlocks]")).toBeNull();
+    expect(document.body.textContent).not.toMatch(/deadlock/i);
     for (const n of [1, 2, 3, 4, 5]) expect(section.textContent).not.toContain(`Overlapping ${n}`);
   });
 

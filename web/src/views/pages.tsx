@@ -183,15 +183,13 @@ export function ClaimPauses({ now }: { now: number }) {
 export function FloorStatus() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
-  const items = useApi<Items>(API.items);
   const pauses = useApi<PausesView>(API.pauses);
-  const deadlocks = (items.data?.items ?? []).filter((i) => i.why?.code === "deadlock").length;
   const o = overview.data;
   const view = o?.factory === undefined ? null : factoryView(o.factory, now, pauses.data?.pauses ?? []);
   return (
     <>
       {view?.notice && <Notice tone={view.tone === "bad" ? "bad" : "warn"}>{view.text}</Notice>}
-      <FloorNotes actions={o?.system_actions ?? []} deadlocks={deadlocks} />
+      <FloorNotes actions={o?.system_actions ?? []} />
       <ClaimPauses now={now} />
     </>
   );
