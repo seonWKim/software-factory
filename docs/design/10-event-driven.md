@@ -21,13 +21,27 @@ force.
   name from its own DDL, verify every column of every row, and only then rename all old tables to
   `legacy_<old>` at once (one transaction). The legacy tables stay
   until a contract migration drops them after the owner confirms.
-- **Contract migrations run only on `npm run migrate -- --contract`** (since 2026-11-09, RFC 0015 M11; see
-  History). A `contract` migration names the breaking migrations it follows (`after`) and is never pending for an
-  open, a start or an update: SQLite's open skips it. `--contract` applies each one
-  whose `after` migrations were applied at least 14 days earlier (`CONTRACT_MIN_DAYS`, the D9 down path's window)
-  and prints why it skips the others; a table with rows is archived to `db/backups/` first, and with no backup
-  folder the drop is refused (D4). Written: `20261109T0900-state-drop-legacy-tables` (M1's `legacy_*`) and
-  `20261109T0901-inbound-drop-legacy-commands` (M4's).
+- **One contract migration copies missing `legacy_*` rows, then drops every `legacy_*` table** (decision changed
+  2026-11-15: the legacy contract checks and copies before it drops, and `--contract --dry-run` exists; SQLite only;
+  replaces "two contract migrations drop M1's and M4's `legacy_*` tables without checking", see History).
+  Contract migrations run only on `npm run migrate -- --contract`: a `contract` migration names the breaking
+  migrations it follows (`after`) and is never pending for an open, a start or an update: SQLite's open skips it.
+  `--contract` applies each one whose `after` migrations were applied at least 14 days earlier (`CONTRACT_MIN_DAYS`,
+  the D9 down path's window) and prints why it skips the others; a table with rows is archived to `db/backups/`
+  first, and with no backup folder the drop is refused (D4). `--contract --dry-run` runs each ready one inside a
+  savepoint that is rolled back: it prints the same report and changes, backs up and records nothing.
+  `20261109T0900-state-drop-legacy-tables` is the only one for legacy tables. It follows M1's rename, M4's command
+  merge and the change-ref rebuild (`20261112T1200`), finds every `legacy_*` table in `sqlite_master` and maps each
+  to its current table (`LEGACY_TABLES`: the renames, both command tables into `inbound_commands` by `command_key`,
+  the rebuilt controller tables, and four retired tables with no replacement whose rows are only archived). A legacy
+  table missing from the map stops the run before anything is copied or dropped, and the error names it. Each row
+  whose key is not in its current table is copied (parents before children), the copy is checked, then all legacy
+  tables are dropped; it prints per table its rows, how many it copied (with each copied key) and how many it
+  dropped. A rerun copies nothing twice, and a run stopped after its copies only drops. The frozen rename migrations
+  still make `legacy_*` tables on a fresh replay, and `inbound_commands.legacy_table` / `legacy_seq` stay (row data
+  the app request seq mapping and retention read). No runtime reader names a `legacy_*` table: the table docs and
+  `HIDDEN_COLUMNS` list none, the Data page hides every value of a table no doc describes, and the Data page's Ask
+  leaves such tables out of the model's request. `20261109T1215-outbound-drop-base-pushes` stays a separate contract.
 - **Rehearse before migrating** (since 2026-11-08): `npm run migrate -- --rehearse` copies the database
   (`VACUUM INTO` a temp file), applies every pending step and migration to the copy,
   checks that each table still holds the same rows over its old columns (under its name or as its `legacy_`
@@ -534,6 +548,11 @@ force.
 
 ## History
 
+- **Legacy contract checks and copies before it drops** (decision changed 2026-11-15). Before: two contract
+  migrations, `20261109T0900-state-drop-legacy-tables` (M1's `legacy_*`) and
+  `20261109T0901-inbound-drop-legacy-commands` (M4's), dropped their tables without checking that each row was in
+  its current table, missed the change-ref rebuild's two legacy tables, and `--contract` had no dry run; the table
+  docs and `HIDDEN_COLUMNS` listed every `legacy_*` copy.
 - **Current text names SQLite only** (decision changed 2026-11-11, issue #567). Before: the current decisions named MySQL beside SQLite in schema changes (MySQL steps up to `0041` in `migrations/mysql/`, applied by `npm run migrate`), backups, renames, contract migrations, rehearsal (a snapshot into `<database>_rehearsal`), the worker-crash and bus contract tests, the sql bus (enterprise: MySQL), the seq cursors (MySQL assigns AUTO_INCREMENT at insert, not at commit, so a reader's `seq > cursor` could pass a lower seq whose transaction commits later), `insertOrSkip` (a plain INSERT whose duplicate-key error was caught on MySQL), the topic tables an enterprise MySQL user needed no DDL rights for, and the merge-queue id length that fits MySQL's key.
 - **Implement run-agent step budget** (decision changed 2026-11-13, issue #671). Before: the implement kind's
   `run-agent` step had the shared `start_to_close` of one hour per step (above the agent's own `run_timeout_ms`,

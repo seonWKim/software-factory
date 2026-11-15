@@ -296,7 +296,7 @@ Tables by owner (the full list is the generated `schema/sqlite.sql`):
 | outbound | `outbound_intents`, `outbound_actions`, `outbound_requests`, `outbound_batches`, `outbound_batch_intents`, `outbound_deliveries`, `outbound_label_states`, `outbound_forge_budget`; `outbound_base_pushes` has no reader or writer left (dropped by a contract migration) |
 | identity | `identity_passports`, `identity_revocations`, `authz_audit`, `identity_profiles`, `identity_owner`, `identity_user_links`, `identity_link_codes` |
 | runtime | `runtime_settings_overrides`, `runtime_settings_changes`, `runtime_child_restarts`, `runtime_hook_decisions`, `runtime_schema_migrations`; `schema_migrations` (SQLite's frozen baseline) |
-| archived | `legacy_*` (the old names of M1's renames and M4's command tables), dropped only by `npm run migrate -- --contract` |
+| archived | `legacy_*` (the old names of M1's renames, M4's command tables and the change-ref rebuild), read by no runtime code; their missing rows are copied to the current tables and the tables dropped only by `npm run migrate -- --contract` |
 
 ## 4. A GitHub item, end to end
 
@@ -487,4 +487,4 @@ Open proposals and pressure points, for the reviewer to weigh. The RFCs are the 
 | Gate list | `src/outbound/` (every forge write and its G5 scan) and `src/identity/` (passports) are not on `PROTECTED_PATHS` and not under a floor in `factory.config.json`, except their `settings/` folders; `hotspot_paths` still names the removed `src/core/controller.ts` and `src/core/worker.ts` | Owner decision: add them to the gate list or floors; pick the hotspot replacement |
 | Enterprise identity | The passport key is a file in the state folder; `SF_PASSPORT_KEY` through the SecretStore is not wired; `factory session` stores its branch through a broker with no passport | PROGRESS.md "Next" 5 |
 | Dead letters | A dead letter raises an alarm, but no CLI replays it (`SqlRetryScheduler.replay` exists) and the router does not mark the actor `blocked_on: dead_letter` | `factory dead-letters replay` (PROGRESS.md "Next" 2) |
-| Contract drops | 43 `legacy_*` tables and `outbound_base_pushes` stay until `npm run migrate -- --contract` (14 days after their migrations; not applied) | Owner runs the contract migrations |
+| Contract drops | 45 `legacy_*` tables and `outbound_base_pushes` stay until `npm run migrate -- --contract` (14 days after their migrations; not applied). One contract migration copies each legacy row missing from its current table, then drops every `legacy_*` table; `--contract --dry-run` prints what it would do | Owner runs `--contract --dry-run`, then `--contract` |
