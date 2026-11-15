@@ -4,7 +4,8 @@
 // inside the task store's add and edit transactions (phase 2), so a refused `+slug` rolls the task write back.
 
 import {
-  type AddTaskToProjectResult, type ArchiveProjectResult, type CreateProjectResult, type DeleteProjectResult, type NewProject, type Project,
+  type AddTaskToProjectResult, type ArchiveProjectResult, type CreateProjectResult, type DeleteProjectResult, type MoveTaskToProjectResult, type NewProject,
+  type Project,
   type ProjectStore, type RenameProjectResult, projectName,
 } from "../../../core/projects.js";
 import { ProjectRefused } from "../../../core/tasks.js";
@@ -96,6 +97,25 @@ async function removeTaskFromProject(db: SqlDriver, project_id: string, task_id:
 }
 
 /**
+ * In one transaction: the target is checked (known, active), then the source link is deleted and the target link
+ * inserted unless it is there. No source link: answered as moved when the target link is there, else refused.
+ */
+async function moveTaskToProject(db: SqlDriver, task_id: string, from_id: string, to_id: string, now: Timestamp): Promise<MoveTaskToProjectResult> {
+  return db.transaction(async (tx) => {
+    if ((await tx.all("SELECT id FROM controller_tasks WHERE id = ?", [task_id])).length === 0) return { ok: false, reason: "task_not_found" } as const;
+    const target = await select(tx, "id", to_id);
+    if (target === null) return { ok: false, reason: "project_not_found" } as const;
+    if (target.archived_at !== null) return { ok: false, reason: "archived" } as const;
+    const inTarget = (await tx.all("SELECT task_id FROM controller_task_projects WHERE task_id = ? AND project_id = ?", [task_id, to_id])).length > 0;
+    // Into the project it is in: nothing to move.
+    const removed = from_id === to_id ? 0 : await tx.run("DELETE FROM controller_task_projects WHERE project_id = ? AND task_id = ?", [from_id, task_id]);
+    if (removed === 0) return inTarget ? { ok: true, changed: false } as const : { ok: false, reason: "not_linked" } as const;
+    if (!inTarget) await tx.run("INSERT INTO controller_task_projects (task_id, project_id, added_at) VALUES (?, ?, ?)", [task_id, to_id, now]);
+    return { ok: true, changed: true } as const;
+  });
+}
+
+/**
  * In `tx`: links the task to the project of each slug it is not linked to yet. Throws ProjectRefused for an unknown
  * or archived project, so the caller's transaction (the task's add or edit) writes nothing.
  */
@@ -182,6 +202,7 @@ export class SqlProjectStore implements ProjectStore {
   deleteProject(id: string) { return deleteProject(this.db, id); }
   addTaskToProject(project_id: string, task_id: string) { return addTaskToProject(this.db, project_id, task_id, this.stamp()); }
   removeTaskFromProject(project_id: string, task_id: string) { return removeTaskFromProject(this.db, project_id, task_id); }
+  moveTaskToProject(task_id: string, from_id: string, to_id: string) { return moveTaskToProject(this.db, task_id, from_id, to_id, this.stamp()); }
   listTaskProjects(task_id: string) { return listTaskProjects(this.db, task_id); }
   listTaskProjectSlugs(task_ids: readonly string[]) { return listTaskProjectSlugs(this.db, task_ids); }
   listWorkItemProjectSlugs(work_item_ids: readonly string[]) { return listWorkItemProjectSlugs(this.db, work_item_ids); }

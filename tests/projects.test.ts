@@ -174,9 +174,44 @@ describe("factory task project", () => {
     expect(await run("project", "create", "Home")).toMatchObject({ code: 0 });
     expect(await run("task", "project", "tk_nope", "+home")).toEqual({ code: 1, lines: ["no task tk_nope"] });
     expect(await links()).toEqual([]);
-    for (const args of [["project", "tk_id2"], ["project", "tk_id2", "home"], ["project", "tk_id2", "+"], ["project", "tk_id2", "+a", "+b"]]) {
+    for (const args of [
+      ["project", "tk_id2"], ["project", "tk_id2", "home"], ["project", "tk_id2", "+"], ["project", "tk_id2", "+a", "+b"],
+      ["project", "tk_id2", "-a", "-b"], ["project", "tk_id2", "-a", "+"], ["project", "tk_id2", "-a", "+A"], ["project", "tk_id2", "-a", "+b", "+c"],
+    ]) {
       expect(parseLocalCliArgs("task", args), JSON.stringify(args)).toMatchObject({ error: expect.any(String) });
     }
+  });
+});
+
+describe("factory task project -<from> +<to>", () => {
+  it("moves the task in one call, either word first; again it changes nothing", async () => {
+    const { run, links } = await cliSetup();
+    await run("project", "create", "Home");
+    await run("project", "create", "Work");
+    await run("task", "add", "fix", "tap", "+home");
+    expect(await run("task", "project", "tk_id3", "-Home", "+work")).toEqual({ code: 0, lines: ["moved tk_id3 from +home to +work"] });
+    expect(await links()).toEqual([{ task_id: "tk_id3", project_id: "pj_id2" }]);
+    expect(await run("task", "project", "tk_id3", "-home", "+work")).toEqual({ code: 0, lines: ["tk_id3 was already moved from +home to +work"] });
+    expect(await links()).toEqual([{ task_id: "tk_id3", project_id: "pj_id2" }]);
+    expect((await run("task", "project", "tk_id3", "+home", "-work")).lines).toEqual(["moved tk_id3 from +work to +home"]);
+    expect(await links()).toEqual([{ task_id: "tk_id3", project_id: "pj_id1" }]);
+  });
+
+  it("exits 1 with the reason, moving nothing, for an unknown task or project, an unlinked source or an archived target", async () => {
+    const { run, links } = await cliSetup();
+    await run("project", "create", "Home");
+    await run("project", "create", "Work");
+    await run("project", "create", "Old");
+    await run("project", "archive", "old");
+    await run("task", "add", "fix", "tap", "+home");
+    await run("task", "add", "call", "mum");
+    const before = await links();
+    expect(await run("task", "project", "tk_nope", "-home", "+work")).toEqual({ code: 1, lines: ["no task tk_nope"] });
+    expect(await run("task", "project", "tk_id4", "-nope", "+work")).toEqual({ code: 1, lines: ['no project "nope"'] });
+    expect(await run("task", "project", "tk_id5", "-home", "+work")).toEqual({ code: 1, lines: ["tk_id5 was not in +home"] });
+    expect(await run("task", "project", "tk_id4", "-home", "+nope")).toEqual({ code: 1, lines: ['no project "nope"'] });
+    expect(await run("task", "project", "tk_id4", "-home", "+old")).toEqual({ code: 1, lines: ['project "old" is archived; restore it first'] });
+    expect(await links()).toEqual(before);
   });
 });
 

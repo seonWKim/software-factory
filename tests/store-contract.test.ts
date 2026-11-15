@@ -3072,6 +3072,44 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.listTaskProjects("tk_a")).toEqual([]);
     });
 
+    it("moveTaskToProject takes the task out of one project and into another in one write; a repeat changes nothing more", async () => {
+      const { store } = await make(new FakeClock("2026-11-15T09:00:00.000Z"));
+      await store.addTask(task("tk_a"));
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      await store.createProject({ id: "pj_c", name: "Side", created_by: by });
+      await store.addTaskToProject("pj_a", "tk_a");
+      await store.addTaskToProject("pj_c", "tk_a");
+      expect(await store.moveTaskToProject("tk_a", "pj_a", "pj_b")).toEqual({ ok: true, changed: true });
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_b" }, { task_id: "tk_a", project_id: "pj_c" }]);
+      expect((await store.db.all("SELECT added_at FROM controller_task_projects WHERE project_id = 'pj_b'"))[0]).toEqual({ added_at: "2026-11-15T09:00:00.000Z" });
+      expect(await store.moveTaskToProject("tk_a", "pj_a", "pj_b")).toEqual({ ok: true, changed: false });
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_b" }, { task_id: "tk_a", project_id: "pj_c" }]);
+      // Into a project it is in already: the source link goes, the target link stays as it was.
+      expect(await store.moveTaskToProject("tk_a", "pj_c", "pj_b")).toEqual({ ok: true, changed: true });
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_b" }]);
+      expect(await store.moveTaskToProject("tk_a", "pj_b", "pj_b")).toEqual({ ok: true, changed: false });
+      expect(await links(store)).toEqual([{ task_id: "tk_a", project_id: "pj_b" }]);
+    });
+
+    it("moveTaskToProject refuses an unknown task, an unlinked source, an unknown or archived target, writing nothing", async () => {
+      const { store } = await make();
+      await store.addTask(task("tk_a"));
+      await store.addTask(task("tk_b"));
+      await store.createProject({ id: "pj_a", name: "Home", created_by: by });
+      await store.createProject({ id: "pj_b", name: "Work", created_by: by });
+      await store.createProject({ id: "pj_old", name: "Old", created_by: by });
+      await store.archiveProject("pj_old");
+      await store.addTaskToProject("pj_a", "tk_a");
+      const before = await links(store);
+      expect(await store.moveTaskToProject("tk_nope", "pj_a", "pj_b")).toEqual({ ok: false, reason: "task_not_found" });
+      expect(await store.moveTaskToProject("tk_b", "pj_a", "pj_b")).toEqual({ ok: false, reason: "not_linked" });
+      expect(await store.moveTaskToProject("tk_a", "pj_nope", "pj_b")).toEqual({ ok: false, reason: "not_linked" });
+      expect(await store.moveTaskToProject("tk_a", "pj_a", "pj_nope")).toEqual({ ok: false, reason: "project_not_found" });
+      expect(await store.moveTaskToProject("tk_a", "pj_a", "pj_old")).toEqual({ ok: false, reason: "archived" });
+      expect(await links(store)).toEqual(before);
+    });
+
     it("deleteProject removes the project and its links only, leaving the tasks and other projects' links as they were", async () => {
       const { store } = await make();
       await store.addTask(task("tk_a"));
