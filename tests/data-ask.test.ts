@@ -192,6 +192,10 @@ describe("POST /api/v1/data/ask: the model", () => {
     const sent = JSON.stringify(req);
     for (const value of [TITLE, PROBLEM, SECRET, String(LEASE_TOKEN), p.run.id, "host:1:0", "problem 2"]) expect(sent).not.toContain(value);
     for (const hidden of ["lease_token", "code_hash"]) expect(sent).not.toContain(hidden);
+    // A table no doc describes (a legacy_ copy until the contract migration) is left out, names and columns;
+    // inbound_commands' own legacy_table and legacy_seq columns stay.
+    expect(content).not.toMatch(/^legacy_/m);
+    expect(sent).not.toContain("legacy_runs");
   });
 
   it("writes one cost record per model call, with its tokens and cost", async () => {

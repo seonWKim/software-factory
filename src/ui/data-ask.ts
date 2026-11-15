@@ -5,7 +5,8 @@
 // - Guards: server.ts runs Host, Origin, Content-Type, the CSRF token and the body size first; here the owner check
 //   comes before anything else, so nobody else causes a model call.
 // - The model sees the instruction, the question, today's UTC date and every table's and column's name with its line
-//   from the table docs (data.ts tableDoc). Hidden columns are left out, and no row value or row count is sent. The
+//   from the table docs (data.ts tableDoc). Hidden columns and tables no doc describes (`legacy_` copies until the
+//   contract migration) are left out, and no row value or row count is sent. The
 //   request passes the egress scan first; a flagged request is never sent.
 // - A query that names a hidden column is refused here, before it runs; a result column with a hidden column's name
 //   shows `[hidden]` (its reads also give NULL in the query). Every other text cell passes the Withholder.
@@ -62,8 +63,9 @@ export async function askRequest(d: Pick<ApiDeps, "store">, question: string, no
   const lines: string[] = [`Today (UTC): ${now.toISOString().slice(0, 10)}`, `Question: ${question}`, "", "Tables (name: what it holds), each with its columns (meaning where given):"];
   for (const t of await d.store.listTables()) {
     const doc = tableDoc(t.name);
+    if (doc === null) continue;
     const shown = t.columns.filter((c) => !(HIDDEN_COLUMNS[t.name] ?? []).includes(c));
-    lines.push(`${t.name}: ${doc?.description ?? "(no description)"}`, `  ${shown.map((c) => (doc?.columns[c] ? `${c} (${doc.columns[c]})` : c)).join(", ")}`);
+    lines.push(`${t.name}: ${doc.description}`, `  ${shown.map((c) => (doc.columns[c] ? `${c} (${doc.columns[c]})` : c)).join(", ")}`);
   }
   return {
     model_class: "standard",
