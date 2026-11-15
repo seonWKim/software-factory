@@ -21,3 +21,8 @@ export function codeUpdateIntervalMs(updater: { code_update_interval_ms?: unknow
   if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) throw new Error("updater.code_update_interval_ms must be a positive integer (milliseconds)");
   return v;
 }
+
+/** Checks the whole `updater` block at load, so a bad value fails startup before any plugin is built. */
+export function updaterConfig(updater: { auto_migrate?: unknown; code_update_interval_ms?: unknown } | undefined): { autoMigrate: boolean; codeUpdateIntervalMs: number } {
+  return { autoMigrate: autoMigrate(updater), codeUpdateIntervalMs: codeUpdateIntervalMs(updater) };
+}

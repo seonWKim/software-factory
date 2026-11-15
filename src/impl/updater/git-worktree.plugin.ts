@@ -3,7 +3,8 @@ import { autoMigrate, codeUpdateIntervalMs } from "./config.js";
 import { CODE_ROOT_ENV, CONFIG_ENV, type CommandRunner, SUPERVISOR_REQUEST_FILE, SUPERVISOR_STATUS_FILE } from "../../interfaces/updater.js";
 import { definePlugin } from "../../plugin-api.js";
 import { baseEnv } from "../process/run-process.js";
-import { CODE_BASE_BRANCH, GitWorktreeUpdater } from "./git-worktree.js";
+import { CODE_BASE_BRANCH } from "./code-origin.js";
+import { GitWorktreeUpdater } from "./git-worktree.js";
 
 /** Where a folder's `factory migrate` runs: the main checkout (the cwd), and the external config if one is used. */
 export interface MigrateAt {
