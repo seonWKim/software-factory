@@ -7,6 +7,8 @@ import { type NeedsHuman, type ReviewOutput, SPEC_CONFLICT, type TriageOutput, f
 import { AGENT_NEEDS_HUMAN, AUTO_ACTOR, AUTO_RESOLVE_LIMIT, autoApproveRefusal, REPEATED_FAILURE, type FailureClass, failureLine, repeatsFastInfraFailure, repeatsLastFailure, preflightCheck, PREFLIGHT_ACCESS, autoResolveAttempts, autoResolveKey, effectiveTier, failureClass, floorTier, isCovered, needsSpecApproval, nextAutoResolveAttempt, parseAutoResolveKey, retryDelayMs, retryKey, retryNotBefore, GITHUB_RATE_LIMITED, runKey, sameStep, FORGE_AUTH, NO_AUTO_RETRY, CHECKS_ENV, CHECKS_ENV_LIMIT, SESSION_RELEASED } from "../../../core/policy.js";
 import { FIX_SPEC_APPROVED, gatePathTouched } from "../../../core/improver.js"; import { autoApprovalDetail, ownerAnswersFor } from "../../../shared/command-notes.js";
 import { dependencyStop } from "./dependency-stop.js";
+import { AUTO_GRANT, MAX_AUTO_GRANTS, autoGrants, testPathsOnly } from "../../../core/auto-grant.js";
+import { effectiveSetting } from "../../../core/settings.js";
 import { conflictCounts, conflictCountsLine } from "../../../core/resolve.js";
 import { autoApprovedFooter, droppedAnswers, droppedValues, heldNote, renderSpec } from "../../../core/spec-comment.js";
 import { STANDING_APPROVED, ruleId, specKind, standingActor } from "../../../core/standing.js";
@@ -16,7 +18,7 @@ import { type Actor, type Run, type StateChangeDetail, type Tier, type WorkItem,
 import { failingTests, firstErrorLine, stripAnsi } from "../../../core/output-summary.js";
 import { PROVIDER_SETUP } from "../../../interfaces/agent-runner.js";
 import type { ActionRow } from "../../../outbound/index.js";
-import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, updatingForChecks } from "../support.js";
+import { AUTO, DELIVERY_FAILED, type Decision, SYSTEM, UNCHANGED_HEAD, MAX_FEEDBACK_CHARS, FLOOR_TIER, CONFLICT_PENDING, quote, footerAfter, fenced, iso, retry, updatingForChecks } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -932,12 +934,17 @@ export class RunResultsUnit {
   async needsHuman(it: WorkItem, run: Run, ask: NeedsHuman, tokens: number): Promise<Decision> {
     const waits = await dependencyStop(this.c, it, run, ask, tokens); if (waits) return waits;
     const patch = { blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
+    // The paths an implementer names outside its allowed paths: granted once when all are test files (design 05-restarts), else the exact reply.
+    const asked = [...new Set((ask.paths ?? []).filter((p) => !isCovered(p, it.allowed_paths)))];
+    const reply = run.kind === "implement" ? retryPathsReply(asked) : null;
+    if (run.kind === "implement") {
+      const granted = await this.autoGrant(it, run, asked, reply, tokens);
+      if (granted !== undefined) return granted;
+    }
     const footer = commandFooter(commandState({ ...it, ...patch }, run.kind));
     const answer = run.kind === "resolve"
       ? "Reply `/resolve <your answer>` to run the resolve again with your answer as its notes, or `/retry` to run it again as it is."
       : `Fix what it needs, then reply \`/retry\` to run the ${run.kind} again, \`/revise <feedback>\` to get a new spec written with your answer, or \`/reject <reason>\` to close.`;
-    // The paths an implementer names are shown as the exact reply only; they never change allowed_paths (issue #280).
-    const reply = run.kind === "implement" ? retryPathsReply((ask.paths ?? []).filter((p) => !isCovered(p, it.allowed_paths))) : null;
     const body = (withText: boolean) => [
       "## Factory: the agent needs a human",
       "",
@@ -963,6 +970,40 @@ export class RunResultsUnit {
       detail: { run_id: run.id, run_kind: run.kind },
       ack_run: run.id,
     };
+  }
+
+  /**
+   * An implement ask for test paths only, none on the gate list, CLAUDE.md or AGENTS.md (design 05-restarts, 2026-11-15):
+   * the owner's `/retry +paths` transition, applied with the system actor, at most MAX_AUTO_GRANTS per item, counted
+   * from the stored state changes so a restart or another worker sees it. undefined: ask the owner as before; null:
+   * this run's grant is stored already (another worker applied it), so nothing changes.
+   */
+  private async autoGrant(it: WorkItem, run: Run, asked: readonly string[], reply: string | null, tokens: number): Promise<Decision | undefined> {
+    // First: once granted, this run's paths are allowed, so a second worker's re-read must not ask the owner.
+    const grants = autoGrants(await this.c.k.reader.listStateChanges(it.id));
+    if (grants.some((g) => g.detail?.run_id === run.id)) return null;
+    const r = this.c.k.live.resolved();
+    if (!reply || grants.length >= MAX_AUTO_GRANTS) return undefined;
+    if (!effectiveSetting(r, "auto_grant_test_paths", it.project).value || !testPathsOnly(asked, r.values.test_globs)) return undefined;
+    const note = `${asked.join(", ")} granted automatically because the ask named test paths only (auto_grant_test_paths)`;
+    const stopped = { ...it, blocked_on: "human" as const, blocked_reason: AGENT_NEEDS_HUMAN };
+    const d = retry(stopped, SYSTEM, "implement", note, this.c.unit("commands").widen(it, asked));
+    if (!d || "refuse" in d) return undefined;
+    const body = [
+      "## Factory: test paths granted automatically",
+      "",
+      "The implement run stopped and asked for paths outside the allowed paths. Every path it named is a test file and none is on the gate list, so the factory applied this itself:",
+      "",
+      "```", reply, "```",
+      "",
+      `Granted automatically because the ask named test paths only (\`auto_grant_test_paths\`): ${asked.map((p) => `\`${p}\``).join(", ")}. The implementer runs again; the review checks that the test edits only follow the change. This happens once per item: a later ask waits for you.`,
+      "",
+      footerAfter(it, d.patch),
+    ].join("\n");
+    if (!(await this.c.k.d.scanner.scan("comment", body)).clean) return undefined;
+    await this.c.unit("outbox").comment(it, `auto-grant:${run.id}`, body);
+    this.c.k.d.log.info("test paths granted automatically because the ask named test paths only", { work_item_id: it.id, run_id: run.id, paths: asked.join(" ") });
+    return { ...d, patch: { ...d.patch, token_cost: tokens }, detail: { ...d.detail, run_id: run.id, [AUTO_GRANT]: true }, ack_run: run.id };
   }
 
   /**
