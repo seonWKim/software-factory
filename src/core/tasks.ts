@@ -349,9 +349,7 @@ const minutesOf = (time: string) => {
 
 /** The timed entries of the local day `date` as timeline blocks, in the order given. Pure. */
 export function planDay(entries: readonly DayEntry[], date: string): TimelineBlock[] {
-  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
-  const from = new Date(y, m - 1, d).getTime();
-  const to = new Date(y, m - 1, d + 1).getTime();
+  const { from, to } = dayBounds(date);
   const out: TimelineBlock[] = [];
   for (const e of entries) {
     const time = isEvent(e) ? e.time : e.due_time;
@@ -372,11 +370,15 @@ function byDue(a: Task, b: Task): number {
   return key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
 }
 
+/** The local day `date` (`YYYY-MM-DD`) as instants: its local midnight and the next one, in this process's time zone. Pure. */
+export function dayBounds(date: string): { from: number; to: number } {
+  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+  return { from: new Date(y, m - 1, d).getTime(), to: new Date(y, m - 1, d + 1).getTime() };
+}
+
 /** The events that overlap the local day `date`, in the given order, each with its start time on that day. */
 function eventsOn(events: readonly CalendarEventInput[], date: string): DayEvent[] {
-  const [y, m, d] = date.split("-").map(Number) as [number, number, number];
-  const from = new Date(y, m - 1, d).getTime();
-  const to = new Date(y, m - 1, d + 1).getTime();
+  const { from, to } = dayBounds(date);
   const out: DayEvent[] = [];
   for (const e of events) {
     const start = Date.parse(e.starts_at);
@@ -396,6 +398,19 @@ function dayEntries(tasks: readonly Task[], events: readonly DayEvent[]): DayEnt
   const time = (e: DayEntry) => (isEvent(e) ? e.time : e.due_time) ?? "";
   const timed = [...tasks.filter((t) => t.due_time !== null), ...events.filter((e) => e.time !== null)].sort((a, b) => time(a).localeCompare(time(b)));
   return [...events.filter((e) => e.time === null), ...timed, ...tasks.filter((t) => t.due_time === null)];
+}
+
+/**
+ * Each local day from `from` through `to` (`YYYY-MM-DD`, inclusive), with the events that overlap it (eventsOn's
+ * rule, in this process's time zone): all-day first, then timed ones by time. The Calendar page's read. Pure.
+ */
+export function calendarDays(events: readonly CalendarEventInput[], from: string, to: string): { date: string; events: DayEvent[] }[] {
+  const start = new Date(dayBounds(from).from);
+  const out: { date: string; events: DayEvent[] }[] = [];
+  for (let n = 0, date = from; date <= to; n++, date = localDate(start, n)) {
+    out.push({ date, events: dayEntries([], eventsOn(events, date)) as DayEvent[] });
+  }
+  return out;
 }
 
 export function taskViews(tasks: readonly Task[], now: Date, events: readonly CalendarEventInput[] = []): TaskViews {
