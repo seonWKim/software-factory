@@ -253,6 +253,8 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     workers_source: workers!.source,
     error: await c.text(status.error ?? null),
     pending: status.pending ?? [],
+    // A separate code checkout: commits behind its origin/main (null: not checked yet); absent when self-hosting.
+    ...("behind" in status ? { behind: status.behind ?? null } : {}),
   };
   // System actions (design §9 Status page): store reads and in-process values only, no forge call.
   const actions = await systemActions({ store: s, factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
