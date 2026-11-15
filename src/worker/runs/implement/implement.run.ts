@@ -1016,8 +1016,8 @@ async function scopeGateStep(
 }
 
 /**
- * The "Feedback on the change" section (design §4): what a human sent with `/revise` on the PR or in a
- * "Request changes" review, when that started this loop. The run's input holds it; a retry of the run (whose
+ * The "Feedback on the change" section (design §4): what a human sent with `/revise` (on the PR, or queued while
+ * implementing: `revise_applied`) or in a "Request changes" review, when that started this loop. The run's input holds it; a retry of the run (whose
  * input does not) reads it from the loop's state change. Labelled untrusted and fenced so it cannot close its
  * block, as the approver's note is. None: empty, so the section is absent.
  */
@@ -1025,7 +1025,7 @@ async function prFeedback(w: Worker, item: WorkItem, run: Run): Promise<string> 
   let text = run.input?.notes?.trim() ?? "";
   if (!text) {
     const row = (await w.d.store.listStateChanges(item.id)).filter((c) => LOOP_STARTS.includes(c.reason)).at(-1);
-    if ((row?.reason === "pr_revise_requested" || row?.reason === "pr_changes_requested") && typeof row.detail?.feedback === "string") {
+    if (row && row.reason !== "review_bug" && row.reason !== "checks_failed" && typeof row.detail?.feedback === "string") {
       text = row.detail.feedback.trim();
     }
   }

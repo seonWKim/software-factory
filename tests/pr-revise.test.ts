@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { phaseLabel } from "../src/core/commands.js";
+import { REVISE_QUEUED, REVISE_QUEUED_PATH } from "../src/controller/units/commands/queued-revise.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { SourceRef, UserId, WorkerId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
@@ -488,19 +489,27 @@ describe("/revise in a Slack thread (issue #481)", () => {
     expect(f.refusals()).toEqual([]);
   });
 
-  for (const [phase, patch] of [
-    ["implementing", { stage: "RUNNING", blocked_on: "none", blocked_reason: null }],
-    ["reviewing", { blocked_on: "none", blocked_reason: null }],
-  ] as const) {
-    it(`while ${phaseLabel(phase)}: one reply in the thread naming the phase, no PR hint, and nothing changes`, async () => {
-      const f = await slackItem();
-      const before = await f.put(patch as WorkItemPatch);
-      await f.say("/revise please change it");
-      expect(await f.item()).toEqual(before);
-      expect(f.refusals()).toHaveLength(1);
-      expect(f.refusals()[0]!.source).toEqual(f.it.source);
-      expect(f.refusals()[0]!.body).toContain(`the item is ${phaseLabel(phase)}`);
-      expect(f.refusals()[0]!.body).not.toMatch(/on PR|PR #/);
-    });
-  }
+  it(`while ${phaseLabel("reviewing")}: one reply in the thread naming the phase, no PR hint, and nothing changes`, async () => {
+    const f = await slackItem();
+    const before = await f.put({ blocked_on: "none", blocked_reason: null });
+    await f.say("/revise please change it");
+    expect(await f.item()).toEqual(before);
+    expect(f.refusals()).toHaveLength(1);
+    expect(f.refusals()[0]!.source).toEqual(f.it.source);
+    expect(f.refusals()[0]!.body).toContain(`the item is ${phaseLabel("reviewing")}`);
+    expect(f.refusals()[0]!.body).not.toMatch(/on PR|PR #/);
+  });
+
+  it("while implementing: the feedback is queued, not refused, and the thread's reply says queued", async () => {
+    const f = await slackItem();
+    const before = await f.put({ stage: "RUNNING", blocked_on: "none", blocked_reason: null });
+    await f.say("/revise please change it");
+    expect(await f.item()).toMatchObject({ stage: "RUNNING", blocked_on: "none", loop_count: before.loop_count, change_ref: before.change_ref });
+    expect(f.refusals()).toEqual([]);
+    const queued = (await f.store.listStateChanges(f.it.id)).filter((c) => c.reason === REVISE_QUEUED);
+    expect(queued.map((c) => c.detail?.feedback)).toEqual(["please change it"]);
+    const replies = f.source.comments.filter((c) => c.marker.startsWith("<!-- factory:revise-queued:"));
+    expect(replies.map((c) => c.source)).toEqual([f.it.source]);
+    expect(replies[0]!.body).toContain(REVISE_QUEUED_PATH);
+  });
 });
