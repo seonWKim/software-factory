@@ -11,6 +11,7 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   schema_migrations: "The numbered baseline schema steps applied to this store.",
   ext_packs_entries: "Extension packs (tools and skills) added to the factory, with their approval status.",
   ext_packs_approvals: "Every approval or refusal of an extension pack, by whom and when.",
+  ext_skill_refs: "Skills found in the user-level Claude Code and Codex configs: source, name, path and SHA-256, never the text.",
   ...Object.fromEntries(RENAMES.map((r) => [LEGACY_PREFIX + r.from, copyOf(r.to)])),
   ...Object.fromEntries(ARCHIVE_ONLY.map((t) => [LEGACY_PREFIX + t, `Archive of the retired ${t} table; no code reads it.`])),
   legacy_controller_work_items: copyOf("controller_work_items"),

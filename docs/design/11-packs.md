@@ -49,6 +49,7 @@
     - **tool-poisoning,** on the description and every other string field: `override_instructions` (ignore, disregard or forget near previous, prior, above or system and instructions, rules or prompt), `concealment` (do not or never near tell, inform, mention or reveal and user), `secret_file_access` (`.ssh/`, `id_rsa`, `.env`, `.aws/credentials`, `/etc/passwd`), `invisible_text` (zero-width and bidi control characters).
     - A file that is not a JSON object with a `name` is refused as `invalid_descriptor`. A refused entry is named by its file, so no descriptor text is printed.
   - **added_by:** the CLI identity, the same user ID other CLI commands store (`cli_user`, else git `user.email`, else the OS user, else `anonymous`), on every store: one owner (08-enterprise.md).
+  - **Imports also store pending entries:** `factory plugins import` stores each MCP server it finds in the user-level Claude Code and Codex configs as a pending `mcp_server` entry here, with env key names only (11-plugin-import.md).
 
 ## History
 
