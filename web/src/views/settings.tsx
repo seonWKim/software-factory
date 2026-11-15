@@ -15,7 +15,7 @@ import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
 import { PageHeader } from "../components/ui/notice.js";
-import { CapabilitiesSection } from "./settings-capabilities.js";
+import { ProvidersSection } from "./settings-capabilities.js";
 import { CalendarSection } from "./settings-calendar.js";
 import { FileKeysSection, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
 import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
@@ -31,7 +31,8 @@ import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 // its Switch removes the dashboard's choice, so factory.config.json decides again. Calendar (settings-calendar.tsx) connects and
 // disconnects each calendar plugin, which writes the live `calendar` key. The file-only keys have their own typed
 // form (settings-file-keys.tsx), saved on a local branch the owner merges; the PR-only table keeps the remaining keys.
-// Capabilities (settings-capabilities.tsx, design 08-settings 2026-11-13) lists skills, tools and providers, read only.
+// Providers (settings-capabilities.tsx, design 08-settings 2026-11-15) lists the provider entries, read only, and links to the
+// Plugins page, which holds the skills, tools and MCP servers.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
@@ -662,7 +663,7 @@ export function SettingsPage() {
       <ModeSection view={v} />
       <NoticesSection view={v} />
       <IntegrationsSection view={v} />
-      <CapabilitiesSection />
+      <ProvidersSection />
       <CalendarSection token={v.csrf_token} />
       <PageCommands />
       <Section title={t("settings.settableKeys")} count={v.keys.length}>

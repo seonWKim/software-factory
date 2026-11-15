@@ -17,7 +17,7 @@
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
 // Three areas, the same guards for each: the HTML pages (/, /items/<id>, /api/health), the JSON API under
 // /api/v1 (api.ts, GET /api/v1/notices in notices-api.ts, GET /api/v1/rules and /api/v1/rules/entry in rules-api.ts, GET
-// /api/v1/tasks (`?project=<slug>`: the project switcher) in tasks-api.ts and GET
+// /api/v1/tasks (`?project=<slug>`: the project switcher) in tasks-api.ts, GET /api/v1/plugins (the Plugins page) in plugins-api.ts and GET
 // /api/v1/calendar in calendar-api.ts, GET /api/v1/calendar/events (the Calendar page's range read) in
 // calendar-events-api.ts; errors as JSON) and the app under /app (app.ts; its own
 // CSP, errors as text).
@@ -36,6 +36,7 @@ import { TASKS_PATH, TASK_WRITES, readTasks } from "./tasks-api.js";
 import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRules, writeRuleVerdict } from "./rules-api.js";
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
+import { PLUGINS_PATH, readPlugins } from "./plugins-api.js";
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
@@ -234,11 +235,12 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
 
   // Decided on the parsed path too: "/app/../x" parses to "/x", which is not the app.
   if (isApiPath(url.pathname)) {
-    // The Rules page's read (issue #571) and the Tasks page's (#607) are served here beside the notices, so api.ts stays within its size budget.
+    // The Rules page's read (issue #571), the Tasks page's (#607) and the Plugins page's are served here beside the notices, so api.ts stays within its size budget.
     const r = url.pathname === NOTICES_PATH ? await readNotices(d)
       : url.pathname === RULES_PATH ? await readRules(d)
       : url.pathname === RULE_ENTRY_PATH ? await readRuleEntry(d, url.searchParams.get("id"))
       : url.pathname === TASKS_PATH ? await readTasks(d, url.searchParams.get("project"))
+      : url.pathname === PLUGINS_PATH ? await readPlugins(d)
       : url.pathname === CALENDAR_PATH ? await readCalendarStatus(d)
       : url.pathname === CALENDAR_EVENTS_PATH ? await readCalendarEvents(d, url.searchParams.get("from"), url.searchParams.get("to"))
       : await api(d, url);

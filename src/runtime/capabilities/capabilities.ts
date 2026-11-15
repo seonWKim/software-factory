@@ -1,13 +1,13 @@
-// The capabilities registry (design 08-settings, 2026-11-13): one list of what the factory's agents may use, for the
-// Settings page's Capabilities section. Three kinds today: the skills in the configured skill folders, the tools the
-// ToolBroker serves (with pack tools), and the LLM provider and agent runner entries, one per configured endpoint.
-// MCP servers join when packs carry them (#495).
+// The capabilities registry (design 08-settings, 2026-11-15): one list of what the factory's agents may use, for the
+// Plugins page's Skills and Tools tabs and the Settings page's Providers section. Three kinds: the skills in the
+// configured skill folders, the tools the ToolBroker serves (with pack tools), and the LLM provider and agent runner
+// entries, one per configured endpoint. Pack MCP servers are listed beside them by src/ui/plugins-api.ts.
 //
-// Names only: the registry reads folder listings, tool descriptors and plugin selections, never a secret, a file's
-// content or a credential. "Last used" comes from runs already stored (their finish time, their reported model and
+// Names only: the registry reads folder listings, a skill file's front matter description, tool descriptors and
+// plugin selections, never a secret, a skill file's body or a credential. "Last used" comes from runs already stored (their finish time, their reported model and
 // their stored transcript), so a tool call writes nothing new. Pure but for the skill folder listing.
 
-import { readdir } from "node:fs/promises";
+import { open, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
@@ -45,6 +45,8 @@ export interface CapabilitySources {
 export interface Skill {
   name: string;
   folder: string;
+  /** The `description` of the skill file's front matter; null when it has none. */
+  description: string | null;
 }
 
 export interface Capability {
@@ -59,8 +61,12 @@ export interface Capability {
   roles: string[];
   /** The newest stored run that used it, by finish time; null when none of the runs read did. */
   last_used: string | null;
+  /** A skill: its front matter description (null: none). */
+  description?: string | null;
   /** A tool: whether it is read-only (only read-only tools reach an agent). */
   read_only?: boolean;
+  /** A tool: the broker's, or a pack layer's. */
+  origin?: ToolSource["origin"];
   /** A provider: the model per class (`model_by`'s values). */
   models?: { class: string; model: string }[];
 }
@@ -71,9 +77,59 @@ export function skillFolderPath(folder: string, root: string, home: string = hom
   return isAbsolute(folder) ? folder : resolve(root, folder);
 }
 
+/** The most bytes of a skill file read for its front matter: the body past it is never returned. */
+const FRONT_MATTER_BYTES = 16 * 1024;
+/** The longest description kept. */
+const DESCRIPTION_CHARS = 500;
+
+/**
+ * The `description` of a skill file's front matter (the block between a first line `---` and the next `---`), or
+ * null when there is no front matter or no description in it. Takes `description: text`, a quoted value, and a
+ * folded or literal block (`>` or `|`, then indented lines). Text outside the front matter is never read.
+ */
+export function frontMatterDescription(text: string): string | null {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
+  if (lines[0]?.trim() !== "---") return null;
+  const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+  if (end < 0) return null;
+  const block = lines.slice(1, end);
+  const at = block.findIndex((l) => /^description\s*:/.test(l));
+  if (at < 0) return null;
+  let value = block[at]!.replace(/^description\s*:\s*/, "").trim();
+  if (/^[>|][+-]?$/.test(value) || value === "") {
+    const rest: string[] = [];
+    for (const l of block.slice(at + 1)) {
+      if (!/^\s+\S/.test(l) && l.trim() !== "") break;
+      rest.push(l.trim());
+    }
+    value = rest.filter((l) => l !== "").join(" ");
+  } else if (/^(["']).*\1$/.test(value)) {
+    value = value.slice(1, -1);
+  }
+  value = value.trim();
+  if (value === "") return null;
+  return value.length > DESCRIPTION_CHARS ? `${value.slice(0, DESCRIPTION_CHARS - 1)}…` : value;
+}
+
+/** A skill file's front matter description: only its first FRONT_MATTER_BYTES are read. Null when unreadable. */
+async function skillDescription(file: string): Promise<string | null> {
+  let handle;
+  try {
+    handle = await open(file, "r");
+    const buffer = Buffer.alloc(FRONT_MATTER_BYTES);
+    const { bytesRead } = await handle.read(buffer, 0, FRONT_MATTER_BYTES, 0);
+    return frontMatterDescription(buffer.subarray(0, bytesRead).toString("utf8"));
+  } catch {
+    return null;
+  } finally {
+    await handle?.close();
+  }
+}
+
 /**
  * The skills in each folder: a subfolder with a `SKILL.md` (Claude Code's layout), or a top-level `<name>.md` (a
- * pack's `skills/` layout). Only names are read. A folder that is missing or unreadable lists none.
+ * pack's `skills/` layout). Names, and the skill file's front matter description only. A folder that is missing or
+ * unreadable lists none.
  */
 export async function readSkills(folders: readonly string[]): Promise<Skill[]> {
   const out: Skill[] = [];
@@ -88,9 +144,9 @@ export async function readSkills(folders: readonly string[]): Promise<Skill[]> {
       if (e.name.startsWith(".")) continue;
       if (e.isDirectory()) {
         const inner = await readdir(join(folder, e.name)).catch(() => [] as string[]);
-        if (inner.includes("SKILL.md")) out.push({ name: e.name, folder });
+        if (inner.includes("SKILL.md")) out.push({ name: e.name, folder, description: await skillDescription(join(folder, e.name, "SKILL.md")) });
       } else if (e.isFile() && e.name.endsWith(".md") && e.name !== "README.md") {
-        out.push({ name: e.name.slice(0, -".md".length), folder });
+        out.push({ name: e.name.slice(0, -".md".length), folder, description: await skillDescription(join(folder, e.name)) });
       }
     }
   }
@@ -164,10 +220,10 @@ export const providerRoles = (p: Pick<ProviderSource, "interface">, i: Pick<Capa
  */
 export function capabilityList(i: CapabilityInputs): Capability[] {
   const used = (id: string) => i.last_used.get(id) ?? null;
-  const skills: Capability[] = i.skills.map((s) => ({ kind: "skill", id: `skill:${s.name}`, name: s.name, detail: s.folder, enabled: true, roles: [], last_used: used(`skill:${s.name}`) }));
+  const skills: Capability[] = i.skills.map((s) => ({ kind: "skill", id: `skill:${s.name}`, name: s.name, detail: s.folder, description: s.description, enabled: true, roles: [], last_used: used(`skill:${s.name}`) }));
   const tools: Capability[] = i.sources.tools.map((t) => {
     const roles = Object.entries(i.grants).filter(([, names]) => t.read_only && (names ?? []).includes(grantName(t))).map(([kind]) => kind).sort();
-    return { kind: "tool", id: toolId(t), name: grantName(t), detail: t.description, enabled: roles.length > 0, roles, last_used: used(toolId(t)), read_only: t.read_only };
+    return { kind: "tool", id: toolId(t), name: grantName(t), detail: t.description, enabled: roles.length > 0, roles, last_used: used(toolId(t)), read_only: t.read_only, origin: t.origin };
   });
   const providers: Capability[] = i.sources.providers.map((p) => ({
     kind: "provider",
