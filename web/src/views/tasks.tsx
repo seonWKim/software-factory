@@ -13,7 +13,7 @@ import { EmptyState, PageHeader, StatusBadge } from "../components/ui/notice.js"
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
-import { SegmentedControl } from "../components/ui/segmented-control.js";
+import { Pagination } from "../components/ui/pagination.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR, QUICK_ADD_KEYS, type QuickAddKey, isQuickAddSubmit, isUndo } from "../keys.js";
@@ -24,17 +24,18 @@ import { itemPath } from "../pages.js";
 import { FactoryWork, WorkState } from "./task-work.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's plain tasks, read through GET
-// /api/v1/tasks, in three views. Today: overdue first, in red, then today's tasks. Upcoming: tomorrow through 7 days
-// ahead, by day (the server's upcoming days after today_date). All: every task, undated included, under its #list.
+// /api/v1/tasks, as one list with no view tabs (design 02-tasks, one list): every task in the groups overdue (in red),
+// today, each later day by date, and no date, in that order, 20 rows to a page (the shared Pagination, paged here from the one
+// read). Page 1 holds the overdue and today groups, so the list opens on today.
 // A done task of the last 30 days (design 02-tasks, done tasks stay) keeps its place: its title struck through and muted,
 // its done time, and only Reopen (the same route as ⌘Z); no checkbox, edit, sub-task, projects, delete, Build this or drag.
-// The server places each task and orders each day, so the page does no date arithmetic. Calendar events are not shown here: the Calendar page (views/
+// The server places overdue and today and orders each day; the page only compares ISO date text. Calendar events are not shown here: the Calendar page (views/
 // calendar.tsx) lists them, with the stale-sync notice. Build this sends a task to intake once (POST /api/v1/tasks/build); a
 // built task links to its work item instead. One list of cards at every width, so no table turns into cards.
 // Each row's actions (design 02-tasks) post to the route that calls the CLI command's store method: the checkbox
 // completes it, `e` or Edit edits it in place (Enter saves, Esc cancels), and its overflow menu adds a sub-task (top-level
 // rows only) or deletes it through the danger Dialog. A sub-task shows indented under its parent, one level.
-// Today ends with today's timeline (design 02-tasks, schedule a task), collapsed until its control (aria-expanded)
+// The list starts with today's timeline (design 02-tasks, schedule a task), collapsed until its control (aria-expanded)
 // is pressed: the server places each timed task, drawn its duration (30 minutes when none is stored); events are not
 // drawn. A task row dragged onto a
 // half-hour slot is scheduled there (POST /api/v1/tasks/schedule: today's date, the slot's time); typing a time in
@@ -42,21 +43,14 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // ⌘Z outside a field undoes the last completion this page made (POST /api/v1/tasks/reopen, `factory task reopen`), then
 // the one before it: the page keeps the completed tasks in memory only, so a reload forgets them, and it never undoes an
 // edit or a delete.
-// The project tabs (design 09-dashboard-app, task projects) filter Today, Upcoming and All to one active
+// The project tabs (design 09-dashboard-app, task projects) filter the list to one active
 // task project's tasks, open and done (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
 // load and set on change, so a filtered view can be shared and reloaded. Factory work
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
-// The page's order (design 09-dashboard-app): the project tabs and the view tabs, Quick add, Factory work, the view; the blocks
+// The page's order (design 09-dashboard-app): the project tabs, Quick add, Factory work, the list; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
-
-const TABS = [
-  { id: "today", label: t("tasks.today") },
-  { id: "upcoming", label: t("tasks.upcoming") },
-  { id: "all", label: t("tasks.all") },
-] as const;
-type Tab = (typeof TABS)[number]["id"];
 
 const muted = "text-xs text-pretty text-text-2";
 
@@ -541,22 +535,20 @@ function nest(tasks: readonly TaskRow[]): { row: TaskRow; sub: boolean }[] {
 /** The tasks among a day's rows: the server also places calendar events there, which the Calendar page shows. */
 const tasksOf = (rows: readonly DayRow[]): TaskRow[] => rows.filter((x): x is TaskRow => !isEventRow(x));
 
-function TaskList({ label, tasks, overdue = false }: { label: string; tasks: readonly TaskRow[]; overdue?: boolean }) {
-  return (
-    <ul aria-label={label} className="divide-y divide-border rounded-control border border-border">
-      {nest(tasks).map(({ row, sub }) => (
-        <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />
-      ))}
-    </ul>
-  );
-}
+type Nested = { row: TaskRow; sub: boolean };
+/** One group of the list: its heading and its rows, each sub-task right after its parent. */
+interface TaskGroup { key: string; title: string; overdue: boolean; rows: Nested[] }
 
-/** One heading and its list, for the groups of Today, Upcoming and All. */
-function Group({ title, tasks, overdue = false }: { title: string; tasks: readonly TaskRow[]; overdue?: boolean }) {
+/** One heading and its list; the rows are the page's share of the group. */
+function Group({ title, rows, overdue }: { title: string; rows: readonly Nested[]; overdue: boolean }) {
   return (
     <div className="space-y-1">
       <h3 className={cn("text-xs font-medium", overdue ? "text-pill-bad-fg" : "text-text-2")}>{title}</h3>
-      <TaskList label={title} tasks={tasks} overdue={overdue} />
+      <ul aria-label={title} className="divide-y divide-border rounded-control border border-border">
+        {rows.map(({ row, sub }) => (
+          <TaskCard key={row.id} task={row} overdue={overdue} sub={sub} />
+        ))}
+      </ul>
     </div>
   );
 }
@@ -648,47 +640,69 @@ function Timeline({ date, blocks }: { date: string; blocks: readonly TimelineRow
   );
 }
 
-/** Upcoming's days: the server's upcoming days after today (today's tasks are in Today), each with its tasks only. */
-const upcomingDays = (v: TasksView) =>
-  v.upcoming.filter((d) => d.date !== v.today_date).map((d) => ({ date: d.date, tasks: tasksOf(d.tasks) })).filter((d) => d.tasks.length > 0);
+/** Tasks per page of the list (design 02-tasks, one list). */
+const PAGE_SIZE = 20;
 
-function TabBody({ tab, v }: { tab: Tab; v: TasksView }) {
-  if (tab === "all") {
-    if (v.projects.length === 0) return <EmptyState title={t("tasks.emptyAll")} />;
-    return (
-      <div className="space-y-3">
-        {v.projects.map((p) => <Group key={p.list ?? ""} title={p.list === null ? t("tasks.noList") : `#${p.list}`} tasks={p.tasks} />)}
-      </div>
-    );
+/**
+ * Every task the read returned as the list's groups, in order: overdue, today, each later day by date, no date. The server
+ * places overdue and today; a task it did not place there (a done one, or one of a later day) is put by its due date, which
+ * compares as the ISO date text it is, so the page does no date arithmetic. Empty groups are left out.
+ */
+function groupsOf(v: TasksView): TaskGroup[] {
+  const placed = new Set<string>();
+  const take = (tasks: readonly TaskRow[]) => tasks.filter((x) => !placed.has(x.id) && placed.add(x.id));
+  const overdue = take(v.today.overdue);
+  const today = take(tasksOf(v.today.due));
+  const days = new Map<string, TaskRow[]>();
+  const noDate: TaskRow[] = [];
+  for (const x of take(v.projects.flatMap((p) => p.tasks))) {
+    if (x.due_date === null) noDate.push(x);
+    else if (x.due_date < v.today_date) overdue.push(x);
+    else if (x.due_date === v.today_date) today.push(x);
+    else days.set(x.due_date, [...(days.get(x.due_date) ?? []), x]);
   }
-  if (tab === "today") {
-    const today = tasksOf(v.today.due);
-    return (
-      <div className="space-y-3">
-        {today.length + v.today.overdue.length === 0 && <EmptyState title={t("tasks.emptyToday")} />}
-        {v.today.overdue.length > 0 && <Group title={t("tasks.overdue")} tasks={v.today.overdue} overdue />}
-        {today.length > 0 && <Group title={t("tasks.todayDay", { day: dayLabel(v.today_date) })} tasks={today} />}
-        <Timeline date={v.today_date} blocks={v.timeline ?? []} />
-      </div>
-    );
+  const groups = [
+    { key: "overdue", title: t("tasks.overdue"), overdue: true, tasks: overdue },
+    { key: "today", title: t("tasks.todayDay", { day: dayLabel(v.today_date) }), overdue: false, tasks: today },
+    ...[...days].sort(([a], [b]) => (a < b ? -1 : 1)).map(([date, tasks]) => ({ key: date, title: dayLabel(date), overdue: false, tasks })),
+    { key: "none", title: t("tasks.noDate"), overdue: false, tasks: noDate },
+  ];
+  return groups.filter((g) => g.tasks.length > 0).map((g) => ({ ...g, rows: nest(g.tasks) }));
+}
+
+/** The groups' rows of one page (the rows past the page size go to the next), regrouped under their headings. */
+function pageOf(groups: readonly TaskGroup[], page: number): TaskGroup[] {
+  const from = (page - 1) * PAGE_SIZE;
+  let seen = 0;
+  const out: TaskGroup[] = [];
+  for (const g of groups) {
+    const rows = g.rows.slice(Math.max(0, from - seen), Math.max(0, from + PAGE_SIZE - seen));
+    seen += g.rows.length;
+    if (rows.length > 0) out.push({ ...g, rows });
   }
-  const upcoming = upcomingDays(v);
-  if (upcoming.length === 0) return <EmptyState title={t("tasks.emptyUpcoming")} />;
+  return out;
+}
+
+/** Today's timeline (collapsed), then the one paginated list; page 1 opens on the overdue and today groups. */
+function OpenTasks({ v }: { v: TasksView }) {
+  const [wanted, setPage] = useState(1);
+  const groups = groupsOf(v);
+  const total = groups.reduce((n, g) => n + g.rows.length, 0);
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  // A reload can leave fewer pages than the one on view.
+  const page = Math.min(wanted, pages);
   return (
     <div className="space-y-3">
-      {upcoming.map((d) => (
-        <Group key={d.date} title={dayLabel(d.date)} tasks={d.tasks} />
-      ))}
+      <Timeline date={v.today_date} blocks={v.timeline ?? []} />
+      {total === 0 && <EmptyState title={t("tasks.emptyAll")} />}
+      {pageOf(groups, page).map((g) => <Group key={g.key} title={g.title} rows={g.rows} overdue={g.overdue} />)}
+      <Pagination page={page} pages={pages} onChange={setPage} />
     </div>
   );
 }
 
-/** True when the view lists at least one open task. */
-const hasTasks = (v: TasksView, tab: Tab): boolean =>
-  (tab === "today" ? [...v.today.overdue, ...tasksOf(v.today.due)]
-  : tab === "upcoming" ? upcomingDays(v).flatMap((d) => d.tasks)
-  : v.projects.flatMap((p) => p.tasks)
-  ).some((x) => x.done_at == null);
+/** True when the list holds at least one open task. */
+const hasTasks = (v: TasksView): boolean => groupsOf(v).some((g) => g.rows.some((r) => r.row.done_at == null));
 
 /**
  * ⌘Z: the tasks this page completed, newest last, in memory only (a reload clears them). Each press outside a field
@@ -795,7 +809,6 @@ function AddProjectDialog({ token, returnFocusTo, onCreated, onClose }: { token:
 }
 
 export function TasksPage() {
-  const [tab, setTab] = useState<Tab>("today");
   const [project, setProject] = useProjectParam();
   const [adding, setAdding] = useState(false);
   const addButton = useRef<HTMLButtonElement>(null);
@@ -803,7 +816,7 @@ export function TasksPage() {
   const v = q.data;
   const token = v?.can_build ? v.csrf_token : null;
   const undo = useUndoDone(token);
-  // All's groups hold every task the read returned, so its titles name each sub-task's parent.
+  // `projects` holds every task the read returned, so its titles name each sub-task's parent.
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
   // Kept from the last read, so the tabs keep their choices while a new filter loads.
   const known = useRef<readonly ProjectChoice[]>([]);
@@ -824,7 +837,6 @@ export function TasksPage() {
           }
         />
         {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
-        <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
       </div>
       <div className="space-y-1">
         <QuickAdd token={v?.csrf_token ?? null} addKey={v?.add_key ?? "enter"} />
@@ -838,12 +850,12 @@ export function TasksPage() {
         <FactoryWork project={project} />
       </div>
       <div>
-        <Section label={TABS.find((x) => x.id === tab)!.label}>
+        <Section label={t("tasks.listLabel")}>
           <div className="space-y-3">
             {q.isError ? <ErrorNote error={q.error} /> : !v ? <Loading rows={3} /> : <Rows.Provider value={{ token, titles, projects: known.current, completed: undo.completed }}>
-                <TabBody tab={tab} v={v} />
+                <OpenTasks key={project ?? ""} v={v} />
               </Rows.Provider>}
-            {v?.can_build && hasTasks(v, tab) && <p className={muted}>{t("tasks.buildNote")}</p>}
+            {v?.can_build && hasTasks(v) && <p className={muted}>{t("tasks.buildNote")}</p>}
           </div>
         </Section>
       </div>

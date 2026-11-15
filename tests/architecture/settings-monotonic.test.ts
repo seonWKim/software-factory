@@ -40,6 +40,16 @@ function looserPair(s: SettingDescriptor): { than: unknown; looser: unknown } {
   return { than: t[0], looser: t[t.length - 1] };
 }
 
+/**
+ * A project value looser than the global one (with the global override it is looser than, or null for the default)
+ * and one tighter than the default. A number: its default +1 and -1. A boolean switch such as
+ * auto_grant_test_paths, default on: true is looser than a global false, and false is tighter.
+ */
+function projectSample(s: SettingDescriptor): { global: string | null; looser: string; tighter: string } {
+  if (s.type === "boolean") return { global: "false", looser: "true", tighter: "false" };
+  return { global: null, looser: String((s.default as number) + 1), tighter: String((s.default as number) - 1) };
+}
+
 describe("settings-monotonic", () => {
   it("every setting is consistent and sits at src/<owner>/settings/<key>.setting.ts, on the gate list", () => {
     const bad: string[] = [];
@@ -84,10 +94,10 @@ describe("settings-monotonic", () => {
     const keys = catalog.all().filter((s) => s.scope === "project" && s.changed_by === "runtime" && s.direction === "tighten-only");
     expect(keys.length).toBeGreaterThan(0);
     for (const s of keys) {
-      const looser = String((s.default as number) + 1);
-      const r = resolveSettings(base, [{ key: s.key, project: "p1", value: looser }]);
+      const { global, looser, tighter } = projectSample(s);
+      const above = global === null ? [] : [{ key: s.key, project: "", value: global }];
+      const r = resolveSettings(base, [...above, { key: s.key, project: "p1", value: looser }]);
       expect(r.ignored.map((i) => i.key), s.key).toEqual([s.key]);
-      const tighter = String((s.default as number) - 1);
       expect(resolveSettings(base, [{ key: s.key, project: "p1", value: tighter }]).ignored, s.key).toEqual([]);
     }
   });
