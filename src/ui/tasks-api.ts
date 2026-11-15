@@ -2,7 +2,8 @@
 // done window) with the stored calendar events; POST /api/v1/tasks/edit,
 // /done, /reopen, /delete and /sub, the page's row actions, and /schedule, its timeline's drop, each calling the store method of its CLI command (`factory task
 // edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
-// its Build this button (task-build.ts, the same action as `factory task build`); and POST /api/v1/tasks, which
+// its Build this button (task-build.ts, the same action as `factory task build`); POST /api/v1/tasks/create, a task in a
+// project built at once (createProjectTask, the same action as `factory task create --project`); and POST /api/v1/tasks, which
 // stores one plain task from quick-add words, for the desktop shell's quick-add box. The words go through the same parser as `factory task add` (src/core/quick-add.ts)
 // and the task through the same store method, with the ID the caller chose, so a retry stores one task. The task is
 // created by the page's commands actor (UiCommands), whose per-process token the request carries. The request guards
@@ -11,7 +12,7 @@
 
 import { readCalendar } from "../calendar/index.js";
 import { needsDueDate, parseQuickAdd, parseQuickEdit, validDate } from "../core/quick-add.js";
-import { buildTask } from "../core/task-build.js";
+import { buildTask, createProjectTask } from "../core/task-build.js";
 import { isProjectSlug } from "../core/projects.js";
 import { ProjectRefused, type TaskStore, doneWindow, durationError, projectRefusal, taskViews } from "../core/tasks.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
@@ -24,6 +25,7 @@ import { PROJECTS_PATH, TASK_PROJECT_PATH, writeProject, writeTaskProject } from
 
 export const TASKS_PATH = "/api/v1/tasks";
 export const TASK_BUILD_PATH = "/api/v1/tasks/build";
+export const TASK_CREATE_PATH = "/api/v1/tasks/create";
 export const TASK_EDIT_PATH = "/api/v1/tasks/edit";
 export const TASK_DONE_PATH = "/api/v1/tasks/done";
 export const TASK_REOPEN_PATH = "/api/v1/tasks/reopen";
@@ -37,6 +39,8 @@ const TASK_ID = /^tk_[A-Za-z0-9_-]{8,64}$/;
 const MAX_ID = 200;
 /** The longest quick-add text taken; a task title is a line, not a document. */
 export const MAX_WORDS = 1000;
+/** The longest work request body POST /api/v1/tasks/create takes. */
+const MAX_BODY = 20_000;
 
 /** Each task's or event's title through the Withholder, as on the other routes. */
 async function shown<T extends { title: string }>(w: Withholder, rows: readonly T[]): Promise<T[]> {
@@ -132,11 +136,32 @@ export async function writeTaskBuild(d: UiDeps, body: unknown): Promise<ApiResul
   return { status: 200, value: { task_id: r.task.id, work_item_id: r.item.id, created: r.created } };
 }
 
-type Field = "id" | "words" | "parent";
+/**
+ * POST /api/v1/tasks/create with `{ id, title, body, project }`, after the request guards: the same action as `factory
+ * task create --title <t> --body-file <f> --project <slug>` (createProjectTask): a task under the caller's ID in task
+ * project `project`, built at once as a local work item whose problem holds `body`. 400 for a body that is not one;
+ * 503 with no actor; 409 for an unknown or archived project or no stored project key (nothing written); else 200 with
+ * the task's and the work item's IDs. A retry with the same ID adds nothing and answers the same item.
+ */
+export async function writeTaskCreate(d: UiDeps, body: unknown): Promise<ApiResult> {
+  const actor = d.commands?.actor ?? null;
+  if (actor === null) return OFF;
+  const b = parseBody(body, ["id", "title", "body", "project"]);
+  if ("error" in b) return refused(400, b.error);
+  const project = (await d.settings?.resolveProject())?.key ?? null;
+  const r = await createProjectTask(d.store, { task_id: b.id, title: b.title.trim(), body: b.body.trim(), slug: b.project, project, user: actor });
+  if (!r.ok) return refused(409, r.reason);
+  return { status: 200, value: { task_id: r.task.id, work_item_id: r.item.id, created: r.created } };
+}
+
+type Field = "id" | "words" | "parent" | "title" | "body" | "project";
 
 /** Why `v` is not a valid value for the field, or null. `id` is a new task's ID; `parent` (and `id` with `stored`) any stored one. */
 function fieldError(k: Field, v: unknown, stored: boolean): string | null {
   if (k === "words") return typeof v === "string" && v.length <= MAX_WORDS ? null : `words must be a string of at most ${MAX_WORDS} characters`;
+  if (k === "title") return typeof v === "string" && v.trim() !== "" && v.length <= MAX_WORDS ? null : `title must be a non-empty string of at most ${MAX_WORDS} characters`;
+  if (k === "body") return typeof v === "string" && v.length <= MAX_BODY ? null : `body must be a string of at most ${MAX_BODY} characters`;
+  if (k === "project") return typeof v === "string" && isProjectSlug(v) ? null : "project must be a project slug, e.g. home-repairs";
   // Any stored ID: a chat-added task's ID is its message's, not the tk_<random> quick-add takes.
   if (k === "parent" || stored) return typeof v === "string" && v !== "" && v.length <= MAX_ID ? null : `${k} must be a task ID of at most ${MAX_ID} characters`;
   return typeof v === "string" && TASK_ID.test(v) ? null : "id must be tk_ and 8 to 64 letters, digits, - or _";
@@ -303,6 +328,7 @@ export async function writeTaskSchedule(d: UiDeps, body: unknown): Promise<ApiRe
 export const TASK_WRITES: Readonly<Record<string, (d: UiDeps, body: unknown) => Promise<ApiResult>>> = {
   [TASKS_PATH]: writeTask,
   [TASK_BUILD_PATH]: writeTaskBuild,
+  [TASK_CREATE_PATH]: writeTaskCreate,
   [TASK_EDIT_PATH]: writeTaskEdit,
   [TASK_DONE_PATH]: writeTaskDone,
   [TASK_REOPEN_PATH]: writeTaskReopen,

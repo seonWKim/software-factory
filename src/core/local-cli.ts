@@ -11,11 +11,12 @@ import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMes
 import { needsDueDate, parseQuickAdd, parseQuickEdit } from "./quick-add.js";
 import { type Project, projectSlug } from "./projects.js";
 import { ProjectRefused, type TaskEdit, type TaskFields, projectRefusal, taskLine } from "./tasks.js";
-import { buildTask, createLocalItem } from "./task-build.js";
+import { NO_PROJECT_KEY, buildTask, createLocalItem, createProjectTask } from "./task-build.js";
 
 /**
  * The writer side of local intake (issue #200; design 05-sources.md, "CLI intake"). `factory task create`
- * creates a local work item with its triage run queued; `task add` stores a plain task from quick-add words and `task
+ * creates a local work item with its triage run queued, and with `--project <slug>` also a task in that project linked
+ * to it, as `task build` links one (design 02-tasks); `task add` stores a plain task from quick-add words and `task
  * done` completes one and `task reopen` undoes that, `task edit`, `task delete` and `task sub` change, remove and nest one (design 02-tasks: no
  * work item, no triage); `project …` keeps the task projects and `task project` links a task to one or unlinks it
  * (design 02-tasks, task projects); `task list` and `task show` read the store; `approve`,
@@ -97,7 +98,8 @@ const ITEM_COMMANDS = ["approve", "retry", "revise", "reject", "resolve", "verdi
 export type ItemCommand = (typeof ITEM_COMMANDS)[number] | typeof MERGE_COMMAND;
 
 export type CliAction =
-  | { action: "create"; title: string; bodyFile: string }
+  /** `project`: the `--project` task project's slug; left out, the work item only. */
+  | { action: "create"; title: string; bodyFile: string; project?: string }
   | { action: "add"; task: TaskFields }
   | { action: "done"; id: string }
   | { action: "reopen"; id: string }
@@ -176,13 +178,15 @@ export function parseLocalCliArgs(word: string, args: readonly string[]): CliAct
       for (let i = 0; i < rest.length; i += 2) {
         const k = rest[i]!;
         const v = rest[i + 1];
-        if ((k !== "--title" && k !== "--body-file") || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
+        if (!["--title", "--body-file", "--project"].includes(k) || v === undefined || k in flags) return bad(`task create: unexpected ${JSON.stringify(k)}`);
         flags[k] = v;
       }
       const title = flags["--title"]?.trim();
       const bodyFile = flags["--body-file"];
       if (!title || !bodyFile) return bad("task create needs --title <t> and --body-file <f>");
-      return { action: "create", title, bodyFile };
+      if (flags["--project"] === undefined) return { action: "create", title, bodyFile };
+      const project = projectSlug(flags["--project"].replace(/^\+/, ""));
+      return project === null ? bad("task create: --project needs a project slug, e.g. home-repairs") : { action: "create", title, bodyFile, project };
     }
     return bad(`unknown task command ${JSON.stringify(sub ?? "")}`);
   }
@@ -286,11 +290,15 @@ export async function runLocalCli(d: LocalCliDeps, a: CliAction): Promise<CliRes
   switch (a.action) {
     case "create": {
       const project = await d.project();
-      if (project === null) {
-        return fail("no project is stored yet: start the factory once (`npm run factory -- dev`) so it records the configured repo");
+      if (project === null) return fail(NO_PROJECT_KEY);
+      const body = (await d.read(a.bodyFile)).trim();
+      if (a.project !== undefined) {
+        const r = await createProjectTask(d.store, { task_id: `tk_${d.newId()}`, title: a.title, body, slug: a.project, project, user });
+        if (!r.ok) return fail(r.reason);
+        await claim();
+        return { code: 0, lines: [r.item.id, `task ${r.task.id} in +${a.project}`] };
       }
       await claim();
-      const body = (await d.read(a.bodyFile)).trim();
       const { item } = await createLocalItem(d.store, { source_id: `local-${d.newId()}`, title: a.title, body, project, user });
       return { code: 0, lines: [item.id] };
     }
