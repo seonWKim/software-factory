@@ -177,7 +177,7 @@ describe("system actions: claim deadlock", () => {
 });
 
 describe("system actions: open alarms", () => {
-  it("each open alarm is listed, but all of them count once in needs_you: the Floor shows them as one line", async () => {
+  it("each open alarm is listed and is its own Needs-you row: two alarms and a worker pause add 3 to needs_you", async () => {
     const { overview, store } = await setup();
     await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
     await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
@@ -185,7 +185,40 @@ describe("system actions: open alarms", () => {
     const o = await overview();
     expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
     expect(codes(o)).toContain("worker_pause");
-    expect(o.needs_you).toBe(2);
+    expect(o.needs_you).toBe(3);
+  });
+});
+
+describe("needs_you: the number of Needs-you rows (design 09-status-page)", () => {
+  /** An item moved to `patch` (a block on a person or the budget, or nothing). */
+  async function item(store: FactoryStore, n: number, patch: Parameters<FactoryStore["transition"]>[0]["patch"]) {
+    const { item } = await store.createWorkItem({ ...issue(n), title: `Item ${n}` }, system);
+    await store.transition({ id: item.id, expected_version: item.version, patch, actor: system, reason: "seed" });
+  }
+
+  it("one waiting item and one open alarm give 2", async () => {
+    const { overview, store } = await setup();
+    await item(store, 1, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
+    expect((await overview()).needs_you).toBe(2);
+  });
+
+  it("each item blocked on a person or the budget is one row; a stuck item (nothing moves it) is none", async () => {
+    const { overview, store } = await setup();
+    await item(store, 1, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    await item(store, 2, { stage: "RUNNING", blocked_on: "budget", blocked_reason: "budget_checkpoint" });
+    await item(store, 3, { stage: "RUNNING" });
+    expect((await overview()).needs_you).toBe(2);
+  });
+
+  it("each non-alarm system action counts once, each alarm once more", async () => {
+    const { overview, store } = await setup({ version: { applied: 3, latest: 8 } });
+    await store.pauseWorkers({ all: true }, "local:me");
+    const before = await overview();
+    expect(codes(before)).toEqual(["migration_pending", "worker_pause"]);
+    expect(before.needs_you).toBe(2);
+    await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
+    expect((await overview()).needs_you).toBe(3);
   });
 });
 
