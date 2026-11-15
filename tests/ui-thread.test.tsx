@@ -54,6 +54,7 @@ beforeEach(() => {
       "/api/v1/items/wi_1": detail,
       "/api/v1/items": { as_of: AT, total: 1, items: [ROW], facets: { state: {}, allStates: 1 } },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
+      "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
       "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 1, system_actions: [], running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 } },
     };
     const body = bodies[path];
@@ -187,10 +188,10 @@ describe("item page: command reply in the thread", () => {
   });
 });
 
-describe("Needs you: link to the factory's latest why", () => {
+describe("Tasks page Needs you: link to the factory's latest why", () => {
   it("a Needs a human row links to /app/items/<id>#<anchor>, and the anchor is on the item page", async () => {
-    mount("/app/");
-    const table = await screen.findByRole("table", { name: "Needs you" });
+    mount("/app/tasks");
+    const table = await screen.findByRole("region", { name: "Needs you" });
     const link = within(table).getByRole("link", { name: "the agent asks a question" });
     expect(link.getAttribute("href")).toBe("/app/items/wi_1#msg-7");
     fireEvent.click(link);
@@ -205,8 +206,8 @@ describe("Needs you: link to the factory's latest why", () => {
   it("a row whose item has no factory entry shows the reason without a link", async () => {
     ROW.need.anchor = null;
     try {
-      mount("/app/");
-      const table = await screen.findByRole("table", { name: "Needs you" });
+      mount("/app/tasks");
+      const table = await screen.findByRole("region", { name: "Needs you" });
       const need = table.querySelector("[data-need]")!;
       expect(need.textContent).toContain("the agent asks a question");
       expect(need.querySelector("a")).toBeNull();
