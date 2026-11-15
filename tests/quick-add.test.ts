@@ -195,6 +195,38 @@ describe("+slug: a task project (design 02-tasks, task projects)", () => {
   });
 });
 
+describe("#label: any script's letters and digits (design 02-tasks)", () => {
+  it("a Hangul #tag is the list and leaves the title; words with no token stay in it", () => {
+    expect(ok("월세 내기 금요일 p1 #집")).toEqual({
+      title: "월세 내기 금요일 p1", list: "집", priority: null, due: null, due_time: null, duration_minutes: null, recurrence: null,
+    });
+  });
+
+  it("letters and digits of other scripts, with dash and underscore, are a #label as #home is", () => {
+    expect(ok("fix bike #home")).toMatchObject({ title: "fix bike", list: "home" });
+    expect(ok("rent friday p1 #home")).toMatchObject({ title: "rent friday p1", list: "home" });
+    expect(ok("call #café-2_x")).toMatchObject({ title: "call", list: "café-2_x" });
+    expect(ok("buy tea #買い物 !2 tomorrow")).toMatchObject({ title: "buy tea", list: "買い物", priority: 2, due: { days_from_today: 1 } });
+    expect(ok("pay #집2")).toMatchObject({ title: "pay", list: "집2" });
+  });
+
+  it("a # with nothing readable after it, or with other punctuation, stays in the title", () => {
+    expect(ok("a # b")).toMatchObject({ title: "a # b", list: null });
+    expect(ok("a #집! b")).toMatchObject({ title: "a #집! b", list: null });
+    expect(ok("a #home.x b")).toMatchObject({ title: "a #home.x b", list: null });
+    expect(ok("a #🏠 b")).toMatchObject({ title: "a #🏠 b", list: null });
+  });
+
+  it("a second #label is refused, Hangul or not", () => {
+    expect(refused("a #집 #home")).toContain("repeated field: list");
+  });
+
+  it("task edit reads a Hangul #tag the same way, naming only the list", () => {
+    expect(parseQuickEdit("#집")).toEqual({ ok: true, edit: { list: "집" } });
+    expect(parseQuickEdit("월세 내기 #집")).toEqual({ ok: true, edit: { title: "월세 내기", list: "집" } });
+  });
+});
+
 describe("task dates", () => {
   it("localDate is the calendar date of the given time, never the system clock's", () => {
     expect(localDate(new Date(2020, 1, 28, 12))).toBe("2020-02-28");

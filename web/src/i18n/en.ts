@@ -360,7 +360,7 @@ export const en = {
   "tasks.buildLabel": "Build this: {title}",
   "tasks.build": "Build this",
   "tasks.addLabel": "Add a task",
-  "tasks.addPlaceholder": "e.g. rent friday p1 #home, then {key}",
+  "tasks.addPlaceholder": "e.g. rent tomorrow !1 #home, then {key}",
   "tasks.add": "Add",
   "tasks.overdue": "Overdue",
   "tasks.due": "due {due}",
