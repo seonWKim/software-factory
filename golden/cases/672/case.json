@@ -1,16 +1,16 @@
 {
-  "id": "665",
-  "pr_number": 665,
-  "work_item_id": "wi_b0a9b4344a0846ffad462538a9f0d709",
+  "id": "672",
+  "pr_number": 672,
+  "work_item_id": "wi_908a612824a1405a9ae44cda730f9d0d",
   "expect": "should_pass",
   "outcome": "clean_merge",
   "human_verdict": {
     "reason": "pr_merged",
     "actor_id": "github:69591622",
-    "record_id": "sc_9e66e9ef7daa4b2a996c83f90c659e49"
+    "record_id": "sc_39039e2e810345638e36b015c8c183a1"
   },
   "revert_reason": null,
   "source_record_ids": [
-    "sc_9e66e9ef7daa4b2a996c83f90c659e49"
+    "sc_39039e2e810345638e36b015c8c183a1"
   ]
 }
