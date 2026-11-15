@@ -791,6 +791,10 @@ describe("Tasks page", () => {
       current = view({ projects: [{ list: null, tasks: [{ ...row("tk_built", { work_item_id: "wi_1" }), done_at: "2026-11-12T08:00:00.000Z" }, row("tk_inbox")] }] });
       await show();
       expect(within(await section()).getByText("Ship it")).toBeTruthy();
+      tab("All");
+      expect(await within(card("tk_built")).findByRole("button", { name: "Work item state: tk_built" }, SLOW)).toBeTruthy();
+      expect(within(card("tk_built")).queryByRole("link", { name: "Open" })).toBeNull();
+      expect(within(card("tk_built")).queryByRole("button", { name: "Approve" })).toBeNull();
     });
 
     it("an item with a waiting task row and one with no task are listed once each, the first on its row only", async () => {

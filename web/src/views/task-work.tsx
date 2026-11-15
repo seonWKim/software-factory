@@ -36,17 +36,18 @@ function RowActions({ it }: { it: ItemRow }) {
 }
 
 /**
- * The work item's state on a task's row. A waiting item shows its state badge and its one primary action (the task's
- * need, so the item is not listed again under Needs you); any other state is a button that opens its commands in a
+ * The work item's state on a task's row. On an open task's row (`open`) a waiting item shows its state badge and its
+ * one primary action (the task's need, so the item is not listed again under Needs you); a done task's waiting item
+ * stays in Needs you, so its row keeps the plain state. Any other state is a button that opens its commands in a
  * Dialog; nothing while the items list lacks the item.
  */
-export function WorkState({ id, title }: { id: string; title: string }) {
+export function WorkState({ id, title, open: taskOpen }: { id: string; title: string; open: boolean }) {
   const items = useApi<Items>(API.items).data?.items;
   const it = items?.find((i) => i.id === id);
   const [open, setOpen] = useState(false);
   const key = it ? stateKey(it) : null;
   if (!it || key === null) return null;
-  if (needsYou([it]).length > 0) {
+  if (taskOpen && needsYou([it]).length > 0) {
     return (
       <>
         <StatusBadge level={it.level} size="sm">{t(key)}</StatusBadge>

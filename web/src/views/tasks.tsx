@@ -506,7 +506,7 @@ function TaskCard({ task, overdue: inOverdue = false, sub = false }: { task: Tas
       <div className="flex items-start gap-2">
         {task.work_item_id !== null ? (
           <>
-            <WorkState id={task.work_item_id} title={task.title} />
+            <WorkState id={task.work_item_id} title={task.title} open={!done} />
             <Link href={itemPath(task.work_item_id)} className={cn(LINK_CLASS, "font-mono text-xs break-all")}>
               {task.work_item_id}
             </Link>
