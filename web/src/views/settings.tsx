@@ -515,7 +515,7 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
           </span>
         )}
       </Td>
-      <Td className="min-w-24 text-text-2">{row.applies_at}</Td>
+      <Td className="min-w-24 whitespace-nowrap text-text-2">{row.applies_at}</Td>
       <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
     </Tr>
   );
