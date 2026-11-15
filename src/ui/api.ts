@@ -259,7 +259,6 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const actions = await systemActions({ store: s, factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
   const system_actions = [];
   for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
-  const token = c.d.lastChecks?.tokenDays() ?? null;
   return {
     as_of: c.now.toISOString(),
     /** The revision this UI server's build was made from (its dist/ stamp); the app compares it with the one built into it. */
@@ -267,11 +266,10 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    /** The number of Needs-you rows (needs-you.ts): the waiting items plus one per system action, each alarm its own. */
-    needs_you: await needsYouCount(s, system_actions),
+    needs_you: await needsYouCount(s, system_actions), // the Needs-you rows: the waiting items, one per system action
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
-    github_token_days: token,
+    github_token_days: c.d.lastChecks?.tokenDays() ?? null,
     /** The GitHub budget the controller stored after its last poll (remaining, reset, this process's count, wait reason); null: none stored. */
     github_budget: await readGitHubBudget(s, c.now),
     running: running.length,
