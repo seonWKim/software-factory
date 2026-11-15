@@ -32,6 +32,8 @@ import { withNodes } from "./standing.js";
 // - Add on MCP and Tools: a pack folder or one descriptor file (`add`), as `factory pack add`. Add on Skills, and
 //   Remove on a skill folder: the skill folder list (`capabilities.skill_folders`) through the config file writer
 //   (POST /api/v1/settings `edit-file`), which puts the change on a local branch; the page shows that item's Merge button.
+// - The Tools tab also lists the tools of each approved imported MCP server, origin MCP (design 11-plugin-import,
+//   phase 3): the read asks a worker to list them, so they appear on a later read; the page starts no server.
 // Buttons are off when the server cannot write from the page. Read once when the page opens (it reads stored
 // transcripts for "last used"), and again after a write; never polled.
 
@@ -384,12 +386,18 @@ function SkillsTab({ view, query, now, report }: { view: PluginsView; query: str
   );
 }
 
+/**
+ * A tool row's origin label. `mcp`: a tool an approved imported MCP server listed (design 11-plugin-import, phase 3),
+ * or that server's own row while it has none; its description names the server. No approve or revoke here.
+ */
+const ORIGIN: Record<string, MessageKey> = { broker: "plugins.originBroker", pack: "plugins.originPack", mcp: "plugins.tabMcp" };
+
 function ToolsTab({ view, query, now, report }: { view: PluginsView; query: string; now: number; report: Reporter }) {
   type Row = PluginsView["tools"][number];
   const status = (r: Row): McpStatus | undefined => (r.origin === "pack" ? (view.tool_status?.[r.name] ?? "waiting") : undefined);
   const columns: Column<Row>[] = [
     { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} /> },
-    { key: "origin", header: t("plugins.colOrigin"), render: (r) => <span className="text-xs whitespace-nowrap">{t(r.origin === "pack" ? "plugins.originPack" : "plugins.originBroker")}</span> },
+    { key: "origin", header: t("plugins.colOrigin"), render: (r) => <span className="text-xs whitespace-nowrap">{t(ORIGIN[r.origin] ?? "plugins.originBroker")}</span> },
     { key: "read_only", header: t("plugins.colReadOnly"), render: (r) => <span className="text-xs text-pretty">{r.read_only ? t("plugins.readOnly") : t("plugins.writes")}</span> },
     { key: "roles", header: t("plugins.colRoles"), render: (r) => <Roles roles={r.roles} /> },
     { key: "last_used", header: t("plugins.colLastUsed"), render: (r) => <LastUsed at={r.last_used} now={now} /> },

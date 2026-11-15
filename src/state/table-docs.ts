@@ -7,4 +7,5 @@ export const TABLE_DOCS: Readonly<Record<string, string>> = {
   ext_packs_entries: "Extension packs (tools and skills) added to the factory, with their approval status.",
   ext_packs_approvals: "Every approval or refusal of an extension pack, by whom and when.",
   ext_skill_refs: "Skills found in the user-level Claude Code and Codex configs: source, name, path and SHA-256, never the text.",
+  ext_mcp_tool_lists: "Tool names of approved imported MCP servers, listed once per description by a worker; never descriptions or error text.",
 };

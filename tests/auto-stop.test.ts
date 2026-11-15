@@ -7,18 +7,19 @@ import { type FunctionComponent, type ReactElement, createElement } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AutoStop, SettingRow, SettingsView, SystemAction } from "../web/src/api.js";
 
-// The last auto-mode stop (design 03-risk), shown beside the Mode toggle and in the system banner: when and why, a
-// link to its alarm, and one click back to auto through POST /api/v1/settings. A burst of agent-run failures stops
-// nothing, so there is no stop line: only its alarm in the open-alarms line.
+// The last auto-mode stop (design 03-risk), shown beside the Mode toggle and on its alarm's Needs-you row (the Check
+// group, design 09-status-page): when and why, a link to its alarm, and one click back to auto through POST
+// /api/v1/settings, the row's primary action, with Failures as a link. A burst of agent-run failures stops nothing, so
+// there is no stop line: its alarm's row opens Failures.
 
 // tsconfig.test.json checks this file without JSX, so the views are built with createElement and their .tsx modules are
 // loaded by a specifier the node check skips (as in ui-settings-page.test.tsx).
 const SETTINGS_MODULE = "../web/src/views/settings.js";
 const BANNER_MODULE = "../web/src/views/system-banner.js";
 const { SettingsPage } = (await import(/* @vite-ignore */ SETTINGS_MODULE)) as { SettingsPage: FunctionComponent };
-const { FloorNotes } = (await import(/* @vite-ignore */ BANNER_MODULE)) as {
-  FloorNotes: FunctionComponent<{ actions: readonly SystemAction[]; deadlocks: number }>;
-};
+const { CheckRow } = (await import(/* @vite-ignore */ BANNER_MODULE)) as { CheckRow: FunctionComponent<{ action: SystemAction }> };
+/** The Check group's rows of `actions`, as NeedsList draws them. */
+const checks = (actions: readonly SystemAction[]) => createElement("ul", null, actions.map((action, i) => createElement(CheckRow, { key: i, action })));
 
 const AT = "2026-11-13T11:52:30.000Z";
 const TOKEN = "tok_stop";
@@ -106,43 +107,49 @@ describe("auto stop: red main", () => {
     expect(await turnAutoOn(section)).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 
-  it("the system banner shows the same line as the alarm's own target, with its link and button", async () => {
+  it("its alarm's Needs-you row is the alarm's own target: Turn auto back on is its primary action, Failures a link", async () => {
     view = settingsView("manual", stop("red_main"));
-    mount(createElement(FloorNotes, { actions: [alarm(stop("red_main")), alarm()], deadlocks: 0 }));
+    mount(checks([alarm(stop("red_main")), alarm()]));
     const line = (await screen.findByText(`Back to manual at ${time}: the checks failed on the base branch after a merge`)).closest("li")!;
     expect(line.id).toBe("alarm-al_1");
     expect(within(line).getByRole("link", { name: "See the alarm" }).getAttribute("href")).toBe("/app/#alarm-al_1");
-    // The stop has its own line, so the open-alarms line counts only the other alarm.
-    expect(screen.getByText("Open alarms: 1.")).not.toBeNull();
+    expect(within(line).getByRole("link", { name: "Failures" }).getAttribute("href")).toBe("/app/failures");
+    expect(within(line).queryByRole("link", { name: "Open on Failures" })).toBeNull();
+    // The other alarm is its own row, whose primary action opens Failures.
+    const other = document.querySelectorAll("li")[1]!;
+    expect(other.querySelector("[data-auto-stop]")).toBeNull();
+    expect(within(other).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
     expect(await turnAutoOn(line)).toEqual({ action: "set", key: "mode", value: '"auto"' });
   });
 });
 
 describe("auto stop: budget checkpoint", () => {
-  it("the Mode toggle and the system banner both show the checkpoint and the time", async () => {
+  it("the Mode toggle and the alarm's Needs-you row both show the checkpoint and the time", async () => {
     view = settingsView("manual", stop("budget_checkpoint"));
     const text = `Back to manual at ${time}: an item reached its budget checkpoint`;
     const section = await modeSection();
     expect(await within(section).findByText(text)).not.toBeNull();
     cleanup();
-    mount(createElement(FloorNotes, { actions: [alarm(stop("budget_checkpoint"))], deadlocks: 0 }));
+    mount(checks([alarm(stop("budget_checkpoint"))]));
     const line = (await screen.findByText(text)).closest("li")!;
     expect(within(line).getByRole("link", { name: "See the alarm" })).not.toBeNull();
     expect(await within(line).findByRole("button", { name: "Turn auto back on" })).not.toBeNull();
-    expect(screen.queryByText(/Open alarms/)).toBeNull();
+    expect(document.querySelectorAll("li")).toHaveLength(1);
   });
 });
 
 describe("auto stop: a burst of agent-run failures", () => {
-  it("leaves the mode auto with no stop line; its alarm shows in the open-alarms line", async () => {
+  it("leaves the mode auto with no stop line; its alarm's row opens Failures", async () => {
     view = settingsView("auto", null);
     const section = await modeSection();
     expect(section.textContent).toContain("auto");
     expect(section.querySelector("[data-auto-stop]")).toBeNull();
     expect(within(section).queryByRole("button", { name: "Turn auto back on" })).toBeNull();
     cleanup();
-    mount(createElement(FloorNotes, { actions: [alarm()], deadlocks: 0 }));
-    expect(screen.getByText("Open alarms: 1.")).not.toBeNull();
-    expect(document.querySelector("[data-action='auto_stop']")).toBeNull();
+    mount(checks([alarm()]));
+    const line = document.querySelector<HTMLElement>("li[data-check='alarm']")!;
+    expect(within(line).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
+    expect(line.querySelector("[data-auto-stop]")).toBeNull();
+    expect(within(line).queryByRole("button", { name: "Turn auto back on" })).toBeNull();
   });
 });

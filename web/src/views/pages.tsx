@@ -22,7 +22,6 @@ import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
-import { FloorNotes } from "./system-banner.js";
 import { Thread } from "./thread.js";
 import { transcriptPath } from "./transcript.js";
 import { HELD, ItemsTree, type TreeFilter, type View, VIEW_KEY, buildTree, defaultExpanded, itemMatches, parentIds, summaryCounts, useExpanded } from "./tree.js";
@@ -178,7 +177,7 @@ export function ClaimPauses({ now }: { now: number }) {
 
 /**
  * The factory's notes on the Tasks page under All projects: a Notice only when the factory is paused, stopped or
- * failing, one line per kind of system action, and the claim pauses.
+ * failing, and the claim pauses. The system actions are Needs-you rows (the Check group), not notes here.
  */
 export function FloorStatus() {
   const now = useNow();
@@ -189,7 +188,6 @@ export function FloorStatus() {
   return (
     <>
       {view?.notice && <Notice tone={view.tone === "bad" ? "bad" : "warn"}>{view.text}</Notice>}
-      <FloorNotes actions={o?.system_actions ?? []} />
       <ClaimPauses now={now} />
     </>
   );

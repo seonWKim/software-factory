@@ -23,6 +23,17 @@ import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
 import type { ImportItem, PluginsImportView, PluginsView } from "../web/src/api.js";
 import { silent } from "./helpers/fakes.js";
 import { newStore } from "./helpers/store.js";
+import { startPackMcpServer } from "../src/impl/runner/pack-mcp-client.js";
+import { listRequestedMcpTools } from "../src/import/mcp-tool-lists.js";
+import { PackApprovalsStore } from "../src/packs/pack-approvals.store.js";
+import { PackEntriesStore } from "../src/packs/pack-entries.store.js";
+import { type UiSettings, newCsrfToken, storeProjectResolver } from "../src/ui/settings-api.js";
+
+// The UI process starts no MCP server: every start goes through this spy, which the Plugins read must never call.
+vi.mock("../src/impl/runner/pack-mcp-client.js", async (original) => {
+  const real = await original<typeof import("../src/impl/runner/pack-mcp-client.js")>();
+  return { ...real, startPackMcpServer: vi.fn(real.startPackMcpServer) };
+});
 
 const ME = "local:me@example.com" as UserId;
 const TOKEN = "import-token";
@@ -239,6 +250,89 @@ describe("no env or header value leaves the configs", () => {
   });
 });
 
+describe("GET /api/v1/plugins: tools of approved imported MCP servers (phase 3)", () => {
+  /** The import setup with the Plugins read wired, the stored servers approved by name, and the listing rows. */
+  async function readSetup(principal: UserId | null = ME) {
+    home();
+    const s = await setup(principal);
+    const editFile = Object.assign(async () => ({ ok: false as const, reason: "not wired" }), { capabilities: async () => ({ skill_folders: [], tools: [], providers: [] }) });
+    const settings: UiSettings = {
+      base: { file: {}, layers: { defaults: {}, projects: {} } }, repo: { owner: "o", name: "r" }, actor: "local:owner",
+      resolveProject: storeProjectResolver(s.d.store, { owner: "o", name: "r" }), csrfToken: newCsrfToken(),
+      editFile: editFile as unknown as NonNullable<UiSettings["editFile"]>,
+    };
+    const d: ApiDeps = { ...s.d, settings };
+    const now = () => d.clock.now().toISOString();
+    const approve = async (name: string) => {
+      const entry = await new PackEntriesStore(s.db, now).current("mcp_server", name);
+      await new PackApprovalsStore(s.db, now).record(entry!, "approve", ME);
+    };
+    const read = async () => {
+      const r = await respond(d, { method: "GET", url: "/api/v1/plugins", host: HOST });
+      expect(r.status).toBe(200);
+      return (JSON.parse(r.body) as PluginsView).tools.filter((t) => (t.origin as string) === "mcp");
+    };
+    const lists = () => s.db.all("SELECT name, status, requested_by FROM ext_mcp_tool_lists ORDER BY name");
+    /** The worker's side, with a start that lists `tools` or fails. */
+    const work = (tools: string[] | null) =>
+      listRequestedMcpTools({ db: s.db, now, by: "host:1:0", start: async () => { if (tools === null) throw new Error("no"); return { tools: tools.map((name) => ({ name })), close: async () => {} }; } });
+    return { ...s, approve, read, lists, work };
+  }
+
+  it("writes one request per approved server as the page's factory user, starts nothing, and shows it as listing", async () => {
+    const s = await readSetup();
+    await s.post({ items: [sel("mcp_server", "claude", "docs"), sel("mcp_server", "codex", "search")] });
+    await s.approve("docs");
+    expect(await s.read()).toEqual([{ name: "mcp:docs", description: "MCP server docs: listing its tools", read_only: false, origin: "mcp", roles: [], last_used: null }]);
+    await s.read();
+    expect(await s.lists()).toEqual([{ name: "docs", status: "requested", requested_by: ME }]);
+    expect(vi.mocked(startPackMcpServer)).not.toHaveBeenCalled();
+  });
+
+  it("shows the listed tool names from the store, labelled as from the MCP server", async () => {
+    const s = await readSetup();
+    await s.post({ items: [sel("mcp_server", "claude", "docs")] });
+    await s.approve("docs");
+    await s.read();
+    await s.work(["search", "fetch"]);
+    expect((await s.read()).map((t) => [t.name, t.description, t.origin])).toEqual([
+      ["mcp:docs:search", "From MCP server docs", "mcp"],
+      ["mcp:docs:fetch", "From MCP server docs", "mcp"],
+    ]);
+    expect(vi.mocked(startPackMcpServer)).not.toHaveBeenCalled();
+  });
+
+  it("a server that did not start shows its name and 'did not start' only; a URL server shows not stdio", async () => {
+    const s = await readSetup();
+    await s.post({ items: [sel("mcp_server", "claude", "docs"), sel("mcp_server", "claude", "remote")] });
+    await s.approve("docs");
+    await s.approve("remote");
+    await s.read();
+    await s.work(null);
+    expect((await s.read()).map((t) => [t.name, t.description])).toEqual([
+      ["mcp:docs", "MCP server docs: did not start"],
+      ["mcp:remote", "MCP server remote: not a stdio server: its tools are not listed"],
+    ]);
+  });
+
+  it("a waiting server gets no request and no row", async () => {
+    const s = await readSetup();
+    await s.post({ items: [sel("mcp_server", "claude", "docs")] });
+    expect(await s.read()).toEqual([]);
+    expect(await s.lists()).toEqual([]);
+  });
+
+  it("with no factory user the read requests nothing", async () => {
+    const s = await readSetup(null);
+    await new PackEntriesStore(s.db, () => "2026-11-15T09:00:00.000Z").insert({
+      kind: "mcp_server", name: "docs", description_hash: "h", module_hash: null, descriptor: JSON.stringify({ name: "docs", source: "claude", command: "d" }), credential_name: null, added_by: ME,
+    });
+    await s.approve("docs");
+    expect(await s.read()).toEqual([expect.objectContaining({ name: "mcp:docs", description: "MCP server docs: listing its tools" })]);
+    expect(await s.lists()).toEqual([]);
+  });
+});
+
 // tsconfig.test.json checks this file without JSX, so the page is built with createElement and its .tsx module is
 // loaded by a specifier the node check skips.
 const PAGE_MODULE = "../web/src/views/plugins.js";
@@ -359,6 +453,17 @@ describe("Plugins page: Import", () => {
     expect((s.posts[0]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe(TOKEN);
     expect(JSON.parse(String(s.posts[0]!.init.body))).toEqual({ items: [{ kind: "skill", source: "claude", name: "review-helper" }] });
     await rtl.waitFor(() => expect(dialog()).toBeNull());
+  });
+
+  it("the Tools tab labels an imported MCP server's tools with origin MCP and has no approve or revoke control", async () => {
+    const tool = (name: string, description: string) => ({ name, description, read_only: false, origin: "mcp", roles: [], last_used: null }) as unknown as PluginsView["tools"][number];
+    page({ ...PAGE, tools: [tool("mcp:docs:search", "From MCP server docs"), tool("mcp:remote", "MCP server remote: did not start")] });
+    rtl.fireEvent.click(rtl.screen.getByRole("tab", { name: "Tools" }));
+    const table = await rtl.screen.findByRole("table", { name: "Tools" });
+    const rows = rtl.within(table).getAllByRole("row").slice(1);
+    expect(rows.map((r) => r.textContent)).toEqual([expect.stringContaining("mcp:docs:search"), expect.stringContaining("did not start")]);
+    for (const r of rows) expect(r.textContent).toContain("MCP");
+    expect(rtl.within(table).queryByRole("button", { name: /Approve|Revoke/ })).toBeNull();
   });
 
   it("without the page's token the Import button is off and names the CLI command", async () => {

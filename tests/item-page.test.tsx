@@ -17,7 +17,7 @@ const src = (n: number) => ({ type: "github_issue", id: `o/r#${n}`, link: `https
 const base = (id: string, n: number, title: string, extra: object = {}) => ({
   id, source: src(n), title, stage: "READY", close_reason: null, blocked_on: "human", blocked_reason: "spec_pending", tier: 2, loop_count: 0,
   restart_count: 0, token_cost: 0, change_ref: null, change_url: null, spec_comment_url: null, parent_id: null, phase: null, phases: [], version: 3,
-  created_at: AT, updated_at: AT, ...extra,
+  created_at: AT, updated_at: AT, why: { code: "human", text: "Waiting for a person", next_actor: "human", refs: [], ref_url: null }, ...extra,
 });
 
 // A fixture spec as triage writes it: a heading, a blank line, a list, and text that must not become HTML.
@@ -75,6 +75,14 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
+
+/** The element at `selector`, once the page shows it. */
+const found = (selector: string) =>
+  waitFor(() => {
+    const el = document.querySelector<HTMLElement>(selector);
+    if (!el) throw new Error(`no ${selector} yet`);
+    return el;
+  });
 
 function mount(path: string) {
   history.replaceState(null, "", path);
@@ -311,9 +319,11 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
   /** Clicks `name` once it is enabled; returns its dialog. */
   async function open(name: "reject" | "revise") {
     const label = name === "reject" ? "Reject" : "Revise";
-    const button = (await screen.findByRole("button", { name: label })) as HTMLButtonElement;
+    // Reject is in the item's "…" menu; Revise is a button of the row.
+    const button = (await screen.findByRole("button", { name: name === "reject" ? "More commands" : label })) as HTMLButtonElement;
     await waitFor(() => expect(button.disabled).toBe(false));
     fireEvent.click(button);
+    if (name === "reject") fireEvent.click(await screen.findByRole("menuitem", { name: label }));
     return screen.getByRole("dialog", { name: `${label} Forms` });
   }
 
@@ -365,7 +375,7 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
     const form = await open("reject");
     fireEvent.click(within(form).getByRole("radio", { name: "duplicate" }));
     fireEvent.click(within(form).getByRole("button", { name: "Confirm reject" }));
-    const row = document.querySelector<HTMLElement>('[data-command="reject"]')!;
+    const row = await found('[data-outcome-of="reject"]');
     await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
     expect(screen.queryByRole("dialog")).toBeNull();
   });
@@ -385,7 +395,7 @@ describe("item page: the Reject and Revise dialogs (issue #527)", () => {
       url: "/api/v1/items/wi_r/commands",
       body: { command: "revise", note: "### Problem\nSay why the gate is slow.\n\n### Allowed paths\nAlso `docs/`." },
     }]));
-    const row = document.querySelector<HTMLElement>('[data-command="revise"]')!;
+    const row = await found('[data-outcome-of="revise"]');
     await waitFor(() => expect(within(row).getByRole("status").textContent).toBe("sent"));
   });
 
@@ -411,14 +421,6 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
   const STORED = "`/approve` was not applied: the spec is not waiting for approval (the item is triaging).";
   const NOT_OWNER = "only the owner may send this command (`not_owner`)";
 
-  /** The element at `selector`, once the page shows it. */
-  const found = (selector: string) =>
-    waitFor(() => {
-      const el = document.querySelector<HTMLElement>(selector);
-      if (!el) throw new Error(`no ${selector} yet`);
-      return el;
-    });
-
   /** Serves wi_g with `detail`'s commands and replies. */
   function serve(detail: object) {
     const body = { as_of: AT, item: base("wi_g", 50, "Grants"), timeline: [], runs: [], commands: [], replies: [], spec: null, ...detail };
@@ -439,52 +441,49 @@ describe("item page: refusals and the viewer's grants (issues #528, #453)", () =
     const replies = [{ seq: 3, command: "approve", created_at: AT, handled_at: AT, refusal: STORED }];
     serve({ commands: [cmd("approve")], replies });
     mount("/app/items/wi_g");
-    const row = await found('[data-command="approve"]');
+    const row = await found('[data-outcome-of="approve"]');
     const shown = await waitFor(() => within(row).getByRole("alert"));
     expect(shown.textContent).toBe("/approve was not applied: the spec is not waiting for approval (the item is triaging).");
     expect(replies[0]!.refusal).toBe(STORED);
   });
 
-  it("a command the owner check refuses is a disabled button with the controller's reason beside it, in plain text", async () => {
+  it("a command the owner check refuses is a disabled button with the controller's reason below the row, in plain text", async () => {
     serve({ commands: ["approve", "reject", "revise"].map((n) => ({ ...cmd(n), allowed: false, reason: NOT_OWNER })) });
     mount("/app/items/wi_g");
-    const row = await found('[data-command="approve"]');
-    for (const name of ["approve", "reject", "revise"]) {
-      expect((screen.getByRole("button", { name: name[0]!.toUpperCase() + name.slice(1) }) as HTMLButtonElement).disabled, name).toBe(true);
-      expect(document.querySelector(`[data-command="${name}"]`)!.textContent).toContain(
-        "only the owner may send this command (not_owner)",
-      );
+    await found('[data-command="approve"]');
+    for (const name of ["Approve", "Revise"]) expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled, name).toBe(true);
+    // Reject is in the "…" menu, disabled with its reason in its label.
+    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
+    const reject = screen.getByRole("menuitem", { name: /^Reject/ }) as HTMLButtonElement;
+    expect(reject.disabled).toBe(true);
+    expect(reject.textContent).toContain("only the owner may send this command (not_owner)");
+    for (const name of ["approve", "revise"]) {
+      expect(document.querySelector(`[data-outcome-of="${name}"]`)!.textContent).toContain("only the owner may send this command (not_owner)");
     }
-    expect(row.textContent).not.toContain("`");
-    // No note box for commands that cannot be sent.
-    expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
+    expect(document.querySelector("[data-decide]")!.textContent).not.toContain("`");
     expect(document.querySelector("[data-commands-none]")).toBeNull();
   });
 
-  it("the verdict row: a Verdict button that opens the dialog, then Good, Bad, Feedback and a ghost Done in one button row; Done hides the outcome", async () => {
+  it("the verdict row: Good and Bad are one segmented control, Feedback a button, in the same row; Verdict is in the \"…\" menu", async () => {
     const replies = [{ seq: 4, command: "verdict", created_at: AT, handled_at: AT, refusal: null }];
     serve({ commands: [cmd("verdict")], replies });
     mount("/app/items/wi_g");
-    const row = await found('[data-command="verdict"]');
-    expect(within(row).queryByRole("combobox")).toBeNull();
-    const done = await waitFor(() => within(row).getByRole("button", { name: "Done" }));
-    const group = done.parentElement!;
-    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Verdict", "Good", "Bad", "Feedback", "Done"]);
-    expect(group.className.split(" ")).toEqual(expect.arrayContaining(["flex-wrap", "gap-2"]));
-    expect(within(group).getByRole("button", { name: "Done" }).className.split(" ")).not.toContain("border");
-    fireEvent.click(done);
-    expect(within(row).queryByRole("button", { name: "Done" })).toBeNull();
+    const group = await screen.findByRole("group", { name: "Verdict" });
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Good", "Bad"]);
+    expect(group.parentElement!.parentElement!.contains(screen.getByRole("button", { name: "Feedback" }))).toBe(true);
+    expect(screen.queryByRole("button", { name: "Verdict" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
+    expect(screen.getByRole("menuitem", { name: "Verdict" })).toBeTruthy();
+    expect((await found('[data-outcome-of="verdict"]')).textContent).toBe("Done");
   });
 
-  it("Merge is its own block 24 px (space-6) below the verdict row, after it, as the primary button", async () => {
+  it("Merge is the first button of the one row, primary, with the verdict control after it", async () => {
     serve({ item: base("wi_g", 50, "Grants", { merge: { enabled: true, reason: null } }), commands: [cmd("verdict")] });
     mount("/app/items/wi_g");
     const merge = await found('[data-command="merge"]');
-    const verdict = document.querySelector<HTMLElement>('[data-command="verdict"]')!;
-    expect(verdict.nextElementSibling).toBe(merge);
-    expect(merge.className.split(" ")).toContain("not-first:mt-6");
-    expect(verdict.className.split(" ")).not.toContain("not-first:mt-6");
-    expect(within(merge).getByRole("button", { name: "Merge" })).toBeTruthy();
+    const row = merge.parentElement!;
+    expect(row.querySelector("button")!.textContent).toBe("Merge");
+    expect(row.querySelector("[data-verdict]")).toBeTruthy();
     expect(within(merge).getByRole("button", { name: "Merge" }).className.split(" ")).toContain("bg-accent");
   });
 });
@@ -546,18 +545,19 @@ describe("item page: the command box and pending proposals (design 09-dashboard-
     await waitFor(() => expect(within(shown[0]!).getByRole("status").textContent).toBe("sent"));
   });
 
-  it("the command box sends the sentence as one request, also when no typed command applies; an empty box sends nothing", async () => {
-    serve([], []);
+  it("the one note box reads its words as a sentence on Ctrl+Enter, also when no typed command applies; an empty box sends nothing", async () => {
+    serve(["approve"], []);
     mount("/app/items/wi_b");
-    const box = (await screen.findByRole("textbox", { name: "Say it in your own words" })) as HTMLTextAreaElement;
+    const box = (await screen.findByRole("textbox", { name: "Note" })) as HTMLTextAreaElement;
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.queryByText("Say it in your own words")).toBeNull();
+    expect(document.querySelector("[data-command-box]")).toBeNull();
     expect(screen.queryByRole("list", { name: "Proposed commands" })).toBeNull();
-    const form = box.closest("form")!;
-    const read = within(form).getByRole("button", { name: "Read it" }) as HTMLButtonElement;
-    expect(read.disabled).toBe(true);
-    // Read it is a secondary Button.
-    expect(read.className.split(" ")).toEqual(expect.arrayContaining(["bg-surface", "border-border-strong"]));
+    await enabled(document.body, "Approve");
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true });
+    expect(posts).toEqual([]);
     fireEvent.change(box, { target: { value: "  approve wi_b but keep it small " } });
-    fireEvent.click(await enabled(form, "Read it"));
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true });
     await waitFor(() => expect(posts).toEqual([{ url: "/api/v1/items/wi_b/commands", body: { command: "sentence", note: "approve wi_b but keep it small" } }]));
     await waitFor(() => expect(box.value).toBe(""));
   });
