@@ -9,6 +9,8 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
 export const DAY_MS = 24 * 3_600_000;
 /** The run kinds whose agent reports a cost: the same kinds the status page's cost table counts. */
 export const SPEND_KINDS: readonly RunKind[] = ["triage", "implement", "review", "resolve", "update"];
+/** The most items a day names as its top items. */
+export const SPEND_DAY_TOP = 3;
 /** The longest range one read covers, in days. */
 export const SPEND_MAX_DAYS = 366;
 
@@ -21,7 +23,13 @@ export interface SpendTotals {
   unknown: number;
 }
 
-export interface SpendDay extends SpendTotals { day: string }
+/** One of a day's most costly items: its known cost that day. */
+export interface SpendDayItem { work_item_id: WorkItemId; cost_usd: number }
+export interface SpendDay extends SpendTotals {
+  day: string;
+  /** The day's items with a known cost, most first (then by ID), at most SPEND_DAY_TOP; unknown-cost runs add nothing. */
+  top: SpendDayItem[];
+}
 export interface SpendItem extends SpendTotals { work_item_id: WorkItemId; kinds: RunKind[] }
 
 export interface Spend {
@@ -62,12 +70,18 @@ export function spendTotals(runs: readonly Run[]): SpendTotals {
   return t;
 }
 
+/** By cost, highest first, then by ID. */
+const byCostThenId = (a: { cost_usd: number; work_item_id: WorkItemId }, b: { cost_usd: number; work_item_id: WorkItemId }): number =>
+  b.cost_usd - a.cost_usd || (a.work_item_id < b.work_item_id ? -1 : 1);
+
 /** Spend of `runs` over the UTC days `from` to `to` (both inclusive, YYYY-MM-DD), by day and by item. */
 export function summarizeSpend(runs: readonly Run[], from: string, to: string): Spend {
   const days = new Map<string, SpendDay>();
   for (let ms = Date.parse(`${from}T00:00:00.000Z`); ms <= Date.parse(`${to}T00:00:00.000Z`); ms += DAY_MS) {
-    days.set(utcDay(ms), { day: utcDay(ms), ...zero() });
+    days.set(utcDay(ms), { day: utcDay(ms), ...zero(), top: [] });
   }
+  // Each day's known cost per item; a run with no stored cost adds nothing here.
+  const dayCost = new Map<string, Map<WorkItemId, number>>();
   const items = new Map<WorkItemId, SpendItem>();
   const total = zero();
   for (const r of runs) {
@@ -76,12 +90,22 @@ export function summarizeSpend(runs: readonly Run[], from: string, to: string): 
     if (!day) continue;
     add(total, r);
     add(day, r);
+    const cost = outcomeCost(r.outcome);
+    if (cost !== null) {
+      const perItem = dayCost.get(day.day) ?? new Map<WorkItemId, number>();
+      perItem.set(r.work_item_id, (perItem.get(r.work_item_id) ?? 0) + cost);
+      dayCost.set(day.day, perItem);
+    }
     const it = items.get(r.work_item_id) ?? { work_item_id: r.work_item_id, kinds: [], ...zero() };
     add(it, r);
     if (!it.kinds.includes(r.kind)) it.kinds.push(r.kind);
     items.set(r.work_item_id, it);
   }
-  const byCost = [...items.values()].sort((a, b) => b.cost_usd - a.cost_usd || (a.work_item_id < b.work_item_id ? -1 : 1));
+  for (const [day, perItem] of dayCost) {
+    const top = [...perItem].map(([work_item_id, cost_usd]) => ({ work_item_id, cost_usd }));
+    days.get(day)!.top = top.sort(byCostThenId).slice(0, SPEND_DAY_TOP);
+  }
+  const byCost = [...items.values()].sort(byCostThenId);
   return { from, to, total, days: [...days.values()], items: byCost };
 }
 

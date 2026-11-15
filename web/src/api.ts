@@ -889,7 +889,11 @@ export interface SpendTotals {
   runs: number;
   unknown: number;
 }
-export interface SpendDay extends SpendTotals { day: string }
+export interface SpendDay extends SpendTotals {
+  day: string;
+  /** The day's items with the most known cost, at most 3, most first. */
+  top: { work_item_id: string; title: string | null; cost_usd: number }[];
+}
 export interface SpendItem extends SpendTotals {
   work_item_id: string;
   title: string | null;
@@ -928,6 +932,8 @@ export const API = {
   health: "/api/v1/health",
   failures: (window: string) => `/api/v1/failures?window=${window}`,
   spend: "/api/v1/spend",
+  /** The spend of one UTC day (YYYY-MM-DD): its items only. */
+  spendDay: (day: string) => `/api/v1/spend?from=${day}&to=${day}`,
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
   capabilities: "/api/v1/settings/capabilities",
