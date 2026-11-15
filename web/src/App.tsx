@@ -111,7 +111,7 @@ function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c:
   );
 }
 
-/** The app (design §9): sidebar, top bar with "Needs you (N)", which links to the landing page,, and the current page. */
+/** The app (design §9): sidebar, top bar with "Needs you (N)", which links to the landing page, and the current page. */
 export function App() {
   const overview = useQuery({
     queryKey: [API.overview],

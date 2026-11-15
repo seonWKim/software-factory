@@ -216,8 +216,6 @@ export const en = {
   "needs.noMore": "No other commands",
   "needs.withKey": "{label} ({key})",
   "needs.idHover": "Item {id}",
-  "why.retryAfterMerge": "Retry after it merges",
-  "why.retry": "Retry",
   "why.allow": "Allow {file} and retry",
   "activity.unreviewed": "{count} PRs merged without review in the last 7 days.",
   "activity.unreviewedLink": "See them on Health",

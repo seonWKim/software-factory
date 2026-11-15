@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
-import { Button } from "../components/ui/button.js";
 import { IdDetails } from "../components/ui/copy.js";
 import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
@@ -88,11 +87,10 @@ export function MergeCheckNote({ check }: { check: MergeCheckView }) {
 const REF = /(?<![\w./-])#(\d+)\b/g;
 
 const PATH = String.raw`[\w@~-]+(?:\.[\w@~-]+)*(?:\/[\w@~-]+(?:\.[\w@~-]+)*)*`;
-/** What the why text names besides `#N`: `/retry +paths <path>...`, a bare `/retry`, an item ID, a path. */
-const TOKEN = new RegExp(
-  String.raw`(?<allow>(?: with)? \/retry \+paths (?<paths>${PATH}(?: ${PATH})*))|(?<retry>\/retry(?: this item)?\b)|(?<id>\bwi_[0-9a-z]+\b)|(?<path>(?<![\w./@:~-])[\w@~-]+(?:\/[\w@~.-]*[\w@~-])+(?![\w#]))`,
-  "g",
-);
+/** `/retry +paths <path>...` in a why text: the reply that allows those paths and retries. */
+const ALLOW = new RegExp(String.raw`\/retry \+paths (?<paths>${PATH}(?: ${PATH})*)`, "g");
+/** What the why text names besides `#N`: an item ID, a path. */
+const TOKEN = new RegExp(String.raw`(?<id>\bwi_[0-9a-z]+\b)|(?<path>(?<![\w./@:~-])[\w@~-]+(?:\/[\w@~.-]*[\w@~-])+(?![\w#]))`, "g");
 
 /** A path is shown in code style when it has a file extension or at least two slashes (so "and/or" stays text). */
 const isPath = (s: string): boolean => s.split("/").length > 2 || /\.\w+$/.test(s);
@@ -100,26 +98,19 @@ const basename = (p: string): string => p.slice(p.lastIndexOf("/") + 1);
 
 /** The "Allow <file> and retry" entries a why text offers: one per `/retry +paths ...` it names, with the note that sends it. */
 export function allowEntries(text: string): { label: string; note: string }[] {
-  return [...text.matchAll(TOKEN)].flatMap((m) => {
-    const paths = m.groups?.paths;
-    return paths ? [{ label: t("why.allow", { file: paths.split(" ").map(basename).join(", ") }), note: `+paths ${paths}` }] : [];
+  return [...text.matchAll(ALLOW)].map((m) => {
+    const paths = m.groups!.paths!;
+    return { label: t("why.allow", { file: paths.split(" ").map(basename).join(", ") }), note: `+paths ${paths}` };
   });
 }
 
-/** An item the why text may name: its title (the loaded item list) or, not loaded, its ID. */
-type ItemTitles = ReadonlyMap<string, { title: string | null }>;
-
 /**
  * The why sentence for people. Each `#N` it names (from `refs`) links to that issue when the API gave a `ref_url`;
- * an item ID is the item's title (from `items`) or the ID, linked to the item page; a path is in code style.
- * With `onRetry` (a Needs-you row), `/retry` is a button ("Retry after it merges" when the sentence waits on an
- * item) and `/retry +paths ...` is dropped from the sentence: the row's menu offers it (`allowEntries`). The stored
- * text is never changed.
+ * an item ID links to the item page; a path is in code style. The stored text is never changed.
  */
-export function WhyText({ why, items, onRetry }: { why: Pick<Why, "text" | "refs" | "ref_url"> & { code?: string }; items?: ItemTitles; onRetry?: () => void }) {
+export function WhyText({ why }: { why: Pick<Why, "text" | "refs" | "ref_url"> & { code?: string } }) {
   const parts: React.ReactNode[] = [];
   let last = 0;
-  let waits = false;
   const text = (to: number, from = last) => {
     // `#N` links inside a stretch of plain text.
     let at = from;
@@ -134,20 +125,13 @@ export function WhyText({ why, items, onRetry }: { why: Pick<Why, "text" | "refs
   };
   for (const m of why.text.matchAll(TOKEN)) {
     const g = m.groups!;
-    const piece = g.allow ?? g.retry ?? g.id ?? g.path!;
-    if ((g.allow || g.retry) && !onRetry) continue;
+    const piece = g.id ?? g.path!;
     if (g.path && !isPath(piece)) continue;
     text(m.index);
     last = m.index + m[0].length;
-    if (g.allow) continue;
-    if (g.retry) {
-      parts.push(<Button key={`r${m.index}`} variant="secondary" size="sm" data-why-retry onClick={onRetry}>{t(waits ? "why.retryAfterMerge" : "why.retry")}</Button>);
-    } else if (g.id) {
-      waits = true;
-      parts.push(<Link key={`i${m.index}`} href={itemPath(piece)} data-why-item={piece} className={LINK_CLASS}>{items?.get(piece)?.title ?? piece}</Link>);
-    } else {
-      parts.push(<code key={`p${m.index}`} className="font-mono text-xs">{piece}</code>);
-    }
+    parts.push(g.id
+      ? <Link key={`i${m.index}`} href={itemPath(piece)} data-why-item={piece} className={LINK_CLASS}>{piece}</Link>
+      : <code key={`p${m.index}`} className="font-mono text-xs">{piece}</code>);
   }
   text(why.text.length);
   return <span data-why={why.code}>{parts}</span>;
