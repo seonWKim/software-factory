@@ -49,6 +49,11 @@ let current: TasksView;
 let filtered: Record<string, TasksView>;
 let posts: { url: string; init: RequestInit }[];
 let answer: { status: number; body: unknown };
+/** The item commands POSTs' answers in order (the last repeats); empty: `answer`. */
+let commandAnswers: { status: number; body: unknown }[];
+/** The csrf_token of each GET /api/v1/session, in order (the last repeats). */
+let sessionTokens: string[];
+let sessionReads: number;
 
 beforeEach(() => {
   current = view();
@@ -57,10 +62,19 @@ beforeEach(() => {
   items = [];
   posts = [];
   answer = { status: 200, body: { task_id: "tk_now", work_item_id: "wi_9", created: true } };
+  commandAnswers = [];
+  sessionTokens = [TOKEN];
+  sessionReads = 0;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, init });
-      return json(answer.status, answer.body);
+      const commands = posts.filter((p) => p.url.endsWith("/commands")).length;
+      const a = url.endsWith("/commands") && commandAnswers.length > 0 ? commandAnswers[Math.min(commands, commandAnswers.length) - 1]! : answer;
+      return json(a.status, a.body);
+    }
+    if (url === "/api/v1/session") {
+      const token = sessionTokens[Math.min(sessionReads++, sessionTokens.length - 1)]!;
+      return json(200, { as_of: "2026-11-12T00:00:00.000Z", csrf_token: token, commands_enabled: true, actor: "local:me", actor_source: "environment" });
     }
     if (url === "/api/v1/tasks") return json(200, current);
     if (url.startsWith("/api/v1/tasks?project=")) {
@@ -777,6 +791,54 @@ describe("Tasks page", () => {
       fireEvent.click(within(card("tk_built")).getByRole("button", { name: "Work item state: tk_built" }));
       const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
       expect(within(dialog).getByRole("link", { name: "Open the full item page" }).getAttribute("href")).toBe("/app/items/wi_1");
+    });
+
+    const STALE = { error: "Missing or stale x-csrf-token; reload the page.", code: "stale_csrf" };
+    const mergeRow = () => item("wi_m", { title: "Task title that keeps its space", level: "ready_to_merge", merge: { enabled: true, reason: null } });
+    const workRow = async (id: string) => {
+      const section = (await screen.findByRole("heading", { name: /Factory work/ }, SLOW)).closest("section")!;
+      return section.querySelector<HTMLElement>(`li[data-key="${id}"]`)!;
+    };
+    const pressMerge = async (row: HTMLElement) => {
+      const button = within(row).getByRole("button", { name: "Merge" });
+      await waitFor(() => expect(button.hasAttribute("disabled")).toBe(false), SLOW);
+      fireEvent.click(button);
+    };
+
+    it("a Merge refused for a stale token reads the session once, retries with the new token and shows the merge state, not the error", async () => {
+      items = [mergeRow()];
+      sessionTokens = [TOKEN, "tok_fresh"];
+      commandAnswers = [{ status: 403, body: STALE }, { status: 202, body: { request_id: "app:1", seq: 1, command: "merge", work_item_id: "wi_m" } }];
+      await show();
+      const row = await workRow("wi_m");
+      await pressMerge(row);
+      await waitFor(() => expect(within(row).getByRole("button", { name: "Merging…" })).toBeTruthy(), SLOW);
+      const sent = posts.filter((p) => p.url.endsWith("/commands")).map((p) => new Headers(p.init.headers).get("x-csrf-token"));
+      expect(sent).toEqual([TOKEN, "tok_fresh"]);
+      expect(sessionReads).toBe(2);
+      expect(row.textContent).not.toContain(STALE.error);
+    });
+
+    it("a Merge whose retry is refused again shows the error once, on its own full-width line below the row, outside the actions", async () => {
+      items = [mergeRow()];
+      commandAnswers = [{ status: 403, body: STALE }];
+      await show();
+      const row = await workRow("wi_m");
+      await pressMerge(row);
+      const error = await within(row).findByRole("alert", {}, SLOW);
+      expect(error.textContent).toBe(STALE.error);
+      expect(posts.filter((p) => p.url.endsWith("/commands")).map((p) => new Headers(p.init.headers).get("x-csrf-token"))).toEqual([TOKEN, TOKEN]);
+      const actions = row.querySelector<HTMLElement>("[data-need-commands]")!;
+      expect(actions.contains(error)).toBe(false);
+      // Its own line: a direct child of the row that takes the full width, after the content and the actions.
+      const line = error.closest<HTMLElement>("[data-row-error]")!;
+      expect(line.parentElement).toBe(row);
+      expect(line.className.split(" ")).toContain("basis-full");
+      const children = [...row.children];
+      expect(children.indexOf(line)).toBeGreaterThan(children.indexOf(actions.closest("li > *")!));
+      // The title keeps its space: it grows from a fixed basis instead of shrinking to nothing beside the actions.
+      const title = within(row).getByRole("link", { name: "Task title that keeps its space" });
+      expect(title.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["grow", "basis-64"]));
     });
 
     it("a checkbox still completes a task with the section on the page", async () => {

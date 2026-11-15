@@ -11,7 +11,7 @@ import { t } from "../i18n/index.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
 import { type NeedGroup, MergeCheckNote, allowEntries, needGroup, needsYou } from "./common.js";
-import { ItemCommands, NeedActions, useCommandSend } from "./item-commands.js";
+import { ItemCommands, NeedActions, SendErrors, useCommandSend } from "./item-commands.js";
 
 /** The five states a built task shows on its row, from its work item's level (src/ui/priority.ts); a closed item is "merged" only when it closed as completed. */
 const STATE_OF: Record<string, MessageKey> = {
@@ -53,6 +53,8 @@ const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"
 /**
  * One compact Factory work row: the item (and its PR), its state as one badge, a merge check only when it is not
  * "mergeable", the reason only for an Answer-or-fix item (Merge and Approve say it with the badge), and the primary action.
+ * The title grows from a 16rem basis, so the actions wrap below it before it truncates; a failed send's error takes its
+ * own full-width line below the row's content, never the actions cell (design-system/patterns.md C-050).
  */
 function WorkRow({ it }: { it: ItemRow }) {
   const cmd = useCommandSend(it.id);
@@ -61,7 +63,7 @@ function WorkRow({ it }: { it: ItemRow }) {
   const reason = group === "answer" ? (it.need?.reason ?? it.why?.text ?? "") : "";
   return (
     <li data-key={it.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 p-3">
-      <div className="min-w-0 flex-1 space-y-1">
+      <div className="min-w-0 grow basis-64 space-y-1">
         <span className="flex min-w-0 items-baseline gap-2">
           <Link href={itemPath(it.id)} title={t("needs.idHover", { id: it.id })} className="truncate font-medium text-text-1 hover:underline">
             {it.title ?? shortSource(it.source.id)}
@@ -74,7 +76,12 @@ function WorkRow({ it }: { it: ItemRow }) {
         </span>
         {reason !== "" && <p data-need title={reason} className="line-clamp-2 text-xs break-words text-text-2">{reason}</p>}
       </div>
-      <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={group} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(reason)} />
+      <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={group} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(reason)} inlineErrors={false} />
+      {Object.values(cmd.local).some((l) => "error" in l) && (
+        <div data-row-error className="flex basis-full flex-col gap-1">
+          <SendErrors local={cmd.local} />
+        </div>
+      )}
     </li>
   );
 }
