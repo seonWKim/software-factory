@@ -45,6 +45,11 @@ export type ArchiveProjectResult = { ok: true; project: Project; changed: boolea
 export type DeleteProjectResult = { ok: true; project: Project; unlinked: string[] } | { ok: false; reason: "not_found" };
 /** `changed`: false when the task was in it already (nothing written). */
 export type AddTaskToProjectResult = { ok: true; changed: boolean } | { ok: false; reason: "project_not_found" | "task_not_found" | "archived" };
+/**
+ * `changed`: false when the task was moved already (in the target, not in the source; nothing written). `not_linked`:
+ * the task is in neither the source nor the target. `project_not_found` and `archived` name the target.
+ */
+export type MoveTaskToProjectResult = { ok: true; changed: boolean } | { ok: false; reason: "task_not_found" | "not_linked" | "project_not_found" | "archived" };
 
 /** The store's project methods, part of FactoryStore (through TaskStore); implemented once in the shared SQL store. */
 export interface ProjectStore {
@@ -65,6 +70,8 @@ export interface ProjectStore {
   addTaskToProject(project_id: string, task_id: string): Promise<AddTaskToProjectResult>;
   /** Unlinks the task; false when it was not linked. */
   removeTaskFromProject(project_id: string, task_id: string): Promise<boolean>;
+  /** In one transaction: unlinks the task from `from_id` and links it to `to_id`; refused with nothing written. */
+  moveTaskToProject(task_id: string, from_id: string, to_id: string): Promise<MoveTaskToProjectResult>;
   /** The task's active projects, by slug. Read-only. */
   listTaskProjects(task_id: string): Promise<Project[]>;
 }
