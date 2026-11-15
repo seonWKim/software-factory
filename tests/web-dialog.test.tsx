@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Dialog } from "../web/src/components/ui/dialog.js";
-import { NeedsGroups } from "../web/src/views/common.js";
+import { NeedsList } from "../web/src/views/task-work.js";
 import { ApproveDialog } from "../web/src/views/item-decisions.js";
 
 // The shared native dialog (design §9): Esc and a click outside cancel without sending, focus goes in and comes
@@ -134,18 +134,15 @@ describe("the verdict dialog on a Needs-you row", () => {
     };
     return render(
       <QueryClientProvider client={client}>
-        <NeedsGroups items={[item]} now={Date.parse(AT)} titles={new Map()} empty="none" />
+        <NeedsList items={[item]} />
       </QueryClientProvider>,
     );
   }
 
-  it("a row shows its primary button first, then ⋯, in an Actions column with every cell vertically centred", () => {
+  it("a row shows its primary button first, then ⋯", () => {
     mountRow();
-    const cells = [...document.querySelectorAll("tbody tr td")];
-    const last = cells.at(-1)!;
-    expect(document.querySelector("thead tr")!.lastElementChild!.textContent).toBe("Actions");
-    expect([...last.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Approve", "⋯"]);
-    expect(cells.every((td) => td.className.split(" ").includes("align-middle!"))).toBe(true);
+    const row = document.querySelector("li[data-key]")!;
+    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Approve", "⋯"]);
     fireEvent.click(screen.getByRole("button", { name: "More commands" }));
     expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Verdict", "Reject", "Revise"]);
   });

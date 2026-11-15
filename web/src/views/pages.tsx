@@ -10,8 +10,6 @@ import { CopyText } from "../components/ui/copy.js";
 import { Input } from "../components/ui/input.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
-import { Tooltip } from "../components/ui/menu.js";
-import { FOCUS } from "../components/ui/control.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Markdown } from "../components/ui/markdown.js";
 import { cn } from "../lib/cn.js";
@@ -20,7 +18,7 @@ import { t } from "../i18n/index.js";
 import { LEVEL_LABELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
-import { ItemsTable, MergeCheckNote, byId, NeedsGroups, needsYou, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
+import { ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
 import { ItemCommands } from "./item-commands.js";
 import { FloorNotes } from "./system-banner.js";
 import { Thread } from "./thread.js";
@@ -40,24 +38,23 @@ function pauseLine(p: PauseRow, now: number): string {
   return t(due ? "pause.stallDue" : "pause.stallAt", vars);
 }
 
-/** What the factory process is doing, in words: `text` is the status page's sentence, `label` one word for the header indicator. */
+/** What the factory process is doing, in words: `text` is the status page's sentence. */
 interface FactoryView {
   tone: "ok" | "warn" | "bad";
   text: string;
-  label: string;
   /** Paused, stopped or failing: the states that get a page Notice. */
   notice: boolean;
 }
 
 function factoryView(factory: FactoryState | null, now: number, pauses: readonly PauseRow[]): FactoryView {
-  if (factory === null || factory.state === "stopped") return { tone: "bad", text: t("factory.stopped"), label: t("status.stopped"), notice: true };
+  if (factory === null || factory.state === "stopped") return { tone: "bad", text: t("factory.stopped"), notice: true };
   const rev = shortRev(factory.rev);
   const target = shortRev(factory.target_rev);
-  const updating = (text: string): FactoryView => ({ tone: "warn", text, label: t("status.updating"), notice: false });
+  const updating = (text: string): FactoryView => ({ tone: "warn", text, notice: false });
   switch (factory.state) {
     case "running":
-      if (pauses.length > 0) return { tone: "warn", text: pauses.map((p) => pauseLine(p, now)).join(" "), label: t("status.paused"), notice: true };
-      return { tone: "ok", text: t("factory.running", { rev, time: ago(factory.since, now) }), label: t("status.running"), notice: false };
+      if (pauses.length > 0) return { tone: "warn", text: pauses.map((p) => pauseLine(p, now)).join(" "), notice: true };
+      return { tone: "ok", text: t("factory.running", { rev, time: ago(factory.since, now) }), notice: false };
     case "building":
       return updating(t("factory.building", { target, rev }));
     case "draining":
@@ -65,9 +62,9 @@ function factoryView(factory: FactoryState | null, now: number, pauses: readonly
     case "restarting":
       return updating(t("factory.restarting", { target }));
     case "build_failed":
-      return { tone: "bad", text: t("factory.buildFailed", { target, rev }), label: t("status.failing"), notice: true };
+      return { tone: "bad", text: t("factory.buildFailed", { target, rev }), notice: true };
     case "crashed":
-      return { tone: "bad", text: t("factory.crashed", { error: factory.error ?? t("factory.exited") }), label: t("status.failing"), notice: true };
+      return { tone: "bad", text: t("factory.crashed", { error: factory.error ?? t("factory.exited") }), notice: true };
     case "migration_pending":
       return updating(factory.pending.length ? t("factory.migrationPendingList", { target, pending: factory.pending.join(", ") }) : t("factory.migrationPending", { target }));
     case "migration_draining":
@@ -75,7 +72,7 @@ function factoryView(factory: FactoryState | null, now: number, pauses: readonly
     case "migration_ready":
       return updating(t("factory.migrationReady", { target }));
     default:
-      return { tone: "warn", text: t("factory.other", { state: factory.state }), label: factory.state, notice: false };
+      return { tone: "warn", text: t("factory.other", { state: factory.state }), notice: false };
   }
 }
 
@@ -87,18 +84,6 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
     <div data-testid="factory-banner">
       <Notice tone={v.tone}>{v.text}</Notice>
     </div>
-  );
-}
-
-/** The Needs-you header's factory status: a dot and one word, the revision (or the full sentence) in a Tooltip. */
-function FactoryIndicator({ view, factory, now }: { view: FactoryView; factory: FactoryState | null; now: number }) {
-  const tip = factory && view.tone === "ok" ? t("status.revision", { rev: shortRev(factory.rev), time: ago(factory.since, now) }) : view.text;
-  return (
-    <Tooltip text={tip} placement="bottom">
-      <span data-testid="factory-status" tabIndex={0} className={cn("inline-flex rounded-pill", FOCUS)}>
-        <StatusBadge level={view.tone === "ok" ? "running" : view.tone === "bad" ? "needs_you" : "needs_approval"} size="sm">{view.label}</StatusBadge>
-      </span>
-    </Tooltip>
   );
 }
 
@@ -167,35 +152,20 @@ export function ClaimPauses({ now }: { now: number }) {
 }
 
 /**
- * Needs you: the header (title, count, the factory's status), a Notice only when the factory is paused, stopped or
- * failing, then what waits for the operator in groups, with one line per kind of note; then the claim pauses.
+ * The factory's notes on the Tasks page under All projects: a Notice only when the factory is paused, stopped or
+ * failing, one line per kind of system action, and the claim pauses.
  */
-export function NeedsYouPage() {
+export function FloorStatus() {
   const now = useNow();
   const overview = useApi<Overview>(API.overview);
   const items = useApi<Items>(API.items);
   const pauses = useApi<PausesView>(API.pauses);
-  const rows = items.data?.items ?? [];
-  const titles = useMemo(() => byId(items.data?.items), [items.data]);
-  // One row per item that waits on the operator; an item started past a deadlock goes on by itself (decision 1).
-  const needs = needsYou(rows);
-  const deadlocks = rows.filter((i) => i.why?.code === "deadlock").length;
+  const deadlocks = (items.data?.items ?? []).filter((i) => i.why?.code === "deadlock").length;
   const o = overview.data;
-  const factory = o?.factory;
-  const view = factory === undefined ? null : factoryView(factory, now, pauses.data?.pauses ?? []);
+  const view = o?.factory === undefined ? null : factoryView(o.factory, now, pauses.data?.pauses ?? []);
   return (
     <>
-      <PageHeader
-        title={t("page.needs")}
-        description={items.data ? t("needs.count", { count: needs.length }) : undefined}
-        actions={view && factory !== undefined && <FactoryIndicator view={view} factory={factory} now={now} />}
-      />
-      {view?.notice && (
-        <div className="mb-4">
-          <Notice tone={view.tone === "bad" ? "bad" : "warn"}>{view.text}</Notice>
-        </div>
-      )}
-      {items.isError ? <ErrorNote error={items.error} /> : !items.data ? <Loading /> : <NeedsGroups items={needs} now={now} titles={titles} empty={t("needs.empty")} />}
+      {view?.notice && <Notice tone={view.tone === "bad" ? "bad" : "warn"}>{view.text}</Notice>}
       <FloorNotes actions={o?.system_actions ?? []} deadlocks={deadlocks} />
       <ClaimPauses now={now} />
     </>

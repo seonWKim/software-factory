@@ -21,7 +21,7 @@ import { cn } from "../lib/cn.js";
 import { localDateTime } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { FactoryWork, WorkState } from "./task-work.js";
+import { NeedsYou, WorkState } from "./task-work.js";
 
 // The Tasks page (design 02-tasks and 09-dashboard-app, issue #607): the owner's plain tasks, read through GET
 // /api/v1/tasks, in three views. Today: overdue first, in red, then today's tasks. Upcoming: tomorrow through 7 days
@@ -44,11 +44,11 @@ import { FactoryWork, WorkState } from "./task-work.js";
 // edit or a delete.
 // The project tabs (design 09-dashboard-app, task projects) filter Today, Upcoming and All to one active
 // task project's tasks, open and done (GET /api/v1/tasks?project=<slug>); its choice is the page's `project` query parameter, read on
-// load and set on change, so a filtered view can be shared and reloaded. Factory work
+// load and set on change, so a filtered view can be shared and reloaded. Needs you
 // follows it too (GET /api/v1/items?project=<slug>): only the work items built from that project's tasks. Each open row's overflow
 // item Projects… opens the project dialog: a checkbox per active project adds or removes the task's link (POST
 // /api/v1/tasks/project) and New project creates one (POST /api/v1/projects) and puts the task in it.
-// The page's order (design 09-dashboard-app): the project tabs and the view tabs, Quick add, Factory work, the view; the blocks
+// The page's order (design 09-dashboard-app): the project tabs and the view tabs, Quick add, Needs you, the view; the blocks
 // are spaced by one flex gap, the Section gap of design-system/patterns.md.
 
 const TABS = [
@@ -805,6 +805,8 @@ export function TasksPage() {
   const undo = useUndoDone(token);
   // All's groups hold every task the read returned, so its titles name each sub-task's parent.
   const titles = new Map(v?.projects.flatMap((p) => p.tasks.map((x) => [x.id, x.title] as const)) ?? []);
+  // The items of the open tasks: each shows its need on its own row, so Needs you leaves it out. Null while the read loads.
+  const linked = v ? new Set(v.projects.flatMap((p) => p.tasks.flatMap((x) => (x.work_item_id !== null && x.done_at == null ? [x.work_item_id] : [])))) : q.isError ? new Set<string>() : null;
   // Kept from the last read, so the tabs keep their choices while a new filter loads.
   const known = useRef<readonly ProjectChoice[]>([]);
   if (v?.active_projects !== undefined) known.current = v.active_projects;
@@ -830,9 +832,7 @@ export function TasksPage() {
           </p>
         )}
       </div>
-      <div className="empty:hidden">
-        <FactoryWork project={project} />
-      </div>
+      <NeedsYou project={project} linked={linked} />
       <div>
         <Section label={TABS.find((x) => x.id === tab)!.label}>
           <div className="space-y-3">

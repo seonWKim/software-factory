@@ -2,16 +2,13 @@ import { useEffect, useState } from "react";
 import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { IdDetails } from "../components/ui/copy.js";
-import { StatusBadge } from "../components/ui/notice.js";
-import { Badge, Empty, Section, Table, Td, Tr } from "../components/ui/parts.js";
-import type { MessageKey } from "../i18n/en.js";
+import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
-import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, isWorkerId, shortSource, stateAndNext, until, workerName } from "../lib/format.js";
+import { LEVEL_LABELS, NEEDS_YOU_LEVELS, ago, isHttpUrl, isWorkerId, shortSource, until, workerName } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { itemPath } from "../pages.js";
-import { NeedActions, useCommandSend } from "./item-commands.js";
 
 /** Date.now(), ticking each second, for "Ns ago" texts. */
 export function useNow(): number {
@@ -171,87 +168,12 @@ export function needGroup(it: ItemRow): NeedGroup {
   return it.level === "needs_approval" || it.commands?.some((c) => c.name === "approve" && c.allowed) ? "approve" : "answer";
 }
 
-/** The row's reason: the stored need (or the item's state and next step), else the why; the same words as the classic page. */
-function needReason(it: ItemRow): { text: string; anchor: string | null } {
-  if (it.need) return { text: it.blocked_reason === null ? stateAndNext(it.stage, it.commands) : it.need.reason, anchor: it.need.anchor ?? null };
-  return { text: it.why?.text ?? (it.badges.join(" · ") || it.blocked_reason || "–"), anchor: null };
-}
-
 /** A link out to GitHub; only drawn for the github plugin. */
 function Ext({ href, children }: { href: string; children: React.ReactNode }) {
   return (
     <a href={href} target="_blank" rel="noreferrer" className={LINK_CLASS}>
       {children}
     </a>
-  );
-}
-
-/** Needs-you rows centre every cell on the row's buttons (the cell's own top alignment is overridden). */
-const MID = "align-middle!";
-
-/** One Needs-you row: the item, its state, why in one plain line, since, and its actions in the same place in every row. */
-function NeedRow({ it, now, titles, showIssue }: { it: ItemRow; now: number; titles: ItemTitles; showIssue: boolean }) {
-  const cmd = useCommandSend(it.id);
-  const { text, anchor } = needReason(it);
-  const refs = { code: it.why?.code ?? "need", text, refs: it.why?.refs ?? [], ref_url: it.why?.ref_url ?? null };
-  const group = needGroup(it);
-  const checking = it.merge_check?.state === "checking";
-  return (
-    <Tr data-key={it.id}>
-      <Td className={cn("max-w-md", MID)}>
-        <span className="flex min-w-0 items-baseline gap-2">
-          <Link href={itemPath(it.id)} title={t("needs.idHover", { id: it.id })} className="truncate font-medium text-text-1 hover:underline">
-            {it.title ?? shortSource(it.source.id)}
-          </Link>
-          {it.change_ref !== null && (it.change_url
-            ? <a href={it.change_url} target="_blank" rel="noreferrer" aria-label={t("needs.prLabel", { ref: it.change_ref })} className="shrink-0 text-text-2 tabular-nums hover:underline">#{it.change_ref}</a>
-            : <span className="shrink-0 text-text-2 tabular-nums">#{it.change_ref}</span>)}
-        </span>
-      </Td>
-      <Td className={MID}>
-        <StatusBadge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</StatusBadge>
-        {it.merge_check && !checking && <MergeCheckNote check={it.merge_check} />}
-      </Td>
-      <Td className={cn("max-w-xl text-text-2", MID)}>
-        <span data-need title={text} className="line-clamp-2 break-words">
-          {anchor && text.match(TOKEN) === null
-            ? <Link href={`${itemPath(it.id)}#${anchor}`} className={LINK_CLASS}>{text}</Link>
-            : <WhyText why={refs} items={titles} onRetry={() => void cmd.send("retry", "")} />}
-        </span>
-      </Td>
-      <Td className={cn("text-right whitespace-nowrap tabular-nums", MID)}>{ago(it.since, now)}</Td>
-      {showIssue && <Td className={cn("tabular-nums", MID)}>{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
-      <Td className={cn("w-44 text-right", MID)}>
-        <NeedActions id={it.id} title={it.title ?? it.id} commands={it.commands ?? []} pr={it.change_ref} group={group} merge={it.merge} source={it.source.type} checking={checking} cmd={cmd} allow={allowEntries(text)} />
-      </Td>
-    </Tr>
-  );
-}
-
-const GROUPS: readonly [NeedGroup, MessageKey][] = [["merge", "needs.groupMerge"], ["approve", "needs.groupApprove"], ["answer", "needs.groupAnswer"]];
-
-/**
- * Needs you: the rows grouped by what is asked (Merge, Approve, Answer or fix, in that order), each group a Section
- * that shows its count only when more than one group has rows. Columns: Item, State, Why, Since, Issue (only when a
- * row has one) and Actions; a PR shows as a muted "#N" link after the title. `titles`: the loaded items, so the why
- * text can name an item by its title.
- */
-export function NeedsGroups({ items, now, titles, empty }: { items: readonly ItemRow[]; now: number; titles: ItemTitles; empty: string }) {
-  if (items.length === 0) return <Empty>{empty}</Empty>;
-  const showIssue = items.some((it) => it.issue);
-  const head = [t("col.item"), t("col.state"), t("col.why"), t("col.since"), ...(showIssue ? [t("col.issue")] : []), t("col.actions")];
-  const numeric = head.map((h) => h === t("col.since"));
-  const groups = GROUPS.map(([group, title]) => ({ title: t(title), rows: items.filter((it) => needGroup(it) === group) })).filter((g) => g.rows.length > 0);
-  return (
-    <>
-      {groups.map((g) => (
-        <Section key={g.title} title={g.title} count={groups.length > 1 ? g.rows.length : undefined}>
-          <Table label={t("page.needs")} head={head} numeric={numeric}>
-            {g.rows.map((it) => <NeedRow key={it.id} it={it} now={now} titles={titles} showIssue={showIssue} />)}
-          </Table>
-        </Section>
-      ))}
-    </>
   );
 }
 
