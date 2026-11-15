@@ -1,9 +1,9 @@
-import { join } from "node:path";
-import { autoMigrate } from "./auto-migrate.js";
+import { join, resolve } from "node:path";
+import { autoMigrate, codeUpdateIntervalMs } from "./config.js";
 import { CODE_ROOT_ENV, CONFIG_ENV, type CommandRunner, SUPERVISOR_REQUEST_FILE, SUPERVISOR_STATUS_FILE } from "../../interfaces/updater.js";
 import { definePlugin } from "../../plugin-api.js";
 import { baseEnv } from "../process/run-process.js";
-import { GitWorktreeUpdater } from "./git-worktree.js";
+import { CODE_BASE_BRANCH, GitWorktreeUpdater } from "./git-worktree.js";
 
 /** Where a folder's `factory migrate` runs: the main checkout (the cwd), and the external config if one is used. */
 export interface MigrateAt {
@@ -43,11 +43,16 @@ export default definePlugin({
   default: true,
   create: (c) => {
     const at: MigrateAt = { repoPath: c.loaded.root, configFile: c.loaded.externalConfig };
+    const repo = c.loaded.config.repo;
+    // Self-hosting (design 08-self-update): the code checkout is the project repository, so it follows the branch
+    // `factory merge` moves. A separate clone follows its own origin/main, fetched once per code update interval.
+    const follow = resolve(c.loaded.root) === resolve(repo.path)
+      ? { baseBranch: repo.base_branch, ...(c.loaded.config.local_only ? { local: true } : {}) }
+      : { baseBranch: CODE_BASE_BRANCH, fetchIntervalMs: codeUpdateIntervalMs(c.loaded.file.updater) };
     return new GitWorktreeUpdater({
       repoPath: c.loaded.root,
       stateDir: c.loaded.stateDir,
-      baseBranch: c.loaded.config.repo.base_branch,
-      ...(c.loaded.config.local_only ? { local: true } : {}),
+      ...follow,
       run: c.run,
       launcher: c.launcher,
       clock: c.clock,

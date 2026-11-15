@@ -48,8 +48,11 @@ export function isCodePath(file: string): boolean {
   );
 }
 
+/** The branch a separate code checkout follows on its origin: the factory's own, never the project's repo.base_branch. */
+export const CODE_BASE_BRANCH = "main";
+
 export interface GitWorktreeOptions {
-  /** The main checkout: state root, and the repository whose origin/<base> the version folders follow. */
+  /** The main (code) checkout: state root, and the repository whose origin/<base> the version folders follow. */
   repoPath: string;
   /** `<state_dir>`: versions/ and deps/ live here unless set below. */
   stateDir: string;
@@ -59,11 +62,18 @@ export interface GitWorktreeOptions {
   depsDir?: string;
   baseBranch: string;
   /**
-   * No GitHub plugin selected (design 05-sources, Local startup): nothing fetches origin. The version folders
-   * follow the main checkout's local `refs/heads/<baseBranch>`, which `factory merge` moves; the main checkout is
-   * never fast-forwarded (it already is that branch, or another one the owner chose).
+   * Self-hosting with no GitHub plugin selected (design 05-sources, Local startup): nothing fetches origin. The
+   * version folders follow the main checkout's local `refs/heads/<baseBranch>`, which `factory merge` moves; the
+   * main checkout is never fast-forwarded (it already is that branch, or another one the owner chose).
    */
   local?: boolean;
+  /**
+   * A code checkout that is not the project repository (design 08-self-update): `git fetch` runs at most once per
+   * this many ms (`updater.code_update_interval_ms`); polls between fetches read only the local origin ref. A failed
+   * fetch is logged and tried again one interval later; the running child stays. The status file gets `behind`.
+   * Absent: self-hosting, a fetch on every poll (or none with `local`).
+   */
+  fetchIntervalMs?: number;
   run: CommandRunner;
   launcher: ChildLauncher;
   clock: Clock;
@@ -191,6 +201,11 @@ export class GitWorktreeUpdater implements Updater {
   private uiArgs: readonly string[] | null = null;
   /** The status page child and the folder it serves from. */
   private ui: { child: ChildHandle; dir: string } | null = null;
+  /** fetchIntervalMs: when the last fetch was tried (ms), and the origin revision after the last one that succeeded. */
+  private fetchedAt: number | null = null;
+  private checkedOrigin: string | null = null;
+  /** The last `rev-list --count` result, so a poll with nothing new runs no git for `behind`. */
+  private behindCache: { rev: string; origin: string; count: number | null } | null = null;
 
   constructor(private readonly o: GitWorktreeOptions) {}
 
@@ -259,6 +274,9 @@ export class GitWorktreeUpdater implements Updater {
     else await this.ensureChild();
     await this.syncUi();
     if (!this.closed) await this.cleanup();
+    // A fetch moved origin with no state change: the status file still gets the new `behind`.
+    const last = this.lastStatus;
+    if (!this.closed && last && "behind" in last && (await this.behind()) !== last.behind) await this.report(last.state, last.target_rev, last.error ?? null);
   }
 
   /**
@@ -635,6 +653,7 @@ export class GitWorktreeUpdater implements Updater {
       ...(state.startsWith("migration_") && this.migration ? { pending: this.migration.steps } : {}),
       supervisor_pid: process.pid,
       restarts: this.restarts,
+      ...(this.o.fetchIntervalMs === undefined ? {} : { behind: await this.behind() }),
     };
     this.lastStatus = status;
     // One write at a time: a child's exit can report while a poll does.
@@ -864,12 +883,50 @@ export class GitWorktreeUpdater implements Updater {
     log.info("main checkout fast-forwarded", { rev: origin });
   }
 
-  /** The revision to run: origin/<base> after a fetch, or the local base branch with no fetch (`local`). */
+  /**
+   * The revision to run: the local base branch with no fetch (`local`), else origin/<base> after a fetch: on every
+   * call, or with fetchIntervalMs at most once per interval, a failed one logged and the local origin ref read anyway.
+   */
   private async fetch(): Promise<string> {
-    const { repoPath, baseBranch } = this.o;
+    const { repoPath, baseBranch, fetchIntervalMs: every, log } = this.o;
     if (this.o.local) return (await this.git(repoPath, ["rev-parse", "--verify", `refs/heads/${baseBranch}^{commit}`])).trim();
-    await this.git(repoPath, ["fetch", "--quiet", "origin", baseBranch]);
-    return (await this.git(repoPath, ["rev-parse", "--verify", `refs/remotes/origin/${baseBranch}^{commit}`])).trim();
+    const fetchArgs = ["fetch", "--quiet", "origin", baseBranch];
+    let fetched = false;
+    if (every === undefined) await this.git(repoPath, fetchArgs);
+    else {
+      const now = this.o.clock.now().getTime();
+      if (this.fetchedAt === null || now - this.fetchedAt >= every) {
+        this.fetchedAt = now;
+        fetched = await this.git(repoPath, fetchArgs).then(
+          () => true,
+          (err: unknown) => {
+            log.warn("git fetch of the code checkout failed; the running version stays, next try in one interval", {
+              error: err instanceof Error ? err.message.slice(0, 300) : "unknown",
+              retry_in_ms: every,
+            });
+            return false;
+          },
+        );
+      }
+    }
+    const origin = (await this.git(repoPath, ["rev-parse", "--verify", `refs/remotes/origin/${baseBranch}^{commit}`])).trim();
+    if (fetched) this.checkedOrigin = origin;
+    return origin;
+  }
+
+  /** Commits the running revision is behind origin as of the last successful fetch; null before one (or unknown). */
+  private async behind(): Promise<number | null> {
+    const rev = this.runningRev;
+    const origin = this.checkedOrigin;
+    if (rev === null || origin === null) return null;
+    if (rev === origin) return 0;
+    const c = this.behindCache;
+    if (c?.rev === rev && c.origin === origin) return c.count;
+    const r = await this.exec(this.o.repoPath, ["git", "rev-list", "--count", `${rev}..${origin}`]);
+    const n = Number.parseInt(r.stdout.trim(), 10);
+    const count = r.exit_code === 0 && Number.isInteger(n) ? n : null;
+    this.behindCache = { rev, origin, count };
+    return count;
   }
 
   private async head(dir: string): Promise<string> {

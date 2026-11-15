@@ -48,7 +48,7 @@ import type { AuthAction, AuthDecision, AuthProvider } from "./interfaces/auth-p
 import type { ToolBroker } from "./interfaces/tool-broker.js";
 import type { SecretStore } from "./interfaces/secret-store.js";
 import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
-import { autoMigrate } from "./impl/updater/auto-migrate.js";
+import { autoMigrate, codeUpdateIntervalMs } from "./impl/updater/config.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
 import { AuditedAuthProvider, controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { OwnerAuth } from "./core/authorize.js";
@@ -170,8 +170,11 @@ export interface FileConfig {
    * user ID the page's commands act as (issue #227); absent, they act as the CLI identity (uiCommandsActor).
    */
   ui?: { port?: number; user_id?: string };
-  /** The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start. */
-  updater?: { auto_migrate?: unknown };
+  /**
+   * The git-worktree updater: `auto_migrate` (default false) runs `npm run migrate` itself between drain and start;
+   * `code_update_interval_ms` (default 15 minutes) is how often a separate code checkout fetches its origin.
+   */
+  updater?: { auto_migrate?: unknown; code_update_interval_ms?: unknown };
   /**
    * The GitHub client: `min_remaining` (default 200), the rate-limit floor under which optional reads wait for the
    * reset; `budget_share` (default 1), the part of the hourly core limit this process may count. The GitHub source: `history_since` (absent: none), a date to check merges back to (design §5, Merges).
@@ -385,6 +388,7 @@ export async function loadConfig(
   uiPort(file.ui);
   uiUserId(file.ui);
   autoMigrate(file.updater);
+  codeUpdateIntervalMs(file.updater);
   const workers = workerCount(file.workers);
   const max_workers = maxWorkers(workers, file.max_workers);
   const retry = retryConfig(file);
