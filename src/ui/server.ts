@@ -8,10 +8,12 @@
 // /api/v1/tasks/build, Build this, /api/v1/tasks/edit, /done, /delete and /sub, the Tasks page's row actions, and
 // projects-api.ts's /api/v1/tasks/project and /api/v1/projects, its project dialog) and the
 // calendar routes (design 08-settings; calendar-api.ts: POST /api/v1/calendar/connect and /disconnect) and the Data page's Ask
-// (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
+// (design 09-dashboard-app; data-ask.ts: POST /api/v1/data/ask) and the Plugins page's import (design 11-plugin-import;
+// plugins-import-api.ts: POST /api/v1/plugins/import), each guarded in this order: Host, then an Origin equal to the Host's own http origin, then Content-Type
 // application/json, then the per-process CSRF token in x-csrf-token; the resume, standing and improve routes then
 // check the owner (approve_spec), the rules, calendar and Ask routes the owner, the pack approvals route approve_tool, the task routes
-// the commands actor. A POST to any
+// the commands actor, the plugins import the page's factory user. GET /api/v1/plugins/import (it reads the user's own
+// Claude Code and Codex configs) also needs the CSRF token after the Host check. A POST to any
 // other path answers 405 as JSON; every other method answers 405 in its area's format. The Host header must name
 // 127.0.0.1 or localhost, so a page on another origin cannot read this one through DNS rebinding. The CSP
 // allows only the page's own inline style and script (by hash; on /classic also the Run now script when shown), same-origin fetches and same-origin GET forms.
@@ -37,6 +39,7 @@ import { RULES_PATH, RULE_ENTRY_PATH, RULE_VERDICT_PATH, readRuleEntry, readRule
 import { IMPROVE_RUN_PATH, type ImproveRunDeps, improveRunWired, runImproveNow } from "./improve-api.js";
 import { NOTICES_PATH, readNotices } from "./notices-api.js";
 import { PLUGINS_PATH, readPlugins } from "./plugins-api.js";
+import { PLUGINS_IMPORT_PATH, readPluginsImport, writePluginsImport } from "./plugins-import-api.js";
 import { CALENDAR_CONNECT_PATH, CALENDAR_DISCONNECT_PATH, CALENDAR_PATH, readCalendarStatus, writeCalendar } from "./calendar-api.js";
 import { CALENDAR_EVENTS_PATH, readCalendarEvents } from "./calendar-events-api.js";
 import { DATA_ASK_PATH, askData } from "./data-ask.js";
@@ -76,6 +79,7 @@ export interface UiRequest {
   /** A write route's headers and body; read only for the write routes (POST /api/v1/settings, /api/v1/items/:id/commands, /api/v1/tasks, ...). */
   origin?: string | undefined;
   contentType?: string | undefined;
+  /** x-csrf-token: read for the write routes and for GET /api/v1/plugins/import. */
   csrfToken?: string | undefined;
   body?: string | undefined;
   /** The body was longer than the route's limit (MAX_BODY, or MAX_COMMAND_BODY for commands) and was not read. */
@@ -138,11 +142,11 @@ function areaError(area: "api" | "app" | "page", status: number, message: string
   return error(status, message, extra);
 }
 
-type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "rules" | "tasks" | "calendar" | "ask";
+type WriteRoute = "settings" | "resume" | "standing" | "improve" | "packs" | "import" | "rules" | "tasks" | "calendar" | "ask";
 
 /**
  * The write route a request is for: POST to exactly /api/v1/settings when settings are wired, to exactly
- * /api/v1/pauses/resume or /api/v1/standing when the pause routes (their owner check) are, or to exactly /api/v1/improve/run when both the pause routes and
+ * /api/v1/pauses/resume, /api/v1/standing or /api/v1/plugins/import when the pause routes (their factory user) are, or to exactly /api/v1/improve/run when both the pause routes and
  * settings (its project) are, or to exactly one of the task routes (TASK_WRITES) when the commands route (its actor and token) is, or
  * to exactly /api/v1/calendar/connect or /disconnect when the settings carry the Calendar section, or to exactly /api/v1/data/ask when they carry
  * the Ask (a query string is ignored). Null for every other request.
@@ -155,12 +159,19 @@ function writeRoute(d: ApiDeps, req: UiRequest): WriteRoute | null {
   if (path === STANDING_PATH && d.pauses !== undefined) return "standing";
   if (path === IMPROVE_RUN_PATH && improveRunWired(d)) return "improve";
   if (path === PACK_APPROVALS_PATH && d.pauses?.auth !== undefined) return "packs";
+  if (path === PLUGINS_IMPORT_PATH && d.pauses !== undefined) return "import";
   if (path === RULE_VERDICT_PATH && d.pauses !== undefined) return "rules";
   if (Object.hasOwn(TASK_WRITES, path) && d.commands !== undefined) return "tasks";
   if ((path === CALENDAR_CONNECT_PATH || path === CALENDAR_DISCONNECT_PATH) && d.settings?.calendar !== undefined) return "calendar";
   if (path === DATA_ASK_PATH && d.settings?.ask !== undefined) return "ask";
   return null;
 }
+
+/** A missing or stale x-csrf-token: the coded 403 (stale_csrf) the page retries once with a fresh token. */
+const staleToken = (): UiResponse => {
+  const r = staleCsrf();
+  return json(r.status, r.value);
+};
 
 /** The Content-Type's media type, lowercased, without parameters. */
 function mediaType(value: string | undefined): string {
@@ -183,8 +194,7 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
   }
   if (mediaType(req.contentType) !== "application/json") return json(415, apiError(415, "Content-Type must be application/json.").value);
   if (!csrfMatches(token, req.csrfToken)) {
-    const r = staleCsrf();
-    return json(r.status, r.value);
+    return staleToken();
   }
   if (req.bodyTooLarge) return json(413, apiError(413, "The body is too large.").value);
   let body: unknown;
@@ -198,6 +208,7 @@ async function writePost(d: ApiDeps, req: UiRequest, route: WriteRoute): Promise
     : route === "resume" ? await resumePause(d, d.pauses!, body)
     : route === "improve" ? await runImproveNow(d as ImproveRunDeps)
     : route === "packs" ? await writePackApproval(d, d.pauses!, body)
+    : route === "import" ? await writePluginsImport(d, d.pauses!, body)
     : route === "rules" ? await writeRuleVerdict(d, d.pauses!, body)
     : route === "tasks" ? await TASK_WRITES[pathOf(req.url)]!(d, body)
     : route === "calendar" ? await writeCalendar(d, pathOf(req.url), body)
@@ -223,7 +234,7 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
     return json(r.status, r.value);
   }
   // A POST anywhere else is a JSON 405, whatever the area: a script that posts reads one error format.
-  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, rule verdict, task, calendar and data ask routes take a POST.", { allow: ALLOW });
+  if (req.method === "POST") return areaError("api", 405, "Only the settings, item commands, pause resume, standing, improve run, pack approvals, plugins import, rule verdict, task, calendar and data ask routes take a POST.", { allow: ALLOW });
   if (req.method !== "GET" && req.method !== "HEAD") return areaError(area, 405, "This page is read-only.", { allow: ALLOW });
 
   let url: URL;
@@ -235,6 +246,13 @@ export async function respond(d: ApiDeps, req: UiRequest): Promise<UiResponse> {
 
   // Decided on the parsed path too: "/app/../x" parses to "/x", which is not the app.
   if (isApiPath(url.pathname)) {
+    // The import's read lists files of the user's home folder: the page's CSRF token too, before any read.
+    if (url.pathname === PLUGINS_IMPORT_PATH) {
+      if (d.pauses === undefined) return json(404, apiError(404, "Not found.").value);
+      if (!csrfMatches(d.pauses.csrfToken, req.csrfToken)) return staleToken();
+      const r = await readPluginsImport(d);
+      return json(r.status, r.value);
+    }
     // The Rules page's read (issue #571), the Tasks page's (#607) and the Plugins page's are served here beside the notices, so api.ts stays within its size budget.
     const r = url.pathname === NOTICES_PATH ? await readNotices(d)
       : url.pathname === RULES_PATH ? await readRules(d)
@@ -286,16 +304,15 @@ export interface UiServer {
 /** Listens on 127.0.0.1:`port` (0 picks a free port). */
 export async function startUi(d: ApiDeps, port: number): Promise<UiServer> {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host };
-    const write = writeRoute(d, base) !== null || commandsWrite(base) !== null;
     const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
+    const base: UiRequest = { method: req.method, url: req.url, host: req.headers.host, csrfToken: one(req.headers[CSRF_HEADER]) };
+    const write = writeRoute(d, base) !== null || commandsWrite(base) !== null;
     (write
       ? readBody(req, commandsWrite(base) !== null ? MAX_COMMAND_BODY : MAX_BODY).then((b) =>
           respond(d, {
             ...base,
             origin: one(req.headers.origin),
             contentType: one(req.headers["content-type"]),
-            csrfToken: one(req.headers[CSRF_HEADER]),
             ...b,
           }),
         )

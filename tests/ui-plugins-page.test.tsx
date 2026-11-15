@@ -100,7 +100,7 @@ describe("Plugins page", () => {
     show();
     const table = await screen.findByRole("table", { name: "MCP" });
     expect((within(rowsOf(table)[0]!).getByRole("button", { name: "Approve" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Import" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Import…" }) as HTMLButtonElement).disabled).toBe(true);
     expect(document.body.textContent).not.toContain("factory pack");
     expect(document.body.textContent).not.toContain("Approve from the CLI");
   });
@@ -143,7 +143,7 @@ describe("Plugins page", () => {
     await waitFor(() => expect(document.body.textContent).toContain("No MCP server yet."));
     for (const tab of ["MCP", "Skills", "Tools"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
-      expect(screen.getByRole("button", { name: "Import" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Import…" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "Add" })).toBeTruthy();
       for (const gone of ["factory pack", "factory.config.json", "by hand"]) expect(document.body.textContent, `${tab}: ${gone}`).not.toContain(gone);
     }

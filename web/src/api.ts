@@ -1,7 +1,8 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
 // (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict), POST
-// /api/v1/packs/approvals (postPackApproval, the Plugins page's Approve and Revoke) and POST
+// /api/v1/packs/approvals (postPackApproval, the Plugins page's Approve and Revoke; postPackAdd, its Add), POST /api/v1/plugins/import
+// (postPluginsImport, the Plugins page's Import dialog; its read, getPluginsImport, sends the token too) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
 // /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete, sub, and schedule, the timeline's drop), the
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
@@ -502,14 +503,39 @@ export interface PluginsView {
   settings_token?: string | null;
 }
 
-/** One item `factory plugins import` finds in the user-level configs: what the Import dialog lists and sends back. */
-export interface FoundPlugin {
+/** One skill or MCP server the user-level Claude Code or Codex config holds (design 11-plugin-import). Never a value. */
+export interface ImportItem {
   kind: "skill" | "mcp_server";
   source: "claude" | "codex";
   name: string;
+  /** A skill's SKILL.md path; null for an MCP server. */
+  path: string | null;
+  env_keys: string[];
+  header_keys: string[];
+  /** Already stored: a second import adds nothing. */
+  imported: boolean;
+  /** The scan rules an MCP server fails; it cannot be imported while non-empty. */
+  refused: string[];
 }
 
-/** The answer to an import or add: the CLI's lines, `refused` when a scan refused an item. */
+/** `/api/v1/plugins/import`: what the user configs hold, and each source whose config did not parse. */
+export interface PluginsImportView {
+  as_of: string;
+  items: ImportItem[];
+  errors: { source: string; message: string }[];
+}
+
+/** One selected item's outcome: stored, already added, refused (with its rules) or not found. */
+export interface ImportResult {
+  kind: ImportItem["kind"];
+  source: ImportItem["source"];
+  name: string;
+  outcome: "stored" | "already_added" | "refused" | "not_found";
+  rules: string[];
+  line: string;
+}
+
+/** The answer to an Add: the CLI's lines, `refused` when a scan refused an item. */
 export type PackWriteResult = { ok: true; lines: string[]; refused: boolean } | { ok: false; error: string };
 
 /** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */
@@ -955,6 +981,7 @@ export const API = {
   capabilities: "/api/v1/settings/capabilities",
   plugins: "/api/v1/plugins",
   packApprovals: "/api/v1/packs/approvals",
+  pluginsImport: "/api/v1/plugins/import",
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",
@@ -1142,17 +1169,27 @@ export async function postPackApproval(token: string, action: "approve" | "revok
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/packs/approvals `scan`: what the user-level Claude Code and Codex configs hold. Writes nothing. */
-export async function postPluginScan(token: string): Promise<{ ok: true; found: FoundPlugin[]; errors: string[] } | { ok: false; error: string }> {
-  const r = await postJson<{ found?: FoundPlugin[]; errors?: string[]; error?: string }>(API.packApprovals, token, { action: "scan" });
-  if (r.ok) return { ok: true, found: r.value.found ?? [], errors: r.value.errors ?? [] };
+/** POST /api/v1/packs/approvals `add`: a pack folder or one descriptor file, stored as pending. */
+export async function postPackAdd(token: string, path: string): Promise<PackWriteResult> {
+  const r = await postJson<{ lines?: string[]; refused?: boolean; error?: string }>(API.packApprovals, token, { action: "add", path });
+  if (r.ok) return { ok: true, lines: r.value.lines ?? [], refused: r.value.refused === true };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/packs/approvals `import` (the picked items) or `add` (a pack folder or descriptor file): stored as pending. */
-export async function postPackWrite(token: string, body: { action: "import"; items: FoundPlugin[] } | { action: "add"; path: string }): Promise<PackWriteResult> {
-  const r = await postJson<{ lines?: string[]; refused?: boolean; error?: string }>(API.packApprovals, token, body);
-  if (r.ok) return { ok: true, lines: r.value.lines ?? [], refused: r.value.refused === true };
+/** GET /api/v1/plugins/import with the CSRF token (it reads the user's own configs): read once per dialog, never polled. */
+export async function getPluginsImport(token: string): Promise<PluginsImportView> {
+  const res = await fetch(API.pluginsImport, { headers: { accept: "application/json", "x-csrf-token": token } });
+  if (!res.ok) throw new Error(`${API.pluginsImport}: HTTP ${res.status}`);
+  return (await res.json()) as PluginsImportView;
+}
+
+/** POST /api/v1/plugins/import: stores the selected items, as `factory plugins import`. A refusal (400, 403) is `{ ok: false, error }`. */
+export async function postPluginsImport(
+  token: string,
+  items: readonly Pick<ImportItem, "kind" | "source" | "name">[],
+): Promise<{ ok: true; results: ImportResult[] } | { ok: false; error: string }> {
+  const r = await postJson<{ results?: ImportResult[]; error?: string }>(API.pluginsImport, token, { items: items.map(({ kind, source, name }) => ({ kind, source, name })) });
+  if (r.ok) return { ok: true, results: r.value.results ?? [] };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 

@@ -1,17 +1,16 @@
-import { useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type ReactNode, useState } from "react";
 import {
-  API, type FoundPlugin, type ItemDetail, type McpStatus, type PluginsView,
-  postPackApproval, postPackWrite, postPluginScan, postSettings, useApi,
+  API, type ImportItem, type ItemDetail, type McpStatus, type PluginsView,
+  getPluginsImport, postPackAdd, postPackApproval, postPluginsImport, postSettings, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { Dialog } from "../components/ui/dialog.js";
+import { Dialog, announceStatus } from "../components/ui/dialog.js";
 import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { Notice, PageHeader, StatusBadge } from "../components/ui/notice.js";
 import { ErrorNote, Loading } from "../components/ui/parts.js";
-import { Switch } from "../components/ui/switch.js";
 import { Tabs } from "../components/ui/tabs.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
@@ -26,8 +25,10 @@ import { withNodes } from "./standing.js";
 // the factory's implementation plugins. The selected tab is the `tab` query parameter. Each tab has a search box over
 // name and description, and Import and Add: above the list, or in the empty state when the tab has nothing.
 // - Approve or Revoke, on every MCP server and pack tool row: POST /api/v1/packs/approvals, as `factory pack approve|revoke`.
-// - Import: a dialog that scans the user-level Claude Code and Codex configs, lets the owner pick items, and imports
-//   the picked ones (the same route, `scan` then `import`), as `factory plugins import`.
+// - Import (design 11-plugin-import): a dialog that lists, from GET /api/v1/plugins/import, the skills (Skills tab) or
+//   MCP servers (MCP and Tools tabs: tools come from MCP servers) of the user-level Claude Code and Codex configs, each
+//   with a checkbox; one already stored shows as imported and one a scan refuses shows its rules, neither selectable.
+//   Import posts the checked ones to POST /api/v1/plugins/import, as `factory plugins import`.
 // - Add on MCP and Tools: a pack folder or one descriptor file (`add`), as `factory pack add`. Add on Skills, and
 //   Remove on a skill folder: the skill folder list (`capabilities.skill_folders`) through the config file writer
 //   (POST /api/v1/settings `edit-file`), which puts the change on a local branch; the page shows that item's Merge button.
@@ -135,71 +136,108 @@ export function skillFolderOf(path: string): string {
   return /\/SKILL\.md$/.test(p) && parent.includes("/") ? parent.slice(0, parent.lastIndexOf("/")) || "/" : parent;
 }
 
-const pickKey = (f: FoundPlugin) => JSON.stringify([f.kind, f.source, f.name]);
+/** Which dialog a tab's Import opens: the kind of item it lists and what importing does. */
+const IMPORT_OF: Record<Tab, { kind: ImportItem["kind"]; title: MessageKey; consequence: MessageKey }> = {
+  mcp: { kind: "mcp_server", title: "plugins.importTitleMcp", consequence: "plugins.importConsequenceMcp" },
+  skills: { kind: "skill", title: "plugins.importTitleSkills", consequence: "plugins.importConsequenceSkills" },
+  tools: { kind: "mcp_server", title: "plugins.importTitleMcp", consequence: "plugins.importConsequenceTools" },
+};
 
-/** Import: scans when it opens, lists what it found with a switch each (all on), and imports the picked ones. */
-function ImportDialog({ token, report, onClose }: { token: string; report: Reporter; onClose: () => void }) {
-  const [found, setFound] = useState<FoundPlugin[] | null>(null);
-  const [errors, setErrors] = useState<string[]>([]);
-  const [off, setOff] = useState<ReadonlySet<string>>(new Set());
-  const [error, setError] = useState<string | null>(null);
+const SOURCE: Record<ImportItem["source"], MessageKey> = { claude: "plugins.sourceClaude", codex: "plugins.sourceCodex" };
+const itemKey = (i: ImportItem) => `${i.kind}\n${i.source}\n${i.name}`;
+
+/** The Import dialog: the found items of one kind, each with a checkbox; Import stores the checked ones. */
+function ImportDialog({ tab, token, onClose }: { tab: Tab; token: string; onClose: () => void }) {
+  const client = useQueryClient();
+  const of = IMPORT_OF[tab];
+  // Read each time the dialog opens: the configs can change between opens.
+  const q = useQuery({ queryKey: [API.pluginsImport], queryFn: () => getPluginsImport(token), staleTime: 0, gcTime: 0 });
+  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    let live = true;
-    void postPluginScan(token).then((r) => {
-      if (!live) return;
-      if (r.ok) {
-        setFound(r.found);
-        setErrors(r.errors);
-      } else {
-        setFound([]);
-        setError(r.error);
-      }
-    });
-    return () => {
-      live = false;
-    };
-  }, [token]);
-  const picked = (found ?? []).filter((f) => !off.has(pickKey(f)));
-  const toggle = (f: FoundPlugin, on: boolean) => {
-    const next = new Set(off);
-    if (on) next.delete(pickKey(f));
-    else next.add(pickKey(f));
-    setOff(next);
+  const [error, setError] = useState<string | null>(null);
+  const items = (q.data?.items ?? []).filter((i) => i.kind === of.kind);
+  const toggle = (key: string) => {
+    const next = new Set(checked);
+    if (!next.delete(key)) next.add(key);
+    setChecked(next);
   };
   const confirm = async () => {
-    if (picked.length === 0) return setError(t("plugins.pickNone"));
     setBusy(true);
     setError(null);
-    const r = await postPackWrite(token, { action: "import", items: picked });
+    const r = await postPluginsImport(token, items.filter((i) => checked.has(itemKey(i))));
     setBusy(false);
-    if (!r.ok) return setError(r.error);
-    report({ ok: !r.refused, lines: r.lines });
+    if (!r.ok) {
+      setError(r.error);
+      return;
+    }
+    await client.invalidateQueries({ queryKey: [API.plugins] });
+    const failed = r.results.filter((x) => x.outcome === "refused" || x.outcome === "not_found");
+    if (failed.length > 0) {
+      setChecked(new Set());
+      setError(failed.map((x) => x.line).join("; "));
+      await q.refetch();
+      return;
+    }
+    const stored = r.results.filter((x) => x.outcome === "stored").length;
+    announceStatus(t("plugins.importDone", { stored, skipped: r.results.length - stored }));
     onClose();
   };
   return (
-    <Dialog title={t("plugins.importTitle")} consequence={t("plugins.importConsequence")} confirmLabel={t("plugins.import")} confirmDisabled={busy || found === null || found.length === 0} error={error} onConfirm={() => void confirm()} onClose={onClose}>
-      {found === null ? (
-        <p role="status" className="text-sm text-text-2">{t("plugins.scanning")}</p>
+    <Dialog
+      title={t(of.title)}
+      consequence={t(of.consequence)}
+      confirmLabel={t("plugins.importConfirm", { count: checked.size })}
+      confirmDisabled={busy || checked.size === 0}
+      error={error}
+      onConfirm={() => void confirm()}
+      onClose={onClose}
+    >
+      <p className="text-sm text-pretty text-text-2">{t("plugins.importIntro")}</p>
+      {q.data?.errors.map((e) => (
+        <Notice key={e.source} tone="warn">
+          {e.message}
+        </Notice>
+      ))}
+      {q.isError ? (
+        <ErrorNote error={q.error} />
+      ) : !q.data ? (
+        <Loading rows={2} />
+      ) : items.length === 0 ? (
+        <p className="text-sm text-pretty">{t("plugins.importNone")}</p>
       ) : (
-        <div className="flex flex-col gap-2">
-          {errors.map((e) => <p key={e} role="alert" className="text-xs text-pretty break-words text-pill-bad-fg">{e}</p>)}
-          {found.length === 0 && error === null && <p className="text-sm text-pretty text-text-2">{t("plugins.nothingFound")}</p>}
-          {found.length > 0 && (
-            <ul aria-label={t("plugins.importTitle")} className="flex max-h-72 flex-col gap-2 overflow-auto">
-              {found.map((f) => {
-                const kind = t(f.kind === "skill" ? "plugins.kindSkill" : "plugins.kindMcp");
-                return (
-                  <li key={pickKey(f)} className="flex min-w-0 items-center gap-2 text-xs">
-                    <Switch checked={!off.has(pickKey(f))} onCheckedChange={(on) => toggle(f, on)} aria-label={t("plugins.pick", { kind, name: f.name, source: f.source })} />
-                    <span className="min-w-0 font-mono wrap-anywhere">{f.name}</span>
-                    <span className="text-text-2 whitespace-nowrap">{kind} · {f.source}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </div>
+        <ul aria-label={t(of.title)} className="max-h-72 divide-y divide-border overflow-y-auto rounded-control border border-border">
+          {items.map((i) => {
+            const key = itemKey(i);
+            const locked = i.imported || i.refused.length > 0;
+            const on = i.imported || checked.has(key);
+            return (
+              <li key={key} data-import-item={i.name} className="flex items-start gap-3 px-3 py-2">
+                {/* The shared Button as a checkbox, as on the Tasks page: components/ui has no checkbox. */}
+                <Button
+                  size="icon"
+                  role="checkbox"
+                  aria-checked={on}
+                  aria-label={t("plugins.importSelect", { name: i.name, source: t(SOURCE[i.source]) })}
+                  disabled={busy || locked}
+                  onClick={() => toggle(key)}
+                >
+                  <span aria-hidden>{on ? "✓" : ""}</span>
+                </Button>
+                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="font-mono text-xs wrap-anywhere">{i.name}</span>
+                  <span className="text-xs text-pretty wrap-anywhere text-text-2">{i.path ?? t(SOURCE[i.source])}</span>
+                  {i.env_keys.length > 0 && <span className="text-xs text-pretty wrap-anywhere text-text-2">{t("plugins.importEnvKeys", { keys: i.env_keys.join(", ") })}</span>}
+                  {i.refused.length > 0 && <span className="text-xs text-pretty wrap-anywhere text-pill-bad-fg">{t("plugins.importRefused", { rules: i.refused.join(", ") })}</span>}
+                </div>
+                {i.imported && (
+                  <StatusBadge size="sm" level="ready_to_merge">
+                    {t("plugins.imported")}
+                  </StatusBadge>
+                )}
+              </li>
+            );
+          })}
+        </ul>
       )}
     </Dialog>
   );
@@ -220,7 +258,7 @@ function AddDialog({ view, skills, report, onClose }: { view: PluginsView; skill
       const folders = view.skill_folders ?? [];
       failed = folders.includes(folder) ? t("plugins.folderListed", { folder }) : await editFolders(view.settings_token!, [...folders, folder], report);
     } else {
-      const r = await postPackWrite(view.csrf_token!, { action: "add", path: path.trim() });
+      const r = await postPackAdd(view.csrf_token!, path.trim());
       if (r.ok) report({ ok: !r.refused, lines: r.lines });
       else failed = r.error;
     }
@@ -254,9 +292,9 @@ function Actions({ view, tab, report }: { view: PluginsView; tab: Tab; report: R
   const off = t("plugins.cannotWrite");
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button variant="secondary" disabled={!canImport} title={canImport ? undefined : off} onClick={() => setOpen("import")}>{t("plugins.import")}</Button>
+      <Button variant="secondary" disabled={!canImport} title={canImport ? undefined : t("plugins.importFromCli")} onClick={() => setOpen("import")}>{t("plugins.import")}</Button>
       <Button variant="secondary" disabled={!canAdd} title={canAdd ? undefined : off} onClick={() => setOpen("add")}>{t("plugins.add")}</Button>
-      {open === "import" && view.csrf_token !== null && <ImportDialog token={view.csrf_token} report={report} onClose={() => setOpen(null)} />}
+      {open === "import" && view.csrf_token !== null && <ImportDialog tab={tab} token={view.csrf_token} onClose={() => setOpen(null)} />}
       {open === "add" && <AddDialog view={view} skills={skills} report={report} onClose={() => setOpen(null)} />}
     </div>
   );

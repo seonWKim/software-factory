@@ -4,22 +4,16 @@
 //   approves or revokes one stored description, through the same path as `factory pack approve|revoke`
 //   (changeApproval): `approve_tool` through the page's auth plugin, then one ext_packs_approvals row with the page's
 //   factory user ID.
-// - `{ "action": "scan" }`: what `factory plugins import --dry-run` finds in the user-level Claude Code and Codex
-//   configs (kind, source and name only; never a descriptor). Writes nothing.
-// - `{ "action": "import", "items": [{ "kind", "source", "name" }] }`: scans again and stores the picked items as
-//   `factory plugins import` does (importFound): an MCP server as a pending pack entry, a skill as a reference. The
-//   page's names pick from the server's own scan; a descriptor never comes from the request.
 // - `{ "action": "add", "path": <absolute path> }`: `factory pack add` (addPack) for a pack folder, or for one
 //   descriptor file in a pack's tools/ or mcp_servers/ folder (that file alone, with its tool module beside it).
-// Import and add store what they find as pending: nothing is approved, started or granted. They are one route with
-// approve because the server's write routes are one per path. The request guards (Host, Origin, Content-Type, CSRF
-// token, body size, JSON) run in server.ts first; every refusal comes before any store write.
+// Add stores what it finds as pending: nothing is approved, started or granted. It is one route with approve because
+// the server's write routes are one per path; the page's Import is its own route (plugins-import-api.ts). The request
+// guards (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts first; every refusal comes before
+// any store write.
 
 import { copyFile, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
-import { importFound, importLine, userConfigHome } from "../import/import-plugins.js";
-import { type Found, IMPORT_KINDS, IMPORT_SOURCES, scanUserConfigs } from "../import/scan.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval } from "../packs/pack-approvals.store.js";
 import { PACK_TOOL_MODULE, PackEntriesStore, addLine, addPack } from "../packs/pack-entries.store.js";
@@ -37,20 +31,18 @@ const objectOf = (body: unknown): Record<string, unknown> => (typeof body === "o
 /** The body as a request, or why it is not one. */
 function request(body: unknown): ApprovalRequest | string {
   const b = objectOf(body);
-  if (b.action !== "approve" && b.action !== "revoke") return "action must be approve, revoke, scan, import or add";
+  if (b.action !== "approve" && b.action !== "revoke") return "action must be approve, revoke or add";
   if (typeof b.kind !== "string" || typeof b.name !== "string" || b.name === "") return "kind and name must be strings";
   if (b.description_hash !== undefined && (typeof b.description_hash !== "string" || b.description_hash === "")) return "description_hash must be a non-empty string";
   return { action: b.action, kind: b.kind, name: b.name, ...(b.description_hash === undefined ? {} : { hash: b.description_hash }) };
 }
 
-/** POST /api/v1/packs/approvals, after the request guards. `p.auth` is set (the route is wired only then). `home`: the user configs' home. */
-export async function writePackApproval(d: PauseDeps, p: UiPauses, body: unknown, home: string = userConfigHome()): Promise<ApiResult> {
-  const action = objectOf(body).action;
-  if (action === "scan") return scan(d, home);
-  if (action === "import" || action === "add") {
+/** POST /api/v1/packs/approvals, after the request guards. `p.auth` is set (the route is wired only then). */
+export async function writePackApproval(d: PauseDeps, p: UiPauses, body: unknown): Promise<ApiResult> {
+  if (objectOf(body).action === "add") {
     const user_id = await p.principal();
     if (user_id === null) return noUser();
-    return action === "import" ? importPicked(d, home, user_id, objectOf(body).items) : addPath(d, user_id, objectOf(body).path);
+    return addPath(d, user_id, objectOf(body).path);
   }
   const r = request(body);
   if (typeof r === "string") return { status: 400, value: { error: r } };
@@ -64,38 +56,6 @@ export async function writePackApproval(d: PauseDeps, p: UiPauses, body: unknown
 }
 
 const noUser = (): ApiResult => ({ status: 403, value: { error: "No factory user acts from this page: link your local account or set cli_user." } });
-
-/** The user configs' skills and MCP servers, every source and kind. */
-const scanAll = (home: string) => scanUserConfigs({ home, sources: IMPORT_SOURCES, kinds: IMPORT_KINDS });
-
-/** `{ action: "scan" }`: each found item's kind, source and name, and each source that stopped. */
-async function scan(d: PauseDeps, home: string): Promise<ApiResult> {
-  const w = new Withholder(d.scanner);
-  const text = async (v: string) => (await w.plain(v)).text;
-  const { found, errors } = await scanAll(home);
-  const items = [];
-  for (const f of found) items.push({ kind: f.kind, source: f.source, name: await text(f.name) });
-  const messages = [];
-  for (const e of errors) messages.push(await text(e.message));
-  return { status: 200, value: { found: items, errors: messages } };
-}
-
-const key = (f: { kind?: unknown; source?: unknown; name?: unknown }) => JSON.stringify([f.kind, f.source, f.name]);
-
-/** `{ action: "import", items }`: the picked items of a fresh scan, stored as `factory plugins import` stores them. */
-async function importPicked(d: PauseDeps, home: string, added_by: string, items: unknown): Promise<ApiResult> {
-  if (!Array.isArray(items) || items.length === 0 || !items.every((i) => typeof i === "object" && i !== null)) {
-    return { status: 400, value: { error: "items must be a non-empty list of { kind, source, name }" } };
-  }
-  const picked = new Set(items.map((i) => key(i as Record<string, unknown>)));
-  const { found } = await scanAll(home);
-  const chosen: Found[] = found.filter((f) => picked.has(key(f)));
-  const gone = items.length - chosen.length;
-  const results = await importFound({ db: storeSql(d.store), now: () => d.clock.now().toISOString(), scanner: d.scanner, added_by, found: chosen });
-  const lines = results.map(importLine);
-  if (gone > 0) lines.push(`${gone} picked item(s) are no longer in the user configs; nothing stored for them`);
-  return lines.length === 0 ? { status: 404, value: { error: "nothing picked is in the user configs" } } : done(d, lines, results.some((r) => r.outcome === "refused"));
-}
 
 /** `{ action: "add", path }`: a pack folder, or one descriptor file of a pack, through addPack. */
 async function addPath(d: PauseDeps, added_by: string, raw: unknown): Promise<ApiResult> {

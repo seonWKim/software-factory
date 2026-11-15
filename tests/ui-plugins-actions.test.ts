@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------------------------------------------
-// The server: POST /api/v1/packs/approvals scan, import and add; GET /api/v1/plugins skill folders.
+// The server: POST /api/v1/packs/approvals add; GET /api/v1/plugins skill folders.
 
 const BASE: SettingsBase = { file: {}, layers: { defaults: {}, projects: {} } };
 
@@ -74,37 +74,7 @@ async function server(fileKeys: { key: string; value: string | null }[] = []) {
   return { d, pauses, store, entries };
 }
 
-/** A home with a Claude Code config holding one MCP server (with an env value) and one skill. */
-function home(): string {
-  const h = temp("plugins-home-");
-  write(join(h, ".claude.json"), JSON.stringify({ mcpServers: { "docs-search": { command: "docs-bin", env: { DOCS_TOKEN: "value-never-sent" } }, tracker: { command: "tracker-bin" } } }));
-  write(join(h, ".claude", "skills", "deploy", "SKILL.md"), "---\ndescription: Ships.\n---\nbody\n");
-  return h;
-}
-
-describe("POST /api/v1/packs/approvals: scan, import and add", () => {
-  it("scan lists each found item's kind, source and name, and writes nothing", async () => {
-    const s = await server();
-    const r = await writePackApproval(s.d, s.pauses, { action: "scan" }, home());
-    expect(r.status).toBe(200);
-    const found = (r.value as { found: unknown[] }).found;
-    expect(found).toContainEqual({ kind: "mcp_server", source: "claude", name: "docs-search" });
-    expect(found).toContainEqual({ kind: "skill", source: "claude", name: "deploy" });
-    expect(JSON.stringify(r.value)).not.toContain("value-never-sent");
-    expect(await s.entries.refs("mcp_server", "docs-search")).toEqual([]);
-  });
-
-  it("import stores only the picked items of a fresh scan, as pending", async () => {
-    const s = await server();
-    const h = home();
-    const r = await writePackApproval(s.d, s.pauses, { action: "import", items: [{ kind: "mcp_server", source: "claude", name: "docs-search" }] }, h);
-    expect(r.status).toBe(200);
-    expect((r.value as { lines: string[] }).lines).toEqual(["stored mcp_server docs-search from claude as pending"]);
-    expect(await s.entries.refs("mcp_server", "docs-search")).toHaveLength(1);
-    expect(await s.entries.refs("mcp_server", "tracker")).toEqual([]);
-    expect((await writePackApproval(s.d, s.pauses, { action: "import", items: [] }, h)).status).toBe(400);
-  });
-
+describe("POST /api/v1/packs/approvals: add", () => {
   it("add stores a pack folder's descriptors, or one descriptor file alone", async () => {
     const s = await server();
     const pack = temp("plugins-pack-");
@@ -120,7 +90,7 @@ describe("POST /api/v1/packs/approvals: scan, import and add", () => {
     expect((await writePackApproval(s.d, s.pauses, { action: "add", path: "relative/path" })).status).toBe(400);
   });
 
-  it("refuses import and add with no factory user, before any write", async () => {
+  it("refuses add with no factory user, before any write", async () => {
     const s = await server();
     const pack = temp("plugins-pack-");
     write(join(pack, "mcp_servers", "one.json"), JSON.stringify({ name: "one", command: "one-bin" }));
@@ -203,9 +173,10 @@ const FULL: PluginsView = {
   settings_token: "settings-token",
 };
 
+/** GET /api/v1/plugins/import: one MCP server and one skill the user configs hold. */
 const FOUND = [
-  { kind: "mcp_server", source: "claude", name: "docs-search" },
-  { kind: "skill", source: "codex", name: "deploy" },
+  { kind: "mcp_server", source: "claude", name: "docs-search", path: null, env_keys: [], header_keys: [], imported: false, refused: [] },
+  { kind: "skill", source: "codex", name: "deploy", path: "/home/me/.codex/skills/deploy/SKILL.md", env_keys: [], header_keys: [], imported: false, refused: [] },
 ];
 
 const reply = (value: unknown) => new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
@@ -219,12 +190,15 @@ beforeEach(() => {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       posts.push({ url, body });
       if (url === "/api/v1/settings") return reply({ ok: true, lines: ["filed"], item: "wi_1", branch: "factory/wi_1" });
-      if (body.action === "scan") return reply({ found: FOUND, errors: [] });
-      if (body.action === "import") return reply({ lines: ["stored mcp_server docs-search from claude as pending"], refused: false });
+      if (url === "/api/v1/plugins/import") {
+        const items = body.items as { kind: string; source: string; name: string }[];
+        return reply({ results: items.map((i) => ({ ...i, outcome: "stored", rules: [], line: `stored ${i.kind} ${i.name}` })) });
+      }
       if (body.action === "add") return reply({ lines: ["stored MCP server one as pending"], refused: false });
       return reply({ line: `${String(body.action)}d ${String(body.name)}` });
     }
     if (url === "/api/v1/plugins") return reply(view);
+    if (url === "/api/v1/plugins/import") return reply({ as_of: AT, items: FOUND, errors: [] });
     return new Response("{}", { status: 404 });
   }));
 });
@@ -237,15 +211,14 @@ function show() {
 const rowsOf = (table: HTMLElement) => [...table.querySelectorAll("tbody > tr")] as HTMLElement[];
 const dialog = () => screen.getByRole("dialog");
 
-/** Opens Import, unpicks the skill, and imports: the post names only the picked item. */
-async function importOne() {
-  fireEvent.click(screen.getByRole("button", { name: "Import" }));
-  await within(dialog()).findByRole("switch", { name: "Import Skill deploy from codex" });
-  expect(posts.at(-1)!.body).toEqual({ action: "scan" });
-  fireEvent.click(within(dialog()).getByRole("switch", { name: "Import Skill deploy from codex" }));
-  fireEvent.click(within(dialog()).getByRole("button", { name: "Import" }));
-  await waitFor(() => expect(posts.at(-1)!.body).toEqual({ action: "import", items: [FOUND[0]] }));
-  expect(await screen.findByText("stored mcp_server docs-search from claude as pending")).toBeTruthy();
+/** Opens Import, which lists what the scan found of the tab's kind, picks the one item, and imports it. */
+async function importOne(tab: string) {
+  const [item, label] = tab === "Skills" ? [FOUND[1]!, "Import deploy from Codex"] : [FOUND[0]!, "Import docs-search from Claude Code"];
+  fireEvent.click(screen.getByRole("button", { name: "Import…" }));
+  fireEvent.click(await within(dialog()).findByRole("checkbox", { name: label }));
+  fireEvent.click(within(dialog()).getByRole("button", { name: "Import 1" }));
+  await waitFor(() => expect(posts.at(-1)).toEqual({ url: "/api/v1/plugins/import", body: { items: [{ kind: item.kind, source: item.source, name: item.name }] } }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 }
 
 describe("Plugins page actions", () => {
@@ -254,7 +227,7 @@ describe("Plugins page actions", () => {
     await screen.findByRole("table", { name: "MCP" });
     for (const tab of ["MCP", "Skills", "Tools"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
-      await importOne();
+      await importOne(tab);
     }
   });
 
@@ -264,7 +237,7 @@ describe("Plugins page actions", () => {
     await screen.findByText(/No MCP server yet\./);
     for (const tab of ["MCP", "Skills", "Tools"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
-      await importOne();
+      await importOne(tab);
     }
   });
 
