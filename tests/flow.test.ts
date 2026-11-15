@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { REVISE_APPLIED, REVISE_QUEUED, REVISE_QUEUED_PATH, pendingRevises } from "../src/core/commands.js";
+import { REVISE_APPLIED, REVISE_QUEUED, REVISE_QUEUED_PATH, pendingRevises } from "../src/controller/units/commands/queued-revise.js";
 import type { Logger } from "../src/core/log.js";
 import { Worker } from "../src/worker/index.js";
 import type { Run, UserId, WorkerId } from "../src/core/types.js";

@@ -102,7 +102,7 @@ function settledIds(detail: Record<string, string | null> | null): string[] {
 /**
  * The item's queued `/revise` feedback not applied yet (design 09-dashboard-app), oldest first: each `revise_queued`
  * row of the timeline whose comment ID no `revise_applied` or `max_loops` row names. The server's rule is
- * pendingRevises in src/core/commands.ts.
+ * pendingRevises in src/controller/units/commands/queued-revise.ts.
  */
 export function pendingFeedback(timeline: ItemDetail["timeline"]): QueuedFeedback[] {
   const settled = new Set(timeline.filter((r) => r.reason === "revise_applied" || r.reason === "max_loops").flatMap((r) => settledIds(r.detail)));

@@ -169,8 +169,8 @@ describe("command table", () => {
     expect(f.indexOf("Commands you can reply with now:")).toBe(3);
     expect(commandFooter(s("merge_pending", false))).not.toContain("On the change");
     expect(commandFooter(s("reviewing", true))).not.toContain("/revise");
-    expect(helpReply(s("failed_review", true))).toContain("`/revise <feedback>` **(now, on the PR)**: Get a new spec written with your feedback. While implementing, the feedback is queued");
-    expect(helpReply(s("failed_review", true))).toContain("before review. On the PR:");
+    expect(helpReply(s("failed_review", true))).toContain("`/revise <feedback>` **(now, on the PR)**: Get a new spec written with your feedback. While implementing: queue your feedback for one more implement run on the item's branch when the run ends, before review. On the PR:");
+    expect(commandsFor(s("implementing")).find((c) => c.name === "revise")!.description).toMatch(/^While implementing: queue your feedback/);
     expect(helpReply(s("failed_review", true))).toContain("(blocked by a failed review run)");
     expect(commandTableMarkdown()).toContain("; on its PR: waiting for a human merge, blocked by a failed review run |");
   });
@@ -252,7 +252,8 @@ describe("command table", () => {
     for (const phase of COMMAND_PHASES) {
       const s = { phase, has_pr: false, local: true as const };
       expect({ phase, on: applies(revise, s) }).toEqual({ phase, on: phase === "merge_pending" || revise.phases.includes(phase) });
-      if (phase !== "merge_pending" && applies(revise, s)) expect(commandsFor(s).find((c) => c.name === "revise")!.description).toBe(revise.description);
+      // Implementing has its own meaning (the queued /revise), checked in the command table tests.
+      if (phase !== "merge_pending" && phase !== "implementing" && applies(revise, s)) expect(commandsFor(s).find((c) => c.name === "revise")!.description).toBe(revise.description);
     }
     expect(applies(revise, commandState(item("local", null, "run_failed:review:invalid_output")))).toBe(false);
     // The item API offers it with the local description, under the same grant as approve.

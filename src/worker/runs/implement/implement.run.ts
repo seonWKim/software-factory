@@ -1016,9 +1016,8 @@ async function scopeGateStep(
 }
 
 /**
- * The "Feedback on the change" section (design §4): what a human sent with `/revise` on the PR, in a
- * "Request changes" review, or with `/revise` while the previous implement run was going (`revise_applied`), when
- * that started this loop. The run's input holds it; a retry of the run (whose
+ * The "Feedback on the change" section (design §4): what a human sent with `/revise` (on the PR, or queued while
+ * implementing: `revise_applied`) or in a "Request changes" review, when that started this loop. The run's input holds it; a retry of the run (whose
  * input does not) reads it from the loop's state change. Labelled untrusted and fenced so it cannot close its
  * block, as the approver's note is. None: empty, so the section is absent.
  */

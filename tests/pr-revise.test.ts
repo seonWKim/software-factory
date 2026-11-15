@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
-import { REVISE_QUEUED, REVISE_QUEUED_PATH, phaseLabel } from "../src/core/commands.js";
+import { phaseLabel } from "../src/core/commands.js";
+import { REVISE_QUEUED, REVISE_QUEUED_PATH } from "../src/controller/units/commands/queued-revise.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import type { SourceRef, UserId, WorkerId, WorkItem, WorkItemPatch } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";

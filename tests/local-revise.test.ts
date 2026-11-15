@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { localProject } from "../src/compose.js";
 import type { FactoryConfig } from "../src/core/config.js";
 import { type CliAction, runLocalCli } from "../src/core/local-cli.js";
-import { REVISE_APPLIED, REVISE_QUEUED_PATH } from "../src/core/commands.js";
+import { REVISE_APPLIED, REVISE_QUEUED_PATH } from "../src/controller/units/commands/queued-revise.js";
 import type { UserId, WorkerId, WorkItemId, WorkItemPatch } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";

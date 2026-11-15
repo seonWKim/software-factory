@@ -2,7 +2,7 @@ import { COMMAND_TABLE, type CommandWho, cliHelpLine } from "./command-table.js"
 import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
-import { RECURRING_FAILURE, type Run, type RunKind, type StateChange, type WorkItem } from "./types.js";
+import { RECURRING_FAILURE, type Run, type RunKind, type WorkItem } from "./types.js";
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
@@ -87,6 +87,8 @@ export interface CommandSpec {
   /** Phases where it also applies to a local item with no PR, with the meaning in `local_description` (issue #563). */
   local_phases?: readonly CommandPhase[];
   local_description?: string;
+  /** What it means in the `implementing` phase, when that differs (`/revise` queued, design 04-gate-commands). */
+  implementing_description?: string;
   /** At `agent_needs_human`, it applies only when the run that asked was one of these kinds. Absent: any kind. */
   asked_by?: readonly RunKind[];
 }
@@ -118,10 +120,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: "revise",
     usage: "/revise <feedback>",
-    description:
-      "Get a new spec written with your feedback. While implementing, the feedback is queued: when the run ends, " +
-      "it goes to one more implement run on the item's branch before review",
-    // While implementing it is queued, not sent into the running session: no agent runner takes a message mid-run (design 04-gate-commands).
+    description: "Get a new spec written with your feedback",
+    // While implementing it is queued, not sent into the running session (design 04-gate-commands).
+    implementing_description: "While implementing: queue your feedback for one more implement run on the item's branch when the run ends, before review",
     phases: ["spec_pending", "implementing", "too_large", "failed_implement", "agent_needs_human", "repeated_failure", "max_loops"],
     needs_pr: false,
     changes_state: true,
@@ -308,13 +309,15 @@ const FACTORY_COMMANDS: readonly CommandName[] = ["standing"];
 /** The commands that apply in `s`, in table order, each with the description it has there; `/help` always last. */
 export function commandsFor(s: CommandState): CommandSpec[] {
   const shown = (c: CommandSpec) => c.name !== "help" && !ACCOUNT_COMMANDS.includes(c.name) && !FACTORY_COMMANDS.includes(c.name);
-  return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (appliesLocally(c, s) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
+  const own = (c: CommandSpec) => appliesLocally(c, s) || (s.phase === "implementing" && c.implementing_description);
+  return COMMANDS.filter((c) => shown(c) && applies(c, s)).map((c) => (own(c) ? { ...c, description: meaning(c, s) } : c)).concat(commandSpec("help"));
 }
 
 /** What `c` does in `s`: its local meaning where that applies (issue #563), else every meaning it has (`s` null: the table). */
 function meaning(c: CommandSpec, s: CommandState | null): string {
   if (s !== null && appliesLocally(c, s) && c.local_description) return c.local_description;
-  return [c.description, c.pr_description, c.local_description].filter((d) => d).join(". ");
+  if (s?.phase === "implementing" && c.implementing_description) return c.implementing_description;
+  return [c.description, c.implementing_description, c.pr_description, c.local_description].filter((d) => d).join(". ");
 }
 
 /** One command as every list shows it: the issue footer and `/help`, Slack's help in an item's thread. */
@@ -561,49 +564,6 @@ export function dependencyHoldRefusal(held: string | null): string {
 /** The reason for a spec command on an item whose spec is not waiting for approval. */
 export function specNotWaiting(phase: CommandPhase): string {
   return `the spec is not waiting for approval (the item is ${phaseLabel(phase)})`;
-}
-
-/*
- * `/revise` while implementing (design 04-gate-commands, 2026-11-15): no agent runner takes a message during its session,
- * so the feedback is queued as a `revise_queued` state change and applied when the run ends, before review, as one
- * implement run (`revise_applied`). A `revise_applied` or `max_loops` row naming its comment ID settles it.
- */
-
-/** State change reason of a `/revise` queued while implementing; its detail holds `comment_id` and `feedback`. */
-export const REVISE_QUEUED = "revise_queued";
-/** State change reason of the implement run that applied queued feedback; its detail lists them in `comment_ids` (JSON). */
-export const REVISE_APPLIED = "revise_applied";
-/** The path a queued `/revise` took, as its reply names it. The live path ("sent to the running implementer") needs a runner that takes messages mid-run. */
-export const REVISE_QUEUED_PATH = "queued: applies when this run ends";
-
-/** The reply to a `/revise` queued while implementing. */
-export function reviseQueuedReply(): string {
-  return `\`/revise\` ${REVISE_QUEUED_PATH}. Your feedback goes to one more implement run on the item's branch right after the current run, before review.`;
-}
-
-/** The comment IDs a settling row (`revise_applied`, `max_loops`) names in its `comment_ids` detail. */
-function settledIds(c: Pick<StateChange, "detail">): string[] {
-  const raw = c.detail?.comment_ids;
-  if (typeof raw !== "string") return [];
-  try {
-    const ids: unknown = JSON.parse(raw);
-    return Array.isArray(ids) ? ids.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-/** The queued `/revise` feedback of an item not applied yet, oldest first, from its state changes in order. */
-export function pendingRevises(changes: readonly Pick<StateChange, "reason" | "detail">[]): { comment_id: string; feedback: string }[] {
-  const settled = new Set(changes.filter((c) => c.reason === REVISE_APPLIED || c.reason === "max_loops").flatMap(settledIds));
-  const out: { comment_id: string; feedback: string }[] = [];
-  for (const c of changes) {
-    const id = c.detail?.comment_id, feedback = c.detail?.feedback;
-    if (c.reason === REVISE_QUEUED && typeof id === "string" && typeof feedback === "string" && !settled.has(id) && !out.some((p) => p.comment_id === id)) {
-      out.push({ comment_id: id, feedback });
-    }
-  }
-  return out;
 }
 
 /**

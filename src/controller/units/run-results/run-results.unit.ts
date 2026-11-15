@@ -276,7 +276,6 @@ export class RunResultsUnit {
           if (data.pr_pending === true) return this.prPending(it, run, data, { token_cost: tokens, ...(files ? { pr_files: files } : {}) }, "implemented");
           // No PR (the local broker, design 05-sources): the item reviews and merges as its local branch.
           const pr = data.pr_number === null || data.pr_number === undefined ? null : Number(data.pr_number);
-          // Feedback queued by `/revise` while implementing goes to one more implement run before review (applyQueued).
           return this.c.unit("commands").applyQueued(it, {
             patch: {
               stage: "REVIEW",
@@ -462,9 +461,8 @@ export class RunResultsUnit {
 
   /**
    * Outbound delivered an implement run's PR (RFC 0015 M7): its number and link go on the item at its version, the
-   * wait ends, and the review is queued as an implement result's was (or the feedback `/revise` queued meanwhile goes to
-   * one more implement run first, applyQueued). Only an item still waiting for its PR changes, so a redelivered result
-   * or a late one changes nothing.
+   * wait ends, and the review is queued as an implement result's was (queued `/revise` feedback first: applyQueued).
+   * Only an item still waiting for its PR changes, so a redelivered result or a late one changes nothing.
    */
   async prDelivered(id: WorkItemId, ref: string, url: string | null): Promise<void> {
     await this.c.unit("transitions").decide(id, async (it) =>
