@@ -15,7 +15,7 @@ const { CalendarSection } = (await import(/* @vite-ignore */ SECTION_MODULE)) as
 const TOKEN = "tok_cal";
 const NAME = "fixture-calendar";
 const URL_ = "https://consent.example/auth?state=s1";
-const plugin = (over: Partial<CalendarPluginView> = {}): CalendarPluginView => ({ name: NAME, connected: false, synced_at: null, error: null, attempt: null, ...over });
+const plugin = (over: Partial<CalendarPluginView> = {}): CalendarPluginView => ({ name: NAME, connected: false, default_client: true, synced_at: null, error: null, attempt: null, ...over });
 
 let view: CalendarView;
 let posts: { url: string; body: Record<string, unknown>; token: string | null }[];
@@ -138,6 +138,40 @@ describe("Calendar section", () => {
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" })));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(posts).toEqual([{ url: "/api/v1/calendar/disconnect", body: { plugin: NAME }, token: TOKEN }]);
+  });
+
+  it("with a default client, the one-step Connect comes first, with Use my own client (advanced) beside it", async () => {
+    const section = await show();
+    const buttons = within(section).getAllByRole("button").map((b) => b.textContent);
+    expect(buttons.slice(0, 2)).toEqual(["Connect", "Use my own client (advanced)"]);
+    within(section).getByRole("button", { name: `Connect ${NAME}` });
+    expect(section.textContent).not.toContain("This build has no default Google client.");
+  });
+
+  it("with no default client, no Connect that can only fail: the plain message and Use my own client as the main action", async () => {
+    view = { plugins: [plugin({ default_client: false })] };
+    const section = await show();
+    expect(within(section).queryByRole("button", { name: `Connect ${NAME}` })).toBeNull();
+    expect(within(section).queryByRole("button", { name: "Connect" })).toBeNull();
+    expect(section.textContent).toContain("This build has no default Google client. Connect with your own OAuth client.");
+    const own = within(section).getByRole("button", { name: `Use my own client for ${NAME}` });
+    expect(own.textContent).toBe("Use my own client");
+    answers = [{ status: 200, body: { plugin: NAME, state: "needs_input", needs: ["CLIENT_ID", "CLIENT_SECRET"] } }];
+    fireEvent.click(own);
+    await screen.findByRole("dialog", { name: `Connect ${NAME} with your own client` });
+    expect(posts).toEqual([{ url: "/api/v1/calendar/connect", body: { plugin: NAME, own_client: true }, token: TOKEN }]);
+  });
+
+  it("a refused plain connect shows its error once", async () => {
+    const error = 'the sign-in asks for GOOGLE_CLIENT_ID, which only the "use my own client" option sends: nothing stored';
+    const section = await show();
+    answers = [{ status: 422, body: { error } }];
+    fireEvent.click(screen.getByRole("button", { name: `Connect ${NAME}` }));
+    await waitFor(() => expect(section.textContent).toContain(error));
+    // The next read (the server keeps no failed attempt for a refusal) adds no second copy.
+    await waitFor(() => expect(posts).toHaveLength(1));
+    await act(async () => new Promise((r) => setTimeout(r, 50)));
+    expect(section.textContent!.split(error).length - 1).toBe(1);
   });
 
   it("a refused connect shows its reason beside the button", async () => {

@@ -15,7 +15,8 @@ import { useNow } from "./common.js";
 // The Settings page's Calendar section (design 08-settings, 2026-11-13): each calendar plugin the server lists from
 // the registry's connect hooks, by its own name (this file names no provider), connected or not, with its last sync time
 // and last error. Connect posts the plugin alone: the server signs in with the plugin's default client and answers the
-// consent page at once, with no dialog. Only the advanced "Use my own client" option asks for values: when the server
+// consent page at once, with no dialog. A build with no default client (`default_client: false`) shows no Connect, which
+// could only fail: it says so, and "Use my own client" is the main action. Only the "Use my own client" option asks for values: when the server
 // answers which secrets that sign-in needs, a Dialog asks for them in password fields, and the values leave the page's
 // state once the attempt is sent. Either way the server answers the consent page, opened in a new tab (and linked, if the browser blocks it), and the section polls GET /api/v1/calendar
 // for the result. Disconnect asks first in the danger Dialog; nothing is sent until Confirm.
@@ -116,6 +117,7 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
         </span>
       </div>
       {plugin.error && <p className="text-xs text-pretty break-words text-pill-bad-fg">{t("calendar.lastError", { error: plugin.error })}</p>}
+      {!plugin.connected && !plugin.default_client && <p className="text-xs text-pretty text-text-2">{t("calendar.noDefaultClient")}</p>}
       <Attempt plugin={plugin} consent={consent} />
       <ButtonRow>
         {plugin.connected ? (
@@ -124,11 +126,18 @@ function CalendarRow({ plugin, token }: { plugin: CalendarPluginView; token: str
           </Button>
         ) : (
           <>
-            <Button disabled={busy || signingIn} aria-label={t("calendar.connectLabel", { name: plugin.name })} onClick={() => void connect()}>
-              {t("calendar.connect")}
-            </Button>
-            <Button variant="ghost" disabled={busy || signingIn} aria-label={t("calendar.ownClientLabel", { name: plugin.name })} onClick={() => void connect({})}>
-              {t("calendar.ownClient")}
+            {plugin.default_client && (
+              <Button disabled={busy || signingIn} aria-label={t("calendar.connectLabel", { name: plugin.name })} onClick={() => void connect()}>
+                {t("calendar.connect")}
+              </Button>
+            )}
+            <Button
+              variant={plugin.default_client ? "ghost" : "secondary"}
+              disabled={busy || signingIn}
+              aria-label={t("calendar.ownClientLabel", { name: plugin.name })}
+              onClick={() => void connect({})}
+            >
+              {plugin.default_client ? t("calendar.ownClient") : t("calendar.ownClientMain")}
             </Button>
           </>
         )}
