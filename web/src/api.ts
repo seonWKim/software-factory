@@ -6,8 +6,9 @@
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
 // (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
+// A write refused for a stale token (code "stale_csrf", after a UI restart) is retried once with GET /api/v1/session's token (postJson).
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { type QueryClient, keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { t } from "./i18n/index.js";
 
 /** The supervisor's status (the status page's banner); null when the factory is stopped. */
@@ -935,8 +936,12 @@ export async function getJson<T>(url: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** The app's QueryClient, kept by useApi so postJson can put a fresh token in the cached session query. */
+let appClient: QueryClient | null = null;
+
 /** One API read, polled every POLL_MS while the document is visible. */
 export function useApi<T>(url: string, pollMs: number | false = POLL_MS) {
+  appClient = useQueryClient();
   return useQuery({
     queryKey: [url],
     queryFn: () => getJson<T>(url),
@@ -986,8 +991,29 @@ export function useRuleEntry(id: string, enabled: boolean, round = 0) {
   return useQuery({ queryKey: [url, round], queryFn: () => getJson<RuleEntryView>(url), enabled, staleTime: Infinity, placeholderData: keepPreviousData });
 }
 
-/** A JSON POST with the CSRF token: the status and the parsed body ({} when the body is not JSON). */
+/** The code of the server's 403 for a missing or stale x-csrf-token (src/ui/commands.ts STALE_CSRF). */
+const STALE_CSRF = "stale_csrf";
+
+/**
+ * A JSON POST with the CSRF token: the status and the parsed body ({} when the body is not JSON). A 403 with code
+ * "stale_csrf" (the UI process restarted since the page read its token; refused before any store write) fetches GET
+ * /api/v1/session once, puts its token in the cached session query and retries the same write once with it; the
+ * retry's result is returned, whatever it is. Any other answer, or a session read that fails, is returned as is.
+ */
 async function postJson<T extends { error?: string }>(url: string, token: string, body: unknown): Promise<{ ok: boolean; status: number; value: T }> {
+  const first = await postOnce<T>(url, token, body);
+  if (first.status !== 403 || (first.value as { code?: unknown }).code !== STALE_CSRF) return first;
+  let fresh: Session;
+  try {
+    fresh = await getJson<Session>(API.session);
+  } catch {
+    return first;
+  }
+  appClient?.setQueryData([API.session], fresh);
+  return postOnce<T>(url, fresh.csrf_token, body);
+}
+
+async function postOnce<T>(url: string, token: string, body: unknown): Promise<{ ok: boolean; status: number; value: T }> {
   const res = await fetch(url, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json", "x-csrf-token": token },
