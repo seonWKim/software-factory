@@ -49,6 +49,8 @@ afterEach(() => {
 });
 
 function show(page: FunctionComponent) {
+  // The Health page lists pauses on its Claim pauses tab; the Tasks page ignores the parameter.
+  history.replaceState(null, "", page === HealthPage ? "/app/health?tab=pauses" : "/app/tasks");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(page)));
   return screen.findByRole("list", { name: "Claim pauses" });
