@@ -826,8 +826,11 @@ describe("item commands", () => {
   it("with commands on the page says who it acts as and where that came from", () => {
     mountCommands(undefined, [], SESSION);
     const actor = document.querySelector("[data-commands-actor]")!;
-    expect(actor.querySelector("summary")!.textContent).toBe("you");
-    expect(actor.querySelector("details")!.textContent).toContain("local:me");
+    const you = actor.querySelector("[data-id]")!;
+    expect(you.textContent).toBe("you");
+    expect(actor.querySelector("details")).toBeNull();
+    fireEvent.mouseEnter(you.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe("local:me");
     expect(actor.textContent).toMatch(/^Acting as you.*\(from environment\)$/);
   });
 

@@ -114,7 +114,9 @@ describe("items tree", () => {
     expect(chip("Held by coordination").textContent).toBe("waits for #11");
     expect(chip("Held by coordination").getAttribute("href")).toBe("/app/items/wi_11");
     expect(within(rowOf(tree, "Phase one")).queryByText(/^waits for/)).toBeNull();
-    expect(within(rowOf(tree, "Phase one")).getByText("host:7:0")).toBeTruthy();
+    const worker = rowOf(tree, "Phase one").querySelector("[data-id]")!;
+    fireEvent.mouseEnter(worker.parentElement!);
+    expect(within(rowOf(tree, "Phase one")).getByRole("tooltip").textContent).toBe("host:7:0");
     expect(within(rowOf(tree, "Phase one")).getByRole("link", { name: "PR #41" }).getAttribute("href")).toBe("https://github.com/o/r/pull/41");
   });
 
@@ -220,7 +222,7 @@ describe("items tree", () => {
 
   it("moves the wait reason and worker to a second line at phone width and uses no animation", async () => {
     const tree = await mount();
-    const second = within(rowOf(tree, "Phase one")).getByText("host:7:0").parentElement;
+    const second = rowOf(tree, "Phase one").querySelector("[data-id]")!.closest("[class*=basis-full]")!;
     expect(second.className).toContain("basis-full");
     expect(second.className).toContain("sm:basis-auto");
     // Token classes switch themes through CSS variables, so there is no dark: variant; no animation.

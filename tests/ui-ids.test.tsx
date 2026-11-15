@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // @ts-nocheck -- tsconfig.test.json has no DOM or JSX; like the other ui tests this file typechecks under the web config.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
@@ -145,14 +145,35 @@ describe("raw IDs", () => {
 });
 
 describe("narrow windows (check:responsive at 390px)", () => {
-  it("a closed name keeps its ID out of the layout, so the summary-wide box never breaks it letter by letter", async () => {
+  it("a name is a plain label with the full ID in a tooltip on hover, and a click copies it", async () => {
+    const written: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: async (v: string) => void written.push(v) }, configurable: true });
     await mountAt("workers", "Being built");
-    const names = [...document.querySelectorAll("details[data-id]")];
+    const names = [...document.querySelectorAll("main [data-id]")];
     expect(names.length).toBeGreaterThan(0);
-    for (const d of names) {
-      expect(d.className).toContain("[&:not([open])::details-content]:hidden");
-      expect(d.querySelector(":scope > button")).not.toBeNull();
-    }
+    expect(document.querySelector("main details")).toBeNull();
+    const label = names[0] as HTMLElement;
+    expect(label.tagName).toBe("BUTTON");
+    expect(label.textContent).toBe("worker 0");
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.mouseEnter(label.parentElement!);
+    expect(screen.getByRole("tooltip").textContent).toBe(`${HOST}:4242:0`);
+    fireEvent.mouseLeave(label.parentElement!);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.focus(label);
+    expect(screen.getByRole("tooltip").textContent).toBe(`${HOST}:4242:0`);
+    fireEvent.click(label);
+    await vi.waitFor(() => expect(label.textContent).toBe("Copied"));
+    expect(written).toEqual([`${HOST}:4242:0`]);
+  });
+
+  it("a click with no clipboard does nothing and leaves the label usable", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    await mountAt("workers", "Being built");
+    const label = document.querySelector("main [data-id]") as HTMLElement;
+    fireEvent.click(label);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(label.textContent).toBe("worker 0");
   });
 
   it("a long short id in the breadcrumb is cut to one line, with the full id as its title", async () => {
