@@ -565,6 +565,8 @@ export const en = {
   "calendar.disconnect": "Disconnect",
   "calendar.disconnectLabel": "Disconnect {name}",
   "calendar.ownClient": "Use my own client (advanced)",
+  "calendar.ownClientMain": "Use my own client",
+  "calendar.noDefaultClient": "This build has no default Google client. Connect with your own OAuth client.",
   "calendar.ownClientLabel": "Use my own client for {name}",
   "calendar.ownClientTitle": "Connect {name} with your own client",
   "calendar.connectConsequence": "Your own OAuth client (a Desktop app). Then sign in in the browser. The values are stored in the secret file only once the sign-in passes.",

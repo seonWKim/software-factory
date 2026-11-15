@@ -15,7 +15,7 @@ import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.
 import { storeSql } from "../src/impl/store/sql/store-sql.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
-import { uiCalendar } from "../src/ui/calendar-api.js";
+import { UiCalendar, uiCalendar } from "../src/ui/calendar-api.js";
 import { HealthMonitor } from "../src/ui/health.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type ApiDeps, type UiRequest, respond } from "../src/ui/server.js";
@@ -203,7 +203,28 @@ describe("GET /api/v1/calendar", () => {
     try {
       const r = await p.get("/api/v1/calendar");
       expect(r.status).toBe(200);
-      expect(r.value.plugins).toEqual([{ name: PLUGIN, connected: false, synced_at: null, error: null, attempt: null }]);
+      expect(r.value.plugins).toEqual([{ name: PLUGIN, connected: false, default_client: true, synced_at: null, error: null, attempt: null }]);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it("reports default_client false when the build carries no default client", async () => {
+    const p = await page({ defaultClient: null });
+    try {
+      expect((await p.get("/api/v1/calendar")).value.plugins).toMatchObject([{ name: PLUGIN, default_client: false }]);
+    } finally {
+      await p.close();
+    }
+  });
+
+  it("reports default_client true for a flow plugin that does not say (no hasDefault), as for a hook without one", async () => {
+    const p = await page();
+    try {
+      p.settings.calendar = new UiCalendar({ ...p.settings.calendar!.flow, plugins: [{ name: PLUGIN, secrets: [] }] });
+      const r = await p.get("/api/v1/calendar");
+      expect(r.status).toBe(200);
+      expect(r.value.plugins).toMatchObject([{ name: PLUGIN, default_client: true }]);
     } finally {
       await p.close();
     }
@@ -272,6 +293,8 @@ describe("POST /api/v1/calendar/connect: a fresh setup, end to end", () => {
       expect(String(r.value.error)).toContain('"use my own client"');
       expect(read(p.secretsFile)).toBe(before);
       expect(await p.listed()).toEqual([]);
+      // The reply carries the refusal; no failed attempt repeats it on the next read.
+      expect((await settled(p)).attempt).toBeNull();
     } finally {
       await p.close();
     }

@@ -1,9 +1,10 @@
 // `factory setup calendar google` (docs/plugins/calendar-source.md, Turn on): the OAuth consent that gives the
 // google-calendar plugin its refresh token. The client is the owner's own when the secret file holds both its ID and
 // secret; else the factory's default client (default-client.ts), so the sign-in needs no setup; else (the dashboard's
-// "use my own client" option, or a build with no default client) the ID and secret are asked once with hidden input,
-// for the one that is missing. The browser opens Google's consent page for calendar.readonly only, with a PKCE S256 challenge,
-// a random state and a redirect to a loopback listener on 127.0.0.1 that closes after 5 minutes. The code is
+// "use my own client" option, or a build with no default client, which it says first) the ID and secret are asked once
+// with hidden input, for the one that is missing. `hasDefault` tells the dashboard whether the build has that client.
+// The browser opens Google's consent page for calendar.readonly only, with a PKCE S256 challenge, a random state and a
+// redirect to a loopback listener on 127.0.0.1 that closes after 5 minutes. The code is
 // exchanged, the answer must grant exactly calendar.readonly and carry a refresh token, and only then are the three
 // secrets stored, together. Every value stays in memory until then; no message carries one. The token exchange is
 // given up after GOOGLE_HTTP_TIMEOUT_MS, as the sync's calls are. The HTTP client is injected and both timeouts run
@@ -19,6 +20,8 @@ export const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 /** How long the loopback listener waits for the browser's callback. */
 export const CONNECT_TIMEOUT_MS = 5 * 60_000;
 const CALLBACK_PATH = "/callback";
+/** Said before asking for the owner's client when this build has no default one; the dashboard says the same. */
+const NO_DEFAULT_CLIENT = "This build has no default Google client. Connect with your own OAuth client.";
 const BACK_TO_TERMINAL = "Go back to the terminal: it says whether the connection worked. You can close this tab.";
 
 /** The timer the listener's timeout runs on: the context's Clock. */
@@ -57,6 +60,7 @@ export function googleCalendarConnect<N extends string>(o: GoogleConnectOptions<
   return {
     command: "google",
     connect: (ctx: ConnectCtx<N>) => connect(o, ctx),
+    hasDefault: async () => (await o.defaultClient()) !== null,
     async disconnect(ctx: ConnectCtx<N>) {
       await ctx.removeSecrets(all);
       ctx.print(`   removed ${all.join(", ")} from ${ctx.secretsFile}`);
@@ -76,6 +80,7 @@ async function connect<N extends string>(o: GoogleConnectOptions<N>, ctx: Connec
     ({ id: clientId, secret: clientSecret } = fallback);
     ctx.print(`   using the factory's Google client (to use your own, put ${idName} and ${secretName} in ${ctx.secretsFile})`);
   } else {
+    if (!ctx.ownClient) ctx.print(`   ${NO_DEFAULT_CLIENT}`);
     ctx.print("   An OAuth client of type Desktop app, with the Google Calendar API enabled (Google Cloud console,");
     ctx.print("   APIs & Services → Credentials). Its ID and secret are held in memory until the sign-in passes.");
     clientId ??= await askHidden(ctx, idName);
