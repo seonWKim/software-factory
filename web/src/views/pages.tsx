@@ -90,6 +90,22 @@ export function FactoryBanner({ factory, now, pauses = [] }: { factory: FactoryS
   );
 }
 
+/**
+ * The running revision and how far it is behind the code checkout's origin/main (a separate clone, design
+ * 08-self-update), so a stuck install shows. Nothing for self-hosting (no `behind`) or with no factory status.
+ */
+export function CodeRevision({ factory }: { factory: FactoryState | null | undefined }) {
+  if (!factory || factory.behind === undefined) return null;
+  const { behind } = factory;
+  const where = behind === null ? t("code.notChecked") : behind === 0 ? t("code.current") : behind === 1 ? t("code.behindOne") : t("code.behind", { count: behind });
+  return (
+    <p data-testid="code-revision" className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
+      <span>{t("code.revision", { rev: shortRev(factory.rev) })}</span>
+      <Badge level={behind === null ? undefined : behind === 0 ? "running" : "needs_approval"}>{where}</Badge>
+    </p>
+  );
+}
+
 /** The Needs-you header's factory status: a dot and one word, the revision (or the full sentence) in a Tooltip. */
 function FactoryIndicator({ view, factory, now }: { view: FactoryView; factory: FactoryState | null; now: number }) {
   const tip = factory && view.tone === "ok" ? t("status.revision", { rev: shortRev(factory.rev), time: ago(factory.since, now) }) : view.text;
@@ -653,6 +669,7 @@ export function RunnersPage() {
       <PageHeader title={t("page.runners")} />
       <div className="flex flex-col gap-6">
         <FactoryBanner factory={f} now={now} />
+        <CodeRevision factory={f} />
         {f && (
           <p data-testid="effective-workers" className="text-sm">
             {t("runners.setting")} <span className="font-semibold tabular-nums">{f.workers}</span> ({WORKERS_SOURCE[f.workers_source] ?? f.workers_source})
@@ -698,6 +715,7 @@ export function HealthPage() {
   // Each read runs the checks: every 30 s, not every 3 s.
   const health = useApi<Health>(API.health, 30_000);
   const merges = useApi<UnreviewedMerges>(API.unreviewedMerges, 30_000);
+  const overview = useApi<Overview>(API.overview);
   const viewer = useViewer();
   if (health.isError) return <><PageHeader title={t("page.health")} /><ErrorNote error={health.error} /></>;
   if (!health.data) return <><PageHeader title={t("page.health")} /><Loading rows={6} /></>;
@@ -710,6 +728,7 @@ export function HealthPage() {
   return (
     <>
       <PageHeader title={t("page.health")} />
+      <CodeRevision factory={overview.data?.factory} />
       <ClaimPauses now={now} />
       <Section title={t("health.checks", { time: ago(health.data.checked_at, now) })} count={checks.length}>
         <CheckList checks={open} />

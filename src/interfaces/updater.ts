@@ -159,6 +159,12 @@ export interface SupervisorStatus {
    * 05-alarms: the alarm step counts them). Absent on files from before it existed and from the `none` updater.
    */
   restarts?: ChildRestart[];
+  /**
+   * A code checkout that is not the project repository (design 08-self-update): how many commits `rev` is behind
+   * the checkout's origin/main as of its last successful fetch; null: no fetch has succeeded yet. Absent:
+   * self-hosting (it follows the branch `factory merge` moves), the `none` updater, or a file from before it.
+   */
+  behind?: number | null;
 }
 
 /** One unexpected child exit: when (ISO time) and why (the child's error, else its exit code). */

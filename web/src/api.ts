@@ -22,6 +22,8 @@ export interface FactoryState {
   workers_source: "override" | "file" | "default";
   error: string | null;
   pending: string[];
+  /** A separate code checkout: commits `rev` is behind its origin/main; null: no fetch yet. Absent: self-hosting. */
+  behind?: number | null;
 }
 
 /** What the factory needs from the operator besides a work item (design §9), with the command that clears it. */
