@@ -16,11 +16,12 @@ import { MergeButton } from "./item-commands.js";
 import { withNodes } from "./standing.js";
 
 // The Settings page's write pieces (useWrite, Outcome) and its typed form of the file-only keys (design 08-settings,
-// phase 3 of "Settings without editing factory.config.json"). Each file-only key has a typed control; Save sends
-// `edit-file`, so the server's file writer puts the change on a new local branch filed as one local item, and the
-// page then shows the branch and that item's Merge button (a local merge, no forge call). A guard, a floor, a
-// permission or a dial asks first in the shared danger Dialog; Cancel sends nothing, Confirm sends the confirm flag.
-// The read-only keys show their value and why they stay in the file.
+// phase 3 of "Settings without editing factory.config.json"). Each file-only key has a typed control and a restart
+// note; Save opens the shared Dialog with the key's old and new value, and only its confirm sends `edit-file`, so the
+// server's file writer puts the change on a new local branch filed as one local item, and the page then shows the
+// branch and that item's Merge button (a local merge, no forge call). Cancel sends nothing. A guard, a floor, a
+// permission or a dial asks in the danger form of the Dialog, whose confirm sends the confirm flag.
+// The read-only keys show their value and the reason the page does not edit them.
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
@@ -273,15 +274,21 @@ function Filed({ item, branch }: { item: string; branch: string }) {
   );
 }
 
+/** A value as the confirm Dialog shows it: pretty JSON, or "not set" when the file leaves it out. */
+const shownJson = (v: Json | undefined): string => (v === undefined ? t("settings.file.notSet") : JSON.stringify(v, null, 2));
+
+const VALUE_CLASS = "max-h-48 overflow-auto rounded-control bg-surface-2 p-2 font-mono text-xs break-all whitespace-pre-wrap";
+
 /**
- * One file-only key: its control, Save, and the outcome. Save sends `edit-file` with the whole new value; a danger
- * key (or a guard, by `danger`) opens the danger Dialog first, whose Cancel sends nothing.
+ * One file-only key: its control, Save, its restart note and the outcome. Save opens the confirm Dialog with the old
+ * and new value; its confirm sends `edit-file` with the whole new value, its Cancel sends nothing. A danger key (or a
+ * guard, by `danger`) uses the Dialog's danger form, and its confirm sends the confirm flag.
  */
 function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spec; value: Json | undefined; token: string; danger: (next: Json) => boolean }) {
   const { busy, error, done, filed, write, fail } = useWrite(token);
   const [draft, setDraft] = useState<Draft | null>(null);
-  /** The value the danger Dialog asks about; null while it is closed. */
-  const [asking, setAsking] = useState<{ next: Json } | null>(null);
+  /** The value the confirm Dialog asks about, and whether it is a danger change; null while it is closed. */
+  const [asking, setAsking] = useState<{ next: Json; danger: boolean } | null>(null);
   const shown = draft ?? toDraft(spec, value);
   const send = async (next: Json, confirm: boolean): Promise<boolean> => {
     const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm });
@@ -298,8 +305,7 @@ function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spe
       fail(t("settings.file.badJson", { key: name, message: err instanceof Error ? err.message : String(err) }));
       return;
     }
-    if (danger(next)) setAsking({ next });
-    else void send(next, false);
+    setAsking({ next, danger: danger(next) });
   };
   return (
     <li data-file-key={name} className="border-t border-border py-3 first:border-t-0 first:pt-0">
@@ -311,21 +317,33 @@ function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spe
             {t("settings.save")}
           </Button>
         </ButtonRow>
+        <p data-restart-note className="text-xs text-pretty text-text-2">
+          {t("settings.file.restartNote")}
+        </p>
       </form>
       <Outcome error={error} done={done} />
       {filed && <Filed item={filed.item} branch={filed.branch} />}
       {asking !== null && (
         <Dialog
-          danger
+          danger={asking.danger}
           title={t("settings.file.dangerTitle", { key: name })}
-          consequence={t("settings.file.dangerConsequence", { key: name })}
+          consequence={asking.danger ? t("settings.file.dangerConsequence", { key: name }) : t("settings.file.confirmConsequence")}
           confirmLabel={t("settings.file.dangerConfirm")}
           confirmDisabled={busy}
           error={error}
-          onConfirm={() => void send(asking.next, true).then((ok) => ok && setAsking(null))}
+          onConfirm={() => void send(asking.next, asking.danger).then((ok) => ok && setAsking(null))}
           onClose={() => setAsking(null)}
         >
-          <pre className="max-h-48 overflow-auto rounded-control bg-surface-2 p-2 font-mono text-xs break-all whitespace-pre-wrap">{JSON.stringify(asking.next, null, 2)}</pre>
+          <dl className="flex flex-col gap-1 text-xs">
+            <dt className="text-text-2">{t("settings.file.oldValue")}</dt>
+            <dd data-old-value>
+              <pre className={VALUE_CLASS}>{shownJson(value)}</pre>
+            </dd>
+            <dt className="mt-2 text-text-2">{t("settings.file.newValue")}</dt>
+            <dd data-new-value>
+              <pre className={VALUE_CLASS}>{shownJson(asking.next)}</pre>
+            </dd>
+          </dl>
         </Dialog>
       )}
     </li>
@@ -344,16 +362,14 @@ function pluginsSpec(view: FileKeysView, file: Json | undefined): Spec {
   return { kind: "fields", fields: f, labels };
 }
 
-/** The read-only keys: each value and why it stays in the file, and the line saying how to change it. */
+/** The read-only keys: each value and the reason the page does not edit it. */
 function ReadOnlyKeys({ keys }: { keys: FileKeysView["read_only"] }) {
   return (
     <ul aria-label={t("settings.file.readOnlyTitle")} className="flex flex-col gap-2">
       {keys.map((k) => (
         <li key={k.key} data-read-only={k.key} className="text-xs">
           <span className="font-mono font-medium">{k.key}</span> <code className="font-mono wrap-anywhere">{k.value ?? t("settings.file.notSet")}</code>
-          <p className="text-pretty text-text-2">
-            {t(`settings.file.why.${k.key}` as MessageKey)} {t("settings.file.readOnlyLine")}
-          </p>
+          <p className="text-pretty text-text-2">{t(`settings.file.why.${k.key}` as MessageKey)}</p>
         </li>
       ))}
     </ul>
@@ -373,7 +389,7 @@ export function FileKeysSection({ view }: { view: SettingsView }) {
   const specOf = (key: string): Spec | undefined => (key === "plugins" ? pluginsSpec(fk, plugins) : key === "model_by" ? tierSpec(modelByShape) : SPECS[key]);
   return (
     <Section title={t("settings.file.title")} count={fk.editable.length}>
-      <p className="mb-2 text-sm text-pretty text-text-2">{withNodes("settings.file.intro", { file: <code>{"factory.config.json"}</code> })}</p>
+      <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.file.intro")}</p>
       <ul className="flex flex-col">
         {fk.editable.map(({ key }) => {
           const spec = specOf(key);
