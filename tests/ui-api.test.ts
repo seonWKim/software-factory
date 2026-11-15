@@ -1224,6 +1224,8 @@ describe("ui api: unreviewed merges", () => {
   });
 });
 
+const SAME_TIME = (other: string) => `Running at the same time as ${other}, which changes some of the same files. If they clash, you'll be asked when it merges.`;
+
 describe("ui api: why an item waits (issue #310)", () => {
   type WhyBody = { code: string; text: string; next_actor: string; refs: number[]; ref_url: string | null };
   type Decision = Awaited<ReturnType<FactoryStore["listClaimDecisions"]>>[number];
@@ -1243,9 +1245,9 @@ describe("ui api: why an item waits (issue #310)", () => {
           },
         }),
     });
-    const decide = (item: WorkItem, run_id: string, decision: Decision["decision"], holder_kind: Decision["holder_kind"] = "pr") =>
+    const decide = (item: WorkItem, run_id: string, decision: Decision["decision"], holder_kind: Decision["holder_kind"] = "pr", holder_work_item_id: WorkItemId | null = null) =>
       decisions.set(item.id, [{
-        run_id, work_item_id: item.id, decision, holder_work_item_id: null, holder_ref: "#92", holder_kind,
+        run_id, work_item_id: item.id, decision, holder_work_item_id, holder_ref: "#92", holder_kind,
         shared: [], cost: 4, threshold: 2.5, fallback: false, approved_by: null, at: s.clock.now().toISOString(),
       } as unknown as Decision]);
     return { ...s, decide };
@@ -1304,7 +1306,8 @@ describe("ui api: why an item waits (issue #310)", () => {
   it("a deadlock claim decision puts its item in Blocked by another task, naming the holder, and out of Needs you and needs_you", async () => {
     const { d, store, items, claimed, decide } = await withDecisions();
     const before = (await json<{ needs_you: number }>(d, "/api/v1/overview")).needs_you;
-    decide(items.running, claimed.id, "deadlock", "waiting");
+    const other = await make(store, 92, "Other item");
+    decide(items.running, claimed.id, "deadlock", "waiting", other.id);
     // The seeded run's heartbeat is stale (stuck); a fresh one is running.
     await store.heartbeat(claimed.id, claimed.lease!.token, LEASE);
     const o = await json<{ needs_you: number; system_actions: { code: string }[] }>(d, "/api/v1/overview");
@@ -1312,12 +1315,22 @@ describe("ui api: why an item waits (issue #310)", () => {
     expect(o.system_actions.map((a) => a.code)).not.toContain("claim_deadlock");
     const w = await whyOn(d, items.running.id);
     expect(w.row.level).toBe("blocked_by_task");
-    expect(w.row.badges).toEqual(["deadlock with #92"]);
-    const why = { code: "deadlock", text: "Started past a deadlock with #92: a person checks the overlap", next_actor: "factory", refs: [92] };
+    expect(w.row.badges).toEqual(["waits on #92"]);
+    const why = { code: "deadlock", text: SAME_TIME("\"Other item\""), next_actor: "factory", refs: [] };
     expect(w.row.why).toMatchObject(why);
     expect(w.item).toMatchObject(why);
     const needs = await json<{ items: { id: string }[] }>(d, "/api/v1/items?state=needs");
     expect(needs.items.map((i) => i.id)).not.toContain(items.running.id);
+  });
+
+  it("a deadlock whose holder has no work item or no title says another item", async () => {
+    const { d, items, claimed, decide, store } = await withDecisions();
+    decide(items.running, claimed.id, "deadlock", "pr");
+    const fallback = SAME_TIME("another item");
+    expect((await whyOn(d, items.running.id)).item).toMatchObject({ code: "deadlock", text: fallback });
+    const untitled = await make(store, 93, null);
+    decide(items.running, claimed.id, "deadlock", "waiting", untitled.id);
+    expect((await whyOn(d, items.running.id)).row.why.text).toBe(fallback);
   });
 
   it("a merge conflict the resolve run gives up on still needs you", async () => {

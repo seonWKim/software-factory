@@ -566,6 +566,14 @@ export interface NeedActionsProps {
   cmd: ReturnType<typeof useCommandSend>;
   /** Overflow entries from the Why text (`Allow x and retry`): each sends `retry` with `note`. */
   allow: readonly { label: string; note: string }[];
+  /** False: the row shows the failed sends itself (SendErrors on its own line, design-system C-050), not this cell. */
+  inlineErrors?: boolean;
+}
+
+/** The errors of a row's failed sends and refused transitions, one alert each (NeedActions' `cmd.local`). */
+export function SendErrors({ local }: { local: Record<string, LocalSend> }) {
+  const failed = Object.values(local).flatMap((l) => ("error" in l ? [l.error] : l.refusal ? [plainRefusal(l.refusal)] : []));
+  return failed.map((text) => <OutcomeText key={text} outcome={{ tone: "error", text }} />);
 }
 
 /**
@@ -574,9 +582,10 @@ export interface NeedActionsProps {
  * viewer may send), else "Open" to the item page. The menu holds every other command and the Why text's allow
  * entries; one the viewer may not send stays, disabled, with its reason. Reject, revise and verdict open a dialog
  * (outside the row, so the row never grows); the others send at once. A send re-reads the list, so the row moves on;
- * a failed send shows its error in the row, a sent one in a short status message that outlives the row.
+ * a failed send shows its error in the cell (or, with `inlineErrors` false, where the row puts SendErrors), a sent
+ * one in a short status message that outlives the row.
  */
-export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow }: NeedActionsProps) {
+export function NeedActions({ id, title, commands, pr, group, merge, source, checking, cmd, allow, inlineErrors = true }: NeedActionsProps) {
   const { on, busy, local, send: post } = cmd;
   const [open, setOpen] = useState<FormName | null>(null);
   const wrap = useRef<HTMLSpanElement>(null);
@@ -615,7 +624,6 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
     })),
     ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
-  const failed = Object.values(local).flatMap((l) => ("error" in l ? [l.error] : l.refusal ? [plainRefusal(l.refusal)] : []));
   // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
   const applied = Object.entries(local).flatMap(([k, l]) => (k !== "merge" && "seq" in l && l.label && !l.refusal ? [l.label] : []));
   return (
@@ -646,9 +654,7 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
       {applied.map((text) => (
         <OutcomeText key={text} outcome={{ tone: "status", text }} />
       ))}
-      {failed.map((text) => (
-        <OutcomeText key={text} outcome={{ tone: "error", text }} />
-      ))}
+      {inlineErrors && <SendErrors local={local} />}
       {open !== null && (
         <CommandDialog
           command={open}

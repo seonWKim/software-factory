@@ -12,7 +12,8 @@ import { type DueDay, type Recurrence, type TaskEdit, type TaskFields, type Task
  * - `#label`: the list;
  * - `+slug`: a task project (src/core/projects.ts), its slug projectSlug of the word after `+`; several may be given,
  *   and the store refuses an unknown or archived one;
- * - `every day`, `every week`, `every month`: the recurrence, which needs a due day.
+ * - `every day`, `every week`, `every month`: the recurrence, which needs a due day. It is read only when these two
+ *   words end the text; any other `every …` (`on every UI review`, `every day standup`, `every monday`) is title words.
  * Each field at most once, except `+slug`. Pure: no clock, no I/O. `task edit` reads the same words (`parseQuickEdit`), naming only
  * the fields they give.
  */
@@ -60,13 +61,16 @@ function readDuration(w: string): number | { refused: string } | null {
 /** The fields the words give (the title: the words left, "" when none), or the reason they are refused. */
 function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok: false; reason: string } {
   const tokens = words.trim().split(/\s+/).filter((w) => w !== "");
+  // The recurrence: only `every day|week|month` as the last two words.
+  const [every, unit] = tokens.slice(-2).map((w) => w.toLowerCase());
+  const recurrence = every === "every" && (RECURRENCES as readonly string[]).includes(unit ?? "") ? (unit as Recurrence) : null;
+  if (recurrence !== null) tokens.splice(-2);
   const title: string[] = [];
   let due: DueDay | null = null;
   let due_time: string | null = null;
   let duration_minutes: number | null = null;
   let priority: TaskPriority | null = null;
   let list: string | null = null;
-  let recurrence: Recurrence | null = null;
   const projects: string[] = [];
   const seen = new Set<string>();
   const once = (field: string): string | null => {
@@ -108,14 +112,6 @@ function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok
       const slug = projectSlug(w.slice(1));
       if (slug === null) return { ok: false, reason: `a project needs a name after +, e.g. +home, not ${w}` };
       if (!projects.includes(slug)) projects.push(slug);
-    } else if (lower === "every") {
-      const next = tokens[i + 1]?.toLowerCase();
-      if (next === undefined || !(RECURRENCES as readonly string[]).includes(next)) {
-        return { ok: false, reason: `unknown recurrence: every ${next ?? ""}`.trim() + " (use every day, every week or every month)" };
-      }
-      refused = once("recurrence");
-      recurrence = next as Recurrence;
-      i++;
     } else title.push(w);
     if (refused !== null) return { ok: false, reason: refused };
   }

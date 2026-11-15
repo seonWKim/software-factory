@@ -15,6 +15,7 @@ import { OverflowMenu } from "../components/ui/menu.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Pagination } from "../components/ui/pagination.js";
 import { Tabs } from "../components/ui/tabs.js";
+import { useUrlParam } from "../lib/url-param.js";
 import { t } from "../i18n/index.js";
 import { QUICK_ADD_ATTR, QUICK_ADD_KEYS, type QuickAddKey, isQuickAddSubmit, isUndo } from "../keys.js";
 import { cn } from "../lib/cn.js";
@@ -741,21 +742,8 @@ function useUndoDone(token: string | null) {
   return { error, completed: (task: TaskRow) => void done.current.push(task) };
 }
 
-/** The `project` query parameter: the project tab's choice, null for All projects. */
-const urlProject = (): string | null => new URLSearchParams(location.search).get("project") || null;
-
-/** The project tab's choice, read from the URL on load and written to it (in place, no new history entry) on change. */
-function useProjectParam(): [string | null, (slug: string | null) => void] {
-  const [project, setProject] = useState(urlProject);
-  const choose = (slug: string | null) => {
-    const url = new URL(location.href);
-    if (slug === null) url.searchParams.delete("project");
-    else url.searchParams.set("project", slug);
-    history.replaceState(history.state, "", url.pathname + url.search + url.hash);
-    setProject(slug);
-  };
-  return [project, choose];
-}
+/** The project tab's choice (the `project` query parameter): null for All projects. */
+const useProjectParam = (): [string | null, (slug: string | null) => void] => useUrlParam("project");
 
 /** The project tabs: All projects (id ""), then the active projects; a slug the URL names that is not among them stays listed by its slug. */
 function ProjectTabs({ projects, value, onChange, action }: { projects: readonly ProjectChoice[]; value: string | null; onChange: (slug: string | null) => void; action: ReactNode }) {

@@ -48,15 +48,15 @@ describe("parseQuickAdd accepts", () => {
   });
 
   it("every day", () => {
-    expect(ok("water plants every day today")).toMatchObject({ title: "water plants", recurrence: "day", due: { days_from_today: 0 } });
+    expect(ok("water plants today every day")).toMatchObject({ title: "water plants", recurrence: "day", due: { days_from_today: 0 } });
   });
 
   it("every week", () => {
-    expect(ok("review budget Every Week 2026-11-13")).toMatchObject({ title: "review budget", recurrence: "week", due: { date: "2026-11-13" } });
+    expect(ok("review budget 2026-11-13 Every Week")).toMatchObject({ title: "review budget", recurrence: "week", due: { date: "2026-11-13" } });
   });
 
   it("every month", () => {
-    expect(ok("pay rent every month 2026-01-31 !1 #home 08:00")).toEqual({
+    expect(ok("pay rent 2026-01-31 !1 #home 08:00 every month")).toEqual({
       title: "pay rent", list: "home", priority: 1, due: { date: "2026-01-31" }, due_time: "08:00", duration_minutes: null, recurrence: "month",
     });
   });
@@ -123,18 +123,12 @@ describe("parseQuickAdd rejects, with a reason", () => {
     expect(refused("a !4")).toContain("!1, !2 or !3");
   });
 
-  it("an unknown every form, such as every fortnight", () => {
-    expect(refused("water every fortnight today")).toContain("unknown recurrence: every fortnight");
-    expect(refused("water today every")).toContain("unknown recurrence");
-  });
-
   it("a repeated field", () => {
     expect(refused("a today tomorrow")).toContain("repeated field: due date");
     expect(refused("a 2026-01-01 today")).toContain("repeated field: due date");
     expect(refused("a 09:00 10:00")).toContain("repeated field: due time");
     expect(refused("a !1 !2")).toContain("repeated field: priority");
     expect(refused("a #home #work")).toContain("repeated field: list");
-    expect(refused("a every day every week today")).toContain("repeated field: recurrence");
   });
 
   it("a recurrence with no due date", () => {
@@ -144,6 +138,38 @@ describe("parseQuickAdd rejects, with a reason", () => {
   it("an empty title", () => {
     expect(refused("")).toContain("the title is empty");
     expect(refused("today !1 #home every week")).toContain("the title is empty");
+  });
+});
+
+describe("every: a repeat only when every day, every week or every month ends the text", () => {
+  it("reads the repeat from the last two words, any case", () => {
+    expect(ok("standup today every day")).toMatchObject({ title: "standup", recurrence: "day" });
+    expect(ok("standup today every WEEK")).toMatchObject({ title: "standup", recurrence: "week" });
+    expect(ok("pay rent 2026-01-31 every month")).toMatchObject({ title: "pay rent", recurrence: "month" });
+  });
+
+  it("keeps any other every … in the title, with no error", () => {
+    expect(ok("Design rules checked on every UI review")).toEqual({
+      title: "Design rules checked on every UI review", list: null, priority: null, due: null, due_time: null, duration_minutes: null, recurrence: null,
+    });
+    expect(ok("water every fortnight today")).toMatchObject({ title: "water every fortnight", recurrence: null, due: { days_from_today: 0 } });
+    expect(ok("water today every")).toMatchObject({ title: "water every", recurrence: null });
+    expect(ok("call mum every monday")).toMatchObject({ title: "call mum every monday", recurrence: null });
+  });
+
+  it("every day, week or month not at the end is title words: only the last pair is the repeat", () => {
+    expect(ok("water plants every day today")).toMatchObject({ title: "water plants every day", recurrence: null, due: { days_from_today: 0 } });
+    expect(ok("every week review today")).toMatchObject({ title: "every week review", recurrence: null });
+    expect(ok("a every day today every week")).toMatchObject({ title: "a every day", recurrence: "week" });
+  });
+
+  it("the unknown recurrence error no longer fires for every inside a title", () => {
+    for (const words of ["Design rules checked on every UI review", "every fortnight call mum", "check every ui today"]) {
+      const r = parseQuickAdd(words);
+      expect(r.ok, words).toBe(true);
+    }
+    expect(parseQuickEdit("on every UI review")).toEqual({ ok: true, edit: { title: "on every UI review" } });
+    expect(parseQuickEdit("every week")).toEqual({ ok: true, edit: { recurrence: "week" } });
   });
 });
 
