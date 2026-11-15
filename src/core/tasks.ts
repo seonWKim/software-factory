@@ -126,7 +126,7 @@ export interface TaskStore extends ProjectStore {
   listWorkItemProjectSlugs(work_item_ids: readonly string[]): Promise<Record<string, string[]>>;
   /** Open tasks (no done_at), oldest first, at most `limit`. Read-only. */
   listTasks(limit: number): Promise<Task[]>;
-  /** The Done view's read (design 02-tasks, Done view): the done tasks of `window` (doneWindow), most recently done first. Read-only. */
+  /** The done tasks of `window` (doneWindow), most recently done first; GET /api/v1/tasks reads them beside the open ones (design 02-tasks, done tasks stay). Read-only. */
   listDoneTasks(window: DoneWindow): Promise<DoneTasks>;
   /**
    * Sets done_at, conditional on it being unset, and for a recurring task inserts its next occurrence (parent_id
@@ -164,22 +164,22 @@ export interface TaskStore extends ProjectStore {
   remindTask(id: string, at: TaskTime, notice: NewNotice): Promise<boolean>;
 }
 
-/** How many days the Done view reads at a time: the last 30 days first, then Show older's 30 days before (owner answer 2). */
+/** How many days a done task stays on the Tasks page after it was done (design 02-tasks, done tasks stay). */
 export const DONE_WINDOW_DAYS = 30;
 
-/** The done tasks one Done view read takes: `from` <= done_at < `before` (no upper bound when `before` is null). */
+/** The done tasks one read takes: `from` <= done_at < `before` (no upper bound when `before` is null). */
 export interface DoneWindow {
   from: Timestamp;
   before: Timestamp | null;
 }
 
-/** One Done view read: its tasks, most recently done first, and `older`, whether a task was done before the window. */
+/** One done read: its tasks, most recently done first, and `older`, whether a task was done before the window. */
 export interface DoneTasks {
   tasks: Task[];
   older: boolean;
 }
 
-/** The window of DONE_WINDOW_DAYS days that ends at `before` (Show older), or at `now` with no upper bound (the first read). Pure. */
+/** The window of DONE_WINDOW_DAYS days that ends at `before`, or at `now` with no upper bound (the Tasks page's read). Pure. */
 export function doneWindow(now: Date, before: Timestamp | null): DoneWindow {
   const end = before === null ? now.getTime() : Date.parse(before);
   return { from: new Date(end - DONE_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString() as Timestamp, before };
@@ -308,19 +308,20 @@ export interface TaskDay {
 }
 
 /**
- * The dashboard's views of the open tasks and the stored calendar events (design 02-tasks), each task placed by its
- * due date and each event by the local days it overlaps, against `now`'s calendar date in this process's time zone,
- * so the day ends at local midnight. Today: overdue tasks (due before today) first, then today's tasks and events.
+ * The dashboard's views of the tasks, open and done (the done window's, design 02-tasks, done tasks stay), and the
+ * stored calendar events (design 02-tasks), each task placed by its due date, a done one as an open one, and each event
+ * by the local days it overlaps, against `now`'s calendar date in this process's time zone, so the day ends at local
+ * midnight. Today: overdue tasks (due before today; open, or done today) first, then today's tasks and events.
  * Upcoming: today through UPCOMING_DAYS days after it, one entry per day that has a task or an event (the Tasks page
- * shows the days after today; the Calendar page shows today too). Projects: every open task, undated included, by its
- * list label (unlabelled last), each by due date (undated last): the Tasks page's All view.
+ * shows the days after today; the Calendar page shows today too). Projects: every task, undated included, by its
+ * list label (unlabelled last), each by due date (undated last): the Tasks page's All view. The timeline holds open tasks only.
  */
 export interface TaskViews {
   today_date: string;
   today: { overdue: Task[]; due: DayEntry[] };
   upcoming: TaskDay[];
   projects: { list: string | null; tasks: Task[] }[];
-  /** Today's timeline: its timed tasks and events as blocks (planDay). */
+  /** Today's timeline: its open timed tasks and events as blocks (planDay). */
   timeline: TimelineBlock[];
 }
 
@@ -397,9 +398,11 @@ function dayEntries(tasks: readonly Task[], events: readonly DayEvent[]): DayEnt
   return [...events.filter((e) => e.time === null), ...timed, ...tasks.filter((t) => t.due_time === null)];
 }
 
-export function taskViews(open: readonly Task[], now: Date, events: readonly CalendarEventInput[] = []): TaskViews {
+export function taskViews(tasks: readonly Task[], now: Date, events: readonly CalendarEventInput[] = []): TaskViews {
   const today = localDate(now);
-  const sorted = [...open].sort(byDue);
+  const sorted = [...tasks].sort(byDue);
+  // A task done today stays where it was; one done earlier is no longer overdue.
+  const overdue = (t: Task) => t.due_date !== null && t.due_date < today && (t.done_at === null || localDate(new Date(t.done_at)) === today);
   const day = (date: string) => dayEntries(sorted.filter((t) => t.due_date === date), eventsOn(events, date));
   const todays = day(today);
   const upcoming: TaskDay[] = [];
@@ -411,9 +414,9 @@ export function taskViews(open: readonly Task[], now: Date, events: readonly Cal
   const lists = [...new Set(sorted.map((t) => t.list))].sort((a, b) => (a === null ? 1 : b === null ? -1 : a.localeCompare(b)));
   return {
     today_date: today,
-    today: { overdue: sorted.filter((t) => t.due_date !== null && t.due_date < today), due: todays },
+    today: { overdue: sorted.filter(overdue), due: todays },
     upcoming,
     projects: lists.map((list) => ({ list, tasks: sorted.filter((t) => t.list === list) })),
-    timeline: planDay(todays, today),
+    timeline: planDay(todays.filter((e) => isEvent(e) || e.done_at === null), today),
   };
 }

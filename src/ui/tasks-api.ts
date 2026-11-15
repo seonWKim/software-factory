@@ -1,5 +1,5 @@
-// The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views with the stored calendar events, and GET
-// /api/v1/tasks/done, its Done tab; POST /api/v1/tasks/edit,
+// The plain tasks' routes (design 02-tasks): GET /api/v1/tasks, the Tasks page's views (open tasks and the done tasks of the
+// done window) with the stored calendar events; POST /api/v1/tasks/edit,
 // /done, /reopen, /delete and /sub, the page's row actions, and /schedule, its timeline's drop, each calling the store method of its CLI command (`factory task
 // edit`, `done`, `reopen`, `delete`, `sub`), so the page and the CLI cannot diverge; POST /api/v1/tasks/build,
 // its Build this button (task-build.ts, the same action as `factory task build`); and POST /api/v1/tasks, which
@@ -14,7 +14,6 @@ import { needsDueDate, parseQuickAdd, parseQuickEdit, validDate } from "../core/
 import { buildTask } from "../core/task-build.js";
 import { isProjectSlug } from "../core/projects.js";
 import { ProjectRefused, type TaskStore, doneWindow, durationError, projectRefusal, taskViews } from "../core/tasks.js";
-import type { Timestamp } from "../core/types.js";
 import { TASK_LIST_LIMIT } from "../core/local-cli.js";
 import type { ApiResult } from "./api.js";
 import type { UiDeps } from "./pages.js";
@@ -45,11 +44,12 @@ async function shown<T extends { title: string }>(w: Withholder, rows: readonly 
 }
 
 /**
- * GET /api/v1/tasks: the open tasks' views (Inbox, Today, Upcoming, Projects (the List tab, by #list); core/tasks.ts
- * taskViews) at the server's clock, in its time zone, with the calendar events stored by the last syncs placed in Today
+ * GET /api/v1/tasks: the views (Today, Upcoming, Projects (the All view, by #list); core/tasks.ts taskViews) of the open
+ * tasks and the done tasks of the last DONE_WINDOW_DAYS days (doneWindow; each with its done_at, design 02-tasks, done
+ * tasks stay) at the server's clock, in its time zone, with the calendar events stored by the last syncs placed in Today
  * and Upcoming, and `calendar`, each source's last sync time and whether its last sync failed. Each task row carries
  * `projects`, the slugs of its active task projects, and `active_projects` lists the active projects (slug and name)
- * for the page's project switcher. With `project` (a slug, `?project=`) the views hold only the open tasks linked to
+ * for the page's project switcher. With `project` (a slug, `?project=`) the views hold only the tasks, open or done, linked to
  * that project: 400 for a value that is not a slug or an archived project, 404 for an unknown one. Reads the stored
  * copy only: no source is called and nothing is written. `csrf_token` and `can_build` for Build this (null and false
  * when the commands route is off). `add_key`, the quick-add field's submit key: the `tasks_add_key` setting's stored
@@ -60,10 +60,11 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
   if (refusal !== null) return refusal;
   const now = d.clock.now();
   const w = new Withholder(d.scanner);
-  const listed = await shown(w, await d.store.listTasks(TASK_LIST_LIMIT));
+  const done = (await d.store.listDoneTasks(doneWindow(now, null))).tasks;
+  const listed = await shown(w, [...await d.store.listTasks(TASK_LIST_LIMIT), ...done]);
   const slugs = await d.store.listTaskProjectSlugs(listed.map((t) => t.id));
   const rows = listed.map((t) => ({ ...t, projects: slugs[t.id] ?? [] }));
-  const open = project === null ? rows : rows.filter((t) => t.projects.includes(project));
+  const kept = project === null ? rows : rows.filter((t) => t.projects.includes(project));
   const active_projects = await Promise.all((await d.store.listProjects("active")).map(async (p) => ({ slug: p.slug, name: (await w.plain(p.name)).text })));
   const calendar = await readCalendar(storeSql(d.store));
   const events = await shown(w, calendar.events);
@@ -72,7 +73,7 @@ export async function readTasks(d: UiDeps, project: string | null = null): Promi
   return {
     status: 200,
     value: {
-      as_of: now.toISOString(), ...taskViews(open, now, events), active_projects, calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build, add_key,
+      as_of: now.toISOString(), ...taskViews(kept, now, events), active_projects, calendar: calendar.sources, csrf_token: d.commands?.token ?? null, can_build, add_key,
     },
   };
 }
@@ -110,23 +111,6 @@ async function readAddKey(d: UiDeps): Promise<TasksAddKey> {
     // Not JSON: the default applies.
   }
   return TASKS_ADD_KEYS.find((k) => k === value) ?? TASKS_ADD_KEYS[0];
-}
-
-/**
- * GET /api/v1/tasks/done, the Tasks page's Done tab (design 02-tasks, Done view): the done tasks of the last
- * DONE_WINDOW_DAYS days at the server's clock, most recently done first, every list in one list; with `?before=<ISO
- * time>` (Show older), those of the DONE_WINDOW_DAYS days before it. `older`: a task was done before the window;
- * `next_before`: the `before` of Show older's read, the oldest row's done time (the window's start when it has none).
- * Reads the stored copy only: no source is called and nothing is written.
- */
-export async function readDoneTasks(d: UiDeps, before: string | null): Promise<ApiResult> {
-  const end = before === null ? null : Date.parse(before);
-  if (end !== null && Number.isNaN(end)) return refused(400, "before must be an ISO time, e.g. 2026-11-13T09:00:00.000Z");
-  const now = d.clock.now();
-  const window = doneWindow(now, end === null ? null : (new Date(end).toISOString() as Timestamp));
-  const r = await d.store.listDoneTasks(window);
-  const tasks = await shown(new Withholder(d.scanner), r.tasks);
-  return { status: 200, value: { as_of: now.toISOString(), tasks, older: r.older, next_before: tasks.at(-1)?.done_at ?? window.from } };
 }
 
 /**

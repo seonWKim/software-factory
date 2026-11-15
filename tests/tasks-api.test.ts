@@ -3,6 +3,7 @@
 // size, JSON), then the body; every refusal stores nothing. The caller chooses the task ID, so a retry stores one task.
 
 import { describe, expect, it } from "vitest";
+import { DONE_WINDOW_DAYS } from "../src/core/tasks.js";
 import type { UserId } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -314,31 +315,36 @@ describe("GET /api/v1/tasks: the quick-add submit key (design 02-tasks, tasks_ad
   });
 });
 
-describe("GET /api/v1/tasks/done: the Done tab's read (design 02-tasks, Done view)", () => {
-  const get = (s: Awaited<ReturnType<typeof setup>>, query = "") => respond(s.d, { method: "GET", url: `${TASK_DONE_PATH}${query}`, host: HOST });
+describe("GET /api/v1/tasks keeps done tasks (design 02-tasks, done tasks stay)", () => {
+  const get = (s: Awaited<ReturnType<typeof setup>>, url: string = TASKS_PATH) => respond(s.d, { method: "GET", url, host: HOST });
+  type Row = { id: string; title: string; done_at: string | null };
+  const all = async (s: Awaited<ReturnType<typeof setup>>, url?: string) =>
+    (JSON.parse((await get(s, url)).body) as { projects: { tasks: Row[] }[] }).projects.flatMap((p) => p.tasks);
 
-  it("lists the tasks the page completed, newest done first, with title, list and done time; it writes nothing", async () => {
+  it("a task the page completed stays in the read with its done_at, placed by its due date as an open task is", async () => {
     const s = await setup();
-    const other = "tk_fedcba9876543210";
-    await s.post({ id: ID, words: "call the bank #home" });
-    await s.post({ id: other, words: "water plants" });
+    await s.post({ id: ID, words: "call the bank today" });
     await s.post({ id: ID }, { url: TASK_DONE_PATH });
-    (s.d.clock as FakeClock).advance(60_000);
-    await s.post({ id: other }, { url: TASK_DONE_PATH });
-    const before = await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id");
-    const r = await get(s);
-    expect(r.status).toBe(200);
-    const body = JSON.parse(r.body) as { tasks: { id: string; title: string; list: string | null; done_at: string }[]; older: boolean };
-    expect(body.tasks.map((t) => [t.id, t.title, t.list])).toEqual([[other, "water plants", null], [ID, "call the bank", "home"]]);
-    expect(body.tasks.every((t) => typeof t.done_at === "string")).toBe(true);
-    expect(body.older).toBe(false);
-    expect(await s.store.db.all("SELECT * FROM controller_tasks ORDER BY id")).toEqual(before);
+    const at = s.d.clock.now().toISOString();
+    const body = JSON.parse((await get(s)).body) as { today: { due: Row[] }; projects: { tasks: Row[] }[] };
+    expect(body.today.due.map((t) => [t.id, t.done_at])).toEqual([[ID, at]]);
+    expect(body.projects.flatMap((p) => p.tasks).map((t) => [t.title, t.done_at])).toEqual([["call the bank", at]]);
   });
 
-  it("answers 400 for a `before` that is not a time, 200 for one that is", async () => {
+  it("holds done tasks done within the last DONE_WINDOW_DAYS days and no older one", async () => {
     const s = await setup();
-    expect((await get(s, "?before=soon")).status).toBe(400);
-    expect((await get(s, "?before=2026-11-01T00:00:00.000Z")).status).toBe(200);
+    const old = "tk_fedcba9876543210";
+    await s.post({ id: old, words: "old chore" });
+    await s.post({ id: old }, { url: TASK_DONE_PATH });
+    (s.d.clock as FakeClock).advance((DONE_WINDOW_DAYS + 1) * 24 * 60 * 60 * 1000);
+    await s.post({ id: ID, words: "new chore" });
+    await s.post({ id: ID }, { url: TASK_DONE_PATH });
+    expect((await all(s)).map((t) => t.id)).toEqual([ID]);
+  });
+
+  it("the done list's own read is gone: GET /api/v1/tasks/done is no route", async () => {
+    const s = await setup();
+    expect((await get(s, TASK_DONE_PATH)).status).toBe(404);
   });
 });
 
@@ -481,5 +487,17 @@ describe("the dashboard's task project routes (design 02-tasks and 09-dashboard-
     expect((await get(s, "?project=old")).status).toBe(400);
     expect((await get(s, "?project=Not%20A%20Slug")).status).toBe(400);
     expect((await get(s, "?project=")).status).toBe(400);
+  });
+
+  it("?project=<slug> filters done rows as it filters open ones", async () => {
+    const s = await seeded();
+    await s.post({ id: "tk_home_done_0001", words: "done at home +home" });
+    await s.post({ id: "tk_away_done_0001", words: "done elsewhere" });
+    for (const id of ["tk_home_done_0001", "tk_away_done_0001"]) await s.post({ id }, { url: TASK_DONE_PATH });
+    const rows = (v: { projects: { tasks: { id: string; done_at: string | null }[] }[] }) => v.projects.flatMap((p) => p.tasks);
+    const home = rows(JSON.parse((await get(s, "?project=home")).body));
+    expect(home.map((t) => t.id).sort()).toEqual([ID, "tk_home_done_0001"].sort());
+    expect(home.find((t) => t.id === "tk_home_done_0001")!.done_at).not.toBeNull();
+    expect(rows(JSON.parse((await get(s)).body)).map((t) => t.id)).toEqual(expect.arrayContaining(["tk_home_done_0001", "tk_away_done_0001"]));
   });
 });
