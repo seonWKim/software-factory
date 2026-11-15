@@ -695,6 +695,51 @@ describe("Tasks page", () => {
       expect((within(dialog).getByLabelText("New project") as HTMLInputElement).value).toBe("");
     });
 
+    it("+ (Add project) after the last tab opens a name dialog; Create posts { id, name } and selects the new tab", async () => {
+      current = view({ active_projects: PROJECTS });
+      filtered = { garden: view({ active_projects: PROJECTS }), orchard: view({ active_projects: [...PROJECTS, { slug: "orchard", name: "Orchard" }] }) };
+      await show();
+      const add = screen.getByRole("button", { name: "Add project" });
+      expect(add.textContent).toBe("+");
+      expect(add.previousElementSibling).toBe(screen.getByRole("tablist", { name: "Project" }));
+      fireEvent.click(add);
+      const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
+      const create = within(dialog).getByRole("button", { name: "Create project" }) as HTMLButtonElement;
+      expect(create.disabled).toBe(true);
+      answer = { status: 201, body: { project: { slug: "orchard", name: "Orchard" } } };
+      fireEvent.change(within(dialog).getByLabelText("Project name"), { target: { value: "Orchard" } });
+      expect(create.disabled).toBe(false);
+      fireEvent.click(create);
+      await waitFor(() => expect(document.querySelector("[data-dialog]")).toBeNull(), SLOW);
+      const sent = posts.filter((p) => p.url === "/api/v1/projects").map((p) => JSON.parse(String(p.init.body)) as { id: string; name: string });
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.name).toBe("Orchard");
+      expect(sent[0]!.id).toMatch(/^pj_[0-9a-f]{32}$/);
+      expect(new URLSearchParams(location.search).get("project")).toBe("orchard");
+      await waitFor(() => expect(selectedProject()).toEqual(["Orchard"]), SLOW);
+    });
+
+    it("a refused create keeps the Add project dialog open with the reason and keeps the ID for a retry; Cancel sends nothing", async () => {
+      current = view({ active_projects: PROJECTS });
+      await show();
+      fireEvent.click(screen.getByRole("button", { name: "Add project" }));
+      const dialog = document.querySelector<HTMLElement>("[data-dialog]")!;
+      answer = { status: 409, body: { error: 'project "home" exists already' } };
+      fireEvent.change(within(dialog).getByLabelText("Project name"), { target: { value: "Home" } });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+      expect((await within(dialog).findByRole("alert", {}, SLOW)).textContent).toBe('project "home" exists already');
+      expect(document.querySelector("[data-dialog]")).toBe(dialog);
+      expect(selectedProject()).toEqual(["All projects"]);
+      expect(location.search).toBe("");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Create project" }));
+      await waitFor(() => expect(posts.filter((p) => p.url === "/api/v1/projects")).toHaveLength(2), SLOW);
+      const ids = posts.map((p) => (JSON.parse(String(p.init.body)) as { id: string }).id);
+      expect(ids[1]).toBe(ids[0]);
+      fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(document.querySelector("[data-dialog]")).toBeNull();
+      expect(posts).toHaveLength(2);
+    });
+
     it("a done row has no Projects… item", async () => {
       current = view({ projects: [{ list: null, tasks: [row("tk_old", { done_at: "2026-11-11T10:00:00.000Z" })] }] });
       await show();

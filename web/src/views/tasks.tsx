@@ -122,6 +122,13 @@ function idFor(attempt: { current: { id: string; words: string } | null }, words
   return attempt.current.id;
 }
 
+/** Creates the project under the ID kept for these words (a retry stores one project); the kept ID goes on success. A refusal comes back as `{ ok: false, error }`. */
+async function createProject(token: string, attempt: { current: { id: string; words: string } | null }, words: string) {
+  const r = await postProject(token, idFor(attempt, words, "pj_"), words);
+  if (r.ok) attempt.current = null;
+  return r;
+}
+
 /** One row action at a time: its POST, the error it answered, and a reload of the tasks on success. */
 function useTaskAction(token: string | null) {
   const client = useQueryClient();
@@ -338,12 +345,11 @@ function ProjectsDialog({ task, token, returnFocusTo, onClose }: { task: TaskRow
   const create = () =>
     send(async () => {
       const words = name.trim();
-      const r = await postProject(token, idFor(attempt, words, "pj_"), words);
+      const r = await createProject(token, attempt, words);
       if (!r.ok) {
         setError(r.error);
         return false;
       }
-      attempt.current = null;
       setName("");
       await link(r.project, true);
       return true;
@@ -744,9 +750,55 @@ function ProjectTabs({ projects, value, onChange }: { projects: readonly Project
   return <Tabs label={t("tasks.project")} options={options} value={value ?? ""} onChange={(id) => onChange(id === "" ? null : id)} />;
 }
 
+/** The Add project dialog: one name field; a refusal stays in the dialog with its reason, and a created project's tab is selected. */
+function AddProjectDialog({ token, returnFocusTo, onCreated, onClose }: { token: string; returnFocusTo: RefObject<HTMLElement | null>; onCreated: (slug: string) => void; onClose: () => void }) {
+  const client = useQueryClient();
+  const attempt = useRef<{ id: string; words: string } | null>(null);
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const create = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await createProject(token, attempt, name.trim());
+      if (!r.ok) {
+        setError(r.error);
+        return;
+      }
+      await client.invalidateQueries({ queryKey: [API.tasks] });
+      onCreated(r.project.slug);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Dialog
+      title={t("tasks.addProject")}
+      consequence={t("tasks.addProjectHint")}
+      confirmLabel={t("tasks.createProject")}
+      confirmDisabled={busy || name.trim() === ""}
+      error={error}
+      returnFocusTo={returnFocusTo}
+      onConfirm={() => void create()}
+      onClose={onClose}
+    >
+      <Field label={t("tasks.projectName")} htmlFor="add-project-name">
+        <Input id="add-project-name" value={name} disabled={busy} onChange={(e) => setName(e.target.value)} />
+      </Field>
+    </Dialog>
+  );
+}
+
 export function TasksPage() {
   const [tab, setTab] = useState<Tab>("today");
   const [project, setProject] = useProjectParam();
+  const [adding, setAdding] = useState(false);
+  const addButton = useRef<HTMLButtonElement>(null);
   const q = useTasks<TasksView & { add_key?: QuickAddKey }>(project);
   const v = q.data;
   const token = v?.can_build ? v.csrf_token : null;
@@ -761,7 +813,13 @@ export function TasksPage() {
     <PageHeader title={t("page.tasks")} />
     <div className="flex flex-col gap-6">
       <div className="flex flex-col items-start gap-3">
-        <ProjectTabs projects={known.current} value={project} onChange={setProject} />
+        <div className="flex max-w-full items-center gap-2">
+          <ProjectTabs projects={known.current} value={project} onChange={setProject} />
+          <Button ref={addButton} size="icon" aria-label={t("tasks.addProject")} disabled={token === null} onClick={() => setAdding(true)}>
+            +
+          </Button>
+        </div>
+        {adding && token !== null && <AddProjectDialog token={token} returnFocusTo={addButton} onCreated={setProject} onClose={() => setAdding(false)} />}
         <SegmentedControl label={t("tasks.viewLabel")} options={TABS} value={tab} onChange={setTab} />
       </div>
       <div className="space-y-1">
