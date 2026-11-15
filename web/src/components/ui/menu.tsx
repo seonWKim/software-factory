@@ -3,7 +3,8 @@ import { cn } from "../../lib/cn.js";
 import { Button } from "./button.js";
 import { DISABLED, FOCUS } from "./control.js";
 
-// OverflowMenu (a "more" button with a short list of actions) and Tooltip (a short hint on hover and focus).
+// OverflowMenu (a "more" button with a short list of actions) and Tooltip (a short hint on hover and focus, which
+// stays open while hovered or focused so a link in it works).
 // Plain React: no positioning library, so both sit by CSS next to their trigger.
 
 export interface MenuItem {
@@ -64,31 +65,38 @@ export function OverflowMenu({ label, items }: { label: string; items: readonly 
   );
 }
 
-/** A short hint for its child, shown on hover and on keyboard focus, hidden by Esc. `placement` is above (default) or below. */
-export function Tooltip({ text, placement = "top", children }: { text: string; placement?: "top" | "bottom"; children: ReactNode }) {
+/** Where the bubble sits along its trigger: centred (default), from its left edge, or ending at its right edge. */
+const ALIGN = { center: "left-1/2 -translate-x-1/2", start: "left-0", end: "right-0" } as const;
+
+/**
+ * A short hint for its child, shown on hover and on keyboard focus, hidden by Esc. `placement` is above (default) or
+ * below. It stays open while the pointer or focus is inside it, so a link in `text` can be clicked or tabbed to.
+ */
+export function Tooltip({ text, placement = "top", align = "center", className, children }: {
+  text: ReactNode;
+  placement?: "top" | "bottom";
+  align?: keyof typeof ALIGN;
+  /** Classes for the wrapper around the trigger, such as a size. */
+  className?: string;
+  children: ReactNode;
+}) {
   const [shown, setShown] = useState(false);
   const id = useId();
   return (
     <span
-      className="relative inline-flex"
+      className={cn("relative inline-flex", className)}
       aria-describedby={shown ? id : undefined}
       onMouseEnter={() => setShown(true)}
       onMouseLeave={() => setShown(false)}
       onFocus={() => setShown(true)}
-      onBlur={() => setShown(false)}
+      onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node | null) && setShown(false)}
       onKeyDown={(e) => e.key === "Escape" && setShown(false)}
     >
       {children}
       {shown && (
-        <span
-          id={id}
-          role="tooltip"
-          className={cn(
-            "pointer-events-none absolute left-1/2 z-10 w-max max-w-56 -translate-x-1/2 rounded-control bg-text-1 px-2 py-1 text-xs text-surface",
-            placement === "top" ? "bottom-full mb-1" : "top-full mt-1",
-          )}
-        >
-          {text}
+        // The padding, not a margin, bridges trigger and bubble, so the pointer can move onto the bubble.
+        <span id={id} role="tooltip" className={cn("absolute z-10", ALIGN[align], placement === "top" ? "bottom-full pb-1" : "top-full pt-1")}>
+          <span className="block w-max max-w-56 rounded-control bg-text-1 px-2 py-1 text-xs text-surface">{text}</span>
         </span>
       )}
     </span>

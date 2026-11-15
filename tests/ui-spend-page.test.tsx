@@ -19,7 +19,7 @@ const { SettingsPage } = (await import(/* @vite-ignore */ SETTINGS_MODULE)) as {
 // the tasks by cost with run count, kinds and a link to each, and the count of runs with no stored cost. And the
 // Settings page's number field, which takes a decimal dollar budget such as 12.50.
 
-const day = (d: string, cost_usd: number, tokens = 0, runs = 0, unknown = 0): SpendDay => ({ day: d, cost_usd, tokens, runs, unknown });
+const day = (d: string, cost_usd: number, tokens = 0, runs = 0, unknown = 0, top: SpendDay["top"] = []): SpendDay => ({ day: d, cost_usd, tokens, runs, unknown, top });
 // 30 days ending Wednesday 2026-01-14; its week began Monday 2026-01-12.
 const DAYS = Array.from({ length: 30 }, (_, i) => day(new Date(Date.UTC(2025, 11, 16 + i)).toISOString().slice(0, 10), 0));
 DAYS[27] = day("2026-01-12", 4, 4000, 2); // Monday
@@ -52,15 +52,25 @@ const SETTINGS: SettingsView = {
 
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 let posts: { url: string; body: Record<string, unknown> }[];
+/** What GET /api/v1/spend answers, and the answers of its one-day reads by day. */
+let view: SpendView;
+let dayViews: Record<string, SpendView>;
+let gets: string[];
 
 beforeEach(() => {
   posts = [];
+  view = SPEND;
+  dayViews = {};
+  gets = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, body: JSON.parse(String(init.body)) });
       return json(200, { ok: true, lines: ["spend.daily_budget_usd = 12.5"] });
     }
-    if (url === "/api/v1/spend") return json(200, SPEND);
+    gets.push(url);
+    if (url === "/api/v1/spend") return json(200, view);
+    const one = /^\/api\/v1\/spend\?from=(\d{4}-\d{2}-\d{2})&to=\1$/.exec(url);
+    if (one && dayViews[one[1]!]) return json(200, dayViews[one[1]!]);
     if (url === "/api/v1/settings") return json(200, SETTINGS);
     if (url === "/api/v1/session") return json(200, { as_of: "x", csrf_token: "tok", commands_enabled: false, actor: null, actor_source: null });
     return json(404, { error: "Not found." });
@@ -124,6 +134,106 @@ describe("Spend page", () => {
   it("says how many runs had no stored cost, apart from the totals", async () => {
     show(SpendPage);
     expect((await screen.findByTestId("spend-unknown")).textContent).toBe("1 run reported no cost; it is counted apart, never as $0.");
+  });
+});
+
+// The owner's example: 30 days ending 2026-11-15, the most on 2026-11-07 ($568.79).
+const NOV = Array.from({ length: 30 }, (_, i) => day(new Date(Date.UTC(2026, 9, 17 + i)).toISOString().slice(0, 10), 0));
+const NOV7 = NOV.findIndex((d) => d.day === "2026-11-07");
+NOV[NOV7] = day("2026-11-07", 568.79, 1_200_000, 14, 1, [
+  { work_item_id: "wi_a", title: "Spend chart hover details", cost_usd: 300 },
+  { work_item_id: "wi_b", title: "Desktop app", cost_usd: 200 },
+  { work_item_id: "wi_c", title: null, cost_usd: 60 },
+]);
+NOV[NOV7 + 1] = day("2026-11-08", 20, 30_000, 2, 0, [{ work_item_id: "wi_a", title: "Spend chart hover details", cost_usd: 20 }]);
+const NOV_ITEMS: SpendView["items"] = [
+  { work_item_id: "wi_a", title: "Spend chart hover details", cost_usd: 320, tokens: 600_000, runs: 6, unknown: 0, kinds: ["implement"] },
+  { work_item_id: "wi_b", title: "Desktop app", cost_usd: 200, tokens: 400_000, runs: 4, unknown: 0, kinds: ["implement"] },
+  { work_item_id: "wi_c", title: null, cost_usd: 60, tokens: 200_000, runs: 3, unknown: 0, kinds: ["review"] },
+  { work_item_id: "wi_d", title: "Other day only", cost_usd: 8.79, tokens: 30_000, runs: 3, unknown: 1, kinds: ["triage"] },
+];
+const NOV_VIEW: SpendView = {
+  as_of: "2026-11-15T12:00:00.000Z", today: "2026-11-15", week_start: "2026-11-09", from: "2026-10-17", to: "2026-11-15",
+  total: { cost_usd: 588.79, tokens: 1_230_000, runs: 16, unknown: 1 }, days: NOV, items: NOV_ITEMS, items_total: 4,
+};
+const NOV7_VIEW: SpendView = {
+  ...NOV_VIEW, from: "2026-11-07", to: "2026-11-07", total: { cost_usd: 568.79, tokens: 1_200_000, runs: 14, unknown: 1 },
+  days: [NOV[NOV7]!], items: NOV_ITEMS.slice(0, 3), items_total: 3,
+};
+
+describe("Spend page: the daily chart", () => {
+  beforeEach(() => {
+    view = NOV_VIEW;
+    dayViews = { "2026-11-07": NOV7_VIEW };
+  });
+  const chart = () => screen.findByRole("list", { name: "Cost per UTC day, last 30 days" });
+  const bar = async (d: string) => within((await chart()).querySelector<HTMLElement>(`[data-day="${d}"]`)!).getByRole("button");
+  const taskLinks = () => [...screen.getByRole("table", { name: "Tasks by cost" }).querySelectorAll("tbody a")].map((a) => a.textContent);
+
+  it("hovering the 2026-11-07 bar shows that day's cost, runs, tokens and top items, each linking to its item", async () => {
+    show(SpendPage);
+    fireEvent.mouseEnter(await bar("2026-11-07"));
+    const tip = screen.getByRole("tooltip");
+    expect(tip.className).toContain("bottom-full"); // above the bar
+    expect(tip.textContent).toContain("2026-11-07");
+    expect(tip.textContent).toContain("$568.79");
+    expect(tip.textContent).toContain("14 runs");
+    expect(tip.textContent).toContain("1.2M tokens");
+    const links = within(tip).getAllByRole("link");
+    expect(links.map((a) => a.textContent)).toEqual(["Spend chart hover details", "Desktop app", "wi_c"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/app/items/wi_a", "/app/items/wi_b", "/app/items/wi_c"]);
+    // It stays open while the pointer is on it, so its links can be clicked.
+    fireEvent.mouseLeave(await bar("2026-11-07"), { relatedTarget: tip });
+    fireEvent.mouseEnter(tip);
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  });
+
+  it("keyboard focus on a bar shows the same tooltip, and focus can move to its links", async () => {
+    show(SpendPage);
+    const b = await bar("2026-11-07");
+    fireEvent.focus(b);
+    const link = within(screen.getByRole("tooltip")).getByRole("link", { name: "Desktop app" });
+    fireEvent.blur(b, { relatedTarget: link });
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+  });
+
+  it("the x-axis shows only the first and last dates; the y-axis shows cost labels with gridlines, the top one the most cost", async () => {
+    show(SpendPage);
+    await chart();
+    const x = document.querySelector<HTMLElement>('[data-axis="x"]')!;
+    expect([...x.children].map((c) => c.textContent)).toEqual(["2026-10-17", "2026-11-15"]);
+    expect(x.textContent).not.toContain("$");
+    const y = [...document.querySelectorAll<HTMLElement>('[data-axis="y"] [data-tick]')];
+    expect(y.length).toBeGreaterThanOrEqual(2);
+    expect(y.length).toBeLessThanOrEqual(3);
+    expect(y[0]!.textContent).toBe("$568.79");
+    for (const tick of y) expect(document.querySelector(`[data-gridline="${tick.dataset.tick}"]`)).toBeTruthy();
+    // Bars and gridlines take token colours only.
+    expect(document.querySelector<HTMLElement>("[data-gridline]")!.className).toContain("border-border");
+  });
+
+  it("clicking a bar filters the tasks to that day by a one-day read, totals and chart unchanged; clicking it again shows all", async () => {
+    show(SpendPage);
+    await screen.findByRole("table", { name: "Tasks by cost" });
+    expect(taskLinks()).toContain("Other day only");
+    const b = await bar("2026-11-07");
+    fireEvent.click(b);
+    await waitFor(() => expect(taskLinks()).toEqual(["Spend chart hover details", "Desktop app", "wi_c"]));
+    expect(gets).toContain("/api/v1/spend?from=2026-11-07&to=2026-11-07");
+    expect(b.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector<HTMLElement>('[data-total="Last 30 days"]')!.textContent).toContain("$588.79");
+    expect((await chart()).querySelectorAll("li")).toHaveLength(30);
+    fireEvent.click(b);
+    await waitFor(() => expect(taskLinks()).toContain("Other day only"));
+    expect(b.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("a clear control shows all days in the table again", async () => {
+    show(SpendPage);
+    fireEvent.click(await bar("2026-11-07"));
+    await waitFor(() => expect(taskLinks()).not.toContain("Other day only"));
+    fireEvent.click(screen.getByRole("button", { name: "Show all days" }));
+    await waitFor(() => expect(taskLinks()).toContain("Other day only"));
   });
 });
 
