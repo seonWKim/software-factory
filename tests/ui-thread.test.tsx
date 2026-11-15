@@ -158,8 +158,9 @@ describe("item page: thread", () => {
 });
 
 describe("item page: command reply in the thread", () => {
-  it("a command from the command box gets 202, and its reply shows in the thread once the item is read again", async () => {
-    detail = { ...detail, commands: [{ name: "approve", usage: "/approve", description: "approve the spec", allowed: true, reason: null }] };
+  it("a command from the decision box gets 202, and its reply shows in the thread once the item is read again", async () => {
+    const why = { code: "human", text: "Waiting for a person to approve the spec", next_actor: "human", refs: [], ref_url: null };
+    detail = { ...detail, item: { ...ITEM, why }, commands: [{ name: "approve", usage: "/approve", description: "approve the spec", allowed: true, reason: null }] };
     // The controller writes its reply after the request: the next read of the item has it.
     afterPost = () => {
       detail = {

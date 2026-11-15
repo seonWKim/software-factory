@@ -77,8 +77,46 @@ async function box() {
   return decide;
 }
 
+const FACTORY_MSG = { seq: 7, at: AT, kind: "spec", author: "factory", role: "factory", channel: "github_issue", anchor: "msg-7", body: "## Spec ready for approval\n\nLonger text of the spec." };
+
 describe("item page: What you need to decide", () => {
-  it("at spec approval shows the box at the top with the reason, each open decision, Approve, Revise and Reject", async () => {
+  it("an item in triage (next actor is the factory) renders no decision box, but still has its menu", async () => {
+    body = detail({ item: item({ stage: "NEW", blocked_on: null, blocked_reason: null, why: { code: "triage", text: "Running triage", next_actor: "factory", refs: [], ref_url: null } }), spec: null });
+    mount();
+    await screen.findByRole("heading", { name: "Check the scope in CI" });
+    await screen.findByRole("button", { name: "More commands" });
+    expect(document.querySelector("[data-decide]")).toBeNull();
+    expect(screen.queryByRole("region", { name: "What you need to decide" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+
+  it("at merge_pending renders one box whose first button is Merge, then Good/Bad, Feedback and the menu", async () => {
+    body = detail({
+      item: item({ stage: "MERGE_PENDING", blocked_reason: null, merge: { enabled: true, reason: null }, why: { code: "merge", text: "Ready to merge", next_actor: "human", refs: [], ref_url: null } }),
+      commands: ["verdict", "reject"].map(cmd), spec: null,
+    });
+    mount();
+    const decide = await screen.findByRole("region", { name: "What you need to decide" });
+    expect(document.querySelectorAll("[data-decide]")).toHaveLength(1);
+    await vi.waitFor(() => expect((within(decide).getByRole("button", { name: "Merge" }) as HTMLButtonElement).disabled).toBe(false));
+    const row = within(decide).getByRole("button", { name: "Merge" }).closest("[data-command]")!.parentElement!;
+    expect([...row.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Merge", "Good", "Bad", "Feedback", "⋯"]);
+    expect(decide.querySelectorAll("textarea")).toHaveLength(1);
+  });
+
+  it("shows the latest factory message above the note box, with a Show in thread link to its anchor", async () => {
+    const older = { ...FACTORY_MSG, seq: 3, anchor: "msg-3", at: "2026-11-11T00:00:00.000Z", body: "An older message." };
+    body = detail({ thread: [older, FACTORY_MSG] });
+    mount();
+    const decide = await box();
+    const context = decide.querySelector("[data-decide-context]") as HTMLElement;
+    expect(context.textContent).toContain("Spec ready for approval");
+    expect(context.textContent).not.toContain("older");
+    expect(within(context).getByRole("link", { name: "Show in thread" }).getAttribute("href")).toBe("#msg-7");
+    expect(context.compareDocumentPosition(within(decide).getByRole("textbox", { name: "Note" })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("at spec approval shows the box at the top with the reason, each open decision, Approve and Revise", async () => {
     mount();
     const decide = await box();
     // At the top: after the title, before the facts, the thread and the runs.
@@ -92,10 +130,11 @@ describe("item page: What you need to decide", () => {
     expect(within(decide).getByRole("radiogroup", { name: "1. Fail the job, or only warn?" })).toBeTruthy();
     expect((within(decide).getByRole("radio", { name: "Fail the job(default)" }) as HTMLInputElement).checked).toBe(true);
     expect((within(decide).getByRole("textbox", { name: "Answer 2" }) as HTMLInputElement).value).toBe("scope");
-    // The buttons read Approve, Revise and Reject; approve, the one the state asks for, is the one primary button.
-    const buttons = ["Approve", "Revise", "Reject"].map((n) => within(decide).getByRole("button", { name: n }));
+    // The row reads Approve, Revise; approve, the one the state asks for, is first and the one primary button.
+    const buttons = ["Approve", "Revise"].map((n) => within(decide).getByRole("button", { name: n }));
     expect(buttons[0]!.className).toContain("bg-accent");
-    expect(buttons.slice(1).map((b) => b.className.includes("bg-accent"))).toEqual([false, false]);
+    expect(buttons[1]!.className).not.toContain("bg-accent");
+    expect(within(decide).queryByRole("button", { name: "Reject" })).toBeNull();
   });
 
   it("has no control without an accessible name", async () => {

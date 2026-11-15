@@ -43,7 +43,7 @@ const runs = { as_of: AT, runs: [{ id: "run_a", status: "running", kind: "implem
 const queue = { as_of: AT, queue: [{ position: 1, id: "run_b", kind: "implement", work_item_id: "wi_3", attempt: 0, created_at: AT, not_before: null }] };
 const detail = {
   as_of: AT,
-  item: { ...row(1, "needs_approval", "Spec waiting"), loop_count: 0, restart_count: 2, token_cost: 2_500_000, created_at: AT },
+  item: { ...row(1, "needs_approval", "Spec waiting"), loop_count: 0, restart_count: 2, token_cost: 2_500_000, created_at: AT, why: { code: "human", text: "Waiting for you", next_actor: "human", refs: [], ref_url: null } },
   timeline: [{ version: 1, at: AT, actor: { kind: "user", id: "github:1" }, reason: "intake", changes: { stage: { from: "null", to: '"NEW"' } }, detail: null }],
   runs: [{ id: "run_c", kind: "implement", status: "failed", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 10, error: { code: "git_failed", detail: "git merge: boom" } }],
 };
@@ -671,9 +671,11 @@ const reply = (seq: number, command: string, handled: boolean, refusal: string |
   ({ seq, command, created_at: AT, handled_at: handled ? AT : null, refusal });
 const SESSION = { as_of: AT, csrf_token: "tok-123", commands_enabled: true, actor: "local:me", actor_source: "environment" as const };
 
-function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(cmd), replies: ReturnType<typeof reply>[] = [], session: object | null = SESSION) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(cmd), replies: ReturnType<typeof reply>[] = [], session: object | null = SESSION, nextActor = "human") {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   if (session) client.setQueryData(["/api/v1/session"], session);
+  // The item the page already read: the decision box shows only when its why names the owner as next actor.
+  client.setQueryData(["/api/v1/items/wi_1"], { ...detail, item: { ...detail.item, why: { ...detail.item.why, next_actor: nextActor } } });
   return render(
     <QueryClientProvider client={client}>
       <ItemCommands id="wi_1" commands={commands} replies={replies} />
@@ -683,6 +685,12 @@ function mountCommands(commands = ["approve", "revise", "reject", "retry"].map(c
 const cap = (name: string) => name[0]!.toUpperCase() + name.slice(1);
 const button = (name: string) => screen.getByRole("button", { name: cap(name) }) as HTMLButtonElement;
 const rowOf = (name: string) => document.querySelector(`[data-command="${name}"]`) as HTMLElement;
+const outcomeOf = (name: string) => document.querySelector(`[data-outcome-of="${name}"]`) as HTMLElement | null;
+/** Picks `name` (Reject or Verdict) from the item's "…" menu. */
+const fromMenu = (name: string) => {
+  fireEvent.click(screen.getByRole("button", { name: "More commands" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: cap(name) }));
+};
 const typeNote = (text: string) => fireEvent.change(screen.getByRole("textbox", { name: "Note" }), { target: { value: text } });
 const settle = () => act(async () => void (await vi.advanceTimersByTimeAsync(10)));
 
@@ -692,9 +700,11 @@ describe("item commands", () => {
     expect([...document.querySelectorAll("[data-command] > button")].map((b) => b.textContent)).toEqual(["Retry", "Approve", "Budget"]);
   });
 
-  it("verdict shows Good, Bad and Feedback, each sending the verdict request; Feedback waits for the note box's text", async () => {
+  it("verdict shows Good and Bad as one segmented control and Feedback as a button, each sending the verdict request; Feedback waits for the note box's text", async () => {
     mountCommands([cmd("verdict")]);
-    expect([...document.querySelectorAll("[data-verdict-tap]")].map((b) => b.textContent)).toEqual(["Good", "Bad", "Feedback"]);
+    const group = screen.getByRole("group", { name: "Verdict" });
+    expect([...group.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Good", "Bad"]);
+    expect(group.parentElement!.parentElement).toBe(button("Feedback").parentElement);
     expect(button("Feedback").disabled).toBe(true);
     fireEvent.click(button("Good"));
     await settle();
@@ -710,8 +720,28 @@ describe("item commands", () => {
     ]);
   });
 
+  it("Reject and Verdict are in the \"…\" menu, not buttons in the box, and open their dialogs", () => {
+    mountCommands(["approve", "verdict", "reject"].map(cmd));
+    expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Verdict" })).toBeNull();
+    fromMenu("verdict");
+    expect(screen.getByRole("dialog", { name: "Verdict Spec waiting" })).toBeTruthy();
+    fireEvent.click(button("Cancel"));
+    fromMenu("reject");
+    expect(screen.getByRole("dialog", { name: "Reject Spec waiting" })).toBeTruthy();
+  });
+
+  it("an item that waits for nobody shows no decision box, only its \"…\" menu with Reject and Verdict", () => {
+    mountCommands(["approve", "verdict", "reject"].map(cmd), [], SESSION, "factory");
+    expect(document.querySelector("[data-decide]")).toBeNull();
+    expect(screen.queryByRole("region", { name: "What you need to decide" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "More commands" }));
+    expect(screen.getAllByRole("menuitem").map((m) => m.textContent)).toEqual(["Verdict", "Reject"]);
+  });
+
   it("with no command that applies (a running item), says so and offers no note box or button", () => {
-    mountCommands([]);
+    mountCommands([], [], SESSION, "factory");
     expect(document.querySelector("[data-commands-none]")?.textContent).toContain("No command applies now");
     expect(document.querySelectorAll("[data-command] > button")).toHaveLength(0);
     expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
@@ -725,7 +755,9 @@ describe("item commands", () => {
       history.replaceState(null, "", "/app/items/wi_1");
       mount();
       expect(await screen.findByRole("button", { name: "Approve" })).toBeTruthy();
-      expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "More commands" }));
+      expect(screen.getByRole("menuitem", { name: "Reject" })).toBeTruthy();
     } finally {
       delete RESPONSES["/api/v1/session"];
       delete (detail as Record<string, unknown>).commands;
@@ -738,18 +770,14 @@ describe("item commands", () => {
     expect(screen.getByRole("textbox", { name: "Note" })).toBeTruthy();
     typeNote("tighten the tests");
     fireEvent.click(button("revise"));
-    const dialog = screen.getByRole("dialog", { name: "Revise wi_1" });
+    const dialog = screen.getByRole("dialog", { name: "Revise Spec waiting" });
     expect((within(dialog).getByRole("button", { name: "Send revise" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    fireEvent.click(button("reject"));
-    expect(screen.getByRole("dialog", { name: "Reject wi_1" })).toBeTruthy();
-    expect(screen.queryByRole("dialog", { name: "Revise wi_1" })).toBeNull();
+    fromMenu("reject");
+    expect(screen.getByRole("dialog", { name: "Reject Spec waiting" })).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: "Revise Spec waiting" })).toBeNull();
     await settle();
     expect(posts).toEqual([]);
-    cleanup();
-    // Only reject and revise: no note box at all.
-    mountCommands(["revise", "reject"].map(cmd));
-    expect(screen.queryByRole("textbox", { name: "Note" })).toBeNull();
   });
 
   it("a send posts { command, note } with the session token; the note only when the box has text", async () => {
@@ -775,7 +803,7 @@ describe("item commands", () => {
   it("reject asks why and to confirm: cancel posts nothing, confirm posts the reason once", async () => {
     mountCommands();
     typeNote("not the reject reason");
-    fireEvent.click(button("reject"));
+    fromMenu("reject");
     fireEvent.click(screen.getByRole("radio", { name: "duplicate" }));
     await settle();
     expect(posts).toEqual([]);
@@ -783,7 +811,7 @@ describe("item commands", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     await settle();
     expect(posts).toEqual([]);
-    fireEvent.click(button("reject"));
+    fromMenu("reject");
     fireEvent.click(screen.getByRole("radio", { name: "duplicate" }));
     fireEvent.click(button("Confirm reject"));
     await settle();
@@ -794,12 +822,12 @@ describe("item commands", () => {
     mountCommands();
     fireEvent.click(button("approve"));
     await settle();
-    expect(within(rowOf("approve")).getByRole("status").textContent).toBe("sent");
+    expect(within(outcomeOf("approve")!).getByRole("status").textContent).toBe("sent");
     postAnswer = { status: 403, body: { error: "Missing or stale x-csrf-token; reload the page." } };
     fireEvent.click(button("retry"));
     await settle();
-    expect(within(rowOf("retry")).getByRole("alert").textContent).toBe("Missing or stale x-csrf-token; reload the page.");
-    expect(within(rowOf("approve")).getByRole("status").textContent).toBe("sent");
+    expect(within(outcomeOf("retry")!).getByRole("alert").textContent).toBe("Missing or stale x-csrf-token; reload the page.");
+    expect(within(outcomeOf("approve")!).getByRole("status").textContent).toBe("sent");
   });
 
   it("shows the latest request's outcome per command: its refusal, sent, or Done", () => {
@@ -810,10 +838,10 @@ describe("item commands", () => {
       reply(4, "revise", true),
       reply(5, "revise", true, "Nothing to revise."),
     ]);
-    expect(rowOf("approve").querySelector("[data-outcome]")!.textContent).toBe("sent");
-    expect(rowOf("retry").querySelector("[data-outcome]")!.textContent).toBe("Done");
-    expect(rowOf("revise").querySelector("[data-outcome]")!.textContent).toBe("Nothing to revise.");
-    expect(rowOf("reject").querySelector("[data-outcome]")).toBeNull();
+    expect(outcomeOf("approve")!.textContent).toBe("sent");
+    expect(outcomeOf("retry")!.textContent).toBe("Done");
+    expect(outcomeOf("revise")!.textContent).toBe("Nothing to revise.");
+    expect(outcomeOf("reject")).toBeNull();
   });
 
   it("a local send shows sent until a reply as new as it arrives", () => {

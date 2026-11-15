@@ -1,13 +1,10 @@
-import { useState } from "react";
 import type { ProposalView } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { t } from "../i18n/index.js";
 import { ButtonRow } from "../components/ui/button-row.js";
-import { Field } from "../components/ui/field.js";
-import { Textarea } from "../components/ui/textarea.js";
 import { cn } from "../lib/cn.js";
 
-// The item page's command box and pending proposals (design 09-dashboard-app). The box sends the owner's words as one
+// The item page's pending proposals (design 09-dashboard-app). The note box sends the owner's words as one
 // app request (`sentence`); the controller reads them with the plain-words reader and answers in the item's thread,
 // where a proposed command is stored as pending. Each pending proposal of the item shows its commands as typed lines,
 // with Confirm all and Cancel, each one app request carrying only the proposal ID. This page makes no model call
@@ -35,45 +32,6 @@ export function OutcomeText({ outcome }: { outcome: Outcome }) {
     >
       {outcome.text}
     </span>
-  );
-}
-
-/** The command box: a sentence in the owner's own words, sent as one app request. */
-export function CommandBox({ enabled, busy, outcome, send }: { enabled: boolean; busy: boolean; outcome: Outcome; send: Send }) {
-  const [words, setWords] = useState("");
-  const submit = async () => {
-    if (await send(SENTENCE, words)) setWords("");
-  };
-  return (
-    <form
-      data-command-box
-      className="mt-6 flex max-w-xl flex-col gap-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void submit();
-      }}
-    >
-      <Field
-        label={t("command.label")}
-        htmlFor="command-box"
-        help={t("command.note")}
-      >
-        <Textarea
-          id="command-box"
-          rows={2}
-          value={words}
-          onChange={(e) => setWords(e.target.value)}
-          placeholder={t("command.placeholder")}
-          className="w-full"
-        />
-      </Field>
-      <ButtonRow>
-        <Button type="submit" variant="secondary" disabled={!enabled || busy || words.trim() === ""}>
-          {t("command.submit")}
-        </Button>
-        <OutcomeText outcome={outcome} />
-      </ButtonRow>
-    </form>
   );
 }
 
