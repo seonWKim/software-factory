@@ -93,6 +93,8 @@ interface Run {
   urls: string[];
   printed: string[];
   hiddenPrompts: string[];
+  /** The printed lines and the hidden prompts, in the order they came. */
+  said: string[];
   /** What the fake browser does with the consent URL: by default, Google's redirect with the code and the state. */
   browser: (url: URL) => Promise<void>;
   run(args?: { disconnect?: boolean }): Promise<number>;
@@ -133,7 +135,7 @@ function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r
   const r: Run = {
     dir, secretsFile, configFile, google,
     clock: new FakeClock(NOW),
-    urls: [], printed: [], hiddenPrompts: [],
+    urls: [], printed: [], hiddenPrompts: [], said: [],
     browser: async (url) => void (await redirect(url, { code: CODE, state: url.searchParams.get("state")! })),
     load: () => loadConfig(dir, { registry }),
     async run(args = {}) {
@@ -146,8 +148,8 @@ function machine(o: { secrets?: string | null; calendar?: unknown; registry?: (r
           yesNo: async () => true,
           text: async (_q, d) => d,
         },
-        secret: async (p) => (r.hiddenPrompts.push(p), hidden.shift()!),
-        print: (l) => void r.printed.push(l),
+        secret: async (p) => (r.hiddenPrompts.push(p), r.said.push(p), hidden.shift()!),
+        print: (l) => void (r.printed.push(l), r.said.push(l)),
       };
       const deps: ConnectDeps = { io, clock: r.clock, openBrowser: async (u) => (r.urls.push(u), r.browser(new URL(u))) };
       return connectSetup(ctx, { kind: "calendar", command: "google", disconnect: args.disconnect === true }, deps);
@@ -246,6 +248,10 @@ describe("factory setup calendar google: end to end", () => {
     const r = machine({ defaultClient: null });
     expect(await r.run()).toBe(0);
     expect(r.hiddenPrompts).toEqual(["   Paste GOOGLE_CLIENT_ID (hidden): ", "   Paste GOOGLE_CLIENT_SECRET (hidden): "]);
+    // Said in the dashboard's words, before the first question.
+    const told = r.said.indexOf("   This build has no default Google client. Connect with your own OAuth client.");
+    expect(told).toBeGreaterThanOrEqual(0);
+    expect(told).toBeLessThan(r.said.indexOf("   Paste GOOGLE_CLIENT_ID (hidden): "));
     expect(read(r.secretsFile)).toBe(`GITHUB_TOKEN=gh\n\nGOOGLE_CLIENT_ID=${CLIENT_ID}\nGOOGLE_CLIENT_SECRET=${CLIENT_SECRET}\nGOOGLE_REFRESH_TOKEN=${REFRESH}`);
     expect(statSync(r.secretsFile).mode & 0o777).toBe(0o600);
   });

@@ -1091,6 +1091,8 @@ export interface CalendarPluginView {
   name: string;
   /** Listed in the live `calendar` setting (else the config file's key). */
   connected: boolean;
+  /** This build carries the default sign-in a plain Connect takes; false: only the own-client option can connect. */
+  default_client: boolean;
   synced_at: string | null;
   /** The last sync's error; null after a success. */
   error: string | null;
