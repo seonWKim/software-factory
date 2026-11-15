@@ -134,9 +134,11 @@ describe("app shell", () => {
     mount();
     expect(await screen.findByText("Needs you (4)")).toBeTruthy();
     const factory = screen.getByRole("navigation", { name: "Factory" });
-    expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you", "Work", "Activity"]);
+    expect([...factory.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Needs you"]);
     const nav = screen.getByRole("navigation", { name: "System" });
-    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Health", "Failures", "Spend", "Rules", "Runners", "Data"]);
+    expect([...nav.querySelectorAll("a")].map((a) => a.textContent)).toEqual(["Work", "Activity", "Health", "Failures", "Spend", "Rules", "Runners", "Data"]);
+    expect(within(factory).queryByRole("link", { name: "Work" })).toBeNull();
+    expect(within(factory).queryByRole("link", { name: "Activity" })).toBeNull();
     fireEvent.click(within(nav).getByText("Runners"));
     expect(await screen.findByRole("heading", { name: "Runners" })).toBeTruthy();
     expect(location.pathname).toBe("/app/runners");
