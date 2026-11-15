@@ -221,9 +221,9 @@ describe("quick-add box", () => {
   it("a refused post shows the reason, keeps the box open and resends under the same task ID", async () => {
     const h = await boxHarness();
     h.box.open();
-    expect(await h.key("Enter", "every fortnight call mum")).toEqual({ error: expect.stringContaining("unknown recurrence") });
+    expect(await h.key("Enter", "call mum every week")).toEqual({ error: expect.stringContaining("every week needs a due date") });
     expect(h.win.visible).toBe(true);
-    await h.key("Enter", "call mum every week today");
+    await h.key("Enter", "call mum today every week");
     expect(h.api.posts.map((p) => (p.body as { id: string }).id)).toEqual(["tk_box0000001", "tk_box0000001"]);
     expect((await h.api.tasks()).map((t) => t.title)).toEqual(["call mum"]);
   });
