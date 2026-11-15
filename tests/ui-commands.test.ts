@@ -759,15 +759,18 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
   let createElement: typeof import("react").createElement;
   let QueryClient: typeof import("@tanstack/react-query").QueryClient;
   let QueryClientProvider: typeof import("@tanstack/react-query").QueryClientProvider;
+  let useQuery: typeof import("@tanstack/react-query").useQuery;
   let views: { MergeButton: unknown; NeedActions: unknown; useCommandSend: (id: string) => unknown };
   let post: () => Promise<Response>;
   let itemReplies: unknown[];
+  /** The item read's other fields (its blocked_reason, its timeline). */
+  let itemMore: { item?: Record<string, unknown>; timeline?: unknown[] };
   beforeAll(async () => {
     const { builtinEnvironments } = await import("vitest/environments");
     teardown = (await builtinEnvironments.jsdom.setup(globalThis, {})).teardown.bind(null, globalThis);
     rtl = await import("@testing-library/react");
     ({ createElement } = await import("react"));
-    ({ QueryClient, QueryClientProvider } = await import("@tanstack/react-query"));
+    ({ QueryClient, QueryClientProvider, useQuery } = await import("@tanstack/react-query"));
     // @ts-expect-error -- TS6142, as the import at the top of this file
     views = await import("../web/src/views/item-commands.js");
   });
@@ -776,11 +779,12 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
   });
   beforeEach(() => {
     itemReplies = [];
+    itemMore = {};
     post = async () => json({ seq: 5 });
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { method?: string }) => {
       if (init?.method === "POST") return post();
       if (url === "/api/v1/session") return json({ as_of: "t", csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" });
-      if (url === "/api/v1/items/wi_1") return json({ item: { id: "wi_1" }, replies: itemReplies });
+      if (url === "/api/v1/items/wi_1") return json({ item: { id: "wi_1", ...itemMore.item }, replies: itemReplies, timeline: itemMore.timeline ?? [] });
       return json({ error: "Not found." }, 404);
     }));
   });
@@ -863,5 +867,98 @@ describe("the Merge button's Merging… state (item page and Needs-you row)", ()
     await rtl.waitFor(() => expect(rtl.screen.getByText("the head moved")).toBeTruthy());
     expect(mergeButton().textContent).toBe("Merge");
     expect(mergeButton().disabled).toBe(false);
+  });
+  /** What the server answers for an Approve or Merge it applied while handling the request (src/ui/commands.ts applyNow). */
+  const applied = (blocked_reason: string | null, label: string | null, extra: Record<string, unknown> = {}) =>
+    json({ seq: 5, outcome: "applied", refusal: null, state: { stage: blocked_reason === null ? "RUNNING" : "REVIEW", blocked_on: blocked_reason === null ? "none" : "ci", blocked_reason, phase: "p", label }, ...extra }, 202);
+  const itemReads = () => vi.mocked(fetch).mock.calls.filter(([u]) => u === "/api/v1/items/wi_1").length;
+  const row = (extra: Record<string, unknown> = {}) => ({ id: "wi_1", stage: "READY", blocked_on: "human", blocked_reason: "spec_pending", ...extra });
+  const approveRow = (cmd: unknown) =>
+    createElement(views.NeedActions as never, {
+      id: "wi_1", title: "One", commands: [{ name: "approve", usage: "/approve", description: "d", allowed: true, reason: null }], pr: null, group: "approve",
+      merge: undefined, source: "local", checking: false, cmd, allow: [],
+    });
+
+  it("Approve on a Needs-you row: the response's state shows Approved on the row and goes into the list at once, with no item read", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/v1/items"], { items: [row()] });
+    function Row() {
+      return approveRow(views.useCommandSend("wi_1"));
+    }
+    rtl.render(wrap(client, createElement(Row)));
+    const approve = () => rtl.screen.getByRole("button", { name: "Approve" }) as unknown as { disabled: boolean };
+    await rtl.waitFor(() => expect(approve().disabled).toBe(false));
+    post = async () => applied(null, "Approved");
+    rtl.fireEvent.click(approve() as never);
+    await rtl.waitFor(() => expect(rtl.screen.getByText("Approved")).toBeTruthy());
+    expect(itemReads()).toBe(0);
+    expect((client.getQueryData(["/api/v1/items"]) as { items: { stage: string; blocked_reason: string | null }[] }).items[0]).toMatchObject({ stage: "RUNNING", blocked_reason: null });
+  });
+
+  it("a refused Approve shows the controller's words on the row at once, and the row keeps its real state", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/v1/items"], { items: [row({ stage: "REVIEW", blocked_reason: "merge_pending" })] });
+    function Row() {
+      return approveRow(views.useCommandSend("wi_1"));
+    }
+    rtl.render(wrap(client, createElement(Row)));
+    const approve = () => rtl.screen.getByRole("button", { name: "Approve" }) as unknown as { disabled: boolean };
+    await rtl.waitFor(() => expect(approve().disabled).toBe(false));
+    post = async () => json({
+      seq: 5, outcome: "refused", refusal: "`/approve` was not applied: the spec is not waiting for approval (the item is waiting for a human merge).",
+      state: { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending", phase: "waiting for a human merge", label: null },
+    }, 202);
+    rtl.fireEvent.click(approve() as never);
+    await rtl.waitFor(() => expect(rtl.screen.getByText("/approve was not applied: the spec is not waiting for approval (the item is waiting for a human merge).")).toBeTruthy());
+    expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_pending");
+  });
+
+  it("Merge on a Needs-you row: Merging… at once from the response, the row's state merge_queued, before any poll", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/v1/items"], { items: [row({ stage: "REVIEW", blocked_reason: "merge_pending", merge: READY })] });
+    function Row() {
+      const cmd = views.useCommandSend("wi_1");
+      // The row's merge readiness as the list holds it (the Needs-you page reads it from the list).
+      const list = useQuery({ queryKey: ["/api/v1/items"], queryFn: async () => ({ items: [] }), enabled: false });
+      const merge = ((list.data as { items: { merge?: unknown }[] } | undefined)?.items[0]?.merge ?? READY) as never;
+      return createElement(views.NeedActions as never, { id: "wi_1", title: "One", commands: [], pr: null, group: "merge", merge, source: "local", checking: false, cmd, allow: [] });
+    }
+    rtl.render(wrap(client, createElement(Row)));
+    await rtl.waitFor(() => expect(mergeButton().disabled).toBe(false));
+    post = async () => applied("merge_queued", "Merging…");
+    rtl.fireEvent.click(mergeButton() as never);
+    await rtl.waitFor(() => expect((client.getQueryData(["/api/v1/items"]) as { items: { blocked_reason: string }[] }).items[0]!.blocked_reason).toBe("merge_queued"));
+    expect(mergeButton().textContent).toBe("Merging…");
+    expect(mergeButton().disabled).toBe(true);
+  });
+
+  it("on the item page: a Merge under way reads Checking…; one returned to merge_pending shows why beside Merge", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const page = (merge: unknown, returned: string | null) =>
+      wrap(client, createElement(views.MergeButton as never, { id: "wi_1", source: "local", merge, replies: [], returned }));
+    const view = rtl.render(page({ enabled: false, reason: "Checking…" }, null));
+    const checking = () => rtl.screen.getByRole("button", { name: "Checking…" }) as unknown as { disabled: boolean };
+    await rtl.waitFor(() => expect(checking().disabled).toBe(true));
+    view.rerender(page(READY, "`src/a.ts` conflicts"));
+    expect(mergeButton().textContent).toBe("Merge");
+    expect(rtl.screen.getByText("src/a.ts conflicts")).toBeTruthy();
+  });
+
+  it("in the Needs-you row: a Merge returned to merge_pending shows why, from the item's newest state change", async () => {
+    itemMore = {
+      item: { blocked_reason: "merge_pending" },
+      timeline: [
+        { version: 3, reason: "merge_requested", detail: { app_request: "5" } },
+        { version: 4, reason: "merge_returned", detail: { refusal: "the merged commit conflicts in `src/a.ts`" } },
+      ],
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function Row() {
+      const cmd = views.useCommandSend("wi_1");
+      return createElement(views.NeedActions as never, { id: "wi_1", title: "One", commands: [], pr: null, group: "merge", merge: READY, source: "local", checking: false, cmd, allow: [] });
+    }
+    rtl.render(wrap(client, createElement(Row)));
+    await rtl.waitFor(() => expect(rtl.screen.getByText("the merged commit conflicts in src/a.ts")).toBeTruthy());
+    expect(mergeButton().textContent).toBe("Merge");
   });
 });

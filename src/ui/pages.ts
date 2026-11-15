@@ -87,6 +87,9 @@ export function runTokens(run: Run): number | null {
   return run.outcome?.status === "failed" && run.outcome.usage ? outcomeTokens(run.outcome) : null;
 }
 
+/** The item's change as the page names it: `PR #N`. */
+export const prName = (change_ref: string): string => `PR #${change_ref}`;
+
 class Ctx {
   readonly w: Withholder;
   readonly now: Date;
@@ -120,7 +123,7 @@ class Ctx {
 
   /** The item's stored PR link (change_url); the change_ref as text when no link is stored; empty with no PR. */
   prLink(item: WorkItem): string {
-    return item.change_ref === null ? "" : link(item.change_url, `PR #${item.change_ref}`);
+    return item.change_ref === null ? "" : link(item.change_url, prName(item.change_ref));
   }
 
   ago(ts: string | null): string {

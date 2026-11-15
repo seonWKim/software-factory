@@ -1,23 +1,27 @@
 // Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback.
 // Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+//
+// The store-only checks of Approve, a command's note and Merge live in src/core/request-transition.ts (design
+// 04-gate-commands, 2026-11-15); the dashboard's request path runs them too, and `afterRequestApprove` does its rest.
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
-  CHECKPOINT_REFUSAL, CLOSED_REFUSAL, appliesLocally, appliesOnPr, commandFooter, commandPhase, commandSpec, commandState, dependencyHoldRefusal,
-  failedRunKind, helpReply, latestSpec, parseCommandPaths, parseLink, phaseLabel, refusalText, specNotWaiting, unknownCommandReply,
+  APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, appliesLocally, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
+  commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, mergeQueued, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
+  specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, waitsForMerge,
 } from "../../../core/commands.js";
-import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, effectiveTier, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
+import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
 import { commandEvent, syncedCommand } from "../../../core/command-inbox.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
 import { CANCEL_APP_COMMAND, SENTENCE_APP_COMMAND, localIdentity } from "../../../core/local-cli.js";
-import { SPEC_DECISIONS, specChanged, specDecisionDetail, specKind } from "../../../core/standing.js";
+import { specKind } from "../../../core/standing.js";
 import { CONFIRM_COMMAND, INTERPRET_MAX_CHARS, INTERPRET_MAX_ITEMS, interpretMessage, interpretReply, interpretTexts, openItems, proposalEvent } from "../../../core/interpret.js";
-import { type Actor, type RunKind, type StateChangeDetail, type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
+import { type Actor, type RunKind, type StateChangeDetail, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { AppCommandRequest, CliCommand, FactoryStore, RedeemLinkResult } from "../../../interfaces/factory-store.js";
 import type { ForgeEvent } from "../../../interfaces/forge.js";
 import type { SourceEvent } from "../../../interfaces/source-adapter.js";
 import { answersDetail, splitAnswers } from "../../../shared/command-notes.js";
-import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, retry, splitFiling, splitFilingFailed, splitOpen, footerAfter } from "../support.js";
+import { type Decision, type Refusal, type Widening, NO_WIDENING, type CommandEvent, COMMAND, MAX_CONFLICT_RETRIES, MAX_FEEDBACK_CHARS, FLOOR_TIER, RULE_OF_TWO, CONFLICT_PENDING, SOURCE_CLOSE_PENDING, SYSTEM, retry, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 import { answerPlain, appProposal, confirmProposal, storeProposals } from "./proposals.js";
@@ -39,10 +43,10 @@ const LINK_REFUSALS: Record<Exclude<RedeemLinkResult, { ok: true }>["reason"], s
   locked: "the code is locked after too many wrong codes",
   already_linked: "this account is already linked to another factory user",
 };
-/** The refusal of an `/approve +paths` on a split spec (issue #280): the approval files sub-issues, it implements nothing. */
-const SPLIT_PATHS = "`+paths` does not apply to a split spec, whose `/approve` files one sub-issue per phase; reply `/approve` without `+paths`, then add paths on a phase's issue";
-/** Characters of an approval note kept on the state change (design §4). */
-const MAX_NOTE_CHARS = 2000;
+/** The decision answers of an approval note (`N: <answer>` lines, issue #526), as the shared approve gate reads them. */
+const NOTE_ANSWERS = { split: splitAnswers, detail: answersDetail };
+/** How the controller's refusals name a PR (core writes no change-ref form of its own). */
+const PR_NAME = (ref: string) => `PR #${ref}`;
 /** State change reasons of PR feedback that started an implement run (design §4). */
 const PR_REVISE = "pr_revise_requested";
 const PR_CHANGES = "pr_changes_requested";
@@ -58,13 +62,6 @@ function reviewFeedback(e: PrReviewEvent): string {
   });
   if (lines.length) parts.push(["Line comments:", ...lines].join("\n"));
   return parts.join("\n\n");
-}
-/**
- * A spec waiting for `/approve`, `/reject` or `/revise`; past the revision limit, only the first two apply. A split
- * whose phase filing outbound gave up waits too: `/approve` again files the rest under new keys, none twice.
- */
-function awaitingSpec(it: WorkItem): boolean {
-  return it.stage === "READY" && (it.blocked_reason === "spec_pending" || it.blocked_reason === "max_revisions" || splitFilingFailed(it));
 }
 /**
  * `/resolve [notes]` (design §5 Merge conflict). Only on an item waiting on a merge conflict, on a local item waiting for
@@ -95,40 +92,70 @@ function resolveCommand(e: ResolveEvent, it: WorkItem, actor: Actor, resolveAske
 function conflictPending(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === CONFLICT_PENDING;
 }
-/** `d` with `tag` added to its state change detail; a refusal or no-op as it is. */
-const withTag = (d: Decision | Refusal, tag: StateChangeDetail | null): Decision | Refusal => (!tag || !d || "refuse" in d ? d : { ...d, detail: { ...d.detail, ...tag } });
 /**
- * A command on a floor_tier block (design §4). `/approve` raises the tier to the one the floor needs (never
- * lowers it), clears the block and enqueues implement under a new key (restart_count + 1), so it is not a
- * no-op. `/reject` closes the item. `/retry` is refused: a floor block is not a failed run.
+ * The comment command event of an app gate command on `item`, keyed `key`: the note is the approve's or retry's
+ * note, the resolve's notes, the reject's reason or the revise's feedback. Never on a PR: a revise here is the
+ * issue's `/revise`, and no `+paths` is read.
  */
-function floorCommand(
-  e: ItemCommandEvent, it: WorkItem, actor: Actor, need: number | null, note: string | null, w: Widening,
-): Decision | Refusal {
-  if (e.kind === "retry_requested") {
-    return { refuse: `the item is ${phaseLabel("floor_tier")}, which is not a failed run; reply \`/approve\` to raise its tier` };
+function appGateEvent(kind: Exclude<CommandEvent["kind"], "budget_continue">, item: WorkItem, key: string, r: AppCommandRequest, note: string): CommandEvent {
+  const who = { provider: "local" as const, subject: r.actor };
+  const at = { source: item.source, comment_id: key };
+  switch (kind) {
+    case "spec_approved": return { kind, ...at, approver: who, note };
+    case "spec_rejected": return { kind, ...at, approver: who, reason: note };
+    case "revise_requested": return { kind, ...at, requester: who, feedback: note, pr: null };
+    case "retry_requested": return { kind, ...at, requester: who, note };
+    case "resolve_requested": return { kind, ...at, requester: who, notes: note, pr: null };
   }
-  if (e.kind === "revise_requested") {
-    return { refuse: `the item is ${phaseLabel("floor_tier")}, not waiting on a spec; reply \`/approve\` to raise its tier or \`/reject <reason>\` to close` };
-  }
-  if (e.kind === "spec_rejected") {
-    return { patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null }, actor, reason: "floor_rejected" };
-  }
-  if (it.stage !== "RUNNING" || need === null) return { refuse: "the floor block has no recorded tier to approve" };
-  // A `+paths` under a higher floor raises the tier further (issue #280).
-  const next = { ...it, tier: effectiveTier(it.tier, need as Tier, w.patch.tier), restart_count: it.restart_count + 1 };
-  return {
-    patch: { ...w.patch, tier: next.tier, restart_count: next.restart_count, blocked_on: "none", blocked_reason: null },
-    actor,
-    reason: "floor_tier_approved",
-    detail: { previous_tier: it.tier, tier: next.tier, ...(note ? { note } : {}), ...w.detail },
-    enqueue: { kind: "implement", idempotency_key: runKey(next, "implement") },
-  };
 }
 
 /** Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback. */
 export class CommandsUnit {
   constructor(private readonly c: Ctx) {}
+
+  /**
+   * The merge gate (core request-transition, design 04-gate-commands), the one copy the dashboard's request path and
+   * the controller's merges share: whether an item waits for its merge (merge_pending, or merge_queued once its Merge
+   * was pressed), and why the local merge or a PR's merge does not apply to it. For the local-merge, merge-queue and
+   * pr-events units, which reach the gate's checks through this unit.
+   */
+  readonly merge = { waits: waitsForMerge,
+    localRefusal: (it: WorkItem, canMerge: boolean) => localMergeRefusal(it, canMerge, PR_NAME),
+    prRefusal: (it: WorkItem, forge: boolean) => prMergeRefusal(it, forge, PR_NAME),
+  };
+
+  /**
+   * A merge refused or failed after its Merge was pressed (a conflict, a red check, the forge's refusal): an item at
+   * merge_queued goes back to merge_pending with the refusal on its state change, so the dashboard's row shows why
+   * and offers Merge again. Any other item changes nothing (a `factory merge` or auto mode's merge never left it).
+   */
+  async mergeReturned(id: WorkItemId, refusal: string): Promise<void> {
+    await this.c.unit("transitions").decide(id, (it) => mergeReturned(it, refusal, SYSTEM));
+  }
+
+  /**
+   * The rest of an approval the dashboard's request path stored while the request was handled (core requestTransition,
+   * design 09-dashboard-app, 2026-11-15), done once by the pass that handles its request row: the run it left to the
+   * controller (its QUEUED_RUN detail) is queued through the Rule of Two and budget holds of `decide`, unless it is
+   * queued already or the item moved on meanwhile (closed, blocked); the item's status is shown on its source; then
+   * the standing-rule follow-up, as after a comment's approval (the request as that comment). A rejected
+   * request-time approval has nothing to capture (captureTacit follows only a reject or a revise). Safe to run twice:
+   * the run's key, the status and the follow-up's posts are keyed. No such change (the controller applied it): nothing.
+   */
+  async afterRequestApprove(item: WorkItem, r: AppCommandRequest): Promise<void> {
+    const change = (await this.c.k.reader.listStateChanges(item.id)).find((c) => c.detail?.[APP_REQUEST] === r.seq && queuedRun(c) !== null);
+    const run = change ? queuedRun(change) : null;
+    if (!change || !run) return;
+    await this.c.unit("transitions").decide(item.id, async (it) => {
+      const queued = (await this.c.k.reader.listRuns(it.id)).some((x) => x.idempotency_key === run.idempotency_key);
+      if (queued || it.stage === "CLOSED" || it.blocked_on !== "none") return null;
+      return { patch: {}, actor: change.actor, reason: APPROVED_RUN_QUEUED, detail: { [APP_REQUEST]: r.seq }, enqueue: run };
+    });
+    const now = await this.c.k.reader.getWorkItem(item.id);
+    if (now) await this.c.unit("outbox").showStatus(now);
+    const e = appGateEvent("spec_approved", item, `app-${r.seq}`, r, "");
+    await this.c.k.guard("standing", () => this.c.unit("standing").afterSpecCommand(item.id, e, r.actor));
+  }
 
   async handleInboxCommand(c: CliCommand): Promise<void> {
     if (c.origin === "app") {
@@ -182,6 +209,24 @@ export class CommandsUnit {
       refusalText(COMMAND[e.kind], refusal),
       `<!-- factory:refused:${e.comment_id} -->`,
     );
+  }
+
+  /**
+   * An app gate command (the app-requests unit) through the comment's handler, tagged with the request's seq. A reject's
+   * reason and a revise's feedback are new text the factory would publish (the reject's close quotes it), so they pass
+   * the egress scan first, as an approve's, retry's or resolve's note does in the handler; a comment's own text is
+   * already on its source.
+   */
+  async appGate(
+    r: AppCommandRequest, item: WorkItem, kind: Exclude<CommandEvent["kind"], "budget_continue">, key: string, raw: string | undefined,
+  ): Promise<string | null> {
+    let note = raw ?? "";
+    if (kind === "spec_rejected" || kind === "revise_requested") {
+      const scanned = await this.approvalNote(item.id, raw, COMMAND[kind]);
+      if ("refuse" in scanned) return scanned.refuse;
+      note = scanned.note ?? "";
+    }
+    return this.gateCommand(item, appGateEvent(kind, item, key, r, note), { user_id: r.actor }, { [APP_REQUEST]: r.seq });
   }
 
   /** A gate command from a comment (`app` null) or an app request (its user), design §4: `approve_spec`, the
@@ -311,32 +356,24 @@ export class CommandsUnit {
         return it.stage === "CLOSED" ? CLOSED_REFUSAL : "the work item is not at a budget checkpoint";
       }
       // `/approve` while implementing: lifts a coordination-cost hold on the queued implement run (design §5).
-      if (e.kind === "spec_approved" && it.stage === "RUNNING" && it.blocked_on === "none") {
+      if (e.kind === "spec_approved" && approvesHold(it)) {
         // The held run is already queued with its paths; `+paths` does not change them (issue #280).
-        if (paths.length > 0) return "`+paths` does not apply to an implement run held by coordination cost, since that run is already queued; reply `/approve` without `+paths`";
+        if (paths.length > 0) return HOLD_PATHS;
         const r = await this.approveHold(it, actor);
         if (r === RETRY) continue;
         return r;
       }
       if (e.kind === "retry_requested" && commandPhase(it) === "dependency_closed") return this.c.unit("coordination").retryDependencies(it, actor, note, paths);
       return this.c.unit("transitions").decide(id, async (x) =>
-        withTag(await this.withSpecDecision(x, await this.command(e, x, actor, await this.floorTierNeeded(x), note, tag, paths)), tag));
+        withTag(await specDecision(x, await this.command(e, x, actor, note, tag, paths), () => this.specKindOf(x)), tag));
     }
     this.c.k.d.log.warn("command gave up after conflicts", { work_item_id: id, command: e.kind });
     return null;
   }
 
-  /**
-   * A spec decision (approve, reject, revise) gets the standing-approval detail (design 05-standing-approvals):
-   * gate, tier, kind, outcome, whether the spec changed, and the deciding user's ID. Any other decision as it is.
-   */
-  async withSpecDecision(it: WorkItem, d: Decision | Refusal): Promise<Decision | Refusal> {
-    if (!d || "refuse" in d) return d;
-    const outcome = SPEC_DECISIONS[d.reason];
-    if (!outcome) return d;
-    const kind = specKind(it, it.parent_id === null && (await this.c.unit("phases").specPhases(it)) !== null);
-    const gate = specDecisionDetail({ tier: it.tier, kind, outcome, spec_changed: specChanged(outcome, d.patch), actor: d.actor });
-    return { ...d, detail: { ...d.detail, ...gate } };
+  /** The spec kind a spec decision's standing-approval detail names (design 05-standing-approvals): phase, split or single. */
+  async specKindOf(it: WorkItem) {
+    return specKind(it, it.parent_id === null && (await this.c.unit("phases").specPhases(it)) !== null);
   }
 
   /**
@@ -395,17 +432,15 @@ export class CommandsUnit {
    * egress-scanned first; a finding refuses the approval, and neither the note nor the rule's match is kept.
    */
   async approvalNote(id: WorkItemId, raw: string | undefined, command = "/approve"): Promise<{ note: string | null } | Refusal> {
-    const text = (raw ?? "").trim();
-    if (!text) return { note: null };
-    const scan = await this.c.k.d.scanner.scan("comment", text);
-    if (!scan.clean) {
-      const rules = scan.findings.map((f) => f.rule).join(",");
-      this.c.k.d.log.warn("command note blocked by the egress scan; command refused", { work_item_id: id, command, rules });
-      return {
-        refuse: `the note was blocked by the leak scanner (\`${rules}\`), so it was not stored and nothing changed; post \`${command}\` again without the secret`,
-      };
+    return this.scanned(id, command, await scanNote((t) => this.c.k.d.scanner.scan("comment", t), raw, command));
+  }
+
+  /** `r` as it is, with a scan finding logged (its rules, never the text): the shared note checks (core request-transition) log nothing. */
+  private scanned<T>(id: WorkItemId, command: string, r: T | { refuse: string; rules?: string }): T | Refusal {
+    if (typeof r === "object" && r !== null && "rules" in r && r.rules !== undefined) {
+      this.c.k.d.log.warn("command note blocked by the egress scan; command refused", { work_item_id: id, command, rules: r.rules });
     }
-    return { note: text.slice(0, MAX_NOTE_CHARS).trim() };
+    return r;
   }
 
   /**
@@ -416,12 +451,7 @@ export class CommandsUnit {
   async commandInput(id: WorkItemId, e: CommandEvent, paths = true): Promise<{ note: string | null; paths: string[] } | Refusal> {
     if (e.kind !== "spec_approved" && e.kind !== "retry_requested" && e.kind !== "resolve_requested") return { note: null, paths: [] };
     const text = e.kind === "resolve_requested" ? e.notes : e.note;
-    const scanned = await this.approvalNote(id, text, COMMAND[e.kind]);
-    if ("refuse" in scanned) return scanned;
-    const split = paths ? parseCommandPaths(text ?? "") : { note: text ?? "", paths: [] };
-    if ("refuse" in split) return split;
-    const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
-    return { note: note || null, paths: split.paths };
+    return this.scanned(id, COMMAND[e.kind], await commandNote((t) => this.c.k.d.scanner.scan("comment", t), text, COMMAND[e.kind], paths));
   }
 
   /**
@@ -515,14 +545,6 @@ export class CommandsUnit {
     else await this.c.unit("outbox").postWithoutItem(e.source, body, `<!-- factory:link:${e.comment_id} -->`);
   }
 
-  /** For an item in a floor block, the tier its latest `floor_blocked` row says it needs; else null. */
-  async floorTierNeeded(it: WorkItem): Promise<number | null> {
-    if (it.blocked_reason !== FLOOR_TIER) return null;
-    const row = (await this.c.k.reader.listStateChanges(it.id)).filter((c) => c.reason === "floor_blocked").at(-1);
-    const tier = row?.detail?.required_tier;
-    return typeof tier === "number" ? tier : null;
-  }
-
   /**
    * The transition a command asks for, or why the item's current state cannot take it. Async only because
    * a `/revise` past the limit posts its comment before the transition (keyed, so a conflict re-run posts once).
@@ -531,7 +553,6 @@ export class CommandsUnit {
     e: ItemCommandEvent,
     it: WorkItem,
     actor: Actor,
-    floorNeed: number | null,
     note: string | null,
     tag: StateChangeDetail | null = null,
     paths: readonly string[] = [],
@@ -544,22 +565,17 @@ export class CommandsUnit {
     if (e.kind === "revise_requested" && (e.pr || asFeedback)) {
       return this.prFeedback(it, { text: e.feedback, actor, reason: PR_REVISE, change_ref: e.pr?.change_ref ?? it.change_ref, key: { comment_id: e.comment_id } });
     }
+    // `/approve` (design §4): the approve gate every source shares (core request-transition), a split's filing claimed here.
+    if (e.kind === "spec_approved") {
+      const a = await approveCheck(this.c.k.reader, it, { actor, note, paths, comment_id: e.comment_id, tag, widen: (p) => this.widen(it, p), answers: NOTE_ANSWERS });
+      return a && "split" in a ? this.c.unit("phases").approveSplit(it, a.split, actor, a.note, e.comment_id, a.tag) : a;
+    }
     if (it.stage === "CLOSED") return e.kind === "spec_rejected" && it.merge_sha ? this.reject(e, it, actor) : { refuse: CLOSED_REFUSAL };
     if (it.blocked_reason === BUDGET_CHECKPOINT) return { refuse: CHECKPOINT_REFUSAL };
-    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e, it, actor, floorNeed, note, this.widen(it, paths));
-    if (it.blocked_reason === RULE_OF_TWO) return this.c.unit("transitions").ruleOfTwoCommand(e, it, actor, note, paths);
+    if (it.blocked_reason === FLOOR_TIER) return floorCommand(e.kind, it, actor, await floorTierNeeded(this.c.k.reader, it), note, this.widen(it, paths));
+    if (it.blocked_reason === RULE_OF_TWO) return ruleOfTwoCommand(e.kind, it, actor, note, paths, await this.c.k.reader.listStateChanges(it.id));
     if (e.kind === "spec_rejected") return this.reject(e, it, actor);
     if (e.kind === "retry_requested") return commandPhase(it) === "phase_hold" ? this.c.unit("phases").retryPhase(it, actor, note, paths) : retry(it, actor, await this.retryKind(it), note, paths.length > 0 ? this.widen(it, paths) : null);
-    if (e.kind === "spec_approved" && (splitFiling(it) || splitOpen(it) || splitFilingFailed(it))) {
-      // The same `/approve` delivered again (a second poll, another replica, or the one whose filing was given up):
-      // the pass that claimed the filing answers it.
-      if ((await this.c.unit("phases").splitClaim(it.id))?.detail?.comment_id === e.comment_id) return null;
-      // Outbound files them and retries a failure; a stopped process leaves nothing for a person to take over.
-      if (splitFiling(it)) return { refuse: "an earlier `/approve` queued this split's phases for filing; this issue lists them once all are filed" };
-    }
-    if (e.kind === "spec_approved" && it.blocked_on === "dependency") {
-      return { refuse: dependencyHoldRefusal(it.blocked_reason) };
-    }
     const phase = commandPhase(it);
     // At the review loop limit too: a human chose to go back through triage or to close (design §4).
     const afterFailure = phase === "too_large" || phase === "failed_implement" || phase === "agent_needs_human" || phase === "repeated_failure" ||
@@ -599,23 +615,6 @@ export class CommandsUnit {
           enqueue: { kind: "triage", idempotency_key: `${runKey(it, "triage")}:v${n}` },
         };
       }
-      case "spec_approved": {
-        const phases = await this.c.unit("phases").specPhases(it);
-        if (phases && paths.length > 0) return { refuse: SPLIT_PATHS };
-        // `N: <answer>` lines answer the spec's decisions (issue #526); a split's answers stay on its approval's tag.
-        const a = splitAnswers(note, latestSpec(await this.c.k.reader.listRuns(it.id))?.decision_items ?? []);
-        if ("refuse" in a) return a;
-        if (phases) return this.c.unit("phases").approveSplit(it, phases, actor, a.note, e.comment_id, a.answers.length ? { ...tag, ...answersDetail(a.answers) } : tag);
-        const w = this.widen(it, paths);
-        const detail = { ...(a.note ? { note: a.note } : {}), ...answersDetail(a.answers), ...w.detail };
-        return {
-          patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, ...w.patch },
-          actor,
-          reason: "spec_approved",
-          ...(Object.keys(detail).length > 0 ? { detail } : {}),
-          enqueue: { kind: "implement", idempotency_key: runKey(it, "implement") },
-        };
-      }
     }
   }
 
@@ -625,7 +624,8 @@ export class CommandsUnit {
    * (finishReject). Refused, saying why, when its change is merged or in the merge queue (the closes unit's rejectRefusal).
    */
   async reject(e: Extract<ItemCommandEvent, { kind: "spec_rejected" }>, it: WorkItem, actor: Actor): Promise<Decision | Refusal> {
-    const refuse = await this.c.unit("closes").rejectRefusal(it);
+    // An item whose Merge was pressed (merge_queued) is checked as one waiting for its merge: its change may be landing.
+    const refuse = await this.c.unit("closes").rejectRefusal(mergeQueued(it) ? { ...it, blocked_on: "human", blocked_reason: "merge_pending" } : it);
     if (refuse !== null) return { refuse };
     const patch = { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING, spec_feedback: e.reason.trim() || null } as const;
     return { patch, actor, reason: "spec_rejected", cancel_queued_runs: true, cancel_running_runs: true };

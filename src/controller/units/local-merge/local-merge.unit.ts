@@ -76,16 +76,15 @@ export class LocalMergeUnit {
       : "auto" in who
         ? service === null ? { user_id: AUTO_ACTOR } : { refuse: service }
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);
+    // The merge gate (core request-transition, through the commands unit): waiting for its merge, no PR, a sandbox that merges.
+    const sandbox = this.c.k.d.sandbox;
+    const gate = "refuse" in principal ? null : this.c.unit("commands").merge.localRefusal(item, canMergeLocal(sandbox));
     let refusal: string;
     if ("refuse" in principal) refusal = principal.refuse;
-    else if (!awaitingMerge(item) || item.change_ref !== null) {
-      const at = [item.stage, item.blocked_reason].filter(Boolean).join(", ");
-      refusal = item.change_ref !== null
-        ? `${item.id} has PR #${item.change_ref}: merge the PR instead`
-        : `${item.id} is not waiting for a merge (${at}); \`factory merge\` applies once its review passed (merge_pending)`;
-    } else if (!canMergeLocal(this.c.k.d.sandbox)) refusal = "this controller has no sandbox that can merge locally";
+    // The gate refuses when the sandbox cannot merge; its check again here only narrows the sandbox's type.
+    else if (gate !== null || !canMergeLocal(sandbox)) refusal = gate as string;
     else {
-      const conflicts = await this.c.k.d.sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
+      const conflicts = await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch });
       if (conflicts === null) refusal = `the factory repo has no local branch \`${branch}\``;
       else if (conflicts.length > 0) refusal = conflictRefusal(item.id, branch, repo.base_branch, conflicts, await this.resolveRefused(item));
       else {
@@ -114,7 +113,7 @@ export class LocalMergeUnit {
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
     if (item.stage === "CLOSED" && item.close_reason === "completed" && item.merge_sha !== null) return "landed";
-    if (!awaitingMerge(item) || item.change_ref !== null) return `${item.id} is no longer waiting for a merge`;
+    if (!this.c.unit("commands").merge.waits(item) || item.change_ref !== null) return `${item.id} is no longer waiting for a merge`;
     if (!canMergeLocal(this.c.k.d.sandbox)) return "this controller has no sandbox that can merge locally";
     const { repo } = this.c.k.cfg;
     const branch = this.branchOf(item);
@@ -152,7 +151,8 @@ export class LocalMergeUnit {
     }
     const actor: Actor = auto ? AUTO : { kind: "user", id: by as UserId };
     const stale = r.not_updated.join(", ");
-    await this.c.unit("transitions").decide(item.id, (it) => (awaitingMerge(it) && it.change_ref === null
+    const waits = this.c.unit("commands").merge.waits;
+    await this.c.unit("transitions").decide(item.id, (it) => (waits(it) && it.change_ref === null
       ? {
           patch: { stage: "CLOSED", close_reason: "completed", merge_sha: r.sha, blocked_on: "none", blocked_reason: null },
           actor,
@@ -166,7 +166,7 @@ export class LocalMergeUnit {
     // way, so a close that did not apply (version conflicts, a store error) is retried by applying the merge again.
     const closed = await this.c.k.reader.getWorkItem(item.id);
     if (closed?.stage !== "CLOSED" || closed.merge_sha !== r.sha) {
-      if (closed && (!awaitingMerge(closed) || closed.change_ref !== null)) return `${item.id} is no longer waiting for a merge`;
+      if (closed && (!waits(closed) || closed.change_ref !== null)) return `${item.id} is no longer waiting for a merge`;
       throw new Error(`the close of ${item.id} after its local merge did not apply; applied again`);
     }
     await this.c.unit("pr-events").closeLinkedTasks(item.id);
@@ -234,7 +234,7 @@ export class LocalMergeUnit {
    */
   async startLocalResolve(id: WorkItemId, baseSha: string, cause: string): Promise<void> {
     await this.c.unit("transitions").decide(id, (it) =>
-      awaitingMerge(it) && it.change_ref === null ? this.c.unit("run-results").autoResolve(it, baseSha, { cause }, null) : null);
+      this.c.unit("commands").merge.waits(it) && it.change_ref === null ? this.c.unit("run-results").autoResolve(it, baseSha, { cause }, null) : null);
   }
 
   /**
@@ -278,8 +278,12 @@ export class LocalMergeUnit {
     return this.c.k.reader.getWorkItem(id);
   }
 
-  /** A refusal posted on the item: why the merge did not apply, keyed by `key`. */
+  /**
+   * A refusal posted on the item: why the merge did not apply, keyed by `key`. An item whose Merge was pressed on the
+   * dashboard (merge_queued) goes back to merge_pending with it first, so its row shows why at once.
+   */
   async refused(id: WorkItemId, by: string, key: string, refusal: string): Promise<void> {
+    await this.c.unit("commands").mergeReturned(id, refusal);
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return;
     this.c.k.d.log.info("command refused", { work_item_id: id, command: MERGE_COMMAND, reason: refusal.split("\n")[0]!.slice(0, 300) });

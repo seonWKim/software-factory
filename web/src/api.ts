@@ -108,6 +108,27 @@ export function showsMerge(m: MergeReadiness | null | undefined): m is MergeRead
 }
 
 /**
+ * The `merge` reasons of an item whose Merge was pressed (blocked_reason merge_queued; src/core/request-transition.ts
+ * ROW_LABELS): the merge queue checks a local item's merged result, the forge merges a PR. The button shows the reason.
+ */
+const IN_FLIGHT = ["Checking…", "Merging…"];
+
+/** Whether the item's Merge was pressed and its merge is under way: the button reads its reason, disabled. */
+export function mergeInFlight(m: MergeReadiness | null | undefined): boolean {
+  return !!m && !m.enabled && IN_FLIGHT.includes(m.reason ?? "");
+}
+
+/**
+ * Why the item's last Merge did not land (design 09-dashboard-app): the refusal on its newest state change when that
+ * change put it back at merge_pending (`merge_returned`: a conflict, a red check, the forge's refusal); else null.
+ */
+export function mergeReturned(detail: Pick<ItemDetail, "item" | "timeline"> | undefined): string | null {
+  const newest = (detail?.timeline ?? []).reduce<ItemDetail["timeline"][number] | null>((a, c) => (a && a.version > c.version ? a : c), null);
+  if (detail?.item.blocked_reason !== "merge_pending" || newest?.reason !== "merge_returned") return null;
+  return newest.detail?.refusal ?? null;
+}
+
+/**
  * Why an item waits (design §9, issue #310): one sentence, who moves it next, and the same-repo issue numbers
  * the sentence names as `#N`. `ref_url` + a number is that issue's URL; null: show the number without a link.
  */
@@ -399,7 +420,26 @@ export interface Session {
   actor_source: "config" | "environment" | null;
 }
 
-export type CommandResult = { ok: true; seq: number } | { ok: false; error: string };
+/**
+ * The item's state after an Approve or Merge the server applied while it handled the request (design
+ * 09-dashboard-app): `phase` in the owner's words, `label` the row's words for it ("Approved", "Merging…"), null when
+ * the request changed nothing.
+ */
+export interface RequestState {
+  stage: string;
+  blocked_on: string;
+  blocked_reason: string | null;
+  phase: string;
+  label: string | null;
+}
+
+/**
+ * A sent command: its seq; for Approve and Merge also `outcome` (applied, already_done, refused, or queued for the
+ * controller), the item's `state` after it and the `refusal` in the controller's words.
+ */
+export type CommandResult =
+  | { ok: true; seq: number; outcome?: string; state?: RequestState; refusal?: string | null }
+  | { ok: false; error: string };
 
 export interface Health {
   checked_at: string;
@@ -1016,13 +1056,16 @@ export async function postSettings(token: string, body: SettingsWrite): Promise<
 
 /**
  * POST /api/v1/items/:id/commands: `{ command, note }`, the note only when it has text; a proposal's Confirm all or
- * Cancel sends `{ command, proposal }` instead. 202 → the request's seq.
+ * Cancel sends `{ command, proposal }` instead. 202 → the request's seq, and for Approve and Merge the item's new state.
  */
 export async function postCommand(token: string, id: string, command: string, note: string, proposal?: string): Promise<CommandResult> {
   const text = note.trim();
   const body = proposal !== undefined ? { command, proposal } : text ? { command, note: text } : { command };
-  const r = await postJson<{ seq?: number; error?: string }>(API.itemCommands(id), token, body);
-  if (r.ok) return { ok: true, seq: r.value.seq ?? 0 };
+  const r = await postJson<{ seq?: number; error?: string; outcome?: string; state?: RequestState; refusal?: string | null }>(API.itemCommands(id), token, body);
+  if (r.ok) {
+    const { outcome, state, refusal } = r.value;
+    return { ok: true, seq: r.value.seq ?? 0, ...(outcome ? { outcome } : {}), ...(state ? { state } : {}), ...(refusal ? { refusal } : {}) };
+  }
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 

@@ -1,6 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type MouseEvent, type ReactNode, type RefObject, useId, useRef, useState } from "react";
-import { API, type CommandReply, type ItemCommand, type ItemDetail, type MergeReadiness, POLL_MS, type Session, getJson, plainRefusal, postCommand, showsMerge, useApi } from "../api.js";
+import {
+  API, type CommandReply, type ItemCommand, type ItemDetail, type ItemRow, type MergeReadiness, POLL_MS, type RequestState, type Session, getJson, mergeInFlight, mergeReturned,
+  plainRefusal, postCommand, showsMerge, useApi,
+} from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
 import { CopyText } from "../components/ui/copy.js";
@@ -33,8 +36,10 @@ import {
 // (oneTapNote), the same verdict request as Slack's buttons store: Good is
 // accept/none, Bad changes/minor, Feedback changes/none with the note box's text. Every
 // other command carries the note box's text when it has any (tokens for budget, the approve note). A send
-// is POST /api/v1/items/:id/commands with the token from GET /api/v1/session; the controller applies it on its
-// next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
+// is POST /api/v1/items/:id/commands with the token from GET /api/v1/session. Approve and Merge are applied while the
+// request is handled (design 09-dashboard-app, 2026-11-15): the response's state goes into the item and list queries at
+// once and the row reads its label ("Approved", "Merging…") or the refusal; the controller applies every other command
+// on its next tick, and the item's `replies` say how that went. An item waiting for its merge also gets the Merge button
 // (MergeButton, also in Needs you), enabled or disabled with its reason as the item API's `merge` says.
 // A waiting spec (issue #526) shows its In short above Commands and its decisions as questions above the note box;
 // approve in an approve phase (the spec gate, the floor block, the Rule of Two) opens its dialog first;
@@ -85,8 +90,11 @@ export function oneTapNote(choice: OneTapChoice, reason: string): string | null 
   return reason.trim() === "" ? null : verdictNote("changes", "none", reason);
 }
 
-/** What this page did with a command since it loaded: the request it sent, or the error its send got. */
-export type LocalSend = { seq: number } | { error: string };
+/**
+ * What this page did with a command since it loaded: the request it sent (with the row's `label` when the server
+ * applied it at once, or the `refusal` it answered with), or the error its send got.
+ */
+export type LocalSend = { seq: number; label?: string | null; refusal?: string | null } | { error: string };
 
 
 /** The text beside a button the viewer's grants do not allow: the controller's reason, in plain words. */
@@ -100,7 +108,10 @@ export function notAllowed(c: ItemCommand): Outcome {
  */
 export function commandOutcome(replies: readonly CommandReply[], command: string, local?: LocalSend): Outcome {
   if (local && "error" in local) return { tone: "error", text: local.error };
+  if (local?.refusal) return { tone: "error", text: plainRefusal(local.refusal) };
   const latest = replies.filter((r) => r.command === command).reduce<CommandReply | null>((a, r) => (a && a.seq > r.seq ? a : r), null);
+  // Applied at once: its label until a newer request's reply, or a refusal of this one, arrives.
+  if (local?.label && (!latest || latest.seq <= local.seq) && !latest?.refusal) return { tone: "status", text: local.label };
   if (local && (!latest || latest.seq < local.seq)) return { tone: "status", text: t("commands.sent") };
   if (!latest) return null;
   if (latest.refusal) return { tone: "error", text: plainRefusal(latest.refusal) };
@@ -110,10 +121,16 @@ export function commandOutcome(replies: readonly CommandReply[], command: string
 /** Whether `outcome` is the "sent" state: a request queued, its reply not here yet. */
 export const awaitsReply = (outcome: Outcome): boolean => outcome?.tone === "status" && outcome.text === t("commands.sent");
 
+/** The fields of the item's row and page that a request's state changes; a Merge under way also turns its button. */
+function statePatch(s: RequestState): Partial<ItemRow> {
+  const fields = { stage: s.stage, blocked_on: s.blocked_on, blocked_reason: s.blocked_reason };
+  return s.blocked_reason === "merge_queued" ? { ...fields, merge: { enabled: false, reason: s.label } } : fields;
+}
+
 /**
  * Sending app commands for item `id`: `send` posts one with the session's token, keeps what this page did with each
- * command (`local`), and on success re-reads the item and the list, so the controller's reply shows. `on`: commands
- * are on for this page's session.
+ * command (`local`), merges the item's new state from the response (Approve, Merge) into the item and list queries at
+ * once, then re-reads them, so the controller's reply shows. `on`: commands are on for this page's session.
  */
 export function useCommandSend(id: string) {
   const client = useQueryClient();
@@ -128,7 +145,13 @@ export function useCommandSend(id: string) {
     const key = proposal ?? command;
     try {
       const r = await postCommand(token, id, command, note, proposal);
-      setLocal((m) => ({ ...m, [key]: r.ok ? { seq: r.seq } : { error: r.error } }));
+      setLocal((m) => ({ ...m, [key]: r.ok ? { seq: r.seq, label: r.state?.label ?? null, refusal: r.refusal ?? null } : { error: r.error } }));
+      if (r.ok && r.state) {
+        const patch = statePatch(r.state);
+        client.setQueryData<ItemDetail>([API.item(id)], (old) => (old ? { ...old, item: { ...old.item, ...patch } } : old));
+        client.setQueriesData<{ items?: ItemRow[] }>({ predicate: (q) => String(q.queryKey[0]).startsWith(API.items) }, (old) =>
+          Array.isArray(old?.items) ? { ...old, items: old.items.map((row) => (row.id === id ? { ...row, ...patch } : row)) } : old);
+      }
       if (r.ok) await Promise.all([client.invalidateQueries({ queryKey: [API.item(id)] }), client.invalidateQueries({ queryKey: [API.items] })]);
       return r.ok;
     } catch (err) {
@@ -254,8 +277,10 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
         )}
         <ul className="space-y-2">
           {commands.map((c) => {
-            const disabled = !enabled || busy || !c.allowed;
             const outcome = c.allowed ? commandOutcome(replies, c.name, local[c.name]) : notAllowed(c);
+            // Applied at once (its label shows): not sent again before the item's new state arrives.
+            const sent = local[c.name];
+            const disabled = !enabled || busy || !c.allowed || (!!sent && "label" in sent && !!sent.label && outcome?.text === sent.label);
             const opensDialog = DIALOGS.includes(c.name) || (c.name === "approve" && phase !== null);
             if (c.name === "verdict") {
               return (
@@ -296,7 +321,7 @@ export function ItemCommands({ id, commands, replies, reason = null }: { id: str
           {/* Merge is its own block, 24px (space-6) below the verdict row, so it never reads as one of the verdicts. */}
           {showMerge && (
             <li data-command="merge" className="flex flex-wrap items-center gap-2 not-first:mt-6">
-              <MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} />
+              <MergeButton id={id} source={detail?.source.type} merge={merge} replies={replies} returned={mergeReturned(data)} />
             </li>
           )}
         </ul>
@@ -391,12 +416,19 @@ function VerdictButtons({
  * The Merge button (design §9), on the item page and in Needs you: sends `merge` with no note (a local item's local
  * merge, as `factory merge`; any other item's PR merged on the forge at the head the review passed), then re-reads
  * the item and the list, so the controller's reply shows. Disabled with the item API's reason beside it; else the
- * latest merge reply (a refusal: the head moved, a conflict, a failing check, no approve_merge).
+ * latest merge reply (a refusal: the head moved, a conflict, a failing check, no approve_merge), or `returned`, why
+ * the last Merge went back to merge_pending. Once pressed (merge_queued) the button reads the merge's progress:
+ * "Merging…", or "Checking…" while the merge queue checks a local item's merged result.
  */
-export function MergeButton({ id, source, merge, replies = [] }: { id: string; source: string | undefined; merge: MergeReadiness; replies?: readonly CommandReply[] }) {
+export function MergeButton({ id, source, merge, replies = [], returned = null }: {
+  id: string; source: string | undefined; merge: MergeReadiness; replies?: readonly CommandReply[]; returned?: string | null;
+}) {
   const { on, busy, local, send: post } = useCommandSend(id);
   const send = () => post("merge", "");
-  const outcome: Outcome = merge.enabled ? commandOutcome(replies, "merge", local.merge) : { tone: "status", text: merge.reason ?? "" };
+  const queued = mergeInFlight(merge);
+  const reply = commandOutcome(replies, "merge", local.merge);
+  const back: Outcome = returned && (!reply || reply.text === t("commands.done")) ? { tone: "error", text: plainRefusal(returned) } : null;
+  const outcome: Outcome = queued ? null : merge.enabled ? (back ?? reply) : { tone: "status", text: merge.reason ?? "" };
   // Merging… from the click until the controller's reply (handled or refused) arrives.
   const merging = merge.enabled && (busy || awaitsReply(outcome));
   return (
@@ -409,7 +441,7 @@ export function MergeButton({ id, source, merge, replies = [] }: { id: string; s
           : t("commands.mergePr")}
         onClick={() => void send()}
       >
-        {merging ? t("commands.merging") : t("commands.merge")}
+        {queued ? merge.reason : merging ? t("commands.merging") : t("commands.merge")}
       </Button>
       <OutcomeText outcome={outcome} />
     </span>
@@ -505,15 +537,19 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
   // A merge this row sent: its replies from the item's own query (the item page's key), read only until the reply.
   const mergeSent = group === "merge" && !!local.merge && "seq" in local.merge;
   const mergeOutcome = (replies: readonly CommandReply[] = []) => commandOutcome(replies, "merge", local.merge);
+  // Read while the row's Merge is sent or under way, and on a ready row for why its last Merge went back (mergeReturned).
   const detail = useQuery({
     queryKey: [API.item(id)],
     queryFn: () => getJson<ItemDetail>(API.item(id)),
-    enabled: mergeSent,
-    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) ? POLL_MS : false),
+    enabled: mergeSent || (group === "merge" && merge?.enabled === true),
+    refetchInterval: (q) => (awaitsReply(mergeOutcome(q.state.data?.replies)) || q.state.data?.item.blocked_reason === "merge_queued" ? POLL_MS : false),
   });
-  const outcome = mergeSent ? mergeOutcome(detail.data?.replies) : null;
-  // Merging… from the click until the controller's reply (handled or refused) arrives.
-  const merging = group === "merge" && (busy || awaitsReply(outcome));
+  const queued = group === "merge" && mergeInFlight(merge);
+  const reply = mergeSent ? mergeOutcome(detail.data?.replies) : null;
+  const returned = group === "merge" && merge?.enabled ? mergeReturned(detail.data) : null;
+  const outcome: Outcome = returned && (!reply || reply.text === t("commands.done")) ? { tone: "error", text: plainRefusal(returned) } : reply;
+  // Merging… from the click until the controller's reply (handled or refused) arrives, then the merge's progress.
+  const merging = group === "merge" && (busy || awaitsReply(outcome) || queued);
   const send = async (command: string, note: string) => {
     if (!(await post(command, note))) return;
     announceStatus(t("commands.commandSent", { command }));
@@ -528,17 +564,19 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
     })),
     ...allow.map((a) => ({ label: a.label, disabled: off || !canRetry, onSelect: () => void send("retry", a.note) })),
   ];
-  const failed = Object.values(local).flatMap((l) => ("error" in l ? [l.error] : []));
+  const failed = Object.values(local).flatMap((l) => ("error" in l ? [l.error] : l.refusal ? [plainRefusal(l.refusal)] : []));
+  // Applied at once (Approve): the row's label, e.g. "Approved", until the list's next read moves the row on.
+  const applied = Object.entries(local).flatMap(([k, l]) => (k !== "merge" && "seq" in l && l.label && !l.refusal ? [l.label] : []));
   return (
     <span ref={wrap} data-need-commands className="inline-flex flex-wrap items-center justify-end gap-2">
       {group === "merge" ? (
         <span data-command="merge" className="inline-flex items-center gap-2">
           <Tooltip text={merge && !merge.enabled && merge.reason ? merge.reason : source === "local" ? t("commands.mergeLocal") : t("commands.mergePr")}>
             <Button variant="secondary" disabled={off || checking || merging || !merge?.enabled} onClick={() => void send("merge", "")}>
-              {checking ? t("needs.checking") : merging ? t("commands.merging") : t("commands.merge")}
+              {checking ? t("needs.checking") : queued ? merge?.reason : merging ? t("commands.merging") : t("commands.merge")}
             </Button>
           </Tooltip>
-          {!awaitsReply(outcome) && <OutcomeText outcome={outcome} />}
+          {!awaitsReply(outcome) && !queued && <OutcomeText outcome={outcome} />}
         </span>
       ) : primary ? (
         <span data-command={primary.name} className="inline-flex">
@@ -554,6 +592,9 @@ export function NeedActions({ id, title, commands, pr, group, merge, source, che
         </Link>
       )}
       <OverflowMenu label={t("commands.more")} items={items.length > 0 ? items : [{ label: t("needs.noMore"), disabled: true, onSelect: () => undefined }]} />
+      {applied.map((text) => (
+        <OutcomeText key={text} outcome={{ tone: "status", text }} />
+      ))}
       {failed.map((text) => (
         <OutcomeText key={text} outcome={{ tone: "error", text }} />
       ))}

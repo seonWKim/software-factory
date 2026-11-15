@@ -4,12 +4,12 @@
 
 import { BUDGET_CHECKPOINT, DEFAULT_BUDGET_MIN_SAMPLE, checkpointComment, currentBudget, overBudget, suggestBudget, tierBudget } from "../../../core/budget.js";
 import {
-  RECURRING_FAILURE, type Actor, type RunInput, type RunKind, type StateChange, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch,
+  RECURRING_FAILURE, type RunKind, type StateChange, type StateChangeDetail, type WorkItem, type WorkItemId, type WorkItemPatch,
 } from "../../../core/types.js";
-import type { NewBudgetCheckpoint, NewRun, TransitionInput } from "../../../interfaces/factory-store.js";
+import type { NewBudgetCheckpoint, TransitionInput } from "../../../interfaces/factory-store.js";
 import { loadRoles } from "../../../runtime/index.js";
 import { holdsAllFacts, ruleOfTwoRefusal } from "../../../shared/role.js";
-import { type CommandEvent, type Decision, type Refusal, AUTO, MAX_CONFLICT_RETRIES, RULE_OF_TWO, footerAfter, updatingForChecks, awaitingMerge } from "../support.js";
+import { type Decision, type Refusal, AUTO, MAX_CONFLICT_RETRIES, RULE_OF_TWO, footerAfter, updatingForChecks, awaitingMerge } from "../support.js";
 import workItemActor from "../../actors/work-item/work-item.actor.js";
 import { allowed } from "../../router/actor.js";
 import type { Ctx } from "../context.js";
@@ -21,8 +21,6 @@ type ThreadEntry = ReturnType<typeof threadEntry>;
 type Hold = Omit<TransitionInput, "id" | "expected_version" | "enqueue"> & { checkpoint: NewBudgetCheckpoint };
 /** Patch fields that can change an item's status or where it is shown. */
 const STATUS_FIELDS = ["stage", "blocked_on", "blocked_reason", "close_reason", "change_ref"] as const;
-/** The state change of a person's `/approve` on a `rule_of_two` block. */
-const RULE_OF_TWO_APPROVED = "rule_of_two_approved";
 
 /**
  * Whether a person approved the item's runs (RFC 0015 §8), from its state changes in order with the decision being
@@ -125,30 +123,6 @@ export class TransitionsUnit {
     if (!role || !holdsAllFacts(role.rule_of_two)) return null;
     const changes = d.actor.kind === "user" ? [] : await this.c.k.reader.listStateChanges(it.id);
     return ruleOfTwoRefusal(role, { person_approved: personApproved([...changes, d]) });
-  }
-
-  /**
-   * A command on a `rule_of_two` block. A person's `/approve` queues the held run (its key, input and not-before as
-   * held) and clears the block; `/reject` closes the item. Any other command is refused.
-   */
-  async ruleOfTwoCommand(
-    e: Exclude<CommandEvent, { kind: "budget_continue" }>, it: WorkItem, actor: Actor, note: string | null, paths: readonly string[],
-  ): Promise<Decision | Refusal> {
-    if (e.kind === "spec_rejected") {
-      return { patch: { stage: "CLOSED", close_reason: "rejected", blocked_on: "none", blocked_reason: null }, actor, reason: "rule_of_two_rejected" };
-    }
-    if (e.kind !== "spec_approved" || paths.length > 0) {
-      return { refuse: "the item waits for a person to approve its run (Rule of Two); reply `/approve` to start it or `/reject <reason>` to close" };
-    }
-    const held = (await this.c.k.reader.listStateChanges(it.id)).filter((c) => c.detail?.held_by === RULE_OF_TWO).at(-1)?.detail;
-    if (typeof held?.held_run_kind !== "string" || typeof held.held_run_key !== "string") return { refuse: "the Rule of Two block has no held run" };
-    const run: Omit<NewRun, "work_item_id"> = {
-      kind: held.held_run_kind as RunKind,
-      idempotency_key: held.held_run_key,
-      ...(typeof held.held_run_input === "string" ? { input: JSON.parse(held.held_run_input) as RunInput } : {}),
-      ...(typeof held.held_run_not_before === "string" ? { not_before: held.held_run_not_before as Timestamp } : {}),
-    };
-    return { patch: { blocked_on: "none", blocked_reason: null }, actor, reason: RULE_OF_TWO_APPROVED, ...(note ? { detail: { note } } : {}), enqueue: run };
   }
 
   /**

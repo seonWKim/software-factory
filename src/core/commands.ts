@@ -3,6 +3,8 @@ import { LOCAL_SOURCE } from "./local-merge.js";
 import { type TriageOutput, parseTriage } from "./outputs.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind } from "./policy.js";
 import { RECURRING_FAILURE, type Run, type RunKind, type WorkItem } from "./types.js";
+// The approve and merge gates' shared checks (design 04-gate-commands), here too for the controller units that read this module.
+export * from "./request-transition.js";
 
 /**
  * The human commands on a work item (design §4): one table of names, usage, descriptions and the states
