@@ -743,6 +743,17 @@ CREATE TABLE ext_packs_entries (
     UNIQUE (kind, name, description_hash)
   );
 
+CREATE TABLE ext_skill_refs (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    sha256      TEXT NOT NULL,
+    added_by    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (source, path, sha256)
+  );
+
 CREATE TABLE identity_link_codes (
     code_hash      TEXT PRIMARY KEY,
     user_id        TEXT NOT NULL,
