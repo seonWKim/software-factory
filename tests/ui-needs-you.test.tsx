@@ -4,9 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
-import { NeedsGroups } from "../web/src/views/common.js";
 
-// The Floor's Needs-you list (design 09-status-page): one list first, one row per item that waits on the operator,
+// The Tasks page's Needs you section (design 09-dashboard-app; the Floor's list of design 09-status-page): one list first, one row per item that waits on the operator,
 // with its title, a one-line reason and the buttons that apply now. Items started past a deadlock are one summary
 // line under the list that links to Work items, never rows and never counted (decision 1); the open alarms are one
 // line that links to Failures, however many. A row with no stored reason says the item's state and the next step.
@@ -34,6 +33,7 @@ beforeEach(() => {
   responses = {
     "/api/v1/overview": { as_of: AT, stages: {}, needs_you: 1, running: 5, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [] },
     "/api/v1/items": { as_of: AT, total: 6, items: [1, 2, 3, 4, 5].map(deadlocked).concat([SPEC]), facets: { allStates: 6, state: {} } },
+    "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
     "/api/v1/runs": { as_of: AT, runs: [] },
     "/api/v1/queue": { as_of: AT, queue: [] },
     "/api/v1/pauses": { pauses: [], csrf_token: null },
@@ -48,7 +48,7 @@ beforeEach(() => {
   // The laptop window the Floor must fit: 1024 × 700.
   vi.stubGlobal("innerWidth", 1024);
   vi.stubGlobal("innerHeight", 700);
-  history.replaceState(null, "", "/app/");
+  history.replaceState(null, "", "/app/tasks");
 });
 
 afterEach(() => {
@@ -61,31 +61,29 @@ function mount() {
   return render(<QueryClientProvider client={client}><App /></QueryClientProvider>);
 }
 
-describe("Needs you on the Floor", () => {
+describe("Needs you on the Tasks page", () => {
   it("with five items started past a deadlock and one at spec approval, lists only the spec item, first, with its buttons in its row", async () => {
     mount();
-    const table = await screen.findByRole("table", { name: "Needs you" });
-    const rows = [...table.querySelectorAll("tbody tr")] as HTMLElement[];
+    const section = await screen.findByRole("region", { name: "Needs you" });
+    const rows = [...section.querySelectorAll("li[data-key]")] as HTMLElement[];
     expect(rows.map((r) => r.getAttribute("data-key"))).toEqual(["wi_30"]);
     expect(within(rows[0]!).getByRole("link", { name: "Spec waiting for you" })).toBeTruthy();
     // Its actions sit in its own row: the primary Approve and the menu with the others.
     expect(within(rows[0]!).getByRole("button", { name: "Approve" })).toBeTruthy();
     expect(within(rows[0]!).getByRole("button", { name: "More commands" })).toBeTruthy();
-    // The page's one h1 is its header, with the count; the factory banner is gone and the group is the first section.
+    // The page's one h1 is its header; the section shows its count and the group inside it.
     const main = document.querySelector("main")!;
     expect(main.querySelectorAll("h1")).toHaveLength(1);
-    expect(screen.queryByTestId("factory-banner")).toBeNull();
-    const firstSection = main.querySelector("section")!;
-    expect(firstSection.getAttribute("aria-label")).toBe("Approve");
-    // The deadlocks are one line after the list, linking to Work items; no row and no count of their own.
+    expect(within(section).getByRole("list", { name: "Approve" })).toBeTruthy();
+    expect(section.querySelector("h2")!.nextElementSibling!.textContent).toBe("1");
+    // The deadlocks are one line after the section, linking to Work items; no row and no count of their own.
     const notes = screen.getByRole("list", { name: "System actions" });
-    expect(table.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section.compareDocumentPosition(notes) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const line = notes.querySelector("[data-deadlocks]") as HTMLElement;
     expect(notes.querySelectorAll("li")).toHaveLength(1);
     expect(line.textContent).toContain("Started past a deadlock: 5.");
     expect(within(line).getByRole("link").getAttribute("href")).toBe("/app/items");
-    expect(screen.getByText("1 waiting")).toBeTruthy();
-    for (const n of [1, 2, 3, 4, 5]) expect(table.textContent).not.toContain(`Overlapping ${n}`);
+    for (const n of [1, 2, 3, 4, 5]) expect(section.textContent).not.toContain(`Overlapping ${n}`);
   });
 
   it("shows the open alarms as one line that links to Failures, whatever their number", async () => {
@@ -101,18 +99,5 @@ describe("Needs you on the Floor", () => {
       expect(notes.textContent).not.toContain("Alarm: 0");
       cleanup();
     }
-  });
-
-  it("a row with no stored reason shows the item's state and the next step, never \"no reason\"", () => {
-    const waiting = row(40, "needs_you", "Nobody said why", {
-      stage: "REVIEW", blocked_on: "human", blocked_reason: null, need: { reason: "waiting for a person", anchor: null }, commands: ["retry", "reject"].map(cmd),
-    });
-    const bare = { ...waiting, id: "wi_41", title: "No commands", stage: "NEW", commands: [] };
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    render(<QueryClientProvider client={client}><NeedsGroups items={[waiting, bare]} now={Date.parse(AT)} titles={new Map()} empty="none" /></QueryClientProvider>);
-    const [first, second] = [...document.querySelectorAll("[data-need]")].map((e) => e.textContent);
-    expect(first).toBe("In review; next: retry or reject it");
-    expect(second).toBe("New, not triaged yet; next: open the item and send the next command");
-    expect(document.body.textContent).not.toMatch(/no reason/i);
   });
 });

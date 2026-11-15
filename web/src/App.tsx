@@ -15,7 +15,7 @@ import { type ThemeChoice, applyChoice, saveChoice, storedChoice } from "./theme
 import { useNow } from "./views/common.js";
 import { DataPage } from "./views/data.js";
 import { FailuresPage } from "./views/failures.js";
-import { ActivityPage, HealthPage, ItemPage, ItemsPage, NeedsYouPage, RunnersPage } from "./views/pages.js";
+import { ActivityPage, HealthPage, ItemPage, ItemsPage, RunnersPage } from "./views/pages.js";
 import { PluginsPage } from "./views/plugins.js";
 import { ModeSwitch, SettingsPage } from "./views/settings.js";
 import { RevisionBanner } from "./views/system-banner.js";
@@ -38,7 +38,6 @@ function Ago({ at }: { at: number }) {
 }
 
 const VIEWS: Record<string, () => JSX.Element> = {
-  "": NeedsYouPage,
   items: ItemsPage,
   tasks: TasksPage,
   calendar: CalendarPage,
@@ -59,7 +58,7 @@ const pageLabel = (p: PageDef) => t(`page.${p.key}` as MessageKey);
 const LINK_ROW = "flex items-center gap-2 px-2 py-1.5 text-sm";
 
 /** One sidebar group of page links; with `titled`, its label shows above it as a small grey title and names it. */
-function SideLinks({ label, pages, current, titled = false }: { label: string; pages: readonly PageDef[]; current: PageDef; titled?: boolean }) {
+function SideLinks({ label, pages, current, badges = {}, titled = false }: { label: string; pages: readonly PageDef[]; current: PageDef; badges?: Readonly<Record<string, number | undefined>>; titled?: boolean }) {
   const id = useId();
   return (
     <nav aria-label={titled ? undefined : label} aria-labelledby={titled ? id : undefined}>
@@ -76,6 +75,7 @@ function SideLinks({ label, pages, current, titled = false }: { label: string; p
             >
               <p.icon aria-hidden className="size-4 shrink-0" />
               <span className="max-sm:sr-only">{pageLabel(p)}</span>
+              {!!badges[p.path] && <span className="ml-auto rounded-pill bg-pill-bad-bg px-1.5 text-xs font-medium text-pill-bad-fg tabular-nums max-sm:sr-only">{badges[p.path]}</span>}
             </Link>
           </li>
         ))}
@@ -113,7 +113,7 @@ function ThemeControl({ choice, onChoose }: { choice: ThemeChoice; onChoose: (c:
   );
 }
 
-/** The app (design §9): sidebar, top bar with "Needs you (N)", and the current page. */
+/** The app (design §9): sidebar, top bar with "Needs you (N)", which links to the landing page, and the current page. */
 export function App() {
   const overview = useQuery({
     queryKey: [API.overview],
@@ -143,7 +143,7 @@ export function App() {
     setChoice(next);
   };
   const needs = overview.data?.needs_you;
-  const View = VIEWS[route.page.path] ?? NeedsYouPage;
+  const View = VIEWS[route.page.path] ?? TasksPage;
   useEffect(() => {
     // The Needs you count leads the tab title, so a background tab shows it: "(4) Needs you · Gongbang".
     const count = needs ? `(${needs}) ` : "";
@@ -160,10 +160,7 @@ export function App() {
           className="flex w-44 shrink-0 flex-col overflow-y-auto border-r border-border bg-(--sidebar) p-3 max-sm:w-14"
         >
           <Brand />
-          <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} titled />
-          <div className="mt-3 border-t border-border pt-3">
-            <SideLinks label={t("nav.factory")} pages={pagesIn("factory")} current={current} titled />
-          </div>
+          <SideLinks label={t("nav.tasks")} pages={pagesIn("tasks")} current={current} badges={{ tasks: needs }} titled />
           {/* Plugins: what the agents can use, its own group above System. One entry, so no title over it. */}
           <div className="mt-3 border-t border-border pt-3">
             <SideLinks label={t("page.plugins")} pages={pagesIn("plugins")} current={current} />

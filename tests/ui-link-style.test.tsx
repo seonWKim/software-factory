@@ -29,6 +29,7 @@ const RESPONSES: Record<string, unknown> = {
   "/api/v1/items/wi_1": {
     as_of: AT, item: { ...withPr, loop_count: 0, restart_count: 0, token_cost: 0, created_at: AT }, timeline: [], runs: [],
   },
+  "/api/v1/tasks": { today_date: "2026-11-07", today: { overdue: [], due: [{ id: "tk_1", title: "Task 1", list: null, priority: null, due_date: null, due_time: null, recurrence: null, work_item_id: "wi_1" }] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
   "/api/v1/runs": { as_of: AT, runs: [] },
   "/api/v1/queue": { as_of: AT, queue: [] },
   "/api/v1/data/tables": { as_of: AT, tables: [{ name: "work_items", rows: 1, columns: ["id"], hidden: [] }] },
@@ -69,8 +70,8 @@ function expectShared(links: HTMLAnchorElement[]) {
 }
 
 describe("shared link style", () => {
-  it("is applied to every link on the Floor, Work items, an item page and Data", async () => {
-    for (const [path, ready] of [["", "Title 1"], ["items", "Title 1"], ["items/wi_1", "Title 1"], ["data", "work_items"]] as const) {
+  it("is applied to every link on the Tasks page, Work items, an item page and Data", async () => {
+    for (const [path, ready] of [["tasks", "Task 1"], ["items", "Title 1"], ["items/wi_1", "Title 1"], ["data", "work_items"]] as const) {
       const { container } = await mountAt(path, ready);
       if (path === "data") { fireEvent.click((await screen.findAllByText("work_items"))[0]!); await screen.findAllByText("wi_1"); }
       expectShared(contentLinks(container));
