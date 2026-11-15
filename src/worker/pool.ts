@@ -27,6 +27,14 @@ export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "activ
   ticks?: TickSource;
   /** The enabled pack checks (design §4, issue #494), loaded and checked at startup; absent: none. Each Worker runs them in its implement runs. */
   pack_checks?: WorkerPlugins["pack_checks"];
+  /** Refuses each imported MCP server a run is granted (design 11-plugin-import, owner answer 1); injected from compose. */
+  imported_mcp_refusals?: WorkerPlugins["imported_mcp_refusals"];
+  /**
+   * Lists the requested tools of approved imported MCP servers (design 11-plugin-import, phase 3), injected from
+   * compose so no worker file imports the server client. Started each tick unless the last one is still going;
+   * absent: never.
+   */
+  list_mcp_tools?: () => Promise<void>;
 }
 
 /** Why the live slot count changed, as the `worker slots` line gives it. "drain" is any stop of the pool. */
@@ -66,9 +74,11 @@ export class WorkerPool {
   private readonly pid: number;
   private readonly index_base: number;
   private reportFailing = false;
+  /** The MCP tool listing in flight, if any: one at a time per process. */
+  private listing: Promise<void> | null = null;
 
   constructor(private readonly d: WorkerPoolDeps) {
-    const { id_prefix, index_base = 0, engines, ticks, pack_checks, ...shared } = d;
+    const { id_prefix, index_base = 0, engines, ticks, pack_checks, imported_mcp_refusals, list_mcp_tools: _list, ...shared } = d;
     const awake = new CountedKeepAwake(d.awake);
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     const settings = this.live;
@@ -78,7 +88,7 @@ export class WorkerPool {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
       return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake: slotAwake, active: () => i < settings.workers() }, {
-        ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}),
+        ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}), ...(imported_mcp_refusals ? { imported_mcp_refusals } : {}),
       });
     });
     // id_prefix is `<host>:<pid>`.
@@ -136,6 +146,7 @@ export class WorkerPool {
           slot.stop.abort();
         }
       });
+      this.listMcpTools();
       await this.report(want, started_at);
       await this.d.clock.sleep(this.live.config().tick_ms, signal).catch(() => undefined);
     }
@@ -147,7 +158,19 @@ export class WorkerPool {
       await Promise.race([Promise.all([...all]), this.d.clock.sleep(this.live.config().tick_ms, wake.signal).catch(() => undefined)]);
       wake.abort();
     }
+    await this.listing;
     await this.d.store.removeWorkerProcess(this.process_id).catch((err: unknown) => this.reportFailed(err));
+  }
+
+  /** Starts the injected MCP tool listing unless one is in flight; a failure is logged and never stops a slot. */
+  private listMcpTools(): void {
+    const list = this.d.list_mcp_tools;
+    if (!list || this.listing) return;
+    this.listing = list()
+      .catch((err: unknown) => this.d.log.warn("MCP tool listing failed", { error: errorText(err) }))
+      .finally(() => {
+        this.listing = null;
+      });
   }
 
   private logSlots(slots: number, from: number | null, reason: SlotChangeReason): void {
