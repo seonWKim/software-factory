@@ -7,7 +7,7 @@
 // (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks or /api/v1/data/tables) in x-csrf-token.
 
-import { keepPreviousData, useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { t } from "./i18n/index.js";
 
 /** The supervisor's status (the status page's banner); null when the factory is stopped. */
@@ -709,6 +709,8 @@ export interface TaskRow {
   parent_task_id?: string | null;
   /** The slugs of its active task projects (absent from an older server). */
   projects?: string[];
+  /** When it was done (ISO time): a done task of the last 30 days stays in the views, struck through; null or absent: open. */
+  done_at?: string | null;
 }
 
 /** An active task project, as the Tasks page's switcher and project dialog list it. */
@@ -758,7 +760,7 @@ export interface CalendarSync {
 }
 
 /**
- * `/api/v1/tasks`: the open tasks placed by due date at the server's local midnight, with the stored calendar events
+ * `/api/v1/tasks`: the open tasks and the done tasks of the last 30 days placed by due date at the server's local midnight, with the stored calendar events
  * in Today and Upcoming (all-day first, then timed tasks and events by time, then untimed tasks); `calendar`, each
  * source's last sync (absent from an older server); `csrf_token` and `can_build` for Build this (null and false when
  * the page has no commands actor).
@@ -767,7 +769,7 @@ export interface TasksView {
   today_date: string;
   today: { overdue: TaskRow[]; due: DayRow[] };
   upcoming: { date: string; tasks: DayRow[] }[];
-  /** The All view: every open task, undated included, under its #list. */
+  /** The All view: every task, open or done, undated included, under its #list. */
   projects: { list: string | null; tasks: TaskRow[] }[];
   /** The active task projects, by slug (absent from an older server). */
   active_projects?: ProjectChoice[];
@@ -776,21 +778,6 @@ export interface TasksView {
   calendar?: CalendarSync[];
   csrf_token: string | null;
   can_build: boolean;
-}
-
-/** One done task in All's done list: a task row with the time it was done. */
-export interface DoneRow extends TaskRow {
-  done_at: string;
-}
-
-/**
- * `/api/v1/tasks/done`: the done tasks of 30 days, most recently done first, all lists in one list (the last 30 days, or
- * the 30 days before `?before=`). `older`: a task was done before them; `next_before`: Show older's `before`.
- */
-export interface DoneView {
-  tasks: DoneRow[];
-  older: boolean;
-  next_before: string;
 }
 
 declare const __FACTORY_REV__: string | null | undefined;
@@ -904,11 +891,10 @@ export const API = {
   ruleVerdict: "/api/v1/rules/verdict",
   ruleEntry: (id: string) => `/api/v1/rules/entry?id=${encodeURIComponent(id)}`,
   tasks: "/api/v1/tasks",
-  /** The open tasks' read, filtered to one task project's tasks when `project` is a slug. */
+  /** The tasks' read, filtered to one task project's tasks when `project` is a slug. */
   tasksIn: (project: string | null) => (project === null ? "/api/v1/tasks" : `/api/v1/tasks?project=${encodeURIComponent(project)}`),
   projects: "/api/v1/projects",
   taskProject: "/api/v1/tasks/project",
-  tasksDone: (before: string | null) => (before === null ? "/api/v1/tasks/done" : `/api/v1/tasks/done?before=${encodeURIComponent(before)}`),
   calendar: "/api/v1/calendar",
   calendarConnect: "/api/v1/calendar/connect",
   calendarDisconnect: "/api/v1/calendar/disconnect",
@@ -956,7 +942,7 @@ export function useItems(project: string | null) {
 }
 
 /**
- * The open tasks' read, polled as useApi is; `project` filters it to that task project's tasks. Its key starts with the
+ * The tasks' read, polled as useApi is; `project` filters it to that task project's tasks. Its key starts with the
  * tasks' key, so a row action's reload of the tasks reloads it whatever the filter.
  */
 export function useTasks<T>(project: string | null) {
@@ -966,19 +952,6 @@ export function useTasks<T>(project: string | null) {
     queryFn: () => getJson<T>(url),
     refetchInterval: POLL_MS,
     refetchIntervalInBackground: false,
-  });
-}
-
-/**
- * All's done list read: the last 30 days, then a page per Show older. Its key starts with the tasks' key, so a row
- * action's reload of the tasks (a completion, a reopen) reloads it too. Not polled.
- */
-export function useDoneTasks() {
-  return useInfiniteQuery({
-    queryKey: [API.tasks, "done"],
-    queryFn: ({ pageParam }) => getJson<DoneView>(API.tasksDone(pageParam)),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last: DoneView) => (last.older ? last.next_before : undefined),
   });
 }
 
