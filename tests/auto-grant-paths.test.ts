@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { AUTO_GRANT, autoGrants, testPathsOnly } from "../src/core/auto-grant.js";
+import { testPathsOnly } from "../src/core/auto-grant.js";
+import { AUTO_GRANT, autoGrants } from "../src/controller/units/run-results/auto-grant.js";
 import { GATE_PATHS } from "../src/core/improver.js";
-import { DEFAULT_TEST_GLOBS, LiveSettings, baseFromConfig } from "../src/core/settings.js";
+import { LiveSettings, SETTABLE_DEFAULTS, baseFromConfig } from "../src/core/settings.js";
 import type { Run, WorkerId, WorkItem } from "../src/core/types.js";
 import { NoKeepAwake } from "../src/impl/awake/no-keep-awake.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -16,6 +17,8 @@ import {
 // An implement run's needs-human ask for test paths only is granted once without the owner (design 05-restarts,
 // 2026-11-15): the owner's `/retry +paths` transition, applied by the controller with the system actor.
 
+/** The default test_globs, as the settings catalog gives them. */
+const DEFAULT_TEST_GLOBS = SETTABLE_DEFAULTS.test_globs as string[];
 const TESTS = ["tests/ui-link-style.test.tsx", "tests/ui-thread.test.tsx"];
 const askFor = (paths: readonly string[]) => ({ output: { needs_human: { reason: "A test outside the allowed paths breaks.", question: "Allow it?", paths } } });
 const done = { output: { summary: "s", next_steps: "n" } };
