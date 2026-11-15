@@ -8,12 +8,12 @@
 // is none). Nothing is started, approved or granted. server.ts runs the request guards first: Host and the CSRF token
 // for the read; Host, Origin, Content-Type, CSRF token, body size and JSON for the write.
 
-import { homedir } from "node:os";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type ImportOutcome, SkillRefsStore, importLine } from "../import/import-plugins.js";
 import { type Found, IMPORT_KINDS, IMPORT_SOURCES, type ImportKind, type ImportSource, scanUserConfigs } from "../import/scan.js";
 import { PackEntriesStore, canonicalJson, descriptionHash } from "../packs/pack-entries.store.js";
 import { scanDescriptor } from "../packs/pack-scans.js";
+import { skillFolderPath } from "../runtime/capabilities/capabilities.js";
 import type { SqlDriver } from "../state/index.js";
 import type { ApiDeps, ApiResult } from "./api.js";
 import type { UiPauses } from "./pause-api.js";
@@ -33,8 +33,11 @@ interface ItemKey {
 
 const keyOf = (i: ItemKey): string => `${i.kind}\n${i.source}\n${i.name}`;
 
-/** Everything both user configs hold, from the OS home folder. Reads only. */
-const scanAll = () => scanUserConfigs({ home: homedir(), sources: IMPORT_SOURCES, kinds: IMPORT_KINDS });
+/**
+ * Everything both user configs hold, under the owner's home folder: `~` as the Plugins page's skill folders resolve
+ * it (skillFolderPath), so the UI layer holds no OS call of its own. Reads only.
+ */
+const scanAll = () => scanUserConfigs({ home: skillFolderPath("~", "/"), sources: IMPORT_SOURCES, kinds: IMPORT_KINDS });
 
 /** True when this exact item (a skill's path and SHA-256, an MCP server's descriptor) is already stored. */
 async function stored(db: SqlDriver, item: Found): Promise<boolean> {
