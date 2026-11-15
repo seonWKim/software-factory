@@ -1,7 +1,7 @@
 // System actions in Needs you (design §9 Status page, issue #311): what the factory needs from the operator
 // besides a work item. A pending migration, a GitHub token that expires within 3 days, a claim pause or a
 // worker pause in effect, an open alarm, and a dashboard or UI server that runs another
-// revision than it should. Each names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
+// revision than it should. Each is one Needs-you row (needs-you.ts) and names the command that clears it (an alarm: where to look into it). Store reads and in-process values only: the overview poll
 // asks GitHub nothing (the token's days come from this process's last health run).
 
 import { execFile } from "node:child_process";
@@ -25,13 +25,8 @@ export interface SystemAction {
   command: string;
   /** When it ends by itself (a claim pause's end, model_stall's next probe, an alarm's close), else null. */
   until: string | null;
-  /** On the alarm of the auto-mode stop still in force (design 03-risk): the banner's stop line and its button. */
+  /** On the alarm of the auto-mode stop still in force (design 03-risk): its Needs-you row's stop line and its button. */
   auto_stop?: AutoStopNote;
-}
-
-/** How many lines the actions take in Needs you: one each, but every open alarm together is one line (design 09). */
-export function oneLine(actions: readonly Pick<SystemAction, "code">[]): number {
-  return actions.filter((a) => a.code !== "alarm").length + (actions.some((a) => a.code === "alarm") ? 1 : 0);
 }
 
 /**

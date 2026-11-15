@@ -30,7 +30,8 @@ import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
-import { type SystemDeps, oneLine, parseRevision, systemActions } from "./system-actions.js";
+import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
@@ -258,7 +259,6 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const actions = await systemActions({ store: s, factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
   const system_actions = [];
   for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
-  const token = c.d.lastChecks?.tokenDays() ?? null;
   return {
     as_of: c.now.toISOString(),
     /** The revision this UI server's build was made from (its dist/ stamp); the app compares it with the one built into it. */
@@ -266,10 +266,10 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await s.countWorkItemsWhere({ blocked_on: "budget", exclude_closed: true })) + oneLine(system_actions), // never Blocked by another task
+    needs_you: await needsYouCount(s, system_actions), // the Needs-you rows: the waiting items, one per system action
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
-    github_token_days: token,
+    github_token_days: c.d.lastChecks?.tokenDays() ?? null,
     /** The GitHub budget the controller stored after its last poll (remaining, reset, this process's count, wait reason); null: none stored. */
     github_budget: await readGitHubBudget(s, c.now),
     running: running.length,

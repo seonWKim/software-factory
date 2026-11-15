@@ -143,9 +143,14 @@ export const byId = (items: readonly ItemRow[] | undefined): Map<string, ItemRow
 /** What a Needs-you row asks of the owner: merge a PR, approve a spec, or answer or fix (everything else). */
 export type NeedGroup = "merge" | "approve" | "answer";
 
-/** The items that wait on the owner: one row each; an item started past a deadlock goes on by itself. */
-export const needsYou = (items: readonly ItemRow[]): ItemRow[] =>
-  items.filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level) && i.why?.code !== "deadlock");
+/** The levels of an item that waits on the owner (the server's NEEDS_YOU): a stuck item waits on nobody's answer. */
+const WAITING_LEVELS: readonly string[] = NEEDS_YOU_LEVELS.filter((l) => l !== "stuck");
+
+/**
+ * The items that wait on the owner, one Needs-you row each (src/ui/needs-you.ts): blocked on a person or the budget.
+ * An item started past a deadlock is Blocked by another task and goes on by itself.
+ */
+export const needsYou = (items: readonly ItemRow[]): ItemRow[] => items.filter((i) => WAITING_LEVELS.includes(i.level));
 
 export function needGroup(it: ItemRow): NeedGroup {
   if (showsMerge(it.merge) || it.level === "ready_to_merge") return "merge";
