@@ -106,8 +106,7 @@ sequenceDiagram
   participant GH as GitHub
   participant H as Human
 
-  OP->>C: factory controller
-  OP->>W: factory worker
+  OP->>C: factory dev (controller + worker in one process)
   C->>C: load config + .env, build implementations
   C->>ST: connect, run migrations
   C->>C: start loops: intake, scheduler, reaper, post-merge

@@ -413,8 +413,8 @@ good"):
   status (outages, git pushes, local merges) still retry forever. The alarm reuses the bus's `DeadLettered` notice
   (group `outbound`); its Needs you hint still names the bus's dead-letter table, which has no row for it.
 - Not done: re-recording a taken-over landing on the new host (the item's branch is in the first host's repo).
-- Finding 8: `npm run migrate` drains `factory dev` only; SET_UP.md now says to stop a hand-started `factory
-  controller` or `factory worker` first. No code.
+- Finding 8: `npm run migrate` drains `factory dev` only; SET_UP.md said to stop a hand-started controller or
+  worker process first (dropped when those commands were removed, 2026-11-16). No code.
 
 M7 sub-issue filing (2026-11-09, owner approved):
 
