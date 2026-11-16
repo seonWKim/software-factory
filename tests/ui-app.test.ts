@@ -177,12 +177,6 @@ describe("ui app: CSP and guards", () => {
     expect(css).toMatch(new RegExp(`\\[data-react-aria-pressable\\] \\{\\s*touch-action: ${touchAction};`));
   });
 
-  it("the HTML page keeps its hash-based CSP", async () => {
-    const d = await deps(builtApp().dist);
-    const csp = (await get(d, "/classic")).headers["content-security-policy"]!;
-    expect(csp).toMatch(/^default-src 'none'; script-src 'sha256-[^']+'; style-src 'sha256-[^']+'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'$/);
-  });
-
   it("methods other than GET and HEAD get 405 with allow: GET, HEAD on /app and /api/v1", async () => {
     const d = await deps(builtApp().dist);
     for (const path of ["/app", "/app/", "/app/assets/index-abc.js", "/api/v1/overview", "/api/v1/nope"]) {
@@ -208,7 +202,7 @@ describe("ui app: CSP and guards", () => {
 });
 
 describe("ui app: not built", () => {
-  it("without web/dist, /app/ is 503 'run npm run build' and / still works", async () => {
+  it("without web/dist, /app/ is 503 'run npm run build' and the API still works", async () => {
     const d = await deps(join(mkdtempSync(join(tmpdir(), "sf-app-")), "missing"));
     for (const path of ["/app", "/app/", "/app/items", "/app/assets/index-abc.js"]) {
       const r = await get(d, path);
@@ -216,7 +210,6 @@ describe("ui app: not built", () => {
       expect(r.headers["content-type"]).toBe("text/plain; charset=utf-8");
       expect(text(r)).toContain("run npm run build");
     }
-    expect((await get(d, "/classic")).status).toBe(200);
     expect((await get(d, "/api/v1/overview")).status).toBe(200);
   });
 
