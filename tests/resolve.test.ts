@@ -109,6 +109,11 @@ describe("resolve prompt fixed rules", () => {
     expect(rule).toMatch(/keep both sides' sections/i);
   });
 
+  it("says next to the allowed-paths rule that known-violations lists are always editable to shrink (never to grow)", () => {
+    const rule = prompt.split("\n").find((l) => l.startsWith("- Change only the conflicting files"));
+    expect(rule).toContain("known-violations lists are always editable to shrink (never to grow)");
+  });
+
   it("renumbers a migration when both sides added one", () => {
     expect(prompt).toMatch(/both sides add(ed)? a migration/i);
     expect(prompt).toMatch(/renumber/i);
