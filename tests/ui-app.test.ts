@@ -241,7 +241,7 @@ describe("ui app: merge check labels", () => {
   const check = (state: MergeCheckView["state"], conflicts: string[] = []): MergeCheckView =>
     ({ state, conflicts, head_sha: state === "checking" ? null : "a".repeat(40), base_sha: state === "checking" ? null : BASE, checked_at: state === "checking" ? null : AT });
   const row = (id: string, merge_check: MergeCheckView | null): ItemRow => ({
-    id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, level: "ready_to_merge", badges: [],
+    id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, item_phase: "ready_to_merge", reason_code: "person",
     stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, change_ref: "1",
     change_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge_check,
   });
@@ -270,7 +270,7 @@ describe("ui app: merge check labels", () => {
       item: {
         id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
         blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: "1", change_url: null,
-        version: 1, created_at: AT, updated_at: AT, merge_check: check("conflicts", ["src/a.ts", "docs/b.md"]),
+        version: 1, created_at: AT, updated_at: AT, item_phase: "needs_you", reason_code: "person", merge_check: check("conflicts", ["src/a.ts", "docs/b.md"]),
       },
       timeline: [],
       runs: [],
@@ -298,7 +298,7 @@ describe("ui app: item commands markup", () => {
       item: {
         id: "wi_1", source: { type: "local", id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "READY", close_reason: null,
         blocked_on: "human", blocked_reason: "spec_approval", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
-        version: 1, created_at: AT, updated_at: AT, merge_check: null, why: { code: "human", text: "Waiting for you", next_actor: "human", refs: [], ref_url: null },
+        version: 1, created_at: AT, updated_at: AT, item_phase: "needs_you", reason_code: "person", merge_check: null, why: { code: "human", reason_code: "person", params: { reason: "Waiting for you" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null },
       },
       timeline: [],
       runs: [],
@@ -337,7 +337,7 @@ describe("ui app: the Merge button", () => {
       item: {
         id: "wi_1", source: { type: source, id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
         blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
-        version: 1, created_at: AT, updated_at: AT, merge_check: null, why: { code: "human", text: "Waiting for you", next_actor: "human", refs: [], ref_url: null }, ...(merge === undefined ? {} : { merge }),
+        version: 1, created_at: AT, updated_at: AT, item_phase: "needs_you", reason_code: "person", merge_check: null, why: { code: "human", reason_code: "person", params: { reason: "Waiting for you" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null }, ...(merge === undefined ? {} : { merge }),
       },
       timeline: [],
       runs: [],
@@ -373,7 +373,7 @@ describe("ui app: the Merge button", () => {
     const client = new QueryClient();
     client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
     const row = (id: string, merge: MergeReadiness): ItemRow => ({
-      id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, level: "ready_to_merge", badges: [],
+      id, source: { type: "github_issue", id: `o/r#${id}`, link: "https://example.invalid/1" }, title: `Item ${id}`, item_phase: "ready_to_merge", reason_code: "person",
       stage: "REVIEW", tier: 2, kind: null, blocked_on: "human", blocked_reason: "merge_pending", close_reason: null, run_status: null, change_ref: id,
       change_url: null, issue: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, merge,
       need: { reason: "mergeable", anchor: null },
@@ -422,7 +422,7 @@ describe("ui app: the Needs-you commands and the verdict control", () => {
   const APPROVE = { name: "approve", usage: "/approve", description: "Approve", allowed: true, reason: null };
   const render = (commands: unknown[]) => {
     const it = {
-      id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://example.invalid/1" }, title: "Item", level: "needs_approval", badges: [], stage: "READY",
+      id: "wi_1", source: { type: "github_issue", id: "o/r#1", link: "https://example.invalid/1" }, title: "Item", item_phase: "needs_approval", reason_code: "person", stage: "READY",
       tier: 2, kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: "42", change_url: null, issue: null, since: AT,
       updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, need: { reason: "spec ready", anchor: null }, commands,
     } as unknown as ItemRow;

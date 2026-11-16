@@ -37,7 +37,7 @@ const view = (over: Partial<TasksView> = {}): TasksView => ({
   ...over,
 });
 const item = (id: string, over: Partial<ItemRow> = {}): ItemRow => ({
-  id, source: { type: "local", id: `local:${id}` }, title: `Work ${id}`, level: "needs_you", badges: [], stage: "REVIEW", tier: null, kind: null,
+  id, source: { type: "local", id: `local:${id}` }, title: `Work ${id}`, item_phase: "needs_you", reason_code: "person", stage: "REVIEW", tier: null, kind: null,
   blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: null, change_url: null, since: "2026-11-12T00:00:00.000Z",
   updated_at: "2026-11-12T00:00:00.000Z", version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, commands: [], ...over,
 } as ItemRow);
@@ -268,7 +268,7 @@ describe("Tasks page", () => {
     });
 
     it("a task whose factory work merged shows struck through, with its work item and Reopen, not removed", async () => {
-      items = [item("wi_1", { level: "closed", close_reason: "completed", stage: "CLOSED" })];
+      items = [item("wi_1", { item_phase: "closed", close_reason: "completed", stage: "CLOSED" })];
       current = view({ projects: [{ list: null, tasks: [done("tk_built", { work_item_id: "wi_1" }), row("tk_inbox")] }] });
       await show();
       expect(title("tk_built").className.split(" ")).toContain("line-through");
@@ -557,7 +557,7 @@ describe("Tasks page", () => {
     const ev = (id: string): EventRow => ({ kind: "event", source: "google-calendar", id, title: `event ${id}`, all_day: true, time: null });
 
     it("the page stacks the project tabs, Quick add, Needs you, then the list, with no mb-/mt- on Quick add or Needs you", async () => {
-      items = [item("wi_x", { title: "Approve the spec", level: "needs_approval" })];
+      items = [item("wi_x", { title: "Approve the spec", item_phase: "needs_approval" })];
       await show();
       const factory = await screen.findByRole("region", { name: "Needs you" }, SLOW);
       const picker = screen.getByRole("tablist", { name: "Project" });
@@ -781,7 +781,7 @@ describe("Tasks page", () => {
     const section = () => screen.findByRole("region", { name: "Needs you" }, SLOW);
 
     it("lists a waiting item with no task as one compact list under its group label, with its count, its state once, its one primary action and no table header", async () => {
-      items = [item("wi_x", { title: "Approve the spec", level: "needs_approval", commands: [{ name: "approve", usage: "/approve", description: "approve", allowed: true, reason: null }] }), item("wi_run", { title: "Busy", level: "running" })];
+      items = [item("wi_x", { title: "Approve the spec", item_phase: "needs_approval", commands: [{ name: "approve", usage: "/approve", description: "approve", allowed: true, reason: null }] }), item("wi_run", { title: "Busy", item_phase: "running" })];
       await show();
       const el = await section();
       expect(within(el).getByText("Approve the spec")).toBeTruthy();
@@ -795,14 +795,14 @@ describe("Tasks page", () => {
     });
 
     it("is not rendered when nothing waits", async () => {
-      items = [item("wi_run", { title: "Busy", level: "running" })];
+      items = [item("wi_run", { title: "Busy", item_phase: "running" })];
       await show();
       await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([u]) => u === "/api/v1/items")).toBe(true));
       expect(screen.queryByRole("region", { name: "Needs you" })).toBeNull();
     });
 
     it("a task whose work waits on a merge shows Merge on its row, and the item is a row of the section too", async () => {
-      items = [item("wi_1", { title: "Ship it", level: "ready_to_merge", merge: { enabled: true, reason: null }, merge_check: { state: "mergeable", conflicts: [], head_sha: "a", base_sha: "b", checked_at: "2026-11-12T00:00:00.000Z" } } as Partial<ItemRow>)];
+      items = [item("wi_1", { title: "Ship it", item_phase: "ready_to_merge", merge: { enabled: true, reason: null }, merge_check: { state: "mergeable", conflicts: [], head_sha: "a", base_sha: "b", checked_at: "2026-11-12T00:00:00.000Z" } } as Partial<ItemRow>)];
       await show();
       expect(await within(card("tk_built")).findByRole("button", { name: "Merge" }, SLOW)).toBeTruthy();
       expect(within(card("tk_built")).getByText("Ready to merge")).toBeTruthy();
@@ -813,7 +813,7 @@ describe("Tasks page", () => {
     });
 
     it("a waiting item whose task is done stays in the section; the done row keeps its plain state", async () => {
-      items = [item("wi_1", { title: "Ship it", level: "needs_approval" })];
+      items = [item("wi_1", { title: "Ship it", item_phase: "needs_approval" })];
       current = view({ projects: [{ list: null, tasks: [{ ...row("tk_built", { work_item_id: "wi_1" }), done_at: "2026-11-12T08:00:00.000Z" }, row("tk_inbox")] }] });
       await show();
       expect(within(await section()).getByText("Ship it")).toBeTruthy();
@@ -823,7 +823,7 @@ describe("Tasks page", () => {
     });
 
     it("an item on an open task's row and one with no task are each listed once in the section; a stuck item is not", async () => {
-      items = [item("wi_1", { title: "Linked", level: "needs_approval" }), item("wi_x", { title: "Loose", level: "needs_approval" }), item("wi_s", { title: "Stuck", level: "stuck", blocked_on: "none" })];
+      items = [item("wi_1", { title: "Linked", item_phase: "needs_approval" }), item("wi_x", { title: "Loose", item_phase: "needs_approval" }), item("wi_s", { title: "Stuck", item_phase: "stuck", blocked_on: "none" })];
       await show();
       const el = await section();
       expect([...el.querySelectorAll<HTMLElement>("li[data-key]")].map((r) => r.dataset.key)).toEqual(["wi_1", "wi_x"]);
@@ -832,13 +832,13 @@ describe("Tasks page", () => {
     });
 
     it("a built task shows its work item's state", async () => {
-      items = [item("wi_1", { level: "ready_to_merge" })];
+      items = [item("wi_1", { item_phase: "ready_to_merge" })];
       await show();
       expect(await within(card("tk_built")).findByText("Ready to merge", {}, SLOW)).toBeTruthy();
     });
 
     it("a merged item reads Merged, and the state opens a dialog with the full-page link", async () => {
-      items = [item("wi_1", { level: "closed", close_reason: "completed", stage: "CLOSED" })];
+      items = [item("wi_1", { item_phase: "closed", close_reason: "completed", stage: "CLOSED" })];
       await show();
       expect(await within(card("tk_built")).findByText("Merged", {}, SLOW)).toBeTruthy();
       fireEvent.click(within(card("tk_built")).getByRole("button", { name: "Work item state: tk_built" }));
@@ -847,7 +847,7 @@ describe("Tasks page", () => {
     });
 
     const STALE = { error: "Missing or stale x-csrf-token; reload the page.", code: "stale_csrf" };
-    const mergeRow = () => item("wi_m", { title: "Task title that keeps its space", level: "ready_to_merge", merge: { enabled: true, reason: null } });
+    const mergeRow = () => item("wi_m", { title: "Task title that keeps its space", item_phase: "ready_to_merge", merge: { enabled: true, reason: null } });
     const workRow = async (id: string) => {
       return (await section()).querySelector<HTMLElement>(`li[data-key="${id}"]`)!;
     };

@@ -15,6 +15,7 @@ import { THEME_KEY, paintChoice, storedChoice } from "../web/src/theme.js";
 import { BANNER_LINK_CLASS } from "../web/src/components/ui/link-style.js";
 import { RevisionBanner } from "../web/src/views/system-banner.js";
 import { VIEW_KEY } from "../web/src/views/tree.js";
+import { whyText } from "../web/src/lib/format.js";
 
 // The app shell (step 2 of #124, design §9): it fetches only /api/v1/*, polls every 3 s while the document is
 // visible and not while it is hidden, and keeps the light/dark choice in browser storage.
@@ -43,7 +44,7 @@ const runs = { as_of: AT, runs: [{ id: "run_a", status: "running", kind: "implem
 const queue = { as_of: AT, queue: [{ position: 1, id: "run_b", kind: "implement", work_item_id: "wi_3", attempt: 0, created_at: AT, not_before: null }] };
 const detail = {
   as_of: AT,
-  item: { ...row(1, "needs_approval", "Spec waiting"), loop_count: 0, restart_count: 2, token_cost: 2_500_000, created_at: AT, why: { code: "human", text: "Waiting for you", next_actor: "human", refs: [], ref_url: null } },
+  item: { ...row(1, "needs_approval", "Spec waiting"), loop_count: 0, restart_count: 2, token_cost: 2_500_000, created_at: AT, why: { code: "human", reason_code: "person", params: { reason: "Waiting for you" }, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null } },
   timeline: [{ version: 1, at: AT, actor: { kind: "user", id: "github:1" }, reason: "intake", changes: { stage: { from: "null", to: '"NEW"' } }, detail: null }],
   runs: [{ id: "run_c", kind: "implement", status: "failed", attempt: 1, started_at: AT, finished_at: AT, created_at: AT, tokens: 10, error: { code: "git_failed", detail: "git merge: boom" } }],
 };
@@ -589,7 +590,7 @@ const GH = { issues: "github" } as const;
 const NONE = { issues: null } as const;
 const trow = (n: number, extra: Partial<ItemRow> = {}): ItemRow => ({
   id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title: `Title ${n}`,
-  level: "running", badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null,
+  item_phase: "running", reason_code: "person", stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null,
   run_status: null, change_ref: null, change_url: null, issue: { number: n, url: `https://github.com/o/r/issues/${n}` }, since: AT,
   updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
 });
@@ -889,8 +890,8 @@ describe("Floor item links (issue #228)", () => {
 // ---- Why an item waits (issue #310): one sentence from the API, #N linked, on Floor, Items, Queue and the item page ----
 describe("why an item waits (issue #310)", () => {
   const REF_URL = "https://github.com/o/r/issues/";
-  const dep = { code: "dependency", text: "Waiting for #12 and #13 to merge", next_actor: "other_item" as const, refs: [12, 13], ref_url: REF_URL };
-  const held = { code: "held", text: "Held behind #92, which has an open PR", next_actor: "other_item" as const, refs: [92], ref_url: REF_URL };
+  const dep = { code: "dependency", reason_code: "dependency", params: { refs: "#12 and #13" }, alarms: [], holder_id: null, next_actor: "other_item" as const, refs: [12, 13], ref_url: REF_URL };
+  const held = { code: "held", reason_code: "held_pr", params: { holder: "#92" }, alarms: [], holder_id: null, next_actor: "other_item" as const, refs: [92], ref_url: REF_URL };
   const refLinks = (el: HTMLElement) => [...el.querySelectorAll("[data-why] a")].map((a) => [a.textContent, a.getAttribute("href")]);
 
   function withWhy(run: () => Promise<void>) {
@@ -927,7 +928,7 @@ describe("why an item waits (issue #310)", () => {
       history.replaceState(null, "", "/app/items/wi_1");
       mount();
       const why = await screen.findByTestId("why");
-      expect(why.textContent).toBe(dep.text);
+      expect(why.textContent).toBe(whyText(dep));
       expect(refLinks(why)).toEqual(dependencyLinks);
       for (let el: HTMLElement | null = why; el; el = el.parentElement) expect(el.className).not.toContain("truncate");
       expect(why.querySelector(".truncate")).toBeNull();
@@ -939,15 +940,15 @@ describe("why an item waits (issue #310)", () => {
     const cells = [...c.querySelectorAll("[data-why]")] as HTMLElement[];
     expect(refLinks(cells[0]!)).toEqual([]);
     expect(refLinks(cells[1]!)).toEqual([["#12", `${REF_URL}12`]]);
-    expect(cells[1]!.textContent).toBe(dep.text);
+    expect(cells[1]!.textContent).toBe(whyText(dep));
   });
 });
 
 describe("open alarms on the Tasks page and the why sentence (design 09-status-page)", () => {
   const ALARM = "Alarm: checks_failed failed 4 runs on several items";
   const action = { code: "alarm", text: `${ALARM}: npm test exited #`, command: "Failures page (/app/failures)", until: "2026-11-07T06:00:00.000Z", work_item_id: null };
-  const alarmed = { code: "queued", text: `Queued at position 1. ${ALARM}`, next_actor: "factory" as const, refs: [], ref_url: null };
-  const plain = { ...alarmed, text: "Queued at position 1" };
+  const plain = { code: "queued", reason_code: "queued_at", params: { position: 1 }, alarms: [] as string[], holder_id: null, next_actor: "factory" as const, refs: [], ref_url: null };
+  const alarmed = { ...plain, alarms: [ALARM] };
 
   /** Runs `run` with the overview's alarm and the why sentences set, then puts the fixtures back. */
   function withAlarm(run: () => Promise<void>) {
@@ -993,9 +994,9 @@ describe("open alarms on the Tasks page and the why sentence (design 09-status-p
       history.replaceState(null, "", "/app/items/wi_1");
       mount();
       const why = await screen.findByTestId("why");
-      expect(why.textContent).toBe(alarmed.text);
+      expect(why.textContent).toBe(`Queued at position 1. ${ALARM}`);
       await resolve();
-      await vi.waitFor(() => expect(screen.getByTestId("why").textContent).toBe(plain.text));
+      await vi.waitFor(() => expect(screen.getByTestId("why").textContent).toBe("Queued at position 1"));
     }));
 });
 

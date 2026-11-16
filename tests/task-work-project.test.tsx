@@ -28,7 +28,7 @@ const view: TasksView = {
   csrf_token: "tok", can_build: true, active_projects: PROJECTS,
 };
 const item = (id: string, title: string): ItemRow => ({
-  id, source: { type: "local", id: `local:${id}`, link: "" }, title, level: "needs_approval", badges: [], stage: "REVIEW", tier: null, kind: null,
+  id, source: { type: "local", id: `local:${id}`, link: "" }, title, item_phase: "needs_approval", reason_code: "person", stage: "REVIEW", tier: null, kind: null,
   blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT,
   updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, commands: [], need: { reason: `Reason of ${title}`, anchor: null },
 } as ItemRow);
