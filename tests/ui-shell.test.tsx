@@ -1030,7 +1030,7 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
 
   it("the Tasks page lists each system action with its command as a row in the Needs you section's Check group", async () => {
     const actions = [
-      { code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null, work_item_id: null },
+      { code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null, work_item_id: null },
       { code: "claim_pause", text: "Claim pause rate_limit in effect, until 2026-11-07T01:00:00.000Z", command: "factory resume rate_limit", until: "2026-11-07T01:00:00.000Z", work_item_id: null },
     ];
     (overview as Record<string, unknown>).system_actions = actions;
@@ -1040,7 +1040,7 @@ describe("system actions, revisions and the tab title (issue #311)", () => {
       const rows = [...list.querySelectorAll("li")];
       expect(rows.map((r) => r.getAttribute("data-check"))).toEqual(["migration_pending", "claim_pause"]);
       expect(rows[0]!.textContent).toContain("Schema at version 3 of 8");
-      expect(rows[0]!.querySelector("code")!.textContent).toBe("npm run migrate");
+      expect(rows[0]!.querySelector("code")!.textContent).toBe("Migrate now, or factory migrate");
       expect(rows[1]!.querySelector("code")!.textContent).toBe("factory resume rate_limit");
       // The rows are inside the Needs you section, not lines after it.
       expect(screen.getByRole("region", { name: "Needs you" }).contains(list)).toBe(true);
@@ -1077,7 +1077,7 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
   const NOW = Date.parse(AT);
   const running = { state: "running", rev: "aaaaaaa1111", target_rev: "aaaaaaa1111", child_pid: 7, since: AT, workers: 3, error: null, pending: [] } as never;
   const bannerText = (pauses?: { name: string; ends_at: string; since?: string | null }[]) => {
-    render(<FactoryBanner factory={running} now={NOW} pauses={pauses} />);
+    render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><FactoryBanner factory={running} now={NOW} pauses={pauses} /></QueryClientProvider>);
     return screen.getByTestId("factory-banner").textContent;
   };
 
@@ -1108,6 +1108,61 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
     const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", badges: ["failed"], need };
     render(<QueryClientProvider client={new QueryClient()}><NeedsList items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} /></QueryClientProvider>);
     expect(document.querySelector("[data-need]")!.textContent).toBe("failed: diff_too_large");
+  });
+});
+
+describe("Runners banner: Migrate now, Start and Restart now (design 08-self-update)", () => {
+  const NOW = Date.parse(AT);
+  const offer = (offered: boolean, reason: string | null = null) => ({ offered, reason });
+  const NOT_LIVE = "No factory supervisor is running, so this page cannot reach it. Start the factory from a terminal with factory dev.";
+  function banner(factory: unknown, view: object) {
+    RESPONSES["/api/v1/supervisor"] = { live: true, state: null, csrf_token: "tok", migrate: offer(true), start: offer(false, "A factory process already runs and claims work: use Restart now for a fresh one."), restart: offer(true), ...view };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={client}><FactoryBanner factory={factory as never} now={NOW} /></QueryClientProvider>);
+    return screen.getByTestId("factory-banner");
+  }
+  afterEach(() => {
+    delete RESPONSES["/api/v1/supervisor"];
+  });
+
+  it("the stopped and migration texts carry no npm run", () => {
+    expect(banner(null, {}).textContent).not.toContain("npm run");
+    cleanup();
+    expect(banner({ ...overview.factory, pending: [] }, {}).textContent).toContain("waits for its migration: Migrate now applies it.");
+    cleanup();
+    const text = banner(overview.factory, {}).textContent!;
+    expect(text).toContain("waits for its migration (pending: schema 12): Migrate now applies it.");
+    expect(text).not.toContain("npm run");
+  });
+
+  it("a running factory offers Restart now only; its confirm files the restart request", async () => {
+    const el = banner({ state: "running", rev: "aaaaaaa1111", target_rev: null, child_pid: 7, since: AT, workers: 3, error: null, pending: [] }, {});
+    const restart = await within(el).findByRole("button", { name: "Restart now" });
+    expect(within(el).queryByRole("button", { name: "Start" })).toBeNull();
+    fireEvent.click(restart);
+    expect(posts).toHaveLength(0); // the confirm first
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Restart now" }));
+    await vi.waitFor(() => expect(posts).toEqual([expect.objectContaining({ url: "/api/v1/supervisor", body: { action: "restart", confirm: true } })]));
+  });
+
+  it("a migration waiting shows the dry run before Migrate now's confirm posts", async () => {
+    postAnswer = { status: 200, body: { dry_run: { pending: ["project keys (1 row)"], lines: ["-- project keys: 1 row would change", "dry run: nothing was changed"], ok: true } } };
+    const el = banner(overview.factory, {});
+    fireEvent.click(await within(el).findByRole("button", { name: "Migrate now" }));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText("Pending steps: project keys (1 row)");
+    expect(dialog.querySelector("pre")!.textContent).toContain("1 row would change");
+    expect(posts.map((p) => p.body)).toEqual([{}]);
+    postAnswer = { status: 202, body: { started: true } };
+    fireEvent.click(within(dialog).getByRole("button", { name: "Migrate now" }));
+    await vi.waitFor(() => expect(posts.map((p) => p.body)).toEqual([{}, { confirm: true }]));
+  });
+
+  it("with no live supervisor no button shows and the page says why in plain words", async () => {
+    const el = banner(null, { live: false, migrate: offer(false, NOT_LIVE), start: offer(false, NOT_LIVE), restart: offer(false, NOT_LIVE) });
+    await within(el).findByText(NOT_LIVE);
+    expect(within(el).queryByRole("button")).toBeNull();
   });
 });
 

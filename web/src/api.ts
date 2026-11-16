@@ -6,7 +6,8 @@
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
 // /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete, sub, and schedule, the timeline's drop), the
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
-// (postDataAsk), each with the per-process CSRF token (from GET /api/v1/settings,
+// (postDataAsk) and Migrate now, Start and Restart now (POST /api/v1/migrate, postMigrate; POST /api/v1/supervisor, postSupervisor),
+// each with the per-process CSRF token (from GET /api/v1/settings, /api/v1/supervisor,
 // /api/v1/session, /api/v1/pauses, /api/v1/standing, /api/v1/rules, /api/v1/tasks, /api/v1/plugins or /api/v1/data/tables) in x-csrf-token.
 // A write refused for a stale token (code "stale_csrf", after a UI restart) is retried once with GET /api/v1/session's token (postJson).
 
@@ -660,6 +661,29 @@ export interface PauseRow {
   since?: string | null;
 }
 
+/** One of Migrate now, Start and Restart now: offered, or why not in plain words. */
+export interface SupervisorOffer {
+  offered: boolean;
+  reason: string | null;
+}
+
+/** `/api/v1/supervisor`: which supervisor actions the page may offer (404 when the server has none of them). */
+export interface SupervisorView {
+  live: boolean;
+  state: string | null;
+  migrate: SupervisorOffer;
+  start: SupervisorOffer;
+  restart: SupervisorOffer;
+  csrf_token: string;
+}
+
+/** Migrate now's dry run: the pending steps and each line `npm run migrate -- --dry-run` would print. */
+export interface MigrateDryRun {
+  pending: string[];
+  lines: string[];
+  ok: boolean;
+}
+
 /** `/api/v1/pauses`: the pauses in effect; `csrf_token` is null when the server has no resume route. */
 export interface PausesView {
   pauses: PauseRow[];
@@ -1044,6 +1068,8 @@ export const API = {
   pluginsImport: "/api/v1/plugins/import",
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
+  supervisor: "/api/v1/supervisor",
+  migrate: "/api/v1/migrate",
   standing: "/api/v1/standing",
   rules: "/api/v1/rules",
   ruleVerdict: "/api/v1/rules/verdict",
@@ -1197,6 +1223,23 @@ export async function postCommand(token: string, id: string, command: string, no
 export async function postResume(token: string, name: string): Promise<{ ok: true; ended: boolean } | { ok: false; error: string }> {
   const r = await postJson<{ ended?: boolean; error?: string }>(API.resume, token, { name });
   if (r.ok) return { ok: true, ended: r.value.ended === true };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/**
+ * POST /api/v1/migrate: without `confirm` the dry run (nothing filed), with it the drain, apply and start-or-cancel
+ * sequence, started in the background. A refusal (no live supervisor, a migration under way, …) comes back as `{ ok: false, error }`.
+ */
+export async function postMigrate(token: string, confirm: boolean): Promise<{ ok: true; dry_run: MigrateDryRun | null } | { ok: false; error: string }> {
+  const r = await postJson<{ dry_run?: MigrateDryRun; error?: string }>(API.migrate, token, confirm ? { confirm: true } : {});
+  if (r.ok) return { ok: true, dry_run: r.value.dry_run ?? null };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/supervisor: Start or Restart now, confirmed. A refusal comes back as `{ ok: false, error }`. */
+export async function postSupervisor(token: string, action: "start" | "restart"): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await postJson<{ error?: string }>(API.supervisor, token, { action, confirm: true });
+  if (r.ok) return { ok: true };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 

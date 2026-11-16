@@ -86,10 +86,10 @@ describe("system actions: none on a quiet factory", () => {
 });
 
 describe("system actions: pending migration", () => {
-  it("a schema behind the code is listed with `npm run migrate` and counts in needs_you", async () => {
+  it("a schema behind the code is listed with Migrate now and counts in needs_you", async () => {
     const { overview } = await setup({ version: { applied: 3, latest: 8 } });
     const o = await overview();
-    expect(o.system_actions).toContainEqual({ code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null });
+    expect(o.system_actions).toContainEqual({ code: "migration_pending", text: "Schema at version 3 of 8", command: "Migrate now, or factory migrate", until: null });
     expect(o.needs_you).toBe(1);
   });
 
@@ -101,7 +101,7 @@ describe("system actions: pending migration", () => {
   it("a supervisor whose update waits on the migration is listed", async () => {
     const factory = { state: "migration_pending", rev: REV_A, target_rev: REV_B, child_pid: 1, since: "x", pending: ["0031_x.sql"], workers: 1 } as FactoryStatus;
     const o = await (await setup({ factory })).overview();
-    expect(o.system_actions).toMatchObject([{ code: "migration_pending", text: "The update to bbbbbbb waits for the migration (pending: 0031_x.sql)", command: "npm run migrate" }]);
+    expect(o.system_actions).toMatchObject([{ code: "migration_pending", text: "The update to bbbbbbb waits for the migration (pending: 0031_x.sql)", command: "Migrate now, or factory migrate" }]);
   });
 });
 
