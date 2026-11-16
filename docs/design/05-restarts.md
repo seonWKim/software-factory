@@ -38,6 +38,4 @@
   - Config: `max_attempts` (default 3, unchanged), `max_restart` (default 3), `retry_base_ms` (default 60000), `retry_max_ms` (default 1800000), `auth_pause_ms` (default `retry_max_ms`; since 2026-11-02) in `factory.config.json`. Schema: migration 4 adds `runs.not_before` and the `worker_claim_pauses` table. `auth_pause_ms` is read and checked at load with the other retry keys (decision changed 2026-11-09, RFC 0010 item 8): a positive integer, or startup fails naming the key; absent, it equals `retry_max_ms`.
   - Rollout: an old worker ignores `not_before` and the pause, so stop every worker before the first new controller starts, then migrate and start the new code everywhere. **Rollout of the 2026-11-02 changes (preflight, forge-auth pause, wip resume, no automatic retry of the four codes):** stop every old worker first, then start the new code everywhere. An old worker ignores the `forge_auth` pause row (it would claim implement and update runs during a pause) and ignores a retry's `wip` input (it would run the agent again). No migration is needed.
 
-## History
-
 - Replaced decisions of this topic: [history/05-restarts.md](history/05-restarts.md).

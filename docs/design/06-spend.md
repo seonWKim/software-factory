@@ -18,6 +18,4 @@
   - **Page.** The Spend page (`/app/spend`, design 09-dashboard-app) shows today, this week and the last 30 days, one daily bar chart (see the chart decision above) and the tasks by cost.
   - Not built: per-item or per-tier money budgets (token budgets stay per tier, design 06-token-budget), the LLM provider's own calls, checking cost against the bill, notification channels.
 
-## History
-
-- 2026-11-13 (wi_199b), replaced 2026-11-16: the daily chart was one bar per UTC day with a native title and a screen-reader label ("2026-11-07: $568.79"); below it the first date, the most costly day's amount and the last date. No y-axis, no top items, no filter.
+- Replaced decisions of this topic: [history/06-spend.md](history/06-spend.md).
