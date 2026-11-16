@@ -13,8 +13,8 @@ import { ItemsTable } from "../web/src/views/common.js";
 
 const AT = "2026-11-07T00:00:00.000Z";
 const row = (n: number, extra: object = {}) => ({
-  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title: `Title ${n}`, level: "needs_approval",
-  badges: [], stage: "READY", tier: 2, kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null,
+  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title: `Title ${n}`, item_phase: "needs_approval", reason_code: "person",
+   stage: "READY", tier: 2, kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null,
   change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 },
   issue: { number: n, url: `https://github.com/o/r/issues/${n}` }, ...extra,
 });
@@ -25,7 +25,7 @@ const overview = {
 };
 const RESPONSES: Record<string, unknown> = {
   "/api/v1/overview": overview,
-  "/api/v1/items": { as_of: AT, total: 1, items: [withPr], facets: { allStates: 1, state: { needs: 1, needs_approval: 1 } } },
+  "/api/v1/items": { as_of: AT, total: 1, items: [withPr], facets: { allStates: 1, state: { needs: 1, needs_approval: 1 } }, counts: { open: 0, running: 1 } },
   "/api/v1/items/wi_1": {
     as_of: AT, item: { ...withPr, loop_count: 0, restart_count: 0, token_cost: 0, created_at: AT }, timeline: [], runs: [],
   },

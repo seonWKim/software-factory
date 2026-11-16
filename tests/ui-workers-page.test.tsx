@@ -52,7 +52,7 @@ beforeEach(() => {
     fetched.push(url);
     const body: Record<string, unknown> = {
       "/api/v1/workers": workers, "/api/v1/overview": overview, "/api/v1/runs": { as_of: AT, runs: [] }, "/api/v1/queue": { as_of: AT, queue: [] },
-      "/api/v1/items": { as_of: AT, total: 0, items: [], facets: { allStates: 0, state: {} } }, "/api/v1/pauses": { pauses: [], csrf_token: null },
+      "/api/v1/items": { as_of: AT, total: 0, items: [], facets: { allStates: 0, state: {} }, counts: { open: 0, running: 1 } }, "/api/v1/pauses": { pauses: [], csrf_token: null },
       "/api/v1/failures?window=24h": failures("24h"), "/api/v1/failures?window=7d": failures("7d"), ...overrides,
     };
     return url in body

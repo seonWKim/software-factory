@@ -14,12 +14,13 @@ const AT = "2026-11-07T00:00:00.000Z";
 const NOW = Date.parse(AT);
 
 const row = (n: number, level: string, title: string, extra: object = {}) => ({
-  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level,
-  badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
+  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, item_phase: level, reason_code: "person",
+   stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
   change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 },
   parent_id: null, phase: null, run: null, claim: null, waiting_on_number: null, ...extra,
 });
-const why = (code: string, text: string, refs: number[] = []) => ({ code, text, next_actor: "factory", refs, ref_url: "https://github.com/o/r/issues/" });
+// An unknown reason code shows as is (lib/format.ts whyText), so each fixture names its text as its reason code.
+const why = (code: string, text: string, refs: number[] = []) => ({ code, reason_code: text, params: {}, alarms: [], holder_id: null, next_actor: "factory", refs, ref_url: "https://github.com/o/r/issues/" });
 const phaseHold = (n: number, prev: number) => why("phase", `Waiting for the previous phase #${prev} to merge`, [prev]);
 
 const ROWS = [
@@ -51,7 +52,7 @@ const ROWS = [
 const overview = { as_of: AT, stages: {}, needs_you: 1, running: 1, queued: 1, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, unreviewed_merges_7d: 0, plugins: { issues: null } };
 // One queued run: the Work summary's "queued" counts runs like overview.queued, not items at level queued.
 const queueBody = { as_of: AT, queue: [{ position: 1, id: "run_q", kind: "implement", work_item_id: "wi_20", attempt: 0, created_at: AT, not_before: null }] };
-const itemsBody = { as_of: AT, total: ROWS.length, items: ROWS, facets: { allStates: ROWS.length, state: {} } };
+const itemsBody = { as_of: AT, total: ROWS.length, items: ROWS, facets: { allStates: ROWS.length, state: {} }, counts: { open: 0, running: 1 } };
 let fetched: string[] = [];
 
 class MemoryStorage {

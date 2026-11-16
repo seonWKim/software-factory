@@ -87,9 +87,9 @@ describe("Table", () => {
 
 describe("Needs you at 390px", () => {
   const row = (n: number, level: string, title: string, why: string) => ({
-    id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level, badges: [], stage: "READY", tier: 2,
+    id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, item_phase: level, reason_code: "person",  stage: "READY", tier: 2,
     kind: null, blocked_on: "human", blocked_reason: null, close_reason: null, run_status: null, change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1,
-    dependents: 0, conflicts: { automatic: 0, person: 0 }, why: { code: "x", text: why, next_actor: "human", refs: [], ref_url: null },
+    dependents: 0, conflicts: { automatic: 0, person: 0 }, why: { code: "x", reason_code: why, params: {}, alarms: [], holder_id: null, next_actor: "human", refs: [], ref_url: null },
   });
 
   it("shows title, state and why as stacked cards, with no table and no horizontal scroll", () => {

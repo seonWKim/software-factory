@@ -56,7 +56,7 @@ beforeEach(() => {
     const url = new URL(input, "http://localhost");
     if (url.pathname === "/api/v1/items") {
       const list = BY_PROJECT[url.searchParams.get("project") ?? ""];
-      return list ? json({ as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} } }) : json({ error: "no project" }, 404);
+      return list ? json({ as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} }, counts: { open: 0, running: 1 } }) : json({ error: "no project" }, 404);
     }
     if (url.pathname === "/api/v1/tasks") return json(view);
     if (url.pathname === "/api/v1/overview") return json(overview);

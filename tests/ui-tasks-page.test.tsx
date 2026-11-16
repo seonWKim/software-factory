@@ -81,7 +81,7 @@ beforeEach(() => {
       const slug = decodeURIComponent(url.slice("/api/v1/tasks?project=".length));
       return filtered[slug] ? json(200, filtered[slug]) : json(404, { error: `no project "${slug}"` });
     }
-    if (url === "/api/v1/items") return json(200, { as_of: "2026-11-12T00:00:00.000Z", total: items.length, items, facets: {} });
+    if (url === "/api/v1/items") return json(200, { as_of: "2026-11-12T00:00:00.000Z", total: items.length, items, facets: {}, counts: { open: 0, running: 1 } });
     if (url === "/api/v1/pauses") return json(200, { pauses: [], csrf_token: null });
     if (url === "/api/v1/overview") return json(200, { as_of: "2026-11-12T00:00:00.000Z", stages: {}, needs_you: 0, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [] });
     if (url === "/api/v1/session") return json(200, { as_of: "2026-11-12T00:00:00.000Z", csrf_token: TOKEN, commands_enabled: true, actor: "local:me", actor_source: "environment" });

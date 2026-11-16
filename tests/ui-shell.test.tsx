@@ -27,18 +27,18 @@ const overview = {
   factory: { state: "migration_pending", rev: "aaaaaaa1111", target_rev: "bbbbbbb2222", child_pid: 7, since: AT, workers: 3, error: null, pending: ["schema 12"] },
 };
 const row = (n: number, level: string, title: string, extra: object = {}) => ({
-  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, level,
-  badges: [], stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
+  id: `wi_${n}`, source: { type: "github_issue", id: `o/r#${n}`, link: `https://github.com/o/r/issues/${n}` }, title, item_phase: level, reason_code: "person",
+   stage: "RUNNING", tier: 2, kind: null, blocked_on: "none", blocked_reason: null, close_reason: null, run_status: null,
   change_ref: null, change_url: null, since: AT, updated_at: AT, version: 1, dependents: 0, conflicts: { automatic: 0, person: 0 }, ...extra,
 });
 const items = {
   as_of: AT, total: 3,
   items: [
-    row(1, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human", badges: ["needs approval"] }),
+    row(1, "needs_approval", "Spec waiting", { stage: "READY", blocked_on: "human" }),
     row(2, "running", "Being built"),
     row(3, "queued", "Waiting its turn"),
   ],
-  facets: { allStates: 3, state: { needs: 1, needs_approval: 1, running: 1, queued: 1 } },
+  facets: { allStates: 3, state: { needs: 1, needs_approval: 1, running: 1, queued: 1 } }, counts: { open: 0, running: 1 },
 };
 const runs = { as_of: AT, runs: [{ id: "run_a", status: "running", kind: "implement", work_item_id: "wi_2", attempt: 1, owner: "host:7:0", heartbeat_at: AT, started_at: AT, lease_expires_at: AT, created_at: AT }] };
 const queue = { as_of: AT, queue: [{ position: 1, id: "run_b", kind: "implement", work_item_id: "wi_3", attempt: 0, created_at: AT, not_before: null }] };
@@ -1108,7 +1108,7 @@ describe("Floor banner and Needs-you Why (claim pauses)", () => {
 
   it("an Answer-or-fix row shows the need's reason, not the badges, and no command to type", () => {
     const need = { reason: "failed: diff_too_large" };
-    const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", badges: ["failed"], need };
+    const failed = { blocked_on: "human", blocked_reason: "run_failed:implement:diff_too_large", need };
     render(<QueryClientProvider client={new QueryClient()}><NeedsList items={[row(1, "needs_human", "Failed one", failed) as unknown as ItemRow]} /></QueryClientProvider>);
     expect(document.querySelector("[data-need]")!.textContent).toBe("failed: diff_too_large");
   });
