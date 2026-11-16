@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { saveProjectLabel } from "../src/core/project-labels.js";
+import { readProjectLabel, saveProject, saveProjectLabel } from "../src/core/project-labels.js";
 import { PR_ONLY_KEYS, SETTABLE_KEYS, type SettingsBase } from "../src/core/settings.js";
 import { loadSettingCatalog } from "../src/runtime/index.js";
 
@@ -308,11 +308,13 @@ describe("POST /api/v1/settings", () => {
     }
   });
 
-  it("a project write with no stored label is refused, pointing to `factory settings`; no forge call is made", async () => {
+  it("a project write with no stored label is refused, pointing to the page's label control and naming no command; no forge call is made", async () => {
     const { d, store } = await setup({ label: false });
     const r = await post(d, { action: "set", key: "max_attempts", value: "2", project: "o/r" });
     expect(r.status).toBe(422);
-    expect(JSON.parse(r.body).error).toMatch(/no project label is stored for o\/r.*settings set <key> <value> --project o\/r on the command line/);
+    const error = JSON.parse(r.body).error as string;
+    expect(error).toMatch(/no project label is stored for o\/r.*set the project label on this page first/);
+    for (const named of ["factory.config.json", "factory settings", "settings set", "--project", "command line"]) expect(error).not.toContain(named);
     await nothingStored(store);
 
     // A resolver that throws (as a forge lookup would without credentials) is refused the same way.
@@ -325,7 +327,7 @@ describe("POST /api/v1/settings", () => {
     });
     const r2 = await post(t.d, { action: "set", key: "max_attempts", value: "2", project: "o/r" });
     expect(r2.status).toBe(422);
-    expect(JSON.parse(r2.body).error).toContain("on the command line");
+    expect(JSON.parse(r2.body).error).toContain("set the project label on this page first");
     expect(asked).toBe(1);
     await nothingStored(t.store);
     // Global writes never ask the resolver.
@@ -337,6 +339,46 @@ describe("POST /api/v1/settings", () => {
     const body = compose.slice(compose.indexOf("export async function buildUiParts"), compose.indexOf("/** What `factory session` needs"));
     expect(body).toContain("storeProjectResolver(store");
     for (const forge of ["GitHubClient", "githubCredentials", "resolveProject(github", "repoLookup"]) expect(body).not.toContain(forge);
+  });
+
+  it("project-label stores the label of the configured repo's stored project key, with no audit row", async () => {
+    const { d, store } = await setup({ label: false });
+    await saveProject(store, { owner: "o", name: "r" }, PROJECT);
+    const r = await post(d, { action: "project-label", value: "ghe.example.com/o/r" });
+    expect(r.status).toBe(200);
+    expect(JSON.parse(r.body)).toEqual({ ok: true, lines: ["project label of o/r = ghe.example.com/o/r"] });
+    expect(await readProjectLabel(store, PROJECT.key)).toBe("ghe.example.com/o/r");
+    expect((await view(d)).project).toBe("ghe.example.com/o/r");
+    await nothingStored(store);
+  });
+
+  it("project-label is refused when no project key is stored, naming no command, and stores nothing", async () => {
+    const { d, store } = await setup({ label: false });
+    const r = await post(d, { action: "project-label", value: "github.com/o/r" });
+    expect(r.status).toBe(422);
+    const error = JSON.parse(r.body).error as string;
+    expect(error).toContain("no project key is stored for o/r");
+    for (const named of ["factory.config.json", "factory settings", "--project", "command line"]) expect(error).not.toContain(named);
+    expect(await readProjectLabel(store, PROJECT.key)).toBe("unknown project");
+  });
+
+  it("project-label refuses a label that is empty, holds whitespace or does not end with /owner/name of the configured repo", async () => {
+    const { d, store } = await setup({ label: false });
+    await saveProject(store, { owner: "o", name: "r" }, PROJECT);
+    for (const [value, message] of [
+      ["", "refused: the project label is empty"],
+      ["github.com/o /r", "refused: the project label contains whitespace"],
+      ["github.com/o/r\t", "refused: the project label contains whitespace"],
+      ["github.com/o/other", "refused: the project label must end with /o/r, the configured repo"],
+      ["github.com/xo/r", "refused: the project label must end with /o/r, the configured repo"],
+    ]) {
+      const r = await post(d, { action: "project-label", value });
+      expect(r.status, value).toBe(422);
+      expect(JSON.parse(r.body).error, value).toBe(message);
+    }
+    expect(await readProjectLabel(store, PROJECT.key)).toBe(PROJECT.label);
+    // A label write takes only its value.
+    expect((await post(d, { action: "project-label", value: "github.com/o/r", key: "x" })).status).toBe(400);
   });
 
   it("refuses a POST without the CSRF token, or with a wrong one, with 403 and stores nothing", async () => {
