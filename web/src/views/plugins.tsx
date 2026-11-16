@@ -17,10 +17,11 @@ import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
 import { useNow } from "./common.js";
+import { ModelsTab } from "./plugins-models.js";
 import { MergeButton } from "./item-commands.js";
 import { withNodes } from "./standing.js";
 
-// The Plugins page (design 09-dashboard-app, 2026-11-16): what the agents can use, in three tabs (MCP, Skills, Tools),
+// The Plugins page (design 09-dashboard-app, 2026-11-16): what the agents can use, in four tabs (MCP, Skills, Tools, Models),
 // read from GET /api/v1/plugins, the rows `factory plugins list` prints. "Plugins" here are agent capabilities, never
 // the factory's implementation plugins. The selected tab is the `tab` query parameter. Each tab has a search box over
 // name and description, and Import and Add: above the list, or in the empty state when the tab has nothing.
@@ -40,14 +41,20 @@ import { withNodes } from "./standing.js";
 //   (POST /api/v1/settings `edit-file`), which puts the change on a local branch; the page shows that item's Merge button.
 // - The Tools tab also lists the tools of each approved imported MCP server, origin MCP (design 11-plugin-import,
 //   phase 3): the read asks a worker to list them, so they appear on a later read; the page starts no server.
+// - The Models tab (plugins-models.tsx) lists the provider entries: each agent runner or model provider with its model
+//   per class, the roles it serves and its last use, read from GET /api/v1/settings/capabilities. It has no search box,
+//   Import or Add.
 // Buttons are off when the server cannot write from the page. Read once when the page opens (it reads stored
 // transcripts for "last used"), and again after a write; never polled.
 
-type Tab = "mcp" | "skills" | "tools";
+/** The tabs that list rows of the plugins read; Models has its own read (plugins-models.tsx). */
+type ListTab = "mcp" | "skills" | "tools";
+type Tab = ListTab | "models";
 const TABS: readonly { id: Tab; label: MessageKey }[] = [
   { id: "mcp", label: "plugins.tabMcp" },
   { id: "skills", label: "plugins.tabSkills" },
   { id: "tools", label: "plugins.tabTools" },
+  { id: "models", label: "plugins.tabModels" },
 ];
 
 /** The config file key of the skill folder list (src/ui/plugins-api.ts SKILL_FOLDERS_KEY). */
@@ -156,7 +163,7 @@ export function skillFolderOf(path: string): string {
 }
 
 /** Which dialog a tab's Import opens: the kind of item it lists and what importing does. */
-const IMPORT_OF: Record<Tab, { kind: ImportItem["kind"]; title: MessageKey; consequence: MessageKey }> = {
+const IMPORT_OF: Record<ListTab, { kind: ImportItem["kind"]; title: MessageKey; consequence: MessageKey }> = {
   mcp: { kind: "mcp_server", title: "plugins.importTitleMcp", consequence: "plugins.importConsequenceMcp" },
   skills: { kind: "skill", title: "plugins.importTitleSkills", consequence: "plugins.importConsequenceSkills" },
   tools: { kind: "mcp_server", title: "plugins.importTitleMcp", consequence: "plugins.importConsequenceTools" },
@@ -198,7 +205,7 @@ function ImportResults({ results }: { results: readonly ImportResult[] }) {
  * The Import dialog: the found items of one kind, each with a checkbox; Import stores the checked ones. It stays open
  * after Import with each item's result, and reports the stored rows to the tab (marked New) and a summary notice.
  */
-function ImportDialog({ tab, token, report, onClose }: { tab: Tab; token: string; report: Reporter; onClose: () => void }) {
+function ImportDialog({ tab, token, report, onClose }: { tab: ListTab; token: string; report: Reporter; onClose: () => void }) {
   const client = useQueryClient();
   const of = IMPORT_OF[tab];
   // Read each time the dialog opens: the configs can change between opens.
@@ -335,7 +342,7 @@ function AddDialog({ view, skills, report, onClose }: { view: PluginsView; skill
 }
 
 /** Import and Add for one tab, each opening its dialog. Off when the page cannot write what it would. */
-function Actions({ view, tab, report }: { view: PluginsView; tab: Tab; report: Reporter }) {
+function Actions({ view, tab, report }: { view: PluginsView; tab: ListTab; report: Reporter }) {
   const [open, setOpen] = useState<"import" | "add" | null>(null);
   const skills = tab === "skills";
   const canImport = view.csrf_token !== null;
@@ -358,7 +365,7 @@ function Actions({ view, tab, report }: { view: PluginsView; tab: Tab; report: R
  * an empty tab.
  */
 function TabList<Row extends { name: string; description: string | null }>(
-  { view, tab, report, query, rows, how, table }: { view: PluginsView; tab: Tab; report: Reporter; query: string; rows: readonly Row[]; how: MessageKey; table: (rows: Row[], empty: ReactNode) => ReactNode },
+  { view, tab, report, query, rows, how, table }: { view: PluginsView; tab: ListTab; report: Reporter; query: string; rows: readonly Row[]; how: MessageKey; table: (rows: Row[], empty: ReactNode) => ReactNode },
 ) {
   const empty = rows.length === 0;
   return (
@@ -514,14 +521,16 @@ export function PluginsPage() {
       <PageHeader title={t("page.plugins")} description={t("plugins.intro")} />
       <div className="flex flex-col gap-3">
         <Tabs label={t("plugins.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={choose} />
-        <Input type="search" aria-label={t("plugins.search")} placeholder={t("plugins.search")} className="w-full sm:max-w-sm" value={query} onChange={(e) => setQuery(e.target.value)} />
+        {tab !== "models" && <Input type="search" aria-label={t("plugins.search")} placeholder={t("plugins.search")} className="w-full sm:max-w-sm" value={query} onChange={(e) => setQuery(e.target.value)} />}
         {outcome && (
           <Notice tone={outcome.ok ? "ok" : "bad"}>
             {outcome.lines.map((l, i) => <span key={i} className="block break-words">{l}</span>)}
           </Notice>
         )}
         {outcome?.filed && <Filed item={outcome.filed.item} branch={outcome.filed.branch} />}
-        {q.isError ? (
+        {tab === "models" ? (
+          <ModelsTab />
+        ) : q.isError ? (
           <ErrorNote error={q.error} />
         ) : !q.data ? (
           <Loading rows={3} />

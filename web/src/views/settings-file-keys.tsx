@@ -12,6 +12,7 @@ import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { keyLabel } from "../lib/key-label.js";
 import { MergeButton } from "./item-commands.js";
 import { withNodes } from "./standing.js";
 
@@ -284,12 +285,26 @@ const VALUE_CLASS = "max-h-48 overflow-auto rounded-control bg-surface-2 p-2 fon
  * and new value; its confirm sends `edit-file` with the whole new value, its Cancel sends nothing. A danger key (or a
  * guard, by `danger`) uses the Dialog's danger form, and its confirm sends the confirm flag.
  */
+/** The raw key name behind a Details toggle, under a row's human label. */
+export function KeyNameDetails({ name }: { name: string }) {
+  return (
+    <details>
+      <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
+      <dl className="mt-1 flex gap-x-3 text-xs">
+        <dt className="text-text-2">{t("settings.detailKey")}</dt>
+        <dd className="font-mono wrap-anywhere">{name}</dd>
+      </dl>
+    </details>
+  );
+}
+
 function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spec; value: Json | undefined; token: string; danger: (next: Json) => boolean }) {
   const { busy, error, done, filed, write, fail } = useWrite(token);
   const [draft, setDraft] = useState<Draft | null>(null);
   /** The value the confirm Dialog asks about, and whether it is a danger change; null while it is closed. */
   const [asking, setAsking] = useState<{ next: Json; danger: boolean } | null>(null);
   const shown = draft ?? toDraft(spec, value);
+  const label = keyLabel(name);
   const send = async (next: Json, confirm: boolean): Promise<boolean> => {
     const ok = await write({ action: "edit-file", key: name, value: JSON.stringify(next), confirm });
     if (ok) setDraft(null);
@@ -302,7 +317,7 @@ function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spe
       // Members of the file's object this form does not name stay as they are.
       next = spec.kind === "fields" && isObject(value) && isObject(made) ? { ...value, ...made } : made;
     } catch (err) {
-      fail(t("settings.file.badJson", { key: name, message: err instanceof Error ? err.message : String(err) }));
+      fail(t("settings.file.badJson", { key: label, message: err instanceof Error ? err.message : String(err) }));
       return;
     }
     setAsking({ next, danger: danger(next) });
@@ -310,10 +325,11 @@ function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spe
   return (
     <li data-file-key={name} className="border-t border-border py-3 first:border-t-0 first:pt-0">
       <form className="flex flex-col items-start gap-3" onSubmit={(e) => (e.preventDefault(), save())}>
-        <span className="font-mono text-xs font-medium">{name}</span>
-        <Control spec={spec} draft={shown} label={name} onChange={setDraft} />
+        <span className="text-sm font-medium">{label}</span>
+        <KeyNameDetails name={name} />
+        <Control spec={spec} draft={shown} label={label} onChange={setDraft} />
         <ButtonRow>
-          <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label: name })}>
+          <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label })}>
             {t("settings.save")}
           </Button>
         </ButtonRow>
@@ -326,8 +342,8 @@ function FileKey({ name, spec, value, token, danger }: { name: string; spec: Spe
       {asking !== null && (
         <Dialog
           danger={asking.danger}
-          title={t("settings.file.dangerTitle", { key: name })}
-          consequence={asking.danger ? t("settings.file.dangerConsequence", { key: name }) : t("settings.file.confirmConsequence")}
+          title={t("settings.file.dangerTitle", { key: label })}
+          consequence={asking.danger ? t("settings.file.dangerConsequence", { key: label }) : t("settings.file.confirmConsequence")}
           confirmLabel={t("settings.file.dangerConfirm")}
           confirmDisabled={busy}
           error={error}
@@ -368,8 +384,9 @@ function ReadOnlyKeys({ keys }: { keys: FileKeysView["read_only"] }) {
     <ul aria-label={t("settings.file.readOnlyTitle")} className="flex flex-col gap-2">
       {keys.map((k) => (
         <li key={k.key} data-read-only={k.key} className="text-xs">
-          <span className="font-mono font-medium">{k.key}</span> <code className="font-mono wrap-anywhere">{k.value ?? t("settings.file.notSet")}</code>
+          <span className="font-medium">{keyLabel(k.key)}</span> <code className="font-mono wrap-anywhere">{k.value ?? t("settings.file.notSet")}</code>
           <p className="text-pretty text-text-2">{t(`settings.file.why.${k.key}` as MessageKey)}</p>
+          <KeyNameDetails name={k.key} />
         </li>
       ))}
     </ul>

@@ -6,6 +6,7 @@ import { act, cleanup, fireEvent, render, screen, within } from "@testing-librar
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SettingsView } from "../web/src/api.js";
+import { keyLabel } from "../web/src/lib/key-label.js";
 
 // The Settings page's Save on a file-only key, its restart note, the read-only keys and the project label control
 // (design 08-settings, 2026-11-16). The page is built with createElement and loaded by a specifier the node
@@ -68,10 +69,12 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
 
 async function form(): Promise<HTMLElement> {
+  history.replaceState(null, "", "/app/settings?tab=advanced");
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(SettingsPage)));
   await screen.findByRole("table", { name: "Settable keys" });
@@ -84,9 +87,9 @@ const dialog = () => document.querySelector<HTMLElement>("dialog[data-dialog]");
 /** Adds src/ui/ to hotspot_paths and presses Save. */
 async function editHotspots(section: HTMLElement) {
   const hot = keyOf(section, "hotspot_paths");
-  fireEvent.click(within(hot).getByRole("button", { name: "Add to hotspot_paths" }));
-  fireEvent.change(within(hot).getByLabelText("hotspot_paths 2"), { target: { value: "src/ui/" } });
-  await act(async () => fireEvent.click(within(hot).getByRole("button", { name: "Save hotspot_paths" })));
+  fireEvent.click(within(hot).getByRole("button", { name: `Add to ${keyLabel("hotspot_paths")}` }));
+  fireEvent.change(within(hot).getByLabelText(`${keyLabel("hotspot_paths")} 2`), { target: { value: "src/ui/" } });
+  await act(async () => fireEvent.click(within(hot).getByRole("button", { name: `Save ${keyLabel("hotspot_paths")}` })));
 }
 
 describe("Save on a file-only key asks first", () => {
@@ -95,7 +98,7 @@ describe("Save on a file-only key asks first", () => {
     await editHotspots(section);
     const d = dialog()!;
     expect(d).not.toBeNull();
-    expect(d.textContent).toContain("Change hotspot_paths?");
+    expect(d.textContent).toContain("Change Hotspot paths?");
     expect(JSON.parse(d.querySelector("[data-old-value]")!.textContent!)).toEqual(["src/core/"]);
     expect(JSON.parse(d.querySelector("[data-new-value]")!.textContent!)).toEqual(["src/core/", "src/ui/"]);
     expect(posts).toEqual([]);
@@ -107,8 +110,8 @@ describe("Save on a file-only key asks first", () => {
   it("a key the file leaves out shows its old value as not set", async () => {
     const section = await form();
     const path = keyOf(section, "repo.path");
-    fireEvent.change(within(path).getByLabelText("repo.path"), { target: { value: "app" } });
-    await act(async () => fireEvent.click(within(path).getByRole("button", { name: "Save repo.path" })));
+    fireEvent.change(within(path).getByLabelText(`${keyLabel("repo.path")}`), { target: { value: "app" } });
+    await act(async () => fireEvent.click(within(path).getByRole("button", { name: `Save ${keyLabel("repo.path")}` })));
     expect(dialog()!.querySelector("[data-old-value]")!.textContent).toBe("not set");
     expect(dialog()!.querySelector("[data-new-value]")!.textContent).toBe('"app"');
   });
@@ -124,12 +127,12 @@ describe("Save on a file-only key asks first", () => {
   it("a floor asks in the danger Dialog and sends confirm true only on Confirm", async () => {
     const section = await form();
     const floors = keyOf(section, "floors");
-    fireEvent.change(within(floors).getByLabelText("floors 1 tier"), { target: { value: "2" } });
-    await act(async () => fireEvent.click(within(floors).getByRole("button", { name: "Save floors" })));
+    fireEvent.change(within(floors).getByLabelText(`${keyLabel("floors")} 1 tier`), { target: { value: "2" } });
+    await act(async () => fireEvent.click(within(floors).getByRole("button", { name: `Save ${keyLabel("floors")}` })));
     expect(dialog()!.textContent).toContain("sets a guard, floor, permission or dial");
     await act(async () => fireEvent.click(within(dialog()!).getByRole("button", { name: "Cancel" })));
     expect(posts).toEqual([]);
-    await act(async () => fireEvent.click(within(floors).getByRole("button", { name: "Save floors" })));
+    await act(async () => fireEvent.click(within(floors).getByRole("button", { name: `Save ${keyLabel("floors")}` })));
     expect(JSON.parse(dialog()!.querySelector("[data-old-value]")!.textContent!)).toEqual([{ prefix: "prompts/", tier: 3 }]);
     await act(async () => fireEvent.click(within(dialog()!).getByRole("button", { name: "Put on a branch" })));
     expect(posts).toEqual([{ action: "edit-file", key: "floors", value: '[{"prefix":"prompts/","tier":2}]', confirm: true }]);

@@ -5,7 +5,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type FunctionComponent, createElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CapabilitiesView, SettingRow, SettingsView } from "../web/src/api.js";
+import type { SettingRow, SettingsView } from "../web/src/api.js";
+import { PR_ONLY_KEYS, SETTABLE_KEYS } from "../src/core/settings.js";
+import { type MessageKey, en } from "../web/src/i18n/en.js";
+import { keyHelp, keyLabel } from "../web/src/lib/key-label.js";
 
 // tsconfig.test.json checks this file without JSX (only tests/ui-shell.test.tsx is checked with web/tsconfig.json),
 // so the page is built with createElement and its .tsx module is loaded by a specifier the node check skips.
@@ -86,23 +89,6 @@ const view: SettingsView = {
   ],
 };
 
-// The capability list's read (design 08-settings, 2026-11-15): a skill, a granted tool, a tool that writes, a provider entry;
-// the Settings page's Providers section shows only the provider entries.
-const capabilities: CapabilitiesView = {
-  as_of: AT,
-  roles: ["triage", "implement", "review", "update", "resolve", "manual"],
-  capabilities: [
-    { kind: "skill", id: "skill:deploy", name: "deploy", detail: "/home/me/.claude/skills", enabled: true, roles: [], last_used: null },
-    { kind: "tool", id: "tool:forge.preflight", name: "forge.preflight", detail: "Read-only check.", enabled: true, roles: ["review", "triage"], last_used: AT, read_only: true },
-    { kind: "tool", id: "tool:git.store_branch", name: "git.store_branch", detail: "Store a branch.", enabled: false, roles: [], last_used: null, read_only: false },
-    {
-      kind: "provider", id: "runner:claude-code", name: "runner:claude-code", detail: null, enabled: true, roles: ["triage", "implement", "review", "resolve"], last_used: AT,
-      models: [{ class: "cheap", model: "haiku" }, { class: "standard", model: "sonnet" }, { class: "strong", model: "opus" }],
-    },
-  ],
-};
-let capabilitiesReads = 0;
-
 let posts: { url: string; init: RequestInit }[] = [];
 const ON = { as_of: "2026-11-08T00:00:00Z", csrf_token: "t", commands_enabled: true, actor: "local:me@example.com", actor_source: "environment" };
 let session: Record<string, unknown> = ON;
@@ -118,8 +104,8 @@ beforeEach(() => {
       return new Response(JSON.stringify(answer.body), { status: answer.status, headers: { "content-type": "application/json" } });
     }
     if (url === "/api/v1/settings") return new Response(JSON.stringify(view), { status: 200, headers: { "content-type": "application/json" } });
-    if (url === "/api/v1/settings/capabilities") return (capabilitiesReads++, new Response(JSON.stringify(capabilities), { status: 200, headers: { "content-type": "application/json" } }));
     if (url.startsWith("/api/v1/items/")) return new Response(JSON.stringify({ item: { merge: { enabled: true, reason: null } } }), { status: 200, headers: { "content-type": "application/json" } });
+    if (url === "/api/v1/calendar") return new Response(JSON.stringify({ plugins: [{ name: "google-calendar", connected: false, default_client: true, synced_at: null, error: null, attempt: null }] }), { status: 200, headers: { "content-type": "application/json" } });
     if (url === "/api/v1/session") return new Response(JSON.stringify(session), { status: 200, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 404 });
   }));
@@ -130,37 +116,28 @@ afterEach(() => {
   afterEachReset();
   afterEachReset = () => undefined;
   cleanup();
+  history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
 
-async function show() {
+/** The page open on a tab (the `tab` query parameter, as a reload or a link would have it). */
+async function show(tab: string | null = "advanced") {
+  // null: leave the URL as it is, as a reload does.
+  if (tab !== null) history.replaceState(null, "", tab === "" ? "/app/settings" : `/app/settings?tab=${tab}`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(SettingsPage)));
-  return screen.findByRole("table", { name: "Settable keys" });
+  return tab === "advanced" || tab === null ? screen.findByRole("table", { name: "Settable keys" }) : screen.findByRole("tablist");
 }
 
 const PR_ONLY = "Change only in factory.config.json (by a reviewed PR)";
 const rowOf = (table: HTMLElement, key: string) => table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;
+const selectedTab = () => screen.getAllByRole("tab").find((t) => t.getAttribute("aria-selected") === "true")!.textContent;
+/** The names of the page's top-level sections, in page order. */
+const regions = () => [...document.querySelectorAll<HTMLElement>("section[aria-label]")].map((e) => e.getAttribute("aria-label")!);
+/** A key row's File value, shown behind its Details. */
+const fileValue = (row: HTMLElement) => row.querySelectorAll("details[data-details] dd")[2]!;
 
 describe("Settings page", () => {
-  it("has a Providers section: each provider entry with its state, roles and last use, and a link to the Plugins page instead of skills and tools", async () => {
-    capabilitiesReads = 0;
-    await show();
-    expect(screen.queryByRole("table", { name: "Capabilities" })).toBeNull();
-    const table = await screen.findByRole("table", { name: "Providers" });
-    const rows = [...table.querySelectorAll("tbody > tr")];
-    expect(rows.map((r) => r.querySelector("td")!.textContent)).toEqual(["runner:claude-codecheap: haiku · standard: sonnet · strong: opus"]);
-    expect(rows[0]!.textContent).toContain("Enabled");
-    expect(rows[0]!.textContent).toContain("triage, implement, review, resolve");
-    expect(rows[0]!.textContent).toContain("ago");
-    const section = screen.getByRole("region", { name: "Providers" });
-    expect(within(section).getByRole("link", { name: "Plugins page" }).getAttribute("href")).toBe("/app/plugins");
-    expect(section.textContent).not.toContain("forge.preflight");
-    expect(section.textContent).not.toContain("deploy");
-    // Read once when the page opens, never polled: it reads stored transcripts.
-    expect(capabilitiesReads).toBe(1);
-  });
-
   it("has a Commands from the page section (#page-commands): who commands act as, and and no how-to-act sentence", async () => {
     await show();
     const section = await screen.findByRole("region", { name: "Commands from the page" });
@@ -181,7 +158,7 @@ describe("Settings page", () => {
     const table = await show();
     expect([...table.querySelectorAll("tbody > tr")].map((r) => r.getAttribute("data-key"))).toEqual(view.keys.map((k) => k.key));
     const loops = rowOf(table, "max_loops");
-    expect((within(loops).getByLabelText("max_loops") as HTMLInputElement).value).toBe("4");
+    expect((within(loops).getByLabelText(`${keyLabel("max_loops")}`) as HTMLInputElement).value).toBe("4");
     expect(loops.textContent).toContain("override");
     expect(loops.textContent).toContain("the controller's next decision");
     const tick = rowOf(table, "tick_ms");
@@ -191,19 +168,19 @@ describe("Settings page", () => {
     // A long unbroken value may break anywhere, so the table fits its card at 1280 px and Reset keeps its 12 px.
     expect(within(tick).getByText("2s", { selector: "span.font-mono" }).className.split(" ")).toContain("wrap-anywhere");
     // Reset only where an override exists.
-    expect(within(loops).queryByRole("button", { name: "Reset max_loops" })).not.toBeNull();
+    expect(within(loops).queryByRole("button", { name: `Reset ${keyLabel("max_loops")}` })).not.toBeNull();
     expect(within(tick).queryByRole("button", { name: /^Reset/ })).toBeNull();
     // workers names its max_workers limit; models has a text field per tier; model_by a JSON field; a switch for the boolean.
     expect(rowOf(table, "workers").textContent).toContain("1 to 8 (max_workers)");
-    for (const t of ["cheap", "standard", "strong"]) expect(within(rowOf(table, "models")).getByLabelText(`models ${t}`)).not.toBeNull();
-    expect((within(rowOf(table, "models")).getByLabelText("models strong") as HTMLInputElement).value).toBe("opus");
-    expect(within(rowOf(table, "model_by")).getByLabelText("model_by").tagName).toBe("TEXTAREA");
-    const sw = within(rowOf(table, "phases_auto_approve")).getByRole("switch", { name: "phases_auto_approve" });
+    for (const t of ["cheap", "standard", "strong"]) expect(within(rowOf(table, "models")).getByLabelText(`${keyLabel("models")} ${t}`)).not.toBeNull();
+    expect((within(rowOf(table, "models")).getByLabelText(`${keyLabel("models")} strong`) as HTMLInputElement).value).toBe("opus");
+    expect(within(rowOf(table, "model_by")).getByLabelText(`${keyLabel("model_by")}`).tagName).toBe("TEXTAREA");
+    const sw = within(rowOf(table, "phases_auto_approve")).getByRole("switch", { name: `${keyLabel("phases_auto_approve")}` });
     expect(sw.getAttribute("aria-checked")).toBe("false");
     // The project value of a per-project key, with its own reset.
     const att = rowOf(table, "max_attempts");
     expect(att.textContent).toContain("This project: 2 (override)");
-    expect(within(att).getByRole("button", { name: "Reset max_attempts for o/r" })).not.toBeNull();
+    expect(within(att).getByRole("button", { name: `Reset ${keyLabel("max_attempts")} for o/r` })).not.toBeNull();
   });
 
   it("the models form is a two-column grid (tier | 7rem field, 8 px by 12 px) with Save in its own button row 12 px below", async () => {
@@ -213,8 +190,8 @@ describe("Settings page", () => {
     expect(grid.className.split(" ")).toEqual(expect.arrayContaining(["grid", "grid-cols-[max-content_7rem]", "gap-x-2", "gap-y-3"]));
     // Each tier is a label cell then its field cell, so the three fields share one column and start at one x.
     expect([...grid.children].map((c) => c.tagName)).toEqual(["LABEL", "INPUT", "LABEL", "INPUT", "LABEL", "INPUT"]);
-    for (const t of ["cheap", "standard", "strong"]) expect(within(grid).getByLabelText(`models ${t}`).className).toContain("w-full");
-    const save = within(models).getByRole("button", { name: "Save models" });
+    for (const t of ["cheap", "standard", "strong"]) expect(within(grid).getByLabelText(`${keyLabel("models")} ${t}`).className).toContain("w-full");
+    const save = within(models).getByRole("button", { name: `Save ${keyLabel("models")}` });
     expect(grid.contains(save)).toBe(false);
     const row = save.parentElement!;
     expect(row.previousElementSibling).toBe(grid);
@@ -238,12 +215,12 @@ describe("Settings page", () => {
     for (const key of ["plugins", "secrets"]) expect(pr.querySelector(`tr[data-key="${key}"]`), key).toBeNull();
   });
 
-  it("shows each key's description from the API under its name, editable and PR-only rows alike", async () => {
+  it("shows each key's description from the catalog under its label; PR-only rows keep the API's text", async () => {
     const table = await show();
     for (const k of view.keys) {
       const cell = rowOf(table, k.key).querySelector("td")!;
-      expect(cell.textContent).toContain(k.key);
-      expect(cell.textContent).toContain(DESC(k.key));
+      expect(cell.textContent).toContain(keyLabel(k.key));
+      expect(cell.textContent).toContain(en[`key.${k.key}.help` as MessageKey]);
     }
     const pr = screen.getByRole("table", { name: PR_ONLY });
     for (const key of ["deny_paths", "auth"]) {
@@ -251,7 +228,7 @@ describe("Settings page", () => {
       expect(cell.textContent).toContain(DESC(key));
     }
     // Always in the page, not behind a hover or a breakpoint.
-    const p = screen.getByText(DESC("max_loops"));
+    const p = screen.getByText(keyHelp("max_loops", ""));
     expect(p.className).not.toMatch(/(^|\s)(hidden|sr-only|group-hover:|sm:|md:|lg:)/);
   });
 
@@ -263,7 +240,7 @@ describe("Settings page", () => {
     expect(duration("tick_ms")).toBe("2s");
     for (const k of view.keys.filter((r) => r.key.endsWith("_ms"))) {
       expect(duration(k.key), k.key).not.toBeNull();
-      expect(rowOf(table, k.key).querySelector("td")!.textContent).toContain(DESC(k.key));
+      expect(rowOf(table, k.key).querySelector("td")!.textContent).toContain(keyHelp(k.key, ""));
     }
     // Keys that are not milliseconds show no duration.
     for (const key of ["max_loops", "workers", "phases_auto_approve"]) expect(duration(key), key).toBeNull();
@@ -276,15 +253,15 @@ describe("Settings page", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]!.textContent).toContain("local:owner");
     expect(rows[0]!.textContent).toContain("(no override) → 4");
-    expect(rows[1]!.textContent).toContain("max_attempts for github.com/o/r");
+    expect(rows[1]!.textContent).toContain(`${keyLabel("max_attempts")} for github.com/o/r`);
     expect(rows[1]!.textContent).toContain("reset (was 3)");
   });
 
   it("saves with POST /api/v1/settings, the CSRF token and JSON", async () => {
     const table = await show();
     const loops = rowOf(table, "max_loops");
-    fireEvent.change(within(loops).getByLabelText("max_loops"), { target: { value: "5" } });
-    await act(async () => fireEvent.click(within(loops).getByRole("button", { name: "Save max_loops" })));
+    fireEvent.change(within(loops).getByLabelText(`${keyLabel("max_loops")}`), { target: { value: "5" } });
+    await act(async () => fireEvent.click(within(loops).getByRole("button", { name: `Save ${keyLabel("max_loops")}` })));
     expect(posts).toHaveLength(1);
     expect(posts[0]!.url).toBe("/api/v1/settings");
     const headers = posts[0]!.init.headers as Record<string, string>;
@@ -297,16 +274,16 @@ describe("Settings page", () => {
     expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ action: "set", key: "phases_auto_approve", value: "true" });
 
     const models = rowOf(table, "models");
-    fireEvent.change(within(models).getByLabelText("models cheap"), { target: { value: "small" } });
-    await act(async () => fireEvent.click(within(models).getByRole("button", { name: "Save models" })));
+    fireEvent.change(within(models).getByLabelText(`${keyLabel("models")} cheap`), { target: { value: "small" } });
+    await act(async () => fireEvent.click(within(models).getByRole("button", { name: `Save ${keyLabel("models")}` })));
     expect(JSON.parse(JSON.parse(posts[2]!.init.body as string).value)).toEqual({ cheap: "small", standard: "sonnet", strong: "opus" });
 
     const att = rowOf(table, "max_attempts");
-    fireEvent.change(within(att).getByLabelText("max_attempts for o/r"), { target: { value: "1" } });
-    await act(async () => fireEvent.click(within(att).getByRole("button", { name: "Save max_attempts for o/r" })));
+    fireEvent.change(within(att).getByLabelText(`${keyLabel("max_attempts")} for o/r`), { target: { value: "1" } });
+    await act(async () => fireEvent.click(within(att).getByRole("button", { name: `Save ${keyLabel("max_attempts")} for o/r` })));
     expect(JSON.parse(posts[3]!.init.body as string)).toEqual({ action: "set", key: "max_attempts", value: "1", project: "o/r" });
 
-    await act(async () => fireEvent.click(within(loops).getByRole("button", { name: "Reset max_loops" })));
+    await act(async () => fireEvent.click(within(loops).getByRole("button", { name: `Reset ${keyLabel("max_loops")}` })));
     expect(JSON.parse(posts[4]!.init.body as string)).toEqual({ action: "reset", key: "max_loops" });
   });
 
@@ -314,8 +291,8 @@ describe("Settings page", () => {
     const table = await show();
     answer = { status: 422, body: { error: "refused: workers 9 is above the config file's max_workers (8)" } };
     const workers = rowOf(table, "workers");
-    fireEvent.change(within(workers).getByLabelText("workers"), { target: { value: "9" } });
-    await act(async () => fireEvent.click(within(workers).getByRole("button", { name: "Save workers" })));
+    fireEvent.change(within(workers).getByLabelText(`${keyLabel("workers")}`), { target: { value: "9" } });
+    await act(async () => fireEvent.click(within(workers).getByRole("button", { name: `Save ${keyLabel("workers")}` })));
     expect(within(workers).getByRole("alert").textContent).toBe("refused: workers 9 is above the config file's max_workers (8)");
     expect(within(rowOf(table, "max_loops")).queryByRole("alert")).toBeNull();
   });
@@ -324,38 +301,38 @@ describe("Settings page", () => {
     const table = await show();
     const modelBy = rowOf(table, "model_by");
     // The file value: a summary of the keys, opening to `path → value` lines with nested objects flattened.
-    const file = modelBy.querySelectorAll("td")[3]!;
+    const file = fileValue(modelBy);
     expect(file.querySelector("summary")!.textContent).toBe("4 keys: triage, implement, review, retry_up");
     const lines = [...file.querySelectorAll("[data-entries] dt")].map((dt) => `${dt.textContent} → ${dt.nextElementSibling!.textContent}`);
     expect(lines).toEqual(["triage → cheap", "implement.1 → standard", "implement.4 → strong", "review → standard", "retry_up → true"]);
     expect(file.textContent).not.toContain(MODEL_BY);
     // The edit field: one entry per line, behind its own summary.
-    const field = within(modelBy).getByLabelText("model_by") as HTMLTextAreaElement;
+    const field = within(modelBy).getByLabelText(`${keyLabel("model_by")}`) as HTMLTextAreaElement;
     expect(field.value).toBe(JSON.stringify(JSON.parse(MODEL_BY), null, 2));
     expect(field.closest("details")!.querySelector("summary")!.textContent).toContain("4 keys");
     // A short object is listed in full, with no summary; its default too.
     const hold = rowOf(table, "hold_policy");
-    expect(hold.querySelector("summary")).toBeNull();
-    expect(hold.querySelectorAll("td")[3]!.textContent).toBe("default: modehold");
+    expect(hold.querySelectorAll("summary")).toHaveLength(1); // its Details only
+    expect(fileValue(hold).textContent).toBe("default: modehold");
   });
 
   it("shows a millisecond key's File value like its Value (30m), and an empty File value or default as empty", async () => {
     const table = await show();
-    expect(rowOf(table, "retry_max_ms").querySelectorAll("td")[3]!.textContent).toBe("30m");
+    expect(fileValue(rowOf(table, "retry_max_ms")).textContent).toBe("30m");
     expect(rowOf(table, "retry_max_ms").textContent).not.toContain("1800000 ");
     // message_style's file value is set; an empty default shows as one form: default: empty.
     const style = rowOf(table, "message_style");
-    expect(style.querySelectorAll("td")[3]!.textContent).toBe('"Short."');
+    expect(fileValue(style).textContent).toBe('"Short."');
     view.keys.find((k) => k.key === "message_style")!.file_value = null;
     cleanup();
     const again = await show();
-    expect(rowOf(again, "message_style").querySelectorAll("td")[3]!.textContent).toBe("default: empty");
+    expect(fileValue(rowOf(again, "message_style")).textContent).toBe("default: empty");
     view.keys.find((k) => k.key === "message_style")!.file_value = '"Short."';
   });
 
   it("shows the message_style example once: a paragraph, no placeholder", async () => {
     const table = await show();
-    const field = within(rowOf(table, "message_style")).getByLabelText("message_style") as HTMLTextAreaElement;
+    const field = within(rowOf(table, "message_style")).getByLabelText(`${keyLabel("message_style")}`) as HTMLTextAreaElement;
     expect(field.placeholder).toBe("");
     expect(document.body.textContent!.split("Short sentences. Plain words, no jargon. Lead with the decision.")).toHaveLength(2);
   });
@@ -375,7 +352,7 @@ describe("Settings page", () => {
   it("hold_policy is a select (hold, start, wait) with the server mode's meaning in each label; wait adds minutes, starting at 20", async () => {
     const table = await show();
     const hold = rowOf(table, "hold_policy");
-    const select = within(hold).getByLabelText("hold_policy") as HTMLSelectElement;
+    const select = within(hold).getByLabelText(`${keyLabel("hold_policy")}`) as HTMLSelectElement;
     expect([...select.options].map((o) => o.value)).toEqual(["hold", "start", "wait"]);
     expect([...select.options].map((o) => o.textContent)).toEqual([
       "hold: keeps the run queued until /approve",
@@ -383,18 +360,18 @@ describe("Settings page", () => {
       "wait: claims the run after its minutes (mode run_after_minutes)",
     ]);
     expect(hold.querySelector("textarea")).toBeNull();
-    expect(within(hold).queryByLabelText("hold_policy minutes")).toBeNull();
+    expect(within(hold).queryByLabelText(`${keyLabel("hold_policy")} minutes`)).toBeNull();
     // start writes {"mode":"run"}.
     fireEvent.change(select, { target: { value: "start" } });
-    fireEvent.click(within(hold).getByRole("button", { name: "Save hold_policy" }));
+    fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(JSON.parse(posts[0]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run"}' });
     // wait shows minutes at 20 and writes run_after_minutes with them.
     fireEvent.change(select, { target: { value: "wait" } });
-    const minutes = within(hold).getByLabelText("hold_policy minutes") as HTMLInputElement;
+    const minutes = within(hold).getByLabelText(`${keyLabel("hold_policy")} minutes`) as HTMLInputElement;
     expect(minutes.value).toBe("20");
     fireEvent.change(minutes, { target: { value: "5" } });
-    fireEvent.click(within(hold).getByRole("button", { name: "Save hold_policy" }));
+    fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ action: "set", key: "hold_policy", value: '{"mode":"run_after_minutes","minutes":5}' });
   });
@@ -403,9 +380,9 @@ describe("Settings page", () => {
     answer = { status: 400, body: { ok: false, error: "minutes must be a positive integer" } };
     const table = await show();
     const hold = rowOf(table, "hold_policy");
-    fireEvent.change(within(hold).getByLabelText("hold_policy"), { target: { value: "wait" } });
-    fireEvent.change(within(hold).getByLabelText("hold_policy minutes"), { target: { value: "0" } });
-    fireEvent.click(within(hold).getByRole("button", { name: "Save hold_policy" }));
+    fireEvent.change(within(hold).getByLabelText(`${keyLabel("hold_policy")}`), { target: { value: "wait" } });
+    fireEvent.change(within(hold).getByLabelText(`${keyLabel("hold_policy")} minutes`), { target: { value: "0" } });
+    fireEvent.click(within(hold).getByRole("button", { name: `Save ${keyLabel("hold_policy")}` }));
     expect((await within(hold).findByRole("alert")).textContent).toContain("minutes must be a positive integer");
   });
 
@@ -416,15 +393,105 @@ describe("Settings page", () => {
     await show().catch(() => undefined);
     const card = (await screen.findByRole("list", { name: "Settable keys" })).querySelector<HTMLElement>('li[data-key="max_loops"]')!;
     const [title, under, rest] = [...card.children] as HTMLElement[];
-    expect(title!.textContent).toContain("max_loops");
-    expect(within(under!).getByLabelText("max_loops")).not.toBeNull();
-    expect([...rest!.querySelectorAll("dt")].map((d) => d.textContent)).toEqual(["Source", "File value", "Applies at", "Reset"]);
+    expect(title!.textContent).toContain(keyLabel("max_loops"));
+    expect(within(under!).getByLabelText(`${keyLabel("max_loops")}`)).not.toBeNull();
+    expect([...rest!.querySelectorAll("dt")].filter((d) => !d.closest("details")).map((d) => d.textContent)).toEqual(["Details", "Reset"]);
   });
 
-  it("puts the pending proposals first on the page", async () => {
+  it("shows exactly three tabs, General selected by default, with Mode and Notices and nothing from the other tabs", async () => {
+    await show("");
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["General", "Integrations", "Advanced"]);
+    expect(selectedTab()).toBe("General");
+    expect(regions()).toEqual(["Mode"]);
+    expect(screen.queryByRole("table", { name: "Settable keys" })).toBeNull();
+  });
+
+  it("each tab holds its sections: Integrations has Integrations and Calendar; Advanced has the keys, file keys, PR-only keys, History, Commands and the ignored overrides", async () => {
+    view.ignored = [{ key: "max_loops", project: null, value: "9", reason: "above the config file's limit" }];
+    await show("integrations");
+    expect(selectedTab()).toBe("Integrations");
+    await screen.findByRole("region", { name: "Calendar" });
+    expect(regions()).toEqual(["Calendar"]);
+    cleanup();
+    await show("advanced");
+    expect(selectedTab()).toBe("Advanced");
+    expect(regions()).toEqual(["Settable keys", "Change on a local branch", PR_ONLY, "History", "Commands from the page", "Ignored overrides"]);
+    view.ignored = [];
+  });
+
+  it("keeps Providers, Pending proposals and Standing approvals off every tab", async () => {
+    for (const tab of ["general", "integrations", "advanced"]) {
+      await show(tab);
+      for (const gone of ["Providers", "Pending proposals", "Standing approvals", "Plugins page"]) expect(document.body.textContent, `${tab}: ${gone}`).not.toContain(gone);
+      cleanup();
+    }
+  });
+
+  it("choosing a tab shows its sections and writes it to the URL, and a reload on that URL opens it again", async () => {
+    await show("");
+    fireEvent.click(screen.getByRole("tab", { name: "Advanced" }));
+    await screen.findByRole("table", { name: "Settable keys" });
+    expect(location.search).toBe("?tab=advanced");
+    expect(selectedTab()).toBe("Advanced");
+    fireEvent.click(screen.getByRole("tab", { name: "Integrations" }));
+    expect(location.search).toBe("?tab=integrations");
+    expect(screen.queryByRole("table", { name: "Settable keys" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "General" }));
+    expect(regions()).toEqual(["Mode"]);
+    // A reload: a fresh page on the URL as it stands.
+    fireEvent.click(screen.getByRole("tab", { name: "Advanced" }));
+    cleanup();
+    await show(null);
+    expect(selectedTab()).toBe("Advanced");
+    expect(screen.getByRole("table", { name: "Settable keys" })).not.toBeNull();
+  });
+
+  it("a tab name the page does not know opens General", async () => {
+    await show("nonsense");
+    expect(selectedTab()).toBe("General");
+  });
+
+  it("the page names no CLI command in its intro or its PR-only text", async () => {
     await show();
-    const first = document.querySelector("section");
-    expect(first?.getAttribute("aria-label")).toBe("Pending proposals");
+    expect(document.body.textContent).not.toContain("factory settings");
+    expect(screen.getByRole("region", { name: "Settable keys" }).textContent).toContain("the same checks as the command line run first");
+  });
+
+  it("every settable key has a human label and a description in the catalog", () => {
+    for (const key of SETTABLE_KEYS) {
+      expect(en[`key.${key}.label` as MessageKey], key).toBeTruthy();
+      expect(en[`key.${key}.help` as MessageKey], key).toBeTruthy();
+    }
+  });
+
+  it("no row shows a raw key name as its primary text: the label is, and the key sits behind Details with Source, File value and Applies at", async () => {
+    const table = await show();
+    for (const k of view.keys) {
+      const r = rowOf(table, k.key);
+      const first = r.querySelector("td")!;
+      expect(first.querySelector("span")!.textContent, k.key).toBe(keyLabel(k.key));
+      const details = r.querySelector("details[data-details]")!;
+      expect(details.querySelector("summary")!.textContent).toBe("Details");
+      expect([...details.querySelectorAll(":scope > dl > dt")].map((d) => d.textContent)).toEqual(["Key name", "Source", "File value", "Applies at"]);
+      expect(details.querySelector("dd")!.textContent).toBe(k.key);
+      // Outside Details the key name appears nowhere in the row.
+      const bare = [...r.querySelectorAll("*")].filter((e) => !e.closest("details[data-details]") && e.children.length === 0 && e.textContent === k.key);
+      expect(bare, k.key).toHaveLength(0);
+    }
+    // The three keys the owner named read as words, not as keys.
+    for (const [key, label] of [["max_attempts", "Attempts per item"], ["standing_approvals.threshold", "Standing approval threshold"], ["repo.install_command", "Install command"]] as const) {
+      expect(keyLabel(key)).toBe(label);
+    }
+  });
+
+  it("the Save and Reset buttons name the human label, never the raw key", async () => {
+    const table = await show();
+    const loops = rowOf(table, "max_loops");
+    expect(within(loops).getByRole("button", { name: "Save Review rounds" })).not.toBeNull();
+    expect(within(loops).getByRole("button", { name: "Reset Review rounds" })).not.toBeNull();
+    for (const b of document.querySelectorAll("button")) expect(b.getAttribute("aria-label") ?? "", b.outerHTML).not.toMatch(/(Save|Reset) [a-z]+[._][a-z_.]+/);
+    const att = rowOf(table, "max_attempts");
+    expect(within(att).getByRole("button", { name: "Reset Attempts per item for o/r" })).not.toBeNull();
   });
 });
 
@@ -446,46 +513,63 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     answer = { status: 200, body: { ok: true, lines: ["filed"], item: "wi_9", branch: "factory/wi_9" } };
   };
 
+  it("names each file key and read-only key by its label, with the key name behind Details, and Save names the label", async () => {
+    const section = await form();
+    for (const { key } of view.file_keys!.editable) {
+      const li = keyOf(section, key);
+      expect(en[`key.${key}.label` as MessageKey], key).toBeTruthy();
+      expect(li.querySelector("form > span")!.textContent, key).toBe(keyLabel(key));
+      expect(within(li).getByRole("button", { name: `Save ${keyLabel(key)}` })).not.toBeNull();
+      expect(li.querySelector("details dd")!.textContent).toBe(key);
+    }
+    expect(within(keyOf(section, "repo.install_command")).getByRole("button", { name: "Save Install command" })).not.toBeNull();
+    for (const { key } of view.file_keys!.read_only) {
+      expect(en[`key.${key}.label` as MessageKey], key).toBeTruthy();
+      expect(section.querySelector(`li[data-read-only="${key}"] span`)!.textContent).toBe(keyLabel(key));
+    }
+    for (const key of PR_ONLY_KEYS) expect(en[`key.${key}.label` as MessageKey], key).toBeTruthy();
+  });
+
   it("has a typed control for every file-only key the page edits", async () => {
     const section = await form();
     expect([...section.querySelectorAll("li[data-file-key]")].map((li) => li.getAttribute("data-file-key"))).toEqual(view.file_keys!.editable.map((e) => e.key));
     for (const li of section.querySelectorAll<HTMLElement>("li[data-file-key]")) {
       const key = li.getAttribute("data-file-key")!;
-      expect(within(li).getByRole("button", { name: `Save ${key}` }), key).not.toBeNull();
+      expect(within(li).getByRole("button", { name: `Save ${keyLabel(key)}` }), key).not.toBeNull();
     }
     // Text fields per model class; a class select per model_by role and tier, a switch for retry_up.
-    expect((within(keyOf(section, "models")).getByLabelText("models strong") as HTMLInputElement).value).toBe("opus");
-    const triage = within(keyOf(section, "model_by")).getByLabelText("model_by triage") as HTMLSelectElement;
+    expect((within(keyOf(section, "models")).getByLabelText(`${keyLabel("models")} strong`) as HTMLInputElement).value).toBe("opus");
+    const triage = within(keyOf(section, "model_by")).getByLabelText(`${keyLabel("model_by")} triage`) as HTMLSelectElement;
     expect([...triage.options].map((o) => o.value)).toEqual(["cheap", "standard", "strong"]);
-    expect((within(keyOf(section, "model_by")).getByLabelText("model_by implement 1") as HTMLSelectElement).value).toBe("standard");
-    expect(within(keyOf(section, "model_by")).getByRole("switch", { name: "model_by retry_up" }).getAttribute("aria-checked")).toBe("true");
+    expect((within(keyOf(section, "model_by")).getByLabelText(`${keyLabel("model_by")} implement 1`) as HTMLSelectElement).value).toBe("standard");
+    expect(within(keyOf(section, "model_by")).getByRole("switch", { name: `${keyLabel("model_by")} retry_up` }).getAttribute("aria-checked")).toBe("true");
     // slack: a list editor of channels and a text field per optional member.
-    expect((within(keyOf(section, "slack")).getByLabelText("slack channels 1") as HTMLInputElement).value).toBe("C1");
-    expect((within(keyOf(section, "slack")).getByLabelText("slack dashboard_url") as HTMLInputElement).value).toBe("");
+    expect((within(keyOf(section, "slack")).getByLabelText(`${keyLabel("slack")} channels 1`) as HTMLInputElement).value).toBe("C1");
+    expect((within(keyOf(section, "slack")).getByLabelText(`${keyLabel("slack")} dashboard_url`) as HTMLInputElement).value).toBe("");
     // The repo commands: one line of arguments each, a quoted argument where it holds a space; check_commands a list of them.
-    expect((within(keyOf(section, "repo.install_command")).getByLabelText("repo.install_command") as HTMLInputElement).value).toBe("npm ci");
-    expect((within(keyOf(section, "repo.test_command")).getByLabelText("repo.test_command") as HTMLInputElement).value).toBe('sh -c "npm test"');
-    expect((within(keyOf(section, "repo.check_commands")).getByLabelText("repo.check_commands 1") as HTMLInputElement).value).toBe("npm run typecheck");
-    expect((within(keyOf(section, "repo.path")).getByLabelText("repo.path") as HTMLInputElement).value).toBe(".");
+    expect((within(keyOf(section, "repo.install_command")).getByLabelText(`${keyLabel("repo.install_command")}`) as HTMLInputElement).value).toBe("npm ci");
+    expect((within(keyOf(section, "repo.test_command")).getByLabelText(`${keyLabel("repo.test_command")}`) as HTMLInputElement).value).toBe('sh -c "npm test"');
+    expect((within(keyOf(section, "repo.check_commands")).getByLabelText(`${keyLabel("repo.check_commands")} 1`) as HTMLInputElement).value).toBe("npm run typecheck");
+    expect((within(keyOf(section, "repo.path")).getByLabelText(`${keyLabel("repo.path")}`) as HTMLInputElement).value).toBe(".");
     // toolchain: env as KEY=VALUE lines, warm_command as arguments.
-    expect((within(keyOf(section, "toolchain")).getByLabelText("toolchain env 1") as HTMLInputElement).value).toBe("CI=1");
-    expect((within(keyOf(section, "toolchain")).getByLabelText("toolchain warm_command") as HTMLInputElement).value).toBe("npm ci");
+    expect((within(keyOf(section, "toolchain")).getByLabelText(`${keyLabel("toolchain")} env 1`) as HTMLInputElement).value).toBe("CI=1");
+    expect((within(keyOf(section, "toolchain")).getByLabelText(`${keyLabel("toolchain")} warm_command`) as HTMLInputElement).value).toBe("npm ci");
     // dials, floors and permissions: typed inputs per member.
-    expect((within(keyOf(section, "dials")).getByLabelText("dials spec_gate_min_tier") as HTMLInputElement).type).toBe("number");
-    expect((within(keyOf(section, "floors")).getByLabelText("floors 1 prefix") as HTMLInputElement).value).toBe("prompts/");
-    expect((within(keyOf(section, "floors")).getByLabelText("floors 1 tier") as HTMLInputElement).value).toBe("3");
-    expect((within(keyOf(section, "permissions")).getByLabelText("permissions grants 1") as HTMLInputElement).value).toBe("static");
-    expect(within(keyOf(section, "permissions")).getByLabelText("permissions static").tagName).toBe("TEXTAREA");
+    expect((within(keyOf(section, "dials")).getByLabelText(`${keyLabel("dials")} spec_gate_min_tier`) as HTMLInputElement).type).toBe("number");
+    expect((within(keyOf(section, "floors")).getByLabelText(`${keyLabel("floors")} 1 prefix`) as HTMLInputElement).value).toBe("prompts/");
+    expect((within(keyOf(section, "floors")).getByLabelText(`${keyLabel("floors")} 1 tier`) as HTMLInputElement).value).toBe("3");
+    expect((within(keyOf(section, "permissions")).getByLabelText(`${keyLabel("permissions")} grants 1`) as HTMLInputElement).value).toBe("static");
+    expect(within(keyOf(section, "permissions")).getByLabelText(`${keyLabel("permissions")} static`).tagName).toBe("TEXTAREA");
     // The path lists: list editors, nested for path_companions.
-    expect((within(keyOf(section, "hotspot_paths")).getByLabelText("hotspot_paths 1") as HTMLInputElement).value).toBe("src/core/");
-    expect(within(keyOf(section, "mechanical_paths")).getByRole("button", { name: "Add to mechanical_paths" })).not.toBeNull();
-    expect((within(keyOf(section, "path_companions")).getByLabelText("path_companions 1 also 1") as HTMLInputElement).value).toBe("docs/design/");
+    expect((within(keyOf(section, "hotspot_paths")).getByLabelText(`${keyLabel("hotspot_paths")} 1`) as HTMLInputElement).value).toBe("src/core/");
+    expect(within(keyOf(section, "mechanical_paths")).getByRole("button", { name: `Add to ${keyLabel("mechanical_paths")}` })).not.toBeNull();
+    expect((within(keyOf(section, "path_companions")).getByLabelText(`${keyLabel("path_companions")} 1 also 1`) as HTMLInputElement).value).toBe("docs/design/");
   });
 
   it("the plugin select of each interface lists only its registered names; no option turns a guard off", async () => {
     const plugins = keyOf(await form(), "plugins");
     for (const p of view.file_keys!.plugins.filter((x) => x.kind !== "source")) {
-      const select = within(plugins).getByLabelText(new RegExp(`^plugins ${p.kind}$`)) as HTMLSelectElement;
+      const select = within(plugins).getByLabelText(new RegExp(`^${keyLabel("plugins")} ${p.kind}$`)) as HTMLSelectElement;
       expect([...select.options].filter((o) => !o.disabled).map((o) => o.value), p.kind).toEqual(p.names);
       // The file's choice; an interface the file leaves out shows the plugin in force and writes nothing until picked.
       if (p.kind === "capability") {
@@ -493,19 +577,19 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
         expect(select.selectedOptions[0]!.textContent).toBe("default: bm25");
       } else expect(select.value, p.kind).toBe(p.selected);
     }
-    const secrets = within(plugins).getByLabelText("plugins secrets") as HTMLSelectElement;
+    const secrets = within(plugins).getByLabelText(`${keyLabel("plugins")} secrets`) as HTMLSelectElement;
     expect([...secrets.options].map((o) => o.value)).not.toContain("none");
     // An interface the file lists several of is a list of selects.
-    expect((within(plugins).getByLabelText("plugins source 2") as HTMLSelectElement).value).toBe("slack");
+    expect((within(plugins).getByLabelText(`${keyLabel("plugins")} source 2`) as HTMLSelectElement).value).toBe("slack");
   });
 
   it("Save sends edit-file through the writer, then shows the branch and a Merge button that merges the item locally", async () => {
     filedAnswer();
     const section = await form();
     const hot = keyOf(section, "hotspot_paths");
-    fireEvent.click(within(hot).getByRole("button", { name: "Add to hotspot_paths" }));
-    fireEvent.change(within(hot).getByLabelText("hotspot_paths 2"), { target: { value: "src/ui/" } });
-    await act(async () => fireEvent.click(within(hot).getByRole("button", { name: "Save hotspot_paths" })));
+    fireEvent.click(within(hot).getByRole("button", { name: `Add to ${keyLabel("hotspot_paths")}` }));
+    fireEvent.change(within(hot).getByLabelText(`${keyLabel("hotspot_paths")} 2`), { target: { value: "src/ui/" } });
+    await act(async () => fireEvent.click(within(hot).getByRole("button", { name: `Save ${keyLabel("hotspot_paths")}` })));
     expect(posts).toHaveLength(0);
     await confirm();
     expect(posts).toHaveLength(1);
@@ -519,24 +603,24 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     expect(posts[1]!.url).toBe("/api/v1/items/wi_9/commands");
     expect(JSON.parse(posts[1]!.init.body as string)).toEqual({ command: "merge" });
     // A Remove takes an entry out; a command line goes back as its arguments; a text member left empty is left out.
-    fireEvent.click(within(hot).getByRole("button", { name: "Remove hotspot_paths 1" }));
-    await act(async () => fireEvent.click(within(hot).getByRole("button", { name: "Save hotspot_paths" })));
+    fireEvent.click(within(hot).getByRole("button", { name: `Remove ${keyLabel("hotspot_paths")} 1` }));
+    await act(async () => fireEvent.click(within(hot).getByRole("button", { name: `Save ${keyLabel("hotspot_paths")}` })));
     await confirm();
     expect(sent(2).value).toBe("[]");
     const test = keyOf(section, "repo.test_command");
-    fireEvent.change(within(test).getByLabelText("repo.test_command"), { target: { value: 'sh -c "npm run check"' } });
-    await act(async () => fireEvent.click(within(test).getByRole("button", { name: "Save repo.test_command" })));
+    fireEvent.change(within(test).getByLabelText(`${keyLabel("repo.test_command")}`), { target: { value: 'sh -c "npm run check"' } });
+    await act(async () => fireEvent.click(within(test).getByRole("button", { name: `Save ${keyLabel("repo.test_command")}` })));
     await confirm();
     expect(JSON.parse(sent(3).value)).toEqual(["sh", "-c", "npm run check"]);
     const slack = keyOf(section, "slack");
-    fireEvent.change(within(slack).getByLabelText("slack channels 1"), { target: { value: "C2" } });
-    await act(async () => fireEvent.click(within(slack).getByRole("button", { name: "Save slack" })));
+    fireEvent.change(within(slack).getByLabelText(`${keyLabel("slack")} channels 1`), { target: { value: "C2" } });
+    await act(async () => fireEvent.click(within(slack).getByRole("button", { name: `Save ${keyLabel("slack")}` })));
     await confirm();
     expect(JSON.parse(sent(4).value)).toEqual({ channels: ["C2"] });
     // A non-guard plugin change writes the whole plugins object, the file's other members kept, without the confirm flag.
     const plugins = keyOf(section, "plugins");
-    fireEvent.change(within(plugins).getByLabelText("plugins runner"), { target: { value: "fake" } });
-    await act(async () => fireEvent.click(within(plugins).getByRole("button", { name: "Save plugins" })));
+    fireEvent.change(within(plugins).getByLabelText(`${keyLabel("plugins")} runner`), { target: { value: "fake" } });
+    await act(async () => fireEvent.click(within(plugins).getByRole("button", { name: `Save ${keyLabel("plugins")}` })));
     await confirm();
     expect(sent(5)).toMatchObject({ key: "plugins", confirm: false });
     expect(JSON.parse(sent(5).value)).toEqual({ secrets: "env-file", runner: "fake", source: ["local", "slack"] });
@@ -546,23 +630,23 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     filedAnswer();
     const section = await form();
     const change: [string, () => void][] = [
-      ["plugins", () => fireEvent.change(within(keyOf(section, "plugins")).getByLabelText("plugins secrets"), { target: { value: "keychain" } })],
-      ["floors", () => fireEvent.change(within(keyOf(section, "floors")).getByLabelText("floors 1 tier"), { target: { value: "2" } })],
-      ["permissions", () => fireEvent.click(within(keyOf(section, "permissions")).getByRole("button", { name: "Remove permissions grants 1" }))],
-      ["dials", () => fireEvent.change(within(keyOf(section, "dials")).getByLabelText("dials auto_merge_max_tier"), { target: { value: "2" } })],
+      ["plugins", () => fireEvent.change(within(keyOf(section, "plugins")).getByLabelText(`${keyLabel("plugins")} secrets`), { target: { value: "keychain" } })],
+      ["floors", () => fireEvent.change(within(keyOf(section, "floors")).getByLabelText(`${keyLabel("floors")} 1 tier`), { target: { value: "2" } })],
+      ["permissions", () => fireEvent.click(within(keyOf(section, "permissions")).getByRole("button", { name: `Remove ${keyLabel("permissions")} grants 1` }))],
+      ["dials", () => fireEvent.change(within(keyOf(section, "dials")).getByLabelText(`${keyLabel("dials")} auto_merge_max_tier`), { target: { value: "2" } })],
     ];
     for (const [key, edit] of change) {
       edit();
-      await act(async () => fireEvent.click(within(keyOf(section, key)).getByRole("button", { name: `Save ${key}` })));
+      await act(async () => fireEvent.click(within(keyOf(section, key)).getByRole("button", { name: `Save ${keyLabel(key)}` })));
       const dialog = document.querySelector<HTMLElement>("dialog[data-dialog]")!;
       expect(dialog, key).not.toBeNull();
-      expect(dialog.textContent).toContain(`Change ${key}?`);
+      expect(dialog.textContent).toContain(`Change ${keyLabel(key)}?`);
       await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" })));
       expect(document.querySelector("dialog[data-dialog]"), key).toBeNull();
       expect(posts, key).toHaveLength(0);
     }
     // Confirm sends the write with the confirm flag.
-    await act(async () => fireEvent.click(within(keyOf(section, "floors")).getByRole("button", { name: "Save floors" })));
+    await act(async () => fireEvent.click(within(keyOf(section, "floors")).getByRole("button", { name: `Save ${keyLabel("floors")}` })));
     const dialog = document.querySelector<HTMLElement>("dialog[data-dialog]")!;
     await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Put on a branch" })));
     expect(posts).toHaveLength(1);
