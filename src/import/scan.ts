@@ -27,9 +27,6 @@ export const IMPORT_KINDS: readonly ImportKind[] = ["skill", "command", "mcp_ser
 export const IMPORT_SOURCES = ["claude", "claude-command", "claude-plugin", "codex", "project", "claude-desktop"] as const;
 export type ImportSource = (typeof IMPORT_SOURCES)[number];
 
-/** A label's source: the part before its first colon. */
-export const sourceOf = (label: string): string => label.split(":")[0]!;
-
 /** A skill's SKILL.md or a command's `.md`: stored as a pointer (path and SHA-256), never its text. */
 export interface FoundFile {
   readonly kind: "skill" | "command";
