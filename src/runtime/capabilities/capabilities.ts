@@ -46,8 +46,8 @@ export interface CapabilitySources {
   providers: readonly ProviderSource[];
 }
 
-/** Where an imported skill was found: Claude Code's or Codex's user-level skills. */
-export type SkillRefSource = "claude" | "codex";
+/** Where an imported skill was found: its source label (`claude`, `codex`, `claude-plugin:<name>`, `project:<repo>`, ...). */
+export type SkillRefSource = string;
 
 /**
  * An imported skill's state, read from its file at read time: `ok` (its bytes still hash to the stored SHA-256),
@@ -67,11 +67,12 @@ export interface Skill {
 /** One `ext_skill_refs` row, as the registry reads it. */
 export interface SkillRef {
   source: SkillRefSource;
+  /** `skill`, or `command` (a Claude Code slash command: never listed as a skill). */
+  kind: string;
   name: string;
   /** The absolute path of its SKILL.md. */
   path: string;
   sha256: string;
-  created_at: string;
 }
 
 export interface Capability {
@@ -181,19 +182,14 @@ export async function readSkills(folders: readonly string[]): Promise<Skill[]> {
 }
 
 /**
- * The imported skills: the newest pointer per source and path, each read from its file now. The file's bytes are
- * hashed: a gone or unreadable file is `missing`, a different SHA-256 is `changed`, and only an `ok` one gives its
- * front matter description. The text is never kept. Its folder is the skills folder that holds its own.
+ * The imported skills: each pointer of kind `skill` (one per source and path; a command is never a skill), read from
+ * its file now. The file's bytes are hashed: a gone or unreadable file is `missing`, a different SHA-256 is
+ * `changed`, and only an `ok` one gives its front matter description. The text is never kept. Its folder is the
+ * skills folder that holds its own.
  */
 export async function readSkillRefs(refs: readonly SkillRef[]): Promise<Skill[]> {
-  const newest = new Map<string, SkillRef>();
-  for (const r of refs) {
-    const key = `${r.source}\n${r.path}`;
-    const seen = newest.get(key);
-    if (!seen || r.created_at > seen.created_at) newest.set(key, r);
-  }
   const out: Skill[] = [];
-  for (const r of newest.values()) {
+  for (const r of refs.filter((x) => x.kind === "skill")) {
     const bytes = await readFile(r.path).catch(() => null);
     const state: SkillState = bytes === null ? "missing" : createHash("sha256").update(bytes).digest("hex") === r.sha256 ? "ok" : "changed";
     const description = state === "ok" ? frontMatterDescription(bytes!.subarray(0, FRONT_MATTER_BYTES).toString("utf8")) : null;

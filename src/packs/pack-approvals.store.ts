@@ -69,7 +69,7 @@ export async function changeApproval(
   o: { auth: Pick<AuthProvider, "authorize">; entries: PackEntriesStore; approvals: PackApprovalsStore; user_id: UserId },
   r: ApprovalRequest,
 ): Promise<ApprovalResult> {
-  const decision = await o.auth.authorize({ user_id: o.user_id, attributes: {} }, "approve_tool", { kind: "tool", id: packGrantName(r.kind as PackEntryKind, r.name) });
+  const decision = await o.auth.authorize({ user_id: o.user_id }, "approve_tool", { kind: "tool", id: packGrantName(r.kind as PackEntryKind, r.name) });
   if (!decision.allow) return { ok: false, refusal: "not_allowed", reason: `${r.action} needs approve_tool: ${decision.reason}` };
   const ref = await target(o.entries, r);
   if (typeof ref === "string") return { ok: false, refusal: "no_entry", reason: ref };

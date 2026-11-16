@@ -78,7 +78,7 @@ export class AppRequestsUnit {
         ? await this.c.unit("local-merge").mergeLocal(item.id, who, key, { [APP_REQUEST]: r.seq })
         : await this.c.unit("pr-events").requestPrMerge(item.id, who, key, { [APP_REQUEST]: r.seq });
     } else if (r.command === "verdict") {
-      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "record_verdict", item.id);
+      const principal = await this.c.unit("auth").allowed({ user_id: r.actor }, "record_verdict", item.id);
       refusal = "refuse" in principal ? principal.refuse : await this.c.unit("verdicts").verdictFrom(item.id, { comment_id: key, target: "issue" }, principal, note ?? "");
     } else if (gate) {
       refusal = await this.gateRequest(r, item, gate, key, note);

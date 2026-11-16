@@ -1,8 +1,11 @@
-import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { serverDescriptor } from "../src/import/mcp-servers.js";
+import { canonicalJson, descriptionHash } from "../src/packs/pack-entries.store.js";
+import { checkPackGrants } from "../src/packs/pack-grants.js";
 import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -1786,6 +1789,9 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       // Rebuilt without pr_number (src/controller/migrations/20261112T1200-controller-change-ref-only); kept until its contract step.
       "legacy_controller_unreviewed_merges",
       "legacy_controller_work_items",
+      // Rebuilt for the plugin import's pointers (src/state/migrations/20261116T1300 and 20261116T1310); kept until the contract step.
+      "legacy_ext_packs_entries",
+      "legacy_ext_skill_refs",
       ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
       "runtime_schema_migrations",
       // Tables of timestamped component migrations (RFC 0015 §6.3).
@@ -3633,5 +3639,148 @@ describe("20261113T0900-controller-task-schedule on an existing SQLite database"
     await TASK_SCHEDULE.up(mdb(db));
     expect(await db.all("SELECT id, duration_minutes, reminded_at FROM controller_tasks")).toEqual([{ id: "tk_old", duration_minutes: null, reminded_at: null }]);
     expect(await store.getTask("tk_old")).toMatchObject({ duration_minutes: null, reminded_at: null });
+  });
+});
+
+describe("20261116T1300 and 20261116T1310: the plugin import's pointer tables on an existing SQLite database", () => {
+  const POINTERS = "20261116T1300-state-ext-packs-entries-pointers";
+  const BY_PATH = "20261116T1310-state-ext-skill-refs-by-path";
+  const at = "2026-11-15T00:00:00.000Z";
+  const later = "2026-11-15T01:00:00.000Z";
+  const rows = (db: DatabaseSync, sql: string) => db.prepare(sql).all().map((r) => ({ ...r }));
+  const cols = (db: DatabaseSync, t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+  const ENTRY = "(id, kind, name, description_hash, module_hash, descriptor, credential_name, status, added_by, created_at, updated_at)";
+  const ME = "local:me@example.com";
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** A copied descriptor as the old import stored it, and its hash. */
+  const copied = (source: string, key: string, raw: Record<string, unknown>) => {
+    const d = serverDescriptor(source, key, raw);
+    return { text: canonicalJson(d), hash: descriptionHash(d) };
+  };
+
+  /**
+   * A HOME whose ~/.claude.json still holds `docs` unchanged and whose ~/.codex/config.toml holds `notes` changed;
+   * `gone` is in neither. A file database just before the two migrations, with a pack tool, the three copied servers
+   * (docs twice: an older and the current description) and skill refs (one path imported twice), and an approval.
+   */
+  async function oldDatabase() {
+    const home = mkdtempSync(join(tmpdir(), "sf-pointer-home-"));
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { docs: { command: "docs-mcp", env: { DOCS_TOKEN: "v" } } } }));
+    writeFileSync(join(home, ".codex", "config.toml"), `[mcp_servers.notes]\ncommand = "notes-v2"\n`);
+    vi.stubEnv("HOME", home);
+    const path = join(mkdtempSync(join(tmpdir(), "sf-pointers-")), "factory.db");
+    const driver = new SqliteDriver(path, { baselineOnly: true });
+    await driver.migrate();
+    const db: MigrationDb = { dialect: "sqlite", all: (sql, p) => driver.all(sql, p), run: (sql, p) => driver.run(sql, p) };
+    await applyMigrations(db, { backupDir: null, now: () => at, migrations: (await discoverMigrations()).filter((m) => m.id < POINTERS) });
+    const docsOld = copied("claude", "docs", { command: "docs-mcp-v0" });
+    const docs = copied("claude", "docs", { command: "docs-mcp", env: { DOCS_TOKEN: "v" } });
+    const notes = copied("codex", "notes", { command: "notes" });
+    const gone = copied("claude", "gone", { command: "gone" });
+    const tool = { text: canonicalJson({ name: "tracker", description: "Reads issues." }), hash: "h-tool" };
+    const insert = (id: string, kind: string, name: string, e: { text: string; hash: string }, created: string) =>
+      driver.run(`INSERT INTO ext_packs_entries ${ENTRY} VALUES (?, ?, ?, ?, NULL, ?, NULL, 'pending', ?, ?, ?)`, [id, kind, name, e.hash, e.text, ME, created, created]);
+    await insert("pe_tool", "tool", "tracker", tool, at);
+    await insert("pe_docs_old", "mcp_server", "docs", docsOld, at);
+    await insert("pe_docs", "mcp_server", "docs", docs, later);
+    await insert("pe_notes", "mcp_server", "notes", notes, at);
+    await insert("pe_gone", "mcp_server", "gone", gone, at);
+    await driver.run("INSERT INTO ext_packs_approvals (kind, name, description_hash, action, user_id, at) VALUES ('mcp_server', 'docs', ?, 'approve', ?, ?)", [docs.hash, ME, at]);
+    await driver.run("INSERT INTO ext_packs_approvals (kind, name, description_hash, action, user_id, at) VALUES ('mcp_server', 'notes', ?, 'approve', ?, ?)", [notes.hash, ME, at]);
+    const ref = (id: string, name: string, p: string, sha: string, created: string) =>
+      driver.run("INSERT INTO ext_skill_refs (id, source, name, path, sha256, added_by, created_at) VALUES (?, 'claude', ?, ?, ?, ?, ?)", [id, name, p, sha, ME, created]);
+    await ref("sr_a_old", "alpha", "/s/alpha/SKILL.md", "a0", at);
+    await ref("sr_a", "alpha", "/s/alpha/SKILL.md", "a1", later);
+    await ref("sr_b", "beta", "/s/beta/SKILL.md", "b1", at);
+    const before = { entries: await driver.all("SELECT * FROM ext_packs_entries ORDER BY id"), refs: await driver.all("SELECT * FROM ext_skill_refs ORDER BY id") };
+    await driver.close();
+    return { home, path, before, docs, notes, gone, tool };
+  }
+
+  /** Opens the database as `npm run migrate` does: breaking migrations applied. */
+  async function migrate(path: string): Promise<void> {
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), new FakeClock());
+    try {
+      await store.migrate();
+    } finally {
+      await store.close();
+    }
+  }
+
+  it("are breaking, name their one table each, verify themselves and come after 20261115T1200", async () => {
+    const found = (await discoverMigrations()).filter((m) => m.id === POINTERS || m.id === BY_PATH);
+    expect(found.map((m) => [m.id, m.change, m.tables])).toEqual([[POINTERS, "breaking", ["ext_packs_entries"]], [BY_PATH, "breaking", ["ext_skill_refs"]]]);
+    for (const m of found) expect(m.verify).toBeTypeOf("function");
+    expect(found.every((m) => m.id > "20261115T1200")).toBe(true);
+  });
+
+  it("rebuilds both tables, keeps the old ones as legacy_ tables with every row, and turns copied MCP rows into pointers", async () => {
+    const o = await oldDatabase();
+    await migrate(o.path);
+    const db = new DatabaseSync(o.path);
+    try {
+      // The legacy tables hold every old row as it was; nothing was dropped.
+      expect(rows(db, "SELECT * FROM legacy_ext_packs_entries ORDER BY id")).toEqual(o.before.entries);
+      expect(rows(db, "SELECT * FROM legacy_ext_skill_refs ORDER BY id")).toEqual(o.before.refs);
+      expect(cols(db, "ext_packs_entries")).toEqual(expect.arrayContaining(["source", "source_file", "source_key", "module_hash"]));
+      expect(cols(db, "ext_skill_refs")).toEqual(expect.arrayContaining(["kind", "updated_at"]));
+      // The pack tool is copied as it was.
+      expect(rows(db, "SELECT id, descriptor, description_hash, source_file FROM ext_packs_entries WHERE kind = 'tool'")).toEqual([
+        { id: "pe_tool", descriptor: o.tool.text, description_hash: o.tool.hash, source_file: null },
+      ]);
+      // One pointer per imported name, from its current row; no descriptor copy.
+      expect(rows(db, "SELECT id, name, description_hash, descriptor, source, source_file, source_key, status FROM ext_packs_entries WHERE kind = 'mcp_server' ORDER BY name")).toEqual([
+        { id: "pe_docs", name: "docs", description_hash: o.docs.hash, descriptor: null, source: "claude", source_file: join(o.home, ".claude.json"), source_key: "docs", status: "pending" },
+        { id: "pe_gone", name: "gone", description_hash: o.gone.hash, descriptor: null, source: "claude", source_file: join(o.home, ".claude.json"), source_key: "gone", status: "missing" },
+        {
+          id: "pe_notes", name: "notes", description_hash: copied("codex", "notes", { command: "notes-v2" }).hash, descriptor: null,
+          source: "codex", source_file: join(o.home, ".codex", "config.toml"), source_key: "notes", status: "pending",
+        },
+      ]);
+      // Skill refs: one row per (source, path), the newest kept with its data; every one a skill.
+      expect(rows(db, "SELECT id, source, kind, name, path, sha256, added_by, created_at, updated_at FROM ext_skill_refs ORDER BY id")).toEqual([
+        { id: "sr_a", source: "claude", kind: "skill", name: "alpha", path: "/s/alpha/SKILL.md", sha256: "a1", added_by: ME, created_at: later, updated_at: later },
+        { id: "sr_b", source: "claude", kind: "skill", name: "beta", path: "/s/beta/SKILL.md", sha256: "b1", added_by: ME, created_at: at, updated_at: at },
+      ]);
+      expect(() => db.prepare("INSERT INTO ext_skill_refs (id, source, kind, name, path, sha256, added_by, created_at, updated_at) VALUES ('x', 'claude', 'skill', 'alpha', '/s/alpha/SKILL.md', 'a2', 'u', 't', 't')").run()).toThrow(/UNIQUE/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("an unchanged server's approval still holds; a changed one is pending again; a missing one runs nothing", async () => {
+    const o = await oldDatabase();
+    await migrate(o.path);
+    const driver = new SqliteDriver(o.path);
+    try {
+      expect(await checkPackGrants(driver, ["pack:mcp_server:docs", "pack:mcp_server:notes", "pack:mcp_server:gone"], false)).toEqual({
+        broker: [],
+        mcp_servers: [{ name: "docs", command: "docs-mcp", args: [] }],
+        refused: [{ grant: "pack:mcp_server:notes", reason: "not_approved" }, { grant: "pack:mcp_server:gone", reason: "missing" }],
+      });
+    } finally {
+      await driver.close();
+    }
+  });
+
+  it("a rerun of either migration changes nothing", async () => {
+    const o = await oldDatabase();
+    await migrate(o.path);
+    const driver = new SqliteDriver(o.path);
+    try {
+      const all = async () => JSON.stringify([await driver.all("SELECT * FROM ext_packs_entries ORDER BY id"), await driver.all("SELECT * FROM ext_skill_refs ORDER BY id")]);
+      const once = await all();
+      const db: MigrationDb = { dialect: "sqlite", all: (sql, p) => driver.all(sql, p), run: (sql, p) => driver.run(sql, p) };
+      for (const m of (await discoverMigrations()).filter((x) => x.id === POINTERS || x.id === BY_PATH)) {
+        await m.up(db);
+        expect(await m.verify!(db)).toEqual([]);
+      }
+      expect(await all()).toBe(once);
+    } finally {
+      await driver.close();
+    }
   });
 });

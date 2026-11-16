@@ -551,7 +551,7 @@ export function labelTarget(source: SourceRef, change_ref: string | null): strin
 /** Only subject "1" may approve. */
 export class FakeAuth implements AuthProvider {
   async resolve(identity: ExternalIdentity): Promise<Principal> {
-    return { user_id: `github:${identity.subject}` as UserId, attributes: {} };
+    return { user_id: `github:${identity.subject}` as UserId };
   }
   async authorize(p: Principal, action: string): Promise<AuthDecision> {
     if (action === "submit_work" || p.user_id === "github:1") return { allow: true };

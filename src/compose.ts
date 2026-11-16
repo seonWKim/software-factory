@@ -50,7 +50,7 @@ import type { SecretStore } from "./interfaces/secret-store.js";
 import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { updaterConfig } from "./impl/updater/config.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
-import { AuditedAuthProvider, controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
+import { controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { OwnerAuth } from "./core/authorize.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { type PackTool, packToolBrokers, withPackTools } from "./impl/broker/pack-tools.js";
@@ -405,10 +405,9 @@ export async function loadConfig(
   // The pack layers (design 11-packs.md): base (the code root), org (`packs.org`), project (`.factory/` in the
   // repo's main checkout) and learned (under the state dir). A missing layer is off. Their plugins and tools join a registry copy.
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
-  // No shared store (design 05-coordination.md, 2026-11-13): sharedStore stays false until phase 2 removes the option.
-  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore: false }));
+  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs));
   const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
-  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore: false, builtin: opts.registry ?? REGISTRY });
+  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, opts.registry ?? REGISTRY);
   const local = !selectsGitHub(plugins);
   if (!local) await checkGitHubSettings(file.github);
   const secretsFile = defaultSecretsFile();
@@ -770,7 +769,7 @@ export async function build(
   // Identity (RFC 0015 §8, M9): service and run passports, and the audit of every authorize decision.
   const identity = await startProcessIdentity(loaded, store, clock);
   // Every person's command, whatever its origin, by the one owner check, one authz_audit row per decision (passport `none`).
-  const auth = new AuditedAuthProvider(new OwnerAuth(store), identity.passports);
+  const auth = new OwnerAuth(store);
   // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
@@ -813,7 +812,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
-  const checks = packChecks(loaded.packs, config.hooks ?? [], { sharedStore: false, toolHooks: runner.supports_tool_hooks === true });
+  const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
   await checkEnabledHooks((config.hooks ?? []).filter((n) => !checks.some((c) => c.name === n)));
   shareGitHubBudget(loaded, github, store, config);
 
@@ -1036,7 +1035,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const onProject = async (user_id: UserId, action: AuthAction, readOnly = false): Promise<AuthDecision> => {
     const project = await settings.resolveProject();
     if (!project) return { allow: false, reason: "no project is stored yet" };
-    return auth[readOnly ? "check" : "authorize"]({ user_id, attributes: {} }, action, { kind: "project", id: project.key });
+    return auth[readOnly ? "check" : "authorize"]({ user_id }, action, { kind: "project", id: project.key });
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
@@ -1084,7 +1083,7 @@ export function ownerRefusal(loaded: Loaded, store: FactoryStore, user: UserId, 
   return async () => {
     const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);
     if (!project) return "no project key is stored yet; start the factory once first";
-    return refusalOf(await (await localAuth(loaded, store)).authorize({ user_id: user, attributes: {} }, action, { kind: "project", id: project.key }));
+    return refusalOf(await (await localAuth(loaded, store)).authorize({ user_id: user }, action, { kind: "project", id: project.key }));
   };
 }
 

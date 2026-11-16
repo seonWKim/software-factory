@@ -30,7 +30,7 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
   const token = newCsrfToken();
   const pauses: UiPauses = {
     principal: async () => (opts.user === undefined ? APPROVER : opts.user),
-    authorize: (user_id) => auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT.key }),
+    authorize: (user_id) => auth.authorize({ user_id }, "approve_spec", { kind: "project", id: PROJECT.key }),
     csrfToken: token,
     log: { info: (msg) => void logged.push(msg), warn: () => {}, error: () => {} },
   };

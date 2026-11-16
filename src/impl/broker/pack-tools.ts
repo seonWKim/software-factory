@@ -101,11 +101,8 @@ async function loadOne(dir: string, module: string, reserved: ReservedSecrets): 
   };
 }
 
-/**
- * Every layer's pack tools, in layer order. A name in two layers fails startup, naming both files. On a shared store
- * a project pack's tool module fails startup too: only reviewed layers (base, org) may add code there.
- */
-export async function loadPackTools(packs: readonly Pack[], opts: { sharedStore: boolean; reserved: ReservedSecrets }): Promise<PackTool[]> {
+/** Every layer's pack tools, in layer order. A name in two layers fails startup, naming both files. */
+export async function loadPackTools(packs: readonly Pack[], reserved: ReservedSecrets): Promise<PackTool[]> {
   const out: PackTool[] = [];
   const where = new Map<string, string>();
   for (const p of packs) {
@@ -117,14 +114,8 @@ export async function loadPackTools(packs: readonly Pack[], opts: { sharedStore:
       if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw err;
     }
-    if (opts.sharedStore && p.layer === "project" && modules.length > 0) {
-      throw new Error(
-        `project pack tool ${join(dir, modules[0]!)}: a shared store (mysql) takes no project pack tools; ` +
-          "put the tool in the org pack (packs.org) (docs/design/11-packs.md)",
-      );
-    }
     for (const module of modules) {
-      const tool = await loadOne(dir, module, opts.reserved);
+      const tool = await loadOne(dir, module, reserved);
       const seen = where.get(tool.name);
       if (seen) throw new Error(`pack tool ${tool.name} is in two layers: ${seen} and ${join(dir, module)}; keep one`);
       where.set(tool.name, join(dir, module));
@@ -136,16 +127,16 @@ export async function loadPackTools(packs: readonly Pack[], opts: { sharedStore:
 
 /**
  * The pack layers' tools, and the registry with each one's credential declared as a secret of the selected broker
- * (`broker`). What loadConfig keeps; a bad tool fails startup, and so does a credential `opts.builtin` (the built-in
+ * (`broker`). What loadConfig keeps; a bad tool fails startup, and so does a credential `builtin` (the built-in
  * registry, before the packs' plugins join) declares for any plugin.
  */
 export async function withPackTools(
   registry: Registry,
   broker: string,
   packs: readonly Pack[],
-  opts: { sharedStore: boolean; builtin: Registry },
+  builtin: Registry,
 ): Promise<{ registry: Registry; pack_tools: PackTool[] }> {
-  const pack_tools = await loadPackTools(packs, { sharedStore: opts.sharedStore, reserved: reservedSecrets(opts.builtin) });
+  const pack_tools = await loadPackTools(packs, reservedSecrets(builtin));
   const declared = pack_tools.flatMap((t) => (t.credential_name ? [{ name: t.credential_name, purpose: `the pack tool ${t.name}` }] : []));
   if (declared.length === 0) return { registry, pack_tools };
   const entry = registry.broker;

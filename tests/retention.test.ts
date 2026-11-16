@@ -192,10 +192,10 @@ describe("the owner check's audit rows (design 08-permissions)", () => {
     const project = { kind: "project" as const, id: "p" };
     const audit = () => store.db.all("SELECT principal, action, decision FROM authz_audit ORDER BY seq");
     // A page load asking whether to show the item commands.
-    expect(await auth.check({ user_id: owner, attributes: {} }, "approve_spec", project)).toEqual({ allow: true });
+    expect(await auth.check({ user_id: owner }, "approve_spec", project)).toEqual({ allow: true });
     expect(await audit()).toEqual([]);
-    expect(await auth.check({ user_id: "local:other" as UserId, attributes: {} }, "approve_spec", project)).toEqual({ allow: false, reason: NOT_OWNER });
-    expect(await auth.authorize({ user_id: owner, attributes: {} }, "approve_spec", project)).toEqual({ allow: true });
+    expect(await auth.check({ user_id: "local:other" as UserId }, "approve_spec", project)).toEqual({ allow: false, reason: NOT_OWNER });
+    expect(await auth.authorize({ user_id: owner }, "approve_spec", project)).toEqual({ allow: true });
     expect(await audit()).toEqual([
       { principal: "local:other", action: "approve_spec", decision: "deny" },
       { principal: owner, action: "approve_spec", decision: "allow" },

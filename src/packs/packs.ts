@@ -222,23 +222,12 @@ export function packSkills(packs: readonly Pack[]): Capability[] {
   );
 }
 
-/**
- * The plugin descriptor files (`plugins/**\/*.plugin.js`) of every layer, in layer order. On a shared store a
- * project pack's plugin fails startup, naming the file: only reviewed layers (base, org) may add code there.
- */
-export function packPluginFiles(packs: readonly Pack[], opts: { sharedStore: boolean }): string[] {
+/** The plugin descriptor files (`plugins/**\/*.plugin.js`) of every layer, in layer order. */
+export function packPluginFiles(packs: readonly Pack[]): string[] {
   const files: string[] = [];
   for (const p of packs) {
     const dir = join(p.dir, "plugins");
-    if (!isDir(dir)) continue;
-    const mine = findDescriptorFiles(dir, /\.plugin\.js$/);
-    if (opts.sharedStore && p.layer === "project" && mine.length > 0) {
-      throw new Error(
-        `project pack plugin ${mine[0]}: a shared store (mysql) takes no project pack plugins; ` +
-          "put the plugin in the org pack (packs.org) or in the engine (docs/design/11-packs.md)",
-      );
-    }
-    files.push(...mine);
+    if (isDir(dir)) files.push(...findDescriptorFiles(dir, /\.plugin\.js$/));
   }
   return files;
 }
@@ -296,11 +285,11 @@ function readCheck(name: string, layer: PackLayer, file: string): PackCheck {
 /**
  * The enabled pack checks, in run order (order, then the layer order, then the name). Only a name `enabled` (the
  * `hooks` key) lists runs: a layer's other checks are not read. Startup fails, naming the check or the file, on a
- * name two layers both have, a bad check file, a point other than the pack check points, a project-layer check
- * on a shared store (mysql), and an `on_tool_call` check when the runner has no tool hooks. A listed name no
- * layer has is left to the `*.hook.ts` check (checkEnabledHooks).
+ * name two layers both have, a bad check file, a point other than the pack check points, and an `on_tool_call`
+ * check when the runner has no tool hooks. A listed name no layer has is left to the `*.hook.ts` check
+ * (checkEnabledHooks).
  */
-export function packChecks(packs: readonly Pack[], enabled: readonly string[], opts: { sharedStore: boolean; toolHooks: boolean }): PackCheck[] {
+export function packChecks(packs: readonly Pack[], enabled: readonly string[], opts: { toolHooks: boolean }): PackCheck[] {
   const checks: PackCheck[] = [];
   for (const name of new Set(enabled)) {
     if (!HOOK_NAME.test(name)) continue;
@@ -310,11 +299,6 @@ export function packChecks(packs: readonly Pack[], enabled: readonly string[], o
       throw new Error(`hooks: the pack check ${name} is in more than one layer (${found.map((f) => f.file).join(", ")}); keep one, or rename the other`);
     }
     const { layer, file } = found[0]!;
-    if (opts.sharedStore && layer === "project") {
-      throw new Error(
-        `project pack check ${file}: a shared store (mysql) runs no project pack checks; put the check in the org pack (packs.org) or remove ${name} from hooks`,
-      );
-    }
     const check = readCheck(name, layer, file);
     if (check.point === "on_tool_call" && !opts.toolHooks) {
       throw new Error(`hooks: the pack check ${name} runs at on_tool_call, but the selected agent runner has no tool hooks (supports_tool_hooks); remove it from hooks or pick a runner that has them`);

@@ -48,7 +48,7 @@ class SlackAuth implements AuthProvider {
   async resolve(identity: ExternalIdentity): Promise<Principal | null> {
     const links: Record<string, string> = { U0ALICE: "github:1", U0BOB: "github:2" };
     const user = identity.provider === "slack" ? links[identity.subject] : `github:${identity.subject}`;
-    return user ? { user_id: user as UserId, attributes: {} } : null;
+    return user ? { user_id: user as UserId } : null;
   }
   async authorize(p: Principal, action: AuthAction): Promise<AuthDecision> {
     this.calls.push({ user_id: p.user_id, action });
@@ -1129,7 +1129,7 @@ describe("slack source: one help and refusal text (issue #528)", () => {
       store: f.store, scanner: f.scanner, clock: f.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], f.clock),
       commands: {
         actor: actor as UserId, source: "config", token: "t",
-        allowed: (action) => auth.authorize({ user_id: actor as UserId, attributes: {} }, action, { kind: "project", id: PROJECT_KEY }),
+        allowed: (action) => auth.authorize({ user_id: actor as UserId }, action, { kind: "project", id: PROJECT_KEY }),
       },
     };
     const r = await respond(d, { method: "GET", url: `/api/v1/items/${encodeURIComponent(id)}`, host: "127.0.0.1:4310" });
