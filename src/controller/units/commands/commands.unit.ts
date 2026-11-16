@@ -7,7 +7,7 @@
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {
   APPROVED_RUN_QUEUED, APP_REQUEST, CHECKPOINT_REFUSAL, CLOSED_REFUSAL, HOLD_PATHS, appliesLocally, appliesOnPr, approveCheck, approvesHold, awaitingSpec, commandFooter, commandNote, commandPhase, commandSpec,
-  commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, mergeQueued, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
+  commandState, failedRunKind, floorCommand, floorTierNeeded, helpReply, parseLink, phaseLabel, refusalText, ruleOfTwoCommand, scanNote, specDecision,
   specNotWaiting, unknownCommandReply, withTag, localMergeRefusal, mergeReturned, prMergeRefusal, queuedRun, waitsForMerge,
 } from "../../../core/commands.js";
 import { AGENT_NEEDS_HUMAN, REPEATED_FAILURE, blockingRunKind, floorTier, isCovered, runKey, workItemIdFromBranch } from "../../../core/policy.js";
@@ -624,8 +624,7 @@ export class CommandsUnit {
    * (finishReject). Refused, saying why, when its change is merged or in the merge queue (the closes unit's rejectRefusal).
    */
   async reject(e: Extract<ItemCommandEvent, { kind: "spec_rejected" }>, it: WorkItem, actor: Actor): Promise<Decision | Refusal> {
-    // An item whose Merge was pressed (merge_queued) is checked as one waiting for its merge: its change may be landing.
-    const refuse = await this.c.unit("closes").rejectRefusal(mergeQueued(it) ? { ...it, blocked_on: "human", blocked_reason: "merge_pending" } : it);
+    const refuse = await this.c.unit("closes").rejectRefusal(it);
     if (refuse !== null) return { refuse };
     const patch = { stage: "CLOSED", close_reason: "rejected", blocked_on: "upstream", blocked_reason: SOURCE_CLOSE_PENDING, spec_feedback: e.reason.trim() || null } as const;
     return { patch, actor, reason: "spec_rejected", cancel_queued_runs: true, cancel_running_runs: true };

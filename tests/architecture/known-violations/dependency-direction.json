@@ -185,7 +185,6 @@
   "component-imports-legacy|controller/units/support.ts|core/commands.ts",
   "component-imports-legacy|controller/units/support.ts|core/policy.ts",
   "component-imports-legacy|controller/units/support.ts|core/resolve.ts",
-  "component-imports-legacy|controller/units/support.ts|core/split.ts",
   "component-imports-legacy|controller/units/support.ts|core/types.ts",
   "component-imports-legacy|controller/units/support.ts|interfaces/factory-store.ts",
   "component-imports-legacy|controller/units/support.ts|interfaces/source-adapter.ts",

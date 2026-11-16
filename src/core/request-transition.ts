@@ -59,9 +59,19 @@ const SPLIT_PATHS = "`+paths` does not apply to a split spec, whose `/approve` f
 export const HOLD_PATHS = "`+paths` does not apply to an implement run held by coordination cost, since that run is already queued; reply `/approve` without `+paths`";
 /** Any command but `/approve` and `/reject` on a Rule of Two block. */
 const RULE_OF_TWO_WAITS = "the item waits for a person to approve its run (Rule of Two); reply `/approve` to start it or `/reject <reason>` to close";
-const FLOOR_TIER = "floor_tier";
-const RULE_OF_TWO = "rule_of_two";
-const DELIVERY_FAILED = "delivery_failed";
+/** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
+export const FLOOR_TIER = "floor_tier";
+/**
+ * blocked_reason of an item whose next run's role holds all three Rule of Two facts while no person approved it (auto
+ * mode approved its spec, RFC 0015 §8): the run is held until a person's `/approve` (design 10-event-driven).
+ */
+export const RULE_OF_TWO = "rule_of_two";
+/**
+ * A write an item waited for was given up by outbound (refused for good, RFC 0015 §7): a run's PR or push, or a
+ * split's phase filing. The item waits for a person (`blocked_on: human`), with the action and its last error in
+ * the transition's detail.
+ */
+export const DELIVERY_FAILED = "delivery_failed";
 
 /** An app request reads no `+paths`, so it widens nothing. */
 const NOT_WIDENED: Widened = { patch: {}, detail: {} };
@@ -73,9 +83,9 @@ function approvedAlready(changes: readonly StateChange[], it: WorkItem): boolean
 }
 
 /** A split parent whose `/approve` claimed the filing and has not settled it yet. */
-const splitFiling = (it: WorkItem) => it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === SPLIT_FILING;
+export const splitFiling = (it: WorkItem): boolean => it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === SPLIT_FILING;
 /** A split parent whose phases are filed and not all closed as completed. */
-const splitOpen = (it: WorkItem) => it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN;
+export const splitOpen = (it: WorkItem): boolean => it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN;
 /** A split whose phase filing outbound gave up: it waits for `/approve` again. */
 const splitFilingFailed = (it: WorkItem) => it.stage === "READY" && it.blocked_on === "human" && it.blocked_reason === DELIVERY_FAILED && it.parent_id === null;
 

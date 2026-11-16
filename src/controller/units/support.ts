@@ -1,12 +1,14 @@
 // Declarations two or more controller units share (moved out of the legacy controller, RFC 0015 M5).
 
-import { commandFooter, commandState } from "../../core/commands.js";
+import { commandFooter, commandState, waitsForMerge } from "../../core/commands.js";
 import { AUTO_ACTOR, runKey } from "../../core/policy.js";
 import { MERGE_CONFLICT_PENDING } from "../../core/resolve.js";
-import { PHASES_OPEN, SPLIT_FILING } from "../../core/split.js";
 import { type Actor, RECURRING_FAILURE, type RunKind, type SourceType, type StateChangeDetail, type Timestamp, type WorkItem, type WorkItemId, type WorkItemPatch } from "../../core/types.js";
 import type { TransitionInput } from "../../interfaces/factory-store.js";
 import type { SourceEvent } from "../../interfaces/source-adapter.js";
+
+// The split, delivery and gate states the approve gate checks live in core, shared with the dashboard's request path.
+export { DELIVERY_FAILED, FLOOR_TIER, RULE_OF_TWO, splitFiling, splitOpen, waitsForMerge } from "../../core/commands.js";
 
 /** The actor of auto mode's approvals, merges and stops (design 03-risk). */
 export const AUTO: Actor = { kind: "system", id: AUTO_ACTOR };
@@ -38,13 +40,6 @@ export const CHECKS_FAILED_UPDATE = "checks_failed_update";
 export const MAX_CONFLICT_RETRIES = 5;
 /** Characters of PR feedback (a `/revise` on a PR, or a "Request changes" review) kept and sent to the implementer. */
 export const MAX_FEEDBACK_CHARS = 8000;
-/** blocked_reason of an item whose diff touches a floor above its tier (design §4). */
-export const FLOOR_TIER = "floor_tier";
-/**
- * blocked_reason of an item whose next run's role holds all three Rule of Two facts while no person approved it (auto
- * mode approved its spec, RFC 0015 §8): the run is held until a person's `/approve` (design 10-event-driven).
- */
-export const RULE_OF_TWO = "rule_of_two";
 /**
  * blocked_reason of a PR whose base no longer merges cleanly and whose automatic resolve runs are used up (or
  * whose updated branch failed its tests); `/resolve` starts a resolve run (design §5).
@@ -97,24 +92,6 @@ export function retry(it: WorkItem, actor: Actor, kind: RunKind | undefined, not
 export function completed(it: WorkItem | null | undefined): boolean {
   return it?.stage === "CLOSED" && it.close_reason === "completed";
 }
-/** A split parent whose `/approve` claimed the filing and has not settled it yet. */
-export function splitFiling(it: WorkItem): boolean {
-  return it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === SPLIT_FILING;
-}
-/** A split parent whose phases are filed and not all closed as completed. */
-export function splitOpen(it: WorkItem): boolean {
-  return it.stage === "READY" && it.blocked_on === "upstream" && it.blocked_reason === PHASES_OPEN;
-}
-/**
- * A write an item waited for was given up by outbound (refused for good, RFC 0015 §7): a run's PR or push, or a
- * split's phase filing. The item waits for a person (`blocked_on: human`), with the action and its last error in
- * the transition's detail.
- */
-export const DELIVERY_FAILED = "delivery_failed";
-/** A split parent whose phase filing outbound gave up: `/approve` again files the rest. */
-export function splitFilingFailed(it: WorkItem): boolean {
-  return it.stage === "READY" && it.blocked_on === "human" && it.blocked_reason === DELIVERY_FAILED && it.parent_id === null;
-}
 /** Markdown block quote of `text`, line by line. */
 export function quote(text: string): string {
   return text.split(/\r?\n/).map((l) => (l.trim() ? `> ${l}` : ">")).join("\n");
@@ -143,6 +120,5 @@ export function updateKey(id: WorkItemId, change_ref: string, head_sha: string, 
 export function updatingForChecks(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_FAILED_UPDATE;
 }
-export function awaitingMerge(it: WorkItem): boolean {
-  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
-}
+/** The old name of waitsForMerge, for the closes and merge-check units until they import waitsForMerge. */
+export const awaitingMerge = waitsForMerge;

@@ -9,7 +9,7 @@ import {
 import type { NewBudgetCheckpoint, TransitionInput } from "../../../interfaces/factory-store.js";
 import { loadRoles } from "../../../runtime/index.js";
 import { holdsAllFacts, ruleOfTwoRefusal } from "../../../shared/role.js";
-import { type Decision, type Refusal, AUTO, MAX_CONFLICT_RETRIES, RULE_OF_TWO, footerAfter, updatingForChecks, awaitingMerge } from "../support.js";
+import { type Decision, type Refusal, AUTO, MAX_CONFLICT_RETRIES, RULE_OF_TWO, footerAfter, updatingForChecks, waitsForMerge } from "../support.js";
 import workItemActor from "../../actors/work-item/work-item.actor.js";
 import { allowed } from "../../router/actor.js";
 import type { Ctx } from "../context.js";
@@ -53,7 +53,7 @@ export class TransitionsUnit {
   expects(it: WorkItem, kind: RunKind): boolean {
     // An update runs while the PR waits for a human merge, so the item stays blocked on that human throughout, or
     // before the implement run of a failed-checks loop (design §5 CI gate).
-    if (kind === "update") return awaitingMerge(it) || updatingForChecks(it);
+    if (kind === "update") return waitsForMerge(it) || updatingForChecks(it);
     if (kind === "manual") return false;
     // A dependency hold is lifted by the claim reading the store; the controller may clear the field after it.
     if (kind === "implement" && it.stage === "RUNNING" && it.blocked_on === "dependency") return true;

@@ -12,7 +12,7 @@ import { lastPrNotes } from "../../../core/pr-body.js";
 import { type Actor, type SourceRef, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
 import type { ExternalIdentity } from "../../../interfaces/auth-provider.js";
 import { LOCAL_GIT_HOST, basePushOutcome, basePushTarget, gitTarget, type ActionRow } from "../../../outbound/index.js";
-import { AUTO, awaitingMerge } from "../support.js";
+import { AUTO, waitsForMerge } from "../support.js";
 import type { Ctx } from "../context.js";
 import { controllerUnit } from "../context.js";
 
@@ -258,7 +258,7 @@ export class LocalMergeUnit {
    */
   async conflicting(it: WorkItem): Promise<boolean> {
     const sandbox = this.c.k.d.sandbox;
-    if (!awaitingMerge(it) || it.change_ref !== null || !canMergeLocal(sandbox)) return false;
+    if (!waitsForMerge(it) || it.change_ref !== null || !canMergeLocal(sandbox)) return false;
     const { repo } = this.c.k.cfg;
     return ((await sandbox.localConflicts({ repo: repo.path, base_ref: repo.base_branch, branch: this.branchOf(it) }))?.length ?? 0) > 0;
   }
@@ -335,7 +335,7 @@ export class LocalMergeUnit {
     if (r.global.mode.value !== "auto" && !Object.values(r.projects).some((p) => p.mode?.value === "auto")) return;
     const waiting = await this.c.k.reader.listWorkItemsWhere({ stage: "REVIEW", blocked_on: "human", limit: AUTO_MERGE_BATCH });
     for (const it of waiting) {
-      if (!awaitingMerge(it) || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) continue;
+      if (!waitsForMerge(it) || it.source.type !== LOCAL_SOURCE || it.change_ref !== null) continue;
       const auto = await this.autoMode(it.project);
       if (!auto) continue;
       // Keyed by the review that passed, not the item version: the merge queue's own state changes bump the version.
