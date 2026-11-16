@@ -117,7 +117,7 @@ function reasonMatches(want: string | undefined, got: string | null): boolean {
 }
 
 /** True when `r` matches the item. */
-export function ruleMatches(r: PhaseRule, it: PhaseInput): boolean {
+function ruleMatches(r: PhaseRule, it: PhaseInput): boolean {
   return (r.stage === undefined || r.stage === it.stage) &&
     (r.on === undefined || r.on === it.blocked_on) &&
     (r.close === undefined || r.close === it.close_reason) &&
