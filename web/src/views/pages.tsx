@@ -309,9 +309,11 @@ export function ItemsPage() {
   const itemsById = useMemo(() => byId(items.data?.items), [items.data]);
   // The tree, and a list narrowed to named items, read every row and filter in the page.
   const local = tree || ids !== null;
-  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : local ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
+  // Running, with no search and no named items, is the server's count of runs whose status is running, as Activity's Running now.
+  const narrowed = !!q.trim() || ids !== null;
+  const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : s === "running" && !narrowed && items.data ? items.data.counts.running : local ?rows.filter((r) => itemMatches(r, { state: s, q, showClosed, ids })).length : (items.data?.facets.state[s] ?? 0));
   // All, with no search, no named items and closed items hidden, is the server's open count (stage not CLOSED), as Activity's Open items.
-  const allCount = !q.trim() && !showClosed && !ids && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
+  const allCount = !narrowed && !showClosed && items.data ? items.data.counts.open : local ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed, ids })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
       <PageHeader title={t("page.work")} />
