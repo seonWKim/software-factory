@@ -1,4 +1,5 @@
-import { basename, dirname } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { UNIT_FILE, type UnitDescriptor } from "../../src/controller/router/unit.js";
@@ -26,6 +27,19 @@ const IO_REACH: readonly [string, RegExp][] = [
   ["restarts", /\.d\.restarts\b/],
 ];
 
+/** A header comment that says the file's I/O (or its store reads) is still inline. */
+const INLINE_CLAIM = /\bI\/O\s+is\s+(?:still\s+)?inline\b|\breads\s+are\s+inline\b/i;
+
+/** The leading comment lines of a source file, joined. */
+function header(text: string): string {
+  const lines: string[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("//")) break;
+    lines.push(line.slice(2));
+  }
+  return lines.join(" ");
+}
+
 function unitFiles(): string[] {
   return findDescriptorFiles(SRC, UNIT_FILE).map((f) => f.slice(SRC.length + 1));
 }
@@ -44,6 +58,15 @@ function violations(): string[] {
 describe("unit-purity", () => {
   it("no new I/O in a controller unit (ratchet)", () => {
     ratchet("unit-purity", violations());
+  });
+
+  it("a header that says its I/O is inline names a unit in the known-violations list", () => {
+    const listed = new Set((JSON.parse(readFileSync(join(import.meta.dirname, "known-violations", "unit-purity.json"), "utf8")) as string[])
+      .map((v) => v.split("|")[1]!.split("/")[2]));
+    const unitsDir = join(SRC, "controller", "units");
+    const files = readdirSync(unitsDir, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".ts"));
+    const claims = files.filter((f) => INLINE_CLAIM.test(header(read(`controller/units/${f}`))));
+    expect(claims.filter((f) => !listed.has(f.split(/[\\/]/)[0]))).toEqual([]);
   });
 
   it("catches an I/O import and a store reached through the kernel", () => {

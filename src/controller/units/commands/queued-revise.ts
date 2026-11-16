@@ -1,7 +1,7 @@
 // `/revise` while implementing (design 04-gate-commands, 2026-11-15): no agent runner takes a message during its session,
 // so the feedback is queued as a `revise_queued` state change and applied when the run ends, before review, as one
-// implement run (`revise_applied`). A `revise_applied` or `max_loops` row naming its comment ID settles it. Its store
-// reads are inline, as the commands unit's are (unit-purity ratchet).
+// implement run (`revise_applied`). A `revise_applied` or `max_loops` row naming its comment ID settles it. It reads
+// state changes through the kernel's reader.
 
 import { type CommandEvent, type Decision, type Refusal, MAX_FEEDBACK_CHARS, SYSTEM, footerAfter } from "../support.js";
 import type { Ctx } from "../context.js";

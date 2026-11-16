@@ -1,5 +1,6 @@
 // The local merge check: a factory PR or a local item waiting for a merge is checked against the newest base.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader, and core's MergeChecker runs
+// the check itself.
 
 import { MERGE_CHECK_BATCH, MergeChecker, type OnConflict, canMergeCheck } from "../../../core/merge-check.js";
 import { awaitingMerge } from "../support.js";

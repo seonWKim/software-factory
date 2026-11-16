@@ -1,5 +1,5 @@
 // Applies finished runs: triage, implement, review, update and resolve outcomes, failures, retries and blocks.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { prNumber } from "../../../core/change-ref.js";
 import { commandFooter, commandState, retryPathsReply, withholdReplyLines } from "../../../core/commands.js";

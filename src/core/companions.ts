@@ -1,4 +1,4 @@
-// Path companions (design 04-triage.md, issue #224): files a change to a path also needs, such as a MySQL
+// Path companions (design 04-triage.md, issue #224): files a change to a path also needs, such as a
 // migration step beside a schema change, or a design topic file beside its index. Triage names the files it
 // expects to change; the controller adds each companion to `allowed_paths` before the answer is checked, so a
 // path limit never stops the implementer halfway.

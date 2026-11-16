@@ -8,7 +8,7 @@ export type Scalar = string | number | boolean | null;
 export type Payload = Readonly<Record<string, Scalar | readonly Scalar[]>>;
 
 export const MAX_PAYLOAD_STRING = 200;
-/** The longest id, key, subject or producer: the bus stores them in VARCHAR(191) columns on MySQL. */
+/** The longest id, key, subject or producer the bus stores. */
 export const MAX_KEY_LENGTH = 191;
 
 export type MessageKind = "command" | "event";

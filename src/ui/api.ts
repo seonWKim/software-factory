@@ -217,7 +217,7 @@ class ApiCtx {
 
 /**
  * /api/v1/health: the HealthMonitor's report (exactly what /api/health returns) plus `sleeps`, the newest host
- * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a MySQL
+ * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a
  * database without step 0025) the list is empty and the checks still answer.
  */
 async function health(c: ApiCtx) {
@@ -587,7 +587,7 @@ async function queue(c: ApiCtx) {
  * `workers`: each current lease owner of a running run once, by id, with how many runs it holds. `processes`:
  * one entry per live worker process (its store row is at most lease_ms old), idle ones included, with its slot
  * counts and the running runs its worker loops hold (lease owner `<process_id>:<n>`). The processes read is a
- * report, never a gate: when it fails (e.g. a MySQL database without the worker_processes step) the endpoint
+ * report, never a gate: when it fails (e.g. a database without the worker_processes step) the endpoint
  * still answers, with `processes: []` and the error text in `processes_error`.
  */
 async function workers(c: ApiCtx) {

@@ -3,8 +3,8 @@
 // command row as the presser's linked factory user, and of `factory confirm` (the same row, as the CLI identity); the
 // dashboard's sentence, Confirm all and Cancel (app requests, `appProposal`); and the one answer to a plain message. Each pending command it names goes through the typed command's
 // path (CommandsUnit.gateCommand): the same AuthProvider check, note scan and state checks. Imports only the
-// controller's own modules; what needs the legacy core comes in from the commands unit (`ConfirmDeps`). Its store
-// I/O is inline, as the commands unit's is (unit-purity ratchet): the kernel has no proposal write yet.
+// controller's own modules; what needs the legacy core comes in from the commands unit (`ConfirmDeps`). It reads
+// and writes proposal rows through the store, since the kernel has no proposal write yet.
 
 import { createHash } from "node:crypto";
 import { COMMAND, type CommandEvent } from "../support.js";

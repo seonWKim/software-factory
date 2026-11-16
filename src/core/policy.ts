@@ -276,9 +276,6 @@ export function classifyNetwork(code: string, detail: string): { code: string; d
   return host === null ? { code, detail } : { code: NETWORK_UNAVAILABLE, detail: networkDetail(host) };
 }
 
-/** The error codes whose failure pauses implement-type claims, each in the claim pause row of the same name. */
-export const IMPLEMENT_PAUSE_CODES = [FORGE_AUTH, PREFLIGHT_ACCESS] as const;
-
 /**
  * When a failed run's automatic retry may be claimed (design §5 Restarts). A model rate limit: its reset (none:
  * `retry_max_ms` after the failure). A stall: at once, the stall pause holds claims. A forge 401/403, a failed

@@ -1,5 +1,5 @@
 // Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { BUDGET_CHECKPOINT, parseBudgetAmount } from "../../../core/budget.js";
 import {

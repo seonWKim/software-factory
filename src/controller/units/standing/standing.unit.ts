@@ -1,5 +1,5 @@
 // Standing approvals: the command, proposals after a run of approvals, turning a rule off.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { SPEC_GATE, STANDING_APPROVED, STANDING_TIER, dueProposal, findRule, gateEvents, parseRuleId, parseStanding, protectedCategory, ruleId } from "../../../core/standing.js";
 import { type Tier, type UserId, type WorkItem, type WorkItemId } from "../../../core/types.js";
