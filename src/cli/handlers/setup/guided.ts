@@ -7,9 +7,7 @@
 
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { type Loaded, Plugins, buildStatsStore, settingsBase } from "../../../compose.js";
-import { cliUserConfig } from "../../../core/config.js";
-import { type CliIdentity, cliIdentity } from "../../../core/local-cli.js";
+import { type CliIdentity, type Loaded, Plugins, buildStatsStore, settingsBase } from "../../../compose.js";
 import { AUTO_MERGE_TIER_MAX, MODES, type Mode, resolveSettings } from "../../../core/settings.js";
 import { ProfileStore, checkDisplayName } from "../../../identity/index.js";
 import { storeSql } from "../../../impl/store/sql/store-sql.js";
@@ -33,8 +31,8 @@ import {
   secretsToPrompt,
   setSecret,
 } from "../../../setup.js";
-import { type CommandContext, loadCommands } from "../../index.js";
-import { cliEnvironment, gitUserName } from "../../support.js";
+import { type CommandCall, loadCommands } from "../../index.js";
+import { gitUserName, loadedIdentity } from "../../support.js";
 import { type Ask, defaultsAsk, readHidden, terminalAsk } from "./ask.js";
 import { applyChoices, configDiffLines, currentChoices, editConfigText, parseSlackChannels } from "./config-edit.js";
 import { clearProgress, readProgress, writeProgress } from "./progress.js";
@@ -47,10 +45,10 @@ export interface GuidedOptions {
 
 /** The shared state plus the command context, for reloading the config and running `factory settings`. */
 export interface GuidedState extends SetupState {
-  ctx: CommandContext;
+  ctx: CommandCall;
 }
 
-export async function guidedSetup(ctx: CommandContext, o: GuidedOptions): Promise<number> {
+export async function guidedSetup(ctx: CommandCall, o: GuidedOptions): Promise<number> {
   if (!o.yes && !process.stdin.isTTY) {
     console.error("setup is interactive: run it in a terminal, or pass --yes to take every default");
     return 1;
@@ -309,7 +307,7 @@ export const youStep: SetupStep<SetupState> = {
       const r = await registerYou({
         store,
         profiles: new ProfileStore(storeSql(store)),
-        identity: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)),
+        identity: await loadedIdentity(loaded),
         gitName: await gitUserName(loaded.root),
         ask: io.ask,
         now: (await new Plugins(loaded).clock()).now().toISOString(),
@@ -356,7 +354,7 @@ export const SETUP_STEPS: readonly SetupStep<GuidedState>[] = [
 ];
 
 /** Writes the new text atomically and loads it; on a config the loader refuses, puts the old text back and returns why. */
-async function writeConfig(ctx: CommandContext, file: string, before: string, after: string): Promise<Loaded | string> {
+async function writeConfig(ctx: CommandCall, file: string, before: string, after: string): Promise<Loaded | string> {
   const save = async (t: string) => {
     const tmp = `${file}.tmp-${process.pid}`;
     await writeFile(tmp, t);
@@ -399,7 +397,7 @@ async function currentMode(loaded: Loaded, print: (line: string) => void): Promi
 }
 
 /** Sets each key that differs through `factory settings set`: the same approve_merge check and audit row. */
-async function applyMode(ctx: CommandContext, loaded: Loaded, choice: ModeChoice, print: (line: string) => void): Promise<StepResult> {
+async function applyMode(ctx: CommandCall, loaded: Loaded, choice: ModeChoice, print: (line: string) => void): Promise<StepResult> {
   const now = await currentMode(loaded, print);
   if (now === null) return { ok: false, line: `mode not set; later: npm run factory -- settings set mode ${choice.mode}` };
   const settings = (await loadCommands()).get("settings")!;
@@ -440,7 +438,7 @@ export interface ConnectDeps {
  * asks, signs in and stores its secrets; the plugin is listed in (or dropped from) the live `calendar` setting, other
  * names kept; on connect one sync of that plugin follows, printing how many events it read. Exit 0 or 1.
  */
-export async function connectSetup(ctx: CommandContext, r: ConnectRequest, deps?: ConnectDeps): Promise<number> {
+export async function connectSetup(ctx: CommandCall, r: ConnectRequest, deps?: ConnectDeps): Promise<number> {
   if (!deps && !process.stdin.isTTY) {
     console.error(`setup ${r.kind} ${r.command} is interactive: run it in a terminal`);
     return 1;
@@ -457,7 +455,7 @@ export async function connectSetup(ctx: CommandContext, r: ConnectRequest, deps?
   try {
     const out = await connectCalendar({
       loaded, store, name: found.name, disconnect: r.disconnect,
-      actor: cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root)).user,
+      actor: (await loadedIdentity(loaded)).user,
       clock: given ?? (await new Plugins(loaded).clock()),
       io: { ask: { yesNo: (q, d) => io.ask.yesNo(q, d), hidden: (p) => io.secret(p) }, print: io.print, openBrowser: deps?.openBrowser ?? openBrowser },
     });

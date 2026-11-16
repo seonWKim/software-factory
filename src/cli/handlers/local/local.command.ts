@@ -1,13 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { buildStatsStore } from "../../../compose.js";
-import { cliUserConfig } from "../../../core/config.js";
-import { CLI_TOP_WORDS, HELP_WORD, cliIdentity, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
+import { readFile } from "node:fs/promises";
+import { CLI_TOP_WORDS, HELP_WORD, cliUsageLines, parseLocalCliArgs, runLocalCli } from "../../../core/local-cli.js";
 import { storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
 import { lastRefusedLines, refusalHint } from "./refused.js";
-import { cliEnvironment } from "../../support.js";
 
 /**
  * `factory task …`, `factory approve|retry|revise|reject|resolve <id> [text]` (issue #200), `factory verdict <id> <verdict>`
@@ -26,19 +22,8 @@ export default defineCommand({
       console.error(action.error);
       return 1;
     }
-    const loaded = await ctx.load();
-    let cliUser;
-    try {
-      cliUser = cliUserConfig(loaded.file);
-    } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err));
-      return 1;
-    }
-    const identity = cliIdentity(cliUser, await cliEnvironment(loaded.root));
-    await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-    const store = await buildStatsStore(loaded);
-    try {
-      await store.migrate();
+    const identity = await ctx.identity();
+    return ctx.withStore(async (store, loaded) => {
       const { owner, name } = loaded.config.repo;
       const resolveProject = storeProjectResolver(store, { owner, name });
       const r = await runLocalCli(
@@ -56,8 +41,6 @@ export default defineCommand({
       if (r.code === 0 && action.action === "command") r.lines.push(refusalHint(action.id));
       for (const line of r.lines) (r.code === 0 ? console.log : console.error)(line);
       return r.code;
-    } finally {
-      await store.close();
-    }
+    });
   },
 });

@@ -1,7 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { loadCommands } from "../src/cli/index.js";
+import type { Loaded } from "../src/compose.js";
 import type { LogFields, Logger } from "../src/core/log.js";
-import type { Timestamp } from "../src/core/types.js";
+import type { CliEnvironment } from "../src/core/local-cli.js";
+import type { Timestamp, UserId } from "../src/core/types.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
+import { REGISTRY } from "../src/plugins.js";
 import { RESUMABLE_PAUSES, RESUME_USAGE, parseResumeArgs, runResume } from "../src/resume-cmd.js";
 import { newStore } from "./helpers/store.js";
 
@@ -26,7 +33,7 @@ async function setup() {
   const resume = async (...args: string[]) => {
     const a = parseResumeArgs(args);
     if ("error" in a) return { code: 1, lines: [a.error, RESUME_USAGE] };
-    return runResume({ store, actor: "local:owner", log }, a);
+    return runResume({ store, actor: "local:owner", log, refusal: async () => null }, a);
   };
   return { store, log, resume };
 }
@@ -79,5 +86,46 @@ describe("factory resume", () => {
     expect(log.lines).toEqual([{ msg: "claim pause ended", fields: { pause: "preflight_access", actor: "local:owner", ended: true } }]);
     await resume("preflight_access");
     expect(log.lines[1]!.fields).toEqual({ pause: "preflight_access", actor: "local:owner", ended: false });
+  });
+});
+
+describe("factory resume: the owner check and the CLI identity", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const FIXED: CliEnvironment = { gitEmail: "Me@Example.com", osUser: "os-login" };
+
+  /** Runs the real `resume` command with a fixed environment, over `store` (kept open after the command). */
+  async function command(store: FactoryStore, env: CliEnvironment, ...args: string[]) {
+    const dir = mkdtempSync(join(tmpdir(), "sf-resume-"));
+    const loaded = {
+      root: dir, stateDir: dir, file: {}, config: { repo: { owner: "o", name: "r" }, local_only: true }, registry: REGISTRY, plugins: { clock: "system" },
+    } as unknown as Loaded;
+    const kept = new Proxy(store, { get: (t, k) => (k === "close" ? async () => {} : Reflect.get(t, k, t)) });
+    const out: string[] = [], logs: Record<string, unknown>[] = [];
+    vi.spyOn(console, "log").mockImplementation((l: string) => void out.push(l));
+    vi.spyOn(console, "error").mockImplementation((l: string) => void out.push(l));
+    vi.spyOn(process.stderr, "write").mockImplementation((l: string | Uint8Array) => (logs.push(JSON.parse(String(l)) as Record<string, unknown>), true));
+    const resume = (await loadCommands()).get("resume")!;
+    const code = await resume.run(args, { name: "resume", usage: "", load: async () => loaded, environment: async () => env, openStore: async () => kept });
+    vi.restoreAllMocks();
+    return { code, out, logs };
+  }
+
+  it("logs the CLI identity's user as the actor (git user.email before the OS user), never the OS login read directly", async () => {
+    const { store } = await setup();
+    const r = await command(store, FIXED, "forge_auth");
+    expect(r).toMatchObject({ code: 0, out: ["ended the forge_auth pause"] });
+    expect(r.logs).toEqual([expect.objectContaining({ msg: "claim pause ended", pause: "forge_auth", actor: "local:me@example.com" })]);
+    expect(await active(store)).not.toContain("forge_auth");
+  });
+
+  it("an identity the owner check refuses gets the refusal, exit 1, and ends no pause", async () => {
+    const { store } = await setup();
+    await store.claimOwner("local:owner@example.com" as UserId);
+    const before = (await store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows;
+    const r = await command(store, FIXED, "--all");
+    expect(r).toMatchObject({ code: 1, out: ["not resumed: not_owner"], logs: [] });
+    expect((await store.listTableRows({ table: "worker_claim_pauses", limit: 200 }))!.rows).toEqual(before);
+    expect(await active(store)).toEqual([...RESUMABLE_PAUSES]);
   });
 });
