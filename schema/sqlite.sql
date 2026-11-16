@@ -747,24 +747,31 @@ CREATE TABLE ext_packs_entries (
     kind              TEXT NOT NULL,
     name              TEXT NOT NULL,
     description_hash  TEXT NOT NULL,
-    descriptor        TEXT NOT NULL,
+    module_hash       TEXT,
+    descriptor        TEXT,
     credential_name   TEXT,
+    source            TEXT,
+    source_file       TEXT,
+    source_key        TEXT,
     status            TEXT NOT NULL,
     added_by          TEXT NOT NULL,
     created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL, module_hash TEXT,
-    UNIQUE (kind, name, description_hash)
+    updated_at        TEXT NOT NULL,
+    UNIQUE (kind, name, description_hash),
+    UNIQUE (source, source_file, source_key)
   );
 
 CREATE TABLE ext_skill_refs (
     id          TEXT PRIMARY KEY,
     source      TEXT NOT NULL,
+    kind        TEXT NOT NULL,
     name        TEXT NOT NULL,
     path        TEXT NOT NULL,
     sha256      TEXT NOT NULL,
     added_by    TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    UNIQUE (source, path, sha256)
+    updated_at  TEXT NOT NULL,
+    UNIQUE (source, path)
   );
 
 CREATE TABLE identity_link_codes (
@@ -1047,6 +1054,31 @@ CREATE TABLE "legacy_dependency_edges" (
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL, source_updated_at TEXT,
     PRIMARY KEY (work_item_id, depends_on)
+  );
+
+CREATE TABLE "legacy_ext_packs_entries" (
+    id                TEXT PRIMARY KEY,
+    kind              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    description_hash  TEXT NOT NULL,
+    descriptor        TEXT NOT NULL,
+    credential_name   TEXT,
+    status            TEXT NOT NULL,
+    added_by          TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL, module_hash TEXT,
+    UNIQUE (kind, name, description_hash)
+  );
+
+CREATE TABLE "legacy_ext_skill_refs" (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    sha256      TEXT NOT NULL,
+    added_by    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (source, path, sha256)
   );
 
 CREATE TABLE "legacy_file_conflicts" (

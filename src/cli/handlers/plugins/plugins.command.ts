@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Plugins, settingsBase } from "../../../compose.js";
 import { foundLine, importLine, storeFound } from "../../../import/import-plugins.js";
-import { type Found, IMPORT_KINDS, IMPORT_SOURCES, type ImportKind, type ImportSource, scanUserConfigs } from "../../../import/scan.js";
+import { type Found, IMPORT_KINDS, IMPORT_SOURCES, type ImportKind, type ImportSource, type ScanResult, scanFolder, scanUserConfigs } from "../../../import/scan.js";
 import { createPlugin } from "../../../plugins.js";
 import { capabilitySources } from "../../../ui/capabilities-api.js";
 import { PLUGIN_KINDS, type PluginKind, pluginLines, pluginRows } from "../../../ui/plugins-api.js";
@@ -13,10 +13,10 @@ import { cliEnvironment } from "../../support.js";
 // `factory plugins list [--kind mcp|skill|tool]` (design 09-dashboard-app, 2026-11-15): the Plugins page's rows,
 // built by the same builder as GET /api/v1/plugins (pluginRows). "Plugins" are what the agents can use, not the
 // factory's implementation plugins. Approve and revoke stay `factory pack approve|revoke` (decision 3).
-// `factory plugins import` stores the user-level Claude Code and Codex skills and MCP servers as pending entries.
+// `factory plugins import` stores what Claude Code and Codex use (skills, commands and MCP servers) as pointers.
 
 const USAGE = `usage: factory plugins list [--kind ${PLUGIN_KINDS.join("|")}]
-usage: factory plugins import [--dry-run] [--kind skill|mcp_server|all] [--from claude|codex]`;
+usage: factory plugins import [--dry-run] [--kind ${IMPORT_KINDS.join("|")}|all] [--source ${IMPORT_SOURCES.join("|")}] [--from <path>]`;
 
 /** The kinds to list, or null when the arguments are not a plugins list command. */
 function parseListArgs(args: readonly string[]): readonly PluginKind[] | null {
@@ -33,13 +33,15 @@ interface ImportArgs {
   dryRun: boolean;
   kinds: readonly ImportKind[];
   sources: readonly ImportSource[];
+  /** `--from <path>`: scan only this folder. */
+  from: string | null;
 }
 
 /** The parsed arguments; null when they are not `import` with known flags and values. */
 function parseImportArgs(args: readonly string[]): ImportArgs | null {
   const [sub, ...rest] = args;
   if (sub !== "import") return null;
-  const out: ImportArgs = { dryRun: false, kinds: IMPORT_KINDS, sources: IMPORT_SOURCES };
+  const out: ImportArgs = { dryRun: false, kinds: IMPORT_KINDS, sources: IMPORT_SOURCES, from: null };
   for (let n = 0; n < rest.length; n++) {
     const [flag, inline] = rest[n]!.split(/=(.*)/s, 2) as [string, string?];
     if (flag === "--dry-run" && inline === undefined) {
@@ -49,7 +51,8 @@ function parseImportArgs(args: readonly string[]): ImportArgs | null {
     const value = inline ?? rest[++n];
     if (flag === "--kind" && value === "all") out.kinds = IMPORT_KINDS;
     else if (flag === "--kind" && (IMPORT_KINDS as readonly string[]).includes(value ?? "")) out.kinds = [value as ImportKind];
-    else if (flag === "--from" && (IMPORT_SOURCES as readonly string[]).includes(value ?? "")) out.sources = [value as ImportSource];
+    else if (flag === "--source" && (IMPORT_SOURCES as readonly string[]).includes(value ?? "")) out.sources = [value as ImportSource];
+    else if (flag === "--from" && value !== undefined && value !== "") out.from = value;
     else return null;
   }
   return out;
@@ -62,12 +65,15 @@ export default defineCommand({
                approved|waiting|off, source, description), skills (name, folder, description, roles, last used)
                and tools (name, origin, read-only, roles, last used, description). Never an env value or a
                descriptor body. Approve or revoke an MCP server with factory pack approve|revoke mcp_server <name>
-  plugins import [--dry-run] [--kind skill|mcp_server|all] [--from claude|codex]
-               finds the skills and MCP servers in the user-level Claude Code (~/.claude.json, ~/.claude/skills/)
-               and Codex (~/.codex/config.toml, ~/.codex/skills/) configs. Stores each MCP server as a pending
-               pack entry with its env key names only (never a value), and each skill as a reference (path and
-               SHA-256, never its text). Starts, approves and grants nothing. A second run adds nothing new.
-               --dry-run lists what it finds and writes nothing. Exits 1 when a config does not parse`,
+  plugins import [--dry-run] [--kind skill|command|mcp_server|all] [--source <source>] [--from <path>]
+               finds the skills, commands and MCP servers Claude Code and Codex use: ~/.claude.json,
+               ~/.claude/skills/, ~/.claude/commands/*.md, enabled Claude Code plugins, ~/.codex/config.toml,
+               ~/.codex/skills/, the managed repo's .mcp.json and .claude/skills/, and Claude Desktop's config.
+               --source picks one of ${IMPORT_SOURCES.join(", ")}. --from <path> scans only that folder
+               (skills/<name>/SKILL.md, commands/*.md, .mcp.json). Stores every item as a pointer, never a copy:
+               a skill or command as its path and SHA-256, an MCP server as its file, key and SHA-256, pending.
+               A changed item updates its row; an MCP server is then pending again. Starts, approves and grants
+               nothing. --dry-run lists what it finds and writes nothing. Exits 1 when a config does not parse`,
   async run(args, ctx) {
     const kinds = parseListArgs(args);
     if (kinds !== null) return list(ctx, kinds);
@@ -76,7 +82,7 @@ export default defineCommand({
       console.error(`${USAGE}\n\n${ctx.usage}`);
       return 1;
     }
-    const { found, errors } = await scanUserConfigs({ home: homedir(), sources: cmd.sources, kinds: cmd.kinds });
+    const { found, errors } = await scan(ctx, cmd);
     for (const e of errors) console.error(e.message);
     const code = errors.length > 0 ? 1 : 0;
     if (cmd.dryRun) {
@@ -91,6 +97,13 @@ export default defineCommand({
     return Math.max(code, await store(ctx, found));
   },
 });
+
+/** The folder `--from` names, or every user-level source and the configured repo. Reads only. */
+async function scan(ctx: CommandContext, cmd: ImportArgs): Promise<ScanResult> {
+  if (cmd.from !== null) return scanFolder(cmd.from, cmd.kinds);
+  const { repo } = (await ctx.load()).config;
+  return scanUserConfigs({ home: homedir(), sources: cmd.sources, kinds: cmd.kinds, repos: [{ name: repo.name, path: repo.path }] });
+}
 
 /** Prints the Plugins page's rows of the given kinds. */
 async function list(ctx: CommandContext, kinds: readonly PluginKind[]): Promise<number> {
