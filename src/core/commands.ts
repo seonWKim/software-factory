@@ -233,45 +233,19 @@ export function failedRunKind(it: WorkItem): RunKind | undefined {
 
 type ItemState = Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "change_ref"> & Partial<Pick<WorkItem, "merge_sha" | "source" | "close_reason">>;
 
-/** Each item phase's command phase; a closed item is `merged` or `closed` by its merge sha. */
-const COMMAND_PHASE: Record<Exclude<ItemPhase, "done" | "closed">, CommandPhase> = {
-  budget_checkpoint: "budget_checkpoint",
-  floor_tier: "floor_tier",
-  rule_of_two: "rule_of_two",
-  agent_needs_human: "agent_needs_human",
-  repeated_failure: "repeated_failure",
-  recurring_failure: "recurring_failure",
-  dependency_closed: "dependency_closed",
-  dependency_cycle: "other_blocked",
-  too_large: "too_large",
-  failed_implement: "failed_implement",
-  failed_review: "failed_review",
-  failed_run: "failed_run",
-  spec_pending: "spec_pending",
-  max_revisions: "max_revisions",
-  merge_pending: "merge_pending",
-  max_loops: "max_loops",
-  merge_conflict: "merge_conflict",
-  dependency_hold: "dependency_hold",
-  phase_hold: "phase_hold",
-  phases_open: "other_blocked",
-  upstream_wait: "other_blocked",
-  ci_wait: "other_blocked",
-  budget_wait: "other_blocked",
-  person_wait: "other_blocked",
-  delivering: "other_blocked",
-  delivering_review: "other_blocked",
-  triaging: "triaging",
-  specced: "implementing",
-  implementing: "implementing",
-  reviewing: "reviewing",
-};
+/** The item phases that are a command phase of the same name; READY with nothing blocking is `implementing`, any other open phase `other_blocked`. */
+const SAME: ReadonlySet<ItemPhase> = new Set<Extract<ItemPhase, CommandPhase>>([
+  "budget_checkpoint", "floor_tier", "rule_of_two", "agent_needs_human", "repeated_failure", "recurring_failure", "dependency_closed", "too_large",
+  "failed_implement", "failed_review", "failed_run", "spec_pending", "max_revisions", "merge_pending", "max_loops", "merge_conflict", "dependency_hold",
+  "phase_hold", "triaging", "implementing", "reviewing",
+]);
+const isCommandPhase = (p: ItemPhase): p is Extract<ItemPhase, CommandPhase> => SAME.has(p);
 
 /** The command phase of an item, from its phase (core/phase.ts). */
 export function commandPhase(it: ItemState): CommandPhase {
   const p = phaseOf({ close_reason: null, ...it });
   if (isClosedPhase(p)) return it.merge_sha ? "merged" : "closed";
-  return COMMAND_PHASE[p];
+  return isCommandPhase(p) ? p : p === "specced" ? "implementing" : "other_blocked";
 }
 
 /** `askedBy`: at `agent_needs_human`, the kind of run that asked (see CommandState.asked_by). */

@@ -7,10 +7,10 @@ import type { Alert, FactoryStore } from "../interfaces/factory-store.js";
 import { blockingRunKind } from "../core/policy.js";
 import { PERSON_PHASES, phaseOf } from "../core/phase.js";
 import type { ClaimDecision, Run, StateChange, WorkItem, WorkItemId } from "../core/types.js";
-import { alarmText, alarmsFor, openAlarms } from "./alarms.js";
+import { alarmText, alarmsFor, itemAlarms, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
 import { esc } from "./html.js";
-import { type PriorityInput, rank } from "./priority.js";
+import { type Level, type PriorityInput, levelOf, rank } from "./priority.js";
 import { heldFailureOf, needCtx } from "./need.js";
 import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
@@ -130,6 +130,17 @@ export function priorityInput(it: WorkItem, run: Run | null, runs: readonly Run[
     ...holdOf(decision, run, waiting.waiting_on_number),
     asked_by: blockingRunKind(it.blocked_reason, runs) ?? null,
   };
+}
+
+/** Why one item waits and its level, from the same reads and rules as listRows (the item page's state). */
+export async function itemState(c: ListCtx, it: WorkItem, runs: readonly Run[], changes: readonly StateChange[]): Promise<{ why: Why; level: Level }> {
+  const { active, position } = await activeRuns(c.store);
+  const run = active.get(it.id) ?? null;
+  const decision = await latestDecision(c.store, it.id, run);
+  const waiting = waitingOn(it, await readPhases(c.store, [it]));
+  const alarms = await itemAlarms(c.store, await openAlarms(c.store, c.now), it);
+  const why = whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(c.store, [decision])), await readClaimPauses(c.store), waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs));
+  return { why, level: levelOf(priorityInput(it, run, runs, decision, waiting, changes), c.now, c.lease_ms) };
 }
 
 /**

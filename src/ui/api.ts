@@ -18,10 +18,10 @@ import { itemAlarms, openAlarms } from "./alarms.js";
 import { actorGrant, itemCommands, itemProposals, itemReplies, mergeReadiness, needsYouCommands, readSession, waitingSpec } from "./commands.js";
 import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } from "./data.js";
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
-import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, latestDecision, holderTitles, listRows, priorityInput, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
+import { LIST_LIMIT, activeRuns, closedFacetRows, itemCounts, itemState, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./pages.js";
 import { heldFailureOf, needCtx, needOf } from "./need.js";
-import { NEEDS_YOU, levelOf } from "./priority.js";
+import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
 import { spend } from "./spend.js";
@@ -177,9 +177,8 @@ class ApiCtx {
   }
 
   /**
-   * `why` as the API returns it: the reason code, each text value and alarm through the Withholder, the refs as
-   * numbers, the holder item's id, and `ref_url`, the item's repository issue URL to append a ref to (null when the
-   * source link is not an issue or PR URL). The web app words the reason (en.ts, one text per reason code).
+   * `why` as the API returns it: the reason code (the app words it), each value and alarm through the Withholder, the
+   * refs as numbers, the holder's id, and `ref_url`, the repository issue URL to append a ref to (null: not an issue or PR URL).
    */
   async why(w: Why, it: WorkItem) {
     const repo = /^(https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+)\/(?:issues|pull)\/\d+$/.exec(it.source.link)?.[1];
@@ -213,20 +212,6 @@ class ApiCtx {
     return { reason: n.from_why ? null : n.reason, anchor: await latestWhyAnchor(this.d.store, it.id) };
   }
 
-  /**
-   * Why one item waits and its level (`item_phase`), from the same reads and rules as the list (list.ts whyOf,
-   * priorityInput), so the item page and the list give one phase for one item.
-   */
-  async phaseOfItem(it: WorkItem, runs: readonly Run[], changes: readonly StateChange[]) {
-    const s = this.d.store;
-    const { active, position } = await activeRuns(s);
-    const run = active.get(it.id) ?? null;
-    const decision = await latestDecision(s, it.id, run);
-    const waiting = waitingOn(it, await readPhases(s, [it]));
-    const alarms = await itemAlarms(s, await openAlarms(s, this.now), it);
-    const why = await this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(s, [decision])), await readClaimPauses(s), waiting, this.now, alarms, await heldFailureOf(needCtx(s, this.w), it, runs)), it);
-    return { item_phase: levelOf(priorityInput(it, run, runs, decision, waiting, changes), this.now, this.d.lease_ms), why };
-  }
 }
 
 /**
@@ -286,8 +271,7 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     github_token_days: c.d.lastChecks?.tokenDays() ?? null,
     /** The GitHub budget the controller stored after its last poll (remaining, reset, this process's count, wait reason); null: none stored. */
     github_budget: await readGitHubBudget(s, c.now),
-    // Open items and running runs, defined once (list.ts itemCounts): Work reads the same numbers from /items.
-    open: counts.open,
+    open: counts.open, // open items and running runs, defined once (list.ts itemCounts), as /items `counts`
     running: counts.running,
     queued: queued.length,
     last_24h: {
@@ -413,7 +397,7 @@ async function item(c: ApiCtx, id: WorkItemId) {
     }
   }
   const merge_check = await mergeCheckRow(c, it, phaseOf(it) === "merge_pending" ? await s.getMergeCheck(id) : null);
-  const { item_phase, why } = await c.phaseOfItem(it, runs, changes);
+  const st = await itemState({ store: s, w: c.w, now: c.now, lease_ms: c.d.lease_ms }, it, runs, changes); // as the list reads it
   const timeline = [];
   for (const sc of changes) timeline.push(await stateChange(c, sc));
   const runRows = [];
@@ -462,9 +446,9 @@ async function item(c: ApiCtx, id: WorkItemId) {
       conflicts: conflictCounts(runs, changes),
       merge_check,
       merge: await mergeReadiness(c.d, it, merge_check, actorGrant(c.d, "approve_merge")),
-      item_phase,
-      reason_code: why.reason_code,
-      why,
+      item_phase: st.level,
+      reason_code: st.why.reason_code,
+      why: await c.why(st.why, it),
     },
     timeline,
     runs: runRows,
