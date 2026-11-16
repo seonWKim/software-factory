@@ -1,5 +1,5 @@
-// The Health panel's Run now (design §7 and §9, issue #508): POST /api/v1/improve/run queues one manual improve
-// run behind the write guards and the approver check (approve_spec over local grants); the button shows only to
+// Run now on the Rules page (design §7 and §9, issue #508): POST /api/v1/improve/run queues one manual improve
+// run behind the write guards and the approver check (approve_spec over local grants); GET /api/v1/rules offers it only to
 // a user who may approve. Solo: a local store and no source plugin.
 
 import { describe, expect, it } from "vitest";
@@ -8,7 +8,7 @@ import type { RunId, Timestamp, UserId, WorkerId } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
-import { HealthMonitor, RUN_NOW_SCRIPT_HASH } from "../src/ui/health.js";
+import { HealthMonitor } from "../src/ui/health.js";
 import { IMPROVE_RUN_PATH } from "../src/ui/improve-api.js";
 import type { UiPauses } from "../src/ui/pause-api.js";
 import { type PauseDeps, type UiRequest, respond } from "../src/ui/server.js";
@@ -109,27 +109,6 @@ describe("POST /api/v1/improve/run", () => {
     const { d, token, runs } = await setup({ wired: false });
     expect((await respond(d, post(token))).status).toBe(405);
     expect(await runs()).toEqual([]);
-  });
-});
-
-describe("Health panel: Run now", () => {
-  const classic = (d: PauseDeps) => respond(d, { method: "GET", url: "/classic", host: HOST });
-  const health = (body: string) => /<section id="health">[\s\S]*?<\/section>/.exec(body)![0];
-
-  it("shows the button, with the token, to a user who may approve; the page's CSP allows its script", async () => {
-    const { d, token } = await setup();
-    const r = await classic(d);
-    expect(health(r.body)).toContain(`id="improve-run-now" data-csrf="${token}"`);
-    expect(r.headers["content-security-policy"]).toContain(`'${RUN_NOW_SCRIPT_HASH}'`);
-  });
-
-  it("shows no button to a requester, to no user, or when the route is not wired", async () => {
-    for (const opts of [{ user: REQUESTER }, { user: null }, { wired: false }]) {
-      const { d } = await setup(opts);
-      const r = await classic(d);
-      expect(health(r.body), JSON.stringify(opts)).not.toContain("improve-run-now");
-      expect(r.headers["content-security-policy"]).not.toContain(RUN_NOW_SCRIPT_HASH);
-    }
   });
 });
 

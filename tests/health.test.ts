@@ -1,4 +1,4 @@
-// The Health panel and GET /api/health: one implementation (doctorChecks) behind doctor and the page,
+// GET /api/health: one implementation (doctorChecks) behind doctor and the API,
 // no store access on the health path, a 60-second limit with one shared in-flight run, and egress-scanned messages.
 
 import { randomBytes } from "node:crypto";
@@ -16,8 +16,7 @@ import { SqlFactoryStore } from "../src/impl/store/sql/sql-factory-store.js";
 import { SqliteDriver } from "../src/impl/store/sqlite/sqlite-driver.js";
 import { REGISTRY, type Registry, withPlugin } from "../src/plugins.js";
 import { type Check, checkLine, checkStatus, checksExitCode, doctor, doctorChecks } from "../src/setup.js";
-import type { ImproveReport, RunId, Timestamp, UserId } from "../src/core/types.js";
-import { HEALTH_MIN_INTERVAL_MS, HealthMonitor, improveSection } from "../src/ui/health.js";
+import { HEALTH_MIN_INTERVAL_MS, HealthMonitor } from "../src/ui/health.js";
 import { type UiDeps, type UiResponse, respond } from "../src/ui/server.js";
 import { fakeGitHubAccess } from "./helpers/fakes.js";
 import { BACKENDS } from "./helpers/store.js";
@@ -35,12 +34,6 @@ afterEach(() => {  vi.unstubAllEnvs();
 /** The page's whole request handling without a socket (respond() is what startUi runs per request). */
 async function get(d: UiDeps, path: string): Promise<UiResponse> {
   return respond(d, { method: "GET", url: path, host: "127.0.0.1:4310" });
-}
-
-function section(body: string, id: string): string {
-  const start = body.indexOf(`<section id="${id}">`);
-  if (start < 0) throw new Error(`no section ${id}`);
-  return body.slice(start, body.indexOf("</section>", start));
 }
 
 /** A store for the health path: every call is recorded and throws, so a test can show none is made. */
@@ -137,7 +130,7 @@ describe("health: one implementation behind doctor and the page", () => {
     expect(report.checks).toEqual(expected.map((c) => ({ status: checkStatus(c), msg: c.msg })));
   });
 
-  it("doctor and the Health panel show each per-project setting's effective value and source layer (design 2026-11-01)", async () => {
+  it("doctor and the health API show each per-project setting's effective value and source layer (design 2026-11-01)", async () => {
     const { loaded } = await setupDoctor();
     const { owner, name } = loaded.config.repo;
     const lines = (await doctorChecks(loaded)).filter((c) => c.msg.startsWith("setting for ")).map(checkLine);
@@ -146,9 +139,10 @@ describe("health: one implementation behind doctor and the page", () => {
     expect(lines).toHaveLength(5);
 
     const { port } = await uiFor(loaded);
-    const health = section((await get(port, "/classic")).body, "health");
-    expect(health).toContain(`setting for ${owner}/${name}: max_attempts = 3 (defaults)`);
-    expect(health).toContain(`setting for ${owner}/${name}: max_diff_lines = 5000 (defaults)`);
+    const health = JSON.parse((await get(port, "/api/health")).body) as { checks: { msg: string }[] };
+    const msgs = health.checks.map((c) => c.msg);
+    expect(msgs).toContain(`setting for ${owner}/${name}: max_attempts = 3 (defaults)`);
+    expect(msgs).toContain(`setting for ${owner}/${name}: max_diff_lines = 5000 (defaults)`);
   });
 
   it("doctor prints one line per check in the same format, and exits 1 only on FAIL", async () => {
@@ -168,26 +162,14 @@ describe("health: one implementation behind doctor and the page", () => {
     expect(checksExitCode([])).toBe(0);
   });
 
-  it("the Health panel lists each check with ok, warn or FAIL, its message and the last-run time", async () => {
-    const { loaded } = await setupDoctor();
-    const { port, clock } = await uiFor(loaded);
-    const panel = section((await get(port, "/classic")).body, "health");
-    expect(panel).toContain("<h2>Health</h2>");
-    expect(panel).toContain(`Last run ${clock.now().toISOString()}`);
-    expect(panel).toContain('href="/classic?health=refresh#health"');
-    expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>claude CLI: not found<\/td>/);
-    expect(panel).toMatch(/<td>warn<\/td><td>GitHub token never expires/);
-    expect(panel).not.toMatch(/llm-check/);
-  });
-
-  it("a failing check shows as FAIL on the panel", async () => {
+  it("a failing check shows as fail in the API", async () => {
     const { loaded } = await setupDoctor({ labels: [] });
     const { port } = await uiFor(loaded);
-    const panel = section((await get(port, "/classic")).body, "health");
-    expect(panel).toMatch(/<td><strong>FAIL<\/strong><\/td><td>label &quot;factory&quot; exists \(run: npm run setup\)<\/td>/);
+    const report = JSON.parse((await get(port, "/api/health")).body) as { checks: { status: string; msg: string }[] };
+    expect(report.checks).toContainEqual({ status: "fail", msg: 'label "factory" exists (run: npm run setup)' });
   });
 
-  it("opening the page or the API makes no model call", async () => {
+  it("opening the API makes no model call", async () => {
     const { loaded } = await setupDoctor();
     let calls = 0;
     const registry = withPlugin(loaded.registry, "llm", "counting", () => {
@@ -195,7 +177,6 @@ describe("health: one implementation behind doctor and the page", () => {
       throw new Error("no model call on the health path");
     });
     const { port } = await uiFor({ ...loaded, registry, plugins: { ...loaded.plugins, llm: "counting" } });
-    await get(port, "/classic");
     await get(port, "/api/health");
     expect(calls).toBe(0);
   });
@@ -232,17 +213,14 @@ describe("health: the store is not touched", () => {
 });
 
 describe("health: messages pass through the Withholder", () => {
-  it("canary: a secret value planted in the secret file is not in the API response or the page", async () => {
+  it("canary: a secret value planted in the secret file is not in the API response", async () => {
     const canary = `canary-${randomBytes(12).toString("hex")}`;
     const { loaded } = await setupDoctor({ fileExtra: `GITHUB_TOKEN=${canary}\n` });
     const { port } = await uiFor(loaded);
-    for (const path of ["/api/health", "/classic", "/classic?health=refresh"]) {
-      const body = (await get(port, path)).body;
-      expect(body, path).not.toContain(canary);
-    }
+    expect((await get(port, "/api/health")).body).not.toContain(canary);
   });
 
-  it("canary: a secret value in a check's error message is withheld from the API response and the page", async () => {
+  it("canary: a secret value in a check's error message is withheld from the API response", async () => {
     const password = `key-${randomBytes(12).toString("hex")}`;
     const { loaded } = await setupDoctor({ ghKey: password, tokenError: new Error(`bad key ${password}`) });
     // The check itself carries the secret: only the Withholder keeps it off the page.
@@ -253,9 +231,6 @@ describe("health: messages pass through the Withholder", () => {
     expect(api.body).not.toContain(password);
     const report = JSON.parse(api.body) as { checks: { status: string; msg: string }[] };
     expect(report.checks).toContainEqual({ status: "fail", msg: "[withheld: known_secret]" });
-    const page = await get(port, "/classic");
-    expect(page.body).not.toContain(password);
-    expect(section(page.body, "health")).toMatch(/<td><strong>FAIL<\/strong><\/td><td><strong>\[withheld: known_secret\]<\/strong><\/td>/);
   });
 });
 
@@ -280,26 +255,18 @@ describe("health: at most one run per 60 seconds per UI process", () => {
     return { port: d, clock };
   }
 
-  it("page loads, the refresh link and the API share one run per 60 s", async () => {
+  it("repeated API requests share one run per 60 s", async () => {
     let n = 0;
     const { port, clock } = await page(async () => [{ ok: true, msg: `run ${++n}` }]);
-    await get(port, "/classic");
-    await get(port, "/classic?health=refresh");
     await get(port, "/api/health");
-    await get(port, "/classic");
+    await get(port, "/api/health");
     expect(n).toBe(1);
 
     clock.advance(HEALTH_MIN_INTERVAL_MS - 1);
-    const limited = section((await get(port, "/classic?health=refresh")).body, "health");
-    expect(n).toBe(1); // refresh does not bypass the limit
-    expect(limited).toContain("run 1");
-    expect(limited).toContain("next run possible in 1s");
+    expect(JSON.parse((await get(port, "/api/health")).body).checks).toEqual([{ status: "ok", msg: "run 1" }]);
+    expect(n).toBe(1);
 
     clock.advance(1);
-    const fresh = await get(port, "/classic?health=refresh");
-    expect(n).toBe(2);
-    expect(section(fresh.body, "health")).toContain("run 2");
-    expect(section(fresh.body, "health")).toContain(`Last run ${clock.now().toISOString()}`);
     expect(JSON.parse((await get(port, "/api/health")).body).checks).toEqual([{ status: "ok", msg: "run 2" }]);
     expect(n).toBe(2);
   });
@@ -307,7 +274,7 @@ describe("health: at most one run per 60 seconds per UI process", () => {
   it("requests that arrive during a run wait for it and start no other", async () => {
     const g = gated();
     const { port, clock } = await page(g.run);
-    const pending = [get(port, "/classic"), get(port, "/api/health"), get(port, "/classic?health=refresh")];
+    const pending = [get(port, "/api/health"), get(port, "/api/health")];
     await vi.waitFor(() => expect(g.count()).toBe(1));
     clock.advance(2 * HEALTH_MIN_INTERVAL_MS); // even past the limit, a running check is shared
     pending.push(get(port, "/api/health"));
@@ -327,72 +294,7 @@ describe("health: at most one run per 60 seconds per UI process", () => {
     });
     const report = JSON.parse((await get(port, "/api/health")).body) as { checks: unknown[] };
     expect(report.checks).toEqual([{ status: "fail", msg: "health checks could not finish: GitHub GET /labels → 500" }]);
-    await get(port, "/classic");
+    await get(port, "/api/health");
     expect(n).toBe(1);
-  });
-});
-
-describe("health: the latest improve report (design §7, issue #308)", () => {
-  /** A GitHub-token-shaped string the pattern scanner flags as `github_token`. */
-  const TOKEN = `ghp_${"b".repeat(36)}`;
-  const P = "local:local:0123456789abcdef";
-
-  async function withReports() {
-    const clock = new FakeClock("2026-03-05T06:00:00.000Z");
-    const store = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
-    await store.migrate();
-    const { item } = await store.createWorkItem(
-      { source: { type: "local", id: "system:improve:p", link: "" }, requester_id: "system:improver" as UserId, project: P, problem: "", resources: [] },
-      { kind: "system", id: "system:test" },
-    );
-    const record = async (key: string, groups: ImproveReport["groups"]) => {
-      const { run } = await store.enqueueRun({ work_item_id: item.id, kind: "improve", idempotency_key: key });
-      clock.advance(1_000);
-      return (await store.recordImproveReport({
-        run_id: run.id, project: P, window_start: "2026-03-04T00:00:00.000Z" as Timestamp, window_end: "2026-03-05T00:00:00.000Z" as Timestamp,
-        groups, patterns: [{ error_code: "lonely", detail: "once", run_ids: ["r9" as RunId], work_item_ids: [item.id] }],
-      })).report;
-    };
-    const g = (error_code: string, extra: Partial<ImproveReport["groups"][number]>) => ({
-      error_code, detail: "npm test exited #", run_ids: ["r1", "r2"] as RunId[], work_item_ids: [item.id], ...extra,
-    });
-    await record("old", [g("old_code", {})]);
-    await record("new", [
-      g("checks_failed", {
-        draft: { status: "drafted", cause: "a flaky port", fix: "pin the port", touches: ["tests/x.test.ts"], touches_prompts_or_gate: false },
-        filing: { status: "filed", ref: { type: "local", id: "local-filed-1", link: "local:local-filed-1" } },
-      }),
-      g("agent_timed_out", { draft: { status: "drafted", cause: `the log holds ${TOKEN}`, fix: "rotate it", touches: [], touches_prompts_or_gate: false }, filing: { status: "skipped", reason: "issue_cap" } }),
-      g("no_commits", { draft: { status: "withheld", rules: ["github_token"], touches_prompts_or_gate: false }, filing: { status: "withheld", rules: ["github_token"] } }),
-    ]);
-    return store;
-  }
-
-  it("shows the latest report: counts, drafted causes and fixes, skipped and withheld groups; flagged text is withheld", async () => {
-    const store = await withReports();
-    const html = await improveSection(await store.getLatestImproveReport(), new PatternEgressScanner(async () => []));
-    expect(html).toContain("3 groups (6 runs), 1 single-run patterns");
-    expect(html).not.toContain("old_code");
-    expect(html).toContain("a flaky port");
-    expect(html).toContain("pin the port");
-    expect(html).toContain("filed: local:local-filed-1");
-    expect(html).toContain("skipped (issue_cap)");
-    expect(html).toContain("withheld (github_token)");
-    expect(html).not.toContain(TOKEN);
-    expect(html).toContain("[withheld: github_token]");
-  });
-
-  it("the status page carries the section; with no report it says so", async () => {
-    const clock = new FakeClock();
-    const empty = new SqlFactoryStore(new SqliteDriver(":memory:"), clock);
-    await empty.migrate();
-    const scanner = new PatternEgressScanner(async () => []);
-    const health = new HealthMonitor(async () => [], clock);
-    const page = async (store: FactoryStore) =>
-      section((await get({ store, scanner, clock, lease_ms: 60_000, health }, "/classic")).body, "improve");
-    expect(await page(empty)).toContain("no improve run has reported yet");
-    const shown = await page(await withReports());
-    expect(shown).toContain("a flaky port");
-    expect(shown).not.toContain(TOKEN);
   });
 });
