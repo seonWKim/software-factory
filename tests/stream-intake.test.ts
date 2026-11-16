@@ -2,9 +2,11 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_INBOX_RETENTION_DAYS, inboxRetentionDays, loadConfig } from "../src/compose.js";
+import { loadConfig } from "../src/compose.js";
+import { INBOX_RETENTION_DEPRECATED } from "../src/core/config.js";
 import { ControllerRole } from "../src/runtime/roles/controller-role.js";
 import { inboxCursorName } from "../src/inbound/index.js";
+import { POLLED } from "../src/inbound/records.js";
 import { Listener } from "../src/core/listener.js";
 import type { FactoryStore } from "../src/interfaces/factory-store.js";
 import type { SourceEvent } from "../src/interfaces/source-adapter.js";
@@ -351,13 +353,21 @@ describe("stream intake: controller", () => {
     await c.tickIntake(); // cursor now at ev-2
     source.push(slackEvent(3), "ev-3"); // ahead of the cursor
     await waitFor(() => source.acks.length === 3, "ack 3");
-    clock.advance((config.inbox_retention_days - 1) * DAY);
+    // A polled snapshot goes at the cutoff whatever any cursor says (its message went out with it).
+    const polled = (key: string) =>
+      store.db.run("INSERT INTO inbound_raw_records (source_type, dedupe_key, event, received_at) VALUES ('github_issue', ?, '{}', ?)", [
+        `${POLLED}${key}`, clock.now().toISOString(),
+      ]);
+    await polled("old");
+    clock.advance((config.retention.raw_records_days - 1) * DAY);
     source.push(slackEvent(4), "ev-4");
     await waitFor(() => source.acks.length === 4, "ack 4");
+    await polled("new");
     clock.advance(DAY + 1);
     // ev-1, ev-2: old and behind the cursor → gone. ev-3: old but ahead of the cursor. ev-4: too new.
     await c.tickRecords();
     expect((await store.listInboxAfter(SLACK, 0, 10)).map((r) => r.dedupe_key)).toEqual(["ev-3", "ev-4"]);
+    expect(await store.db.all("SELECT dedupe_key FROM inbound_raw_records WHERE source_type = 'github_issue'")).toEqual([{ dedupe_key: `${POLLED}new` }]);
 
     await c.tickIntake(); // cursor now at ev-4
     await c.tickRecords();
@@ -367,30 +377,35 @@ describe("stream intake: controller", () => {
 });
 
 describe("stream intake: config and wiring", () => {
-  it("inbox_retention_days defaults to 14 and must be a positive integer", () => {
-    expect(DEFAULT_INBOX_RETENTION_DAYS).toBe(14);
-    expect(inboxRetentionDays({})).toBe(14);
-    expect(inboxRetentionDays({ inbox_retention_days: 3 })).toBe(3);
-    for (const bad of [0, -1, 1.5, "7", null]) {
-      expect(() => inboxRetentionDays({ inbox_retention_days: bad as never })).toThrow(/inbox_retention_days must be a positive integer/);
-    }
-  });
-
-  it("loadConfig carries inbox_retention_days and fails startup on a bad value", async () => {
+  it("retention.raw_records_days defaults to 7; the old inbox_retention_days is still read with a warning, and the new key wins", async () => {
     const root = new URL("..", import.meta.url).pathname;
     const dir = mkdtempSync(join(tmpdir(), "sf-inbox-"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       cpSync(join(root, "prompts"), join(dir, "prompts"), { recursive: true });
       const file = JSON.parse(readFileSync(join(root, "factory.config.json"), "utf8")) as Record<string, unknown>;
       const write = (extra: Record<string, unknown>) =>
         writeFileSync(join(dir, "factory.config.json"), JSON.stringify({ ...file, store: { type: "sqlite" }, ...extra }));
+      const days = async () => (await loadConfig(dir)).config.retention.raw_records_days;
+      const warned = () => warn.mock.calls.map((c) => String(c[0])).filter((m) => m.startsWith(INBOX_RETENTION_DEPRECATED));
       write({});
-      expect((await loadConfig(dir)).config.inbox_retention_days).toBe(14);
+      expect(await days()).toBe(7);
+      expect(warned()).toEqual([]);
+      write({ retention: { raw_records_days: 3 } });
+      expect(await days()).toBe(3);
+      expect(warned()).toEqual([]);
       write({ inbox_retention_days: 30 });
-      expect((await loadConfig(dir)).config.inbox_retention_days).toBe(30);
+      expect(await days()).toBe(30);
+      expect(warned()).toHaveLength(1);
+      write({ inbox_retention_days: 30, retention: { raw_records_days: 2 } });
+      expect(await days()).toBe(2);
+      expect(warned()).toHaveLength(2);
       write({ inbox_retention_days: 0 });
-      await expect(loadConfig(dir)).rejects.toThrow(/inbox_retention_days/);
+      await expect(loadConfig(dir)).rejects.toThrow(/inbox_retention_days must be a positive integer/);
+      write({ retention: { raw_records_days: -1 } });
+      await expect(loadConfig(dir)).rejects.toThrow(/retention\.raw_records_days must be an integer of 0 or more/);
     } finally {
+      warn.mockRestore();
       rmSync(dir, { recursive: true, force: true });
     }
   });

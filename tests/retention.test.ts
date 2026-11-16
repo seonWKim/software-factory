@@ -119,7 +119,7 @@ describe("the daily retention step", () => {
     const { store, clock } = await newStore();
     await seed(store, clock);
     clock.advance(400 * DAY);
-    await controller(store, clock, "replica-a", { outbox_days: 0, commands_days: 30, records_days: 0 }).tickRetention();
+    await controller(store, clock, "replica-a", { ...RETENTION_DEFAULTS, outbox_days: 0, commands_days: 30, records_days: 0 }).tickRetention();
     expect(await rows(store)).toEqual({ outbound_intents: 1, inbound_commands: 0, worker_host_sleeps: 1 });
   });
 
@@ -162,9 +162,9 @@ describe("the daily retention step", () => {
 });
 
 describe("the retention config", () => {
-  it("absent, it gives 30, 30 and 90 days; set keys override, 0 included", () => {
-    expect(retentionConfig(undefined)).toEqual({ outbox_days: 30, commands_days: 30, records_days: 90 });
-    expect(retentionConfig({ commands_days: 0 })).toEqual({ outbox_days: 30, commands_days: 0, records_days: 90 });
+  it("absent, it gives 30, 30, 90 and 7 days; set keys override, 0 included", () => {
+    expect(retentionConfig(undefined)).toEqual({ outbox_days: 30, commands_days: 30, records_days: 90, raw_records_days: 7 });
+    expect(retentionConfig({ commands_days: 0 })).toEqual({ outbox_days: 30, commands_days: 0, records_days: 90, raw_records_days: 7 });
   });
 
   it("a negative or non-integer value fails with a message that names the key", () => {

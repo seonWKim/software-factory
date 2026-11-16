@@ -263,7 +263,7 @@ export class ControllerRole implements Decisions {
     await this.outboxStep();
   }
 
-  /** Removes inbound records past inbox_retention_days, as inbound's `records` tick does. */
+  /** Removes inbound records past retention.raw_records_days, as inbound's `records` tick does. */
   async tickRecords(): Promise<void> {
     await (await this.wire()).inbound.prune(this.tick("records"));
   }
@@ -488,7 +488,7 @@ export class ControllerRole implements Decisions {
       forge: d.forge ?? null,
       config: () => {
         const c = d.settings.config();
-        return { poll_interval_ms: c.poll_interval_ms, inbox_retention_days: c.inbox_retention_days, project_key: c.project.key };
+        return { poll_interval_ms: c.poll_interval_ms, raw_records_days: c.retention.raw_records_days, project_key: c.project.key };
       },
       sync: d.sync ? { lease: d.sync, type: SYNCED } : null,
       forgePaused: async () => (await d.store.getClaimPause(GITHUB_RATE_LIMIT)) !== null,
