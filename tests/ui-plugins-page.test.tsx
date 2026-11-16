@@ -44,7 +44,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     if (init?.method === "POST") {
       posts.push({ url, init });
-      return new Response(JSON.stringify({ line: "approved MCP server docs-search (description_hash abc)" }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ line: "approved MCP server docs-search" }), { status: 200, headers: { "content-type": "application/json" } });
     }
     if (url === "/api/v1/plugins") return new Response(JSON.stringify(view), { status: 200, headers: { "content-type": "application/json" } });
     return new Response("{}", { status: 404 });
@@ -89,7 +89,7 @@ describe("Plugins page", () => {
     expect(posts[0]!.url).toBe("/api/v1/packs/approvals");
     expect((posts[0]!.init.headers as Record<string, string>)["x-csrf-token"]).toBe("pack-token");
     expect(JSON.parse(String(posts[0]!.init.body))).toEqual({ action: "approve", kind: "mcp_server", name: "docs-search" });
-    expect(await screen.findByText("approved MCP server docs-search (description_hash abc)")).toBeTruthy();
+    expect(await screen.findByText("approved MCP server docs-search")).toBeTruthy();
     fireEvent.click(within(rowsOf(await screen.findByRole("table", { name: "MCP" }))[1]!).getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(posts).toHaveLength(2));
     expect(JSON.parse(String(posts[1]!.init.body))).toEqual({ action: "revoke", kind: "mcp_server", name: "tracker" });
@@ -122,6 +122,37 @@ describe("Plugins page", () => {
     expect(rows[0]!.textContent).toContain("ago");
     expect(rows[1]!.textContent).toContain("Pack");
     expect(rows[2]!.textContent).toContain("Writes; never granted");
+  });
+
+  it("the Skills tab shows each row's source (Folder, Claude Code or Codex), an imported row's path, and a missing or changed file", async () => {
+    const imported = (name: string, source: "claude" | "codex", state: "ok" | "missing" | "changed") =>
+      ({ name, folder: `/home/me/.${source}/skills`, description: null, roles: [], last_used: null, source, path: `/home/me/.${source}/skills/${name}/SKILL.md`, state });
+    view = { ...FULL, skills: [...FULL.skills, imported("review", "claude", "ok"), imported("ship", "codex", "missing"), imported("old", "claude", "changed")] };
+    history.replaceState(null, "", "/app/plugins?tab=skills");
+    show();
+    const rows = rowsOf(await screen.findByRole("table", { name: "Skills" }));
+    const cells = (r: HTMLElement) => [...r.querySelectorAll("td")].map((td) => td.textContent);
+    expect(screen.getAllByRole("columnheader").map((h) => h.textContent)).toEqual(expect.arrayContaining(["Source", "Folder", "Path"]));
+    expect(cells(rows[0]!)).toEqual(expect.arrayContaining(["Folder", "/home/me/.claude/skills"]));
+    expect(rows[1]!.textContent).toContain("Claude Code");
+    expect(rows[1]!.textContent).toContain("/home/me/.claude/skills/review/SKILL.md");
+    expect(rows[2]!.textContent).toContain("Codex");
+    expect(rows[2]!.textContent).toContain("File missing");
+    expect(rows[3]!.textContent).toContain("Changed since import");
+    expect(rows[1]!.textContent).not.toMatch(/missing|Changed/);
+  });
+
+  it("an action's notice shows only on the tab it came from, and a tab change clears it", async () => {
+    show();
+    const table = await screen.findByRole("table", { name: "MCP" });
+    fireEvent.click(within(rowsOf(table)[0]!).getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("approved MCP server docs-search")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Skills" }));
+    await screen.findByRole("table", { name: "Skills" });
+    expect(screen.queryByText("approved MCP server docs-search")).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "MCP" }));
+    await screen.findByRole("table", { name: "MCP" });
+    expect(screen.queryByText("approved MCP server docs-search")).toBeNull();
   });
 
   it("the search box filters rows by name and description, and says when nothing matches", async () => {

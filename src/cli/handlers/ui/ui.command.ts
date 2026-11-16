@@ -1,7 +1,5 @@
 import { join } from "node:path";
 import { Plugins, buildUiParts, uiPort } from "../../../compose.js";
-import { cliUserConfig } from "../../../core/config.js";
-import { cliIdentity } from "../../../core/local-cli.js";
 import { FORGE_BUDGET_PLUGIN } from "../../../impl/github/github-client.js";
 import { SUPERVISOR_STATUS_FILE } from "../../../interfaces/updater.js";
 import { createPlugin, selectedSources } from "../../../plugins.js";
@@ -12,7 +10,7 @@ import { HealthMonitor, syncChecks } from "../../../ui/health.js";
 import { startUi } from "../../../ui/server.js";
 import { LastChecks, checkoutRevision, olderThanFactory, serverRevision, watchRevision } from "../../../ui/system-actions.js";
 import { defineCommand } from "../../command.js";
-import { cliEnvironment, stopOnSignals } from "../../support.js";
+import { stopOnSignals } from "../../support.js";
 
 export default defineCommand({
   names: ["ui"],
@@ -22,7 +20,7 @@ export default defineCommand({
     const loaded = await ctx.load();
     // An ID, never a display name: the same local identity as the CLI's (issue #318), so the owner check sees one
     // user for the UI and the terminal.
-    const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
+    const identity = await ctx.identity();
     const parts = await buildUiParts(loaded, { identity });
     // The last health run, kept for Needs you: the token's days without a GitHub call per poll.
     const lastChecks = new LastChecks();

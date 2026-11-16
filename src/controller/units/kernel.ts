@@ -44,11 +44,11 @@ const READS = [
 ] as const;
 
 /**
- * What a unit's `load` reads through: store reads, the egress scan (a check, no write), the forge's PR check reads
- * (remote reads, no write; null when config selects no forge) and the command suggester.
+ * What a unit's `load` reads through: store reads, the egress scan (a check, no write), the forge's PR and base check
+ * reads (remote reads, no write; null when config selects no forge) and the command suggester.
  */
 export type ControllerReader = Pick<Store, (typeof READS)[number]> & Pick<ControllerDeps["scanner"], "scan"> & {
-  readonly forge: Pick<Forge, "prChecks" | "prCheckResults"> | null;
+  readonly forge: Pick<Forge, "prChecks" | "prCheckResults" | "baseChecks"> | null;
   /** The provider that suggests a command for a plain comment (a query, no state change); null when none is configured. */
   readonly llm: NonNullable<ControllerDeps["llm"]> | null;
   /**
@@ -209,7 +209,11 @@ export class Kernel {
     this.reader = {
       ...(reads as Pick<Store, (typeof READS)[number]>),
       scan: (channel, content) => d.scanner.scan(channel, content),
-      forge: forge && { prChecks: (pr) => forge.prChecks(pr), prCheckResults: (pr) => forge.prCheckResults(pr) },
+      forge: forge && {
+        prChecks: (pr) => forge.prChecks(pr),
+        prCheckResults: (pr) => forge.prCheckResults(pr),
+        ...(forge.baseChecks ? { baseChecks: () => forge.baseChecks!() } : {}),
+      },
       llm: d.llm ?? null,
       auth: { owner: d.auth, service: d.service_auth ?? null },
       signals,

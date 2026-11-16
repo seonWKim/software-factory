@@ -6,7 +6,9 @@
 // One builder (pluginRows) serves the page and `factory plugins list`, so both show the same rows. Names and
 // descriptions only: an MCP server's row is its name, its descriptor's `description`, its source and its approval
 // status; its descriptor body (command, args, env) never leaves the store read. A skill's description is its file's
-// front matter `description`, never its body. Every string leaves through the Withholder. Reading writes nothing.
+// front matter `description`, never its body. An imported skill (design 11-plugin-import, an `ext_skill_refs` pointer
+// read from its SKILL.md now) adds its source, path and state (`ok`, `missing`, `changed`) to its row; a folder skill's
+// row has none of them. Every string leaves through the Withholder. Reading writes nothing.
 // Approve and Revoke go through POST /api/v1/packs/approvals (packs-api.ts), the same path as `factory pack approve|revoke`,
 // for an MCP server and for a pack tool: the page's read adds each pack tool's status (`tool_status`), the configured
 // skill folders as the file holds them (`skill_folders`, [] when none) and the Settings route's token the skill folder
@@ -18,6 +20,7 @@
 import type { SettingsBase } from "../core/settings.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
+import type { SkillRefSource, SkillState } from "../runtime/capabilities/capabilities.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
 import type { ApiDeps, ApiResult } from "./api.js";
 import type { UiSettings } from "./settings-api.js";
@@ -54,6 +57,12 @@ export interface SkillRow {
   description: string | null;
   roles: string[];
   last_used: string | null;
+  /** An imported skill: where it was found (absent: a skill folder's). */
+  source?: SkillRefSource;
+  /** An imported skill: its SKILL.md path. */
+  path?: string;
+  /** An imported skill: `ok`, or `missing` or `changed` (not offered to agents). */
+  state?: SkillState;
 }
 
 export interface ToolRow {
@@ -137,7 +146,10 @@ export async function pluginRows(d: CapabilityDeps, base: SettingsBase, sources:
   for (const r of await mcpToolRows(d)) mcpTools.push({ ...r, name: await text(r.name), description: await text(r.description) });
   return {
     mcp,
-    skills: caps.filter((c) => c.kind === "skill").map((c) => ({ name: c.name, folder: c.detail ?? "", description: c.description ?? null, roles: c.roles, last_used: c.last_used })),
+    skills: caps.filter((c) => c.kind === "skill").map((c): SkillRow => ({
+      name: c.name, folder: c.detail ?? "", description: c.description ?? null, roles: c.roles, last_used: c.last_used,
+      ...(c.imported ? { source: c.imported.source, path: c.imported.path, state: c.imported.state } : {}),
+    })),
     tools: caps
       .filter((c) => c.kind === "tool")
       .map((c): ToolRow => ({ name: c.name, description: c.detail ?? "", read_only: c.read_only === true, origin: c.origin ?? "broker", roles: c.roles, last_used: c.last_used }))

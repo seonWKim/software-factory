@@ -2,14 +2,15 @@
 // description, effective value, source, file value, project values, learned values (each resolved through settingsFor,
 // with its evidence run IDs and set time) and "applies at", the PR-only keys with their
 // descriptions and the last 50 audit rows; POST /api/v1/settings sets or resets one key, or (`"action": "edit-file"`)
-// sets one file-only key of factory.config.json on a new local branch (design 08-settings). Every write goes through runSettings (src/settings-cmd.ts),
+// sets one file-only key of factory.config.json on a new local branch (design 08-settings), or (`"action": "project-label"`)
+// stores the configured repo's project label. Every setting write goes through runSettings (src/settings-cmd.ts),
 // the same function `factory settings` runs, so the page accepts and refuses exactly what the CLI does. GET also carries
 // `file_keys` for the page's typed form: each file-only key's value in the file as loaded, the read-only keys' values,
 // and each `plugins` interface with its registered plugin names; an edit-file answer names the filed item and its branch.
 //
 // The UI process has no forge client and no forge credential: `--project` finds the configured repo's project
 // key from the stored project label (storeProjectResolver), and a write for a repo with no stored label is
-// refused with a pointer to `factory settings`. Project labels, actor IDs, values and messages leave through the
+// refused; the page's project label control stores the label of the stored key (writeProjectLabel). Project labels, actor IDs, values and messages leave through the
 // Withholder, as on the other routes. The request guards (Host, Origin, Content-Type, CSRF token) run in
 // server.ts before writeSettings is reached. A set or reset of an owner-only key (`integrations`) then needs the page's
 // user to be the local owner (rules-api.ts ownerOf); with no owner check wired it is refused. GET lists each
@@ -21,7 +22,7 @@ import type { Loaded } from "../compose.js";
 import { checkConfigKeys, configFailLines } from "../config-keys.js";
 import { type LearnedSetting, learnedFromRows } from "../core/learned-settings.js";
 import { type ProjectRef, rekeyProjectSettings } from "../core/project.js";
-import { readProjectLabel, readStoredProject } from "../core/project-labels.js";
+import { readProjectLabel, readStoredProject, saveProjectLabel } from "../core/project-labels.js";
 import {
   PROJECT_SETTABLE_KEYS, PR_ONLY_KEYS, SETTABLE_DEFAULTS, SETTABLE_KEYS, type SettableKey,
   type GlobalSettableKey, type LearnedSettingsSource, type SettableValues, type SettingsBase, type SettingSource,
@@ -355,7 +356,7 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
     as_of: d.clock.now().toISOString(),
     csrf_token: s.csrfToken,
     repo: ownerName,
-    /** The configured repo's stored label; null: no label stored, so project writes go through `factory settings`. */
+    /** The configured repo's stored label; null: no label stored, so a project write is refused until one is set. */
     project: ref ? await text(ref.label) : null,
     project_keys: PROJECT_SETTABLE_KEYS,
     keys,
@@ -373,7 +374,8 @@ export async function readSettings(d: UiDeps, s: UiSettings) {
 export type SettingsWrite =
   | { action: "set"; key: string; value: string; project?: string }
   | { action: "reset"; key: string; project?: string; learned?: true }
-  | ({ action: "edit-file" } & ConfigEditRequest);
+  | ({ action: "edit-file" } & ConfigEditRequest)
+  | { action: "project-label"; value: string };
 
 /** The POST body, or why it is not one. */
 export function parseWrite(body: unknown): SettingsWrite | { error: string } {
@@ -382,6 +384,12 @@ export function parseWrite(body: unknown): SettingsWrite | { error: string } {
   const allowed = new Set(["action", "key", "value", "project", "learned", "confirm"]);
   const extra = Object.keys(b).find((k) => !allowed.has(k));
   if (extra) return { error: `unknown field "${extra}"` };
+  if (b.action === "project-label") {
+    const other = Object.keys(b).find((k) => k !== "action" && k !== "value");
+    if (other) return { error: `project-label takes only a value, not "${other}"` };
+    if (typeof b.value !== "string") return { error: "value must be the label text" };
+    return { action: "project-label", value: b.value };
+  }
   if (typeof b.key !== "string" || b.key === "") return { error: "key must be a non-empty string" };
   if (b.project !== undefined && typeof b.project !== "string") return { error: "project must be a string (owner/name)" };
   const project = typeof b.project === "string" ? { project: b.project } : {};
@@ -403,7 +411,7 @@ export function parseWrite(body: unknown): SettingsWrite | { error: string } {
     if (b.project === undefined) return { error: "reset --learned needs --project <owner/name>: a learned value is per project" };
     return { action: "reset", key: b.key, ...project, learned: true };
   }
-  return { error: 'action must be "set", "reset" or "edit-file"' };
+  return { error: 'action must be "set", "reset", "edit-file" or "project-label"' };
 }
 
 class NoStoredProject extends Error {}
@@ -413,8 +421,30 @@ export function noLabelMessage(repo: { owner: string; name: string }): string {
   const ownerName = `${repo.owner}/${repo.name}`;
   return (
     `refused: no project label is stored for ${ownerName} yet, so this page cannot find its project key without asking the forge; ` +
-    `use npm run factory -- settings set <key> <value> --project ${ownerName} on the command line`
+    `set the project label on this page first`
   );
+}
+
+/**
+ * The project label write (design 08-settings): stores `label` as the label of the configured repo's stored project
+ * key. A label is not a setting, so no audit row is written. Refused when the label is empty, holds whitespace or does
+ * not end with `/owner/name` of the configured repo, and when no project key is stored for the repo.
+ */
+export async function writeProjectLabel(
+  store: Pick<FactoryStore, "getCursor" | "advanceCursor">,
+  repo: { owner: string; name: string },
+  label: string,
+): Promise<{ ok: true; line: string } | { ok: false; error: string }> {
+  const ownerName = `${repo.owner}/${repo.name}`;
+  if (label === "") return { ok: false, error: "refused: the project label is empty" };
+  if (/\s/.test(label)) return { ok: false, error: "refused: the project label contains whitespace" };
+  if (!label.endsWith(`/${ownerName}`)) return { ok: false, error: `refused: the project label must end with /${ownerName}, the configured repo` };
+  const stored = await readStoredProject(store, repo);
+  if (!stored) {
+    return { ok: false, error: `refused: no project key is stored for ${ownerName} yet; the factory stores it the first time it reaches the repo's forge` };
+  }
+  const changed = await saveProjectLabel(store, { key: stored.key, label });
+  return { ok: true, line: changed ? `project label of ${ownerName} = ${label}` : `project label of ${ownerName} is already ${label}` };
 }
 
 /**
@@ -427,6 +457,10 @@ export async function writeSettings(d: PauseDeps, s: UiSettings, body: unknown):
   const text = async (v: string) => (await w.plain(v)).text;
   const parsed = parseWrite(body);
   if ("error" in parsed) return { status: 400, value: { error: parsed.error } };
+  if (parsed.action === "project-label") {
+    const l = await writeProjectLabel(d.store, s.repo, parsed.value);
+    return l.ok ? { status: 200, value: { ok: true, lines: [await text(l.line)] } } : { status: 422, value: { error: await text(l.error) } };
+  }
   let filed: { item: string; branch: string } | null = null;
   const editFile = s.editFile;
   const deps: SettingsDeps = {

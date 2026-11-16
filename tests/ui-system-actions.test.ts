@@ -139,12 +139,14 @@ describe("system actions: GitHub token expiry from the last health run", () => {
 });
 
 describe("system actions: claim and worker pauses", () => {
-  it("a claim pause in effect is listed with its end time and its resume command", async () => {
+  it("a claim pause in effect is listed with its end time, the dashboard's Resume now first and its CLI command after", async () => {
     const { overview, store, clock } = await setup();
     const until = new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp;
     await store.pauseClaims(until, "rate_limit");
     const o = await overview();
-    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command: "factory resume rate_limit", until });
+    const command = "Resume now on the Status page (/app/), or factory resume rate_limit";
+    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command, until });
+    expect(command.indexOf("Resume now")).toBeLessThan(command.indexOf("factory resume"));
     expect(o.needs_you).toBe(1);
   });
 
@@ -186,6 +188,16 @@ describe("system actions: open alarms", () => {
     expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
     expect(codes(o)).toContain("worker_pause");
     expect(o.needs_you).toBe(3);
+  });
+});
+
+describe("system actions: the auto-stop alarm", () => {
+  it("names the dashboard's Settings page and Turn auto back on first, `factory mode auto` after", async () => {
+    const { overview, store } = await setup();
+    await store.recordAlert({ pattern: "auto_stopped", pattern_key: "auto_stopped", error_code: "failure_alarm", count: 1, detail: null }, ALERT_DEDUPE_MS);
+    const command = (await overview()).system_actions.find((a) => a.code === "alarm")!.command;
+    expect(command).toContain("Turn auto back on in Settings (/app/settings)");
+    expect(command.indexOf("/app/settings")).toBeLessThan(command.indexOf("factory mode auto"));
   });
 });
 

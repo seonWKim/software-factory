@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import {
-  API, type ImportItem, type ItemDetail, type McpStatus, type PluginsView,
+  API, type ImportItem, type ImportResult, type ItemDetail, type McpStatus, type PluginsView,
   getPluginsImport, postPackAdd, postPackApproval, postPluginsImport, postSettings, useApi,
 } from "../api.js";
 import { Button } from "../components/ui/button.js";
@@ -28,7 +28,13 @@ import { withNodes } from "./standing.js";
 // - Import (design 11-plugin-import): a dialog that lists, from GET /api/v1/plugins/import, the skills (Skills tab) or
 //   MCP servers (MCP and Tools tabs: tools come from MCP servers) of the user-level Claude Code and Codex configs, each
 //   with a checkbox; one already stored shows as imported and one a scan refuses shows its rules, neither selectable.
-//   Import posts the checked ones to POST /api/v1/plugins/import, as `factory plugins import`.
+//   Import posts the checked ones to POST /api/v1/plugins/import, as `factory plugins import`. While it runs the confirm
+//   button says "Importing…" and is off; then the dialog stays open and lists each item's result (stored, already
+//   added, refused with its rules) until the owner closes it, and the stored rows show on the tab at once, marked New.
+// - The Skills tab lists the skill folders' skills and the imported ones, each with its source (Folder, Claude Code,
+//   Codex); an imported one shows its SKILL.md path and, when its file is missing or changed, that state.
+// - An action's notice (approve, revoke, add, import, skill folder edit) shows on the tab it came from, in plain words;
+//   changing tab clears it and the New marks, and the next action replaces both.
 // - Add on MCP and Tools: a pack folder or one descriptor file (`add`), as `factory pack add`. Add on Skills, and
 //   Remove on a skill folder: the skill folder list (`capabilities.skill_folders`) through the config file writer
 //   (POST /api/v1/settings `edit-file`), which puts the change on a local branch; the page shows that item's Merge button.
@@ -62,28 +68,38 @@ function matching<Row extends { name: string; description: string | null }>(rows
   });
 }
 
-/** What the last write said: its lines, and for a skill folder edit the filed item and its branch. */
+/**
+ * What the last write said: its lines, for a skill folder edit the filed item and its branch, and for an import the
+ * keys of the rows it stored (freshKey), which the tab marks New.
+ */
 interface Report {
   ok: boolean;
   lines: string[];
   filed?: { item: string; branch: string };
+  fresh?: ReadonlySet<string>;
 }
 type Reporter = (r: Report) => void;
 
-/** After a write: the outcome, and the list read again. */
-function useReporter(setReport: (r: Report | null) => void): Reporter {
+/** After a write: the outcome on the tab it came from, and the list read again. */
+function useReporter(tab: Tab, setReport: (r: { tab: Tab; report: Report } | null) => void): Reporter {
   const client = useQueryClient();
   return (r) => {
-    setReport(r);
+    setReport({ tab, report: r });
     if (r.ok) void client.invalidateQueries({ queryKey: [API.plugins] });
   };
 }
 
-/** A name in mono, with its description under it. */
-function NameCell({ name, description }: { name: string; description: string | null }) {
+/** The key a stored import marks a row with: an MCP server by name, a skill by its source and name. */
+const freshKey = (kind: ImportItem["kind"], name: string, source?: string): string => (kind === "skill" ? `skill\n${source ?? ""}\n${name}` : `mcp_server\n${name}`);
+
+/** A name in mono, with its description under it; `fresh`: a row the last import stored, marked New. */
+function NameCell({ name, description, fresh = false }: { name: string; description: string | null; fresh?: boolean }) {
   return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="font-mono text-xs wrap-anywhere">{name}</span>
+    <div data-new={fresh ? "" : undefined} className="flex min-w-0 flex-col gap-0.5">
+      <span className="flex min-w-0 flex-wrap items-center gap-1.5">
+        <span className="font-mono text-xs wrap-anywhere">{name}</span>
+        {fresh && <StatusBadge size="sm" level="running">{t("plugins.new")}</StatusBadge>}
+      </span>
       {description && <span className="text-xs text-pretty wrap-anywhere text-text-2">{description}</span>}
     </div>
   );
@@ -146,10 +162,42 @@ const IMPORT_OF: Record<Tab, { kind: ImportItem["kind"]; title: MessageKey; cons
 };
 
 const SOURCE: Record<ImportItem["source"], MessageKey> = { claude: "plugins.sourceClaude", codex: "plugins.sourceCodex" };
-const itemKey = (i: ImportItem) => `${i.kind}\n${i.source}\n${i.name}`;
+const itemKey = (i: Pick<ImportItem, "kind" | "source" | "name">) => `${i.kind}\n${i.source}\n${i.name}`;
 
-/** The Import dialog: the found items of one kind, each with a checkbox; Import stores the checked ones. */
-function ImportDialog({ tab, token, onClose }: { tab: Tab; token: string; onClose: () => void }) {
+/** One import result in plain words: stored, already added, refused with its rules, or not found. */
+function resultText(r: ImportResult): string {
+  if (r.outcome === "stored") return t("plugins.resultStored");
+  if (r.outcome === "already_added") return t("plugins.resultAlready");
+  if (r.outcome === "refused") return t("plugins.resultRefused", { rules: r.rules.join(", ") });
+  return t("plugins.resultNotFound");
+}
+
+/** The last Import's result per item, in the dialog until it closes. */
+function ImportResults({ results }: { results: readonly ImportResult[] }) {
+  return (
+    <section className="flex flex-col gap-1">
+      <h3 className="text-sm font-semibold">{t("plugins.importResults")}</h3>
+      <ul aria-label={t("plugins.importResults")} className="flex flex-col gap-1">
+        {results.map((r) => {
+          const ok = r.outcome === "stored" || r.outcome === "already_added";
+          return (
+            <li key={itemKey(r)} data-import-result={r.outcome} className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs">
+              <span className="font-mono wrap-anywhere">{r.name}</span>
+              <span className="text-text-2">{t(SOURCE[r.source])}</span>
+              <span className={ok ? "text-pretty" : "text-pretty wrap-anywhere text-pill-bad-fg"}>{resultText(r)}</span>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * The Import dialog: the found items of one kind, each with a checkbox; Import stores the checked ones. It stays open
+ * after Import with each item's result, and reports the stored rows to the tab (marked New) and a summary notice.
+ */
+function ImportDialog({ tab, token, report, onClose }: { tab: Tab; token: string; report: Reporter; onClose: () => void }) {
   const client = useQueryClient();
   const of = IMPORT_OF[tab];
   // Read each time the dialog opens: the configs can change between opens.
@@ -157,6 +205,7 @@ function ImportDialog({ tab, token, onClose }: { tab: Tab; token: string; onClos
   const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [results, setResults] = useState<readonly ImportResult[] | null>(null);
   const items = (q.data?.items ?? []).filter((i) => i.kind === of.kind);
   const toggle = (key: string) => {
     const next = new Set(checked);
@@ -172,28 +221,27 @@ function ImportDialog({ tab, token, onClose }: { tab: Tab; token: string; onClos
       setError(r.error);
       return;
     }
-    await client.invalidateQueries({ queryKey: [API.plugins] });
-    const failed = r.results.filter((x) => x.outcome === "refused" || x.outcome === "not_found");
-    if (failed.length > 0) {
-      setChecked(new Set());
-      setError(failed.map((x) => x.line).join("; "));
-      await q.refetch();
-      return;
-    }
-    const stored = r.results.filter((x) => x.outcome === "stored").length;
-    announceStatus(t("plugins.importDone", { stored, skipped: r.results.length - stored }));
-    onClose();
+    setResults(r.results);
+    setChecked(new Set());
+    const stored = r.results.filter((x) => x.outcome === "stored");
+    const failed = r.results.some((x) => x.outcome === "refused" || x.outcome === "not_found");
+    const summary = t("plugins.importDone", { stored: stored.length, skipped: r.results.filter((x) => x.outcome === "already_added").length });
+    report({ ok: !failed, lines: [summary], fresh: new Set(stored.map((x) => freshKey(x.kind, x.name, x.source))) });
+    announceStatus(summary);
+    await Promise.all([client.invalidateQueries({ queryKey: [API.plugins] }), q.refetch()]);
   };
   return (
     <Dialog
       title={t(of.title)}
       consequence={t(of.consequence)}
-      confirmLabel={t("plugins.importConfirm", { count: checked.size })}
+      confirmLabel={busy ? t("plugins.importing") : t("plugins.importConfirm", { count: checked.size })}
       confirmDisabled={busy || checked.size === 0}
+      {...(results === null ? {} : { cancelLabel: t("plugins.close") })}
       error={error}
       onConfirm={() => void confirm()}
       onClose={onClose}
     >
+      {results && <ImportResults results={results} />}
       <p className="text-sm text-pretty text-text-2">{t("plugins.importIntro")}</p>
       {q.data?.errors.map((e) => (
         <Notice key={e.source} tone="warn">
@@ -296,37 +344,40 @@ function Actions({ view, tab, report }: { view: PluginsView; tab: Tab; report: R
     <div className="flex flex-wrap items-center gap-2">
       <Button variant="secondary" disabled={!canImport} title={canImport ? undefined : t("plugins.importFromCli")} onClick={() => setOpen("import")}>{t("plugins.import")}</Button>
       <Button variant="secondary" disabled={!canAdd} title={canAdd ? undefined : off} onClick={() => setOpen("add")}>{t("plugins.add")}</Button>
-      {open === "import" && view.csrf_token !== null && <ImportDialog tab={tab} token={view.csrf_token} onClose={() => setOpen(null)} />}
+      {open === "import" && view.csrf_token !== null && <ImportDialog tab={tab} token={view.csrf_token} report={report} onClose={() => setOpen(null)} />}
       {open === "add" && <AddDialog view={view} skills={skills} report={report} onClose={() => setOpen(null)} />}
     </div>
   );
 }
 
-/** A tab's list: Import and Add above it, or, with nothing to list, in its empty state; a search that matched nothing says so. */
+/**
+ * A tab's list: Import and Add above it, or, with nothing to list, in its empty state; a search that matched nothing
+ * says so. Actions keeps one place in the tree either way, so an open Import dialog stays open when its import fills
+ * an empty tab.
+ */
 function TabList<Row extends { name: string; description: string | null }>(
   { view, tab, report, query, rows, how, table }: { view: PluginsView; tab: Tab; report: Reporter; query: string; rows: readonly Row[]; how: MessageKey; table: (rows: Row[], empty: ReactNode) => ReactNode },
 ) {
-  if (rows.length === 0) {
-    return (
-      <div className="flex flex-col items-start gap-3 rounded-control border border-dashed border-border-strong px-4 py-6">
-        <p className="text-sm text-pretty text-text-2">{t(how)}</p>
-        <Actions view={view} tab={tab} report={report} />
-      </div>
-    );
-  }
+  const empty = rows.length === 0;
   return (
     <>
-      <Actions view={view} tab={tab} report={report} />
-      {table(matching(rows, query), t("plugins.noMatch", { query: query.trim() }))}
+      <div className={empty ? "flex flex-col items-start gap-3 rounded-control border border-dashed border-border-strong px-4 py-6" : "contents"}>
+        {empty && <p className="text-sm text-pretty text-text-2">{t(how)}</p>}
+        <Actions view={view} tab={tab} report={report} />
+      </div>
+      {!empty && table(matching(rows, query), t("plugins.noMatch", { query: query.trim() }))}
     </>
   );
 }
 
 type McpRow = PluginsView["mcp"][number];
 
-function McpTab({ view, query, report }: { view: PluginsView; query: string; report: Reporter }) {
+/** The rows the last import on this tab stored (freshKey); none after a tab change or another action. */
+type Fresh = ReadonlySet<string> | undefined;
+
+function McpTab({ view, query, report, fresh }: { view: PluginsView; query: string; report: Reporter; fresh: Fresh }) {
   const columns: Column<McpRow>[] = [
-    { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} /> },
+    { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} fresh={fresh?.has(freshKey("mcp_server", r.name)) ?? false} /> },
     { key: "source", header: t("plugins.colSource"), render: () => <span className="text-xs whitespace-nowrap">{t("plugins.sourcePack")}</span> },
     { key: "status", header: t("plugins.colStatus"), render: (r) => <Status status={r.status} /> },
     { key: "action", header: t("plugins.colAction"), render: (r) => <ApproveButton token={view.csrf_token} kind="mcp_server" name={r.name} status={r.status} report={report} /> },
@@ -369,18 +420,33 @@ function SkillFolders({ view, report }: { view: PluginsView; report: Reporter })
   );
 }
 
-function SkillsTab({ view, query, now, report }: { view: PluginsView; query: string; now: number; report: Reporter }) {
+/** An imported skill's state when it is not offered to agents: its file is missing or changed since import. */
+const SKILL_STATE: Record<"missing" | "changed", MessageKey> = { missing: "plugins.stateMissing", changed: "plugins.stateChanged" };
+
+function SkillsTab({ view, query, now, report, fresh }: { view: PluginsView; query: string; now: number; report: Reporter; fresh: Fresh }) {
   type Row = PluginsView["skills"][number];
   const columns: Column<Row>[] = [
-    { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} /> },
+    { key: "name", header: t("plugins.colName"), render: (r) => <NameCell name={r.name} description={r.description} fresh={r.source !== undefined && (fresh?.has(freshKey("skill", r.name, r.source)) ?? false)} /> },
+    { key: "source", header: t("plugins.colSource"), render: (r) => <span className="text-xs whitespace-nowrap">{t(r.source ? SOURCE[r.source] : "plugins.sourceFolder")}</span> },
     { key: "folder", header: t("plugins.colFolder"), render: (r) => <span className="font-mono text-xs wrap-anywhere">{r.folder}</span> },
+    {
+      key: "path",
+      header: t("plugins.colPath"),
+      render: (r) =>
+        r.path === undefined ? null : (
+          <div className="flex min-w-0 flex-col items-start gap-0.5">
+            <span className="font-mono text-xs wrap-anywhere">{r.path}</span>
+            {(r.state === "missing" || r.state === "changed") && <StatusBadge size="sm" level="needs_you">{t(SKILL_STATE[r.state])}</StatusBadge>}
+          </div>
+        ),
+    },
     { key: "roles", header: t("plugins.colRoles"), render: (r) => <Roles roles={r.roles} /> },
     { key: "last_used", header: t("plugins.colLastUsed"), render: (r) => <LastUsed at={r.last_used} now={now} /> },
   ];
   return (
     <>
       <TabList view={view} tab="skills" report={report} query={query} rows={view.skills} how="plugins.emptySkills"
-        table={(rows, empty) => <DataTable label={t("plugins.tabSkills")} columns={columns} rows={rows} rowKey={(r) => `${r.folder}\n${r.name}`} empty={empty} />} />
+        table={(rows, empty) => <DataTable label={t("plugins.tabSkills")} columns={columns} rows={rows} rowKey={(r) => `${r.source ?? "folder"}\n${r.folder}\n${r.name}`} empty={empty} />} />
       <SkillFolders view={view} report={report} />
     </>
   );
@@ -430,11 +496,15 @@ export function PluginsPage() {
   const now = useNow();
   const [tab, setTab] = useTabParam();
   const [query, setQuery] = useState("");
-  const [outcome, setOutcome] = useState<Report | null>(null);
-  const report = useReporter(setOutcome);
+  // The last action's notice, with the tab it came from: shown only there, and cleared by a tab change.
+  const [last, setLast] = useState<{ tab: Tab; report: Report } | null>(null);
+  const report = useReporter(tab, setLast);
+  const outcome = last?.tab === tab ? last.report : null;
+  const fresh = outcome?.fresh;
   const q = useApi<PluginsView>(API.plugins, false);
   const choose = (next: Tab) => {
     setQuery("");
+    setLast(null);
     setTab(next);
   };
   return (
@@ -454,9 +524,9 @@ export function PluginsPage() {
         ) : !q.data ? (
           <Loading rows={3} />
         ) : tab === "mcp" ? (
-          <McpTab view={q.data} query={query} report={report} />
+          <McpTab view={q.data} query={query} report={report} fresh={fresh} />
         ) : tab === "skills" ? (
-          <SkillsTab view={q.data} query={query} now={now} report={report} />
+          <SkillsTab view={q.data} query={query} now={now} report={report} fresh={fresh} />
         ) : (
           <ToolsTab view={q.data} query={query} now={now} report={report} />
         )}

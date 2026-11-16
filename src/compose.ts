@@ -15,7 +15,7 @@ import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
-import type { CliIdentity } from "./core/local-cli.js";
+import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal } from "./core/local-merge.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -1076,19 +1076,19 @@ export async function localAuth(_loaded: Loaded, store: FactoryStore): Promise<A
 }
 
 /**
- * The approve_merge check of `factory settings` and `factory mode` for `mode`, `auto_merge_max_tier` and a loosening change (design
- * 08-settings): `user` on the configured project, through the owner check, with no forge call. Solo: the first
- * local identity is the owner and holds it with no setup. The refusal, or null.
+ * The owner check of every CLI command that asks one (approve_merge for a `factory settings` or `mode` change, design 08-settings;
+ * approve_spec for the sentence form, `factory resume` and `factory workers`): `user` on the configured project, no forge call.
  */
-export async function approveMergeCheck(loaded: Loaded, store: FactoryStore, user: UserId): Promise<() => Promise<string | null>> {
-  const auth = await localAuth(loaded, store);
-  const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
+export function ownerRefusal(loaded: Loaded, store: FactoryStore, user: UserId, action: AuthAction): () => Promise<string | null> {
+  const repo = loaded.config.repo;
   return async () => {
     const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);
     if (!project) return "no project key is stored yet; start the factory once first";
-    return refusalOf(await auth.authorize({ user_id: user, attributes: {} }, "approve_merge", { kind: "project", id: project.key }));
+    return refusalOf(await (await localAuth(loaded, store)).authorize({ user_id: user, attributes: {} }, action, { kind: "project", id: project.key }));
   };
 }
+
+export type { CliEnvironment, CliIdentity, FactoryStore }; // for the CLI component (src/cli/command.ts)
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. `local` and `learned` as the worker pool's (Plugins.localRoute; 08-settings). */
 export interface SessionParts {

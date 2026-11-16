@@ -95,7 +95,7 @@ export function alarmCommand(a: Alert): string {
   if (a.pattern === "spend_budget") return "Spend page (/app/spend)";
   if (a.pattern === "repeated_error") return "Failures page (/app/failures)";
   if (a.pattern === "zero_tokens") return "factory llm-check";
-  if (a.pattern === "auto_stopped") return "factory mode auto (after the cause is fixed)";
+  if (a.pattern === "auto_stopped") return "Turn auto back on in Settings (/app/settings) after the cause is fixed, or factory mode auto";
   if (a.pattern === "dead_letter") return `bus_${deadLetterTopic(a).replace(/\./g, "_")}_dead_letters (replay once the cause is fixed)`;
   return "factory doctor";
 }

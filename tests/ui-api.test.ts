@@ -17,6 +17,7 @@ import { type ApiDeps, type UiDeps, type UiResponse, respond, wire } from "../sr
 import { type FileKeysView, type UiSettings, fileKeysOf, newCsrfToken, writeSettings } from "../src/ui/settings-api.js";
 import type { ConfigEditRequest, ConfigEditResult } from "../src/core/config-writer.js";
 import { checkoutRevision } from "../src/ui/system-actions.js";
+import { type PauseDeps, resumePause } from "../src/ui/pause-api.js";
 import viteConfig from "../web/vite.config.js";
 import { PROJECT_KEY, issue, newStore, system, w1 } from "./helpers/store.js";
 
@@ -1789,5 +1790,22 @@ describe("ui api: the Settings page's typed form of the file-only keys (design 0
     // A refusal names no item.
     const no = await wired(refuse);
     expect(await writeSettings(no, no.settings, { action: "edit-file", key: "hotspot_paths", value: '["src/"]' })).toEqual({ status: 422, value: { error: "refused: no" } });
+  });
+});
+
+describe("POST /api/v1/pauses/resume: the refusal (design 05-restarts)", () => {
+  it("a 403 names the dashboard's Resume now on the Status page first, `factory resume <name>` after, and ends nothing", async () => {
+    const { store, clock } = await newStore();
+    const until = new Date(clock.now().getTime() + 60_000).toISOString() as Timestamp;
+    await store.pauseClaims(until, "rate_limit");
+    const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pauses = { principal: async () => "local:other" as UserId, authorize: async () => ({ allow: false, reason: "not_owner" }) as AuthDecision, csrfToken: "t", log };
+    const r = await resumePause({ store } as unknown as PauseDeps, pauses, { name: "rate_limit" });
+    expect(r.status).toBe(403);
+    const error = (r.value as { error: string }).error;
+    expect(error).toContain("Resume now on the Status page (/app/)");
+    expect(error.indexOf("/app/")).toBeLessThan(error.indexOf("factory resume rate_limit"));
+    expect(await store.getClaimPause("rate_limit")).toBe(until);
+    expect(log.info).not.toHaveBeenCalled();
   });
 });

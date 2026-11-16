@@ -137,9 +137,11 @@ export async function systemActions(x: SystemInput): Promise<SystemAction[]> {
 
   for (const p of await activePauses(x)) {
     const what = p.name === "model_stall" ? `next probe at ${p.ends_at}` : `until ${p.ends_at}`;
-    add("claim_pause", `Claim pause ${p.name} in effect, ${what}`, `factory resume ${p.name}`, p.ends_at);
+    // The dashboard action first, the CLI command as the fallback.
+    add("claim_pause", `Claim pause ${p.name} in effect, ${what}`, `Resume now on the Status page (/app/), or factory resume ${p.name}`, p.ends_at);
   }
   const workerPauses = await x.store.listWorkerPauses();
+  // The CLI only: the dashboard has no worker pause or resume control yet.
   if (workerPauses.length > 0) {
     add("worker_pause", `${workerPauses.length} worker pause${workerPauses.length === 1 ? "" : "s"} in effect (factory workers pause)`, "factory workers resume");
   }

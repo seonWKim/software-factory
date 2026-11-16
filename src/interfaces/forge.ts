@@ -81,6 +81,12 @@ export interface ForgePollResult {
  */
 export type PrChecks = { state: "pending" } | { state: "passed" } | { state: "failed"; failed: string[] };
 
+/**
+ * The checks on the base branch's head commit, summed up as PrChecks are, with the commit read (`head_sha`; null
+ * when the forge read no commit, e.g. under its request budget, which answers pending).
+ */
+export type BaseChecks = PrChecks & { head_sha: string | null };
+
 /** What `closePr` needs. */
 export interface ClosePrInput {
   pr: number;
@@ -191,6 +197,12 @@ export interface Forge {
   setPrStatus(source: SourceRef, status: WorkStatus, pr: number): Promise<void>;
   /** The checks on PR `pr`'s current head commit (design §5 CI gate): `prCheckResults` summed up. Read-only. */
   prChecks(pr: number): Promise<PrChecks>;
+  /**
+   * The checks on the configured base branch's current head commit, with the same summary rule as `prChecks`. Read
+   * by the CI gate only after a PR's checks failed, at most once per checks step (design 05-ci-gate, Red main).
+   * Throws when the forge cannot be read. Read-only. Absent: the base is never read and counts as not red.
+   */
+  baseChecks?(): Promise<BaseChecks>;
   /**
    * Each check on PR `pr`'s current head commit with its result; empty when none ran. Read when a review is
    * queued, for the review prompt (design §4, issue #223). Throws when the forge cannot be read. Read-only.

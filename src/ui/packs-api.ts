@@ -9,14 +9,15 @@
 // Add stores what it finds as pending: nothing is approved, started or granted. It is one route with approve because
 // the server's write routes are one per path; the page's Import is its own route (plugins-import-api.ts). The request
 // guards (Host, Origin, Content-Type, CSRF token, body size, JSON) run in server.ts first; every refusal comes before
-// any store write.
+// any store write. The page's lines are plain words (design 11-plugin-import, 2026-11-16): "approved MCP server docs",
+// "stored tool reader as pending", never a description_hash or module_hash; the CLI's lines keep their hash prefixes.
 
 import { copyFile, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { type ApprovalRequest, PackApprovalsStore, approvalLine, changeApproval } from "../packs/pack-approvals.store.js";
-import { PACK_TOOL_MODULE, PackEntriesStore, addLine, addPack } from "../packs/pack-entries.store.js";
+import { type AddOutcome, PACK_TOOL_MODULE, type PackEntryKind, PackEntriesStore, addLine, addPack } from "../packs/pack-entries.store.js";
 import type { ApiResult } from "./api.js";
 import type { PauseDeps, UiPauses } from "./pause-api.js";
 import { Withholder } from "./withhold.js";
@@ -52,8 +53,14 @@ export async function writePackApproval(d: PauseDeps, p: UiPauses, body: unknown
   const now = () => d.clock.now().toISOString();
   const result = await changeApproval({ auth: p.auth!, entries: new PackEntriesStore(db, now), approvals: new PackApprovalsStore(db, now), user_id }, r);
   if (!result.ok) return { status: result.refusal === "not_allowed" ? 403 : 404, value: { error: approvalLine(r, result) } };
-  return { status: 200, value: { ...result.ref, action: r.action, line: approvalLine(r, result) } };
+  // The ref stays for scripts; the line the page shows names no hash.
+  return { status: 200, value: { ...result.ref, action: r.action, line: `${r.action === "approve" ? "approved" : "revoked"} ${what(result.ref.kind, result.ref.name)}` } };
 }
+
+const what = (kind: PackEntryKind, name: string): string => `${kind === "tool" ? "tool" : "MCP server"} ${name}`;
+
+/** An add's line for the page: the CLI's words (addLine) without its hashes. */
+const addPageLine = (r: AddOutcome): string => (r.outcome === "stored" ? `stored ${what(r.kind, r.name)} as pending` : addLine(r));
 
 const noUser = (): ApiResult => ({ status: 403, value: { error: "No factory user acts from this page: link your local account or set cli_user." } });
 
@@ -69,7 +76,7 @@ async function addPath(d: PauseDeps, added_by: string, raw: unknown): Promise<Ap
   if (kind === "folder") {
     const results = await add(path);
     if (results.length === 0) return { status: 422, value: { error: `no tools/*.json or mcp_servers/*.json under ${path}` } };
-    return done(d, results.map(addLine), results.some((r) => r.outcome === "refused"));
+    return done(d, results.map(addPageLine), results.some((r) => r.outcome === "refused"));
   }
   const dir = basename(dirname(path));
   if (!path.endsWith(".json") || !DESCRIPTOR_DIRS.includes(dir)) {
@@ -83,13 +90,13 @@ async function addPath(d: PauseDeps, added_by: string, raw: unknown): Promise<Ap
     const module = `${path.slice(0, -".json".length)}${PACK_TOOL_MODULE}`;
     if (dir === "tools") await copyFile(module, join(one, dir, basename(module))).catch(() => undefined);
     const results = await add(one);
-    return done(d, results.map(addLine), results.some((r) => r.outcome === "refused"));
+    return done(d, results.map(addPageLine), results.some((r) => r.outcome === "refused"));
   } finally {
     await rm(one, { recursive: true, force: true });
   }
 }
 
-/** 200 with the CLI's lines, each through the Withholder (they name the owner's paths and names); `refused` when a scan refused an item. */
+/** 200 with the page's lines, each through the Withholder (they name the owner's paths and names); `refused` when a scan refused an item. */
 async function done(d: PauseDeps, lines: readonly string[], refused: boolean): Promise<ApiResult> {
   const w = new Withholder(d.scanner);
   const out = [];
