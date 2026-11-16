@@ -1,6 +1,7 @@
 // Declarations two or more controller units share (moved out of the legacy controller, RFC 0015 M5).
 
 import { commandFooter, commandState } from "../../core/commands.js";
+import { phaseOf } from "../../core/phase.js";
 import { AUTO_ACTOR, runKey } from "../../core/policy.js";
 import { MERGE_CONFLICT_PENDING } from "../../core/resolve.js";
 import { PHASES_OPEN, SPLIT_FILING } from "../../core/split.js";
@@ -143,6 +144,7 @@ export function updateKey(id: WorkItemId, change_ref: string, head_sha: string, 
 export function updatingForChecks(it: WorkItem): boolean {
   return it.stage === "REVIEW" && it.blocked_on === "ci" && it.blocked_reason === CHECKS_FAILED_UPDATE;
 }
+/** Waiting for a person's merge (core/phase.ts `merge_pending`): the only state the merge check runs on. */
 export function awaitingMerge(it: WorkItem): boolean {
-  return it.stage === "REVIEW" && it.blocked_on === "human" && it.blocked_reason === "merge_pending";
+  return phaseOf(it) === "merge_pending";
 }

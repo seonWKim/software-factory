@@ -1,4 +1,5 @@
 import type { StateChange, Timestamp, WorkItem, WorkItemId } from "./types.js";
+import { FAILED_PHASES, type PhaseInput, phaseOf } from "./phase.js";
 
 /**
  * Owner notices (design 09-notifications): one stored notice per wait, a wait being the state change that set an
@@ -69,7 +70,7 @@ export interface NoticeSettings {
 
 /** A waiting item with its state changes, oldest first (none when the caller knew it unchanged since its notice). */
 export interface WaitingItem {
-  item: Pick<WorkItem, "id" | "blocked_on" | "blocked_reason">;
+  item: Pick<WorkItem, "id" | "stage" | "blocked_on" | "blocked_reason" | "close_reason">;
   changes: readonly Pick<StateChange, "id" | "changes">[];
 }
 
@@ -79,12 +80,12 @@ export interface ClosedItem {
   changes: readonly Pick<StateChange, "id" | "at" | "changes">[];
 }
 
-const FAILURE_REASONS = new Set(["max_attempts", "max_restart", "max_loops", "repeated_failure", "recurring_failure"]);
-
-export function noticeKind(blocked_reason: string | null): WaitKind {
-  if (blocked_reason === "spec_pending") return "spec";
-  if (blocked_reason === "merge_pending") return "merge";
-  if (blocked_reason !== null && (blocked_reason.startsWith("run_failed:") || FAILURE_REASONS.has(blocked_reason))) return "failure";
+/** A waiting item's notice kind, from its phase (core/phase.ts): a spec at its revision limit is a spec to approve too. */
+export function noticeKind(it: PhaseInput): WaitKind {
+  const p = phaseOf(it);
+  if (p === "spec_pending" || p === "max_revisions") return "spec";
+  if (p === "merge_pending") return "merge";
+  if (FAILED_PHASES.has(p) || p === "max_loops" || p === "recurring_failure") return "failure";
   return "other";
 }
 
@@ -192,7 +193,7 @@ export function decideNotices(input: {
     if (item.blocked_on !== "human") continue;
     const key = waitKey(changes);
     if (key === null || stored.has(`${item.id}\n${key}`)) continue;
-    const kind = noticeKind(item.blocked_reason);
+    const kind = noticeKind(item);
     if (!settings.notice_kinds.includes(kind)) continue;
     out.push({ work_item_id: item.id, wait_key: key, kind, created_at: at, held_until: held, count: 1 });
   }

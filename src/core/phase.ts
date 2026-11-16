@@ -145,4 +145,4 @@ export const PERSON_PHASES: ReadonlySet<ItemPhase> = new Set<ItemPhase>([
 export const FAILED_PHASES: ReadonlySet<ItemPhase> = new Set<ItemPhase>(["too_large", "failed_implement", "failed_review", "failed_run", "repeated_failure"]);
 
 /** True for a closed item, merged or not. */
-export const isClosedPhase = (p: ItemPhase): boolean => p === "done" || p === "closed";
+export const isClosedPhase = (p: ItemPhase): p is "done" | "closed" => p === "done" || p === "closed";

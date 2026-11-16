@@ -1,5 +1,4 @@
-import { PHASES_OPEN, PHASE_HOLD } from "./split.js";
-import type { WorkItem } from "./types.js";
+import { type ItemPhase, type PhaseInput, phaseOf } from "./phase.js";
 
 /**
  * Where a work item stands, as one word a reader of the source can act on. Sources show it (e.g. one
@@ -26,32 +25,43 @@ export const WORK_STATUSES: readonly WorkStatus[] = [
   "rejected",
 ];
 
-/**
- * Pure mapping from the fields that carry state. Anything blocked that is not one of the two expected
- * human gates (spec approval, merge) needs a human: failed runs, max_loops, merge conflicts, an unknown
- * reason, and any blocker other than `human`, except `dependency`: an item waiting for another item to merge
- * shows its stage (implementing), since nobody needs to act (design §5, 2026-11-03). So does a split's wait on
- * its own phases: a phase held until the one before it merges, and a parent whose phases are open, show
- * "implementing". A coordination-cost hold keeps `blocked_on: none`, so it shows its stage as well.
- */
-export function statusOf(
-  it: Pick<WorkItem, "stage" | "blocked_on" | "blocked_reason" | "close_reason">,
-): WorkStatus {
-  if (it.stage === "CLOSED") return it.close_reason === "completed" ? "done" : "rejected";
-  if (it.blocked_on === "upstream" && (it.blocked_reason === PHASE_HOLD || it.blocked_reason === PHASES_OPEN)) return "implementing";
-  if (it.blocked_on !== "none" && it.blocked_on !== "dependency" && it.blocked_on !== "outbound") {
-    if (it.blocked_on === "human" && it.stage === "READY" && it.blocked_reason === "spec_pending") return "needs_approval";
-    if (it.blocked_on === "human" && it.stage === "REVIEW" && it.blocked_reason === "merge_pending") return "ready_to_merge";
-    return "needs_human";
-  }
-  switch (it.stage) {
-    case "NEW":
-      return "triaging";
-    case "READY":
-      return "needs_approval";
-    case "RUNNING":
-      return "implementing";
-    case "REVIEW":
-      return "in_review";
-  }
+/** Each phase's status. A wait on another item (a dependency, a split's phases) or on outbound shows its stage. */
+const STATUS: Record<ItemPhase, WorkStatus> = {
+  done: "done",
+  closed: "rejected",
+  spec_pending: "needs_approval",
+  max_revisions: "needs_approval",
+  specced: "needs_approval",
+  merge_pending: "ready_to_merge",
+  triaging: "triaging",
+  implementing: "implementing",
+  dependency_hold: "implementing",
+  phase_hold: "implementing",
+  phases_open: "implementing",
+  delivering: "implementing",
+  reviewing: "in_review",
+  delivering_review: "in_review",
+  budget_checkpoint: "needs_human",
+  floor_tier: "needs_human",
+  rule_of_two: "needs_human",
+  agent_needs_human: "needs_human",
+  repeated_failure: "needs_human",
+  recurring_failure: "needs_human",
+  dependency_closed: "needs_human",
+  dependency_cycle: "needs_human",
+  too_large: "needs_human",
+  failed_implement: "needs_human",
+  failed_review: "needs_human",
+  failed_run: "needs_human",
+  max_loops: "needs_human",
+  merge_conflict: "needs_human",
+  upstream_wait: "needs_human",
+  ci_wait: "needs_human",
+  budget_wait: "needs_human",
+  person_wait: "needs_human",
+};
+
+/** The item's status, from its phase (core/phase.ts). */
+export function statusOf(it: PhaseInput): WorkStatus {
+  return STATUS[phaseOf(it)];
 }
