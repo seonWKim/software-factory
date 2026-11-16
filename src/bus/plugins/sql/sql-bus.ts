@@ -18,7 +18,7 @@ import type { StartPosition } from "../../../shared/handler.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
-import { P, TOPICS_TABLE, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
+import { P, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { addMs } from "../../../shared/time.js";
 import { MESSAGE_COLUMNS, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
 import { SqlRetryScheduler } from "./sql-scheduler.js";
@@ -111,9 +111,8 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   relay(tick: Tick): Promise<number> {
     return this.db.transaction(async (tx) => {
       const rows = await tx.all(
-        `SELECT seq, topic, envelope FROM ${this.outbox} WHERE published_at IS NULL ORDER BY seq LIMIT ${this.relayBatch}${this.db.dialect.forUpdate}`,
+        `SELECT seq, topic, envelope FROM ${this.outbox} WHERE published_at IS NULL ORDER BY seq LIMIT ${this.relayBatch}`,
       );
-      await this.lockTopics(tx, rows.map((r) => String(r.topic)));
       for (const r of rows) {
         await this.insertMessage(tx, this.topic(String(r.topic)), JSON.parse(String(r.envelope)) as Envelope, tick.now);
         await tx.run(`UPDATE ${this.outbox} SET published_at = ? WHERE seq = ?`, [tick.now, Number(r.seq)]);
@@ -122,24 +121,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     });
   }
 
-  /**
-   * Takes the `bus_topics` rows of `names` until the transaction ends, before it inserts into their tables, so inserts
-   * into one topic commit in seq order and a cursor (`seq > last_seq`) never skips a lower seq. One statement in key
-   * order, so two writers never take two topics in opposite orders. SQLite has one writer and no row locks
-   * (`forUpdate` is empty), so there it returns at once.
-   */
-  private async lockTopics(tx: SqlExecutor, names: readonly string[]): Promise<void> {
-    const forUpdate = this.db.dialect.forUpdate;
-    const unique = [...new Set(names)];
-    if (forUpdate === "" || unique.length === 0) return;
-    const locked = await tx.all(
-      `SELECT name FROM ${TOPICS_TABLE} WHERE name IN (${unique.map(() => "?").join(", ")}) ORDER BY name${forUpdate}`,
-      unique,
-    );
-    if (locked.length !== unique.length) throw new Error(`${TOPICS_TABLE} lists not every topic of ${unique.join(", ")}: its tables were not created`);
-  }
-
-  /** Writes one message to its topic's table (the caller holds its lock); a message id already there is skipped. */
+  /** Writes one message to its topic's table ; a message id already there is skipped. */
   private async insertMessage(tx: SqlExecutor, topic: TopicDescriptor, m: Envelope, publishedAt: string): Promise<void> {
     const key = topic.partitionKey(m);
     const values: SqlValue[] = [
@@ -256,7 +238,6 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
         );
         // The notice commits with the dead letter. A notice that is dead-lettered itself raises none (no loop).
         if (topic.name !== SYSTEM_ALERTS.name) {
-          await this.lockTopics(tx, [SYSTEM_ALERTS.name]);
           await this.insertMessage(tx, SYSTEM_ALERTS, deadLetterNotice(c, code, lastError, horizon), horizon);
         }
         return;

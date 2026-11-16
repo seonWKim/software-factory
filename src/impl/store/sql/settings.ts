@@ -61,7 +61,7 @@ export async function resetLearnedSetting(db: SqlDriver, input: ResetSettingInpu
 }
 
 async function selectForUpdate(db: SqlDriver, tx: SqlExecutor, project: string, key: string): Promise<LearnedSetting | null> {
-  const [row] = await tx.all(`SELECT * FROM runtime_learned_settings WHERE project_key = ? AND setting_key = ?${db.dialect.forUpdate}`, [project, key]);
+  const [row] = await tx.all(`SELECT * FROM runtime_learned_settings WHERE project_key = ? AND setting_key = ?`, [project, key]);
   return row ? rowToLearned(row) : null;
 }
 

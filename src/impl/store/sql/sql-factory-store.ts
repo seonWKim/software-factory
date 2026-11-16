@@ -256,13 +256,12 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
 
   /** transition() inside a caller's transaction. A refusal returns before anything is written. */
   private async applyTransition(tx: SqlExecutor, input: TransitionInput): Promise<TransitionResult> {
-    const { forUpdate } = this.db.dialect;
-    const current = await this.selectItem(tx, input.id, forUpdate);
+    const current = await this.selectItem(tx, input.id);
     if (!current) return { ok: false, reason: "not_found" };
     if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
 
     if (input.ack_run !== undefined) {
-      const run = await this.selectRun(tx, input.ack_run, forUpdate);
+      const run = await this.selectRun(tx, input.ack_run);
       const finished = run && (run.status === "succeeded" || run.status === "failed" || run.status === "cancelled");
       if (!run || run.work_item_id !== input.id || !finished || run.acknowledged_at !== null) {
         return { ok: false, reason: "run_not_ackable" };
@@ -315,10 +314,9 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   async recordVerdict(input: RecordVerdictInput): Promise<RecordVerdictResult> {
-    const { forUpdate } = this.db.dialect;
     try {
       return await this.db.transaction(async (tx): Promise<RecordVerdictResult> => {
-        const current = await this.selectItem(tx, input.id, forUpdate);
+        const current = await this.selectItem(tx, input.id);
         if (!current) return { ok: false, reason: "not_found" };
         // Before the version: a redelivered comment is a no-op whatever happened to the item since.
         const existing = await this.selectVerdictByComment(tx, input.comment_id);
@@ -440,7 +438,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     const { checkpoint_id, answer, granted_budget, ...transition } = input;
     try {
       return await this.db.transaction(async (tx): Promise<BudgetCheckpointResult> => {
-        const cp = await this.selectCheckpoint(tx, checkpoint_id, this.db.dialect.forUpdate);
+        const cp = await this.selectCheckpoint(tx, checkpoint_id);
         if (!cp || cp.work_item_id !== input.id || cp.answer !== "pending") return { ok: false, reason: "checkpoint_not_pending" };
         const r = await this.applyTransition(tx, transition);
         if (!r.ok) return r;
@@ -518,14 +516,14 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     // An interactive run is a person's session, never a worker's (design §5, 2026-11-01).
     const kinds = input.kinds.filter((k) => k !== INTERACTIVE);
     if (kinds.length === 0) return null;
-    const { seq, forUpdate } = this.db.dialect;
+    const { seq } = this.db.dialect;
     const writeKinds = placeholders(IMPLEMENT_KINDS.length);
     return this.db.transaction(async (tx) => {
       // The lock row first: claimers run the same-item check below one at a time, so two of them can never both
       // see "nothing of this item is running" and claim two runs of one item. Only a claim moves a run to 'running',
       // so the running set read under the lock stays true until this commits. (SQLite: BEGIN IMMEDIATE already
       // serializes; the select is a no-op.)
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
       const now = this.now();
       // A usage or rate limit pauses every claim, for every item, on every replica; a forge 401/403 pauses the
       // implement-type claims only, and so does a failed push_access or pr_api preflight check; a GitHub rate
@@ -818,7 +816,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
 
   /** A probe pause's row and its answered row; `lock`: read under the claim lock first. */
   private async probeRows(tx: SqlExecutor, pause: ProbePause, lock: boolean): Promise<{ current?: Timestamp; answered?: Timestamp }> {
-    if (lock) await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${this.db.dialect.forUpdate}`, [CLAIM_LOCK]);
+    if (lock) await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
     const answeredRow = PROBE_PAUSES[pause].answered;
     const rows = new Map(
       (await tx.all("SELECT name, resume_at FROM worker_claim_pauses WHERE name IN (?, ?)", [pause, answeredRow]))
@@ -893,14 +891,14 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   // Worker pauses (design §5 Pause)
 
   async pauseWorkers(input: { count: number } | { all: true }, by: string): Promise<{ paused: (WorkerId | "*")[] }> {
-    const { seq, forUpdate } = this.db.dialect;
+    const { seq } = this.db.dialect;
     return this.db.transaction(async (tx) => {
       const now = this.now();
       if ("all" in input) {
         return { paused: (await this.insertOnce(tx, PAUSE_INSERT, [ALL_WORKERS, by, now])) ? [ALL_WORKERS] : [] };
       }
       // Under the claim lock, so no claim moves a run to running between the read and the pause rows.
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
+      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
       const already = new Set((await tx.all("SELECT worker_id FROM worker_pauses")).map((r) => r.worker_id as string));
       const running = await tx.all(
         `SELECT lease_owner FROM worker_runs WHERE status = 'running' AND lease_owner IS NOT NULL AND kind <> ? ORDER BY started_at DESC, ${seq} DESC`,
@@ -991,14 +989,13 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     backoff_ms?: (attempt: number) => number,
     onAbandoned?: (attempt: AbandonedAttempt) => void,
   ): Promise<RunId[]> {
-    const { forUpdateSkipLocked } = this.db.dialect;
     const { ids, abandoned } = await this.db.transaction(async (tx) => {
       const now = this.now();
       // A run another reaper holds right now is left for the next tick. started_at and updated_at (the last
       // heartbeat on a running run) are read here, before this transaction's write rewrites updated_at.
       const expired = await tx.all(
         `SELECT id, kind, attempt, lease_token, work_item_id, started_at, updated_at FROM worker_runs
-         WHERE status = 'running' AND lease_expires_at <= ?${forUpdateSkipLocked}`,
+         WHERE status = 'running' AND lease_expires_at <= ?`,
         [now],
       );
       const failed: RunOutcome = {
@@ -1072,11 +1069,11 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   // Interactive sessions (design §5, 2026-11-01)
 
   async startSession(input: StartSessionInput): Promise<StartSessionResult> {
-    const { forUpdate, seq } = this.db.dialect;
+    const { seq } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<StartSessionResult> => {
       // The claim lock first, as claimRun takes it: no claim moves a run to running between these checks and the insert.
-      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?${forUpdate}`, [CLAIM_LOCK]);
-      const current = await this.selectItem(tx, input.id, forUpdate);
+      await tx.all(`SELECT name FROM worker_claim_locks WHERE name = ?`, [CLAIM_LOCK]);
+      const current = await this.selectItem(tx, input.id);
       if (!current) return { ok: false, reason: "not_found" };
       if (current.version !== input.expected_version) return { ok: false, reason: "version_conflict", current };
       const own = await tx.all(`SELECT id, kind, status FROM worker_runs WHERE work_item_id = ? AND status IN ('queued', 'running') ORDER BY created_at, ${seq}`, [input.id]);
@@ -1118,7 +1115,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
 
   async updateSession(runId: RunId, token: number, update: SessionUpdate): Promise<LeaseResult> {
     return this.db.transaction(async (tx): Promise<LeaseResult> => {
-      const run = await this.selectRun(tx, runId, this.db.dialect.forUpdate);
+      const run = await this.selectRun(tx, runId);
       const s = run?.input?.session;
       if (!run || !s || run.status !== "running" || run.lease?.token !== token) return { ok: false, reason: "lease_lost" };
       const now = this.now();
@@ -1427,11 +1424,10 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   async approveClaimHold(input: ApproveClaimHoldInput): Promise<ApproveClaimHoldResult> {
-    const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<ApproveClaimHoldResult> => {
       const [row] = await tx.all(
         `SELECT d.* FROM controller_claim_decisions d JOIN worker_runs r ON r.id = d.run_id
-         WHERE d.run_id = ? AND d.work_item_id = ? AND d.decision = 'held' AND d.approved_by IS NULL AND r.status = 'queued'${forUpdate}`,
+         WHERE d.run_id = ? AND d.work_item_id = ? AND d.decision = 'held' AND d.approved_by IS NULL AND r.status = 'queued'`,
         [input.run_id, input.id],
       );
       if (!row) return { ok: false, reason: "not_held" };
@@ -1454,11 +1450,10 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   // PR heads
 
   async recordPushedHead(runId: RunId, token: number, head_sha: string): Promise<{ ok: true } | { ok: false; reason: "lease_lost" }> {
-    const { forShare } = this.db.dialect;
     return this.db.transaction(async (tx) => {
-      // FOR SHARE, as appendHandoff: the run stays `running` with this token until this commits.
+      // As appendHandoff: the run stays `running` with this token until this commits.
       const [held] = await tx.all(
-        `SELECT work_item_id FROM worker_runs WHERE id = ? AND status = 'running' AND lease_token = ?${forShare}`,
+        `SELECT work_item_id FROM worker_runs WHERE id = ? AND status = 'running' AND lease_token = ?`,
         [runId, token],
       );
       if (!held) return { ok: false, reason: "lease_lost" };
@@ -1468,9 +1463,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   async recordPrHead(input: RecordPrHeadInput): Promise<RecordPrHeadResult> {
-    const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<RecordPrHeadResult> => {
-      const current = await this.selectItem(tx, input.id, forUpdate);
+      const current = await this.selectItem(tx, input.id);
       if (!current) return { ok: false, reason: "not_found" };
       if (current.last_head_sha !== input.expected_head) return { ok: false, reason: "head_moved", current };
       const moved = await tx.run(
@@ -1532,13 +1526,12 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     input: Omit<Handoff, "id" | "at">,
     token: number,
   ): Promise<{ ok: true; handoff: Handoff } | { ok: false; reason: "lease_lost" }> {
-    const { forShare } = this.db.dialect;
     return this.db.transaction(async (tx) => {
       const now = this.now();
-      // FOR SHARE: status and token are what fence the holder; the row lock keeps the reaper and a
+      // Status and token are what fence the holder; the write transaction keeps the reaper and a
       // completion from moving the run out of 'running' (and a reclaim from bumping the token) until this commits.
       const [holds] = await tx.all(
-        `SELECT 1 AS held FROM worker_runs WHERE id = ? AND work_item_id = ? AND status = 'running' AND lease_token = ?${forShare}`,
+        `SELECT 1 AS held FROM worker_runs WHERE id = ? AND work_item_id = ? AND status = 'running' AND lease_token = ?`,
         [input.run_id, input.work_item_id, token],
       );
       if (!holds) return { ok: false, reason: "lease_lost" };
@@ -1575,12 +1568,11 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   // Stream intake
 
   async appendInbox(input: NewInboxEvent): Promise<AppendInboxResult> {
-    const { forUpdate } = this.db.dialect;
     return this.db.transaction(async (tx): Promise<AppendInboxResult> => {
-      // FOR UPDATE on the lease row: a takeover (token + 1) waits for this append to commit, and appends of
+      // On the lease row: a takeover (token + 1) waits for this append to commit, and appends of
       // one source type commit one at a time, so their seqs commit in order and a cursor never skips one.
       const [held] = await tx.all(
-        `SELECT token FROM inbound_listener_leases WHERE source_type = ? AND token = ?${forUpdate}`,
+        `SELECT token FROM inbound_listener_leases WHERE source_type = ? AND token = ?`,
         [input.source_type, input.lease_token],
       );
       if (!held) return { ok: false, reason: "lease_lost" };
@@ -1731,7 +1723,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   async redeemLinkCode(code: string, account: LinkedAccount): Promise<RedeemLinkResult> {
     const now = this.now();
     return this.db.transaction(async (tx): Promise<RedeemLinkResult> => {
-      const [row] = await tx.all(`SELECT * FROM identity_link_codes WHERE code_hash = ?${this.db.dialect.forUpdate}`, [hashCode(code)]);
+      const [row] = await tx.all(`SELECT * FROM identity_link_codes WHERE code_hash = ?`, [hashCode(code)]);
       const user_id = row ? (String(row.user_id) as UserId) : null;
       if (row && row.used_at !== null && row.used_provider === account.provider && row.used_subject === account.subject) {
         return { ok: true, user_id: user_id! };
@@ -1833,7 +1825,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   private async selectOverride(tx: SqlExecutor, key: string, project: string): Promise<SettingOverride | null> {
-    const [row] = await tx.all(`SELECT * FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?${this.db.dialect.forUpdate}`, [key, project]);
+    const [row] = await tx.all(`SELECT * FROM runtime_settings_overrides WHERE setting_key = ? AND project_key = ?`, [key, project]);
     return row ? settingsSql.rowToOverride(row) : null;
   }
 
@@ -1939,7 +1931,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     const until = this.after(ttl_ms);
     return this.db.transaction(async (tx) => {
       const [row] = await tx.all(
-        `SELECT * FROM outbound_label_states WHERE source_id = ? AND target = ?${this.db.dialect.forUpdate}`, [source_id, target],
+        `SELECT * FROM outbound_label_states WHERE source_id = ? AND target = ?`, [source_id, target],
       );
       if (!row) {
         const inserted = await this.insertOnce(
@@ -2392,11 +2384,11 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   }
 
   /**
-   * Whether `fence.token` is still the token of its sync lease. FOR UPDATE: a takeover (token + 1) waits for the
+   * Whether `fence.token` is still the token of its sync lease. A takeover (token + 1) waits for the
    * fenced write to commit, so no write lands after another replica took the lease.
    */
   private async fenceHeld(tx: SqlExecutor, fence: SyncFence): Promise<boolean> {
-    const [held] = await tx.all(`SELECT token FROM inbound_sync_leases WHERE name = ? AND token = ?${this.db.dialect.forUpdate}`, [fence.name, fence.token]);
+    const [held] = await tx.all(`SELECT token FROM inbound_sync_leases WHERE name = ? AND token = ?`, [fence.name, fence.token]);
     return held !== undefined;
   }
 
@@ -2418,7 +2410,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
    * 10-event-driven, sequence locks). SQLite has one writer, so there the read only checks that the row exists.
    */
   private async lockCommandSequence(tx: SqlExecutor): Promise<void> {
-    const [row] = await tx.all(`SELECT name FROM inbound_sequence_locks WHERE name = 'commands'${this.db.dialect.forUpdate}`);
+    const [row] = await tx.all(`SELECT name FROM inbound_sequence_locks WHERE name = 'commands'`);
     if (!row) throw new Error("inbound_sequence_locks has no commands row: run npm run migrate");
   }
 
@@ -2448,8 +2440,8 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     return new Date(this.clock.now().getTime() + ms).toISOString() as Timestamp;
   }
 
-  private async selectItem(q: SqlExecutor, id: WorkItemId, lock = ""): Promise<WorkItem | null> {
-    const [row] = await q.all(`SELECT * FROM controller_work_items WHERE id = ?${lock}`, [id]);
+  private async selectItem(q: SqlExecutor, id: WorkItemId): Promise<WorkItem | null> {
+    const [row] = await q.all(`SELECT * FROM controller_work_items WHERE id = ?`, [id]);
     return row ? rowToWorkItem(row) : null;
   }
 
@@ -2463,13 +2455,13 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
     return row ? rowToVerdict(row) : null;
   }
 
-  private async selectCheckpoint(q: SqlExecutor, id: BudgetCheckpointId, lock = ""): Promise<BudgetCheckpoint | null> {
-    const [row] = await q.all(`SELECT * FROM controller_budget_checkpoints WHERE id = ?${lock}`, [id]);
+  private async selectCheckpoint(q: SqlExecutor, id: BudgetCheckpointId): Promise<BudgetCheckpoint | null> {
+    const [row] = await q.all(`SELECT * FROM controller_budget_checkpoints WHERE id = ?`, [id]);
     return row ? rowToBudgetCheckpoint(row) : null;
   }
 
-  private async selectRun(q: SqlExecutor, id: RunId, lock = ""): Promise<Run | null> {
-    const [row] = await q.all(`SELECT * FROM worker_runs WHERE id = ?${lock}`, [id]);
+  private async selectRun(q: SqlExecutor, id: RunId): Promise<Run | null> {
+    const [row] = await q.all(`SELECT * FROM worker_runs WHERE id = ?`, [id]);
     return row ? rowToRun(row) : null;
   }
 
@@ -2482,7 +2474,7 @@ export class SqlFactoryStore extends SqlProjectStore implements FactoryStore {
   private async cancelRuns(
     tx: SqlExecutor, workItemId: WorkItemId, status: "queued" | "running", now: Timestamp,
   ): Promise<RunId[]> {
-    const rows = await tx.all(`SELECT id FROM worker_runs WHERE work_item_id = ? AND status = ?${this.db.dialect.forUpdate}`, [
+    const rows = await tx.all(`SELECT id FROM worker_runs WHERE work_item_id = ? AND status = ?`, [
       workItemId, status,
     ]);
     const cancelled: RunId[] = [];
