@@ -5,7 +5,10 @@
 //
 // One builder (pluginRows) serves the page and `factory plugins list`, so both show the same rows. Names and
 // descriptions only: an MCP server's row is its name, its descriptor's `description`, its source and its approval
-// status; its descriptor body (command, args, env) never leaves the store read. A skill's description is its file's
+// status; its descriptor body (command, args, env) never leaves the read. An imported MCP server is a pointer row
+// (design 11-plugin-import): its descriptor is read from its source file now, and it is `missing` when the file no
+// longer holds it. The Skills tab lists the imported skills of the sources the page has labels for (claude, codex);
+// the CLI lists the others. A skill's description is its file's
 // front matter `description`, never its body. An imported skill (design 11-plugin-import, an `ext_skill_refs` pointer
 // read from its SKILL.md now) adds its source, path and state (`ok`, `missing`, `changed`) to its row; a folder skill's
 // row has none of them. Every string leaves through the Withholder. Reading writes nothing.
@@ -20,6 +23,7 @@
 import type { SettingsBase } from "../core/settings.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
 import { McpToolListsStore, approvedImportedServers, requestMcpToolLists } from "../import/mcp-tool-lists.js";
+import { PackEntriesStore } from "../packs/pack-entries.store.js";
 import type { SkillRefSource, SkillState } from "../runtime/capabilities/capabilities.js";
 import { type CapabilityDeps, type UiCapabilitySources, capabilityRows, settingsSources } from "./capabilities-api.js";
 import type { ApiDeps, ApiResult } from "./api.js";
@@ -37,9 +41,10 @@ export type PluginKind = (typeof PLUGIN_KINDS)[number];
 /**
  * An MCP server's status: `approved` (its current description's latest approval row is an approve), `off` (that
  * row is a revoke: the owner turned it off), `waiting` (no row for this description: never approved, or changed
- * since its approval, so the pin asks again).
+ * since its approval, so the pin asks again; an imported server whose file entry changed since import too),
+ * `missing` (an imported server whose source file no longer holds it: nothing runs it).
  */
-export type McpStatus = "approved" | "waiting" | "off";
+export type McpStatus = "approved" | "waiting" | "off" | "missing";
 
 export interface McpRow {
   name: string;
@@ -81,30 +86,18 @@ export interface PluginRows {
   tools: ToolRow[];
 }
 
-/** The descriptor's `description` string; nothing else of the body is kept. */
-function descriptionOf(descriptor: unknown): string | null {
-  try {
-    const d = JSON.parse(String(descriptor)) as unknown;
-    return typeof d === "object" && d !== null && typeof (d as { description?: unknown }).description === "string" ? (d as { description: string }).description : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Each stored entry of `kind`: its current description (the one added last) and its status, by name. */
+/** Each stored entry of `kind`: its current description (the one added last, an imported server's read from its file) and its status, by name. */
 async function entryRows(d: Pick<CapabilityDeps, "store">, kind: "mcp_server" | "tool"): Promise<McpRow[]> {
   const db = storeSql(d.store);
-  const entries = await db.all("SELECT name, description_hash, descriptor FROM ext_packs_entries WHERE kind = ? ORDER BY name, created_at DESC, id DESC", [kind]);
+  const entries = new PackEntriesStore(db, () => "");
   const approvals = await db.all("SELECT name, description_hash, action FROM ext_packs_approvals WHERE kind = ? ORDER BY seq", [kind]);
   const latest = new Map(approvals.map((a) => [`${String(a.name)}\n${String(a.description_hash)}`, String(a.action)]));
   const out: McpRow[] = [];
-  const seen = new Set<string>();
-  for (const e of entries) {
-    const name = String(e.name);
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const action = latest.get(`${name}\n${String(e.description_hash)}`);
-    out.push({ name, description: descriptionOf(e.descriptor), source: "pack", status: action === "approve" ? "approved" : action === "revoke" ? "off" : "waiting" });
+  for (const name of await entries.names(kind)) {
+    const e = (await entries.current(kind, name))!;
+    const action = e.imported?.state === "ok" || e.imported === null ? latest.get(`${name}\n${e.description_hash}`) : undefined;
+    const status: McpStatus = e.imported?.state === "missing" ? "missing" : action === "approve" ? "approved" : action === "revoke" ? "off" : "waiting";
+    out.push({ name, description: typeof e.descriptor.description === "string" ? e.descriptor.description : null, source: "pack", status });
   }
   return out;
 }
@@ -188,12 +181,16 @@ export async function readPlugins(d: ApiDeps): Promise<ApiResult> {
       as_of: d.clock.now().toISOString(),
       csrf_token: d.pauses?.auth !== undefined ? d.pauses.csrfToken : null,
       ...rows,
+      skills: rows.skills.filter((r) => r.source === undefined || PAGE_SKILL_SOURCES.includes(r.source)),
       tool_status,
       skill_folders: await skillFolders(d.settings, new Withholder(d.scanner)),
       settings_token: writer ? d.settings.csrfToken : null,
     },
   };
 }
+
+/** The imported skills' sources the page has a label for; `factory plugins list` lists the others too. */
+const PAGE_SKILL_SOURCES: readonly string[] = ["claude", "codex"];
 
 const roles = (r: readonly string[]) => (r.length > 0 ? r.join(",") : "-");
 const or = (v: string | null) => (v === null || v === "" ? "-" : v);
