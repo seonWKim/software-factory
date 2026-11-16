@@ -2,9 +2,10 @@
 // no forge call. In a fresh run folder at the base it merges the branches of the entries ahead and then this
 // change's branch, in queue order, and runs the install command and then the checks on the result, then the UI check
 // (`repo.ui_check`, design §4) when the merged result changes one of its paths. A conflict or a failing check is a
-// result (`red`), not a run failure: the merge queue decides. Git and sandbox errors fail the run.
+// result (`red`), not a run failure: the merge queue decides. Git and sandbox errors fail the run. A failing check's
+// red result names the failing tests and keeps the output tail, as the implement run's `checks_failed` does.
 
-import { NO_HOOKS, RunFailure, gitIdentity } from "../../support.js";
+import { NO_HOOKS, RunFailure, failingTestNames, gitIdentity } from "../../support.js";
 import type { Worker } from "../../runner.js";
 import { DEFAULT_TIMEOUTS, defineRunKind, type RunCall } from "../../run-kind.js";
 
@@ -46,12 +47,27 @@ async function mergeCheck(w: Worker, { run, item, signal }: RunCall): Promise<Re
     const uiRound = ui && changed.some((f) => ui.paths.some((p) => f.startsWith(p))) ? [{ commands: [[...ui.command]] }] : [];
     for (const round of [{ commands: [[...w.cfg.repo.install_command]] }, {}, ...uiRound]) {
       const r = await w.runCheckList(run, handle, signal, round);
-      if (r.failed) return { result: "red", why: "checks", command: r.failed.command.join(" "), how: r.failed.how, base_sha, merged_sha };
+      if (r.failed) return { result: "red", why: "checks", ...(await failure(w, r.failed)), base_sha, merged_sha };
     }
     return { result: "green", base_sha, merged_sha, heads };
   } finally {
     await w.d.sandbox.destroy(handle);
   }
+}
+
+/**
+ * What a failed check says: its command and exit text, the failing tests by name (`file > name`, at most 10, as
+ * the implement run names them) and its output tail (at most CHECK_TAIL_CHARS, 2000). The tail goes through the
+ * egress scan first; a flagged tail is withheld whole (null), and the names are kept.
+ */
+async function failure(w: Worker, failed: { command: readonly string[]; how: string; tail: string }): Promise<Record<string, unknown>> {
+  const clean = failed.tail === "" || (await w.d.scanner.scan("run_outcome", failed.tail)).clean;
+  return {
+    command: failed.command.join(" "),
+    how: failed.how,
+    failing_tests: failingTestNames(failed.tail),
+    output_tail: clean ? failed.tail : null,
+  };
 }
 
 export default defineRunKind({

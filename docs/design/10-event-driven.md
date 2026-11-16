@@ -451,7 +451,19 @@ force.
   and checked by the ToolBroker on every call. The controller decides a command under its passport (Identity checks
   it, the origin's auth plugin decides the role) and auto mode under its service passport; every decision is
   written to `authz_audit`.
-- **The merge queue** (decision changed 2026-11-09, the landing is an outbound delivery; see History). A local change merges only through
+- **The merge queue** (decision changed 2026-11-16, a merged result that fails its checks is sent back to implement;
+  before that 2026-11-09, the landing is an outbound delivery; see History). A red check for failing checks names
+  what broke and sends the item back: the `merge-check` run's red result (`why: checks`) holds the failing command,
+  its exit text, the failing tests by name (`failing_tests`, `file > name`, at most 10, parsed as the implement run's
+  `checks_failed` does) and the output tail (`output_tail`, at most 2000 characters, through the egress scan first; a
+  flagged tail is withheld whole as null, the names are kept). The queue removes the entry with a reason naming the
+  failing tests (with none, the command and its exit text) and sends the item back to an implement run as a loop
+  (`merge_check_failed`: stage RUNNING, loop_count + 1, one implement run keyed by the new loop), whose prompt lists
+  the names in a fenced, untrusted section; at `max_loops` it blocks on a human (`max_loops`) and the message says
+  so. The item moves first, conditionally on it still waiting for the merge, then the entry leaves, so a repeat
+  changes nothing. No base rerun first: a test that also fails on the base still sends the item back. A conflict, a
+  check run that could not run and a check that timed out keep the item at merge_pending, with no loop counted.
+  A local change merges only through
   the `merge-queue` unit, one `MergeQueue` actor per project and base branch (state table
   `src/controller/actors/merge-queue/`, snapshots `controller_merge_queues` and `controller_merge_queue_entries`,
   migrations `20261109T0300-controller-merge-queue` and `20261109T1030-controller-merge-queue-heads`; each entry is
@@ -524,7 +536,7 @@ force.
     another replica whose merge targets the first replica's host waits for that host: it is not re-recorded for the
     new one, since the item's branch is in the first host's factory repo. Red, a failed check run, or a
   check that did not come back in time: the entry leaves with the reason posted on the item (which stays in
-  merge_pending), every entry checked with it ahead is rebuilt (queued again), and the queue moves on. A result or
+  merge_pending, except after failing checks: sent back to implement, above), every entry checked with it ahead is rebuilt (queued again), and the queue moves on. A result or
   timer moves an entry only while it is still on that run (`run_key` in the conditional update), so the result of
   a replaced check never passes the rebuilt entry. The time limit: starting a check emits a delayed
   `MergeCheckTimedOut{entry_id, run_key}` on `controller.events`, due after max_attempts × (run_timeout_ms +
@@ -591,6 +603,10 @@ force.
 - **Merge queue depth and time limit** (decision changed 2026-11-08, M8 leftovers). Before: depth 1 only (one
   check out at a time, the queue row's `idle → checking` move as the lock), and a stuck check waited for its run's
   own timeouts and the reaper, since units could not emit a bus message.
+- **A merged result that fails its checks** (decision changed 2026-11-16). Before: the `merge-check` run's red
+  result held only the command, its exit text and the SHAs; the entry left with a reason naming only the command
+  ("fix it on the branch and run the merge again"), and the item stayed at REVIEW / merge_pending with no run queued
+  until a person sent `/revise` or merged again.
 - **Merge queue crash safety and the landed tree** (decision changed 2026-11-09, controller review fixes). Before:
   a throw or restart while the head landed left the queue `merging` for good; a crash between the move to checking
   and the run left an entry checking with no run or timer; a stale check's result could pass a rebuilt entry; the
