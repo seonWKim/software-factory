@@ -114,9 +114,10 @@ describe("resolve prompt fixed rules", () => {
     expect(rule).toContain("known-violations lists are always editable to shrink (never to grow)");
   });
 
-  it("renumbers a migration when both sides added one", () => {
+  it("renames a clashing migration by the repository's own naming rule when both sides added one", () => {
     expect(prompt).toMatch(/both sides add(ed)? a migration/i);
-    expect(prompt).toMatch(/renumber/i);
+    expect(prompt).toMatch(/repository's own naming rule/);
+    expect(prompt).not.toMatch(/mysql/i);
   });
 
   it("keeps both sides' entries in lists and tables", () => {
