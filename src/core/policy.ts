@@ -416,11 +416,28 @@ export function workItemIdFromBranch(branch: string, prefix: string): string | n
 }
 
 /**
- * A path is covered when it equals an allowed path, or sits under an allowed path that ends in `/`.
- * Shared by triage validation (`files_to_change`) and the pre-push scope gate, so both use one rule.
+ * The architecture ratchet lists (design 04-triage, decided 2026-11-16): one `*.json` file directly in
+ * `tests/architecture/known-violations/`. Always writable, whatever allowed_paths says, since the architecture
+ * tests refuse any growth in them and require a fixed entry to be removed. The folder is on the gate list, so
+ * a change to it still needs a human merge.
+ */
+const RATCHET_LIST = /^tests\/architecture\/known-violations\/[^/]+\.json$/;
+
+/**
+ * The pure prefix test: `path` equals `a`, or sits under `a` when `a` ends in `/`. Overlap checks (coordination's
+ * shared paths, hotspots, mechanical paths) use this, not `isCovered`, which also always covers the ratchet lists.
+ */
+export function isUnder(path: string, a: string): boolean {
+  return path === a || (a.endsWith("/") && path.startsWith(a));
+}
+
+/**
+ * A path is covered when it equals an allowed path, sits under an allowed path that ends in `/`, or is a
+ * ratchet list (RATCHET_LIST). Shared by triage validation (`files_to_change`), the pre-push scope gate and
+ * the edit hook, so all use one rule.
  */
 export function isCovered(path: string, allowed: readonly string[]): boolean {
-  return allowed.some((a) => path === a || (a.endsWith("/") && path.startsWith(a)));
+  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a));
 }
 
 /**
@@ -437,10 +454,13 @@ export const SESSION_LOST = "session_lost";
 /** The blocked reason of an item whose session ended without a PR: RUNNING, blocked on a human, nothing queued. */
 export const SESSION_RELEASED = "session_released";
 
-/** The paths two lists share by the scope gate's coverage rule (as the coordination cost's shared paths). */
+/**
+ * The paths two lists share: equal, or one under the other's folder (as the coordination cost's shared paths).
+ * Not `isCovered`: a ratchet list is always writable, but it overlaps only a list that names it.
+ */
 export function pathsOverlap(a: readonly string[], b: readonly string[]): string[] {
   const out = new Set<string>();
-  for (const x of a) for (const y of b) if (x === y || isCovered(y, [x])) out.add(y); else if (isCovered(x, [y])) out.add(x);
+  for (const x of a) for (const y of b) if (isUnder(y, x)) out.add(y); else if (isUnder(x, y)) out.add(x);
   return [...out].sort();
 }
 

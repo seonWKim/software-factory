@@ -44,6 +44,12 @@ describe("prompts/triage.md", () => {
     expect(text).toContain("Which other files does a change to these paths require?");
   });
 
+  it("lists the existing tests that assert text or behaviour the spec changes (decided 2026-11-16)", () => {
+    const b = bullet(produce, "files_to_change");
+    expect(b).toMatch(/grep the tests for each string the change removes or changes/);
+    expect(b).toMatch(/list each matching test file in allowed_paths and files_to_change/);
+  });
+
   it("names the topic files as the documentation targets, not the index (issue #224)", () => {
     const b = bullet(produce, "files_to_change");
     expect(b).toMatch(/topic files the change touches/);
