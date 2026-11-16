@@ -87,8 +87,7 @@ export async function syncCalendars(db: SqlDriver, feeds: readonly NamedFeed[], 
  */
 async function claim(db: SqlDriver, source: string, first: boolean, now: string, next: string): Promise<boolean> {
   if (first) {
-    const insert = db.dialect.name === "sqlite" ? "INSERT OR IGNORE" : "INSERT IGNORE";
-    if ((await db.run(`${insert} INTO calendar_sync_state (source, next_sync_at) VALUES (?, ?)`, [source, next])) === 1) return true;
+    if ((await db.run(`INSERT OR IGNORE INTO calendar_sync_state (source, next_sync_at) VALUES (?, ?)`, [source, next])) === 1) return true;
   }
   return (await db.run("UPDATE calendar_sync_state SET next_sync_at = ? WHERE source = ? AND next_sync_at <= ?", [next, source, now])) === 1;
 }

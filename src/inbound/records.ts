@@ -33,11 +33,11 @@ export async function moveCursor(tx: SqlExecutor, dialect: Dialect, name: string
 }
 
 /**
- * Whether `fence.token` is still its sync lease's token. FOR UPDATE: a takeover (token + 1) waits until this
- * transaction commits, so a replica whose lease was taken over writes nothing after the takeover.
+ * Whether `fence.token` is still its sync lease's token. Read inside the write transaction, so a takeover (token + 1) cannot commit between
+ * this check and the write.
  */
-export async function fenceHolds(tx: SqlExecutor, forUpdate: string, fence: SyncFence): Promise<boolean> {
-  const [held] = await tx.all(`SELECT token FROM inbound_sync_leases WHERE name = ? AND token = ?${forUpdate}`, [fence.name, fence.token]);
+export async function fenceHolds(tx: SqlExecutor, fence: SyncFence): Promise<boolean> {
+  const [held] = await tx.all(`SELECT token FROM inbound_sync_leases WHERE name = ? AND token = ?`, [fence.name, fence.token]);
   return held !== undefined;
 }
 
