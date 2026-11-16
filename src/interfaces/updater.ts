@@ -46,13 +46,15 @@ export function migrationPendingError(message: string): Error & { code: string }
 }
 
 /**
- * `<state_dir>/supervisor-request.json`: what `npm run migrate` asks a running supervisor to do, read on its
- * next poll and then removed. drain: stop every child and start none. start: the steps applied; start the
- * waiting revision. cancel: the steps failed; start the old revision again.
+ * `<state_dir>/supervisor-request.json`: what `npm run migrate` or the dashboard (Migrate now, Start, Restart now)
+ * asks a running supervisor to do, read on its next poll and then removed. drain: stop every child and start none.
+ * start: after a drain, the steps applied, so start the waiting revision; with no migration under way, start a child
+ * only when none is live. cancel: the steps failed; start the old revision again. restart: start a child from the
+ * current version folder and drain the old one (no migration under way).
  */
 export const SUPERVISOR_REQUEST_FILE = "supervisor-request.json";
 export interface SupervisorRequest {
-  action: "drain" | "start" | "cancel";
+  action: "drain" | "start" | "cancel" | "restart";
   /** ISO time the request was written. */
   at: string;
 }

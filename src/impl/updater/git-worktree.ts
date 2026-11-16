@@ -386,7 +386,7 @@ export class GitWorktreeUpdater implements Updater {
     await this.removeFolder(m.dir).catch(() => undefined);
   }
 
-  /** Reads and removes `npm run migrate`'s request, if any, and acts on it. */
+  /** Reads and removes `npm run migrate`'s or the dashboard's request, if any, and acts on it. */
   private async readRequest(): Promise<void> {
     const file = this.o.requestFile;
     if (!file || !existsSync(file)) return;
@@ -418,7 +418,25 @@ export class GitWorktreeUpdater implements Updater {
     } else if (action === "cancel" && this.migration && this.migration.phase !== "waiting") {
       log.warn("npm run migrate failed: starting the old revision again", { rev: this.migration.rev });
       await this.cancelMigration();
+    } else if (action === "start" && !this.migration && this.live.length === 0) {
+      // The dashboard's Start: a build that failed on this folder's head is tried once more.
+      log.info("start request: no child is live; starting one");
+      if (this.newest && this.failedRev === (await this.head(this.newest).catch(() => null))) this.failedRev = null;
+      await this.ensureChild();
+    } else if (action === "restart" && !this.migration && this.current && this.newest) {
+      await this.restartChild(this.newest);
     } else if (action) log.warn("supervisor request ignored", { action });
+  }
+
+  /** The dashboard's Restart now: a new child from `dir` (built), then the claiming one drains (startChild). */
+  private async restartChild(dir: string): Promise<void> {
+    const head = await this.head(dir);
+    if ((await this.builtRev(dir)) !== head) {
+      this.o.log.warn("restart request ignored: the current version folder is not built", { dir, rev: head });
+      return;
+    }
+    this.o.log.info("restart request: starting a child from the current version folder", { rev: head, dir });
+    await this.startChild(dir, head);
   }
 
   async shutdown(): Promise<void> {
