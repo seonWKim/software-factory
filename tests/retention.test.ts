@@ -142,9 +142,9 @@ describe("the daily retention step", () => {
     const calls: number[] = [];
     const small = new Proxy(store, {
       get(target, prop, receiver) {
-        if (prop === "pruneRecords") {
+        if (prop === "pruneHistory") {
           return async (ms: number) => {
-            const r = await target.pruneRecords(ms, 1);
+            const r = await target.pruneHistory(ms, 1);
             calls.push(r.worker_host_sleeps!);
             // Reported as full while it deleted one, as a batch at the limit would be.
             return r.worker_host_sleeps === 1 ? { worker_host_sleeps: 500 } : r;

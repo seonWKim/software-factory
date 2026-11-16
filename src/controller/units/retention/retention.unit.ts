@@ -19,7 +19,7 @@ const OWNER = "controller";
 /** What the pass calls on the store (the role's, handed in): the lease, the day mark and the three classes. */
 export type RetentionStore = Pick<
   Ctx["k"]["d"]["store"],
-  "acquireSyncLease" | "releaseSyncLease" | "getCursor" | "advanceCursor" | "pruneDeliveredOutbox" | "pruneHandledCommands" | "pruneRecords"
+  "acquireSyncLease" | "releaseSyncLease" | "getCursor" | "advanceCursor" | "pruneDeliveredOutbox" | "pruneHandledCommands" | "pruneHistory"
 >;
 
 /** The daily retention pass. */
@@ -62,7 +62,7 @@ export class RetentionUnit {
     const classes: [number, (ms: number, limit: number) => Promise<Record<string, number>>][] = [
       [days.outbox_days, (ms, limit) => store.pruneDeliveredOutbox(ms, limit)],
       [days.commands_days, (ms, limit) => store.pruneHandledCommands(ms, limit)],
-      [days.records_days, (ms, limit) => store.pruneRecords(ms, limit)],
+      [days.records_days, (ms, limit) => store.pruneHistory(ms, limit)],
     ];
     const deleted: Record<string, number> = {};
     let complete = true;
