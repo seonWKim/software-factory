@@ -2,6 +2,7 @@ import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { API, type AutoStop, type Session, type SettingRow, type SettingsView, type SettingsWrite, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
@@ -32,7 +33,8 @@ import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 // disconnects each calendar plugin, which writes the live `calendar` key. The file-only keys have their own typed
 // form (settings-file-keys.tsx), saved on a local branch the owner merges; the PR-only table keeps the remaining keys.
 // Providers (settings-capabilities.tsx, design 08-settings 2026-11-15) lists the provider entries, read only, and links to the
-// Plugins page, which holds the skills, tools and MCP servers.
+// Plugins page, which holds the skills, tools and MCP servers. The project label control above the settable keys stores
+// the configured repo's project label (design 08-settings, 2026-11-16), which every per-project value is found by.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
@@ -522,6 +524,34 @@ function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
   );
 }
 
+/**
+ * The configured repo's project label (design 08-settings): the stored label, an Input and Save. Save sends the
+ * `project-label` write, which the server refuses when the label is empty, holds whitespace, does not end with
+ * `/owner/name` of the repo, or no project key is stored; the refusal shows under the field.
+ */
+function ProjectLabel({ view }: { view: SettingsView }) {
+  const { busy, error, done, write } = useWrite(view.csrf_token);
+  const [draft, setDraft] = useState<string | null>(null);
+  const id = useId();
+  const shown = draft ?? view.project ?? "";
+  const save = async () => {
+    if (await write({ action: "project-label", value: shown })) setDraft(null);
+  };
+  return (
+    <form data-project-label className="mb-3 flex max-w-xl flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
+      <Field label={t("settings.projectLabel")} htmlFor={id} help={t("settings.projectLabelHint", { repo: view.repo })} className="w-full">
+        <Input id={id} aria-label={t("settings.projectLabelFor", { repo: view.repo })} className="w-full font-mono text-xs" value={shown} onChange={(e) => setDraft(e.target.value)} />
+      </Field>
+      <ButtonRow>
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label: t("settings.projectLabelFor", { repo: view.repo }) })}>
+          {t("settings.save")}
+        </Button>
+      </ButtonRow>
+      <Outcome error={error} done={done} />
+    </form>
+  );
+}
+
 /** Who the page's item commands act as (design 09): the item page's "Commands are off" notice links here (#page-commands). */
 function PageCommands() {
   const session = useApi<Session>(API.session, false);
@@ -670,6 +700,7 @@ export function SettingsPage() {
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.settableIntro", { command: <code>{"factory settings"}</code> })}
         </p>
+        <ProjectLabel view={v} />
         <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.colSource"), t("settings.colFileValue"), t("settings.colAppliesAt"), t("settings.colReset")]}>
           {v.keys.map((row) => (
             <KeyRow key={row.key} row={row} view={v} />

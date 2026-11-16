@@ -573,7 +573,8 @@ export interface FileKeysView {
 export type SettingsWrite =
   | { action: "set"; key: string; value: string; project?: string }
   | { action: "reset"; key: string; project?: string }
-  | { action: "edit-file"; key: string; value: string; confirm: boolean };
+  | { action: "edit-file"; key: string; value: string; confirm: boolean }
+  | { action: "project-label"; value: string };
 
 /** The answer to a write: the CLI's lines (an edit-file also with its filed item and branch), or its refusal. */
 export type WriteResult = { ok: true; lines: string[]; filed?: { item: string; branch: string } } | { ok: false; error: string };
@@ -1117,7 +1118,7 @@ async function postOnce<T>(url: string, token: string, body: unknown): Promise<{
   return { ok: res.ok, status: res.status, value };
 }
 
-/** POST /api/v1/settings: a set, reset or edit-file, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
+/** POST /api/v1/settings: a set, reset, edit-file or project-label, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
 export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
   const r = await postJson<{ ok?: boolean; lines?: string[]; error?: string; item?: string; branch?: string }>(API.settings, token, body);
   if (r.ok && r.value.ok) {
