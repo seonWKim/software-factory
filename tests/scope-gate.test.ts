@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { isCovered, scopeViolations } from "../src/core/policy.js";
+import { countDrift, ratchet } from "./architecture/lib.js";
 
 const z = (...paths: string[]) => paths.map((p) => `${p}\0`).join("");
 
@@ -121,5 +122,82 @@ describe("scopeViolations on real git output", () => {
     r.write("outside/gone.ts", "agent change\n");
     r.commit("outside after merge");
     expect(scopeViolations(r.diff(), allowed)).toEqual(["outside/gone.ts"]);
+  });
+});
+
+// Ratchet lists (design 04-triage, decided 2026-11-16): tests/architecture/known-violations/ is always writable,
+// so a run that shrinks a list never stops for a path; the architecture tests still refuse any growth.
+describe("ratchet lists under tests/architecture/known-violations/", () => {
+  const KNOWN = "tests/architecture/known-violations/";
+  let dir = "";
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = "";
+  });
+
+  /** A repo whose base has a count budget and a name list, and a feature branch that shrinks both. */
+  function shrink(files: Record<string, unknown>): string {
+    dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "scope-ratchet-"));
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: dir, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@example.com", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@example.com" };
+    const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, env, encoding: "utf8" });
+    const write = (p: string, body: unknown) => {
+      mkdirSync(dirname(join(dir, p)), { recursive: true });
+      writeFileSync(join(dir, p), JSON.stringify(body, null, 2) + "\n");
+    };
+    git("init", "-q", "-b", "main");
+    write(`${KNOWN}file-budget.json`, { "compose.ts": 1330, "core/types.ts": 734 });
+    write(`${KNOWN}dependency-direction.json`, { "component-imports-legacy": 305, "other-rule": 2 });
+    write(`${KNOWN}unit-purity.json`, ["reaches-io|a.unit.ts|x", "reaches-io|b.unit.ts|y"]);
+    git("add", "-A");
+    git("commit", "-q", "-m", "base");
+    git("checkout", "-q", "-b", "feature");
+    for (const [p, body] of Object.entries(files)) write(p, body);
+    git("add", "-A");
+    git("commit", "-q", "-m", "shrink");
+    return git("diff", "--name-only", "-z", "--no-renames", "main...HEAD");
+  }
+
+  it("passes a diff that lowers a count in file-budget.json when allowed_paths does not name it", () => {
+    const diff = shrink({ [`${KNOWN}file-budget.json`]: { "compose.ts": 1290, "core/types.ts": 734 } });
+    expect(diff).toContain("file-budget.json");
+    expect(scopeViolations(diff, ["src/"])).toEqual([]);
+  });
+
+  it("passes a diff that removes an entry from dependency-direction.json or a name list when allowed_paths does not name it", () => {
+    const diff = shrink({
+      [`${KNOWN}dependency-direction.json`]: { "component-imports-legacy": 305 },
+      [`${KNOWN}unit-purity.json`]: ["reaches-io|a.unit.ts|x"],
+    });
+    expect(diff.split("\0").filter(Boolean).sort()).toEqual([`${KNOWN}dependency-direction.json`, `${KNOWN}unit-purity.json`]);
+    expect(scopeViolations(diff, [])).toEqual([]);
+  });
+
+  it("still fails any other file in the same diff", () => {
+    const diff = shrink({ [`${KNOWN}file-budget.json`]: { "compose.ts": 1 }, "tests/architecture/lib.json": {} });
+    expect(scopeViolations(diff, ["src/"])).toEqual(["tests/architecture/lib.json"]);
+  });
+});
+
+// The growth checks themselves are unchanged (tests/architecture/lib.ts); this shows they still refuse growth
+// against the checked-in lists. SF_RATCHET_UPDATE=1 makes them rewrite the lists, so they are skipped then.
+describe.skipIf(process.env.SF_RATCHET_UPDATE === "1")("the architecture ratchet still refuses growth", () => {
+  const known = <T>(name: string): T =>
+    JSON.parse(readFileSync(join(import.meta.dirname, "architecture", "known-violations", `${name}.json`), "utf8")) as T;
+
+  it("a count above its budget, or a budget raised above the count, fails file-budget", () => {
+    const budget = known<Record<string, number>>("file-budget");
+    const [file, n] = Object.entries(budget)[0]!;
+    expect(countDrift("file-budget", { ...budget, [file]: n + 1 }).grew).toEqual([`${file}: ${n} → ${n + 1}`]);
+    // Raising the JSON's count above the code's is the same drift seen from the list: the list no longer matches.
+    expect(countDrift("file-budget", { ...budget, [file]: n - 1 }).fell_but_list_not_lowered).toEqual([`${file}: ${n} → ${n - 1}`]);
+    expect(countDrift("file-budget", budget)).toEqual({ grew: [], fell_but_list_not_lowered: [] });
+  });
+
+  it("a name added to a name list, or a new violation, fails the ratchet", () => {
+    const names = known<string[]>("unit-purity");
+    expect(() => ratchet("unit-purity", names)).not.toThrow();
+    // A name in the list that the code does not have (the list grew) fails, and so does a new violation.
+    expect(() => ratchet("unit-purity", names.slice(1))).toThrow();
+    expect(() => ratchet("unit-purity", [...names, "reaches-io|new.unit.ts|z"])).toThrow();
   });
 });
