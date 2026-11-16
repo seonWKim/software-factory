@@ -290,7 +290,7 @@ describe("ui app: merge check labels", () => {
 
 // The item page's command buttons (design §9, issue #228), rendered to static markup in the node environment.
 describe("ui app: item commands markup", () => {
-  it("the item page has a button per command, in order; revise and reject open a dialog, the note box is for the rest", () => {
+  it("the item page has a button per command, in order, with reject in the \"…\" menu; revise opens a dialog, the one note box is for the rest", () => {
     const AT = "2026-11-07T00:00:00.000Z";
     const names = ["approve", "revise", "reject"];
     const detail: ItemDetail = {
@@ -298,7 +298,7 @@ describe("ui app: item commands markup", () => {
       item: {
         id: "wi_1", source: { type: "local", id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "READY", close_reason: null,
         blocked_on: "human", blocked_reason: "spec_approval", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
-        version: 1, created_at: AT, updated_at: AT, merge_check: null,
+        version: 1, created_at: AT, updated_at: AT, merge_check: null, why: { code: "human", text: "Waiting for you", next_actor: "human", refs: [], ref_url: null },
       },
       timeline: [],
       runs: [],
@@ -309,17 +309,18 @@ describe("ui app: item commands markup", () => {
     client.setQueryData([API.item("wi_1")], detail);
     client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true, actor: "local:me", actor_source: "environment" });
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
-    const buttons = [...html.matchAll(/<li data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
-    expect(buttons).toEqual(names.map((n) => [n, n[0]!.toUpperCase() + n.slice(1)]));
+    const buttons = [...html.matchAll(/<span data-command="([^"]+)"[^>]*><button[^>]*>([^<]*)<\/button>/g)].map((m) => [m[1], m[2]]);
+    expect(buttons).toEqual(["approve", "revise"].map((n) => [n, n[0]!.toUpperCase() + n.slice(1)]));
+    // Reject is in the "…" menu (closed until pressed), not a button of the row.
+    expect(html).not.toContain('data-command="reject"');
+    expect(html).toContain('aria-label="More commands"');
     // The note box is for approve's note; it no longer names reject or revise.
     expect(html).toMatch(/<textarea aria-label="Note"/);
     expect(html).not.toContain("Reason for reject");
     // Revise and reject are enabled buttons that open a dialog (none until pressed); approve sends.
-    const tag = (n: string) => html.match(new RegExp(`<li data-command="${n}"[^>]*><button[^>]*>`))![0];
-    for (const n of ["revise", "reject"]) {
-      expect(tag(n)).not.toContain(" disabled=\"\"");
-      expect(tag(n)).toContain('aria-haspopup="dialog"');
-    }
+    const tag = (n: string) => html.match(new RegExp(`<span data-command="${n}"[^>]*><button[^>]*>`))![0];
+    expect(tag("revise")).not.toContain(" disabled=\"\"");
+    expect(tag("revise")).toContain('aria-haspopup="dialog"');
     expect(tag("approve")).not.toContain(" disabled=\"\"");
     expect(tag("approve")).not.toContain("aria-haspopup");
     expect(html).not.toContain("<dialog");
@@ -336,7 +337,7 @@ describe("ui app: the Merge button", () => {
       item: {
         id: "wi_1", source: { type: source, id: "wi_1", link: "https://example.invalid/1" }, title: "Item", stage: "REVIEW", close_reason: null,
         blocked_on: "human", blocked_reason: "merge_pending", tier: 2, loop_count: 0, restart_count: 0, token_cost: 0, change_ref: null, change_url: null,
-        version: 1, created_at: AT, updated_at: AT, merge_check: null, ...(merge === undefined ? {} : { merge }),
+        version: 1, created_at: AT, updated_at: AT, merge_check: null, why: { code: "human", text: "Waiting for you", next_actor: "human", refs: [], ref_url: null }, ...(merge === undefined ? {} : { merge }),
       },
       timeline: [],
       runs: [],
@@ -348,7 +349,7 @@ describe("ui app: the Merge button", () => {
     client.setQueryData([API.session], { as_of: AT, csrf_token: "t", commands_enabled: true });
     return renderToStaticMarkup(createElement(QueryClientProvider, { client }, createElement(ItemPage, { id: "wi_1" })));
   };
-  const mergeRow = (html: string) => html.match(/<li data-command="merge"[^>]*>.*?<\/li>/)?.[0] ?? null;
+  const mergeRow = (html: string) => html.match(/<span data-command="merge"[^>]*>.*?<\/span><\/span>/)?.[0] ?? null;
 
   it("shows Merge for a local or a GitHub item the API enables, and nothing for one not waiting for a merge", () => {
     for (const source of ["local", "github_issue"]) {

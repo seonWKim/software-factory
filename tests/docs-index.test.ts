@@ -45,16 +45,21 @@ function indexProblems(index: string, topics: string): string[] {
   return problems;
 }
 
-/** A topic file states its current decision first and keeps its history under one `## History` heading at the bottom. */
+/**
+ * A topic file states its current decision first. It has at most one `## History` heading, at the bottom, and no heading
+ * after it. Every link into `history/<topic>.md`, wherever it sits in the file, must resolve.
+ */
 function topicProblems(path: string): string[] {
   const lines = readFileSync(path, "utf8").split("\n");
   const h2 = lines.map((l, i) => [l, i] as const).filter(([l]) => l.startsWith("## "));
   const history = h2.filter(([l]) => l.trim() === "## History");
-  if (history.length !== 1) return [`${path}: needs exactly one "## History" heading, found ${history.length}`];
-  const at = history[0]![1];
-  if (h2.some(([, i]) => i > at)) return [`${path}: a heading follows "## History"; history must be at the bottom`];
-  if (!lines.slice(0, at).some((l) => l.trim() !== "" && !l.startsWith("#"))) return [`${path}: no current decision before "## History"`];
-  return [];
+  if (history.length > 1) return [`${path}: needs at most one "## History" heading, found ${history.length}`];
+  const at = history.length === 1 ? history[0]![1] : lines.length;
+  if (history.length === 1 && h2.some(([, i]) => i > at)) return [`${path}: a heading follows "## History"; history must be at the bottom`];
+  if (!lines.slice(0, at).some((l) => l.trim() !== "" && !l.startsWith("#"))) return [`${path}: no current decision before the history`];
+  return relativeLinks(lines.join("\n"))
+    .filter((t) => t.startsWith("history/") && !existsSync(resolve(dirname(path), t)))
+    .map((t) => `${path}: broken history link ${t}`);
 }
 
 describe("the real indexes", () => {
@@ -101,6 +106,7 @@ describe("agents are told to read the index first and edit topic files", () => {
     expect(rule).toContain("docs/design/");
     expect(rule).toMatch(/topic file/);
     expect(rule).toMatch(/History/);
+    expect(rule).toContain("docs/design/history/<topic>.md");
     expect(text).toContain("docs/plugins/<interface>.md");
   });
 
@@ -116,12 +122,14 @@ describe("agents are told to read the index first and edit topic files", () => {
     expect(text).toMatch(/topic file/);
     expect(text).toMatch(/topic files, never the index/);
     expect(text).toMatch(/History/);
+    expect(text).toContain("docs/design/history/<topic>.md");
   });
 
   it("prompts/review.md checks the topic files were updated and the index holds no decision text", () => {
     const text = read("prompts/review.md");
     expect(text).toMatch(/topic files?/);
     expect(text).toMatch(/no decision text/);
+    expect(text).toContain("docs/design/history/<topic>.md");
   });
 });
 
@@ -130,7 +138,10 @@ describe("index checks, on small fixtures", () => {
   const fixture = (files: Record<string, string>): { index: string; topics: string } => {
     const dir = mkdtempSync(join(tmpdir(), "sf-docs-index-"));
     mkdirSync(join(dir, "topics"));
-    for (const [rel, content] of Object.entries(files)) writeFileSync(join(dir, rel), content);
+    for (const [rel, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, rel)), { recursive: true });
+      writeFileSync(join(dir, rel), content);
+    }
     return { index: join(dir, "index.md"), topics: join(dir, "topics") };
   };
   const topic = "# A\n\nThe current decision.\n\n## History\n\n- 2026-11-01: before: the old one.\n";
@@ -171,8 +182,23 @@ describe("index checks, on small fixtures", () => {
     expect(out.join("\n")).toMatch(/contains "before:"/);
   });
 
-  it("fails a topic file without History at the bottom", () => {
-    expect(problems({ ...good, "topics/a.md": "# A\n\nThe decision.\n" }).join("\n")).toMatch(/exactly one "## History"/);
+  it("passes a topic whose History section links to its file in history/, and fails a broken one", () => {
+    const moved = "# A\n\nThe current decision.\n\n## History\n\n- Replaced decisions of this topic: [history/a.md](history/a.md).\n";
+    const split = { ...good, "topics/a.md": moved, "topics/history/a.md": "## History\n\n- 2026-11-01: before: the old one.\n" };
+    expect(problems(split)).toEqual([]);
+    expect(problems({ ...good, "topics/a.md": moved }).join("\n")).toMatch(/broken history link history\/a\.md/);
+  });
+
+  it("passes a topic without History, and fails a broken history link in it", () => {
+    const linked = "# A\n\nThe current decision.\n\n- Replaced decisions of this topic: [history/a.md](history/a.md).\n";
+    expect(problems({ ...good, "topics/a.md": "# A\n\nThe decision.\n" })).toEqual([]);
+    expect(problems({ ...good, "topics/a.md": linked, "topics/history/a.md": "## History\n\n- old\n" })).toEqual([]);
+    expect(problems({ ...good, "topics/a.md": linked }).join("\n")).toMatch(/broken history link history\/a\.md/);
+  });
+
+  it("fails a topic with two History headings, or History not at the bottom", () => {
+    const twice = "# A\n\nThe decision.\n\n## History\n\n- old\n\n## History\n\n- older\n";
+    expect(problems({ ...good, "topics/a.md": twice }).join("\n")).toMatch(/at most one "## History"/);
     const after = "# A\n\nThe decision.\n\n## History\n\n- old\n\n## More\n\ntext\n";
     expect(problems({ ...good, "topics/a.md": after }).join("\n")).toMatch(/history must be at the bottom/);
     expect(problems({ ...good, "topics/a.md": "# A\n\n## History\n\n- old\n" }).join("\n")).toMatch(/no current decision/);

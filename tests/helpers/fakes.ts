@@ -71,7 +71,6 @@ export const config: FactoryConfig = {
   tick_ms: 1000,
   poll_interval_ms: 30_000,
   run_timeout_ms: 600_000,
-  inbox_retention_days: 14,
   retention: RETENTION_DEFAULTS,
   // Tests that are not about batching send each commit at once (`commit`): the `auto` debounce waits on time these
   // tests never advance. Batching has its own tests (tests/outbound/).
@@ -552,7 +551,7 @@ export function labelTarget(source: SourceRef, change_ref: string | null): strin
 /** Only subject "1" may approve. */
 export class FakeAuth implements AuthProvider {
   async resolve(identity: ExternalIdentity): Promise<Principal> {
-    return { user_id: `github:${identity.subject}` as UserId, attributes: {} };
+    return { user_id: `github:${identity.subject}` as UserId };
   }
   async authorize(p: Principal, action: string): Promise<AuthDecision> {
     if (action === "submit_work" || p.user_id === "github:1") return { allow: true };

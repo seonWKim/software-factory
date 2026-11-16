@@ -99,6 +99,49 @@ describe("whyWaiting: precedence", () => {
   });
 });
 
+describe("whyWaiting: a recurring-failure hold names its last failed run", () => {
+  const hold = { blocked_on: "human" as const, blocked_reason: "recurring_failure" };
+  const failure = (error_code: string, detail: string, infra = false) =>
+    ({ outcome: { status: "failed" as const, error_code, detail, infra }, code: error_code, detail });
+
+  it("an agent_stalled run: the model stalled and a retry is enough", () => {
+    const w = whyWaiting(input({ item: hold, failure: failure("agent_stalled", "no model output for 5 minutes", true) }));
+    expect(w).toMatchObject({ code: "human", next_actor: "human" });
+    expect(w.text).toMatch(/model stalled/);
+    expect(w.text).toMatch(/a plain retry is likely enough/);
+    expect(w.text).toContain("The model printed nothing for the stall timeout");
+    expect(w.text).toContain("no model output for 5 minutes");
+    expect(w.text).not.toContain("recurring_failure");
+  });
+
+  it("a rate limit or an infra failure: a retry is enough too", () => {
+    for (const f of [failure("rate_limited", "429"), failure("lease_lost", "lost", true)]) {
+      expect(whyWaiting(input({ item: hold, failure: f })).text).toMatch(/a plain retry is likely enough/);
+    }
+  });
+
+  it("a task failure: named in plain words, and something must change before a retry", () => {
+    const w = whyWaiting(input({ item: hold, failure: failure("tests_failed", "2 tests failed") }));
+    expect(w.text).toContain("The checks or tests failed");
+    expect(w.text).toMatch(/a plain retry will likely fail again/);
+    expect(w.text).toMatch(/change .* first/);
+    expect(w.text).not.toMatch(/likely enough/);
+  });
+
+  it("a code with no description is named as is", () => {
+    expect(whyWaiting(input({ item: hold, failure: failure("odd_code", "") })).text).toContain("odd_code");
+  });
+
+  it("no failed run: still a sentence, never empty or a raw code, naming no failure", () => {
+    for (const x of [input({ item: hold, failure: null }), input({ item: hold })]) {
+      const w = whyWaiting(x);
+      expect(w.text).toMatch(/no failed run/);
+      expect(w.text).not.toContain("recurring_failure");
+      expect(w.text).not.toMatch(/likely (enough|fail)/);
+    }
+  });
+});
+
 describe("refsOf and deadlocked", () => {
   it("reads same-repo numbers only", () => {
     expect(refsOf("#3, o/r#4 and #3 or #x")).toEqual([3]);

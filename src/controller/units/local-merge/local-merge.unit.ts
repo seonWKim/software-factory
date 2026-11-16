@@ -72,7 +72,7 @@ export class LocalMergeUnit {
     const auto = who === AUTO_MERGE;
     const service = auto ? await this.c.unit("auth").automatic("approve_merge", item) : null;
     const principal = "user_id" in who
-      ? await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id)
+      ? await this.c.unit("auth").allowed({ user_id: who.user_id }, "approve_merge", item.id)
       : "auto" in who
         ? service === null ? { user_id: AUTO_ACTOR } : { refuse: service }
         : await this.c.unit("auth").authorize(who, "approve_merge", item.id);

@@ -1,6 +1,6 @@
 // Applies the status page's requests (the gate commands approve, reject, revise, retry and resolve, verdict, merge,
 // and through the commands unit a sentence and a proposal's Confirm all and Cancel; anything else is refused).
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 
 import { APP_REQUEST, COMMANDS, MERGE_REQUESTED, refusalText } from "../../../core/commands.js";
 import { LOCAL_SOURCE, MERGE_COMMAND } from "../../../core/local-merge.js";
@@ -65,7 +65,7 @@ export class AppRequestsUnit {
         ? await this.c.unit("local-merge").mergeLocal(item.id, who, key, { [APP_REQUEST]: r.seq })
         : await this.c.unit("pr-events").requestPrMerge(item.id, who, key, { [APP_REQUEST]: r.seq });
     } else if (r.command === "verdict") {
-      const principal = await this.c.unit("auth").allowed({ user_id: r.actor, attributes: {} }, "record_verdict", item.id);
+      const principal = await this.c.unit("auth").allowed({ user_id: r.actor }, "record_verdict", item.id);
       refusal = "refuse" in principal ? principal.refuse : await this.c.unit("verdicts").verdictFrom(item.id, { comment_id: key, target: "issue" }, principal, note ?? "");
     } else if (gate) {
       refusal = await this.c.unit("commands").appGate(r, item, gate, key, note);

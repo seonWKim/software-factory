@@ -18,7 +18,7 @@ export default defineHandler<Envelope, ControllerContext>({
       if (c) await ctx.decisions.consumeCommand(c);
       return;
     }
-    // A record pruned before it was handled (past inbox_retention_days) has nothing left to decide on.
+    // A record pruned before it was handled (past retention.raw_records_days) has nothing left to decide on.
     const r = await readRecord(ctx.db, String(m.payload.record_id));
     if (r) await ctx.decisions.consumeEvent(r.event);
   },

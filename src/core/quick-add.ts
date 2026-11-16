@@ -9,7 +9,7 @@ import { type DueDay, type Recurrence, type TaskEdit, type TaskFields, type Task
  *   and anywhere else is a title word;
  * - `45m`, `1h`, `1h30m`: the duration (1 minute to a day; none given: DEFAULT_DURATION_MINUTES when planned);
  * - `!1` to `!3`: the priority, 1 the highest;
- * - `#label`: the list;
+ * - `#label`: the list, its letters and digits of any script, `_` and `-`;
  * - `+slug`: a task project (src/core/projects.ts), its slug projectSlug of the word after `+`; several may be given,
  *   and the store refuses an unknown or archived one;
  * - `every day`, `every week`, `every month`: the recurrence, which needs a due day. It is read only when these two
@@ -105,7 +105,7 @@ function scan(words: string): { ok: true; edit: TaskEdit; title: string } | { ok
       if (p < 1 || p > 3) return { ok: false, reason: `priority must be !1, !2 or !3, not ${w}` };
       refused = once("priority");
       priority = p as TaskPriority;
-    } else if (/^#[\w-]+$/.test(w)) {
+    } else if (/^#[\p{L}\p{N}_-]+$/u.test(w)) {
       refused = once("list");
       list = w.slice(1);
     } else if (w.startsWith("+")) {

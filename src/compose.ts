@@ -15,7 +15,7 @@ import { pathCompanionsConfig } from "./core/companions.js";
 import { checkCommands, commandText } from "./core/checks.js";
 import { saveProject, saveProjectLabel } from "./core/project-labels.js";
 import { errorText, type Logger } from "./core/log.js";
-import type { CliIdentity } from "./core/local-cli.js";
+import type { CliEnvironment, CliIdentity } from "./core/local-cli.js";
 import { canMergeLocal } from "./core/local-merge.js";
 import { StoredLearnedSettings } from "./core/learned-settings.js";
 import type { Tier, UserId, VerdictSeverity } from "./core/types.js";
@@ -50,7 +50,7 @@ import type { SecretStore } from "./interfaces/secret-store.js";
 import { CODE_VERSION_ENV, CONFIG_ENV, type ChildRestart, SUPERVISOR_STATUS_FILE, type SupervisorStatus, WORKER_INDEX_BASE_ENV } from "./interfaces/updater.js";
 import { updaterConfig } from "./impl/updater/config.js";
 import { LOCAL_KEY_FILE, ProfileStore, startIdentity, type IdentityRuntime } from "./identity/index.js";
-import { AuditedAuthProvider, controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
+import { controllerServiceAuth, outboundServiceAuth } from "./impl/auth/audited-auth.js";
 import { OwnerAuth } from "./core/authorize.js";
 import { PassportToolBroker } from "./impl/broker/passport-broker.js";
 import { type PackTool, packToolBrokers, withPackTools } from "./impl/broker/pack-tools.js";
@@ -75,6 +75,8 @@ import {
 } from "./plugins.js";
 import { batchingPolicies } from "./outbound/index.js";
 import { type Pack, autoApproveReadOnly, findPacks, packChecks, packPluginFiles, packPrompts, packSkills } from "./packs/packs.js";
+import { importedMcpRefusals, listRequestedMcpTools } from "./import/mcp-tool-lists.js";
+import { startPackMcpServer } from "./impl/runner/pack-mcp-client.js";
 import { PackGuidance } from "./impl/capability/project-guidance.js";
 import { LearnedRules, joinGuidance } from "./core/learned-rules.js";
 
@@ -149,9 +151,9 @@ export interface FileConfig {
   tick_ms: number;
   poll_interval_ms: number;
   run_timeout_ms: number;
-  /** Stream intake: days an inbox row is kept once behind its cursor. Absent: 14. Positive integer. */
+  /** Deprecated (design 08-retention): `retention.raw_records_days` when that is absent, with a warning. Positive integer. */
   inbox_retention_days?: number;
-  retention?: { outbox_days?: unknown; commands_days?: unknown; records_days?: unknown }; // design 08-retention; absent: 30, 30, 90
+  retention?: { outbox_days?: unknown; commands_days?: unknown; records_days?: unknown; raw_records_days?: unknown }; // design 08-retention; absent: 30, 30, 90, 7
   /** Outbound (RFC 0015 §15.1): `batching` per destination kind. Absent: `auto` everywhere. */
   outbound?: { batching?: unknown };
   /** The merge queue (RFC 0015 §7): `depth`, the speculative depth. Absent: 1. */
@@ -390,7 +392,7 @@ export async function loadConfig(
   const retry = retryConfig(file);
   // The per-project gate settings in layers (design 2026-11-01): top level / `defaults`, then `projects`.
   const settings = settingsLayers(raw as Record<string, unknown>, `${file.repo.owner}/${file.repo.name}`);
-  const retention = { inbox_retention_days: inboxRetentionDays(file), retention: retentionConfig(file.retention) };
+  const retention = { retention: retentionConfig(file.retention, file.inbox_retention_days) };
   const budget = budgetConfig({ budget_min_sample: file.budget_min_sample });
   const stats = statsConfig(file.stats);
   const models = parseModels(file.models);
@@ -403,10 +405,9 @@ export async function loadConfig(
   // The pack layers (design 11-packs.md): base (the code root), org (`packs.org`), project (`.factory/` in the
   // repo's main checkout) and learned (under the state dir). A missing layer is off. Their plugins and tools join a registry copy.
   const packs = findPacks({ codeRoot, repoPath, stateDir, configDir: stateBase, packs: file.packs });
-  // No shared store (design 05-coordination.md, 2026-11-13): sharedStore stays false until phase 2 removes the option.
-  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs, { sharedStore: false }));
+  const packRegistry = await withPackPlugins(opts.registry ?? REGISTRY, packPluginFiles(packs));
   const plugins = withForgeDefault(packRegistry, selectPlugins(packRegistry, { store, calendar: file.calendar, plugins: file.plugins }, { platform: opts.platform }), file.plugins);
-  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, { sharedStore: false, builtin: opts.registry ?? REGISTRY });
+  const { registry, pack_tools } = await withPackTools(packRegistry, plugins.broker, packs, opts.registry ?? REGISTRY);
   const local = !selectsGitHub(plugins);
   if (!local) await checkGitHubSettings(file.github);
   const secretsFile = defaultSecretsFile();
@@ -438,7 +439,7 @@ export async function loadConfig(
     ...stallConfig(file),
     ...alarmConfig(file),
     agent_stop_checks: agentStopChecks(file),
-    ...retention, // inbox_retention_days and the retention block (design 08-retention)
+    ...retention, // the retention block, inbox_retention_days as its fallback (design 08-retention)
     outbound_batching: batchingPolicies(file.outbound?.batching),
     merge_queue_depth: mergeQueueDepth(file),
     ...(file.hooks === undefined ? {} : { hooks: hookNames(file.hooks) }),
@@ -768,7 +769,7 @@ export async function build(
   // Identity (RFC 0015 §8, M9): service and run passports, and the audit of every authorize decision.
   const identity = await startProcessIdentity(loaded, store, clock);
   // Every person's command, whatever its origin, by the one owner check, one authz_audit row per decision (passport `none`).
-  const auth = new AuditedAuthProvider(new OwnerAuth(store), identity.passports);
+  const auth = new OwnerAuth(store);
   // Suggests a command for a plain-language comment; never changes state (design §4). The worker pool's improve
   // runs draft a cause and fix per failure group through it, with no tools (design §7).
   const llm = await p.llm(secrets);
@@ -811,7 +812,7 @@ export async function build(
   });
   const config: FactoryConfig = { ...resolvedConfig(loaded.config, project), ...(tool_grants ? { tool_grants } : {}) };
   // The pack checks `hooks` names (design §4, issue #494), refused here when bad; its other names are `*.hook.ts`.
-  const checks = packChecks(loaded.packs, config.hooks ?? [], { sharedStore: false, toolHooks: runner.supports_tool_hooks === true });
+  const checks = packChecks(loaded.packs, config.hooks ?? [], { toolHooks: runner.supports_tool_hooks === true });
   await checkEnabledHooks((config.hooks ?? []).filter((n) => !checks.some((c) => c.name === n)));
   shareGitHubBudget(loaded, github, store, config);
 
@@ -854,25 +855,19 @@ export async function build(
     check_env: baseEnv(),
   });
 
+  const id_prefix = `${hostname()}:${process.pid}`;
   const worker = new WorkerPool({
-    id_prefix: `${hostname()}:${process.pid}`,
+    id_prefix,
     // A run's push and PR go to this machine's git destination (`git:<host id>:<branch>`), which its controller flushes.
     host: hostId(stateDir),
     // The supervisor's block for this child (git-worktree updater); unset: 0.
     index_base: opts.workerIndexBase ?? workerIndexBase(process.env[WORKER_INDEX_BASE_ENV]),
     // The revision the supervisor built this child from, stamped on each run (`worker_runs.code_version`); unset: dev.
     ...codeVersion(process.env[CODE_VERSION_ENV]),
-    store,
-    sandbox,
-    runner,
-    broker: guarded,
-    local,
-    passports,
-    scanner,
-    storage,
-    llm,
-    clock,
-    config,
+    store, sandbox, runner,
+    broker: guarded, local, passports,
+    scanner, storage, llm,
+    clock, config,
     prompts: loaded.prompts,
     log: new ConsoleLogger(clock, "worker"),
     toolEnv: baseEnv(),
@@ -886,6 +881,10 @@ export async function build(
     pack_checks: new PackCheckRunner(checks, { sandbox, audit: new SqlHookAudit(storeSql(store)), now: () => clock.now().toISOString() }),
     // A run's PR comment is a thread entry on this ref; outbound posts it (RFC 0015 M7).
     ...(forge ? { prRef: (pr: number) => forge.prRef(pr) } : {}),
+    // Imported MCP servers (design 11-plugin-import): never started for a run (owner answer 1); an approved one's
+    // tools are listed here, in the worker, once per request, with an empty env and no credential (owner answer 3).
+    imported_mcp_refusals: (servers) => importedMcpRefusals(storeSql(store), servers),
+    list_mcp_tools: () => listRequestedMcpTools({ db: storeSql(store), now: () => clock.now().toISOString(), by: id_prefix, start: startPackMcpServer }),
   });
 
   return { loaded, clock, store, secrets, project, controller, worker, close: () => refreshed.then(() => identity.stop()).then(() => store.close()) };
@@ -1030,13 +1029,13 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
     integrations: INTEGRATION_KINDS.map((kind) => ({ kind, interface: loaded.registry[kind].interface, configured: String(loaded.plugins[kind]) })),
   };
   // The owner check for "Resume now", approve_tool and the page's command checks (approve_spec, approve_merge), with no
-  // forge call; every decision here is audited (passport `none`).
+  // forge call. Each command decision is audited (passport `none`); a page's read-only check only when refused (`check`).
   const identity = await startProcessIdentity(loaded, store, clock);
-  const auth = new AuditedAuthProvider(new OwnerAuth(store), identity.passports);
-  const onProject = async (user_id: UserId, action: AuthAction): Promise<AuthDecision> => {
+  const auth = new OwnerAuth(store);
+  const onProject = async (user_id: UserId, action: AuthAction, readOnly = false): Promise<AuthDecision> => {
     const project = await settings.resolveProject();
     if (!project) return { allow: false, reason: "no project is stored yet" };
-    return auth.authorize({ user_id, attributes: {} }, action, { kind: "project", id: project.key });
+    return auth[readOnly ? "check" : "authorize"]({ user_id }, action, { kind: "project", id: project.key });
   };
   // One token per process for every write route; held only in memory, never written to a file, the store or a log.
   // The UI server, loaded here only: through setup.ts it reaches GitHub modules a solo start must not load.
@@ -1045,7 +1044,7 @@ export async function buildUiParts(loaded: Loaded, opts: { identity: CliIdentity
   const actor = who.actor;
   const commands: UiCommands = {
     ...who, token, forge: loaded.plugins.forge !== undefined, localMerge: canMergeLocal(await p.sandbox()),
-    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action)),
+    allowed: (action) => (actor === null ? Promise.resolve({ allow: false, reason: "no_actor" }) : onProject(actor, action, true)),
   };
   // The mode switch, the auto-merge tier and a loosening change need approve_merge on the project (design 08-settings), as the Merge button.
   settings.mayApproveMerge = async () => refusalOf(await onProject(opts.identity.user, "approve_merge"));
@@ -1076,19 +1075,19 @@ export async function localAuth(_loaded: Loaded, store: FactoryStore): Promise<A
 }
 
 /**
- * The approve_merge check of `factory settings` and `factory mode` for `mode`, `auto_merge_max_tier` and a loosening change (design
- * 08-settings): `user` on the configured project, through the owner check, with no forge call. Solo: the first
- * local identity is the owner and holds it with no setup. The refusal, or null.
+ * The owner check of every CLI command that asks one (approve_merge for a `factory settings` or `mode` change, design 08-settings;
+ * approve_spec for the sentence form, `factory resume` and `factory workers`): `user` on the configured project, no forge call.
  */
-export async function approveMergeCheck(loaded: Loaded, store: FactoryStore, user: UserId): Promise<() => Promise<string | null>> {
-  const auth = await localAuth(loaded, store);
-  const repo = { owner: loaded.config.repo.owner, name: loaded.config.repo.name };
+export function ownerRefusal(loaded: Loaded, store: FactoryStore, user: UserId, action: AuthAction): () => Promise<string | null> {
+  const repo = loaded.config.repo;
   return async () => {
     const project = (await storeProjectResolver(store, repo)()) ?? (loaded.config.local_only ? localProject(repo) : null);
     if (!project) return "no project key is stored yet; start the factory once first";
-    return refusalOf(await auth.authorize({ user_id: user, attributes: {} }, "approve_merge", { kind: "project", id: project.key }));
+    return refusalOf(await (await localAuth(loaded, store)).authorize({ user_id: user }, action, { kind: "project", id: project.key }));
   };
 }
+
+export type { CliEnvironment, CliIdentity, FactoryStore }; // for the CLI component (src/cli/command.ts)
 
 /** What `factory session` needs (design §5, 2026-11-01): no controller, worker, source or agent runner. `local` and `learned` as the worker pool's (Plugins.localRoute; 08-settings). */
 export interface SessionParts {
@@ -1311,16 +1310,6 @@ export function mergeQueueDepth(file: Pick<FileConfig, "merge_queue">): number {
   if (typeof v !== "number" || !Number.isInteger(v) || v < 1 || v > MERGE_QUEUE_DEPTH_MAX) {
     throw new Error(`merge_queue.depth must be an integer from 1 to ${MERGE_QUEUE_DEPTH_MAX}`);
   }
-  return v;
-}
-
-export const DEFAULT_INBOX_RETENTION_DAYS = 14;
-
-/** `inbox_retention_days`: absent means 14, otherwise a positive integer or startup fails. */
-export function inboxRetentionDays(file: Pick<FileConfig, "inbox_retention_days">): number {
-  const v = file.inbox_retention_days;
-  if (v === undefined) return DEFAULT_INBOX_RETENTION_DAYS;
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 1) throw new Error("inbox_retention_days must be a positive integer");
   return v;
 }
 

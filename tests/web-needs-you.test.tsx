@@ -7,6 +7,8 @@ import { App } from "../web/src/App.js";
 
 // The Needs you section of the Tasks page (design 09-dashboard-app), which /app/ opens: its count, compact rows grouped
 // Merge, Approve, Answer or fix, one primary action per row with the "⋯" menu last, and j, k, Enter and p on the rows.
+// Its count, the sidebar badge and the top-bar chip are the same number for the same data: the overview's needs_you
+// counts the rows the section lists (design 09-status-page; tests/ui-system-actions.test.ts checks the server's side).
 
 const AT = "2026-11-12T00:00:00.000Z";
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
@@ -28,10 +30,13 @@ const DEP = row("5b2b", "running", "Add the input component", { blocked_on: "non
 
 let list: object[];
 let overview: Record<string, unknown>;
+/** The Tasks read's projects (the open tasks and their work items). */
+let projects: object[];
 let posts: { url: string; body: unknown }[];
 
 beforeEach(() => {
   list = [MERGE, CHECKING, APPROVE, RETRY, NOTHING, DEP];
+  projects = [];
   overview = { as_of: AT, stages: {}, needs_you: 5, running: 0, queued: 0, last_24h: { succeeded: 0, failed: 0, tokens: 0 }, system_actions: [], factory: { state: "running", rev: "0ff810f1234", target_rev: "0ff810f1234", child_pid: 1, since: AT, workers: 1, workers_source: "default", error: null, pending: [] } };
   posts = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -42,7 +47,7 @@ beforeEach(() => {
     const bodies: Record<string, unknown> = {
       "/api/v1/overview": overview,
       "/api/v1/items": { as_of: AT, total: list.length, items: list, facets: { allStates: list.length, state: {} } },
-      "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects: [], csrf_token: "tok", can_build: true, active_projects: [] },
+      "/api/v1/tasks": { today_date: "2026-11-12", today: { overdue: [], due: [] }, upcoming: [], projects, csrf_token: "tok", can_build: true, active_projects: [] },
       "/api/v1/pauses": { pauses: [], csrf_token: null },
       "/api/v1/session": { as_of: AT, csrf_token: "tok", commands_enabled: true, actor: "local:me", actor_source: "environment" },
     };
@@ -178,5 +183,51 @@ describe("the Needs you section", () => {
     mount();
     const [merge] = await ready();
     expect(merge!.querySelector("[data-shortcut]")).toBeNull();
+  });
+});
+
+describe("the Needs you count is its rows (design 09-status-page)", () => {
+  const ALARM = (n: number) => ({ code: "alarm", text: `Alarm: checks_failed failed ${n} runs on several items`, command: "Failures page (/app/failures)", until: AT });
+  const STUCK = row("s1", "stuck", "Nobody moves this", { blocked_on: "none", stage: "RUNNING", need: undefined });
+
+  /** Mounts the app on the overview's `needs_you` and `checks` and the items `items`; reads the section and the two numbers. */
+  async function numbers(needs_you: number, items: object[], checks: object[]) {
+    overview = { ...overview, needs_you, system_actions: checks };
+    list = items;
+    mount();
+    const chip = await screen.findByTestId("needs-you");
+    await waitFor(() => expect(chip.textContent).not.toContain("…"));
+    const badge = document.querySelector('aside a[href="/app/tasks"] span.ml-auto')!.textContent;
+    const section = await screen.findByRole("region", { name: "Needs you" });
+    const rows = [...section.querySelectorAll<HTMLElement>("li[data-key], li[data-check]")];
+    return { rows, count: Number(section.querySelector("h2 + span")!.textContent), badge: Number(badge), chip: chip.textContent };
+  }
+
+  it("one waiting item and one open alarm: 2 rows (the alarm under Check), 2 on the badge and 2 on the chip", async () => {
+    const n = await numbers(2, [MERGE], [ALARM(4)]);
+    expect([n.rows.length, n.count, n.badge]).toEqual([2, 2, 2]);
+    expect(n.chip).toBe("Needs you (2)");
+    const check = within(screen.getByRole("region", { name: "Needs you" })).getByRole("list", { name: "Check" });
+    expect([...check.querySelectorAll("li")].map((r) => r.getAttribute("data-check"))).toEqual(["alarm"]);
+  });
+
+  it("waiting items only, one on an open task's row: each a row; a stuck item is none", async () => {
+    projects = [{ list: null, tasks: [{ id: "tk_1", title: "Ship", list: null, priority: null, due_date: null, due_time: null, recurrence: null, work_item_id: MERGE.id }] }];
+    const n = await numbers(3, [MERGE, APPROVE, RETRY, STUCK], []);
+    expect([n.rows.length, n.count, n.badge]).toEqual([3, 3, 3]);
+    expect(n.rows.map((r) => r.dataset.key)).toEqual([MERGE.id, APPROVE.id, RETRY.id]);
+  });
+
+  it("each open alarm is its own row: two alarms give 2", async () => {
+    const n = await numbers(2, [], [ALARM(4), ALARM(5)]);
+    expect([n.rows.length, n.count, n.badge]).toEqual([2, 2, 2]);
+    expect(n.rows.map((r) => r.dataset.check)).toEqual(["alarm", "alarm"]);
+  });
+
+  it("a non-alarm system action is one row with its command, beside an item and an alarm", async () => {
+    const pause = { code: "worker_pause", text: "1 worker pause in effect (factory workers pause)", command: "factory workers resume", until: null };
+    const n = await numbers(3, [MERGE], [pause, ALARM(4)]);
+    expect([n.rows.length, n.count, n.badge]).toEqual([3, 3, 3]);
+    expect(n.rows.find((r) => r.dataset.check === "worker_pause")!.querySelector("code")!.textContent).toBe("factory workers resume");
   });
 });

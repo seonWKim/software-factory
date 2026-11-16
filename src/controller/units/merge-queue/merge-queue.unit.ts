@@ -39,7 +39,7 @@ export class MergeQueueUnit {
 
   private store(): MergeQueueStore {
     const db = this.c.k.db;
-    if (!db) throw new Error("the merge queue needs a SQL store (sqlite or mysql)");
+    if (!db) throw new Error("the merge queue needs a SQL store (SQLite)");
     return new MergeQueueStore(db, () => new Date(this.c.k.nowMs()).toISOString());
   }
 

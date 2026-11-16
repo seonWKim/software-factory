@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { API, type ItemRow, type MergeCheckView, type Overview, type QueueRow, type RunRow, type Session, type Why, mergeCheckLabel, showsMerge, useApi } from "../api.js";
 import { IdDetails } from "../components/ui/copy.js";
-import { Badge, Empty, Table, Td, Tr } from "../components/ui/parts.js";
+import { type Column, DataTable } from "../components/ui/data-table.js";
+import { Badge } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { cn } from "../lib/cn.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
@@ -143,9 +144,14 @@ export const byId = (items: readonly ItemRow[] | undefined): Map<string, ItemRow
 /** What a Needs-you row asks of the owner: merge a PR, approve a spec, or answer or fix (everything else). */
 export type NeedGroup = "merge" | "approve" | "answer";
 
-/** The items that wait on the owner: one row each; an item started past a deadlock goes on by itself. */
-export const needsYou = (items: readonly ItemRow[]): ItemRow[] =>
-  items.filter((i) => (NEEDS_YOU_LEVELS as readonly string[]).includes(i.level) && i.why?.code !== "deadlock");
+/** The levels of an item that waits on the owner (the server's NEEDS_YOU): a stuck item waits on nobody's answer. */
+const WAITING_LEVELS: readonly string[] = NEEDS_YOU_LEVELS.filter((l) => l !== "stuck");
+
+/**
+ * The items that wait on the owner, one Needs-you row each (src/ui/needs-you.ts): blocked on a person or the budget.
+ * An item started past a deadlock is Blocked by another task and goes on by itself.
+ */
+export const needsYou = (items: readonly ItemRow[]): ItemRow[] => items.filter((i) => WAITING_LEVELS.includes(i.level));
 
 export function needGroup(it: ItemRow): NeedGroup {
   if (showsMerge(it.merge) || it.level === "ready_to_merge") return "merge";
@@ -163,76 +169,64 @@ function Ext({ href, children }: { href: string; children: React.ReactNode }) {
 
 /** The Work items table. The title links to the item's page; the Item cell has no link out. The Issue column exists only when the GitHub plugin is in use (`plugins` from the overview); the PR column always shows. */
 export function ItemsTable({ items, now, label, empty, plugins }: { items: readonly ItemRow[]; now: number; label: string; empty: string; plugins?: Overview["plugins"] }) {
-  if (items.length === 0) return <Empty>{empty}</Empty>;
-  const showIssue = plugins?.issues === "github";
-  const head = [t("col.item"), t("col.state"), t("col.why"), t("col.since"), ...(showIssue ? [t("col.issue")] : []), t("col.pr")];
-  return (
-    <Table label={label} head={head}>
-      {items.map((it) => (
-        <Tr key={it.id} data-key={it.id}>
-          <Td className="max-w-md">
-            <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
-              {it.title ?? shortSource(it.source.id)}
-            </Link>
-          </Td>
-          <Td>
-            <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
-            {it.merge_check && <MergeCheckNote check={it.merge_check} />}
-          </Td>
-          <Td className="text-text-2">{it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–"}</Td>
-          <Td className="tabular-nums whitespace-nowrap">{ago(it.since, now)}</Td>
-          {showIssue && <Td className="tabular-nums">{it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–"}</Td>}
-          <Td className="tabular-nums">
-            {it.change_ref === null ? "–" : it.change_url ? <Ext href={it.change_url}>#{it.change_ref}</Ext> : `#${it.change_ref}`}
-          </Td>
-        </Tr>
-      ))}
-    </Table>
-  );
+  const columns: Column<ItemRow>[] = [
+    {
+      key: "item",
+      header: t("col.item"),
+      className: "max-w-md",
+      render: (it) => (
+        <Link href={itemPath(it.id)} className={cn("block font-medium sm:truncate", LINK_CLASS)}>
+          {it.title ?? shortSource(it.source.id)}
+        </Link>
+      ),
+    },
+    {
+      key: "state",
+      header: t("col.state"),
+      render: (it) => (
+        <>
+          <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
+          {it.merge_check && <MergeCheckNote check={it.merge_check} />}
+        </>
+      ),
+    },
+    { key: "why", header: t("col.why"), className: "text-text-2", render: (it) => (it.why ? <WhyText why={it.why} /> : it.badges.join(" · ") || it.blocked_reason || "–") },
+    { key: "since", header: t("col.since"), className: "tabular-nums whitespace-nowrap", render: (it) => ago(it.since, now) },
+    ...(plugins?.issues === "github"
+      ? [{ key: "issue", header: t("col.issue"), className: "tabular-nums", render: (it: ItemRow) => (it.issue ? <Ext href={it.issue.url}>#{it.issue.number}</Ext> : "–") }]
+      : []),
+    {
+      key: "pr",
+      header: t("col.pr"),
+      className: "tabular-nums",
+      render: (it) => (it.change_ref === null ? "–" : it.change_url ? <Ext href={it.change_url}>#{it.change_ref}</Ext> : `#${it.change_ref}`),
+    },
+  ];
+  return <DataTable label={label} columns={columns} rows={items} rowKey={(it) => it.id} empty={empty} dataKey />;
 }
 
 /** Running runs with their item, owner and heartbeat. */
 export function RunningTable({ runs, items, now }: { runs: readonly RunRow[]; items: ReadonlyMap<string, ItemRow>; now: number }) {
-  const running = runs.filter((r) => r.status === "running");
-  if (running.length === 0) return <Empty>{t("running.empty")}</Empty>;
-  return (
-    <Table label={t("running.label")} head={[t("col.item"), t("col.run"), t("col.attempt"), t("col.worker"), t("col.runningFor"), t("col.heartbeat")]}>
-      {running.map((r) => {
-        const it = items.get(r.work_item_id);
-        return (
-          <Tr key={r.id} data-key={r.id}>
-            <Td className="max-w-md"><RunItemCell id={r.work_item_id} item={it} /></Td>
-            <Td>{r.kind}</Td>
-            <Td className="tabular-nums">{r.attempt}</Td>
-            <Td><WorkerName id={r.owner} /></Td>
-            <Td className="tabular-nums">{ago(r.started_at, now)}</Td>
-            <Td className="tabular-nums">{t("time.ago", { time: ago(r.heartbeat_at, now) })}</Td>
-          </Tr>
-        );
-      })}
-    </Table>
-  );
+  const columns: Column<RunRow>[] = [
+    { key: "item", header: t("col.item"), className: "max-w-md", render: (r) => <RunItemCell id={r.work_item_id} item={items.get(r.work_item_id)} /> },
+    { key: "kind", header: t("col.run") },
+    { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
+    { key: "worker", header: t("col.worker"), render: (r) => <WorkerName id={r.owner} /> },
+    { key: "running_for", header: t("col.runningFor"), className: "tabular-nums", render: (r) => ago(r.started_at, now) },
+    { key: "heartbeat", header: t("col.heartbeat"), className: "tabular-nums", render: (r) => t("time.ago", { time: ago(r.heartbeat_at, now) }) },
+  ];
+  return <DataTable label={t("running.label")} columns={columns} rows={runs.filter((r) => r.status === "running")} rowKey={(r) => r.id} empty={t("running.empty")} dataKey />;
 }
 
 /** Queued runs in claim order, with their item and when each may start: "now" or its retry time, else why it waits. */
 export function QueueTable({ queue, items, now, limit }: { queue: readonly QueueRow[]; items: ReadonlyMap<string, ItemRow>; now: number; limit?: number }) {
-  if (queue.length === 0) return <Empty>{t("queue.empty")}</Empty>;
-  const shown = limit ? queue.slice(0, limit) : queue;
-  return (
-    <Table label={t("queue.title")} head={["#", t("col.item"), t("col.run"), t("col.attempt"), t("col.queued"), t("col.starts")]}>
-      {shown.map((q) => {
-        const it = items.get(q.work_item_id);
-        return (
-          <Tr key={q.id} data-key={q.id}>
-            <Td className="tabular-nums">{q.position}</Td>
-            <Td className="max-w-md"><RunItemCell id={q.work_item_id} item={it} /></Td>
-            <Td>{q.kind}</Td>
-            <Td className="tabular-nums">{q.attempt}</Td>
-            <Td className="tabular-nums">{t("time.ago", { time: ago(q.created_at, now) })}</Td>
-            <Td className="tabular-nums">{q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)}</Td>
-          </Tr>
-        );
-      })}
-    </Table>
-  );
+  const columns: Column<QueueRow>[] = [
+    { key: "position", header: "#", numeric: false, className: "tabular-nums" },
+    { key: "item", header: t("col.item"), className: "max-w-md", render: (q) => <RunItemCell id={q.work_item_id} item={items.get(q.work_item_id)} /> },
+    { key: "kind", header: t("col.run") },
+    { key: "attempt", header: t("col.attempt"), numeric: false, className: "tabular-nums" },
+    { key: "queued", header: t("col.queued"), className: "tabular-nums", render: (q) => t("time.ago", { time: ago(q.created_at, now) }) },
+    { key: "starts", header: t("col.starts"), className: "tabular-nums", render: (q) => (q.why && q.why.code !== "queued" && q.why.code !== "not_before" ? <WhyText why={q.why} /> : until(q.not_before, now)) },
+  ];
+  return <DataTable label={t("queue.title")} columns={columns} rows={limit ? queue.slice(0, limit) : queue} rowKey={(q) => q.id} empty={t("queue.empty")} dataKey />;
 }

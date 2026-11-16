@@ -84,7 +84,7 @@ export class PrEventsUnit {
   async requestPrMerge(id: WorkItemId, who: { user_id: UserId }, key: string, detail: Record<string, unknown>): Promise<string | null> {
     const item = await this.c.k.reader.getWorkItem(id);
     if (!item) return "the work item was not found";
-    const principal = await this.c.unit("auth").allowed({ user_id: who.user_id, attributes: {} }, "approve_merge", item.id);
+    const principal = await this.c.unit("auth").allowed({ user_id: who.user_id }, "approve_merge", item.id);
     if ("refuse" in principal) return principal.refuse;
     // The merge gate (core request-transition, through the commands unit): waiting for its merge, a PR, a forge, a reviewed head.
     const forge = this.c.k.forge;

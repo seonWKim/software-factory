@@ -156,7 +156,6 @@ describe("CI check gate before merge_pending", () => {
 
 describe("failed checks after an implement run that pushed nothing", () => {
   const failed = { state: "failed" as const, failed: ["test"] };
-  const NO_PUSH = "The previous attempt pushed no commit";
 
   /**
    * An item whose PR head stays `h1` whatever the implement runs do (each pushes only the branch's earlier work),
@@ -191,37 +190,36 @@ describe("failed checks after an implement run that pushed nothing", () => {
   const implementPrompts = (f: { runner: FakeRunner }) => f.runner.specs.filter((s) => s.role === "implement").map((s) => s.prompt);
   const skipped = (runs: Run[]) => runs.filter((r) => r.kind === "review" && r.outcome?.status === "succeeded" && r.outcome.data.no_agent === "unchanged_head");
 
-  it("an unchanged head whose checks failed goes back to implement with loop_count + 1, and the prompt says nothing was pushed", async () => {
+  it("an unchanged head whose checks failed blocks on a human with unchanged_head: no run, loop_count unchanged", async () => {
     const f = await noPush(91, [failed, failed]);
     const changes = await f.store.listStateChanges(f.item.id);
     const loops = changes.filter((c) => c.reason === "checks_failed");
-    expect(loops).toHaveLength(2);
+    expect(loops).toHaveLength(1);
     expect(loops[0]!.detail).not.toHaveProperty("unchanged_head");
-    expect(loops[1]!.changes).toMatchObject({ stage: { from: "REVIEW", to: "RUNNING" }, loop_count: { from: 1, to: 2 } });
-    expect(loops[1]!.detail).toMatchObject({ failed_checks: JSON.stringify(["test"]), unchanged_head: true });
+    const blocked = changes.at(-1)!;
+    expect(blocked).toMatchObject({ reason: "unchanged_head", detail: { failed_checks: JSON.stringify(["test"]), unchanged_head: true } });
+    expect(blocked.changes).not.toHaveProperty("loop_count");
     const runs = await f.store.listRuns(f.item.id);
-    expect(skipped(runs).length).toBeGreaterThanOrEqual(1);
-    expect(loops[1]!.detail!.review_run_id).toBe(skipped(runs)[0]!.id);
+    expect(skipped(runs)).toHaveLength(1);
+    expect(blocked.detail!.review_run_id).toBe(skipped(runs)[0]!.id);
+    expect(runs.filter((r) => r.status === "queued" || r.status === "running")).toEqual([]);
 
     const prompts = implementPrompts(f);
-    expect(prompts).toHaveLength(3);
+    expect(prompts).toHaveLength(2);
     expect(prompts[1]).toContain("## Failing CI checks to fix");
-    expect(prompts[1]).not.toContain(NO_PUSH);
-    expect(prompts[2]).toContain(NO_PUSH);
-    // The third loop's unchanged head has passing checks: only its ack, with no field changed, as before.
-    expect(changes.slice(-3).map((c) => c.reason)).toEqual(["implemented", "pr_delivered", "review_unchanged_head"]);
-    expect(changes.at(-1)!.changes).toEqual({});
-    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "none", loop_count: 2 });
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "unchanged_head", loop_count: 1 });
+    expect(f.source.comments.some((c) => c.marker.startsWith("<!-- factory:unchanged-head:") && c.body.includes("pushed no commit"))).toBe(true);
   });
 
-  it("an unchanged head whose checks failed at the loop limit blocks on a human with max_loops and starts no implement run", async () => {
+  it("failed checks on unchanged heads never loop up to max_loops: the first unchanged head blocks on a human", async () => {
     const f = await noPush(92, [failed, failed, failed]);
-    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: 2 });
-    const last = (await f.store.listStateChanges(f.item.id)).at(-1)!;
-    expect(last).toMatchObject({ reason: "max_loops", detail: { unchanged_head: true } });
+    expect(f.item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "unchanged_head", loop_count: 1 });
+    const reasons = (await f.store.listStateChanges(f.item.id)).map((c) => c.reason);
+    expect(reasons).not.toContain("max_loops");
     const runs = await f.store.listRuns(f.item.id);
-    expect(runs.filter((r) => r.kind === "implement")).toHaveLength(3);
+    expect(runs.filter((r) => r.kind === "implement")).toHaveLength(2);
     expect(runs.filter((r) => r.status === "queued")).toEqual([]);
+    expect(f.forge.checkResults).toEqual([failed]);
   });
 
   it("an unchanged head whose checks are pending makes no state change", async () => {
@@ -298,18 +296,17 @@ describe("failed checks after an implement run that pushed nothing", () => {
       expect(await snapshot(f)).toEqual(before);
     }
 
-    it("failed checks: one pass loops it back to implement with loop_count + 1; a second pass adds nothing", async () => {
+    it("failed checks: one pass blocks it on a human with unchanged_head, no run and loop_count unchanged; a second pass adds nothing", async () => {
       const f = await stalled(96, [failed, pending]);
       expect(f.item.loop_count).toBe(1);
       f.forge.checkResults = [failed];
       await f.controller.tickChecks();
       const item = (await f.store.getWorkItem(f.item.id))!;
-      expect(item).toMatchObject({ stage: "RUNNING", blocked_on: "none", loop_count: 2 });
-      const runs = await f.store.listRuns(f.item.id);
-      const queued = runs.filter((r) => r.status === "queued");
-      expect(queued.map((r) => r.kind)).toEqual(["implement"]);
+      expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "unchanged_head", loop_count: 1 });
+      expect((await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued")).toEqual([]);
       const last = (await f.store.listStateChanges(f.item.id)).at(-1)!;
-      expect(last).toMatchObject({ reason: "checks_failed", detail: { unchanged_head: true }, changes: { loop_count: { from: 1, to: 2 } } });
+      expect(last).toMatchObject({ reason: "unchanged_head", detail: { unchanged_head: true } });
+      expect(last.changes).not.toHaveProperty("loop_count");
 
       const before = await snapshot(f);
       f.forge.checkResults = [failed];
@@ -317,13 +314,14 @@ describe("failed checks after an implement run that pushed nothing", () => {
       expect(await snapshot(f)).toEqual(before);
     });
 
-    it("failed checks at the loop limit: one pass blocks it on a human with max_loops and queues no run; a second pass adds nothing", async () => {
-      const f = await stalled(97, [failed, failed, pending]);
-      expect(f.item.loop_count).toBe(config.max_loops - 1);
+    it("failed checks one loop before the limit: one pass blocks it with unchanged_head, not max_loops, and queues no run; a second pass adds nothing", async () => {
+      const f = await stalled(97, [failed, pending]);
+      const cur = (await f.store.getWorkItem(f.item.id))!;
+      await f.store.transition({ id: f.item.id, expected_version: cur.version, actor: { kind: "system", id: "test" }, reason: "setup", patch: { loop_count: config.max_loops - 1 } });
       f.forge.checkResults = [failed];
       await f.controller.tickChecks();
       const item = (await f.store.getWorkItem(f.item.id))!;
-      expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "max_loops", loop_count: config.max_loops - 1 });
+      expect(item).toMatchObject({ stage: "REVIEW", blocked_on: "human", blocked_reason: "unchanged_head", loop_count: config.max_loops - 1 });
       expect((await f.store.listRuns(f.item.id)).filter((r) => r.status === "queued")).toEqual([]);
 
       const before = await snapshot(f);

@@ -1,5 +1,5 @@
 // Gate commands from any source (approve, reject, revise, retry, resolve, budget), help, plain comments, links and PR feedback.
-// Moved out of the legacy controller (RFC 0015 M5); its I/O is still inline (unit-purity ratchet).
+// Moved out of the legacy controller (RFC 0015 M5); it reads through the kernel's reader and writes through the kernel.
 //
 // The store-only checks of Approve, a command's note and Merge live in src/core/request-transition.ts (design
 // 04-gate-commands, 2026-11-15); the dashboard's request path runs them too, and `afterRequestApprove` does its rest.
@@ -233,7 +233,7 @@ export class CommandsUnit {
    * note (a comment's `+paths` too) through G5, the transition (`tag` on its change), the standing follow-up, a reject's close, the pushback's capture. */
   async gateCommand(item: WorkItem, e: CommandEvent, app: AppSender = null, tag: StateChangeDetail | null = null): Promise<string | null> {
     const who = e.kind === "spec_approved" || e.kind === "spec_rejected" || e.kind === "budget_continue" ? e.approver : e.requester;
-    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id, attributes: {} }, "approve_spec", item.id) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
+    const principal = app ? await this.c.unit("auth").allowed({ user_id: app.user_id }, "approve_spec", item.id) : await this.c.unit("auth").authorize(who, "approve_spec", item.id);
     if ("refuse" in principal) return principal.refuse;
     const input = await this.commandInput(item.id, e, app === null);
     if ("refuse" in input) return input.refuse;

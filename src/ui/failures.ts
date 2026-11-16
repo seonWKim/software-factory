@@ -16,7 +16,7 @@ export const FAILURES_CAP = 500;
 
 /**
  * Plain words for the error codes the code base names (the worker, the broker, the store's reaper and the
- * policy constants). A code not listed here shows raw, with no description.
+ * policy constants). Read by the why text (why.ts); the Failures page has its own copy in the web catalog.
  */
 export const FAILURE_DESCRIPTIONS: Readonly<Record<string, string>> = {
   [RATE_LIMITED]: "The model provider's usage or rate limit was hit. The run waits for the limit to reset.",
@@ -95,7 +95,6 @@ export async function failures(c: FailuresCtx, params: URLSearchParams): Promise
     }
     groups.push({
       code: await c.text(code),
-      description: FAILURE_DESCRIPTIONS[code] ?? null,
       count: runs.length,
       last_seen: runs[0]?.finished_at ?? null,
       items: new Set(runs.map((r) => r.work_item_id)).size,

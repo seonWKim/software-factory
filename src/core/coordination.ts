@@ -1,4 +1,4 @@
-import { isCovered } from "./policy.js";
+import { isUnder, pathsOverlap } from "./policy.js";
 import type { DependencyKind, DependencyState, SharedPath, SourceRef } from "./types.js";
 
 /**
@@ -112,25 +112,9 @@ export function learnedWeight(conflicts: number): number {
   return Math.min(LEARNED_CAP, BASE_WEIGHT + LEARNED_STEP * conflicts);
 }
 
-/**
- * The paths two path lists share, by the same coverage rule as the scope gate (`isCovered`): equal paths, or a
- * path under a folder (ending in `/`) of the other list. The more specific of the two is the shared path.
- */
-export function sharedPaths(a: readonly string[], b: readonly string[]): string[] {
-  const out = new Set<string>();
-  for (const x of a) {
-    for (const y of b) {
-      if (x === y) out.add(x);
-      else if (isCovered(y, [x])) out.add(y);
-      else if (isCovered(x, [y])) out.add(x);
-    }
-  }
-  return [...out].sort();
-}
-
 /** Whether `path` is a hotspot, or a folder holding one, or under a hotspot folder. */
 function isHotspot(path: string, hotspots: readonly string[]): boolean {
-  return hotspots.some((h) => h === path || isCovered(h, [path]) || isCovered(path, [h]));
+  return hotspots.some((h) => isUnder(h, path) || isUnder(path, h));
 }
 
 /**
@@ -138,7 +122,7 @@ function isHotspot(path: string, hotspots: readonly string[]): boolean {
  * (e.g. `docs/`) is not: it covers other files too.
  */
 export function isMechanical(path: string, mechanical: readonly string[]): boolean {
-  return mechanical.some((m) => m === path || isCovered(path, [m]));
+  return mechanical.some((m) => isUnder(path, m));
 }
 
 /** Recorded conflicts on `path`; for a folder, the most on any file under it. */
@@ -171,7 +155,7 @@ export function coordinationCost(
   conflicts: ReadonlyMap<string, number>,
   s: CoordinationSettings,
 ): { shared: SharedPath[]; cost: number } {
-  const shared = sharedPaths(a, b).map((p) => pathWeight(p, conflicts, s));
+  const shared = pathsOverlap(a, b).map((p) => pathWeight(p, conflicts, s));
   // Weights are multiples of 0.25 by default; rounding keeps a sum like 2.4999999 from slipping under a threshold.
   const cost = Math.round(shared.reduce((sum, p) => sum + p.weight, 0) * 1000) / 1000;
   return { shared, cost };

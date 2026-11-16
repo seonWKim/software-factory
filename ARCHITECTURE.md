@@ -34,16 +34,16 @@ graph LR
   subgraph HOST["One host (solo) or many replicas (enterprise)"]
     SUP["Supervisor<br/>factory dev (Updater)"]
     subgraph CHILD["Child process (one per revision)"]
-      subgraph CR["Controller role (factory controller)"]
+      subgraph CR["Controller role"]
         INB["inbound"]
         CTL["controller<br/>router + units"]
         OUT["outbound"]
         BUSS["bus retry scheduler"]
       end
-      WP["Worker pool (factory worker)<br/>N slots (live setting workers)"]
+      WP["Worker pool<br/>N slots (live setting workers)"]
     end
     UI["UI server<br/>factory ui :4310<br/>(a supervisor child too)"]
-    CLI["CLI<br/>factory task / approve / merge /<br/>settings / resume / session / issue ..."]
+    CLI["CLI<br/>factory task / approve / merge /<br/>settings / resume / session ..."]
     MIG["npm run migrate"]
     REPO[("Factory repo (git)<br/>local base, item branches,<br/>staging refs, .factory/versions/rev")]
   end
@@ -480,7 +480,7 @@ Open proposals and pressure points, for the reviewer to weigh. The RFCs are the 
 | One process, four components | The controller role wires inbound, the controller, outbound and the retry scheduler into one process (`controller-role.ts`); outbound cannot be scaled or restarted apart from the decisions | A process role per component (`runtime/roles/<role>/` in RFC 0015 §6.1), so each scales and restarts on its own |
 | Runs off the bus | Workers claim from `worker_runs` through the store's `claimRun`; the worker has no outbox or inbox and publishes nothing; its intents wait for the controller's next outbox step to be announced; no topic is `competing`, so `requires` / `capabilities` are unused | A `runs.requests` competing topic with worker capabilities (PROGRESS.md "Next" 2) |
 | Units not pure yet | `unit-purity` ratchet: 24 entries in 10 units (`alarms`, `closes`, `coordination`, `improve`, `intake`, `local-merge`, `model-probe`, `phases`, `pr-events`, `sync`) still reach the store, sources, forge, sandbox, LLM or network themselves. A decision's writes are applied in order but not in one transaction, and `legacy-controller` writes its inbox row after the effect, so no controller message is exactly-once | Split the rest into load/decide; a store call that commits a decision's writes with the inbox row (M5 follow-up) |
-| Forge writes outside outbound | `forge-writes` ratchet: empty (sub-issue filing moved to outbound's `file_sub_issue`, 2026-11-09). `factory issue` (`src/issue-cmd.ts`) posts to GitHub REST directly through the client, which the ratchet's patterns do not see | Decide whether operator commands go through outbound |
+| Forge writes outside outbound | `forge-writes` ratchet: empty (sub-issue filing moved to outbound's `file_sub_issue`, 2026-11-09). No operator command writes to the forge today | Decide whether operator commands go through outbound |
 | Legacy seams | `dependency-direction` ratchet: 298 `component-imports-legacy` entries (controller 118, worker 81, cli 72, inbound 11, outbound 9, runtime 7): components still import `src/core/` helpers and `src/interfaces/` types. The legacy `FactoryStore` still writes component tables for them (the worker's thread entries and intents through `recordItemMessage` / `recordRunIntent`; outbound claims and finishes its thread intents through `claimDelivery` / `finishDelivery`), and the `github-issues` source writes `inbound_commands` and `controller_item_thread` during its poll | Move each helper into its component as its milestone rewrites it (RFC 0015 M2 re-plan); the list only shrinks |
 | Clock reads | `no-clock` ratchet: legacy files still read the clock or set timers, and five units read `clock.now()` (`run-results`, `coordination`, `model-probe`, `commands`, `improve`) | Time from ticks only |
 | Golden cases | `rule-of-two` ratchet: the `triage`, `implement` and `resolve` roles have no golden case; auto mode does not call `ruleOfTwoRefusal` yet (owner decision) | Golden cases per role; wire the Rule of Two into auto mode |

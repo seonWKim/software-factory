@@ -88,8 +88,8 @@ describe("each owner-check decision writes exactly one authz_audit row with no p
     await store.claimOwner(OWNER);
     const auth = new OwnerAuth(store);
     const item = { kind: "work_item" as const, id: "wi_1" };
-    expect(await auth.authorize({ user_id: OWNER, attributes: {} }, "approve_spec", item)).toEqual({ allow: true });
-    expect(await auth.authorize({ user_id: "local:dev" as UserId, attributes: {} }, "approve_spec", item)).toEqual({ allow: false, reason: NOT_OWNER });
+    expect(await auth.authorize({ user_id: OWNER }, "approve_spec", item)).toEqual({ allow: true });
+    expect(await auth.authorize({ user_id: "local:dev" as UserId }, "approve_spec", item)).toEqual({ allow: false, reason: NOT_OWNER });
     const rows = await store.db.all("SELECT passport_id, principal, action, resource, decision, reason FROM authz_audit ORDER BY seq");
     expect(rows).toEqual([
       { passport_id: NO_PASSPORT, principal: OWNER, action: "approve_spec", resource: '{"project":null,"item":"wi_1"}', decision: "allow", reason: "allowed" },

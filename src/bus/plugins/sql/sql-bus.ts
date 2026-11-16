@@ -18,7 +18,7 @@ import type { StartPosition } from "../../../shared/handler.js";
 import type { Tick } from "../../../shared/ticks/tick-generator.js";
 import type { Row, SqlDriver, SqlExecutor, SqlValue } from "../../../state/index.js";
 import type { BusPlugin, Claimed, ComponentBusOptions, EventBus, Inbox, NackError, Relay, Tx } from "../../index.js";
-import { P, TOPICS_TABLE, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
+import { P, insertOrSkip, topicTables, type TopicTables } from "./ddl.js";
 import { addMs } from "../../../shared/time.js";
 import { MESSAGE_COLUMNS, envelopeOf, readHorizon, retryDelayMs } from "./rows.js";
 import { SqlRetryScheduler } from "./sql-scheduler.js";
@@ -42,6 +42,11 @@ export interface SqlBusOptions extends ComponentBusOptions {
   readonly relayBatch?: number;
   /** How long published outbox rows are kept before `prune` removes them. */
   readonly outboxRetentionMs?: number;
+  /**
+   * The key TTL an inbox row gets when its message carries none (`idempotency_key_ttl_ms` null), raised to the topic's
+   * maximum redelivery; a dead-letter notice keeps none. Absent: such a row never expires (design 08-retention).
+   */
+  readonly inboxTtlMs?: number;
 }
 
 const DEFAULT_LEASE_MS = 60_000;
@@ -56,6 +61,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   private readonly leaseMs: number;
   private readonly relayBatch: number;
   private readonly outboxRetentionMs: number;
+  private readonly inboxTtlMs: number | null;
   private readonly capabilities: readonly string[];
   private readonly byName = new Map<string, TopicDescriptor>();
   private readonly byType = new Map<string, TopicDescriptor>();
@@ -71,6 +77,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     this.leaseMs = o.leaseMs ?? DEFAULT_LEASE_MS;
     this.relayBatch = o.relayBatch ?? DEFAULT_RELAY_BATCH;
     this.outboxRetentionMs = o.outboxRetentionMs ?? DEFAULT_OUTBOX_RETENTION_MS;
+    this.inboxTtlMs = o.inboxTtlMs ?? null;
     const capabilities = [...new Set(o.capabilities ?? [])];
     const bad = capabilities.filter((c) => !CAPABILITY.test(c));
     if (bad.length > 0) throw new Error(`capability ${bad.join(", ")} is not key=value`);
@@ -111,9 +118,8 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
   relay(tick: Tick): Promise<number> {
     return this.db.transaction(async (tx) => {
       const rows = await tx.all(
-        `SELECT seq, topic, envelope FROM ${this.outbox} WHERE published_at IS NULL ORDER BY seq LIMIT ${this.relayBatch}${this.db.dialect.forUpdate}`,
+        `SELECT seq, topic, envelope FROM ${this.outbox} WHERE published_at IS NULL ORDER BY seq LIMIT ${this.relayBatch}`,
       );
-      await this.lockTopics(tx, rows.map((r) => String(r.topic)));
       for (const r of rows) {
         await this.insertMessage(tx, this.topic(String(r.topic)), JSON.parse(String(r.envelope)) as Envelope, tick.now);
         await tx.run(`UPDATE ${this.outbox} SET published_at = ? WHERE seq = ?`, [tick.now, Number(r.seq)]);
@@ -122,24 +128,7 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
     });
   }
 
-  /**
-   * Takes the `bus_topics` rows of `names` until the transaction ends, before it inserts into their tables, so inserts
-   * into one topic commit in seq order and a cursor (`seq > last_seq`) never skips a lower seq. One statement in key
-   * order, so two writers never take two topics in opposite orders. SQLite has one writer and no row locks
-   * (`forUpdate` is empty), so there it returns at once.
-   */
-  private async lockTopics(tx: SqlExecutor, names: readonly string[]): Promise<void> {
-    const forUpdate = this.db.dialect.forUpdate;
-    const unique = [...new Set(names)];
-    if (forUpdate === "" || unique.length === 0) return;
-    const locked = await tx.all(
-      `SELECT name FROM ${TOPICS_TABLE} WHERE name IN (${unique.map(() => "?").join(", ")}) ORDER BY name${forUpdate}`,
-      unique,
-    );
-    if (locked.length !== unique.length) throw new Error(`${TOPICS_TABLE} lists not every topic of ${unique.join(", ")}: its tables were not created`);
-  }
-
-  /** Writes one message to its topic's table (the caller holds its lock); a message id already there is skipped. */
+  /** Writes one message to its topic's table; a message id already there is skipped. */
   private async insertMessage(tx: SqlExecutor, topic: TopicDescriptor, m: Envelope, publishedAt: string): Promise<void> {
     const key = topic.partitionKey(m);
     const values: SqlValue[] = [
@@ -169,13 +158,21 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
 
   /** Inserts `(consumer, idempotency_key)` with the caller's state change; a key seen before is a duplicate. */
   async claim(tx: Tx, consumer: string, m: Envelope): Promise<"new" | "duplicate"> {
-    const expires = m.idempotency_key_ttl_ms === null ? null : addMs(m.occurred_at, m.idempotency_key_ttl_ms);
+    const ttl = m.idempotency_key_ttl_ms ?? this.defaultTtl(m);
+    const expires = ttl === null ? null : addMs(m.occurred_at, ttl);
     const inserted = await insertOrSkip(
       tx,
       `${this.inbox} (consumer, idempotency_key, message_id, processed_at, expires_at) VALUES (?, ?, ?, ?, ?)`,
       [consumer, m.idempotency_key, m.id, await readHorizon(tx), expires],
     );
     return inserted ? "new" : "duplicate";
+  }
+
+  /** The inbox TTL of a message that carries none: `inboxTtlMs`, at least its topic's maximum redelivery; none for a dead letter. */
+  private defaultTtl(m: Envelope): number | null {
+    const topic = this.byType.get(m.type);
+    if (this.inboxTtlMs === null || m.type === DEAD_LETTERED || !topic) return null;
+    return Math.max(this.inboxTtlMs, maxRedeliveryMs(topic.backoff));
   }
 
   /** Removes inbox rows past their key's TTL and old published outbox rows (the component's `prune` tick). */
@@ -256,7 +253,6 @@ export class SqlEventBus implements EventBus, Inbox, Relay {
         );
         // The notice commits with the dead letter. A notice that is dead-lettered itself raises none (no loop).
         if (topic.name !== SYSTEM_ALERTS.name) {
-          await this.lockTopics(tx, [SYSTEM_ALERTS.name]);
           await this.insertMessage(tx, SYSTEM_ALERTS, deadLetterNotice(c, code, lastError, horizon), horizon);
         }
         return;

@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { enqueueImprove, listImproveRuns } from "../src/core/improver.js";
-import type { UserId, WorkerId } from "../src/core/types.js";
+import type { RunId, Timestamp, UserId, WorkerId } from "../src/core/types.js";
 import { OwnerAuth } from "../src/core/authorize.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { PatternEgressScanner } from "../src/impl/egress/pattern-egress-scanner.js";
@@ -30,7 +30,7 @@ async function setup(opts: { user?: UserId | null; wired?: boolean } = {}) {
   const token = newCsrfToken();
   const pauses: UiPauses = {
     principal: async () => (opts.user === undefined ? APPROVER : opts.user),
-    authorize: (user_id) => auth.authorize({ user_id, attributes: {} }, "approve_spec", { kind: "project", id: PROJECT.key }),
+    authorize: (user_id) => auth.authorize({ user_id }, "approve_spec", { kind: "project", id: PROJECT.key }),
     csrfToken: token,
     log: { info: (msg) => void logged.push(msg), warn: () => {}, error: () => {} },
   };
@@ -130,5 +130,46 @@ describe("Health panel: Run now", () => {
       expect(health(r.body), JSON.stringify(opts)).not.toContain("improve-run-now");
       expect(r.headers["content-security-policy"]).not.toContain(RUN_NOW_SCRIPT_HASH);
     }
+  });
+});
+
+describe("GET /api/v1/rules: improve (design 07-self-improvement, 2026-11-16)", () => {
+  const rules = async (d: PauseDeps) => parse(await respond(d, { method: "GET", url: "/api/v1/rules", host: HOST })).improve;
+  /** A GitHub-token-shaped string the pattern scanner flags as `github_token`. */
+  const SECRET = `ghp_${"c".repeat(36)}`;
+
+  it("no report yet gives null; Run now with its token only for a user who may approve", async () => {
+    const { d, token } = await setup();
+    expect(await rules(d)).toEqual({ report: null, run_now: true, csrf_token: token });
+    for (const opts of [{ user: REQUESTER }, { user: null }, { wired: false }]) {
+      const other = await setup(opts);
+      expect(await rules(other.d), JSON.stringify(opts)).toEqual({ report: null, run_now: false, csrf_token: null });
+    }
+  });
+
+  it("the latest report: window, counts and each group's draft and filing, every text through the Withholder", async () => {
+    const { d, store, clock } = await setup();
+    const { run } = await enqueueImprove({ store, clock }, PROJECT.key, "daily");
+    const g = { detail: "npm test exited #", run_ids: ["r1", "r2"] as RunId[], work_item_ids: [run.work_item_id] };
+    await store.recordImproveReport({
+      run_id: run.id, project: PROJECT.key, window_start: "2026-03-03T08:00:00.000Z" as Timestamp, window_end: "2026-03-04T08:00:00.000Z" as Timestamp,
+      groups: [
+        { ...g, error_code: "checks_failed", draft: { status: "drafted", cause: "a flaky port", fix: `rotate ${SECRET}`, touches: [], touches_prompts_or_gate: false },
+          filing: { status: "filed", ref: { type: "local", id: "local-1", link: "local:local-1" } } },
+        { ...g, error_code: "no_commits", draft: { status: "skipped", reason: "call_cap" }, filing: { status: "skipped", reason: "issue_cap" } },
+        { ...g, error_code: "agent_timed_out" },
+      ],
+      patterns: [{ ...g, error_code: "lonely", run_ids: ["r9" as RunId] }],
+    });
+    const { report } = await rules(d);
+    expect(report).toMatchObject({ window_start: "2026-03-03T08:00:00.000Z", window_end: "2026-03-04T08:00:00.000Z", runs: 6, patterns: 1 });
+    expect(report.groups.map((x: { error_code: string }) => x.error_code)).toEqual(["checks_failed", "no_commits", "agent_timed_out"]);
+    expect(report.groups[0]).toEqual({
+      error_code: "checks_failed", detail: "npm test exited #", runs: 2,
+      draft: { cause: "a flaky port", fix: "[withheld: github_token]", note: null }, filing: "filed: local:local-1",
+    });
+    expect(report.groups[1]).toMatchObject({ draft: { cause: null, fix: null, note: "skipped (call_cap)" }, filing: "skipped (issue_cap)" });
+    expect(report.groups[2]).toMatchObject({ draft: null, filing: null });
+    expect(JSON.stringify(report)).not.toContain(SECRET);
   });
 });

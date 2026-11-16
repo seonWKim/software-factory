@@ -41,7 +41,7 @@ It never removes `factory.config.json`, the secret file (unless `ARGS=--secrets`
 
 ## Before you start
 
-- Node.js 22.13 or newer, and git
+- Node.js 22 (the major CI runs; `.nvmrc`), 22.13 or newer, and git
 - Claude Code installed (`claude --version`)
 - A Claude Pro / Max / Team / Enterprise plan
 - With GitHub sync on: write access to the GitHub repository the factory works on (set in `factory.config.json`, default `seonWKim/software-factory`)
@@ -352,12 +352,11 @@ Use:
 | Check that the configured LLM provider answers (two small real calls) | `npm run factory -- llm-check` (or `doctor --llm`) |
 | GitHub token expired or about to | `npm run setup -- --rotate-github` |
 | Claude token replaced | `npm run setup -- --rotate-claude` |
-| After an update that adds a breaking migration or a data step (`npm run migrate -- --status` lists them; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. It drains only `factory dev`: stop any `factory controller` or `factory worker` you started yourself before you migrate, so no old process writes meanwhile. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
+| After an update that adds a breaking migration or a data step (`npm run migrate -- --status` lists them; back up first). Works while `factory dev` runs: the status page says the update waits for it; `migrate` drains the factory first, applies the steps, then the new revision starts. Set `"updater": { "auto_migrate": true }` in `factory.config.json` to have the factory do this by itself | `npm run migrate` |
 | See the pending breaking migrations and data steps | `npm run migrate -- --status` |
 | See what `npm run migrate` would run, changing nothing | `npm run migrate -- --dry-run` |
 | See work items / one item's history | `npm run factory -- status` / `npm run factory -- status <id>` |
 | Watch the factory in a browser (read-only) | `make ui` (or `npm run factory -- ui`), then open <http://127.0.0.1:4310/> (the app; the older page is at `/classic`) |
-| File or tidy an issue as the factory (the bot with `app`) | `npm run factory -- issue create --title <t> --body-file <f> [--label <l>]...`, `issue comment <n> --body-file <f>`, `issue edit <n> --body-file <f>`, `issue title <n> <text>`, `issue sub-issue <parent> <child>` |
 | Reset this machine and set up again | `make teardown`, then `make setup` (see [Start over](#start-over-pull--teardown--setup)) |
 | Suspect a leak | Revoke the token on GitHub first (or the App's key), then rotate |
 

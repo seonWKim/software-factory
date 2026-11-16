@@ -719,6 +719,19 @@ CREATE TABLE "controller_work_items" (
     UNIQUE (source_type, source_id)
   );
 
+CREATE TABLE ext_mcp_tool_lists (
+    id                TEXT PRIMARY KEY,
+    name              TEXT NOT NULL,
+    description_hash  TEXT NOT NULL,
+    status            TEXT NOT NULL,
+    tools             TEXT,
+    requested_by      TEXT NOT NULL,
+    claimed_by        TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    UNIQUE (name, description_hash)
+  );
+
 CREATE TABLE ext_packs_approvals (
     seq               INTEGER PRIMARY KEY AUTOINCREMENT,
     kind              TEXT NOT NULL,
@@ -734,24 +747,31 @@ CREATE TABLE ext_packs_entries (
     kind              TEXT NOT NULL,
     name              TEXT NOT NULL,
     description_hash  TEXT NOT NULL,
-    descriptor        TEXT NOT NULL,
+    module_hash       TEXT,
+    descriptor        TEXT,
     credential_name   TEXT,
+    source            TEXT,
+    source_file       TEXT,
+    source_key        TEXT,
     status            TEXT NOT NULL,
     added_by          TEXT NOT NULL,
     created_at        TEXT NOT NULL,
-    updated_at        TEXT NOT NULL, module_hash TEXT,
-    UNIQUE (kind, name, description_hash)
+    updated_at        TEXT NOT NULL,
+    UNIQUE (kind, name, description_hash),
+    UNIQUE (source, source_file, source_key)
   );
 
 CREATE TABLE ext_skill_refs (
     id          TEXT PRIMARY KEY,
     source      TEXT NOT NULL,
+    kind        TEXT NOT NULL,
     name        TEXT NOT NULL,
     path        TEXT NOT NULL,
     sha256      TEXT NOT NULL,
     added_by    TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    UNIQUE (source, path, sha256)
+    updated_at  TEXT NOT NULL,
+    UNIQUE (source, path)
   );
 
 CREATE TABLE identity_link_codes (
@@ -1034,6 +1054,31 @@ CREATE TABLE "legacy_dependency_edges" (
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL, source_updated_at TEXT,
     PRIMARY KEY (work_item_id, depends_on)
+  );
+
+CREATE TABLE "legacy_ext_packs_entries" (
+    id                TEXT PRIMARY KEY,
+    kind              TEXT NOT NULL,
+    name              TEXT NOT NULL,
+    description_hash  TEXT NOT NULL,
+    descriptor        TEXT NOT NULL,
+    credential_name   TEXT,
+    status            TEXT NOT NULL,
+    added_by          TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL, module_hash TEXT,
+    UNIQUE (kind, name, description_hash)
+  );
+
+CREATE TABLE "legacy_ext_skill_refs" (
+    id          TEXT PRIMARY KEY,
+    source      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    path        TEXT NOT NULL,
+    sha256      TEXT NOT NULL,
+    added_by    TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE (source, path, sha256)
   );
 
 CREATE TABLE "legacy_file_conflicts" (
@@ -1728,6 +1773,8 @@ CREATE INDEX controller_claim_decisions_work_item ON controller_claim_decisions 
 
 CREATE INDEX controller_dependency_edges_target ON controller_dependency_edges (depends_on);
 
+CREATE INDEX controller_handoffs_item ON controller_handoffs (work_item_id, at);
+
 CREATE INDEX controller_improve_reports_project ON controller_improve_reports (project_key, created_at);
 
 CREATE INDEX controller_inbox_expiry ON controller_inbox (expires_at);
@@ -1820,6 +1867,8 @@ CREATE INDEX inbound_raw_records_seq ON inbound_raw_records (source_type, seq);
 
 CREATE INDEX link_codes_live ON "legacy_link_codes" (used_at, expires_at);
 
+CREATE INDEX outbound_actions_item ON outbound_actions (work_item_id, action, seq);
+
 CREATE UNIQUE INDEX outbound_actions_key ON outbound_actions (intent_key);
 
 CREATE INDEX outbound_actions_pending ON outbound_actions (delivered_at, seq);
@@ -1831,6 +1880,8 @@ CREATE INDEX outbound_batch_intents_batch ON outbound_batch_intents (batch_id, s
 CREATE INDEX outbound_batches_destination ON outbound_batches (destination, seq);
 
 CREATE INDEX outbound_batches_flush ON outbound_batches (state, flush_at);
+
+CREATE INDEX outbound_deliveries_comment ON outbound_deliveries (comment_id);
 
 CREATE INDEX outbound_inbox_expiry ON outbound_inbox (expires_at);
 

@@ -3,7 +3,7 @@
 // docs/plugins/tacit-ledger.md) and a class's draft (the owner's sample, 2026-11-13); `<home>/private/tacit/rules.md`
 // holds the promoted rules, a promote adds one block to it and a retire removes one.
 
-import type { TacitApplied, TacitAppliedRule, TacitDraft, TacitEntryDetail, TacitPendingEntry, TacitPromotion, TacitRule } from "../../interfaces/tacit-ledger.js";
+import type { TacitApplied, TacitAppliedRule, TacitDraft, TacitEntryDetail, TacitEvidence, TacitPendingEntry, TacitPromotion, TacitRule } from "../../interfaces/tacit-ledger.js";
 
 /** `## proposals (open) 1`, `## proposals (held) 0`, `## tacit Pending 1`, `## tacit Held 0`: the state word. */
 const PENDING_HEADING = /^##\s+(?:proposals\s+\((open|held)\)|tacit\s+(pending|held))(?:\s|$)/i;
@@ -241,15 +241,29 @@ export function withoutRuleBlock(text: string, id: string): string | null {
 }
 
 /** `- 기본값: …`, `근본 원인: …`, `kind: …`: a detail field line, with or without the list dash; the value follows the colon. */
-const SHOW_FIELD = /^(?:-\s*)?(기본값|default|예외|exceptions?|범위|scope|근본\s*원인|root[ _]reason|kind|target)\s*[:：](.*)$/i;
-const SHOW_KEY: Record<string, "default" | "exceptions" | "scope" | "root_reason" | "kind" | "target"> = {
+const SHOW_FIELD =
+  /^(?:-\s*)?(기본값|default|예외|exceptions?|범위|scope|근본\s*원인|root[ _]reason|kind|target|설명|요약|description|summary|현재|current|before|변경|proposed|after)\s*[:：](.*)$/i;
+type ShowKey = "default" | "exceptions" | "scope" | "root_reason" | "kind" | "target" | "description" | "current" | "proposed";
+const SHOW_KEY: Record<string, ShowKey> = {
   기본값: "default", default: "default", 예외: "exceptions", exception: "exceptions", exceptions: "exceptions", 범위: "scope", scope: "scope",
   "근본 원인": "root_reason", 근본원인: "root_reason", "root reason": "root_reason", kind: "kind", target: "target",
+  설명: "description", 요약: "description", description: "description", summary: "description",
+  현재: "current", current: "current", before: "current", 변경: "proposed", proposed: "proposed", after: "proposed",
 };
 /** `## incidents 3`: the incidents' heading, with how many came up. */
 const INCIDENTS_HEADING = /^#{1,4}\s+incidents?\b(?:\s*\(?(\d+)\)?)?/i;
-/** `- wi_12 — "keep the flag"`: the owner's words after an incident row's dash. */
+/** `- T-12 2026-11-03 — "keep the flag"`: the owner's words after an incident row's dash. */
 const INCIDENT_WORDS = /\s—\s+(.+)$/;
+/** An incident row's day: `2026-11-03`, alone or in brackets. */
+const INCIDENT_DATE = /[([]?\b(\d{4}-\d{2}-\d{2})\b[)\]]?/;
+/** `  proposal: …`, `  근본 원인: …`, `  date: …`: an indented line under an incident row. */
+const INCIDENT_FIELD = /^(?:-\s*)?(제안|proposal|agent proposal|근본\s*원인|root[ _]reason|날짜|date)\s*[:：](.*)$/i;
+const INCIDENT_KEY: Record<string, "proposal" | "root_reason" | "date"> = {
+  제안: "proposal", proposal: "proposal", "agent proposal": "proposal", "근본 원인": "root_reason", 근본원인: "root_reason", "root reason": "root_reason",
+  날짜: "date", date: "date",
+};
+/** A field's key as SHOW_KEY and INCIDENT_KEY spell it: lower case, one space for runs of space or underscore. */
+const keyOf = (word: string): string => word.toLowerCase().replace(/[\s_]+/g, " ");
 
 /** `"words"` or `“words”` as `words`. */
 function unquote(s: string): string {
@@ -257,30 +271,62 @@ function unquote(s: string): string {
   return (m ? m[1]! : s).trim();
 }
 
+/** One incident row (after its `- `) as evidence: its reference and date before the dash, its quoted words after it. */
+function incidentRow(rest: string): { -readonly [K in keyof TacitEvidence]: TacitEvidence[K] } {
+  const words = INCIDENT_WORDS.exec(rest);
+  const quoted = words === null && /^["“]/.test(rest);
+  const head = words !== null ? rest.slice(0, words.index) : quoted ? "" : rest;
+  const date = INCIDENT_DATE.exec(head);
+  const ref = (date === null ? head : head.replace(date[0], " ")).replace(/\s+/g, " ").trim();
+  const quote = unquote(words?.[1] ?? (quoted ? rest : ""));
+  return { ...(ref !== "" ? { ref } : {}), ...(date !== null ? { date: date[1]! } : {}), ...(quote !== "" ? { quote } : {}) };
+}
+
+/** Newest first by date; an undated row after every dated one, each group in the ledger's order. */
+const newestFirst = (a: TacitEvidence, b: TacitEvidence): number => (b.date ?? "").localeCompare(a.date ?? "");
+
 /**
- * `evolve show <id>` as the entry's detail. Field lines (`기본값`, `예외`, `범위`, `근본 원인`, or `default`,
- * `exceptions`, `scope`, `root reason`, `kind`, `target`) give their value; an indented line under one continues it.
- * Each `- ` row under an `## incidents <n>` heading is one incident, its quoted words after the dash; the count is the
- * heading's number, else the rows. A field the text lacks is absent; an empty text is null.
+ * `evolve show <id>` as the entry's detail. Field lines (`기본값`, `예외`, `범위`, `근본 원인`, `설명`, `현재`, `변경`, or
+ * `default`, `exceptions`, `scope`, `root reason`, `kind`, `target`, `description`, `current`, `proposed`) give their
+ * value; an indented line under one continues it. Each `- ` row under an `## incidents <n>` heading is one incident:
+ * `- <ref> <YYYY-MM-DD>? — "<the owner's words>"`, and its indented `proposal:` / `제안:`, `root reason:` / `근본 원인:`
+ * and `date:` lines; the rows are `evidence`, newest first. The count is the heading's number, else the rows. A field
+ * the text lacks is absent; an empty text is null.
  */
 export function parseShow(id: string, text: string): TacitEntryDetail | null {
   if (text.trim() === "") return null;
-  const fields: Partial<Record<(typeof SHOW_KEY)[string], string>> = {};
-  let field: (typeof SHOW_KEY)[string] | null = null;
-  let incidents: { count: number | null; rows: number; quotes: string[] } | null = null;
+  const fields: Partial<Record<ShowKey, string>> = {};
+  let field: ShowKey | null = null;
+  let incidents: { count: number | null; rows: { -readonly [K in keyof TacitEvidence]: TacitEvidence[K] }[] } | null = null;
+  let row: { -readonly [K in keyof TacitEvidence]: TacitEvidence[K] } | null = null;
   let inIncidents = false;
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (line.startsWith("#")) {
       field = null;
+      row = null;
       const h = INCIDENTS_HEADING.exec(line);
       inIncidents = h !== null;
-      if (h) incidents = { count: h[1] === undefined ? null : Number(h[1]), rows: 0, quotes: [] };
+      if (h) incidents = { count: h[1] === undefined ? null : Number(h[1]), rows: [] };
+      continue;
+    }
+    // An indented field line under an incident row belongs to that incident.
+    const sub = row !== null && /^\s/.test(raw) ? INCIDENT_FIELD.exec(line) : null;
+    if (row !== null && sub) {
+      const key = INCIDENT_KEY[keyOf(sub[1]!)]!;
+      const value = sub[2]!.trim();
+      if (key === "date") {
+        const d = INCIDENT_DATE.exec(value)?.[1];
+        if (d !== undefined) row.date = d;
+      } else if (value !== "") {
+        row[key] = value;
+      }
       continue;
     }
     const f = SHOW_FIELD.exec(line);
     if (f) {
-      field = SHOW_KEY[f[1]!.toLowerCase().replace(/[\s_]+/g, " ")] ?? null;
+      row = null;
+      field = SHOW_KEY[keyOf(f[1]!)] ?? null;
       if (field) fields[field] = f[2]!.trim();
       continue;
     }
@@ -290,17 +336,15 @@ export function parseShow(id: string, text: string): TacitEntryDetail | null {
     }
     field = null;
     if (!inIncidents || incidents === null || !line.startsWith("- ")) continue;
-    // A row's words are what follows its dash, else the row itself when it is quoted; a bare reference has none.
-    incidents.rows++;
-    const rest = line.slice(2).trim();
-    const words = INCIDENT_WORDS.exec(rest)?.[1] ?? (/^["“]/.test(rest) ? rest : "");
-    if (unquote(words) !== "") incidents.quotes.push(unquote(words));
+    row = incidentRow(line.slice(2).trim());
+    incidents.rows.push(row);
   }
   const out: { -readonly [K in keyof TacitEntryDetail]: TacitEntryDetail[K] } = { id };
-  for (const [k, v] of Object.entries(fields) as [keyof typeof fields, string][]) if (v !== "") out[k] = v;
+  for (const [k, v] of Object.entries(fields) as [ShowKey, string][]) if (v !== "") out[k] = v;
   if (incidents) {
-    out.incidents = incidents.count ?? incidents.rows;
-    if (incidents.quotes.length > 0) out.quotes = incidents.quotes;
+    out.incidents = incidents.count ?? incidents.rows.length;
+    const evidence = incidents.rows.filter((r) => Object.keys(r).length > 0);
+    if (evidence.length > 0) out.evidence = [...evidence].sort(newestFirst);
   }
   return out;
 }

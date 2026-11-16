@@ -44,6 +44,12 @@ describe("prompts/triage.md", () => {
     expect(text).toContain("Which other files does a change to these paths require?");
   });
 
+  it("lists the existing tests that assert text or behaviour the spec changes (decided 2026-11-16)", () => {
+    const b = bullet(produce, "files_to_change");
+    expect(b).toMatch(/grep the tests for each string the change removes or changes/);
+    expect(b).toMatch(/list each matching test file in allowed_paths and files_to_change/);
+  });
+
   it("names the topic files as the documentation targets, not the index (issue #224)", () => {
     const b = bullet(produce, "files_to_change");
     expect(b).toMatch(/topic files the change touches/);
@@ -306,12 +312,13 @@ describe("on this repo", () => {
     expect(out).toMatch(/UI check, `npm run -s check:responsive`, runs at merge/);
   });
 
-  it("CLAUDE.md links to AGENTS.md, which holds the moved test-running rule", () => {
+  it("CLAUDE.md links to AGENTS.md; the implement prompt holds the test-running rule and AGENTS.md the install rule", () => {
     expect(readlinkSync(join(root, "CLAUDE.md"))).toBe("AGENTS.md");
-    const rule = readFileSync(join(root, "AGENTS.md"), "utf8").split("\n").find((l) => l.startsWith("- Tests:"));
-    expect(rule, "the test-running rule").toBeDefined();
-    expect(rule).toMatch(/through the project's scripts/);
-    expect(rule).toContain("never the test runner directly (`npx vitest ...`)");
-    expect(rule).toMatch(/never run `npm install`, `npm ci`, or `npx`/);
+    expect(prompt("implement")).toMatch(/any single test, through the project's own scripts, never the test runner directly/);
+    const agents = readFileSync(join(root, "AGENTS.md"), "utf8").split("\n");
+    expect(agents.some((l) => l.startsWith("- Tests:")), "no duplicate test-running bullet").toBe(false);
+    const rule = agents.find((l) => l.startsWith("- Dependencies:"));
+    expect(rule, "the install rule").toBeDefined();
+    expect(rule).toMatch(/never run `npm install`, `npm ci`, or `npx` for a package that is not installed/);
   });
 });

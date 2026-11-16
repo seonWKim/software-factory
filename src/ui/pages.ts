@@ -20,7 +20,7 @@ import { runNowButton } from "./improve-api.js";
 import type { PauseDeps } from "./pause-api.js";
 import { LIST_LIMIT, type ListRow, listRows } from "./list.js";
 import { mergesSection } from "./merge-digest.js";
-import { needOf } from "./need.js";
+import { needCtx, needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import type { UiTacit } from "./rules-api.js";
 import type { UiSettings } from "./settings-api.js";
@@ -271,7 +271,7 @@ async function itemsSection(c: Ctx, rows: ListRow[], f: Filters): Promise<string
     const it = r.item;
     let next = "";
     if (NEEDS_YOU.includes(r.level)) {
-      const need = await needOf({ store: c.d.store, text: async (v, o) => (await c.w.plain(v, o)).text }, it);
+      const need = await needOf(needCtx(c.d.store, c.w), it);
       next = `${esc(need.reason)} · ${link(need.url, need.label)}${need.command === null ? "" : ` · <code>${esc(need.command)}</code>`}`;
     }
     next = [next, await alarmNotes(c, r.alarms)].filter((x) => x !== "").join(" · ");

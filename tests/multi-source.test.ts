@@ -28,6 +28,8 @@ import {
   triageSpec,
 } from "./helpers/fakes.js";
 import { newStore, w1, PROJECT_KEY } from "./helpers/store.js";
+import { COMMAND_TABLE } from "../src/core/command-table.js";
+import { edgeRefusal } from "../src/impl/source/slack-commands.js";
 
 /** Slack identities: FakeAuth allows subject "1" only, whatever the provider. */
 const slackAlice: ExternalIdentity = { provider: "slack", subject: "1" };
@@ -357,5 +359,17 @@ describe("multi-source controller: startup checks", () => {
   it("one non-GitHub source alone is accepted", () => {
     expect(make([new FakeStreamSource()])).not.toThrow();
     expect(make([new FakeSlackPollSource()])).not.toThrow();
+  });
+});
+
+describe("Slack: a settings or mode write refused until #479 (design 05-sources)", () => {
+  it("names the dashboard's Settings page (/app/settings) first and the CLI command after", () => {
+    const writes = COMMAND_TABLE.filter((c) => c.edge);
+    expect(writes.map((c) => c.name)).toEqual(expect.arrayContaining(["settings set", "mode"]));
+    for (const c of writes) {
+      const text = edgeRefusal(c);
+      expect(text, c.name).toContain("Settings (/app/settings)");
+      expect(text.indexOf("/app/settings"), c.name).toBeLessThan(text.indexOf(`factory ${c.name}`));
+    }
   });
 });

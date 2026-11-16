@@ -1,6 +1,6 @@
 import { errorText } from "../core/log.js";
 import { LiveSettings } from "../core/settings.js";
-import type { Timestamp, WorkerId } from "../core/types.js";
+import type { Timestamp, UserId, WorkerId } from "../core/types.js";
 import { loadRunKinds, runKindProblems } from "./run-kind.js";
 import { Worker, type WorkerPlugins } from "./runner.js";
 import { KINDS, type WorkerDeps } from "./support.js";
@@ -27,6 +27,14 @@ export interface WorkerPoolDeps extends Omit<WorkerDeps, "id" | "index" | "activ
   ticks?: TickSource;
   /** The enabled pack checks (design §4, issue #494), loaded and checked at startup; absent: none. Each Worker runs them in its implement runs. */
   pack_checks?: WorkerPlugins["pack_checks"];
+  /** Refuses each imported MCP server a run is granted (design 11-plugin-import, owner answer 1); injected from compose. */
+  imported_mcp_refusals?: WorkerPlugins["imported_mcp_refusals"];
+  /**
+   * Lists the requested tools of approved imported MCP servers (design 11-plugin-import, phase 3), injected from
+   * compose so no worker file imports the server client. Started each tick unless the last one is still going;
+   * absent: never.
+   */
+  list_mcp_tools?: () => Promise<void>;
 }
 
 /** Why the live slot count changed, as the `worker slots` line gives it. "drain" is any stop of the pool. */
@@ -66,9 +74,11 @@ export class WorkerPool {
   private readonly pid: number;
   private readonly index_base: number;
   private reportFailing = false;
+  /** The MCP tool listing in flight, if any: one at a time per process. */
+  private listing: Promise<void> | null = null;
 
   constructor(private readonly d: WorkerPoolDeps) {
-    const { id_prefix, index_base = 0, engines, ticks, pack_checks, ...shared } = d;
+    const { id_prefix, index_base = 0, engines, ticks, pack_checks, imported_mcp_refusals, list_mcp_tools: _list, ...shared } = d;
     const awake = new CountedKeepAwake(d.awake);
     this.live = d.settings ?? LiveSettings.fixed(d.config, d.models);
     const settings = this.live;
@@ -78,7 +88,7 @@ export class WorkerPool {
       const index = index_base + i;
       const slotAwake = this.slotAwake[i]!;
       return new Worker({ ...shared, settings, id: `${id_prefix}:${index}` as WorkerId, index, awake: slotAwake, active: () => i < settings.workers() }, {
-        ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}),
+        ...(engines ? { engines } : {}), ...(ticks ? { ticks } : {}), ...(pack_checks ? { pack_checks } : {}), ...(imported_mcp_refusals ? { imported_mcp_refusals } : {}),
       });
     });
     // id_prefix is `<host>:<pid>`.
@@ -136,6 +146,7 @@ export class WorkerPool {
           slot.stop.abort();
         }
       });
+      this.listMcpTools();
       await this.report(want, started_at);
       await this.d.clock.sleep(this.live.config().tick_ms, signal).catch(() => undefined);
     }
@@ -147,7 +158,19 @@ export class WorkerPool {
       await Promise.race([Promise.all([...all]), this.d.clock.sleep(this.live.config().tick_ms, wake.signal).catch(() => undefined)]);
       wake.abort();
     }
+    await this.listing;
     await this.d.store.removeWorkerProcess(this.process_id).catch((err: unknown) => this.reportFailed(err));
+  }
+
+  /** Starts the injected MCP tool listing unless one is in flight; a failure is logged and never stops a slot. */
+  private listMcpTools(): void {
+    const list = this.d.list_mcp_tools;
+    if (!list || this.listing) return;
+    this.listing = list()
+      .catch((err: unknown) => this.d.log.warn("MCP tool listing failed", { error: errorText(err) }))
+      .finally(() => {
+        this.listing = null;
+      });
   }
 
   private logSlots(slots: number, from: number | null, reason: SlotChangeReason): void {
@@ -198,49 +221,49 @@ class SlotAwake implements KeepAwake {
 }
 
 /** `factory workers …` (design §5 Pause). */
-export type WorkersAction =
-  | { op: "pause"; count: number; by: string }
-  | { op: "pause_all"; by: string }
-  | { op: "resume" }
-  | { op: "status" };
+export type WorkersAction = { op: "pause"; count: number } | { op: "pause_all" } | { op: "resume" } | { op: "status" };
 
-/** The paused-by ID when `--by` is not given: the operator's command line, not a person's display name. */
-export const WORKERS_CLI_ACTOR = "system:cli";
+export const WORKERS_USAGE = `factory workers pause <n>     pause the n workers whose runs started most recently
+factory workers pause --all   pause every worker loop, idle ones included
+factory workers resume        clear every pause
+factory workers status        list the pauses in force`;
 
-export const WORKERS_USAGE = `factory workers pause <n> [--by <user id>]   pause the n workers whose runs started most recently
-factory workers pause --all [--by <user id>] pause every worker loop, idle ones included
-factory workers resume                       clear every pause
-factory workers status                       list the pauses in force`;
-
-/** Parses `workers` arguments; an error string for anything else. */
+/** Parses `workers` arguments; the usage for anything else (`--by` included: the actor is the CLI identity). */
 export function parseWorkersArgs(args: readonly string[]): WorkersAction | { error: string } {
-  const rest = [...args];
-  let by = WORKERS_CLI_ACTOR;
-  const at = rest.indexOf("--by");
-  if (at !== -1) {
-    const v = rest[at + 1];
-    if (!v || v.startsWith("--") || !/^[\w.:@-]{1,255}$/.test(v)) return { error: "--by needs a user or agent ID, e.g. local:<name>" };
-    by = v;
-    rest.splice(at, 2);
-  }
-  const [op, arg, extra] = rest;
-  if (op === "resume" && rest.length === 1) return { op: "resume" };
-  if ((op === "status" || op === undefined) && rest.length <= 1) return { op: "status" };
+  const [op, arg, extra] = args;
+  if (op === "resume" && args.length === 1) return { op: "resume" };
+  if ((op === "status" || op === undefined) && args.length <= 1) return { op: "status" };
   if (op === "pause" && extra === undefined) {
-    if (arg === "--all") return { op: "pause_all", by };
-    if (arg !== undefined && /^[1-9]\d{0,3}$/.test(arg)) return { op: "pause", count: Number(arg), by };
+    if (arg === "--all") return { op: "pause_all" };
+    if (arg !== undefined && /^[1-9]\d{0,3}$/.test(arg)) return { op: "pause", count: Number(arg) };
   }
   return { error: WORKERS_USAGE };
 }
 
+export interface WorkersDeps {
+  store: Pick<FactoryStore, "pauseWorkers" | "resumeWorkers" | "listWorkerPauses">;
+  /** Who pauses or resumes: the CLI identity's user, never a display name. */
+  actor: UserId;
+  /** The owner check (approve_spec) before a pause or resume writes: the refusal, or null. `status` only reads. */
+  refusal: () => Promise<string | null>;
+}
+
 /**
  * Applies a `workers` action to the store, the only place pauses live: running workers see it within one
- * tick_ms, on every host. Returns the lines to print.
+ * tick_ms, on every host. A refused pause or resume writes nothing. Returns the lines to print and the exit code.
  */
-export async function runWorkersCommand(store: FactoryStore, action: WorkersAction): Promise<string[]> {
+export async function runWorkersCommand(d: WorkersDeps, action: WorkersAction): Promise<{ code: number; lines: string[] }> {
+  if (action.op !== "status") {
+    const refused = await d.refusal();
+    if (refused !== null) return { code: 1, lines: [`not changed: ${refused}`] };
+  }
+  return { code: 0, lines: await applyWorkers(d, action) };
+}
+
+async function applyWorkers({ store, actor }: WorkersDeps, action: WorkersAction): Promise<string[]> {
   switch (action.op) {
     case "pause": {
-      const { paused } = await store.pauseWorkers({ count: action.count }, action.by);
+      const { paused } = await store.pauseWorkers({ count: action.count }, actor);
       const lines = paused.length
         ? [`paused ${paused.length} worker${paused.length === 1 ? "" : "s"}: ${paused.join(", ")}`]
         : ["paused no worker: no unpaused worker has a run in progress"];
@@ -249,7 +272,7 @@ export async function runWorkersCommand(store: FactoryStore, action: WorkersActi
       return lines;
     }
     case "pause_all": {
-      const { paused } = await store.pauseWorkers({ all: true }, action.by);
+      const { paused } = await store.pauseWorkers({ all: true }, actor);
       return [paused.length ? "paused every worker loop, idle ones included" : "every worker loop was already paused", PAUSE_NOTE];
     }
     case "resume": {

@@ -480,7 +480,7 @@ export interface Run {
    * cleared, `attempt` unchanged. Cleared by the claim that resumes it. Null otherwise, and on older rows.
    */
   paused_at: Timestamp | null;
-  /** The ID that asked for the pause (`--by`, default `system:cli`); set and cleared with paused_at. */
+  /** Who asked for the pause (the CLI identity's user of `factory workers pause`, or `system:network`); set and cleared with paused_at. */
   paused_by: string | null;
   /**
    * The agent session of the run's main step when it was paused, for a same-host resume (`--resume`). Kept

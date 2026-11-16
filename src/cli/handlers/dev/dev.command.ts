@@ -22,6 +22,6 @@ export default defineCommand({
       await app.close();
       return 0;
     }
-    return runDev(loaded, (signal) => runLoops(loaded, "dev", signal));
+    return runDev(loaded, (signal) => runLoops(loaded, signal));
   },
 });

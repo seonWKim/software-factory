@@ -20,7 +20,7 @@ One cell of a `Tr`; in a card it wraps and drops width classes.
 
 ## DataTable
 
-A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric? }`. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`; no rows shows `empty`.
+A `Table` built from `columns` and `rows`, on `Table`, `Tr` and `Td`. A column is `{ key, header, render?, numeric?, className? }` (`className` is added to the column's cells). With `dataKey` each row carries `data-key` set to its `rowKey`, for links and tests that find a row by it. States: number columns right-aligned in `tabular-nums` (header too); a column empty in every row left out; cards below `SM_PX`; no rows shows `empty`.
 
 ## Badge
 
@@ -124,7 +124,7 @@ A copy element: the shown text (`children`, else `value`) in `font-mono text-xs`
 
 ## IdDetails
 
-A readable name (`label`, e.g. "worker 3" or "you") as a details summary that opens to the full `id` in `font-mono text-xs` and a CopyButton. States: closed (the ID is not laid out), open. Pages use it so no raw ID shows in running text (design 09-dashboard-app).
+A readable name (`label`, e.g. "worker 3" or "you") as a plain button on the shared Tooltip: the full `id` shows in the tooltip on hover and keyboard focus (not in the DOM while hidden), and a click copies it and shows "Copied" in place of the label for 1.5 s, on the same line, so the row height never changes. No disclosure; with no clipboard a click does nothing. The copy logic is one helper shared with CopyButton. Pages use it so no raw ID shows in running text (design 09-dashboard-app).
 
 ## Markdown
 

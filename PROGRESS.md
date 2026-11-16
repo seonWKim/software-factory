@@ -190,18 +190,20 @@ outbound takes them (M7).
 ## Ratchet (known violations)
 
 The lists in `tests/architecture/known-violations/*.json` only shrink. Counts checked against those files on
-2026-11-09 (M11).
+2026-11-09 (M11); dependency-direction, forge-writes and table-ownership-sql on 2026-11-16. dependency-direction is a
+count budget per rule, not a list of entries: a new violating file goes over the budget whatever the JSON names.
+A hard rule expects no violations and reads no list.
 
 | Test | Count | Meaning |
 |---|---|---|
 | table-ownership | 1 | `schema_migrations` (SQLite baseline bookkeeping; goes when M11 squashes the baseline) |
-| table-ownership-sql | 0 | empty list |
-| forge-writes | 0 | empty list (sub-issue filing moved to outbound, 2026-11-09) |
+| table-ownership-sql | 0 | hard rule (no list; component SQL names only its own tables) |
+| forge-writes | 0 | hard rule (no list; sub-issue filing moved to outbound, 2026-11-09) |
 | file-budget | 15 files, 15,838 lines | src files over 600 lines (M11 set the limit back from the refactor's 60,000 and relisted them); the largest are `impl/store/sql/sql-factory-store.ts` (3017), `compose.ts` (1408), `interfaces/factory-store.ts` (1361), `run-results.unit.ts` (1175), `worker/runner.ts` (1130), `implement.run.ts` (1122) |
 | no-clock | 36 files, 44 reads | legacy clock reads and timers (`known-violations/no-clock.json`); M6 moved `core/worker.ts`'s one entry (the Clock import of WorkerDeps) to `core/worker-deps.ts` |
 | rule-of-two | 3 | roles with no golden case yet (triage, implement, resolve) |
 | unit-purity | 24 | controller units that reach I/O (store, auth, forge, sources, sandbox, LLM, network probe, restarts); a unit goes once its reads go through the kernel's reader and its writes through `commit`/`commitItem` (reaper, mirror, transitions also split into load/decide) |
-| dependency-direction | 298 | `component-imports-legacy` from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
+| dependency-direction | budget 314, count 314 | `component-imports-legacy` budget (`{"component-imports-legacy": 314}`; any other rule has no budget, so allows none); the imports come from `cli/` (commands still call compose/core; the guided setup), `controller/settings/floors.setting.ts`, and M4's strangler seams (`inbound/intake.ts`, `inbound/records.ts`, `controller/index.ts`, `runtime/roles/controller-role.ts`), and M5's units (119 entries exposed by the move: they import core helpers and legacy interface types); they go as legacy code goes |
 
 ## Decisions taken while implementing
 
@@ -411,8 +413,8 @@ good"):
   status (outages, git pushes, local merges) still retry forever. The alarm reuses the bus's `DeadLettered` notice
   (group `outbound`); its Needs you hint still names the bus's dead-letter table, which has no row for it.
 - Not done: re-recording a taken-over landing on the new host (the item's branch is in the first host's repo).
-- Finding 8: `npm run migrate` drains `factory dev` only; SET_UP.md now says to stop a hand-started `factory
-  controller` or `factory worker` first. No code.
+- Finding 8: `npm run migrate` drains `factory dev` only; SET_UP.md said to stop a hand-started controller or
+  worker process first (dropped when those commands were removed, 2026-11-16). No code.
 
 M7 sub-issue filing (2026-11-09, owner approved):
 

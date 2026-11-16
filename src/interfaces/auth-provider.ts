@@ -6,8 +6,6 @@ import type { UserId } from "../core/types.js";
 
 export interface Principal {
   user_id: UserId;
-  /** From the identity provider; agents cannot edit these. */
-  attributes: Readonly<Record<string, string>>;
 }
 
 export interface ExternalIdentity {

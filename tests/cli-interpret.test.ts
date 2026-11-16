@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { loadCommands, resolveCommand } from "../src/cli/index.js";
+import { describe, expect, it, vi } from "vitest";
+import { TYPO_MAX_EDITS, TYPO_MIN_LENGTH, editDistance, loadCommands, mistypedName, resolveCommand } from "../src/cli/index.js";
 import { defineCommand } from "../src/cli/command.js";
 import { SENTENCE_FORM } from "../src/core/command-table.js";
 import { type SentenceDeps, parseSentence, runSentence } from "../src/core/local-cli.js";
@@ -109,5 +109,66 @@ describe("src/main.ts: which command runs (resolveCommand)", () => {
     expect(resolveCommand(commands, SENTENCE, "approve the spec for wi_1", [])).toMatchObject({ name: SENTENCE_FORM, args: ["approve the spec for wi_1"] });
     expect(resolveCommand(commands, SENTENCE, "--help", [])).toBeNull();
     expect(resolveCommand(commands, SENTENCE, undefined, [])).toBeNull();
+  });
+});
+
+describe("src/main.ts: a mistyped command name (design 04-gate-commands)", () => {
+  /** The sentence form over a counting fake model, as main.ts builds it but with the store and identity of the test. */
+  async function sentenceWith(llm: ScriptedLLM) {
+    const { store } = await newStore();
+    return defineCommand({
+      names: [SENTENCE_FORM],
+      usage: "",
+      run: async (args) => {
+        const parsed = parseSentence(args);
+        if ("error" in parsed) return 1;
+        const d: SentenceDeps = { store, llm, scanner: cleanScanner, identity: { user: ME, from: "git user.email" }, refusal: async () => null, newId: () => "0f-3a-b2" };
+        return (await runSentence(d, parsed.text)).code;
+      },
+    });
+  }
+
+  it("a first word within two edits of a command name prints `unknown command X, did you mean Y?`, exits 1 and calls no model", async () => {
+    const commands = await loadCommands();
+    const llm = new ScriptedLLM({ kind: "chat", entries: [], text: "unused" });
+    const sentence = await sentenceWith(llm);
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, "error").mockImplementation((l: string) => void errors.push(l));
+    try {
+      for (const [typed, name] of [["stauts", "status"], ["resmue", "resume"], ["wrokers", "workers"], ["settngs", "settings"]] as const) {
+        const found = resolveCommand(commands, sentence, typed, ["wi_1", "now"])!;
+        expect(found.command).not.toBe(sentence);
+        expect(await found.command.run(found.args, { name: found.name, usage: "", load: () => Promise.reject(new Error("no config")) })).toBe(1);
+        expect(errors.at(-1)).toBe(`unknown command ${typed}, did you mean ${name}?`);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect(llm.calls).toBe(0);
+  });
+
+  it("a word shorter than the minimum, or further than two edits from every name, still reaches the sentence form", async () => {
+    const commands = await loadCommands();
+    const llm = new ScriptedLLM({ kind: "chat", entries: [], text: "Both are waiting." });
+    const sentence = await sentenceWith(llm);
+    expect(TYPO_MIN_LENGTH).toBe(4);
+    expect(TYPO_MAX_EDITS).toBe(2);
+    // "uis" is one edit from `ui` but has three letters; "please" and "what" are near no command name.
+    for (const word of ["uis", "please", "what"]) {
+      expect(mistypedName(commands.keys(), word), word).toBeNull();
+      const found = resolveCommand(commands, sentence, word, ["is", "waiting"])!;
+      expect(found).toMatchObject({ name: SENTENCE_FORM, args: [word, "is", "waiting"] });
+      expect(await found.command.run(found.args, { name: found.name, usage: "", load: () => Promise.reject(new Error("no config")) })).toBe(0);
+    }
+    expect(llm.calls).toBe(3);
+  });
+
+  it("edit distance counts insertions, deletions, substitutions and swaps of two neighbouring letters", () => {
+    expect(editDistance("status", "status")).toBe(0);
+    expect(editDistance("stauts", "status")).toBe(1);
+    expect(editDistance("stauts", "stats")).toBe(1);
+    expect(editDistance("resum", "resume")).toBe(1);
+    expect(editDistance("", "abc")).toBe(3);
+    expect(editDistance("kitten", "sitting")).toBe(3);
   });
 });

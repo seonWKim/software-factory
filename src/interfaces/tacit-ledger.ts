@@ -46,13 +46,29 @@ export interface TacitPendingEntry {
   readonly target?: string;
 }
 
+/** One incident row of `evolve show`: what it links to and what it holds; a part the row lacks is absent. */
+export interface TacitEvidence {
+  /** The linked ID (`T-…`, `L-…`, `E-…`, or the ledger's own reference). */
+  readonly ref?: string;
+  /** The day it happened (YYYY-MM-DD). */
+  readonly date?: string;
+  /** What the agent proposed. */
+  readonly proposal?: string;
+  /** The owner's own words. */
+  readonly quote?: string;
+  /** This incident's root reason. */
+  readonly root_reason?: string;
+}
+
 /**
  * One entry's detail, as `evolve show <id>` gives it; a field the ledger did not print is absent. What it would
- * change (a class's draft rule, a proposal's kind and target), why (the incidents, the owner's words, the root reason)
- * and where it applies (the scope).
+ * change (a class's draft rule, a proposal's kind and target, the lines it changes), why (the incidents, the root
+ * reason) and where it applies (the scope).
  */
 export interface TacitEntryDetail {
   readonly id: string;
+  /** One line on what the entry is. */
+  readonly description?: string;
   /** A class's draft rule (`기본값`). */
   readonly default?: string;
   /** When the draft rule does not hold (`예외`). */
@@ -60,10 +76,13 @@ export interface TacitEntryDetail {
   /** A proposal's kind and the asset it changes. */
   readonly kind?: string;
   readonly target?: string;
+  /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
+  readonly current?: string;
+  readonly proposed?: string;
   /** How many times it came up. */
   readonly incidents?: number;
-  /** The owner's own words, one per incident that has them. */
-  readonly quotes?: readonly string[];
+  /** The incident rows that hold anything beyond a bare reference, newest first (undated rows last, in the ledger's order). */
+  readonly evidence?: readonly TacitEvidence[];
   /** The reason the incidents share. */
   readonly root_reason?: string;
   /** Where it applies (`범위`). */

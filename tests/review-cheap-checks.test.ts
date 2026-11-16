@@ -322,4 +322,11 @@ describe("prompts/review.md", () => {
   it("puts notes that are not findings in the summary", () => {
     expect(text).toMatch(/a note that is not one \(for example "needs a human merge", "not a defect"[^)]*\) goes in `summary`, not in findings/);
   });
+
+  it("checks a change under web/ against design-system/patterns.md, only when the project has it", () => {
+    expect(text).toMatch(/For a change under `web\/`, check the diff against\s+`design-system\/patterns\.md` and `design-system\/components\.md`/);
+    expect(text).toMatch(/only when the project has `design-system\/patterns\.md` and the diff changes its UI/);
+    expect(text).toMatch(/names the rule by its number/);
+    expect(text).toMatch(/`check:responsive` screenshots as evidence when they exist; when they do not, list\s+them under `unverified`/);
+  });
 });

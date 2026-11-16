@@ -139,12 +139,14 @@ describe("system actions: GitHub token expiry from the last health run", () => {
 });
 
 describe("system actions: claim and worker pauses", () => {
-  it("a claim pause in effect is listed with its end time and its resume command", async () => {
+  it("a claim pause in effect is listed with its end time, the dashboard's Resume now first and its CLI command after", async () => {
     const { overview, store, clock } = await setup();
     const until = new Date(clock.now().getTime() + 3_600_000).toISOString() as Timestamp;
     await store.pauseClaims(until, "rate_limit");
     const o = await overview();
-    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command: "factory resume rate_limit", until });
+    const command = "Resume now on the Status page (/app/), or factory resume rate_limit";
+    expect(o.system_actions).toContainEqual({ code: "claim_pause", text: `Claim pause rate_limit in effect, until ${until}`, command, until });
+    expect(command.indexOf("Resume now")).toBeLessThan(command.indexOf("factory resume"));
     expect(o.needs_you).toBe(1);
   });
 
@@ -177,7 +179,7 @@ describe("system actions: claim deadlock", () => {
 });
 
 describe("system actions: open alarms", () => {
-  it("each open alarm is listed, but all of them count once in needs_you: the Floor shows them as one line", async () => {
+  it("each open alarm is listed and is its own Needs-you row: two alarms and a worker pause add 3 to needs_you", async () => {
     const { overview, store } = await setup();
     await store.recordAlert({ pattern: "repeated_error", pattern_key: "repeated_error:a", error_code: "checks_failed", count: 4, detail: null }, ALERT_DEDUPE_MS);
     await store.recordAlert({ pattern: "zero_tokens", pattern_key: "zero_tokens", error_code: "zero_tokens", count: 3, detail: null }, ALERT_DEDUPE_MS);
@@ -185,7 +187,74 @@ describe("system actions: open alarms", () => {
     const o = await overview();
     expect(codes(o).filter((c) => c === "alarm")).toHaveLength(2);
     expect(codes(o)).toContain("worker_pause");
+    expect(o.needs_you).toBe(3);
+  });
+});
+
+describe("system actions: the auto-stop alarm", () => {
+  it("names the dashboard's Settings page and Turn auto back on first, `factory mode auto` after", async () => {
+    const { overview, store } = await setup();
+    await store.recordAlert({ pattern: "auto_stopped", pattern_key: "auto_stopped", error_code: "failure_alarm", count: 1, detail: null }, ALERT_DEDUPE_MS);
+    const command = (await overview()).system_actions.find((a) => a.code === "alarm")!.command;
+    expect(command).toContain("Turn auto back on in Settings (/app/settings)");
+    expect(command.indexOf("/app/settings")).toBeLessThan(command.indexOf("factory mode auto"));
+  });
+});
+
+describe("needs_you: the number of Needs-you rows (design 09-status-page)", () => {
+  /** The levels the Tasks page's Needs you section lists (web/src/views/common.tsx `needsYou`): never stuck. */
+  const WAITING = ["ready_to_merge", "needs_approval", "needs_you", "needs_triage"];
+
+  /** An item moved to `patch` (a block on a person or the budget, or nothing). */
+  async function item(store: FactoryStore, n: number, patch: Parameters<FactoryStore["transition"]>[0]["patch"]) {
+    const { item } = await store.createWorkItem({ ...issue(n), title: `Item ${n}` }, system);
+    await store.transition({ id: item.id, expected_version: item.version, patch, actor: system, reason: "seed" });
+  }
+  const alarm = (store: FactoryStore, code: string) =>
+    store.recordAlert({ pattern: "repeated_error", pattern_key: `repeated_error:${code}`, error_code: code, count: 4, detail: null }, ALERT_DEDUPE_MS);
+
+  /** The overview, checked against the rows the section lists for the same reads: the waiting items, then one per system action. */
+  async function counted(s: Awaited<ReturnType<typeof setup>>) {
+    const o = await s.overview();
+    const r = await respond(s.d, { method: "GET", url: "/api/v1/items", host: "127.0.0.1:4310" });
+    const levels = (JSON.parse(r.body) as { items: { level: string }[] }).items.map((i) => i.level);
+    expect(o.needs_you).toBe(levels.filter((l) => WAITING.includes(l)).length + o.system_actions.length);
+    return { o, levels };
+  }
+
+  it("one waiting item and one open alarm give 2", async () => {
+    const s = await setup();
+    await item(s.store, 1, { stage: "REVIEW", blocked_on: "human", blocked_reason: "merge_pending" });
+    await alarm(s.store, "checks_failed");
+    expect((await counted(s)).o.needs_you).toBe(2);
+  });
+
+  it("waiting items only: each item blocked on a person or the budget is one row; a stuck item (nothing moves it) is none", async () => {
+    const s = await setup();
+    await item(s.store, 1, { stage: "READY", blocked_on: "human", blocked_reason: "spec_pending" });
+    await item(s.store, 2, { stage: "RUNNING", blocked_on: "budget", blocked_reason: "budget_checkpoint" });
+    await item(s.store, 3, { stage: "RUNNING" });
+    const { o, levels } = await counted(s);
+    expect(levels).toContain("stuck");
     expect(o.needs_you).toBe(2);
+  });
+
+  it("alarms only: two open alarms are two rows", async () => {
+    const s = await setup();
+    await alarm(s.store, "checks_failed");
+    await alarm(s.store, "agent_error");
+    expect((await counted(s)).o.needs_you).toBe(2);
+  });
+
+  it("non-alarm system actions: each counts once, and an alarm once more", async () => {
+    const s = await setup({ version: { applied: 3, latest: 8 } });
+    await s.store.pauseWorkers({ all: true }, "local:me");
+    await s.store.pauseWorkers({ all: true }, "local:me");
+    const before = await counted(s);
+    expect(codes(before.o)).toEqual(["migration_pending", "worker_pause"]);
+    expect(before.o.needs_you).toBe(2);
+    await alarm(s.store, "checks_failed");
+    expect((await counted(s)).o.needs_you).toBe(3);
   });
 });
 

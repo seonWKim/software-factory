@@ -11,7 +11,8 @@ import { alarmText, alarmsFor, openAlarms } from "./alarms.js";
 import { type FilterRow, type Filters, runKindOf, searchKeys } from "./filters.js";
 import { esc } from "./html.js";
 import { type PriorityInput, rank } from "./priority.js";
-import { type ClaimPauses, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
+import { heldFailureOf, needCtx } from "./need.js";
+import { type ClaimPauses, type HeldFailure, type Why, type WhyInput, deadlocked, heldBy, refsOf, whyWaiting, withAlarms } from "./why.js";
 import type { Withholder } from "./withhold.js";
 
 /** Most rows any list or section reads from the store. */
@@ -89,7 +90,7 @@ export async function listRows(c: ListCtx, f: Filters): Promise<ListRow[]> {
       conflicts: conflictCounts(runs, changes),
       decision,
       alarms,
-      why: whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, titles), pauses, waiting, c.now, alarms),
+      why: whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, titles), pauses, waiting, c.now, alarms, await heldFailureOf(needCtx(c.store, c.w), it, runs)),
     });
   }
 
@@ -216,7 +217,7 @@ export function withTitle(decision: ClaimDecision | null, titles: ReadonlyMap<Wo
 
 /**
  * whyWaiting's input from the stored item and run; `not_before` counts only while it is after `now`. The open
- * alarms that affect the item are named after the sentence.
+ * alarms that affect the item are named after the sentence; `failure` is a held item's last failed run (heldFailureOf).
  */
 export function whyOf(
   it: WorkItem,
@@ -227,6 +228,7 @@ export function whyOf(
   phases: { waiting_on: number; waiting_on_number: number | null },
   now: Date,
   alarms: readonly Alert[],
+  failure: HeldFailure | null = null,
 ): Why {
   const active = run && (run.status === "queued" || run.status === "running") ? run : null;
   const notBefore = active?.status === "queued" && active.not_before && Date.parse(active.not_before) > now.getTime() ? active.not_before : null;
@@ -237,6 +239,7 @@ export function whyOf(
     pauses,
     not_before: notBefore,
     phases,
+    failure,
   }), alarms.map(alarmText));
 }
 

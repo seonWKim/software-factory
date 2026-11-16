@@ -19,7 +19,7 @@ import { type DataCtx, type DataResult, dataAutonomy, dataTable, dataTables } fr
 import { applyFilters, facetCounts, parseFilters } from "./filters.js";
 import { LIST_LIMIT, activeRuns, closedFacetRows, latestDecision, holderTitles, listRows, readClaimPauses, readPhases, waitingOn, whyOf, withTitle } from "./list.js";
 import { runTokens } from "./pages.js";
-import { needOf } from "./need.js";
+import { heldFailureOf, needCtx, needOf } from "./need.js";
 import { NEEDS_YOU } from "./priority.js";
 import { type PauseDeps, readPauses } from "./pause-api.js";
 import { failures } from "./failures.js";
@@ -30,7 +30,8 @@ import { readCapabilities } from "./capabilities-api.js";
 import { readStanding } from "./standing-api.js";
 import { inProject, projectFilterRefusal } from "./tasks-api.js";
 import { itemPrefix, runParts, transcript } from "./transcript.js";
-import { type SystemDeps, oneLine, parseRevision, systemActions } from "./system-actions.js";
+import { type SystemDeps, parseRevision, systemActions } from "./system-actions.js";
+import { needsYouCount } from "./needs-you.js";
 import { latestWhyAnchor, threadRows } from "./thread.js";
 import type { Why } from "./why.js";
 import { displayName } from "./names.js";
@@ -195,7 +196,7 @@ class ApiCtx {
    */
   async need(it: WorkItem, check: { state: "mergeable" | "checking" | "conflicts"; conflicts: string[] } | null) {
     const n = await needOf(
-      { store: this.d.store, text: async (v, o) => (await this.w.plain(v, o)).text },
+      needCtx(this.d.store, this.w),
       it,
       check && { state: check.state, conflicts: check.conflicts.length },
     );
@@ -210,13 +211,13 @@ class ApiCtx {
     const decision = await latestDecision(s, it.id, run);
     const waiting = waitingOn(it, await readPhases(s, [it]));
     const alarms = await itemAlarms(s, await openAlarms(s, this.now), it);
-    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(s, [decision])), await readClaimPauses(s), waiting, this.now, alarms), it);
+    return this.why(whyOf(it, run, position.get(run?.id ?? "") ?? null, withTitle(decision, await holderTitles(s, [decision])), await readClaimPauses(s), waiting, this.now, alarms, await heldFailureOf(needCtx(s, this.w), it)), it);
   }
 }
 
 /**
  * /api/v1/health: the HealthMonitor's report (exactly what /api/health returns) plus `sleeps`, the newest host
- * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a MySQL
+ * sleeps (design §5 Host sleep, §9). The sleeps read is a report, never a gate: when it fails (e.g. a
  * database without step 0025) the list is empty and the checks still answer.
  */
 async function health(c: ApiCtx) {
@@ -258,7 +259,6 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
   const actions = await systemActions({ store: s, factory: status, deps: c.d, now: c.now, dashboardRev: parseRevision(params.get("rev")) });
   const system_actions = [];
   for (const a of actions) system_actions.push({ ...a, text: (await c.text(a.text))! });
-  const token = c.d.lastChecks?.tokenDays() ?? null;
   return {
     as_of: c.now.toISOString(),
     /** The revision this UI server's build was made from (its dist/ stamp); the app compares it with the one built into it. */
@@ -266,10 +266,10 @@ async function overview(c: ApiCtx, params: URLSearchParams) {
     plugins: c.d.plugins ?? { issues: null },
     ...(factory === undefined ? {} : { factory }),
     stages,
-    needs_you: (await s.countWorkItemsWhere({ blocked_on: "human", exclude_closed: true })) + (await s.countWorkItemsWhere({ blocked_on: "budget", exclude_closed: true })) + oneLine(system_actions), // never Blocked by another task
+    needs_you: await needsYouCount(s, system_actions), // the Needs-you rows: the waiting items, one per system action
     system_actions,
     /** Days left on the GitHub token from this process's last health run; "unknown" before one; null: no expiry check. */
-    github_token_days: token,
+    github_token_days: c.d.lastChecks?.tokenDays() ?? null,
     /** The GitHub budget the controller stored after its last poll (remaining, reset, this process's count, wait reason); null: none stored. */
     github_budget: await readGitHubBudget(s, c.now),
     running: running.length,
@@ -567,7 +567,7 @@ async function queue(c: ApiCtx) {
       // The item's own active run decides its sentence (a running run wins), as on Items and the item page.
       const run = active.get(it.id) ?? r;
       const decision = await latestDecision(s, it.id, run);
-      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, withTitle(decision, await holderTitles(s, [decision])), pauses, waitingOn(it, phases), c.now, await itemAlarms(s, open, it)), it);
+      why = await c.why(whyOf(it, run, position.get(run.id) ?? null, withTitle(decision, await holderTitles(s, [decision])), pauses, waitingOn(it, phases), c.now, await itemAlarms(s, open, it), await heldFailureOf(needCtx(s, c.w), it)), it);
     }
     out.push({
       position: i + 1,
@@ -587,7 +587,7 @@ async function queue(c: ApiCtx) {
  * `workers`: each current lease owner of a running run once, by id, with how many runs it holds. `processes`:
  * one entry per live worker process (its store row is at most lease_ms old), idle ones included, with its slot
  * counts and the running runs its worker loops hold (lease owner `<process_id>:<n>`). The processes read is a
- * report, never a gate: when it fails (e.g. a MySQL database without the worker_processes step) the endpoint
+ * report, never a gate: when it fails (e.g. a database without the worker_processes step) the endpoint
  * still answers, with `processes: []` and the error text in `processes_error`.
  */
 async function workers(c: ApiCtx) {

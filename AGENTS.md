@@ -4,7 +4,7 @@ A software factory: a team of agents that takes work items (GitHub issues, Slack
 
 Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 
-## Read first
+## Where things are
 
 | File | What |
 |---|---|
@@ -18,7 +18,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 | `docs/slack-setup.md` | One-time Slack app setup (`scripts/slack-app.sh` create, tokens, check) |
 | `docs/plugins.md` | Index of every interface's named plugins; each interface's topic file in `docs/plugins/` gives the config to enable each, the secrets it needs, how to switch back; guards cannot be disabled |
 
-`docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic files your change touches (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`). Each topic file states its current decision first, with older decisions under "History" at the bottom.
+`docs/design.md` and `docs/plugins.md` are indexes. Read the index first, then open only the topic files your change touches (`docs/design/<topic>.md`, `docs/plugins/<interface>.md`). Each topic file states its current decision first, with older decisions under "History" at the bottom, or in `docs/design/history/<topic>.md` that it links there.
 
 ## Principles every change follows
 
@@ -37,7 +37,7 @@ Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 - Store user and agent IDs, never display names.
 - No in-process state that another worker would need. Every state transition is a conditional update in the store; every handler must be safe to run twice.
 - New states go into `blocked_on` / `blocked_reason` / `close_reason` before anyone adds a new `stage`.
-- Design changes: update the topic file in `docs/design/` that holds the decision (e.g. `docs/design/05-restarts.md`) in the same change: the current decision first, the replaced one as a line under its History heading, and say which decision changed. Never put decision text or history in the index `docs/design.md`; add a line there only for a new topic file.
+- Design changes: update the topic file in `docs/design/` that holds the decision (e.g. `docs/design/05-restarts.md`) in the same change: the current decision first, the replaced one as a line in `docs/design/history/<topic>.md`, which the topic file's History heading links to, and say which decision changed. Never put decision text or history in the index `docs/design.md`; add a line there only for a new topic file.
 - Keep the code maintainable as it grows: leave every change at least as small and clear as you found it.
   - Delete what you replace: no dead code, unused exports, commented-out blocks or old paths kept "just in case".
   - Reuse before adding: search for an existing helper, type or plugin before writing a new one.
@@ -56,5 +56,5 @@ A change to the dashboard (`web/`) reads `design-system/components.md` and `desi
 
 The factory's prompts in `prompts/` are generic, for any project. These are this repo's own rules on top of them.
 
-- Tests: run them through the project's scripts, also for a single file (`npm test -- tests/x.test.ts`), never the test runner directly (`npx vitest ...`): the scripts carry flags the sandbox needs. Dependencies are already installed and the sandbox has no network: never run `npm install`, `npm ci`, or `npx` for a package that is not installed.
+- Dependencies: Dependencies are already installed and the sandbox has no network: never run `npm install`, `npm ci`, or `npx` for a package that is not installed.
 - Merge conflicts in `docs/design.md`, `docs/design/*.md`, `docs/plugins/*.md`, `docs/settings.md` and `SET_UP.md`: keep both sides' sections. Each side's new or changed section stays; never drop either side's section to keep the other's. When both sides added a current decision at the top of a topic file, order the two newest first by their decision date. When both sides edited the same decision paragraph, combine the two edits into one decision and keep both sides' History lines. If both sides edited any other paragraph, combine the two edits.

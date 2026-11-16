@@ -6,8 +6,9 @@ import type { FactoryStore } from "../interfaces/factory-store.js";
  * The one owner check (design 08-permissions, One owner; phase A of issue #575). Every command path (the controller
  * units, the command inbox, the local CLI, the dashboard commands and approve_tool) reaches `authorizeOwner` through
  * `OwnerAuth`: the caller's identity, resolved to a factory user, must be the store's owner (identity_owner, issue
- * #577). Anyone else is refused as `not_owner`. Each decision, allowed or refused, writes one authz_audit row with
- * passport `none`. Service principals (the controller's auto mode, the worker's and outbound's tool calls) keep
+ * #577). Anyone else is refused as `not_owner`. Each command decision, allowed or refused, writes one authz_audit row
+ * with passport `none`; a read-only check (`check`: a page asking whether to show a command) writes one only when it
+ * refuses (design 08-permissions). Service principals (the controller's auto mode, the worker's and outbound's tool calls) keep
  * their passport checks and never reach it.
  */
 
@@ -65,12 +66,22 @@ export class OwnerAuth implements AuthProvider {
   constructor(private readonly store: OwnerStore) {}
 
   async resolve(identity: ExternalIdentity): Promise<Principal> {
-    return { user_id: await factoryUserOf(this.store, identity), attributes: {} };
+    return { user_id: await factoryUserOf(this.store, identity) };
   }
 
   /** The resource does not matter: the owner may act on every one, anyone else on none. */
-  async authorize(principal: Principal, action: AuthAction, resource?: AuthResource): Promise<AuthDecision> {
+  authorize(principal: Principal, action: AuthAction, resource?: AuthResource): Promise<AuthDecision> {
+    return this.decide(principal, action, resource, true);
+  }
+
+  /** A read-only check (a page load asking whether to offer a command): decided as `authorize`, audited only when refused. */
+  check(principal: Principal, action: AuthAction, resource?: AuthResource): Promise<AuthDecision> {
+    return this.decide(principal, action, resource, false);
+  }
+
+  private async decide(principal: Principal, action: AuthAction, resource: AuthResource | undefined, auditAllowed: boolean): Promise<AuthDecision> {
     const decision = await authorizeOwner(this.store, principal.user_id, action);
+    if (decision.allow && !auditAllowed) return decision;
     await this.store.recordOwnerDecision({
       principal: principal.user_id, action, ...(resource ? { resource } : {}), allow: decision.allow, reason: decision.allow ? "allowed" : decision.reason,
     });

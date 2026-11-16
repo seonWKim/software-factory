@@ -1,8 +1,11 @@
-import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { serverDescriptor } from "../src/import/mcp-servers.js";
+import { canonicalJson, descriptionHash } from "../src/packs/pack-entries.store.js";
+import { checkPackGrants } from "../src/packs/pack-grants.js";
 import type { HostSleep, RunId, RunKind, Timestamp, UserId, WorkItemId } from "../src/core/types.js";
 import { projectLabelCursor } from "../src/core/project.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
@@ -1786,6 +1789,9 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       // Rebuilt without pr_number (src/controller/migrations/20261112T1200-controller-change-ref-only); kept until its contract step.
       "legacy_controller_unreviewed_merges",
       "legacy_controller_work_items",
+      // Rebuilt for the plugin import's pointers (src/state/migrations/20261116T1300 and 20261116T1310); kept until the contract step.
+      "legacy_ext_packs_entries",
+      "legacy_ext_skill_refs",
       ...BASELINE_TABLES.filter((t) => renamed.has(t) || (ARCHIVE_ONLY as readonly string[]).includes(t)).map((t) => `legacy_${t}`),
       "runtime_schema_migrations",
       // Tables of timestamped component migrations (RFC 0015 §6.3).
@@ -1805,6 +1811,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       "ext_packs_approvals", // approvals of pack entries: src/state/migrations/20261111T1600-state-ext-packs-approvals
       "ext_packs_entries", // pack tool and MCP server entries: src/state/migrations/20261111T1201-state-ext-packs-entries
       "ext_skill_refs", // imported skill references (design 11-plugin-import): src/state/migrations/20261115T1200-state-ext-skill-refs
+      "ext_mcp_tool_lists", // tool listings of imported MCP servers (design 11-plugin-import): src/state/migrations/20261116T1200-state-ext-mcp-tool-lists
       "runtime_config_file_changes", // file-only key edits (design 08-settings): src/state/migrations/20261113T1200-state-config-file-changes
       "calendar_events", // the calendar component: src/calendar/migrations/20261112T1700-calendar-events
       "calendar_sync_state",
@@ -2419,12 +2426,12 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const rows = await store.listPendingDeliveries(["github_issue"], 10);
       for (const row of rows.slice(0, 3)) await store.finishDelivery(row.seq, (await store.claimDelivery(row.seq, LEASE))!, null);
       // Delivered but not old yet: nothing goes.
-      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 0 });
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toMatchObject({ outbound_intents: 0 });
       clock.advance(400 * DAY);
-      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 2 });
-      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 1 });
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toMatchObject({ outbound_intents: 2 });
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toMatchObject({ outbound_intents: 1 });
       // Run twice: nothing more, no error; the undelivered row is still there to send.
-      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toEqual({ outbound_intents: 0 });
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 2)).toMatchObject({ outbound_intents: 0 });
       expect((await store.listPendingDeliveries(["github_issue"], 10)).map((r) => r.seq)).toEqual([rows[3]!.seq]);
     });
 
@@ -2479,7 +2486,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       expect(await store.listCliCommandsAfter(0, 10)).toEqual([]);
     });
 
-    it("pruneRecords keeps a claim decision of a queued or running run at any age; finished runs', host sleeps and alerts go", async () => {
+    it("pruneHistory keeps a claim decision of a queued or running run at any age; finished runs', host sleeps and alerts go", async () => {
       const { store, clock } = await make();
       const held = async (n: number) => {
         const { item } = await store.createWorkItem(issue(n), system);
@@ -2501,7 +2508,7 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       await store.recordAlert({ pattern: "repeated_error", pattern_key: "k", error_code: "x", count: 3, detail: null }, 6 * 3_600_000);
 
       clock.advance(400 * DAY);
-      const r = await store.pruneRecords(90 * DAY, 100);
+      const r = await store.pruneHistory(90 * DAY, 100);
       expect(r).toMatchObject({ worker_host_sleeps: 1, controller_alerts: 1 });
       expect(await store.listClaimDecisions(b)).toHaveLength(1);
       // Running, still kept; finished, it goes.
@@ -2509,22 +2516,22 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       const second = (await claim())!;
       expect(second.work_item_id).toBe(b);
       clock.advance(400 * DAY);
-      await store.pruneRecords(90 * DAY, 100);
+      await store.pruneHistory(90 * DAY, 100);
       expect(await store.listClaimDecisions(a)).toEqual([]);
       expect(await store.listClaimDecisions(b)).toHaveLength(1);
       await store.completeRun(second.id, second.lease!.token, finished);
-      expect((await store.pruneRecords(90 * DAY, 100)).controller_claim_decisions).toBe(1);
+      expect((await store.pruneHistory(90 * DAY, 100)).controller_claim_decisions).toBe(1);
       expect(await store.listClaimDecisions(b)).toEqual([]);
-      expect(await store.pruneRecords(90 * DAY, 100)).toEqual({ controller_claim_decisions: 0, worker_host_sleeps: 0, controller_alerts: 0 });
+      expect(await store.pruneHistory(90 * DAY, 100)).toMatchObject({ controller_claim_decisions: 0, worker_host_sleeps: 0, controller_alerts: 0 });
     });
 
     it("an alert inside the alarm dedupe window stays at any retention above 0", async () => {
       const { store, clock } = await make();
       await store.recordAlert({ pattern: "repeated_error", pattern_key: "k", error_code: "x", count: 3, detail: null }, 6 * 3_600_000);
       clock.advance(6 * 3_600_000 - 1);
-      expect((await store.pruneRecords(1, 100)).controller_alerts).toBe(0);
+      expect((await store.pruneHistory(1, 100)).controller_alerts).toBe(0);
       clock.advance(2);
-      expect((await store.pruneRecords(1, 100)).controller_alerts).toBe(1);
+      expect((await store.pruneHistory(1, 100)).controller_alerts).toBe(1);
     });
 
     it("state_changes, verdicts and runs are never deleted", async () => {
@@ -2542,8 +2549,127 @@ describe.each([{ name: "sqlite", make: newStore }])("FactoryStore contract: $nam
       clock.advance(4000 * DAY);
       await store.pruneDeliveredOutbox(1, 1000);
       await store.pruneHandledCommands(1, 1000);
-      await store.pruneRecords(1, 1000);
+      await store.pruneHistory(1, 1000);
       expect(await counts()).toEqual(before);
+    });
+
+    it("the base push, handoff and posted-comment lookups use their indexes, not a table scan", async () => {
+      const { store } = await make();
+      const plan = async (sql: string) => (await dbOf(store).all(`EXPLAIN QUERY PLAN ${sql}`, ["x"])).map((r) => String(r.detail)).join("; ");
+      // The store's queries, as getBasePush, listHandoffs and the reactions' comment lookup send them.
+      expect(await plan("SELECT seq, args, delivered_ref FROM outbound_actions WHERE action = 'push_base' AND work_item_id = ? ORDER BY seq DESC LIMIT 1"))
+        .toMatch(/SEARCH outbound_actions USING INDEX outbound_actions_item \(work_item_id=\? AND action=\?\)/);
+      expect(await plan("SELECT * FROM controller_handoffs WHERE work_item_id = ? ORDER BY at, rowid"))
+        .toMatch(/SEARCH controller_handoffs USING INDEX controller_handoffs_item \(work_item_id=\?\)/);
+      expect(await plan("SELECT * FROM outbound_deliveries WHERE comment_id = ? ORDER BY created_at, updated_at, marker"))
+        .toMatch(/SEARCH outbound_deliveries USING INDEX outbound_deliveries_comment \(comment_id=\?\)/);
+    });
+
+    it("pruneHistory deletes authz_audit rows older than the cutoff; a recent one stays", async () => {
+      const { store, clock } = await make();
+      const decide = (principal: string) => store.recordOwnerDecision({ principal: principal as UserId, action: "approve_spec", allow: true, reason: "allowed" });
+      await decide("local:old");
+      clock.advance(60 * DAY);
+      await decide("local:recent");
+      clock.advance(31 * DAY);
+      expect((await store.pruneHistory(90 * DAY, 100)).authz_audit).toBe(1);
+      expect(await dbOf(store).all("SELECT principal FROM authz_audit")).toEqual([{ principal: "local:recent" }]);
+      expect((await store.pruneHistory(90 * DAY, 100)).authz_audit).toBe(0);
+    });
+
+    it("pruneDeliveredOutbox deletes old delivered actions but each item's newest push_base, and only the batch rows no kept action uses", async () => {
+      const { store, clock } = await make();
+      const db = dbOf(store);
+      const items = [(await store.createWorkItem(issue(1), system)).item.id, (await store.createWorkItem(issue(2), system)).item.id];
+      const at = () => clock.now().toISOString();
+      /** One action in its own sent batch; returns its seq. */
+      const action = async (item: string | null, kind: string, delivered: boolean, args = "{}") => {
+        await db.run(
+          "INSERT INTO outbound_actions (work_item_id, source_type, target, action, args, created_at, delivered_at, delivered_ref) VALUES (?, 'git', 'x', ?, ?, ?, ?, ?)",
+          [item, kind, args, at(), delivered ? at() : null, delivered && kind === "push_base" ? JSON.stringify({ pushed: "abc" }) : null],
+        );
+        const [row] = await db.all("SELECT MAX(seq) AS seq FROM outbound_actions");
+        const seq = Number(row!.seq), batch = `b_${seq}`;
+        await db.run(
+          "INSERT INTO outbound_batches (id, destination, idempotency_key, state, intent_count, attempts, opened_at, flush_at, sent_at) VALUES (?, 'git:x', ?, ?, 1, 2, ?, ?, ?)",
+          [batch, batch, delivered ? "sent" : "open", at(), at(), delivered ? at() : null],
+        );
+        await db.run("INSERT INTO outbound_batch_intents (intent_id, batch_id, commit_id, commit_count) VALUES (?, ?, 'c', 1)", [`act_${seq}`, batch]);
+        return seq;
+      };
+      const base = (n: number) => JSON.stringify({ base_ref: "main", merge_sha: `sha${n}` });
+      const oldBase = await action(items[0]!, "push_base", true, base(1));
+      const newestBase = await action(items[0]!, "push_base", true, base(2));
+      const otherBase = await action(items[1]!, "push_base", true, base(3));
+      const status = await action(items[0]!, "status", true);
+      const pending = await action(null, "post", false);
+      clock.advance(10 * DAY);
+      const recent = await action(items[1]!, "status", true);
+      // Every comment record stays (decision 2: deliveries are kept).
+      await store.recordPostedComment({ source_id: "o/r#1", marker: "<!-- m -->", comment_id: "c1", url: null, body: "b" });
+      clock.advance(25 * DAY);
+
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 100)).toMatchObject({ outbound_actions: 2, outbound_batch_intents: 2, outbound_batches: 2 });
+      const left = (await db.all("SELECT seq FROM outbound_actions ORDER BY seq")).map((r) => Number(r.seq));
+      expect(left).toEqual([newestBase, otherBase, pending, recent]);
+      expect(left).not.toContain(oldBase);
+      expect(left).not.toContain(status);
+      const batches = (await db.all("SELECT batch_id FROM outbound_batch_intents ORDER BY seq")).map((r) => String(r.batch_id));
+      expect(batches).toEqual(left.map((s) => `b_${s}`));
+      expect((await db.all("SELECT id FROM outbound_batches ORDER BY seq")).map((r) => String(r.id))).toEqual(batches);
+      // The kept push_base still reads with its batch's tries.
+      expect(await store.getBasePush(items[0]! as WorkItemId)).toMatchObject({ merge_sha: "sha2", attempts: 2, outcome: "pushed" });
+      expect(await db.all("SELECT comment_id FROM outbound_deliveries")).toEqual([{ comment_id: "c1" }]);
+      expect(await store.pruneDeliveredOutbox(30 * DAY, 100)).toEqual({ outbound_intents: 0, outbound_actions: 0, outbound_batch_intents: 0, outbound_batches: 0 });
+    });
+
+    it("pruneHistory deletes expired passports and revocations; no live passport loses its parent", async () => {
+      const { store, clock } = await make();
+      const db = dbOf(store);
+      const passport = (id: string, parent: string | null, expires_in_ms: number) =>
+        db.run(
+          `INSERT INTO identity_passports (id, parent_id, principal, provider, origin, kind, restrictions, token_hash, key_id, issued_at, expires_at)
+           VALUES (?, ?, 'service:worker', 'local', 'local', 'run', '{}', 'h', 'k', ?, ?)`,
+          [id, parent, clock.now().toISOString(), new Date(clock.now().getTime() + expires_in_ms).toISOString()],
+        );
+      const revoke = (id: string, expires_in_ms: number) =>
+        db.run("INSERT INTO identity_revocations (passport_id, revoked_by, reason, revoked_at, expires_at) VALUES (?, 'x', 'r', ?, ?)", [
+          id, clock.now().toISOString(), new Date(clock.now().getTime() + expires_in_ms).toISOString(),
+        ]);
+      await passport("root", null, 1_000);
+      await passport("mid", "root", 1_000);
+      await passport("live", "mid", 10 * DAY);
+      await passport("gone", null, 1_000);
+      await passport("valid", null, 10 * DAY);
+      await revoke("gone", 1_000);
+      await revoke("valid", 10 * DAY);
+      clock.advance(DAY);
+      expect(await store.pruneHistory(90 * DAY, 100)).toMatchObject({ identity_passports: 1, identity_revocations: 1 });
+      expect((await db.all("SELECT id FROM identity_passports ORDER BY id")).map((r) => r.id)).toEqual(["live", "mid", "root", "valid"]);
+      expect(await db.all("SELECT passport_id FROM identity_revocations")).toEqual([{ passport_id: "valid" }]);
+      // Once the child expires, its chain goes too.
+      clock.advance(10 * DAY);
+      await store.pruneHistory(90 * DAY, 100);
+      await store.pruneHistory(90 * DAY, 100);
+      expect(await db.all("SELECT id FROM identity_passports")).toEqual([]);
+    });
+
+    it("pruneHistory deletes claim pauses that ended before the cutoff; a live pause and a probe pause in effect stay, and a restarted pause reads", async () => {
+      const { store, clock } = await make();
+      const at = (ms: number) => new Date(clock.now().getTime() + ms).toISOString() as Timestamp;
+      await store.pauseClaims(at(60_000));
+      await store.pauseClaims(at(60_000), "model_stall");
+      clock.advance(100 * DAY);
+      await store.pauseClaims(at(DAY), "forge_auth");
+      const names = async () => (await dbOf(store).all("SELECT name FROM worker_claim_pauses ORDER BY name")).map((r) => r.name);
+      // The rate-limit pause ended long ago and goes; the stall is still in effect (no probe answered it), and the
+      // live forge_auth pause stays.
+      expect((await store.pruneHistory(90 * DAY, 100)).worker_claim_pauses).toBe(1);
+      expect(await names()).toEqual(["forge_auth", "model_stall", "model_stall_since"]);
+      expect(await store.getClaimPause("model_stall")).not.toBeNull();
+      // Restarted, the pruned pause reads as any new one.
+      expect(await store.pauseClaims(at(60_000))).toEqual({ extended: true, resume_at: at(60_000) });
+      expect(await store.getClaimPause()).toBe(at(60_000));
     });
   });
 
@@ -3513,5 +3639,148 @@ describe("20261113T0900-controller-task-schedule on an existing SQLite database"
     await TASK_SCHEDULE.up(mdb(db));
     expect(await db.all("SELECT id, duration_minutes, reminded_at FROM controller_tasks")).toEqual([{ id: "tk_old", duration_minutes: null, reminded_at: null }]);
     expect(await store.getTask("tk_old")).toMatchObject({ duration_minutes: null, reminded_at: null });
+  });
+});
+
+describe("20261116T1300 and 20261116T1310: the plugin import's pointer tables on an existing SQLite database", () => {
+  const POINTERS = "20261116T1300-state-ext-packs-entries-pointers";
+  const BY_PATH = "20261116T1310-state-ext-skill-refs-by-path";
+  const at = "2026-11-15T00:00:00.000Z";
+  const later = "2026-11-15T01:00:00.000Z";
+  const rows = (db: DatabaseSync, sql: string) => db.prepare(sql).all().map((r) => ({ ...r }));
+  const cols = (db: DatabaseSync, t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+  const ENTRY = "(id, kind, name, description_hash, module_hash, descriptor, credential_name, status, added_by, created_at, updated_at)";
+  const ME = "local:me@example.com";
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  /** A copied descriptor as the old import stored it, and its hash. */
+  const copied = (source: string, key: string, raw: Record<string, unknown>) => {
+    const d = serverDescriptor(source, key, raw);
+    return { text: canonicalJson(d), hash: descriptionHash(d) };
+  };
+
+  /**
+   * A HOME whose ~/.claude.json still holds `docs` unchanged and whose ~/.codex/config.toml holds `notes` changed;
+   * `gone` is in neither. A file database just before the two migrations, with a pack tool, the three copied servers
+   * (docs twice: an older and the current description) and skill refs (one path imported twice), and an approval.
+   */
+  async function oldDatabase() {
+    const home = mkdtempSync(join(tmpdir(), "sf-pointer-home-"));
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { docs: { command: "docs-mcp", env: { DOCS_TOKEN: "v" } } } }));
+    writeFileSync(join(home, ".codex", "config.toml"), `[mcp_servers.notes]\ncommand = "notes-v2"\n`);
+    vi.stubEnv("HOME", home);
+    const path = join(mkdtempSync(join(tmpdir(), "sf-pointers-")), "factory.db");
+    const driver = new SqliteDriver(path, { baselineOnly: true });
+    await driver.migrate();
+    const db: MigrationDb = { dialect: "sqlite", all: (sql, p) => driver.all(sql, p), run: (sql, p) => driver.run(sql, p) };
+    await applyMigrations(db, { backupDir: null, now: () => at, migrations: (await discoverMigrations()).filter((m) => m.id < POINTERS) });
+    const docsOld = copied("claude", "docs", { command: "docs-mcp-v0" });
+    const docs = copied("claude", "docs", { command: "docs-mcp", env: { DOCS_TOKEN: "v" } });
+    const notes = copied("codex", "notes", { command: "notes" });
+    const gone = copied("claude", "gone", { command: "gone" });
+    const tool = { text: canonicalJson({ name: "tracker", description: "Reads issues." }), hash: "h-tool" };
+    const insert = (id: string, kind: string, name: string, e: { text: string; hash: string }, created: string) =>
+      driver.run(`INSERT INTO ext_packs_entries ${ENTRY} VALUES (?, ?, ?, ?, NULL, ?, NULL, 'pending', ?, ?, ?)`, [id, kind, name, e.hash, e.text, ME, created, created]);
+    await insert("pe_tool", "tool", "tracker", tool, at);
+    await insert("pe_docs_old", "mcp_server", "docs", docsOld, at);
+    await insert("pe_docs", "mcp_server", "docs", docs, later);
+    await insert("pe_notes", "mcp_server", "notes", notes, at);
+    await insert("pe_gone", "mcp_server", "gone", gone, at);
+    await driver.run("INSERT INTO ext_packs_approvals (kind, name, description_hash, action, user_id, at) VALUES ('mcp_server', 'docs', ?, 'approve', ?, ?)", [docs.hash, ME, at]);
+    await driver.run("INSERT INTO ext_packs_approvals (kind, name, description_hash, action, user_id, at) VALUES ('mcp_server', 'notes', ?, 'approve', ?, ?)", [notes.hash, ME, at]);
+    const ref = (id: string, name: string, p: string, sha: string, created: string) =>
+      driver.run("INSERT INTO ext_skill_refs (id, source, name, path, sha256, added_by, created_at) VALUES (?, 'claude', ?, ?, ?, ?, ?)", [id, name, p, sha, ME, created]);
+    await ref("sr_a_old", "alpha", "/s/alpha/SKILL.md", "a0", at);
+    await ref("sr_a", "alpha", "/s/alpha/SKILL.md", "a1", later);
+    await ref("sr_b", "beta", "/s/beta/SKILL.md", "b1", at);
+    const before = { entries: await driver.all("SELECT * FROM ext_packs_entries ORDER BY id"), refs: await driver.all("SELECT * FROM ext_skill_refs ORDER BY id") };
+    await driver.close();
+    return { home, path, before, docs, notes, gone, tool };
+  }
+
+  /** Opens the database as `npm run migrate` does: breaking migrations applied. */
+  async function migrate(path: string): Promise<void> {
+    const store = new SqlFactoryStore(new SqliteDriver(path, { applyBreaking: true }), new FakeClock());
+    try {
+      await store.migrate();
+    } finally {
+      await store.close();
+    }
+  }
+
+  it("are breaking, name their one table each, verify themselves and come after 20261115T1200", async () => {
+    const found = (await discoverMigrations()).filter((m) => m.id === POINTERS || m.id === BY_PATH);
+    expect(found.map((m) => [m.id, m.change, m.tables])).toEqual([[POINTERS, "breaking", ["ext_packs_entries"]], [BY_PATH, "breaking", ["ext_skill_refs"]]]);
+    for (const m of found) expect(m.verify).toBeTypeOf("function");
+    expect(found.every((m) => m.id > "20261115T1200")).toBe(true);
+  });
+
+  it("rebuilds both tables, keeps the old ones as legacy_ tables with every row, and turns copied MCP rows into pointers", async () => {
+    const o = await oldDatabase();
+    await migrate(o.path);
+    const db = new DatabaseSync(o.path);
+    try {
+      // The legacy tables hold every old row as it was; nothing was dropped.
+      expect(rows(db, "SELECT * FROM legacy_ext_packs_entries ORDER BY id")).toEqual(o.before.entries);
+      expect(rows(db, "SELECT * FROM legacy_ext_skill_refs ORDER BY id")).toEqual(o.before.refs);
+      expect(cols(db, "ext_packs_entries")).toEqual(expect.arrayContaining(["source", "source_file", "source_key", "module_hash"]));
+      expect(cols(db, "ext_skill_refs")).toEqual(expect.arrayContaining(["kind", "updated_at"]));
+      // The pack tool is copied as it was.
+      expect(rows(db, "SELECT id, descriptor, description_hash, source_file FROM ext_packs_entries WHERE kind = 'tool'")).toEqual([
+        { id: "pe_tool", descriptor: o.tool.text, description_hash: o.tool.hash, source_file: null },
+      ]);
+      // One pointer per imported name, from its current row; no descriptor copy.
+      expect(rows(db, "SELECT id, name, description_hash, descriptor, source, source_file, source_key, status FROM ext_packs_entries WHERE kind = 'mcp_server' ORDER BY name")).toEqual([
+        { id: "pe_docs", name: "docs", description_hash: o.docs.hash, descriptor: null, source: "claude", source_file: join(o.home, ".claude.json"), source_key: "docs", status: "pending" },
+        { id: "pe_gone", name: "gone", description_hash: o.gone.hash, descriptor: null, source: "claude", source_file: join(o.home, ".claude.json"), source_key: "gone", status: "missing" },
+        {
+          id: "pe_notes", name: "notes", description_hash: copied("codex", "notes", { command: "notes-v2" }).hash, descriptor: null,
+          source: "codex", source_file: join(o.home, ".codex", "config.toml"), source_key: "notes", status: "pending",
+        },
+      ]);
+      // Skill refs: one row per (source, path), the newest kept with its data; every one a skill.
+      expect(rows(db, "SELECT id, source, kind, name, path, sha256, added_by, created_at, updated_at FROM ext_skill_refs ORDER BY id")).toEqual([
+        { id: "sr_a", source: "claude", kind: "skill", name: "alpha", path: "/s/alpha/SKILL.md", sha256: "a1", added_by: ME, created_at: later, updated_at: later },
+        { id: "sr_b", source: "claude", kind: "skill", name: "beta", path: "/s/beta/SKILL.md", sha256: "b1", added_by: ME, created_at: at, updated_at: at },
+      ]);
+      expect(() => db.prepare("INSERT INTO ext_skill_refs (id, source, kind, name, path, sha256, added_by, created_at, updated_at) VALUES ('x', 'claude', 'skill', 'alpha', '/s/alpha/SKILL.md', 'a2', 'u', 't', 't')").run()).toThrow(/UNIQUE/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("an unchanged server's approval still holds; a changed one is pending again; a missing one runs nothing", async () => {
+    const o = await oldDatabase();
+    await migrate(o.path);
+    const driver = new SqliteDriver(o.path);
+    try {
+      expect(await checkPackGrants(driver, ["pack:mcp_server:docs", "pack:mcp_server:notes", "pack:mcp_server:gone"], false)).toEqual({
+        broker: [],
+        mcp_servers: [{ name: "docs", command: "docs-mcp", args: [] }],
+        refused: [{ grant: "pack:mcp_server:notes", reason: "not_approved" }, { grant: "pack:mcp_server:gone", reason: "missing" }],
+      });
+    } finally {
+      await driver.close();
+    }
+  });
+
+  it("a rerun of either migration changes nothing", async () => {
+    const o = await oldDatabase();
+    await migrate(o.path);
+    const driver = new SqliteDriver(o.path);
+    try {
+      const all = async () => JSON.stringify([await driver.all("SELECT * FROM ext_packs_entries ORDER BY id"), await driver.all("SELECT * FROM ext_skill_refs ORDER BY id")]);
+      const once = await all();
+      const db: MigrationDb = { dialect: "sqlite", all: (sql, p) => driver.all(sql, p), run: (sql, p) => driver.run(sql, p) };
+      for (const m of (await discoverMigrations()).filter((x) => x.id === POINTERS || x.id === BY_PATH)) {
+        await m.up(db);
+        expect(await m.verify!(db)).toEqual([]);
+      }
+      expect(await all()).toBe(once);
+    } finally {
+      await driver.close();
+    }
   });
 });

@@ -13,14 +13,20 @@ Do:
    weakened assertion that hides a real bug is a finding.
 5. If the change alters a design decision, check that the docs the repository's agent instructions (AGENTS.md or
    CLAUDE.md) name for it were updated. Where the docs are an index of topic files: the topic files were updated
-   (current decision first, the replaced one under History), and the index holds no decision text: one line or
-   row per topic only.
+   (current decision first, the replaced one in docs/design/history/<topic>.md, linked under History), and the index
+   holds no decision text: one line or row per topic only.
 6. Check maintainability in the diff itself. Each of these is a finding of kind `code`:
    - the change leaves dead code, unused exports or a replaced code path behind
    - it duplicates an existing helper instead of reusing it
    - it adds a third copy of a block
    Note cleanup chances outside the change in `summary`, not as findings.
-7. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
+7. Design-system review: only when the project has `design-system/patterns.md` and the diff changes its UI (for this layout, a
+   change under `web/`); other diffs are unaffected. For a change under `web/`, check the diff against
+   `design-system/patterns.md` and `design-system/components.md`. Each rule it breaks is a finding of kind `code`
+   that names the rule by its number (for example "breaks decision rule 2: one value behind a disclosure") and asks
+   for the change. Attach the `check:responsive` screenshots as evidence when they exist; when they do not, list
+   them under `unverified`.
+8. Recheck the risk tier (1–5) from what the diff actually does. Never lower it below the work item's tier.
 
 When to stop and ask (needs_human):
 - Return `needs_human` with a short `reason` and one `question` (plain text, at most 500 characters each) only when you cannot go on without the owner: missing credentials or permissions, a tool that fails the same way twice, a spec that contradicts the code, or a decision only the owner can make.

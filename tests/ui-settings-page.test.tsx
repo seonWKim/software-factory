@@ -436,6 +436,12 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
   }
   const keyOf = (section: HTMLElement, key: string) => section.querySelector<HTMLElement>(`li[data-file-key="${key}"]`)!;
   const sent = (n: number) => JSON.parse(posts[n]!.init.body as string) as { action: string; key: string; value: string; confirm: boolean };
+  /** Save opens the confirm Dialog; this presses its confirm. */
+  const confirm = async () => {
+    const dialog = document.querySelector<HTMLElement>("dialog[data-dialog]")!;
+    expect(dialog).not.toBeNull();
+    await act(async () => fireEvent.click(within(dialog).getByRole("button", { name: "Put on a branch" })));
+  };
   const filedAnswer = () => {
     answer = { status: 200, body: { ok: true, lines: ["filed"], item: "wi_9", branch: "factory/wi_9" } };
   };
@@ -500,6 +506,8 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     fireEvent.click(within(hot).getByRole("button", { name: "Add to hotspot_paths" }));
     fireEvent.change(within(hot).getByLabelText("hotspot_paths 2"), { target: { value: "src/ui/" } });
     await act(async () => fireEvent.click(within(hot).getByRole("button", { name: "Save hotspot_paths" })));
+    expect(posts).toHaveLength(0);
+    await confirm();
     expect(posts).toHaveLength(1);
     expect(posts[0]!.url).toBe("/api/v1/settings");
     expect(sent(0)).toEqual({ action: "edit-file", key: "hotspot_paths", value: '["src/core/","src/ui/"]', confirm: false });
@@ -513,20 +521,23 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     // A Remove takes an entry out; a command line goes back as its arguments; a text member left empty is left out.
     fireEvent.click(within(hot).getByRole("button", { name: "Remove hotspot_paths 1" }));
     await act(async () => fireEvent.click(within(hot).getByRole("button", { name: "Save hotspot_paths" })));
+    await confirm();
     expect(sent(2).value).toBe("[]");
     const test = keyOf(section, "repo.test_command");
     fireEvent.change(within(test).getByLabelText("repo.test_command"), { target: { value: 'sh -c "npm run check"' } });
     await act(async () => fireEvent.click(within(test).getByRole("button", { name: "Save repo.test_command" })));
+    await confirm();
     expect(JSON.parse(sent(3).value)).toEqual(["sh", "-c", "npm run check"]);
     const slack = keyOf(section, "slack");
     fireEvent.change(within(slack).getByLabelText("slack channels 1"), { target: { value: "C2" } });
     await act(async () => fireEvent.click(within(slack).getByRole("button", { name: "Save slack" })));
+    await confirm();
     expect(JSON.parse(sent(4).value)).toEqual({ channels: ["C2"] });
-    // A non-guard plugin change writes the whole plugins object, the file's other members kept, with no Dialog.
+    // A non-guard plugin change writes the whole plugins object, the file's other members kept, without the confirm flag.
     const plugins = keyOf(section, "plugins");
     fireEvent.change(within(plugins).getByLabelText("plugins runner"), { target: { value: "fake" } });
     await act(async () => fireEvent.click(within(plugins).getByRole("button", { name: "Save plugins" })));
-    expect(document.querySelector("dialog")).toBeNull();
+    await confirm();
     expect(sent(5)).toMatchObject({ key: "plugins", confirm: false });
     expect(JSON.parse(sent(5).value)).toEqual({ secrets: "env-file", runner: "fake", source: ["local", "slack"] });
   });
@@ -559,13 +570,13 @@ describe("Settings page: the typed form of the file-only keys (design 08-setting
     expect(document.querySelector("dialog[data-dialog]")).toBeNull();
   });
 
-  it("each read-only key shows its value and the line to edit the file, with no control", async () => {
+  it("each read-only key shows its value and its reason, with no control and no file path", async () => {
     const section = await form();
     for (const { key, value } of view.file_keys!.read_only) {
       const li = section.querySelector<HTMLElement>(`li[data-read-only="${key}"]`)!;
       expect(li, key).not.toBeNull();
       expect(li.textContent).toContain(value ?? "not set");
-      expect(li.textContent).toContain("Edit factory.config.json to change this.");
+      expect(li.textContent).not.toContain("factory.config.json");
       expect(li.querySelectorAll("input, button, textarea, select, [role=switch]"), key).toHaveLength(0);
       expect(section.querySelector(`li[data-file-key="${key}"]`), key).toBeNull();
     }

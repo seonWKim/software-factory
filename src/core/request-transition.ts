@@ -131,7 +131,7 @@ export async function commandNote(
 ): Promise<{ note: string | null; paths: string[] } | (Refused & { rules?: string })> {
   const scanned = await scanNote(scan, text, command);
   if ("refuse" in scanned) return scanned;
-  const split = paths ? parseCommandPaths(text ?? "") : { note: text ?? "", paths: [] };
+  const split = paths ? parseCommandPaths(text ?? "", command) : { note: text ?? "", paths: [] };
   if ("refuse" in split) return split;
   const note = split.note.slice(0, MAX_NOTE_CHARS).trim();
   return { note: note || null, paths: split.paths };

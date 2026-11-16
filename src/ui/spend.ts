@@ -1,7 +1,8 @@
 // GET /api/v1/spend?from=&to= (design 06-spend): cost, tokens and runs per UTC day and per work item over a range
 // of UTC days, from the stored run outcomes (src/core/spend.ts). Read-only: server.ts answers 405 to any other
 // method. Runs with no stored cost are counted apart as `unknown`, never added as 0. Item titles pass the
-// Withholder, as on every other route. Store reads only: one range read of runs, one read per item shown.
+// Withholder, as on every other route; so do the titles of each day's top items (at most 3, by known cost). Store
+// reads only: one range read of runs, one read per item shown.
 
 import { DAY_MS, SPEND_MAX_DAYS, readSpend, utcDay, weekStart } from "../core/spend.js";
 import type { WorkItemId } from "../core/types.js";
@@ -33,13 +34,25 @@ export async function spend(c: SpendCtx, params: URLSearchParams): Promise<{ sta
   if (span < 1 || span > SPEND_MAX_DAYS) return { status: 400, value: { error: `from must be on or before to, at most ${SPEND_MAX_DAYS} days apart.` } };
 
   const s = await readSpend(c.store, from, to);
+  // One read per item, shared by the table and the days' top items.
+  const titles = new Map<WorkItemId, string | null>();
+  const titleOf = async (id: WorkItemId): Promise<string | null> => {
+    if (!titles.has(id)) {
+      const title = (await c.store.getWorkItem(id))?.title;
+      titles.set(id, title ? await c.text(title) : null);
+    }
+    return titles.get(id)!;
+  };
   const items = [];
-  for (const it of s.items.slice(0, SPEND_ITEMS_CAP)) {
-    const title = (await c.store.getWorkItem(it.work_item_id as WorkItemId))?.title;
-    items.push({ ...it, title: title ? await c.text(title) : null });
+  for (const it of s.items.slice(0, SPEND_ITEMS_CAP)) items.push({ ...it, title: await titleOf(it.work_item_id) });
+  const days = [];
+  for (const d of s.days) {
+    const top = [];
+    for (const it of d.top) top.push({ work_item_id: it.work_item_id, title: await titleOf(it.work_item_id), cost_usd: it.cost_usd });
+    days.push({ ...d, top });
   }
   return {
     status: 200,
-    value: { as_of: c.now.toISOString(), today: utcDay(now), week_start: utcDay(weekStart(now)), ...s, items, items_total: s.items.length },
+    value: { as_of: c.now.toISOString(), today: utcDay(now), week_start: utcDay(weekStart(now)), ...s, days, items, items_total: s.items.length },
   };
 }

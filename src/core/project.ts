@@ -11,12 +11,6 @@ export interface ProjectRef {
   label: string;
 }
 
-/**
- * Providers the key format names: the forge's, and `local` for a factory with no forge plugin (design 05-sources,
- * Local startup). The format leaves room for others.
- */
-export type ProjectProvider = "github" | "local";
-
 const KEY = /^([a-z][a-z0-9-]*):([A-Za-z0-9.-]+(?::\d+)?):(.+)$/;
 /** A legacy project value: `owner/name`, as stored before project keys. */
 const OWNER_NAME = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;

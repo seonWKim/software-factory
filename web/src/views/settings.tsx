@@ -2,9 +2,11 @@ import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { API, type AutoStop, type Session, type SettingRow, type SettingsView, type SettingsWrite, useApi } from "../api.js";
 import { Button } from "../components/ui/button.js";
 import { ButtonRow } from "../components/ui/button-row.js";
+import { Field } from "../components/ui/field.js";
 import { Input } from "../components/ui/input.js";
-import { BANNER_LINK_CLASS, LINK_CLASS } from "../components/ui/link-style.js";
-import { Badge, Empty, ErrorNote, Loading, Section, Table, Td, Tr } from "../components/ui/parts.js";
+import { LINK_CLASS } from "../components/ui/link-style.js";
+import { type Column, DataTable } from "../components/ui/data-table.js";
+import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
 import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
@@ -32,7 +34,8 @@ import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
 // disconnects each calendar plugin, which writes the live `calendar` key. The file-only keys have their own typed
 // form (settings-file-keys.tsx), saved on a local branch the owner merges; the PR-only table keeps the remaining keys.
 // Providers (settings-capabilities.tsx, design 08-settings 2026-11-15) lists the provider entries, read only, and links to the
-// Plugins page, which holds the skills, tools and MCP servers.
+// Plugins page, which holds the skills, tools and MCP servers. The project label control above the settable keys stores
+// the configured repo's project label (design 08-settings, 2026-11-16), which every per-project value is found by.
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
@@ -466,59 +469,100 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
   );
 }
 
-function KeyRow({ row, view }: { row: SettingRow; view: SettingsView }) {
-  const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
-  const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
-  return (
-    <Tr data-key={row.key}>
-      <Td>
-        <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
-        <Description text={row.description} />
-      </Td>
-      <Td className="min-w-56">
-        {SECTION_KEYS[row.key] ? (
-          <p className="text-xs text-pretty text-text-2">
-            <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
-          </p>
-        ) : (
-          <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
-        )}
-        <Duration settingKey={row.key} value={row.value} />
-        {row.key === "workers" && row.max !== undefined && (
-          <p className="mt-1 text-xs text-text-2">
-            {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
-          </p>
-        )}
-        {row.project_settable && (
-          <div className="mt-2 border-t border-border pt-2">
-            <p className="mb-1 text-xs text-text-2">
-              {t("settings.forValue", { value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
-              {view.project === null && ` · ${t("settings.noProjectLabel")}`}
-            </p>
-            <div className="flex flex-wrap items-start gap-2">
-              <Editor row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
-              {own?.source === "override" && <ResetButton row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} token={view.csrf_token} project={view.repo} />}
-            </div>
-            <Duration settingKey={row.key} value={own?.value ?? row.value} />
-            {learned && <LearnedLayer row={row} learned={learned} view={view} />}
-          </div>
-        )}
-      </Td>
-      <Td>
-        <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge>
-      </Td>
-      <Td className="min-w-40">
-        {row.file_value !== null ? (
+/** The settable keys table's columns; the Value cell holds the editors, the per-project layer and the learned value. */
+function keyColumns(view: SettingsView): Column<SettingRow>[] {
+  return [
+    {
+      key: "key",
+      header: t("settings.colKey"),
+      render: (row) => (
+        <>
+          <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
+          <Description text={row.description} />
+        </>
+      ),
+    },
+    { key: "value", header: t("settings.colValue"), className: "min-w-56", render: (row) => <ValueCell row={row} view={view} /> },
+    { key: "source", header: t("settings.colSource"), render: (row) => <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge> },
+    {
+      key: "file_value",
+      header: t("settings.colFileValue"),
+      className: "min-w-40",
+      render: (row) =>
+        row.file_value !== null ? (
           <JsonValue text={shownValue(row.key, row.file_value)} />
         ) : (
           <span className="text-xs text-text-3">
             {withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}
           </span>
-        )}
-      </Td>
-      <Td className="min-w-24 whitespace-nowrap text-text-2">{row.applies_at}</Td>
-      <Td>{row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} />}</Td>
-    </Tr>
+        ),
+    },
+    { key: "applies_at", header: t("settings.colAppliesAt"), className: "min-w-24 whitespace-nowrap text-text-2" },
+    { key: "reset", header: t("settings.colReset"), render: (row) => row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} /> },
+  ];
+}
+
+function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
+  const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
+  const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
+  return (
+    <>
+      {SECTION_KEYS[row.key] ? (
+        <p className="text-xs text-pretty text-text-2">
+          <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
+        </p>
+      ) : (
+        <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+      )}
+      <Duration settingKey={row.key} value={row.value} />
+      {row.key === "workers" && row.max !== undefined && (
+        <p className="mt-1 text-xs text-text-2">
+          {row.capped_at ? t("settings.workersRangeCapped", { max: row.max, capped: row.capped_at }) : t("settings.workersRange", { max: row.max })}
+        </p>
+      )}
+      {row.project_settable && (
+        <div className="mt-2 border-t border-border pt-2">
+          <p className="mb-1 text-xs text-text-2">
+            {t("settings.forValue", { value: own ? `${own.value} (${own.source})` : t("settings.globalValue") })}
+            {view.project === null && ` · ${t("settings.noProjectLabel")}`}
+          </p>
+          <div className="flex flex-wrap items-start gap-2">
+            <Editor row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
+            {own?.source === "override" && <ResetButton row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} token={view.csrf_token} project={view.repo} />}
+          </div>
+          <Duration settingKey={row.key} value={own?.value ?? row.value} />
+          {learned && <LearnedLayer row={row} learned={learned} view={view} />}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The configured repo's project label (design 08-settings): the stored label, an Input and Save. Save sends the
+ * `project-label` write, which the server refuses when the label is empty, holds whitespace, does not end with
+ * `/owner/name` of the repo, or no project key is stored; the refusal shows under the field.
+ */
+function ProjectLabel({ view }: { view: SettingsView }) {
+  const { busy, error, done, write } = useWrite(view.csrf_token);
+  const [draft, setDraft] = useState<string | null>(null);
+  const id = useId();
+  const shown = draft ?? view.project ?? "";
+  const save = async () => {
+    if (await write({ action: "project-label", value: shown })) setDraft(null);
+  };
+  return (
+    <form data-project-label className="mb-3 flex max-w-xl flex-col items-start gap-2" onSubmit={(e) => (e.preventDefault(), void save())}>
+      <Field label={t("settings.projectLabel")} htmlFor={id} help={t("settings.projectLabelHint", { repo: view.repo })} className="w-full">
+        <Input id={id} aria-label={t("settings.projectLabelFor", { repo: view.repo })} className="w-full font-mono text-xs" value={shown} onChange={(e) => setDraft(e.target.value)} />
+      </Field>
+      <ButtonRow>
+        <Button type="submit" variant="secondary" disabled={busy || draft === null} aria-label={t("settings.saveLabel", { label: t("settings.projectLabelFor", { repo: view.repo }) })}>
+          {t("settings.save")}
+        </Button>
+      </ButtonRow>
+      <Outcome error={error} done={done} />
+    </form>
   );
 }
 
@@ -570,7 +614,7 @@ export function ModeSwitch({ floating = false }: { floating?: boolean }) {
   );
 }
 
-/** Each auto-mode stop's cause (its alarm's error code, design 03-risk), as the Mode toggle and the banner name it. */
+/** Each auto-mode stop's cause (its alarm's error code, design 03-risk), as the Mode toggle and its alarm row name it. */
 const STOP_CAUSE: Readonly<Record<string, MessageKey>> = {
   red_main: "settings.autoStopRedMain",
   budget_checkpoint: "settings.autoStopBudget",
@@ -580,7 +624,7 @@ const STOP_CAUSE: Readonly<Record<string, MessageKey>> = {
 /** A time of day in the browser's time zone, hours and minutes (11:52). */
 const clockTime = (at: string) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
 
-/** Where an alarm is shown: its line in the Needs-you notes (system-banner.tsx), by the alert's id. */
+/** The auto-mode stop's alarm row in the Needs you section's Check group (system-banner.tsx), by the alert's id. */
 export const alarmAnchor = (alertId: string) => `alarm-${alertId}`;
 
 /** "Back to manual at 11:52: <why>": the stop's time and cause. */
@@ -590,11 +634,11 @@ export const autoStopText = (stop: AutoStop) => {
 };
 
 /**
- * The auto-mode stop still in force (design 03-risk), beside the Mode toggle and in the system banner: when and why,
- * a link to its alarm, and "Turn auto back on", which writes mode auto at once (no confirmation) through
- * POST /api/v1/settings like the toggle. With no settings view yet (the banner's read is loading) there is no button.
+ * The auto-mode stop still in force (design 03-risk), beside the Mode toggle and on its alarm row in Needs you: when
+ * and why, a link to its alarm, and "Turn auto back on", which writes mode auto at once (no confirmation) through
+ * POST /api/v1/settings like the toggle. With no settings view yet (its read is loading) there is no button.
  */
-export function AutoStopNote({ stop, view, banner = false }: { stop: AutoStop; view: SettingsView | undefined; banner?: boolean }) {
+export function AutoStopNote({ stop, view }: { stop: AutoStop; view: SettingsView | undefined }) {
   const { busy, error, write } = useWrite(view?.csrf_token ?? "");
   const mode = view ? currentMode(view) : null;
   const target = mode?.project === undefined ? {} : { project: mode.project };
@@ -602,7 +646,7 @@ export function AutoStopNote({ stop, view, banner = false }: { stop: AutoStop; v
     <div data-auto-stop className="flex min-w-0 flex-col gap-1 text-sm">
       <span className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className="min-w-0 text-pretty break-words">{autoStopText(stop)}</span>
-        <Link href={`${BASE}#${alarmAnchor(stop.alert_id)}`} className={banner ? BANNER_LINK_CLASS : LINK_CLASS}>{t("settings.autoStopAlarm")}</Link>
+        <Link href={`${BASE}#${alarmAnchor(stop.alert_id)}`} className={LINK_CLASS}>{t("settings.autoStopAlarm")}</Link>
         {mode && (
           <Button size="sm" disabled={busy} onClick={() => void write({ action: "set", key: "mode", value: JSON.stringify("auto"), ...target })}>
             {t("settings.autoStopTurnOn")}
@@ -670,11 +714,8 @@ export function SettingsPage() {
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.settableIntro", { command: <code>{"factory settings"}</code> })}
         </p>
-        <Table label={t("settings.settableKeys")} head={[t("settings.colKey"), t("settings.colValue"), t("settings.colSource"), t("settings.colFileValue"), t("settings.colAppliesAt"), t("settings.colReset")]}>
-          {v.keys.map((row) => (
-            <KeyRow key={row.key} row={row} view={v} />
-          ))}
-        </Table>
+        <ProjectLabel view={v} />
+        <DataTable label={t("settings.settableKeys")} columns={keyColumns(v)} rows={v.keys} rowKey={(r) => r.key} empty={t("settings.noKeys")} dataKey />
       </Section>
       {v.ignored.length > 0 && (
         <Section title={t("settings.ignoredOverrides")} count={v.ignored.length}>
@@ -694,37 +735,33 @@ export function SettingsPage() {
         <p className="mb-2 text-sm text-pretty text-text-2">
           {withNodes("settings.prOnlyIntro", { command: <code>{"factory settings set"}</code>, file: <code>{"factory.config.json"}</code> })}
         </p>
-        <Table label={PR_ONLY_TITLE} head={[t("settings.colKey")]}>
-          {prOnly.map((p) => (
-            <Tr key={p.key} data-key={p.key}>
-              <Td>
-                <span className="font-mono text-xs">{p.key}</span>
-                <Description text={p.description} />
-              </Td>
-            </Tr>
-          ))}
-        </Table>
+        <DataTable
+          label={PR_ONLY_TITLE}
+          columns={[{ key: "key", header: t("settings.colKey"), render: (p: SettingsView["pr_only"][number]) => <><span className="font-mono text-xs">{p.key}</span><Description text={p.description} /></> }]}
+          rows={prOnly}
+          rowKey={(p) => p.key}
+          empty={t("settings.noKeys")}
+          dataKey
+        />
       </Section>
       <Section title={t("settings.history")} count={v.history.length}>
-        {v.history.length === 0 ? (
-          <Empty>{t("settings.noHistory")}</Empty>
-        ) : (
-          <Table label={t("settings.history")} head={[t("col.when"), t("settings.colWho"), t("settings.colKey"), t("settings.colChange")]}>
-            {v.history.map((c) => (
-              <Tr key={c.seq}>
-                <Td className="tabular-nums whitespace-nowrap">{t("time.ago", { time: ago(c.at, now) })}</Td>
-                <Td className="font-mono text-xs">{c.actor}</Td>
-                <Td className="font-mono text-xs">
-                  {c.key}
-                  {c.project ? t("settings.forProject", { project: c.project }) : ""}
-                </Td>
-                <Td className="font-mono text-xs break-all">
-                  {c.new_value === null ? t("settings.resetWas", { old: String(c.old_value) }) : t("settings.changed", { old: c.old_value ?? t("settings.noOverride"), new: c.new_value })}
-                </Td>
-              </Tr>
-            ))}
-          </Table>
-        )}
+        <DataTable
+          label={t("settings.history")}
+          columns={[
+            { key: "at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (c) => t("time.ago", { time: ago(c.at, now) }) },
+            { key: "actor", header: t("settings.colWho"), className: "font-mono text-xs" },
+            { key: "key", header: t("settings.colKey"), className: "font-mono text-xs", render: (c) => `${c.key}${c.project ? t("settings.forProject", { project: c.project }) : ""}` },
+            {
+              key: "change",
+              header: t("settings.colChange"),
+              className: "font-mono text-xs break-all",
+              render: (c) => (c.new_value === null ? t("settings.resetWas", { old: String(c.old_value) }) : t("settings.changed", { old: c.old_value ?? t("settings.noOverride"), new: c.new_value })),
+            },
+          ]}
+          rows={v.history}
+          rowKey={(c) => String(c.seq)}
+          empty={t("settings.noHistory")}
+        />
       </Section>
     </>
   );

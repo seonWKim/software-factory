@@ -1,7 +1,8 @@
 // The app talks only to the JSON API under /api/v1 (design §9); nothing else is fetched. Its writes are
 // POST /api/v1/settings (postSettings), POST /api/v1/items/:id/commands (postCommand), POST /api/v1/pauses/resume
-// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict), POST
-// /api/v1/packs/approvals (postPackApproval, the Plugins page's Approve and Revoke) and POST
+// (postResume), POST /api/v1/standing (postStanding), POST /api/v1/rules/verdict (postRuleVerdict), POST /api/v1/improve/run (postImproveRun), POST
+// /api/v1/packs/approvals (postPackApproval, the Plugins page's Approve and Revoke; postPackAdd, its Add), POST /api/v1/plugins/import
+// (postPluginsImport, the Plugins page's Import dialog; its read, getPluginsImport, sends the token too) and POST
 // /api/v1/tasks/build (postTaskBuild), POST /api/v1/tasks (postTaskAdd) and the Tasks page's row actions under
 // /api/v1/tasks (postTaskAction: edit, done, reopen (⌘Z and All's done list), delete, sub, and schedule, the timeline's drop), the
 // project dialog's POST /api/v1/projects (postProject) and POST /api/v1/tasks/project (postTaskProject) and POST /api/v1/data/ask
@@ -53,7 +54,7 @@ export interface Overview {
   /** The revision the UI server's build was made from (its dist/ stamp); compared with WEB_REV. Null: unknown. */
   server_rev?: string | null;
   stages: Record<string, number>;
-  /** Open items blocked on a person plus the system actions: "Needs you (N)". */
+  /** The number of Needs-you rows: open items blocked on a person or the budget, plus one per system action (each alarm its own): "Needs you (N)". */
   needs_you: number;
   system_actions?: SystemAction[];
   running: number;
@@ -65,6 +66,25 @@ export interface Overview {
   plugins?: { issues: "github" | null };
   /** Absent when the server has no status function. */
   factory?: FactoryState | null;
+  /** Days left on the GitHub token from the last health run; "unknown" before one; null: no expiry check. */
+  github_token_days?: number | "unknown" | null;
+  /** The GitHub budget the controller stored after its last poll; null: none stored (GitHub off, or no poll yet). */
+  github_budget?: GitHubBudget | null;
+}
+
+/** The stored GitHub call budget (src/ui/github-budget.ts): `waiting` and `low` each show a banner on the Health tab. */
+export interface GitHubBudget {
+  limit: number;
+  remaining: number;
+  reset_at: string;
+  budget_share: number;
+  share_limit: number | null;
+  /** The calls this process counted in the window. */
+  counted: number;
+  state: "ok" | "low" | "waiting";
+  as_of: string;
+  replica_id: string | null;
+  wait_reason: string | null;
 }
 
 export interface SourceRef {
@@ -523,18 +543,69 @@ export interface CapabilitiesView {
   capabilities: CapabilityRow[];
 }
 
-/** An MCP server's approval status on the Plugins page: `waiting` until approved, `off` once revoked (design 11-packs). */
-export type McpStatus = "approved" | "waiting" | "off";
+/**
+ * An MCP server's or pack tool's approval status on the Plugins page: `waiting` until approved, `off` once revoked
+ * (design 11-packs), `missing` when an imported server's source file no longer holds it (design 11-plugin-import).
+ */
+export type McpStatus = "approved" | "waiting" | "off" | "missing";
 
-/** `/api/v1/plugins` (design 09-dashboard-app, 2026-11-15): what the agents can use, one list per tab. Names and descriptions only. */
+/** `/api/v1/plugins` (design 09-dashboard-app, 2026-11-16): what the agents can use, one list per tab. Names and descriptions only. */
 export interface PluginsView {
   as_of: string;
-  /** The pack approvals route's token; null when this server cannot approve from the page. */
+  /** The pack write route's token (approve, revoke, import, add); null when this server cannot write packs from the page. */
   csrf_token: string | null;
   mcp: { name: string; description: string | null; source: "pack"; status: McpStatus }[];
-  skills: { name: string; folder: string; description: string | null; roles: string[]; last_used: string | null }[];
+  /**
+   * The skill folders' skills, and the imported ones (design 11-plugin-import): an imported row adds its `source`, its
+   * SKILL.md `path` and its `state` (`missing` or `changed`: not offered to agents). A folder skill's row has none.
+   */
+  skills: {
+    name: string; folder: string; description: string | null; roles: string[]; last_used: string | null;
+    source?: "claude" | "codex"; path?: string; state?: "ok" | "missing" | "changed";
+  }[];
   tools: { name: string; description: string; read_only: boolean; origin: "broker" | "pack"; roles: string[]; last_used: string | null }[];
+  /** Each pack tool's status, by its row name (`pack:tool:<name>`). Absent from an older server. */
+  tool_status?: Record<string, McpStatus>;
+  /** The configured skill folders as the config file holds them; [] when none. Absent from an older server. */
+  skill_folders?: string[];
+  /** The Settings route's token the skill folder edits are sent with; null when this server has no config file writer. */
+  settings_token?: string | null;
 }
+
+/** One skill or MCP server the user-level Claude Code or Codex config holds (design 11-plugin-import). Never a value. */
+export interface ImportItem {
+  kind: "skill" | "mcp_server";
+  source: "claude" | "codex";
+  name: string;
+  /** A skill's SKILL.md path; null for an MCP server. */
+  path: string | null;
+  env_keys: string[];
+  header_keys: string[];
+  /** Already stored: a second import adds nothing. */
+  imported: boolean;
+  /** The scan rules an MCP server fails; it cannot be imported while non-empty. */
+  refused: string[];
+}
+
+/** `/api/v1/plugins/import`: what the user configs hold, and each source whose config did not parse. */
+export interface PluginsImportView {
+  as_of: string;
+  items: ImportItem[];
+  errors: { source: string; message: string }[];
+}
+
+/** One selected item's outcome: stored, already added, refused (with its rules) or not found. */
+export interface ImportResult {
+  kind: ImportItem["kind"];
+  source: ImportItem["source"];
+  name: string;
+  outcome: "stored" | "already_added" | "refused" | "not_found";
+  rules: string[];
+  line: string;
+}
+
+/** The answer to an Add: the CLI's lines, `refused` when a scan refused an item. */
+export type PackWriteResult = { ok: true; lines: string[]; refused: boolean } | { ok: false; error: string };
 
 /** One integration interface on the Settings page. `configured`: the plugin factory.config.json selects. */
 export interface IntegrationRow {
@@ -564,7 +635,8 @@ export interface FileKeysView {
 export type SettingsWrite =
   | { action: "set"; key: string; value: string; project?: string }
   | { action: "reset"; key: string; project?: string }
-  | { action: "edit-file"; key: string; value: string; confirm: boolean };
+  | { action: "edit-file"; key: string; value: string; confirm: boolean }
+  | { action: "project-label"; value: string };
 
 /** The answer to a write: the CLI's lines (an edit-file also with its filed item and branch), or its refusal. */
 export type WriteResult = { ok: true; lines: string[]; filed?: { item: string; branch: string } } | { ok: false; error: string };
@@ -682,15 +754,30 @@ export interface RuleRow {
   target?: string;
 }
 
+/** One incident behind an entry: its linked ID (T-, L-, E-), day, the agent's proposal, the owner's quote, its root reason. */
+export interface RuleEvidence {
+  ref?: string;
+  date?: string;
+  proposal?: string;
+  quote?: string;
+  root_reason?: string;
+}
+
 /** One entry's detail from `/api/v1/rules/entry?id=`; a field the ledger did not print is absent. */
 export interface RuleDetail {
   id: string;
+  /** One line on what the entry is. */
+  description?: string;
   default?: string;
   exceptions?: string;
   kind?: string;
   target?: string;
+  /** A proposal's current lines of its target and the change it proposes, when the ledger carries them. */
+  current?: string;
+  proposed?: string;
   incidents?: number;
-  quotes?: string[];
+  /** The incidents, newest first. */
+  evidence?: RuleEvidence[];
   root_reason?: string;
   scope?: string;
 }
@@ -743,6 +830,38 @@ export interface RulesView {
   judge: string | null;
   home: { path: string; missing: string | null } | null;
   turn_on: string | null;
+  /** The latest improve report and Run now (absent from an older server), with the ledger on or off. */
+  improve?: ImproveView;
+}
+
+/**
+ * The `improve` field of `/api/v1/rules`: the latest report (null: no run has reported), and `run_now` whether the
+ * viewer may queue a run (approve_spec), with the token POST /api/v1/improve/run takes (null when they may not).
+ */
+export interface ImproveView {
+  report: ImproveReportView | null;
+  run_now: boolean;
+  csrf_token: string | null;
+}
+
+export interface ImproveReportView {
+  window_start: string;
+  window_end: string;
+  created_at: string;
+  /** The runs in all groups. */
+  runs: number;
+  /** Single-run patterns. */
+  patterns: number;
+  groups: ImproveGroupView[];
+}
+
+/** One failure group: its draft's cause and fix, or one note (withheld, failed, skipped); `filing` null: not filed yet. */
+export interface ImproveGroupView {
+  error_code: string;
+  detail: string | null;
+  runs: number;
+  draft: { cause: string | null; fix: string | null; note: string | null } | null;
+  filing: string | null;
 }
 
 export type RuleVerdict = "promote" | "reject" | "hold" | "retire";
@@ -891,8 +1010,6 @@ export interface FailureRun {
 }
 export interface FailureGroup {
   code: string;
-  /** Plain words for a known code; null for an unknown one. */
-  description: string | null;
   count: number;
   last_seen: string | null;
   items: number;
@@ -914,7 +1031,11 @@ export interface SpendTotals {
   runs: number;
   unknown: number;
 }
-export interface SpendDay extends SpendTotals { day: string }
+export interface SpendDay extends SpendTotals {
+  day: string;
+  /** The day's items with the most known cost, at most 3, most first. */
+  top: { work_item_id: string; title: string | null; cost_usd: number }[];
+}
 export interface SpendItem extends SpendTotals {
   work_item_id: string;
   title: string | null;
@@ -953,17 +1074,21 @@ export const API = {
   health: "/api/v1/health",
   failures: (window: string) => `/api/v1/failures?window=${window}`,
   spend: "/api/v1/spend",
+  /** The spend of one UTC day (YYYY-MM-DD): its items only. */
+  spendDay: (day: string) => `/api/v1/spend?from=${day}&to=${day}`,
   unreviewedMerges: "/api/v1/unreviewed-merges",
   settings: "/api/v1/settings",
   capabilities: "/api/v1/settings/capabilities",
   plugins: "/api/v1/plugins",
   packApprovals: "/api/v1/packs/approvals",
+  pluginsImport: "/api/v1/plugins/import",
   pauses: "/api/v1/pauses",
   resume: "/api/v1/pauses/resume",
   standing: "/api/v1/standing",
   rules: "/api/v1/rules",
   ruleVerdict: "/api/v1/rules/verdict",
   ruleEntry: (id: string) => `/api/v1/rules/entry?id=${encodeURIComponent(id)}`,
+  improveRun: "/api/v1/improve/run",
   tasks: "/api/v1/tasks",
   /** The tasks' read, filtered to one task project's tasks when `project` is a slug. */
   tasksIn: (project: string | null) => (project === null ? "/api/v1/tasks" : `/api/v1/tasks?project=${encodeURIComponent(project)}`),
@@ -1086,7 +1211,7 @@ async function postOnce<T>(url: string, token: string, body: unknown): Promise<{
   return { ok: res.ok, status: res.status, value };
 }
 
-/** POST /api/v1/settings: a set, reset or edit-file, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
+/** POST /api/v1/settings: a set, reset, edit-file or project-label, with the CSRF token. A refusal comes back as `{ ok: false, error }`. */
 export async function postSettings(token: string, body: SettingsWrite): Promise<WriteResult> {
   const r = await postJson<{ ok?: boolean; lines?: string[]; error?: string; item?: string; branch?: string }>(API.settings, token, body);
   if (r.ok && r.value.ok) {
@@ -1141,10 +1266,41 @@ export async function postRuleVerdict(
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 
-/** POST /api/v1/packs/approvals: approve or revoke an MCP server's current description, as `factory pack approve|revoke`. */
-export async function postPackApproval(token: string, action: "approve" | "revoke", name: string): Promise<{ ok: true; line: string } | { ok: false; error: string }> {
-  const r = await postJson<{ line?: string; error?: string }>(API.packApprovals, token, { action, kind: "mcp_server", name });
+/** POST /api/v1/improve/run: the queued run's ID, or the refusal with the run already queued or running (409). */
+export async function postImproveRun(token: string): Promise<{ ok: true; run_id: string } | { ok: false; error: string; run_id: string | null }> {
+  const r = await postJson<{ run_id?: string; error?: string }>(API.improveRun, token, {});
+  if (r.ok && r.value.run_id) return { ok: true, run_id: r.value.run_id };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }), run_id: r.value.run_id ?? null };
+}
+
+/** POST /api/v1/packs/approvals: approve or revoke an MCP server's or pack tool's current description, as `factory pack approve|revoke`. */
+export async function postPackApproval(token: string, action: "approve" | "revoke", name: string, kind: "mcp_server" | "tool" = "mcp_server"): Promise<{ ok: true; line: string } | { ok: false; error: string }> {
+  const r = await postJson<{ line?: string; error?: string }>(API.packApprovals, token, { action, kind, name });
   if (r.ok) return { ok: true, line: r.value.line ?? "" };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** POST /api/v1/packs/approvals `add`: a pack folder or one descriptor file, stored as pending. */
+export async function postPackAdd(token: string, path: string): Promise<PackWriteResult> {
+  const r = await postJson<{ lines?: string[]; refused?: boolean; error?: string }>(API.packApprovals, token, { action: "add", path });
+  if (r.ok) return { ok: true, lines: r.value.lines ?? [], refused: r.value.refused === true };
+  return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
+}
+
+/** GET /api/v1/plugins/import with the CSRF token (it reads the user's own configs): read once per dialog, never polled. */
+export async function getPluginsImport(token: string): Promise<PluginsImportView> {
+  const res = await fetch(API.pluginsImport, { headers: { accept: "application/json", "x-csrf-token": token } });
+  if (!res.ok) throw new Error(`${API.pluginsImport}: HTTP ${res.status}`);
+  return (await res.json()) as PluginsImportView;
+}
+
+/** POST /api/v1/plugins/import: stores the selected items, as `factory plugins import`. A refusal (400, 403) is `{ ok: false, error }`. */
+export async function postPluginsImport(
+  token: string,
+  items: readonly Pick<ImportItem, "kind" | "source" | "name">[],
+): Promise<{ ok: true; results: ImportResult[] } | { ok: false; error: string }> {
+  const r = await postJson<{ results?: ImportResult[]; error?: string }>(API.pluginsImport, token, { items: items.map(({ kind, source, name }) => ({ kind, source, name })) });
+  if (r.ok) return { ok: true, results: r.value.results ?? [] };
   return { ok: false, error: r.value.error ?? t("api.http", { status: r.status }) };
 }
 

@@ -7,7 +7,7 @@ import { TimeBasedTicks } from "../shared/ticks/plugins/time-based/time-based-ti
 import type { HookDescriptor } from "../shared/hook.js";
 import { type RoleCatalog, SqlHookAudit, loadHooks, loadRoles, runHooks } from "../runtime/index.js";
 import { storeSql } from "../impl/store/sql/store-sql.js";
-import { PACK_TOOL_REFUSED, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
+import { PACK_TOOL_REFUSED, type PackRefusal as PackGrantRefusal, checkPackGrants, packRefusalMessage } from "../packs/pack-grants.js";
 import { type FactoryConfig, type Prompts, STALL_DEFAULTS, grantsFor, readOnlyOverlaps, readOnlyRunFields } from "../core/config.js";
 import { LiveSettings } from "../core/settings.js";
 import { DEFAULT_MODEL_TABLE, type ModelClass, type ModelNames, type ModelRunKind, type ModelTable, isModelRunKind, modelClassFor } from "../core/model-choice.js";
@@ -18,7 +18,7 @@ import { incompleteLabel, lastPrNotes, prBody } from "../core/pr-body.js";
 import type { MergeIO } from "../core/mechanical.js";
 import { Read, type ToolSpec } from "../core/tools/index.js";
 import { type Run, type RunOutcome, type RunUsage, type Timestamp, type WorkItem, type WorkerId, usageTokens } from "../core/types.js";
-import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
+import { type AgentRunResult, type AgentRunSpec, type PackCheckPoint, type PackMcpServer, type PackChecks, type PackGate, type PackRefusal, PROVIDER_SETUP, SESSION_ROLES, TOOLS_NOT_EXPOSED, toolsNotExposedMessage } from "../interfaces/agent-runner.js";
 import type { KeepAwake } from "../interfaces/keep-awake.js";
 import type { Sandbox, SandboxHandle } from "../interfaces/sandbox.js";
 import { STORE_BRANCH, type ToolCallContext, type ToolResult } from "../interfaces/tool-broker.js";
@@ -755,7 +755,8 @@ export class Worker {
       ? { id: opts.resume ?? globalThis.crypto.randomUUID(), resume: Boolean(opts.resume) }
       : null;
     // The run kind's broker tools and pack MCP servers from `tool_grants`; a refused pack entry fails the run before its agent (design 11-packs).
-    const { broker: tool_grants, mcp_servers, refused } = await checkPackGrants(storeSql(this.d.store), grantsFor(this.cfg.tool_grants, run.kind), this.cfg.packs_auto_approve_read_only === true, this.d.runner.runs_mcp_servers === true);
+    const { broker: tool_grants, mcp_servers, refused: packRefused } = await checkPackGrants(storeSql(this.d.store), grantsFor(this.cfg.tool_grants, run.kind), this.cfg.packs_auto_approve_read_only === true, this.d.runner.runs_mcp_servers === true);
+    const refused = [...packRefused, ...((await this.plugins.imported_mcp_refusals?.(mcp_servers)) ?? [])]; // imported MCP servers never start for a run (design 11-plugin-import, owner answer 1)
     if (refused.length > 0) throw new RunFailure(PACK_TOOL_REFUSED, packRefusalMessage(refused));
     if (tool_grants.length > 0 && !this.d.runner.exposes_tools) {
       throw new RunFailure(TOOLS_NOT_EXPOSED, toolsNotExposedMessage(tool_grants));
@@ -772,9 +773,7 @@ export class Worker {
     const on_tool_call = role.gate_hooks && this.packGate("on_tool_call", run, item, handle);
     const liveBefore = await this.liveUntracked(handle);
     const result = await this.d.runner.run({
-      run_id: run.id,
-      work_item_id: item.id,
-      role: run.kind,
+      run_id: run.id, work_item_id: item.id, role: run.kind,
       sandbox: handle,
       tool_grants,
       mcp_servers,
@@ -1037,6 +1036,7 @@ export interface WorkerPlugins {
   roles?: RoleCatalog;
   hooks?: readonly HookDescriptor[];
   pack_checks?: PackChecks;
+  /** Refuses each imported MCP server a run is granted as `not_started` (design 11-plugin-import, owner answer 1); absent: none. */ imported_mcp_refusals?: (servers: readonly PackMcpServer[]) => Promise<readonly PackGrantRefusal[]>;
 }
 
 /** A run an enabled `before_run` hook or a pack check refused (a veto, a timeout or an error): a task failure, not retried as infra. */

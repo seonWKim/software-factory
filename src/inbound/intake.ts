@@ -39,7 +39,8 @@ export const RECORD_TTL_MS = 7 * DAY_MS;
 
 export interface InboundConfig {
   readonly poll_interval_ms: number;
-  readonly inbox_retention_days: number;
+  /** `retention.raw_records_days` (design 08-retention): days a raw record is kept; 0 keeps them forever. */
+  readonly raw_records_days: number;
   readonly project_key: string;
 }
 
@@ -133,9 +134,11 @@ export class Inbound {
     await this.commit(COMMANDS_CURSOR, cursor, String(rows.at(-1)!.seq), null, async () => announced);
   }
 
-  /** Removes records past `inbox_retention_days` (the `prune` tick); a stream's only once its cursor passed them. */
+  /** Removes records past `retention.raw_records_days` (the `prune` tick); a stream's only once its cursor passed them. */
   async prune(t: Tick): Promise<void> {
-    const before = new Date(Date.parse(t.now) - this.d.config().inbox_retention_days * DAY_MS).toISOString();
+    const days = this.d.config().raw_records_days;
+    if (days === 0) return;
+    const before = new Date(Date.parse(t.now) - days * DAY_MS).toISOString();
     const streams: { type: SourceType; through: number }[] = [];
     for (const s of this.streams) {
       const cursor = await readCursor(this.d.db, inboxCursorName(s.type));
@@ -236,7 +239,7 @@ export class Inbound {
   ): Promise<void> {
     try {
       await this.d.db.transaction(async (tx) => {
-        if (fence && !(await fenceHolds(tx, this.d.db.dialect.forUpdate, fence))) throw new Stale(true);
+        if (fence && !(await fenceHolds(tx, fence))) throw new Stale(true);
         const messages = await write(tx);
         if (!(await moveCursor(tx, this.d.dialect, name, expected, next))) throw new Stale(false);
         await this.d.bus.publish(tx, messages);

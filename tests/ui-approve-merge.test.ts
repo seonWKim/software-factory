@@ -79,7 +79,7 @@ async function harness() {
   /** The page's deps for `actor`: the owner check asks the same auth plugin the controller asks. */
   const page = (actor: UserId): UiDeps => ({
     store, scanner: cleanScanner, clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], clock),
-    commands: { actor, source: "config", token: TOKEN, forge: true, localMerge: true, allowed: (action) => roles.authorize({ user_id: actor, attributes: {} }, action) },
+    commands: { actor, source: "config", token: TOKEN, forge: true, localMerge: true, allowed: (action) => roles.authorize({ user_id: actor }, action) },
   });
   const post = async (it: WorkItem, body: unknown, actor = OWNER): Promise<Reply> => {
     const r = await respond(page(actor), {
@@ -227,7 +227,7 @@ describe("Approve applies while the request is handled", () => {
 function pageWith(h: Awaited<ReturnType<typeof harness>>, scanner: UiDeps["scanner"]): UiDeps {
   return {
     store: h.store, scanner, clock: h.clock, lease_ms: 60_000, health: new HealthMonitor(async () => [], h.clock),
-    commands: { actor: OWNER, source: "config", token: TOKEN, allowed: (action) => h.roles.authorize({ user_id: OWNER, attributes: {} }, action) },
+    commands: { actor: OWNER, source: "config", token: TOKEN, allowed: (action) => h.roles.authorize({ user_id: OWNER }, action) },
   };
 }
 

@@ -1,6 +1,6 @@
 import { fixReferences, isRevertSubject, revertedShas, subjectOf, unique } from "../../core/links.js";
 import type { SourceRef } from "../../core/types.js";
-import type { ChangeLinks, Forge, ForgePollResult, PrChecks, PrMergeResult } from "../../interfaces/forge.js";
+import type { BaseChecks, ChangeLinks, Forge, ForgePollResult, PrChecks, PrMergeResult } from "../../interfaces/forge.js";
 
 /**
  * The local forge (docs/plugins/forge.md): changes live in the factory's own repository, named by their branch, so a
@@ -44,6 +44,11 @@ export class LocalForge implements Forge {
   /** No checks run on a local change: passed, as for a forge change with no checks. */
   async prChecks(): Promise<PrChecks> {
     return { state: "passed" };
+  }
+
+  /** No checks run on the local base either: passed, so the CI gate never waits on a red base. */
+  async baseChecks(): Promise<BaseChecks> {
+    return { state: "passed", head_sha: null };
   }
 
   async prCheckResults(): Promise<[]> {

@@ -6,9 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../web/src/App.js";
 
 // The Tasks page's Needs you section (design 09-dashboard-app; the Floor's list of design 09-status-page): one list first, one row per item that waits on the operator,
-// with its title, a one-line reason and the buttons that apply now. Items started past a deadlock are one summary
-// line under the list that links to Work items, never rows and never counted (decision 1); the open alarms are one
-// line that links to Failures, however many. A row with no stored reason says the item's state and the next step.
+// with its title, a one-line reason and the buttons that apply now. Items started past a deadlock are never rows and
+// never counted (decision 1). Each open alarm is its own row in the Check group: its text on one line, the full text
+// behind a toggle, and one primary action that opens it on Failures; no dismiss. A row with no stored reason says the
+// item's state and the next step.
 
 const AT = "2026-11-12T00:00:00.000Z";
 const cmd = (name: string) => ({ name, usage: `/${name}`, description: name, allowed: true, reason: null });
@@ -82,18 +83,57 @@ describe("Needs you on the Tasks page", () => {
     for (const n of [1, 2, 3, 4, 5]) expect(section.textContent).not.toContain(`Overlapping ${n}`);
   });
 
-  it("shows the open alarms as one line that links to Failures, whatever their number", async () => {
-    for (const n of [1, 4]) {
+  it("lists each open alarm as its own row in the Check group, counted in the section, with no Open alarms line", async () => {
+    for (const n of [1, 2]) {
       (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = Array.from({ length: n }, (_, i) => ALARM(i));
       mount();
-      const notes = await screen.findByRole("list", { name: "System actions" });
-      const alarms = notes.querySelectorAll('[data-action="alarm"]');
-      expect(alarms).toHaveLength(1);
-      expect(alarms[0]!.textContent).toContain(`Open alarms: ${n}.`);
-      expect(within(alarms[0] as HTMLElement).getByRole("link").getAttribute("href")).toBe("/app/failures");
-      // One line: no alarm text or command of its own.
-      expect(notes.textContent).not.toContain("Alarm: 0");
+      const section = await screen.findByRole("region", { name: "Needs you" });
+      const check = await within(section).findByRole("list", { name: "Check" });
+      const rows = [...check.querySelectorAll<HTMLElement>('li[data-check="alarm"]')];
+      expect(rows.map((r) => r.querySelector("[data-alarm-summary]")!.textContent)).toEqual(Array.from({ length: n }, (_, i) => `Alarm: ${i}`));
+      // The spec item and the alarms: the count is the rows.
+      expect(section.querySelector("h2")!.nextElementSibling!.textContent).toBe(String(1 + n));
+      expect(section.querySelectorAll("li[data-key], li[data-check]")).toHaveLength(1 + n);
+      for (const r of rows) {
+        expect(within(r).getByRole("link", { name: "Open on Failures" }).getAttribute("href")).toBe("/app/failures");
+        // One primary action and no dismiss control.
+        expect(r.querySelectorAll("button")).toHaveLength(0);
+        expect(r.textContent).not.toMatch(/dismiss/i);
+      }
+      expect(document.body.textContent).not.toContain("Open alarms");
+      expect(screen.queryByRole("list", { name: "System actions" })).toBeNull();
       cleanup();
     }
+  });
+
+  it("an alarm row shows its text on one line and the full text behind a toggle; a long text wraps and never widens the page", async () => {
+    const long = `Alarm: checks_failed failed 4 runs on several items: ${"npm test exited 1 in packages/very-long-workspace-name/".repeat(5)}${"x".repeat(80)}`;
+    expect(long.length).toBeGreaterThan(200);
+    (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [{ code: "alarm", text: long, command: "Failures page (/app/failures)", until: AT }];
+    mount();
+    const row = (await screen.findByRole("list", { name: "Check" })).querySelector<HTMLElement>('li[data-check="alarm"]')!;
+    const summary = row.querySelector<HTMLElement>("[data-alarm-summary]")!;
+    expect(summary.className.split(" ")).toContain("truncate");
+    expect(summary.closest("li > div")!.className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "grow", "basis-64"]));
+    const toggle = row.querySelector<HTMLDetailsElement>("details[data-alarm-full]")!;
+    expect(toggle.open).toBe(false);
+    expect(toggle.querySelector("summary")!.textContent).toBe("Full text");
+    const full = toggle.querySelector("p")!;
+    expect(full.textContent).toBe(long);
+    expect(full.className.split(" ")).toContain("wrap-anywhere");
+    expect(row.className.split(" ")).toContain("flex-wrap");
+  });
+
+  it("lists each other system action as one row with its command in the Check group", async () => {
+    (responses["/api/v1/overview"] as { system_actions: unknown[] }).system_actions = [
+      { code: "migration_pending", text: "Schema at version 3 of 8", command: "npm run migrate", until: null },
+      { code: "worker_pause", text: "2 worker pauses in effect (factory workers pause)", command: "factory workers resume", until: null },
+    ];
+    mount();
+    const section = await screen.findByRole("region", { name: "Needs you" });
+    const rows = [...within(section).getByRole("list", { name: "Check" }).querySelectorAll<HTMLElement>("li")];
+    expect(rows.map((r) => r.dataset.check)).toEqual(["migration_pending", "worker_pause"]);
+    expect(rows.map((r) => r.querySelector("code")!.textContent)).toEqual(["npm run migrate", "factory workers resume"]);
+    expect(section.querySelector("h2")!.nextElementSibling!.textContent).toBe("3");
   });
 });

@@ -1,12 +1,7 @@
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
-import { Plugins, approveMergeCheck, buildStatsStore, loadConfig, localProject, resolveProject, settingsBase } from "../../../compose.js";
-import { cliUserConfig } from "../../../core/config.js";
-import { cliIdentity } from "../../../core/local-cli.js";
+import { Plugins, loadConfig, localProject, ownerRefusal, resolveProject, settingsBase } from "../../../compose.js";
 import { MODE_USAGE, SETTINGS_TOP_WORDS, SETTINGS_USAGE, parseModeArgs, parseSettingsArgs, runSettings } from "../../../settings-cmd.js";
 import { configWriter, storeProjectResolver } from "../../../ui/settings-api.js";
 import { defineCommand } from "../../command.js";
-import { cliEnvironment } from "../../support.js";
 
 export default defineCommand({
   names: SETTINGS_TOP_WORDS,
@@ -20,7 +15,7 @@ export default defineCommand({
                tighten-only key need approve_merge.
                --project <owner/name> for max_attempts, max_diff_lines, max_diff_files (tighten only) and mode
                edit-file sets one file-only key of factory.config.json on a new local branch factory/<id>, filed
-               as a local item you merge with factory merge <id>; a guard, floor or permission needs --confirm
+               as a local item you merge with npm run factory -- merge <id>; a guard, floor or permission needs --confirm
   mode auto|manual [--project <owner/name>]
                settings set mode: auto approves specs below tier 4 with no owner-only decision and merges
                reviewed local changes up to auto_merge_max_tier (never tier 4 or the gate list); manual
@@ -34,17 +29,13 @@ export default defineCommand({
       console.log(`${action.error}\n${isMode ? MODE_USAGE : SETTINGS_USAGE}`);
       return 1;
     }
-    const loaded = await ctx.load();
-    const identity = cliIdentity(cliUserConfig(loaded.file), await cliEnvironment(loaded.root));
-    await mkdir(join(loaded.stateDir, "db"), { recursive: true, mode: 0o700 });
-    const store = await buildStatsStore(loaded);
-    try {
+    const identity = await ctx.identity();
+    // withStore migrates the store first, as for the other commands.
+    return ctx.withStore(async (store, loaded) => {
       // The configured egress scanner (G5): a message_style it flags is refused before anything is stored.
       const plugins = new Plugins(loaded);
       const clock = await plugins.clock();
       const scanner = await plugins.scanner(await plugins.secrets());
-      // Refuses on MySQL while schema steps are pending, as the other commands do.
-      await store.migrate();
       const { owner, name } = loaded.config.repo;
       // Only for --project and edit-file: the configured repo's key, from the store, else the forge (design
       // 2026-11-07); with no GitHub plugin selected, the local key (design 05-sources, Local startup).
@@ -62,7 +53,7 @@ export default defineCommand({
           resolveProject: project,
           // An ID, never a display name: the CLI identity (issue #318), the one the approve_merge check asks about.
           actor: identity.user,
-          mayApproveMerge: await approveMergeCheck(loaded, store, identity.user),
+          mayApproveMerge: ownerRefusal(loaded, store, identity.user, "approve_merge"),
           scanner,
           // The file-only key writer, the same one the Settings write route runs (design 08-settings).
           ...(action.action === "edit-file"
@@ -73,8 +64,6 @@ export default defineCommand({
       );
       for (const line of r.lines) console.log(line);
       return r.ok ? 0 : 1;
-    } finally {
-      await store.close();
-    }
+    });
   },
 });

@@ -8,7 +8,7 @@ import { NOT_OWNER, NOT_OWNER_REPLY, OwnerAuth, authorizeOwner } from "../src/co
 import { runLocalCli } from "../src/core/local-cli.js";
 import type { UserId, WorkItem } from "../src/core/types.js";
 import { startIdentity } from "../src/identity/index.js";
-import { AuditedAuthProvider, controllerServiceAuth, outboundServiceAuth } from "../src/impl/auth/audited-auth.js";
+import { controllerServiceAuth, outboundServiceAuth } from "../src/impl/auth/audited-auth.js";
 import { PassportToolBroker } from "../src/impl/broker/passport-broker.js";
 import type { ExternalIdentity } from "../src/interfaces/auth-provider.js";
 import type { ToolBroker } from "../src/interfaces/tool-broker.js";
@@ -40,7 +40,7 @@ async function setup() {
   await store.createLinkCode(OWNER, "BCDEFGHJKM");
   await store.redeemLinkCode("BCDEFGHJKM", { provider: SLACK_OWNER.provider, subject: SLACK_OWNER.subject });
   const identity = await startIdentity({ db: store.db, stateDir: await mkdtemp(join(tmpdir(), "sf-owner-")) });
-  const auth = new AuditedAuthProvider(new OwnerAuth(store), identity.passports);
+  const auth = new OwnerAuth(store);
   const source = new FakeSource();
   const controller = new ControllerRole({ store, source, auth, clock, config, log: silent, scanner: cleanScanner });
   let n = 0;
@@ -186,7 +186,7 @@ describe("service principals keep their passport checks and skip the owner check
   async function ownerless() {
     const { store } = await newStore();
     const identity = await startIdentity({ db: store.db, stateDir: await mkdtemp(join(tmpdir(), "sf-service-")) });
-    expect(await new OwnerAuth(store).authorize({ user_id: "service:controller" as UserId, attributes: {} }, "approve_spec")).toEqual({ allow: false, reason: NOT_OWNER });
+    expect(await new OwnerAuth(store).authorize({ user_id: "service:controller" as UserId }, "approve_spec")).toEqual({ allow: false, reason: NOT_OWNER });
     return { store, identity };
   }
 

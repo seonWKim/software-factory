@@ -479,15 +479,52 @@ describe("plugin agents-home", () => {
       scope: "software, CLI",
       root_reason: "agents rename flags without checking callers",
       incidents: 3,
-      quotes: ["keep --json, scripts use it", "don't rename the flag"],
+      evidence: [{ ref: "wi_1", quote: "keep --json, scripts use it" }, { ref: "wi_2", quote: "don't rename the flag" }, { ref: "wi_3" }],
     });
     const proposal = ["# P-20261103-34e9", "kind: edit-asset", "target: prompts/review.md", "root reason: reviews skip the tests", "  and nobody asks"].join("\n");
     expect(parseShow("P-20261103-34e9", proposal)).toEqual({
       id: "P-20261103-34e9", kind: "edit-asset", target: "prompts/review.md", root_reason: "reviews skip the tests\nand nobody asks",
     });
     // Incidents with no number count their rows; a bare reference has no words.
-    expect(parseShow("C-1", "## incidents\n- wi_1\n- wi_2")).toEqual({ id: "C-1", incidents: 2 });
+    expect(parseShow("C-1", "## incidents\n- wi_1\n- wi_2")).toEqual({ id: "C-1", incidents: 2, evidence: [{ ref: "wi_1" }, { ref: "wi_2" }] });
     expect(parseShow("C-1", "  \n")).toBeNull();
+  });
+
+  it("the show text: each incident's ID, optional date, proposal, quote and root reason, newest first; a description and the lines a proposal changes", () => {
+    const text = [
+      "# P-20261103-34e9",
+      "설명: Quiet the notify script at night",
+      "kind: edit-asset",
+      "target: bin/evolve",
+      "현재: notify always",
+      "  even at 3am",
+      "변경: notify 08:00-22:00 only",
+      "## incidents 3",
+      "- T-20261101-aa 2026-11-01 — \"too loud\"",
+      "  proposal: keep notifying",
+      "  근본 원인: no quiet hours",
+      "- L-0042 — “stop at night”",
+      "  제안: notify every hour",
+      "- E-7 (2026-11-03) — \"again at 3am\"",
+      "  date: 2026-11-04",
+      "  root reason: the schedule ignores the hour",
+      "근본 원인: nobody set quiet hours",
+    ].join("\n");
+    expect(parseShow("P-20261103-34e9", text)).toEqual({
+      id: "P-20261103-34e9",
+      description: "Quiet the notify script at night",
+      kind: "edit-asset",
+      target: "bin/evolve",
+      current: "notify always\neven at 3am",
+      proposed: "notify 08:00-22:00 only",
+      root_reason: "nobody set quiet hours",
+      incidents: 3,
+      evidence: [
+        { ref: "E-7", date: "2026-11-04", quote: "again at 3am", root_reason: "the schedule ignores the hour" },
+        { ref: "T-20261101-aa", date: "2026-11-01", quote: "too loud", proposal: "keep notifying", root_reason: "no quiet hours" },
+        { ref: "L-0042", quote: "stop at night", proposal: "notify every hour" },
+      ],
+    });
   });
 
   it("show runs evolve show <id> and reads its text; it writes nothing; an empty text is null; a bad ID runs no CLI", async () => {

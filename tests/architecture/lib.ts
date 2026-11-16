@@ -2,8 +2,10 @@
 //
 // Ratchet: today's code breaks most rules. Each test compares what it finds with
 // tests/architecture/known-violations/<test>.json and fails on a new violation, and also on a listed one that
-// is gone, so the lists only shrink. `SF_RATCHET_UPDATE=1 npm test -- tests/architecture` rewrites the lists:
-// use it only to shrink them, and say so in the commit.
+// is gone, so the lists only shrink. Two forms: a list of named violations (`ratchet`), or a count budget per key
+// (`ratchetCounts`), which a new violation exceeds whatever the JSON names. A rule with no violations left is a
+// hard rule: its test expects none and reads no list. `SF_RATCHET_UPDATE=1 npm test -- tests/architecture`
+// rewrites the lists: use it only to shrink them, and say so in the commit.
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -84,14 +86,27 @@ export function ratchet(test: string, found: readonly string[]): void {
 
 /** Budget form: a count per key may only fall. A fall must be written back (the list shrinks with the code). */
 export function ratchetCounts(test: string, found: Readonly<Record<string, number>>): void {
-  const file = join(KNOWN, `${test}.json`);
-  const current = Object.fromEntries(Object.entries(found).filter(([, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b)));
+  const current = positiveCounts(found);
   if (UPDATE) {
-    writeFileSync(file, JSON.stringify(current, null, 2) + "\n");
+    writeFileSync(join(KNOWN, `${test}.json`), JSON.stringify(current, null, 2) + "\n");
     return;
   }
+  expect(countDrift(test, current)).toEqual({ grew: [], fell_but_list_not_lowered: [] });
+}
+
+/**
+ * How `found` differs from the budgets in known-violations/<test>.json: keys over their budget (a key with no
+ * budget has 0), and budgets the count fell below. Both must be empty for the ratchet to pass.
+ */
+export function countDrift(test: string, found: Readonly<Record<string, number>>): { grew: string[]; fell_but_list_not_lowered: string[] } {
+  const file = join(KNOWN, `${test}.json`);
   const known: Record<string, number> = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  const current = positiveCounts(found);
   const grew = Object.entries(current).filter(([k, n]) => n > (known[k] ?? 0)).map(([k, n]) => `${k}: ${known[k] ?? 0} → ${n}`);
   const fell = Object.entries(known).filter(([k, n]) => (current[k] ?? 0) < n).map(([k, n]) => `${k}: ${n} → ${current[k] ?? 0}`);
-  expect({ grew, fell_but_list_not_lowered: fell }).toEqual({ grew: [], fell_but_list_not_lowered: [] });
+  return { grew, fell_but_list_not_lowered: fell };
+}
+
+function positiveCounts(found: Readonly<Record<string, number>>): Record<string, number> {
+  return Object.fromEntries(Object.entries(found).filter(([, n]) => n > 0).sort(([a], [b]) => a.localeCompare(b)));
 }
