@@ -423,8 +423,11 @@ export function workItemIdFromBranch(branch: string, prefix: string): string | n
  */
 const RATCHET_LIST = /^tests\/architecture\/known-violations\/[^/]+\.json$/;
 
-/** `path` equals `a`, or sits under `a` when `a` ends in `/`. */
-function under(path: string, a: string): boolean {
+/**
+ * The pure prefix test: `path` equals `a`, or sits under `a` when `a` ends in `/`. Overlap checks (coordination's
+ * shared paths, hotspots, mechanical paths) use this, not `isCovered`, which also always covers the ratchet lists.
+ */
+export function isUnder(path: string, a: string): boolean {
   return path === a || (a.endsWith("/") && path.startsWith(a));
 }
 
@@ -434,7 +437,7 @@ function under(path: string, a: string): boolean {
  * the edit hook, so all use one rule.
  */
 export function isCovered(path: string, allowed: readonly string[]): boolean {
-  return RATCHET_LIST.test(path) || allowed.some((a) => under(path, a));
+  return RATCHET_LIST.test(path) || allowed.some((a) => isUnder(path, a));
 }
 
 /**
@@ -457,7 +460,7 @@ export const SESSION_RELEASED = "session_released";
  */
 export function pathsOverlap(a: readonly string[], b: readonly string[]): string[] {
   const out = new Set<string>();
-  for (const x of a) for (const y of b) if (under(y, x)) out.add(y); else if (under(x, y)) out.add(x);
+  for (const x of a) for (const y of b) if (isUnder(y, x)) out.add(y); else if (isUnder(x, y)) out.add(x);
   return [...out].sort();
 }
 

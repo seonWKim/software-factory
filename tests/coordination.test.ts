@@ -16,8 +16,8 @@ import {
   learnedWeight,
   parseDependsOn,
   pathWeight,
-  sharedPaths,
 } from "../src/core/coordination.js";
+import { pathsOverlap } from "../src/core/policy.js";
 import { statusOf } from "../src/core/status-label.js";
 
 const S = DEFAULT_COORDINATION;
@@ -45,10 +45,21 @@ describe("coordination cost (design §5, 2026-11-03)", () => {
     for (const p of [...DEFAULT_HOTSPOTS, ...DEFAULT_MECHANICAL]) expect(existsSync(p), p).toBe(true);
   });
 
-  it("shared paths use the scope gate's coverage rule; the more specific path is the shared one", () => {
-    expect(sharedPaths(["src/", "docs/a.md"], ["src/core/x.ts", "docs/a.md", "tests/"])).toEqual(["docs/a.md", "src/core/x.ts"]);
-    expect(sharedPaths(["src/core/"], ["src/"])).toEqual(["src/core/"]);
-    expect(sharedPaths(["src/a.ts"], ["src/ab.ts", "src/a"])).toEqual([]);
+  it("shared paths are a pure prefix match; the more specific path is the shared one", () => {
+    expect(pathsOverlap(["src/", "docs/a.md"], ["src/core/x.ts", "docs/a.md", "tests/"])).toEqual(["docs/a.md", "src/core/x.ts"]);
+    expect(pathsOverlap(["src/core/"], ["src/"])).toEqual(["src/core/"]);
+    expect(pathsOverlap(["src/a.ts"], ["src/ab.ts", "src/a"])).toEqual([]);
+  });
+
+  // The ratchet lists are always writable by the scope rule (design 04-triage, 2026-11-16), but that must not
+  // make them overlap every path: coordination uses the pure prefix test.
+  it("a ratchet list shares no path, hotspot or mechanical weight with an unrelated path", () => {
+    const list = "tests/architecture/known-violations/file-budget.json";
+    expect(pathsOverlap([list], ["src/x.ts"])).toEqual([]);
+    expect(pathsOverlap(["src/x.ts"], [list])).toEqual([]);
+    expect(coordinationCost([list], ["src/x.ts"], none, S).cost).toBe(0);
+    expect(pathWeight("src/x.ts", none, { ...S, hotspots: [list], mechanical: [list] })).toMatchObject({ weight: 1, hotspot: false });
+    expect(pathsOverlap([list], [list])).toEqual([list]);
   });
 
   it("two ordinary shared files cost 2.0 (parallel at 2.5); a hotspot costs 3.0 (held)", () => {
