@@ -4,7 +4,7 @@
 
 import { useState } from "react";
 import { Button, Tree, TreeItem, TreeItemContent } from "react-aria-components";
-import type { ItemRow } from "../api.js";
+import type { ItemRow, Items } from "../api.js";
 import { Badge } from "../components/ui/parts.js";
 import { LINK_CLASS } from "../components/ui/link-style.js";
 import { t } from "../i18n/index.js";
@@ -35,7 +35,7 @@ const issueNumber = (it: ItemRow): number | null => {
   return m ? Number(m[1]) : null;
 };
 
-const needsYou = (it: ItemRow) => (NEEDS_YOU_LEVELS as readonly string[]).includes(it.level);
+const needsYou = (it: ItemRow) => (NEEDS_YOU_LEVELS as readonly string[]).includes(it.item_phase);
 
 /** Held behind another item: a held claim, or a phase waiting for the phase before it. */
 export function isHeld(it: ItemRow): boolean {
@@ -47,7 +47,7 @@ function inState(it: ItemRow, state: string | null): boolean {
   if (state === null) return true;
   if (state === "needs") return needsYou(it);
   if (state === HELD) return isHeld(it);
-  return it.level === state;
+  return it.item_phase === state;
 }
 
 /** True when the title or the source id holds the search text (a leading # is optional). */
@@ -65,7 +65,7 @@ export interface TreeFilter {
 
 /** Whether a row passes the filters: closed rows only with Show closed (or the Closed filter). */
 export function itemMatches(it: ItemRow, f: TreeFilter): boolean {
-  if (it.level === "closed" && !f.showClosed && f.state !== "closed") return false;
+  if (it.item_phase === "closed" && !f.showClosed && f.state !== "closed") return false;
   return inState(it, f.state) && inSearch(it, f.q);
 }
 
@@ -100,14 +100,17 @@ export function parentIds(nodes: readonly TreeNode[]): string[] {
 
 /** The expanded rows when nothing is saved: every parent that has an open phase. */
 export function defaultExpanded(nodes: readonly TreeNode[]): string[] {
-  return nodes.flatMap((n) => (n.children.some((c) => c.item.level !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
+  return nodes.flatMap((n) => (n.children.some((c) => c.item.item_phase !== "closed") ? [n.item.id, ...defaultExpanded(n.children)] : defaultExpanded(n.children)));
 }
 
-/** The item counts of the summary line, over the open items: each is also a state filter. Queued is a run count (pages.tsx, useQueuedRuns). */
-export function summaryCounts(rows: readonly ItemRow[]) {
-  const open = rows.filter((r) => r.level !== "closed");
+/**
+ * The counts of the summary line: running is the server's count of running runs (`counts`, the same number as
+ * Activity's), held and needs count the open items, each also a state filter. Queued is a run count (pages.tsx, useQueuedRuns).
+ */
+export function summaryCounts(rows: readonly ItemRow[], counts: Items["counts"]) {
+  const open = rows.filter((r) => r.item_phase !== "closed");
   return {
-    running: open.filter((r) => r.level === "running").length,
+    running: counts.running,
     held: open.filter(isHeld).length,
     needs: open.filter((r) => needsYou(r)).length,
   };
@@ -134,7 +137,7 @@ function Row({ node, now, byNumber }: { node: TreeNode; now: number; byNumber: R
     <div className={cn("flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2 gap-y-1 py-1", node.context && "text-text-2")}>
       <SourceLink source={it.source} itemId={it.id} className="shrink-0" />
       <Link href={itemPath(it.id)} className={cn("min-w-0 truncate font-medium", LINK_CLASS)}>{it.title ?? shortSource(it.source.id)}</Link>
-      <Badge level={it.level}>{LEVEL_LABELS[it.level] ?? it.level}</Badge>
+      <Badge level={it.item_phase}>{LEVEL_LABELS[it.item_phase] ?? it.item_phase}</Badge>
       {waits && (
         waits.id ? (
           <Link href={itemPath(waits.id)} className={cn(CHIP, LINK_CLASS)} data-waits-for>{t("tree.waitsFor", { label: waits.label })}</Link>

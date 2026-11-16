@@ -17,7 +17,7 @@ import { cn } from "../lib/cn.js";
 import { useUrlParam } from "../lib/url-param.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
-import { LEVEL_LABELS, ago, detailLevel, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
+import { LEVEL_LABELS, ago, isHttpUrl, shortRev, shortSource, tokens } from "../lib/format.js";
 import { Link } from "../nav.js";
 import { BASE, itemPath } from "../pages.js";
 import { ItemsTable, MergeCheckNote, byId, PersonName, QueueTable, RunningTable, SourceLink, WhyText, WorkerName, useNow, useViewer } from "./common.js";
@@ -204,7 +204,7 @@ export function ActivityPage() {
   return (
     <>
       <PageHeader title={t("page.activity")} />
-      <Section title={t("running.label")} count={runs.data?.runs.filter((r) => r.status === "running").length}>
+      <Section title={t("running.label")} count={o?.running}>
         {runs.isError ? <ErrorNote error={runs.error} /> : !runs.data ? <Loading rows={2} /> : <RunningTable runs={runs.data.runs} items={map} now={now} />}
       </Section>
       {o && (o.unreviewed_merges_7d ?? 0) > 0 && (
@@ -220,7 +220,7 @@ export function ActivityPage() {
               [t("activity.succeeded"), String(o.last_24h.succeeded)],
               [t("activity.failed"), String(o.last_24h.failed), `${BASE}failures?window=24h`],
               [t("col.tokens"), tokens(o.last_24h.tokens)],
-              [t("activity.openItems"), String(Object.entries(o.stages).filter(([s]) => s !== "CLOSED").reduce((n, [, v]) => n + v, 0))],
+              [t("activity.openItems"), String(o.open)],
             ].map(([k, v, href]) => (
               <div key={k} className="rounded-control border border-border px-3 py-2">
                 <dt className="text-xs text-text-2">{k}</dt>
@@ -267,8 +267,8 @@ function useQueuedRuns() {
 }
 
 /** The tree's summary line; each count is a button that sets the matching state filter. */
-function Summary({ rows, queued, rateLimit, onFilter }: { rows: readonly ItemRow[]; queued: number | undefined; rateLimit: string; onFilter: (s: string) => void }) {
-  const c = summaryCounts(rows);
+function Summary({ rows, counts, queued, rateLimit, onFilter }: { rows: readonly ItemRow[]; counts: Items["counts"]; queued: number | undefined; rateLimit: string; onFilter: (s: string) => void }) {
+  const c = summaryCounts(rows, counts);
   const parts: [string, number | string, string][] = [[t("items.running"), c.running, "running"], [t("items.queued"), queued ?? "…", "queued"], [t("items.heldLower"), c.held, HELD], [t("items.needs"), c.needs, "needs"]];
   return (
     <p data-testid="summary" className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
@@ -316,7 +316,8 @@ export function ItemsPage() {
   const [expanded, setExpanded] = useExpanded(defaultExpanded(nodes));
   const itemsById = useMemo(() => byId(items.data?.items), [items.data]);
   const counted = (s: string) => (s === "queued" ? (queue.data?.queue.length ?? "…") : tree ? rows.filter((r) => itemMatches(r, { state: s, q, showClosed })).length : (items.data?.facets.state[s] ?? 0));
-  const allCount = tree ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed })).length : (items.data?.facets.allStates ?? "");
+  // All, with no search and closed items hidden, is the server's open count (stage not CLOSED), as Activity's Open items.
+  const allCount = !q.trim() && !showClosed && items.data ? items.data.counts.open : tree ? rows.filter((r) => itemMatches(r, { state: null, q, showClosed })).length : (items.data?.facets.allStates ?? "");
   return (
     <>
       <PageHeader title={t("page.work")} />
@@ -342,7 +343,7 @@ export function ItemsPage() {
           </ButtonRow>
         )}
       </div>
-      {tree && items.data && <Summary rows={rows} queued={queue.data?.queue.length} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
+      {tree && items.data && <Summary rows={rows} counts={items.data.counts} queued={queue.data?.queue.length} rateLimit={rateLimitText(pauses.data)} onFilter={setState} />}
       <ButtonRow role="group" aria-label={t("items.filterByState")} className="mb-3">
         {[null, ...(tree ? [HELD] : []), ...STATE_FILTERS].map((s) => (
           <Button key={s ?? "all"} size="sm" aria-pressed={state === s} onClick={() => setState(s)} className="tabular-nums">
@@ -381,7 +382,7 @@ export function ItemPage({ id }: { id: string }) {
   entries.reverse().sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
   const transcripts = q.data.transcripts ?? {};
   const short = shortSource(item.source.id);
-  const level = detailLevel(item);
+  const level = item.item_phase;
   return (
     <>
       <nav aria-label={t("item.breadcrumb")} className="mb-1 text-sm">

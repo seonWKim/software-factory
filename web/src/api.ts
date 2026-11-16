@@ -57,6 +57,8 @@ export interface Overview {
   /** The number of Needs-you rows: open items blocked on a person or the budget, plus one per system action (each alarm its own): "Needs you (N)". */
   needs_you: number;
   system_actions?: SystemAction[];
+  /** Open items (stage not CLOSED) and running runs, defined once on the server (the items list's `counts`). */
+  open: number;
   running: number;
   queued: number;
   last_24h: { succeeded: number; failed: number; tokens: number };
@@ -130,12 +132,17 @@ export function showsMerge(m: MergeReadiness | null | undefined): m is MergeRead
 }
 
 /**
- * Why an item waits (design §9, issue #310): one sentence, who moves it next, and the same-repo issue numbers
- * the sentence names as `#N`. `ref_url` + a number is that issue's URL; null: show the number without a link.
+ * Why an item waits (design §9, issue #310): its reason code (one en.ts text each, `why.reason.<code>`, worded by
+ * lib/format.ts whyText) with the values the text names, the open alarms said after it, who moves it next, and the
+ * same-repo issue numbers it names as `#N`. `ref_url` + a number is that issue's URL; null: show the number without
+ * a link. `holder_id`: the item that holds a held or deadlocked run, linked from its name.
  */
 export interface Why {
   code: string;
-  text: string;
+  reason_code: string;
+  params: Record<string, string | number>;
+  alarms: string[];
+  holder_id: string | null;
   next_actor: "human" | "factory" | "other_item" | "none";
   refs: number[];
   ref_url: string | null;
@@ -145,8 +152,10 @@ export interface ItemRow {
   id: string;
   source: SourceRef;
   title: string | null;
-  level: string;
-  badges: string[];
+  /** The item's phase on the pages: its level (src/ui/priority.ts levelOf over core/phase.ts phaseOf and its run). */
+  item_phase: string;
+  /** Why it waits, as a reason code (the same as `why.reason_code`). */
+  reason_code: string;
   stage: string;
   tier: number | null;
   kind: string | null;
@@ -168,10 +177,10 @@ export interface ItemRow {
   /** The Merge button: enabled, or disabled with the reason. */
   merge?: MergeReadiness;
   /**
-   * What a Needs-you row says: the reason (src/ui/need.ts); absent for other rows. `anchor`: the item page's anchor
-   * of the newest factory thread entry (`msg-<seq>`), null when it has none.
+   * What a Needs-you row says: the reason (src/ui/need.ts); absent for other rows; null when the why's text says it.
+   * `anchor`: the item page's anchor of the newest factory thread entry (`msg-<seq>`), null when it has none.
    */
-  need?: { reason: string; anchor?: string | null };
+  need?: { reason: string | null; anchor?: string | null };
   /** A Needs-you row's buttons: the state-changing commands that apply now (not budget), each allowed or not for the viewer. */
   commands?: ItemCommand[];
   why?: Why;
@@ -191,6 +200,8 @@ export interface Items {
   total: number;
   items: ItemRow[];
   facets: { state: Record<string, number>; allStates: number };
+  /** Open items (stage not CLOSED) and running runs, defined once on the server: the same numbers as the overview's. */
+  counts: { open: number; running: number };
 }
 
 export interface RunRow {
@@ -256,6 +267,9 @@ export interface ItemDetail {
     merge_check?: MergeCheckView | null;
     /** The Merge button: enabled, or disabled with the reason. */
     merge?: MergeReadiness;
+    /** The item's phase on the pages (the list's `item_phase`) and its reason code. */
+    item_phase: string;
+    reason_code: string;
     why?: Why;
   };
   timeline: {
