@@ -78,7 +78,6 @@
   - **Schema:** migration 12 adds `work_items.origin` (`factory` default), `head_branch`, `last_head_sha` (all store-owned, not in `WorkItemPatch`) and the `controller_unreviewed_merges` table. SQLite builds it on open.
   - Not built: re-review after a person's push, adopting a PR again after it reopens with a new number, showing unreviewed merges in stats. The Health section and the Floor line of the app show them (see `09-dashboard-app.md`).
 
-## History
 
 - **One GitHub client per process: `issue-cmd.ts` among its callers** (until 2026-11-16, when the `factory issue` command was removed). Before: the callers of `Plugins.githubApi()` were the CLI commands (`settings --project`, `migrate`, `golden add`), `issue-cmd.ts` (`issueDeps`) and `setup.ts` (doctor, setup).
 - **Stream intake cleanup read `inbox_retention_days`** (until 2026-11-16, design 08-retention). Before: raw records were kept `inbox_retention_days` days (default 14); now `retention.raw_records_days` (default 7), the old key a deprecated fallback.
