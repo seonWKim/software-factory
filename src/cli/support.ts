@@ -14,13 +14,10 @@ export function stopOnSignals(): AbortSignal {
   return stop.signal;
 }
 
-/** Controller and/or worker in this process until `signal` aborts. */
-export async function runLoops(loaded: Loaded, cmd: "dev" | "controller" | "worker", signal: AbortSignal): Promise<void> {
+/** The controller and the worker in this process until `signal` aborts. */
+export async function runLoops(loaded: Loaded, signal: AbortSignal): Promise<void> {
   const app = await build(loaded, { signal });
-  const loops = [];
-  if (cmd !== "worker") loops.push(app.controller.run(signal));
-  if (cmd !== "controller") loops.push(app.worker.run(signal));
-  await Promise.all(loops);
+  await Promise.all([app.controller.run(signal), app.worker.run(signal)]);
   await app.close();
 }
 

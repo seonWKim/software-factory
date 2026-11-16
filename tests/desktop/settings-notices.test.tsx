@@ -47,13 +47,14 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  history.replaceState(null, "", "/");
   vi.unstubAllGlobals();
 });
 
-async function notices() {
+async function notices(region = "Notices") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(createElement(QueryClientProvider, { client }, createElement(SettingsPage)));
-  return screen.findByRole("region", { name: "Notices" });
+  return screen.findByRole("region", { name: region });
 }
 
 describe("Settings page: Notices", () => {
@@ -103,7 +104,8 @@ describe("Settings page: Notices", () => {
   });
 
   it("the settable-keys table points the two keys to the Notices section instead of a field", async () => {
-    await notices();
+    history.replaceState(null, "", "/app/settings?tab=advanced");
+    await notices("Settable keys");
     const table = await screen.findByRole("table", { name: "Settable keys" });
     for (const key of ["notice_kinds", "quiet_hours"]) {
       const tr = table.querySelector<HTMLElement>(`tr[data-key="${key}"]`)!;

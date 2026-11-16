@@ -1,19 +1,15 @@
 import { API, type CapabilitiesView, type CapabilityRow, useApi } from "../api.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
-import { LINK_CLASS } from "../components/ui/link-style.js";
 import { StatusBadge } from "../components/ui/notice.js";
 import { ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { t } from "../i18n/index.js";
 import { ago } from "../lib/format.js";
-import { Link } from "../nav.js";
-import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
-import { withNodes } from "./standing.js";
 
-// The Settings page's Providers section (design 08-settings, 2026-11-15): each provider entry of the capability list
-// (a registered agent runner or LLM provider, one per configured endpoint) with whether config selects it, its model
-// per class, the roles it serves and when a stored run last used it. Skills, tools and MCP servers moved to the
-// Plugins page (plugins.tsx); this section links there. Read once when the page opens, never polled.
+// The Plugins page's Models tab (design 09-dashboard-app, 2026-11-16; it was the Settings page's Providers section,
+// design 08-settings 2026-11-15): each provider entry of the capability list (a registered agent runner or LLM
+// provider, one per configured endpoint) with whether config selects it, its model per class, the roles it serves and
+// when a stored run last used it. Read once when the tab opens, never polled.
 
 /** The name, then the provider's endpoint and its model per class. */
 function NameCell({ row }: { row: CapabilityRow }) {
@@ -28,10 +24,10 @@ function NameCell({ row }: { row: CapabilityRow }) {
   );
 }
 
-export function ProvidersSection() {
+export function ModelsTab() {
   const now = useNow();
   const q = useApi<CapabilitiesView>(API.capabilities, false);
-  const title = t("settings.providers");
+  const title = t("plugins.tabModels");
   const rows = q.data?.capabilities.filter((c) => c.kind === "provider");
   const columns: Column<CapabilityRow>[] = [
     { key: "name", header: t("settings.capColName"), render: (r) => <NameCell row={r} /> },
@@ -49,9 +45,7 @@ export function ProvidersSection() {
   ];
   return (
     <Section title={title} count={rows?.length}>
-      <p className="mb-2 text-sm text-pretty text-text-2">
-        {withNodes("settings.providersHint", { link: <Link href={`${BASE}plugins`} className={LINK_CLASS}>{t("settings.pluginsLink")}</Link> })}
-      </p>
+      <p className="mb-2 text-sm text-pretty text-text-2">{t("plugins.modelsHint")}</p>
       {q.isError ? (
         <ErrorNote error={q.error} />
       ) : !rows ? (

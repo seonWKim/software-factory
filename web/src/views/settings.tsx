@@ -8,34 +8,40 @@ import { LINK_CLASS } from "../components/ui/link-style.js";
 import { type Column, DataTable } from "../components/ui/data-table.js";
 import { Badge, ErrorNote, Loading, Section } from "../components/ui/parts.js";
 import { Select } from "../components/ui/select.js";
+import { Tabs } from "../components/ui/tabs.js";
 import { Switch } from "../components/ui/switch.js";
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
 import { ago, duration } from "../lib/format.js";
+import { keyHelp, keyLabel } from "../lib/key-label.js";
+import { useUrlParam } from "../lib/url-param.js";
 import { Link } from "../nav.js";
 import { BASE } from "../pages.js";
 import { useNow } from "./common.js";
 import { PageHeader } from "../components/ui/notice.js";
-import { ProvidersSection } from "./settings-capabilities.js";
 import { CalendarSection } from "./settings-calendar.js";
-import { FileKeysSection, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
-import { ProposalsSection, StandingSection, withNodes } from "./standing.js";
+import { FileKeysSection, KeyNameDetails, Outcome, editableKeys, useWrite } from "./settings-file-keys.js";
+import { withNodes } from "./standing.js";
 
-// The Settings page (design §8 and §9, issue #236): every settable key with its value, source and when a change
-// applies, an edit control per key and a reset when an override exists, the PR-only keys read-only, and the
-// audit history, and the standing approvals (standing.tsx), whose pending proposals come first. Every key write is POST /api/v1/settings, which runs
-// the same checks as `factory settings`; a refusal is shown next to the field it came from. A per-project gate key
-// also shows the configured project's learned value (design 08-settings) next to its file and override values, with
-// its evidence runs, its set time and a reset that runs the same check as `factory settings reset --learned`.
-// The owner notices' two keys (design 09-notifications) are edited in their own Notices section: a switch per kind
-// and a quiet-hours field. Integrations (design 08-settings, 2026-11-12) lists each integration with the plugin in force;
-// its Switch removes the dashboard's choice, so factory.config.json decides again. Calendar (settings-calendar.tsx) connects and
-// disconnects each calendar plugin, which writes the live `calendar` key. The file-only keys have their own typed
-// form (settings-file-keys.tsx), saved on a local branch the owner merges; the PR-only table keeps the remaining keys.
-// Providers (settings-capabilities.tsx, design 08-settings 2026-11-15) lists the provider entries, read only, and links to the
-// Plugins page, which holds the skills, tools and MCP servers. The project label control above the settable keys stores
-// the configured repo's project label (design 08-settings, 2026-11-16), which every per-project value is found by.
+// The Settings page (design §8 and §9, issue #236; three tabs since 2026-11-16, design 08-settings): the tab is the `tab`
+// query parameter (General, Integrations, Advanced; General when it names none).
+// - General: Mode (and the auto-merge tier) and Notices.
+// - Integrations: the integrations and Calendar (settings-calendar.tsx), which connects and disconnects each calendar plugin.
+// - Advanced: every settable key, the file keys, the PR-only keys, the audit history, Commands and the ignored overrides.
+// A settable key's row reads its human label and description (lib/key-label.ts, en.ts) with its value and an edit
+// control; its key name, source, file value and when a change applies sit behind one Details toggle, and a reset shows
+// when an override exists. Every key write is POST /api/v1/settings, which runs the same checks as `factory settings`; a
+// refusal is shown next to the field it came from. A per-project gate key also shows the configured project's learned
+// value (design 08-settings) next to its file and override values, with its evidence runs, its set time and a reset
+// that runs the same check as `factory settings reset --learned`. The owner notices' two keys (design 09-notifications)
+// are edited in their own Notices section: a switch per kind and a quiet-hours field. Integrations (design 08-settings,
+// 2026-11-12) lists each integration with the plugin in force; its Switch removes the dashboard's choice, so
+// factory.config.json decides again. The file-only keys have their own typed form (settings-file-keys.tsx), saved on a
+// local branch the owner merges; the PR-only table keeps the remaining keys. The project label control above the
+// settable keys stores the configured repo's project label (design 08-settings, 2026-11-16), which every per-project
+// value is found by. Pending proposals, Standing approvals and the Providers table moved to the Rules page (Approvals)
+// and the Plugins page (Models tab).
 
 const TIERS = ["cheap", "standard", "strong"] as const;
 const PR_ONLY_TITLE = t("settings.prOnlyTitle");
@@ -324,7 +330,7 @@ interface LearnedValue {
 /** The configured project's learned value of a key: in force or not, its evidence runs and when it was set, and its reset. */
 function LearnedLayer({ row, learned, view }: { row: SettingRow; learned: LearnedValue; view: SettingsView }) {
   const now = useNow();
-  const label = t("settings.keyFor", { key: row.key, project: view.repo });
+  const label = t("settings.keyFor", { key: keyLabel(row.key), project: view.repo });
   const runs = learned.evidence_run_ids;
   return (
     <div data-learned className="mt-2 flex flex-wrap items-start gap-2">
@@ -469,6 +475,31 @@ function IntegrationsSection({ view }: { view: SettingsView }) {
   );
 }
 
+/** One row's Details: the key name, where its value comes from, the file's value and when a change applies. */
+function KeyDetails({ row }: { row: SettingRow }) {
+  return (
+    <details data-details>
+      <summary className="cursor-pointer text-xs text-text-2">{t("settings.details")}</summary>
+      <dl className="mt-2 grid grid-cols-[auto_minmax(10ch,1fr)] gap-x-3 gap-y-1 text-xs">
+        <dt className="text-text-2">{t("settings.detailKey")}</dt>
+        <dd className="font-mono wrap-anywhere">{row.key}</dd>
+        <dt className="text-text-2">{t("settings.colSource")}</dt>
+        <dd><Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge></dd>
+        <dt className="text-text-2">{t("settings.colFileValue")}</dt>
+        <dd className="min-w-0">
+          {row.file_value !== null ? (
+            <JsonValue text={shownValue(row.key, row.file_value)} />
+          ) : (
+            <span className="text-text-3">{withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}</span>
+          )}
+        </dd>
+        <dt className="text-text-2">{t("settings.colAppliesAt")}</dt>
+        <dd className="text-text-2">{row.applies_at}</dd>
+      </dl>
+    </details>
+  );
+}
+
 /** The settable keys table's columns; the Value cell holds the editors, the per-project layer and the learned value. */
 function keyColumns(view: SettingsView): Column<SettingRow>[] {
   return [
@@ -477,34 +508,22 @@ function keyColumns(view: SettingsView): Column<SettingRow>[] {
       header: t("settings.colKey"),
       render: (row) => (
         <>
-          <span className="font-mono text-xs whitespace-nowrap">{row.key}</span>
-          <Description text={row.description} />
+          <span className="text-sm font-medium text-pretty">{keyLabel(row.key)}</span>
+          <Description text={keyHelp(row.key, row.description)} />
         </>
       ),
     },
     { key: "value", header: t("settings.colValue"), className: "min-w-56", render: (row) => <ValueCell row={row} view={view} /> },
-    { key: "source", header: t("settings.colSource"), render: (row) => <Badge level={SOURCE_TONE[row.source] || undefined}>{row.source}</Badge> },
-    {
-      key: "file_value",
-      header: t("settings.colFileValue"),
-      className: "min-w-40",
-      render: (row) =>
-        row.file_value !== null ? (
-          <JsonValue text={shownValue(row.key, row.file_value)} />
-        ) : (
-          <span className="text-xs text-text-3">
-            {withNodes("settings.default", { value: <JsonValue text={shownValue(row.key, row.default_value)} /> })}
-          </span>
-        ),
-    },
-    { key: "applies_at", header: t("settings.colAppliesAt"), className: "min-w-24 whitespace-nowrap text-text-2" },
-    { key: "reset", header: t("settings.colReset"), render: (row) => row.source === "override" && <ResetButton row={row} label={row.key} token={view.csrf_token} /> },
+    { key: "details", header: t("settings.details"), className: "min-w-32", render: (row) => <KeyDetails row={row} /> },
+    { key: "reset", header: t("settings.colReset"), render: (row) => row.source === "override" && <ResetButton row={row} label={keyLabel(row.key)} token={view.csrf_token} /> },
   ];
 }
 
 function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
   const own = view.project === null ? undefined : row.projects.find((p) => p.project === view.project);
   const learned = view.project === null ? undefined : ((row as SettingRow & { learned?: LearnedValue[] }).learned ?? []).find((l) => l.project === view.project);
+  const label = keyLabel(row.key);
+  const projectLabel = t("settings.keyFor", { key: label, project: view.repo });
   return (
     <>
       {SECTION_KEYS[row.key] ? (
@@ -512,7 +531,7 @@ function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
           <span className="font-mono wrap-anywhere">{row.value}</span> · {t(SECTION_KEYS[row.key]!)}
         </p>
       ) : (
-        <Editor row={row} label={row.key} value={row.value} token={view.csrf_token} />
+        <Editor row={row} label={label} value={row.value} token={view.csrf_token} />
       )}
       <Duration settingKey={row.key} value={row.value} />
       {row.key === "workers" && row.max !== undefined && (
@@ -527,8 +546,8 @@ function ValueCell({ row, view }: { row: SettingRow; view: SettingsView }) {
             {view.project === null && ` · ${t("settings.noProjectLabel")}`}
           </p>
           <div className="flex flex-wrap items-start gap-2">
-            <Editor row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
-            {own?.source === "override" && <ResetButton row={row} label={t("settings.keyFor", { key: row.key, project: view.repo })} token={view.csrf_token} project={view.repo} />}
+            <Editor row={row} label={projectLabel} value={own?.value ?? row.value} token={view.csrf_token} project={view.repo} />
+            {own?.source === "override" && <ResetButton row={row} label={projectLabel} token={view.csrf_token} project={view.repo} />}
           </div>
           <Duration settingKey={row.key} value={own?.value ?? row.value} />
           {learned && <LearnedLayer row={row} learned={learned} view={view} />}
@@ -691,53 +710,52 @@ function ModeSection({ view }: { view: SettingsView }) {
   );
 }
 
-export function SettingsPage() {
+type SettingsTab = "general" | "integrations" | "advanced";
+const TABS: readonly { id: SettingsTab; label: MessageKey }[] = [
+  { id: "general", label: "settings.tabGeneral" },
+  { id: "integrations", label: "settings.tabIntegrations" },
+  { id: "advanced", label: "settings.tabAdvanced" },
+];
+
+/** The selected tab: the `tab` query parameter, General when it names no tab. */
+function useTabParam(): [SettingsTab, (tab: SettingsTab) => void] {
+  const [tab, choose] = useUrlParam("tab", (v) => TABS.some((x) => x.id === v));
+  return [(tab ?? "general") as SettingsTab, choose];
+}
+
+/** The Advanced tab: the settable keys, the file keys, the PR-only keys, the history, Commands and the ignored overrides. */
+function AdvancedTab({ view: v }: { view: SettingsView }) {
   const now = useNow();
-  const settings = useApi<SettingsView>(API.settings);
-  if (settings.isError) return <><PageHeader title={t("page.settings")} /><ErrorNote error={settings.error} /></>;
-  if (!settings.data) return <><PageHeader title={t("page.settings")} /><Loading rows={8} /></>;
-  const v = settings.data;
   // The keys the typed form edits leave the PR-only table; the remaining keys change only by a reviewed PR.
   const editable = editableKeys(v);
   const prOnly = v.pr_only.filter((p) => !editable.has(p.key));
   return (
     <>
-      <PageHeader title={t("page.settings")} />
-      <ProposalsSection />
-      <ModeSection view={v} />
-      <NoticesSection view={v} />
-      <IntegrationsSection view={v} />
-      <ProvidersSection />
-      <CalendarSection token={v.csrf_token} />
-      <PageCommands />
       <Section title={t("settings.settableKeys")} count={v.keys.length}>
-        <p className="mb-2 text-sm text-pretty text-text-2">
-          {withNodes("settings.settableIntro", { command: <code>{"factory settings"}</code> })}
-        </p>
+        <p className="mb-2 text-sm text-pretty text-text-2">{t("settings.settableIntro")}</p>
         <ProjectLabel view={v} />
         <DataTable label={t("settings.settableKeys")} columns={keyColumns(v)} rows={v.keys} rowKey={(r) => r.key} empty={t("settings.noKeys")} dataKey />
       </Section>
-      {v.ignored.length > 0 && (
-        <Section title={t("settings.ignoredOverrides")} count={v.ignored.length}>
-          <ul className="space-y-1 text-sm">
-            {v.ignored.map((i, n) => (
-              <li key={n} className="text-pretty break-words">
-                <code>{i.key}</code>
-                {i.project ? t("settings.forProject", { project: i.project }) : ""} = <code>{i.value}</code>: {i.reason}
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
-      <StandingSection />
       <FileKeysSection view={v} />
       <Section title={PR_ONLY_TITLE} count={prOnly.length}>
         <p className="mb-2 text-sm text-pretty text-text-2">
-          {withNodes("settings.prOnlyIntro", { command: <code>{"factory settings set"}</code>, file: <code>{"factory.config.json"}</code> })}
+          {withNodes("settings.prOnlyIntro", { file: <code>{"factory.config.json"}</code> })}
         </p>
         <DataTable
           label={PR_ONLY_TITLE}
-          columns={[{ key: "key", header: t("settings.colKey"), render: (p: SettingsView["pr_only"][number]) => <><span className="font-mono text-xs">{p.key}</span><Description text={p.description} /></> }]}
+          columns={[
+            {
+              key: "key",
+              header: t("settings.colKey"),
+              render: (p: SettingsView["pr_only"][number]) => (
+                <>
+                  <span className="text-sm font-medium text-pretty">{keyLabel(p.key)}</span>
+                  <Description text={p.description} />
+                  <KeyNameDetails name={p.key} />
+                </>
+              ),
+            },
+          ]}
           rows={prOnly}
           rowKey={(p) => p.key}
           empty={t("settings.noKeys")}
@@ -750,7 +768,7 @@ export function SettingsPage() {
           columns={[
             { key: "at", header: t("col.when"), className: "tabular-nums whitespace-nowrap", render: (c) => t("time.ago", { time: ago(c.at, now) }) },
             { key: "actor", header: t("settings.colWho"), className: "font-mono text-xs" },
-            { key: "key", header: t("settings.colKey"), className: "font-mono text-xs", render: (c) => `${c.key}${c.project ? t("settings.forProject", { project: c.project }) : ""}` },
+            { key: "key", header: t("settings.colKey"), className: "text-sm", render: (c) => `${keyLabel(c.key)}${c.project ? t("settings.forProject", { project: c.project }) : ""}` },
             {
               key: "change",
               header: t("settings.colChange"),
@@ -763,6 +781,48 @@ export function SettingsPage() {
           empty={t("settings.noHistory")}
         />
       </Section>
+      <PageCommands />
+      {v.ignored.length > 0 && (
+        <Section title={t("settings.ignoredOverrides")} count={v.ignored.length}>
+          <ul className="space-y-1 text-sm">
+            {v.ignored.map((i, n) => (
+              <li key={n} className="text-pretty break-words">
+                {keyLabel(i.key)}
+                {i.project ? t("settings.forProject", { project: i.project }) : ""} = <code>{i.value}</code>: {i.reason}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+    </>
+  );
+}
+
+export function SettingsPage() {
+  const settings = useApi<SettingsView>(API.settings);
+  const [tab, setTab] = useTabParam();
+  if (settings.isError) return <><PageHeader title={t("page.settings")} /><ErrorNote error={settings.error} /></>;
+  if (!settings.data) return <><PageHeader title={t("page.settings")} /><Loading rows={8} /></>;
+  const v = settings.data;
+  return (
+    <>
+      <PageHeader title={t("page.settings")} />
+      <div className="flex flex-col gap-4">
+        <Tabs label={t("settings.tabs")} options={TABS.map((x) => ({ id: x.id, label: t(x.label) }))} value={tab} onChange={setTab} />
+        {tab === "general" && (
+          <div>
+            <ModeSection view={v} />
+            <NoticesSection view={v} />
+          </div>
+        )}
+        {tab === "integrations" && (
+          <div>
+            <IntegrationsSection view={v} />
+            <CalendarSection token={v.csrf_token} />
+          </div>
+        )}
+        {tab === "advanced" && <div><AdvancedTab view={v} /></div>}
+      </div>
     </>
   );
 }

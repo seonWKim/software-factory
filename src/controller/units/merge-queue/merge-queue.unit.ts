@@ -3,8 +3,10 @@
 // where its tier allows), so a change waiting on a person is never in it. Each entry is checked as it will land
 // (base + the entries ahead + this change) by a `merge-check` run on a worker; the first `merge_queue.depth` entries
 // are checked at once (speculative depth; solo default 1). The head lands once its check passed, through the
-// `before_merge` hooks; red removes the entry with the reason and rebuilds the entries behind it. A check that does
-// not come back in time is ended by the delayed MergeCheckTimedOut message the unit emits when it starts it.
+// `before_merge` hooks; red removes the entry with the reason and rebuilds the entries behind it. A red for failing
+// checks also sends the item back to an implement run as a loop (counted by loop_count, limited by max_loops); any
+// other red leaves it at merge_pending. A check that does not come back in time is ended by the delayed
+// MergeCheckTimedOut message the unit emits when it starts it.
 //
 // Crash safety: every write is keyed or conditional, so each step may run again. A checking entry whose run is
 // missing (the process died before it was queued) gets it again. The landing is an outbound delivery keyed by the
@@ -14,6 +16,7 @@
 // moves nothing: every such move names the run.
 
 import { createHash } from "node:crypto";
+import { runKey } from "../../../core/policy.js";
 import type { EntryFields, MergeQueue, MergeQueueEntry } from "../../actors/merge-queue/merge-queue.store.js";
 import { MergeQueueStore } from "../../actors/merge-queue/merge-queue.store.js";
 import { mergeOutcome, type ActionRow } from "../../../outbound/index.js";
@@ -30,6 +33,8 @@ type Run = Parameters<UnitOperations["run-results"]["apply"]>[0];
 
 /** The run kind that checks an entry's merged result (src/worker/runs/merge-check/). */
 const MERGE_CHECK = "merge-check";
+/** The state change that sends an item whose merged result failed its checks back to implement (a loop start). */
+const MERGE_CHECK_FAILED = "merge_check_failed";
 /** How long a timer message's key is kept: past any check's time limit. */
 const TIMER_KEY_TTL_MS = 30 * 24 * 3_600_000;
 
@@ -176,9 +181,8 @@ export class MergeQueueUnit {
     const d = run.outcome.data;
     if (d.result !== "green") {
       const base = this.c.k.cfg.repo.base_branch;
-      const why = d.why === "conflict"
-        ? `the merged commit conflicts in ${(Array.isArray(d.conflicts) ? d.conflicts : []).map((f) => `\`${String(f)}\``).join(", ")}`
-        : `\`${String(d.command)}\` ${String(d.how)} on the merged commit`;
+      if (d.why === "checks") return this.checksRed(e, run, d);
+      const why = `the merged commit conflicts in ${(Array.isArray(d.conflicts) ? d.conflicts : []).map((f) => `\`${String(f)}\``).join(", ")}`;
       return this.red(e, `${why}, so \`${base}\` did not move and the change left the merge queue; fix it on the branch and run the merge again`);
     }
     // The base the landing must find: the checked base when no entry was ahead of it; else the commit the last
@@ -310,6 +314,43 @@ export class MergeQueueUnit {
   /** Every entry checked with `e` ahead goes back to be checked again (its old run's result then changes nothing). */
   private async rebuild(e: MergeQueueEntry): Promise<void> {
     for (const x of await this.behind(e)) await this.store().move(x.entry_id, x.state, "queued", { run_key: null, base_sha: null });
+  }
+
+  /**
+   * A red check for failing checks on the merged result: the item goes back to an implement run as a loop
+   * (`merge_check_failed`: stage RUNNING, loop_count + 1, the run keyed by the new loop), or at `max_loops` blocks on
+   * a human; then the entry leaves with the reason. Both name the failing tests, or with none the command and its exit
+   * text. The item first, conditional on it still waiting for the merge: a crash after it leaves an entry whose item
+   * no longer waits, which the next step removes; a repeat changes nothing.
+   */
+  private async checksRed(e: MergeQueueEntry, run: Run, d: Record<string, unknown>): Promise<void> {
+    const base = this.c.k.cfg.repo.base_branch;
+    const limit = this.c.k.cfg.max_loops;
+    const tests = (Array.isArray(d.failing_tests) ? d.failing_tests : []).map(String);
+    const command = String(d.command);
+    const how = String(d.how);
+    const what = tests.length > 0
+      ? `the merged commit failed its checks; failing tests: ${tests.map((t) => `\`${t.replace(/`/g, "'")}\``).join(", ")}`
+      : `\`${command}\` ${how} on the merged commit`;
+    let next = `fix it on the branch and run the merge again`;
+    await this.c.unit("transitions").decide(e.work_item_id as WorkItemId, (it) => {
+      if (!awaitingMerge(it)) return null;
+      const loop = it.loop_count + 1;
+      const detail = { entry_id: e.entry_id, run_id: run.id, command, how, failing_tests: JSON.stringify(tests) };
+      if (loop >= limit) {
+        next = `that makes ${loop} loops (limit \`max_loops\` = ${limit}), so the factory started no implement run; a human needs to decide`;
+        return { patch: { blocked_on: "human", blocked_reason: "max_loops" }, actor: SYSTEM, reason: "max_loops", detail };
+      }
+      next = `the factory sent it back to the implementer (loop ${loop} of ${limit})`;
+      return {
+        patch: { stage: "RUNNING", blocked_on: "none", blocked_reason: null, loop_count: loop },
+        actor: SYSTEM,
+        reason: MERGE_CHECK_FAILED,
+        detail,
+        enqueue: { kind: "implement", idempotency_key: runKey({ ...it, loop_count: loop }, "implement") },
+      };
+    });
+    return this.red(e, `${what}, so \`${base}\` did not move and the change left the merge queue; ${next}`);
   }
 
   /** A red check of the entry's current run: it leaves with the reason, the entries behind it are rebuilt, the queue moves on. */

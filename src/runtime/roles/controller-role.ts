@@ -1,4 +1,4 @@
-// The controller role (RFC 0015 §8, M4–M5): what `factory controller` and `factory dev` run. Inbound polls the
+// The controller role (RFC 0015 §8, M4–M5): what `factory dev` runs. Inbound polls the
 // sources and the forge, stores their records and announces them; its normalizer turns them into
 // controller.commands; the controller's consumer hands each to the router, which gives each event to the unit that
 // accepts its kind. The units (src/controller/units/, discovered) decide; their steps run on the controller's tick.

@@ -242,7 +242,7 @@ describe("plugins import: filters", () => {
     for (const args of [["import", "--kind", "tool"], ["import", "--source", "cursor"], ["import", "--from"], ["import", "--force"], ["export"]]) {
       const r = await run(codeRoot(), h, args);
       expect(r.code, args.join(" ")).toBe(1);
-      expect(r.err.join("\n")).toMatch(/usage: factory plugins import/);
+      expect(r.err.join("\n")).toMatch(/usage: npm run factory -- plugins import/);
     }
   });
 });

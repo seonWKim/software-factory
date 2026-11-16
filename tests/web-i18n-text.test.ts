@@ -38,7 +38,7 @@ function tsxFiles(dir: string): string[] {
  * Keys that code builds from a template string (`t(`level.${level}`)`), so no literal use of them exists: each is
  * listed by its prefix. A new template-built family goes here by hand; nothing else is skipped.
  */
-const TEMPLATE_PREFIXES = ["page.", "level.", "unit.", "settings.hold.", "settings.file.why.", "failure.", "why.reason.", "why.stage."];
+const TEMPLATE_PREFIXES = ["page.", "level.", "unit.", "settings.hold.", "settings.file.why.", "failure.", "why.reason.", "why.stage.", "key."];
 
 /** The catalog keys that no source text uses as a quoted literal and that no listed template prefix covers. */
 function unusedKeys(keys: readonly string[], sources: readonly string[]): string[] {
