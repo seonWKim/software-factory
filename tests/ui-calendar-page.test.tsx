@@ -15,7 +15,7 @@ const { CalendarPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { Cal
 
 // The Calendar page (design 09-dashboard-app, Calendar page): Week and Month views of the stored calendar events from
 // GET /api/v1/calendar/events, with previous, next and Today, "Not synced" for a day the last syncs did not cover, the
-// stale-sync notice, and an empty state that links to Settings → Calendar. Today is fixed at Thursday 2026-11-12 (local).
+// stale-sync notice, and an empty state that links to the Integrations tab of Settings. Today is fixed at Thursday 2026-11-12 (local).
 
 const SLOW = { timeout: 5_000 };
 const ev = (id: string, time: string | null, source = "google-calendar"): EventRow => ({ kind: "event", source, id, title: `event ${id}`, all_day: time === null, time });
@@ -188,11 +188,11 @@ describe("Calendar page", () => {
     expect(entries()).toEqual(["google-calendar:holiday", "work:standup", "google-calendar:lunch"]);
   });
 
-  it("with no calendar connected the empty state links to Settings → Calendar", async () => {
+  it("with no calendar connected the empty state links to the Integrations tab of Settings", async () => {
     calendar = [];
     synced = { from: "9999-01-01", to: "9999-01-01" };
     show();
     const link = await screen.findByRole("link", { name: "Connect a calendar in Settings" }, SLOW);
-    expect(link.getAttribute("href")).toBe("/app/settings#calendar");
+    expect(link.getAttribute("href")).toBe("/app/settings?tab=integrations#calendar");
   });
 });

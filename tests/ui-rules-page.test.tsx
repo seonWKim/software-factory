@@ -24,6 +24,7 @@ const { RulesPage } = (await import(/* @vite-ignore */ PAGE_MODULE)) as { RulesP
 
 const TOKEN = "tok_rules";
 const SLOW = { timeout: 5_000 };
+const AT = "2026-11-07T00:00:00.000Z";
 
 const view = (over: Partial<RulesView> = {}): RulesView => ({
   enabled: true,
@@ -66,6 +67,7 @@ beforeEach(() => {
     }
     gets.push(url);
     if (url === "/api/v1/rules") return json(200, current);
+    if (url === "/api/v1/standing") return json(200, { as_of: AT, csrf_token: TOKEN, rules: [], proposals: [] });
     if (url.startsWith("/api/v1/rules/entry?")) {
       if (typeof detail === "number") return json(detail, { error: "boom" });
       return json(200, typeof detail === "function" ? detail(new URL(url, "http://x").searchParams.get("id")!) : detail);

@@ -17,6 +17,7 @@ import { EmptyState, Notice, PageHeader, StatusBadge } from "../components/ui/no
 import { Textarea } from "../components/ui/textarea.js";
 import type { MessageKey } from "../i18n/en.js";
 import { t } from "../i18n/index.js";
+import { ApprovalsSection } from "./standing.js";
 
 // The Rules page (design 09-dashboard-app.md and 07-self-improvement.md, issue #571), under one PageHeader that says what
 // the page is for and how many entries wait, at most max-w-3xl wide, with a "How this works" disclosure. Only entries
@@ -39,6 +40,8 @@ import { t } from "../i18n/index.js";
 // and scope; it is collapsed while something waits. Suggest reads each class's retire suggestions on demand. Then a
 // collapsed Retired list. Scope and the encoded-elsewhere lines render through Markdown.
 // One card per entry at every width, so no table turns into cards.
+// Approvals (standing.tsx, moved from Settings 2026-11-16) sit under the "How this works" line: the pending standing-approval
+// proposals and the standing rules, each part hidden when it has no items and the whole heading when both are empty.
 // The improve report (design 07-self-improvement, 2026-11-16) is a Section from GET /api/v1/rules's `improve`: its
 // window and counts, then one row per failure group with its draft and filing. Run now shows only when `run_now` says
 // the viewer may run it (approve_spec); it posts to POST /api/v1/improve/run and shows the queued run_id, or a 409's
@@ -601,6 +604,7 @@ export function RulesPage() {
       <>
         <PageHeader title={title} />
         <div className={`${PAGE_WIDTH} space-y-4`}>
+          <ApprovalsSection />
           {v.improve && <Improve view={v.improve} />}
           <LedgerOff view={v} />
         </div>
@@ -621,6 +625,7 @@ export function RulesPage() {
       </details>
       {v.judge !== null && <Notice tone="warn">{t("rules.readOnly")}{v.judge}</Notice>}
       {v.error !== null && <Notice tone="bad">{v.error}</Notice>}
+      <ApprovalsSection />
       {waiting.length === 0 && v.error === null && <EmptyState title={t("rules.emptyTitle")}>{t("rules.empty")}</EmptyState>}
       <div>
         {GROUPS.map((g) => {
