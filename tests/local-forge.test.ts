@@ -2,7 +2,14 @@
 // outbound call, and with no forge selected the kernel reads revert and fix-forward links through it (compose
 // builds it through the registry and gives it as the controller's `links`).
 
+import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import type { Loaded } from "../src/compose.js";
+import { mergeQueuePushBase } from "../src/core/config.js";
+import { forgeRoles } from "../src/core/local-merge.js";
 import type { WorkItem } from "../src/core/types.js";
 import { FakeClock } from "../src/impl/clock/fake-clock.js";
 import { LocalForge } from "../src/impl/forge/local-forge.js";
@@ -126,5 +133,52 @@ describe("a local-forge flow", () => {
     expect(fix.fixes_pr).toBeNull();
     const forward = (await f.store.listStateChanges(orig.id)).filter((c) => c.reason === "fixed_forward");
     expect(forward.map((c) => c.detail)).toEqual([{ fix_work_item_id: fix.id }]);
+  });
+});
+
+// The local forge's base push (docs/plugins/forge.md, design 05-sources Local items): off by default, on with
+// `merge_queue.push_base` when the factory repo names an origin; the git push is the GitHub forge's (src/impl/git/).
+describe("LocalForge base push (merge_queue.push_base)", () => {
+  const GIT_ENV = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" };
+  const repo = (origin: boolean): string => {
+    const dir = mkdtempSync(join(tmpdir(), "sf-local-forge-"));
+    execFileSync("git", ["init", "--quiet", "-b", "main", dir], { env: GIT_ENV });
+    if (origin) execFileSync("git", ["-C", dir, "remote", "add", "origin", join(dir, "nowhere.git")], { env: GIT_ENV });
+    return dir;
+  };
+  const create = async (push_base: boolean | undefined, path: string) => {
+    const d = (await import("../src/impl/forge/local.plugin.js")).default;
+    const loaded = { config: { ...config, repo: { ...config.repo, path }, ...(push_base === undefined ? {} : { merge_queue_push_base: push_base }) } } as unknown as Loaded;
+    return d.create({ loaded, repo: { owner: "o", name: "r" }, extraScanValues: [], github: {} as never });
+  };
+
+  it("`merge_queue.push_base` is off when absent and must be true or false", () => {
+    expect(mergeQueuePushBase(undefined)).toBe(false);
+    expect(mergeQueuePushBase({})).toBe(false);
+    expect(mergeQueuePushBase({ push_base: true })).toBe(true);
+    expect(mergeQueuePushBase({ push_base: false })).toBe(false);
+    for (const v of ["true", 1, null]) expect(() => mergeQueuePushBase({ push_base: v }), String(v)).toThrow(/merge_queue.push_base must be true or false/);
+  });
+
+  it("the plugin pushes only with the setting on and an origin in the factory repo", async () => {
+    expect((await create(true, repo(true))).pushBase).toBeTypeOf("function");
+    expect(await create(true, repo(false))).not.toHaveProperty("pushBase");
+    expect(await create(false, repo(true))).not.toHaveProperty("pushBase");
+    expect(await create(undefined, repo(true))).not.toHaveProperty("pushBase");
+  });
+
+  it("pushes only the base branch, and only a commit sha", async () => {
+    const forge = new LocalForge("factory/", "main");
+    await expect(forge.pushBase!({ repo: "/nowhere", base_ref: "factory/wi_1", sha: SHA, expected_sha: SHA })).rejects.toThrow(/refusing to push "factory\/wi_1"/);
+    await expect(forge.pushBase!({ repo: "/nowhere", base_ref: "main", sha: "HEAD", expected_sha: SHA })).rejects.toThrow(/not a commit sha/);
+  });
+
+  it("with no forge selected, the local forge is the controller's forge only when it pushes; a selected forge stays the forge", () => {
+    const quiet = new LocalForge("factory/");
+    const pushing = new LocalForge("factory/", "main");
+    expect(forgeRoles(null, quiet)).toEqual({ forge: null, links: quiet });
+    expect(forgeRoles(null, pushing)).toEqual({ forge: pushing, links: pushing });
+    const selected = new LocalForge("factory/");
+    expect(forgeRoles(selected, pushing)).toEqual({ forge: selected, links: selected });
   });
 });

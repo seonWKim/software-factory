@@ -1,6 +1,6 @@
 # software-factory
 
-A software factory: a team of agents that takes work items (GitHub issues, Slack threads) through triage → implement → review → human gate. Built by hand to a minimal version, then built further by itself.
+A software factory for one owner: a set of agents that takes work items (GitHub issues, Slack threads) through triage → implement → review → human gate. Built by hand to a minimal version, then built further by itself.
 
 Agent-neutral instructions. `CLAUDE.md` is a symlink to this file.
 
@@ -57,4 +57,5 @@ A change to the dashboard (`web/`) reads `design-system/components.md` and `desi
 The factory's prompts in `prompts/` are generic, for any project. These are this repo's own rules on top of them.
 
 - Dependencies: Dependencies are already installed and the sandbox has no network: never run `npm install`, `npm ci`, or `npx` for a package that is not installed.
-- Merge conflicts in `docs/design.md`, `docs/design/*.md`, `docs/plugins/*.md`, `docs/settings.md` and `SET_UP.md`: keep both sides' sections. Each side's new or changed section stays; never drop either side's section to keep the other's. When both sides added a current decision at the top of a topic file, order the two newest first by their decision date. When both sides edited the same decision paragraph, combine the two edits into one decision and keep both sides' History lines. If both sides edited any other paragraph, combine the two edits.
+- Generated files are regenerated on a conflict, never hand-merged: a conflict in `docs/settings.md` is fixed by running `npm run settings:catalog`.
+- Merge conflicts in `docs/design.md`, `docs/design/*.md`, `docs/plugins/*.md` and `SET_UP.md`: keep both sides' sections. Each side's new or changed section stays; never drop either side's section to keep the other's. When both sides added a current decision at the top of a topic file, order the two newest first by their decision date. When both sides edited the same decision paragraph, combine the two edits into one decision and keep both sides' History lines. If both sides edited any other paragraph, combine the two edits.

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { componentOf, sourceFiles } from "./lib.js";
 
 // RFC 0015 §9 migration-naming: `<yyyymmddThhmm>-<component>-<slug>.migration.ts` in its component's folder,
-// no duplicate timestamps. The frozen numbered lists (SQLite schema.ts, migrations/mysql/) stay as the baseline.
+// no duplicate timestamps. The frozen numbered list (SQLite schema.ts) stays as the baseline.
 
 const NAME = /^(\d{8}T\d{4})-([a-z]+)-([a-z0-9]+(?:-[a-z0-9]+)*)\.migration\.ts$/;
 
